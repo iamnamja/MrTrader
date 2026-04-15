@@ -18,10 +18,11 @@ class AlpacaClient:
     """Alpaca API client wrapper for trading and market data"""
 
     def __init__(self):
+        is_paper = settings.trading_mode.lower() != "live"
         self.trading_client = TradingClient(
             api_key=settings.alpaca_api_key,
             secret_key=settings.alpaca_secret_key,
-            base_url=settings.alpaca_base_url,
+            paper=is_paper,
         )
         self.data_client = StockHistoricalDataClient(
             api_key=settings.alpaca_api_key,
@@ -54,7 +55,7 @@ class AlpacaClient:
                 result.append({
                     "symbol": pos.symbol,
                     "qty": int(pos.qty),
-                    "avg_fill_price": float(pos.avg_fill_price),
+                    "avg_entry_price": float(pos.avg_entry_price),
                     "market_value": float(pos.market_value),
                     "unrealized_pl": float(pos.unrealized_pl),
                     "unrealized_plpc": float(pos.unrealized_plpc),
@@ -72,7 +73,7 @@ class AlpacaClient:
             return {
                 "symbol": position.symbol,
                 "qty": int(position.qty),
-                "avg_fill_price": float(position.avg_fill_price),
+                "avg_entry_price": float(position.avg_entry_price),
                 "market_value": float(position.market_value),
                 "unrealized_pl": float(position.unrealized_pl),
                 "unrealized_plpc": float(position.unrealized_plpc),
