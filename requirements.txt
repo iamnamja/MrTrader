@@ -13,7 +13,7 @@ alembic==1.12.1
 redis==5.0.1
 
 # Market Data & Trading
-alpaca-trade-api==3.0.0
+# alpaca-trade-api==3.0.0  # Will add in Phase 2 (Windows PyYAML workaround needed)
 yfinance==0.2.32
 
 # ML & Data

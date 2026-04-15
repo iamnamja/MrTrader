@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 from app.config import settings
@@ -47,7 +47,7 @@ def check_db_connection():
     """Check if database connection is working"""
     try:
         db = get_session()
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db.close()
         return True
     except Exception as e:
