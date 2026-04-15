@@ -59,16 +59,18 @@ async def startup_event():
         logger.error(f"✗ Redis connection failed: {e}")
         raise
 
-    # Check Alpaca connection
+    # Check Alpaca connection (optional for Phase 1)
     try:
-        alpaca = get_alpaca_client()
-        if alpaca.health_check():
-            logger.info("✓ Alpaca connection verified")
+        if get_alpaca_client is not None:
+            alpaca = get_alpaca_client()
+            if alpaca.health_check():
+                logger.info("✓ Alpaca connection verified")
+            else:
+                logger.warning("⚠ Alpaca health check failed (will be fixed in Phase 2)")
         else:
-            raise RuntimeError("Alpaca health check failed")
+            logger.warning("⚠ Alpaca not installed yet (Phase 1 only, will add in Phase 2)")
     except Exception as e:
-        logger.error(f"✗ Alpaca connection failed: {e}")
-        raise
+        logger.warning(f"⚠ Alpaca connection failed: {e} (Phase 1 only, will fix in Phase 2)")
 
     logger.info("✓ MrTrader application started successfully")
 
@@ -96,15 +98,25 @@ async def get_status():
     """Get system status"""
     db_ok = check_db_connection()
     redis_ok = get_redis_queue().health_check()
-    alpaca_ok = get_alpaca_client().health_check()
 
-    status = "healthy" if all([db_ok, redis_ok, alpaca_ok]) else "degraded"
+    alpaca_ok = False
+    alpaca_status = "not installed"
+    if get_alpaca_client is not None:
+        try:
+            alpaca_ok = get_alpaca_client().health_check()
+            alpaca_status = "✓ connected"
+        except Exception as e:
+            alpaca_status = f"✗ error: {str(e)[:50]}"
+    else:
+        alpaca_status = "⚠ not installed (Phase 1 only)"
+
+    status = "healthy" if all([db_ok, redis_ok]) else "degraded"
 
     return {
         "status": status,
         "database": "✓ connected" if db_ok else "✗ disconnected",
         "redis": "✓ connected" if redis_ok else "✗ disconnected",
-        "alpaca": "✓ connected" if alpaca_ok else "✗ disconnected",
+        "alpaca": alpaca_status,
         "mode": settings.trading_mode,
     }
 
@@ -112,6 +124,11 @@ async def get_status():
 @app.get("/api/account")
 async def get_account_info():
     """Get Alpaca account information"""
+    if get_alpaca_client is None:
+        return {
+            "status": "unavailable",
+            "message": "Alpaca not installed (Phase 1 only, will add in Phase 2)",
+        }
     try:
         alpaca = get_alpaca_client()
         account = alpaca.get_account()
@@ -130,6 +147,13 @@ async def get_account_info():
 @app.get("/api/positions")
 async def get_positions():
     """Get all open positions"""
+    if get_alpaca_client is None:
+        return {
+            "status": "unavailable",
+            "message": "Alpaca not installed (Phase 1 only)",
+            "data": [],
+            "count": 0,
+        }
     try:
         alpaca = get_alpaca_client()
         positions = alpaca.get_positions()
@@ -149,6 +173,11 @@ async def get_positions():
 @app.get("/api/position/{symbol}")
 async def get_position(symbol: str):
     """Get position for a specific symbol"""
+    if get_alpaca_client is None:
+        return {
+            "status": "unavailable",
+            "message": "Alpaca not installed (Phase 1 only)",
+        }
     try:
         alpaca = get_alpaca_client()
         position = alpaca.get_position(symbol.upper())
