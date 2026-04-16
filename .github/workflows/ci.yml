@@ -1,116 +1,141 @@
-name: CI Pipeline
+name: MrTrader CI
 
 on:
   push:
-    branches: [ develop, main, 'feature/**' ]
+    branches: [main, develop, "feature/**"]
   pull_request:
-    branches: [ develop, main ]
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Stub values so pydantic-settings doesn't fail at import time
+  ALPACA_API_KEY: "test_key"
+  ALPACA_SECRET_KEY: "test_secret"
+  DATABASE_URL: "sqlite:///:memory:"
+  REDIS_URL: "redis://localhost:6379"
 
 jobs:
-  lint-and-test:
+  # ── Lint + type-check ────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint dependencies
+        run: pip install flake8 mypy types-redis
+
+      - name: Install app dependencies
+        run: pip install -r requirements.txt
+
+      - name: flake8
+        run: |
+          flake8 app/ \
+            --max-line-length=100 \
+            --extend-ignore=E203,W503,E501 \
+            --exclude=app/database/migrations/
+
+      - name: mypy (advisory)
+        run: |
+          mypy app/ \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --exclude app/database/migrations/ \
+            || true
+
+  # ── Unit + contract tests ────────────────────────────────────────────────────
+  test:
+    name: Unit & Contract Tests
+    runs-on: ubuntu-latest
     services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: mrtrader
-          POSTGRES_PASSWORD: mrtrader_password
-          POSTGRES_DB: mrtrader
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
       redis:
         image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
         ports:
           - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-    - name: Cache pip packages
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest pytest-asyncio pytest-cov flake8 black isort
+      - name: Run unit + integration + contract tests
+        env:
+          ALPACA_API_KEY: ${{ env.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ env.ALPACA_SECRET_KEY }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: redis://localhost:6379
+        run: |
+          pytest tests/ \
+            --ignore=tests/test_strategy_regression.py \
+            -v --tb=short -q \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=60
 
-    - name: Lint with flake8
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 app tests --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
-        flake8 app tests --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-      continue-on-error: true
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
 
-    - name: Check code formatting with black
-      run: black --check app tests
-      continue-on-error: true
-
-    - name: Check import sorting with isort
-      run: isort --check-only app tests
-      continue-on-error: true
-
-    - name: Run tests
-      env:
-        DATABASE_URL: postgresql://mrtrader:mrtrader_password@localhost:5432/mrtrader
-        REDIS_URL: redis://localhost:6379
-        ALPACA_API_KEY: test_key
-        ALPACA_SECRET_KEY: test_secret
-      run: |
-        pytest tests/ -v --cov=app --cov-report=xml --cov-report=term
-      continue-on-error: true
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
-
-    - name: Build status
-      if: always()
-      run: echo "CI Pipeline completed"
-
-  check-security:
+  # ── Strategy regression (main only, needs yfinance network access) ───────────
+  backtest-regression:
+    name: Backtest Regression
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Check for secrets
-      run: |
-        # Simple check: look for common secret patterns
-        if grep -r "ALPACA_API_KEY\|ALPACA_SECRET_KEY" --include="*.py" app/ | grep -v ".example\|config.py\|#"; then
-          echo "WARNING: Potential secrets in code"
-          exit 1
-        fi
-      continue-on-error: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-    - name: Check .env is not committed
-      run: |
-        if git log --all --full-history -- ".env" | grep -q ".env"; then
-          echo "ERROR: .env file found in git history!"
-          exit 1
-        fi
-      continue-on-error: true
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run strategy regression (unit tests only, skip network)
+        env:
+          ALPACA_API_KEY: ${{ env.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ env.ALPACA_SECRET_KEY }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
+        run: |
+          pytest tests/test_strategy_regression.py \
+            -v --tb=short \
+            -k "signal or sizer or check_exit or position"
+        timeout-minutes: 10
+
+  # ── CI gate ──────────────────────────────────────────────────────────────────
+  ci-success:
+    name: CI Pass Gate
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: All required jobs must pass
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" || \
+                "${{ needs.test.result }}" != "success" ]]; then
+            echo "CI failed: lint=${{ needs.lint.result }} test=${{ needs.test.result }}"
+            exit 1
+          fi
+          echo "CI passed."
