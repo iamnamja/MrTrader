@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 from typing import List, Optional, Dict, Any
 import pandas as pd
 from datetime import datetime, timedelta
@@ -12,6 +14,51 @@ from app.config import settings
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+
+class _TokenBucket:
+    """
+    Token-bucket rate limiter.
+
+    Alpaca allows 200 requests/minute.  We cap at 180/min (10% headroom)
+    to avoid racing the exact boundary.
+    """
+
+    def __init__(self, rate: float = 180, per: float = 60.0):
+        self._capacity = rate
+        self._tokens = rate
+        self._rate = rate / per          # tokens per second
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        """Block until a token is available."""
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last
+            self._last = now
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            if self._tokens < 1:
+                sleep_for = (1 - self._tokens) / self._rate
+            else:
+                sleep_for = 0
+            self._tokens -= 1
+
+        if sleep_for > 0:
+            logger.debug("Rate limit: sleeping %.2fs", sleep_for)
+            time.sleep(sleep_for)
+
+
+_rate_limiter = _TokenBucket()
+
+
+def _notify_circuit_breaker():
+    """Inform the circuit breaker of a network error (best-effort, no circular import)."""
+    try:
+        from app.agents.circuit_breaker import circuit_breaker
+        circuit_breaker.record_network_error()
+    except Exception:
+        pass
 
 
 class AlpacaClient:
@@ -33,6 +80,7 @@ class AlpacaClient:
     def get_account(self) -> Dict[str, Any]:
         """Get account information"""
         try:
+            _rate_limiter.acquire()
             account = self.trading_client.get_account()
             return {
                 "cash": float(account.cash),
@@ -49,6 +97,7 @@ class AlpacaClient:
     def get_positions(self) -> List[Dict[str, Any]]:
         """Get all open positions"""
         try:
+            _rate_limiter.acquire()
             positions = self.trading_client.get_all_positions()
             result = []
             for pos in positions:
@@ -69,6 +118,7 @@ class AlpacaClient:
     def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get position for a specific symbol"""
         try:
+            _rate_limiter.acquire()
             position = self.trading_client.get_open_position(symbol)
             return {
                 "symbol": position.symbol,
@@ -93,6 +143,7 @@ class AlpacaClient:
             side: 'buy' or 'sell'
         """
         try:
+            _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             order_request = MarketOrderRequest(
                 symbol=symbol,
@@ -112,6 +163,7 @@ class AlpacaClient:
             }
         except Exception as e:
             logger.error(f"Error placing market order: {e}")
+            _notify_circuit_breaker()
             raise
 
     def place_limit_order(
@@ -127,6 +179,7 @@ class AlpacaClient:
             limit_price: Limit price
         """
         try:
+            _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             order_request = LimitOrderRequest(
                 symbol=symbol,
@@ -209,6 +262,7 @@ class AlpacaClient:
                 limit=limit,
             )
 
+            _rate_limiter.acquire()
             bars = self.data_client.get_stock_bars(request)
 
             if symbol in bars:
@@ -231,6 +285,7 @@ class AlpacaClient:
                 timeframe=TimeFrame.MINUTE,
                 limit=1,
             )
+            _rate_limiter.acquire()
             bars = self.data_client.get_stock_bars(request)
 
             if symbol in bars:
