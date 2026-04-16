@@ -98,11 +98,16 @@ def test_client(mock_alpaca, mock_redis, db_session):
     TestClient with all external services mocked and DB session injected.
     Import app lazily so env-var validation doesn't fire at import time.
     """
+    from unittest.mock import AsyncMock
     with (
         patch("app.integrations.get_alpaca_client", return_value=mock_alpaca),
-        patch("app.integrations.get_redis_queue",   return_value=mock_redis),
-        patch("app.database.check_db_connection",   return_value=True),
-        patch("app.database.session.get_session",   return_value=db_session),
+        patch("app.integrations.get_redis_queue", return_value=mock_redis),
+        patch("app.database.check_db_connection", return_value=True),
+        patch("app.database.session.get_session", return_value=db_session),
+        patch("app.orchestrator.AgentOrchestrator.start", new_callable=AsyncMock),
+        patch("app.orchestrator.AgentOrchestrator.stop", new_callable=AsyncMock),
+        patch("app.main.init_db"),
+        patch("app.startup_reconciler.reconcile", return_value={"ghost_positions": [], "orphaned_orders": []}),
     ):
         from app.main import app
         with TestClient(app, raise_server_exceptions=False) as client:

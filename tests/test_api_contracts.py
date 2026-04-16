@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,10 +61,14 @@ def make_client(alpaca=None, redis=None, db_session=None):
     sess = db_session or _empty_db_session()
     with (
         patch("app.integrations.get_alpaca_client", return_value=alp),
-        patch("app.integrations.get_redis_queue",   return_value=red),
-        patch("app.database.check_db_connection",   return_value=True),
-        patch("app.database.session.get_session",   return_value=sess),
-        patch("app.api.routes.get_session",         return_value=sess),
+        patch("app.integrations.get_redis_queue", return_value=red),
+        patch("app.database.check_db_connection", return_value=True),
+        patch("app.database.session.get_session", return_value=sess),
+        patch("app.api.routes.get_session", return_value=sess),
+        patch("app.orchestrator.AgentOrchestrator.start", new_callable=AsyncMock),
+        patch("app.orchestrator.AgentOrchestrator.stop", new_callable=AsyncMock),
+        patch("app.main.init_db"),
+        patch("app.startup_reconciler.reconcile", return_value={"ghost_positions": [], "orphaned_orders": []}),
     ):
         from app.main import app
         with TestClient(app, raise_server_exceptions=False) as client:
