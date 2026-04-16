@@ -1,6 +1,8 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
+      "Bash(*)",
       "Bash(git status)",
       "Bash(git status *)",
       "Bash(git log *)",
