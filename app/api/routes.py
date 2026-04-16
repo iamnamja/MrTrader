@@ -1,5 +1,6 @@
 """
-Dashboard API routes — metrics, positions, trades, decisions, controls.
+Dashboard API routes — metrics, positions, trades, decisions, controls,
+paper-trading approval workflow, and live-trading capital management.
 """
 
 import logging
@@ -19,7 +20,7 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.database import check_db_connection
-from app.database.models import AgentDecision, RiskMetric, Trade
+from app.database.models import AgentDecision, AuditLog, RiskMetric, Trade
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -312,3 +313,179 @@ async def close_position(symbol: str):
     except Exception as exc:
         logger.error("Close position error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Paper-trading approval workflow (Phase 8) ────────────────────────────────
+
+@router.get("/approval/status")
+async def get_approval_status():
+    """Check whether the paper-trading session meets go-live criteria."""
+    from app.approval_workflow import approval_workflow
+    is_ready, metrics = approval_workflow.check_go_live_readiness()
+    return {"is_ready": is_ready, "metrics": metrics}
+
+
+@router.post("/approval/request-live")
+async def request_live_approval(approved_by: str = "user"):
+    """Evaluate metrics and, if criteria pass, grant go-live approval."""
+    from app.approval_workflow import approval_workflow
+    result = approval_workflow.request_approval(approved_by=approved_by)
+    if result["status"] == "denied":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/approval/go-live")
+async def approve_and_go_live():
+    """
+    Full go-live switch:
+      1. Re-verify all go-live criteria.
+      2. Start the capital ramp at Stage 1.
+      3. Flip trading mode to LIVE.
+    """
+    from app.approval_workflow import approval_workflow
+    from app.trading_modes import mode_manager
+    from app.live_trading.capital_manager import capital_manager
+
+    is_ready, metrics = approval_workflow.check_go_live_readiness()
+    if not is_ready:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Go-live criteria not met", "metrics": metrics},
+        )
+
+    capital_manager.start()
+    mode_manager.switch_to_live()
+
+    db = get_session()
+    try:
+        db.add(AuditLog(
+            action="GO_LIVE_ACTIVATED",
+            details={
+                "activated_at": datetime.utcnow().isoformat(),
+                "initial_capital": capital_manager.get_current_capital(),
+                "metrics_snapshot": {k: v for k, v in metrics.items()
+                                     if not isinstance(v, dict)},
+            },
+            timestamp=datetime.utcnow(),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    return {
+        "status": "live_trading_enabled",
+        "trading_mode": mode_manager.mode.value,
+        "initial_capital": capital_manager.get_current_capital(),
+        "activated_at": datetime.utcnow().isoformat(),
+    }
+
+
+# ─── Live trading monitoring & capital management (Phase 9) ───────────────────
+
+@router.get("/live/status")
+async def get_live_trading_status():
+    """Real-time live account health plus current capital stage."""
+    from app.live_trading.monitoring import monitor
+    from app.live_trading.capital_manager import capital_manager
+    from app.live_trading.kill_switch import kill_switch
+    from app.trading_modes import mode_manager
+
+    health = monitor.health_check()
+    return {
+        **health,
+        "trading_mode":    mode_manager.mode.value,
+        "capital":         capital_manager.get_current_capital(),
+        "capital_stage":   capital_manager.current_stage.stage,
+        "kill_switch_active": kill_switch.is_active,
+    }
+
+
+@router.get("/live/capital-stages")
+async def get_capital_stages():
+    """All capital ramp stages and which is currently active."""
+    from app.live_trading.capital_manager import capital_manager
+    return capital_manager.get_all_stages()
+
+
+@router.post("/live/increase-capital")
+async def request_capital_increase():
+    """
+    Attempt to advance to the next capital stage.
+    Requires stage duration elapsed AND health thresholds met.
+    """
+    from app.live_trading.capital_manager import capital_manager
+    from app.live_trading.monitoring import monitor
+
+    health = monitor.health_check()
+    if not capital_manager.can_advance(
+        health["max_drawdown_pct"], abs(min(health["pnl_today_pct"], 0))
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Cannot advance: stage not complete or health thresholds breached",
+                "health": health,
+            },
+        )
+
+    result = capital_manager.advance()
+
+    db = get_session()
+    try:
+        db.add(AuditLog(
+            action="CAPITAL_STAGE_ADVANCED",
+            details=result,
+            timestamp=datetime.utcnow(),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    return result
+
+
+@router.post("/live/kill-switch")
+async def activate_kill_switch(reason: str = "User triggered"):
+    """Emergency: close all positions and halt new trades."""
+    from app.live_trading.kill_switch import kill_switch
+    return kill_switch.activate(reason=reason)
+
+
+@router.post("/live/kill-switch/reset")
+async def reset_kill_switch(reason: str = "Manual reset"):
+    """Re-enable trading after reviewing the kill-switch event."""
+    from app.live_trading.kill_switch import kill_switch
+    kill_switch.reset(reason=reason)
+    return {"status": "kill_switch_reset", "reason": reason}
+
+
+@router.get("/live/audit-log")
+async def get_live_audit_log(limit: int = 100):
+    """Recent kill-switch, capital, and alert audit entries."""
+    db = get_session()
+    try:
+        logs = (
+            db.query(AuditLog)
+            .filter(AuditLog.action.in_([
+                "GO_LIVE_ACTIVATED",
+                "GO_LIVE_APPROVAL_GRANTED",
+                "CAPITAL_STAGE_ADVANCED",
+                "KILL_SWITCH_ACTIVATED",
+                "KILL_SWITCH_RESET",
+                "ALERT_SENT",
+            ]))
+            .order_by(desc(AuditLog.timestamp))
+            .limit(min(limit, 500))
+            .all()
+        )
+        return [
+            {
+                "action":    log.action,
+                "details":   log.details,
+                "timestamp": log.timestamp.isoformat(),
+            }
+            for log in logs
+        ]
+    finally:
+        db.close()
