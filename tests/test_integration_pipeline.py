@@ -20,17 +20,19 @@ class TestApprovalWorkflowStateMachine:
         from app.approval_workflow import ApprovalWorkflow
         wf = ApprovalWorkflow()
         with patch("app.approval_workflow.get_session") as mock_db:
-            session = MagicMock()
-            # Wire up all query chains to return sensible primitives
-            session.query.return_value.filter_by.return_value.first.return_value = None
-            session.query.return_value.filter.return_value.first.return_value = None
-            session.query.return_value.filter.return_value.count.return_value = 0
-            session.query.return_value.filter.return_value.all.return_value = []
-            session.query.return_value.filter.return_value.filter.return_value.first.return_value = None
-            session.query.return_value.filter.return_value.filter.return_value.count.return_value = 0
-            session.query.return_value.filter.return_value.filter.return_value.all.return_value = []
-            session.close.return_value = None
-            mock_db.return_value = session
+            db = MagicMock()
+            # Ensure all query chains return None / empty so no TradingSession is found
+            q = db.query.return_value
+            q.filter_by.return_value.order_by.return_value.first.return_value = None
+            q.filter_by.return_value.first.return_value = None
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.count.return_value = 0
+            q.filter.return_value.all.return_value = []
+            q.filter.return_value.filter.return_value.first.return_value = None
+            q.filter.return_value.filter.return_value.count.return_value = 0
+            q.filter.return_value.filter.return_value.all.return_value = []
+            db.close.return_value = None
+            mock_db.return_value = db
             is_ready, metrics = wf.check_go_live_readiness()
         assert not is_ready
         assert isinstance(metrics["total_trades"], int)
@@ -68,17 +70,15 @@ class TestCapitalManagerStateMachine:
     def test_start_at_stage_1(self):
         from app.live_trading.capital_manager import CapitalManager
         cm = CapitalManager()
-        with patch.object(cm, "_persist_state"):
-            cm.start()
+        cm.start()
         assert cm.current_stage.stage == 1
         assert cm.get_current_capital() == 1_000
 
     def test_advance_stage(self):
         from app.live_trading.capital_manager import CapitalManager
         cm = CapitalManager()
-        with patch.object(cm, "_persist_state"):
-            cm.start()
-            result = cm.advance()
+        cm.start()
+        result = cm.advance()
         assert result["status"] == "advanced"
         assert cm.current_stage.stage == 2
         assert cm.get_current_capital() == 2_500
@@ -86,12 +86,10 @@ class TestCapitalManagerStateMachine:
     def test_cannot_advance_past_max(self):
         from app.live_trading.capital_manager import CapitalManager
         cm = CapitalManager()
-        with patch.object(cm, "_persist_state"):
-            cm.start()
-            # Advance to final stage
-            for _ in range(len(cm.STAGES) - 1):
-                cm.advance()
-            result = cm.advance()  # try to go beyond
+        cm.start()
+        for _ in range(len(cm.STAGES) - 1):
+            cm.advance()
+        result = cm.advance()  # try to go beyond
         assert result["status"] == "already_at_max"
 
     def test_health_gate_prevents_advance(self):
@@ -99,8 +97,7 @@ class TestCapitalManagerStateMachine:
         from app.live_trading.capital_manager import CapitalManager
         from datetime import timedelta
         cm = CapitalManager()
-        with patch.object(cm, "_persist_state"):
-            cm.start()
+        cm.start()
         # Simulate stage complete but bad health
         cm._stage_start = datetime.utcnow() - timedelta(days=10)
         assert not cm.can_advance(max_drawdown_pct=5.0, daily_loss_pct=0.0)
@@ -109,8 +106,7 @@ class TestCapitalManagerStateMachine:
         from app.live_trading.capital_manager import CapitalManager
         from datetime import timedelta
         cm = CapitalManager()
-        with patch.object(cm, "_persist_state"):
-            cm.start()
+        cm.start()
         # Stage 1 needs 3 days elapsed + good health
         cm._stage_start = datetime.utcnow() - timedelta(days=5)
         assert cm.can_advance(max_drawdown_pct=1.0, daily_loss_pct=0.5)
