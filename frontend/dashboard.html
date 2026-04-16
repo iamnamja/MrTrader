@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MrTrader Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      padding: 24px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    header h1 { color: #4ade80; font-size: 2rem; }
+    header p  { color: #888; font-size: 0.9rem; margin-top: 4px; }
+
+    #connection-status {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #555;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    #connection-status.connected    { background: #4ade80; }
+    #connection-status.disconnected { background: #ef4444; }
+
+    /* ── KPI grid ───────────────────────────────── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .card-title {
+      color: #888;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #4ade80;
+    }
+    .card-value.negative { color: #ef4444; }
+    .card-sub {
+      font-size: 0.78rem;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    /* ── Health bar ─────────────────────────────── */
+    .health-bar {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .health-pill {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .health-pill .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+    }
+    .health-pill.ok   .dot { background: #4ade80; }
+    .health-pill.fail .dot { background: #ef4444; }
+
+    /* ── Controls ───────────────────────────────── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 9px 20px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    .btn-green  { background: #4ade80; color: #000; }
+    .btn-yellow { background: #facc15; color: #000; }
+    .btn-red    { background: #ef4444; color: #fff; }
+
+    /* ── Sections ───────────────────────────────── */
+    section { margin-bottom: 32px; }
+    section h2 {
+      font-size: 1rem;
+      color: #aaa;
+      border-bottom: 1px solid #2a2a2a;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+
+    /* ── Tables ─────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th {
+      background: #1f1f1f;
+      color: #4ade80;
+      text-align: left;
+      padding: 10px 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #1f1f1f;
+      white-space: nowrap;
+    }
+    tr:hover td { background: #181818; }
+    .pos { color: #4ade80; }
+    .neg { color: #ef4444; }
+
+    /* ── Status badges ──────────────────────────── */
+    .badge {
+      display: inline-block;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-active   { background: #14532d; color: #4ade80; }
+    .badge-closed   { background: #1e293b; color: #94a3b8; }
+    .badge-rejected { background: #450a0a; color: #fca5a5; }
+    .badge-pending  { background: #422006; color: #fb923c; }
+
+    /* ── Toast alerts ───────────────────────────── */
+    #toast-container {
+      position: fixed;
+      bottom: 20px; right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+    }
+    .toast {
+      background: #1f1f1f;
+      border-left: 4px solid #4ade80;
+      border-radius: 6px;
+      padding: 10px 16px;
+      font-size: 0.85rem;
+      max-width: 320px;
+      animation: slide-in 0.3s ease;
+    }
+    .toast.warn  { border-color: #facc15; }
+    .toast.error { border-color: #ef4444; }
+    @keyframes slide-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+    .last-updated { color: #555; font-size: 0.75rem; text-align: right; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>MrTrader <span id="connection-status" title="WebSocket"></span></h1>
+  <p>Automated Trading Dashboard</p>
+</header>
+
+<!-- Health bar -->
+<div class="health-bar">
+  <div class="health-pill" id="hp-db"><span class="dot"></span>Database</div>
+  <div class="health-pill" id="hp-redis"><span class="dot"></span>Redis</div>
+  <div class="health-pill" id="hp-alpaca"><span class="dot"></span>Alpaca</div>
+  <div class="health-pill" id="hp-overall"><span class="dot"></span>Overall</div>
+</div>
+
+<!-- KPI cards -->
+<div class="kpi-grid">
+  <div class="card">
+    <div class="card-title">Account Value</div>
+    <div class="card-value" id="kpi-account">—</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Cash</div>
+    <div class="card-value" id="kpi-cash">—</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Daily P&amp;L</div>
+    <div class="card-value" id="kpi-daily-pnl">—</div>
+    <div class="card-sub" id="kpi-daily-pnl-pct"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Total P&amp;L</div>
+    <div class="card-value" id="kpi-total-pnl">—</div>
+    <div class="card-sub" id="kpi-total-pnl-pct"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Open Positions</div>
+    <div class="card-value" id="kpi-positions">—</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Trades Today</div>
+    <div class="card-value" id="kpi-trades-today">—</div>
+    <div class="card-sub" id="kpi-mode"></div>
+  </div>
+</div>
+
+<div class="last-updated" id="last-updated"></div>
+
+<!-- Controls -->
+<div class="controls">
+  <button class="btn-yellow" onclick="pauseTrading()">Pause Trading</button>
+  <button class="btn-green"  onclick="resumeTrading()">Resume Trading</button>
+  <button class="btn-red"    onclick="killSwitch()">Kill Switch</button>
+</div>
+
+<!-- Positions table -->
+<section>
+  <h2>Open Positions</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th><th>Qty</th><th>Avg Price</th>
+          <th>Current</th><th>Unrealized P&amp;L</th><th>P&amp;L %</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="positions-body"><tr><td colspan="7" style="color:#555">No positions</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Trades table -->
+<section>
+  <h2>Recent Trades</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>Symbol</th><th>Dir</th><th>Qty</th>
+          <th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Status</th><th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="trades-body"><tr><td colspan="9" style="color:#555">No trades</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Agent decisions table -->
+<section>
+  <h2>Agent Decisions</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Agent</th><th>Decision</th><th>Reasoning</th></tr>
+      </thead>
+      <tbody id="decisions-body"><tr><td colspan="4" style="color:#555">No decisions logged</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+  const API = "";
+
+  // ── Formatting helpers ──────────────────────────────────────────────────────
+  const fmt$ = v => v == null ? "—" : "$" + parseFloat(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const fmt% = v => v == null ? "" : (v >= 0 ? "+" : "") + parseFloat(v).toFixed(2) + "%";
+  const fmtDt = iso => new Date(iso).toLocaleTimeString();
+  const fmtDtFull = iso => new Date(iso).toLocaleString();
+  const colorClass = v => v == null ? "" : parseFloat(v) >= 0 ? "pos" : "neg";
+
+  function badgeHtml(status) {
+    const cls = {ACTIVE:"badge-active", CLOSED:"badge-closed", REJECTED:"badge-rejected"};
+    return `<span class="badge ${cls[status] || 'badge-pending'}">${status}</span>`;
+  }
+
+  // ── Health check ────────────────────────────────────────────────────────────
+  async function refreshHealth() {
+    try {
+      const r = await fetch(`${API}/api/dashboard/system-health`);
+      const d = await r.json();
+      const map = {db: d.database, redis: d.redis, alpaca: d.alpaca, overall: d.overall};
+      const ids = {db: "hp-db", redis: "hp-redis", alpaca: "hp-alpaca", overall: "hp-overall"};
+      for (const [k, v] of Object.entries(ids)) {
+        const el = document.getElementById(v);
+        el.className = "health-pill " + (map[k] === "OK" || map[k] === "HEALTHY" ? "ok" : "fail");
+      }
+    } catch(e) { console.warn("Health check failed", e); }
+  }
+
+  // ── Summary ─────────────────────────────────────────────────────────────────
+  async function refreshSummary() {
+    try {
+      const r = await fetch(`${API}/api/dashboard/summary`);
+      if (!r.ok) return;
+      const d = await r.json();
+
+      const setKpi = (id, val, cls) => {
+        const el = document.getElementById(id);
+        el.textContent = val;
+        el.className = "card-value" + (cls ? " " + cls : "");
+      };
+
+      setKpi("kpi-account", fmt$(d.account_value));
+      setKpi("kpi-cash",    fmt$(d.cash));
+      setKpi("kpi-daily-pnl",  fmt$(d.daily_pnl),  colorClass(d.daily_pnl));
+      setKpi("kpi-total-pnl",  fmt$(d.total_pnl),  colorClass(d.total_pnl));
+
+      document.getElementById("kpi-daily-pnl-pct").textContent = fmt%(d.daily_pnl_pct);
+      document.getElementById("kpi-total-pnl-pct").textContent = fmt%(d.total_pnl_pct);
+      document.getElementById("kpi-positions").textContent    = d.open_positions_count;
+      document.getElementById("kpi-trades-today").textContent = d.trades_today_count;
+      document.getElementById("kpi-mode").textContent         = d.trading_mode.toUpperCase();
+      document.getElementById("last-updated").textContent     = "Last updated: " + new Date().toLocaleTimeString();
+    } catch(e) { console.warn("Summary refresh failed", e); }
+  }
+
+  // ── Positions ────────────────────────────────────────────────────────────────
+  async function refreshPositions() {
+    try {
+      const r = await fetch(`${API}/api/dashboard/positions`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const tbody = document.getElementById("positions-body");
+      if (!data.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:#555">No positions</td></tr>'; return; }
+      tbody.innerHTML = data.map(p => `
+        <tr>
+          <td><strong>${p.symbol}</strong></td>
+          <td>${p.quantity}</td>
+          <td>${fmt$(p.avg_price)}</td>
+          <td>${fmt$(p.current_price)}</td>
+          <td class="${colorClass(p.pnl_unrealized)}">${fmt$(p.pnl_unrealized)}</td>
+          <td class="${colorClass(p.pnl_unrealized_pct)}">${fmt%(p.pnl_unrealized_pct)}</td>
+          <td><button class="btn-red" style="padding:4px 10px;font-size:0.75rem" onclick="closePosition('${p.symbol}')">Close</button></td>
+        </tr>`).join("");
+    } catch(e) { console.warn("Positions refresh failed", e); }
+  }
+
+  // ── Trades ───────────────────────────────────────────────────────────────────
+  async function refreshTrades() {
+    try {
+      const r = await fetch(`${API}/api/dashboard/trades?limit=20`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const tbody = document.getElementById("trades-body");
+      if (!data.length) { tbody.innerHTML = '<tr><td colspan="9" style="color:#555">No trades</td></tr>'; return; }
+      tbody.innerHTML = data.map(t => `
+        <tr>
+          <td>${t.id}</td>
+          <td><strong>${t.symbol}</strong></td>
+          <td>${t.direction}</td>
+          <td>${t.quantity}</td>
+          <td>${fmt$(t.entry_price)}</td>
+          <td>${t.exit_price ? fmt$(t.exit_price) : "—"}</td>
+          <td class="${colorClass(t.pnl)}">${fmt$(t.pnl)}</td>
+          <td>${badgeHtml(t.status)}</td>
+          <td>${fmtDt(t.created_at)}</td>
+        </tr>`).join("");
+    } catch(e) { console.warn("Trades refresh failed", e); }
+  }
+
+  // ── Decisions ────────────────────────────────────────────────────────────────
+  async function refreshDecisions() {
+    try {
+      const r = await fetch(`${API}/api/dashboard/decisions?limit=20`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const tbody = document.getElementById("decisions-body");
+      if (!data.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:#555">No decisions logged</td></tr>'; return; }
+      tbody.innerHTML = data.map(d => `
+        <tr>
+          <td>${fmtDt(d.timestamp)}</td>
+          <td>${d.agent_name}</td>
+          <td>${d.decision_type}</td>
+          <td style="color:#888;font-size:0.8rem;max-width:400px;white-space:normal">${d.reasoning ? JSON.stringify(d.reasoning).slice(0,150) : "—"}</td>
+        </tr>`).join("");
+    } catch(e) { console.warn("Decisions refresh failed", e); }
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────────────────
+  async function pauseTrading() {
+    await fetch(`${API}/api/dashboard/control/pause`, { method: "POST" });
+    toast("Trading paused", "warn");
+  }
+
+  async function resumeTrading() {
+    await fetch(`${API}/api/dashboard/control/resume`, { method: "POST" });
+    toast("Trading resumed");
+  }
+
+  async function killSwitch() {
+    if (!confirm("Close ALL open positions immediately?")) return;
+    const r = await fetch(`${API}/api/dashboard/control/kill-switch`, { method: "POST" });
+    const d = await r.json();
+    toast(`Kill switch: closed ${d.closed?.length ?? 0} position(s)`, "warn");
+    refreshPositions();
+  }
+
+  async function closePosition(symbol) {
+    if (!confirm(`Close position in ${symbol}?`)) return;
+    await fetch(`${API}/api/dashboard/control/close-position/${symbol}`, { method: "POST" });
+    toast(`Closing ${symbol}…`);
+    setTimeout(refreshPositions, 1500);
+  }
+
+  // ── Toast ────────────────────────────────────────────────────────────────────
+  function toast(msg, type = "info") {
+    const c = document.getElementById("toast-container");
+    const el = document.createElement("div");
+    el.className = "toast" + (type === "warn" ? " warn" : type === "error" ? " error" : "");
+    el.textContent = msg;
+    c.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // ── WebSocket ────────────────────────────────────────────────────────────────
+  function connectWS() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const dot = document.getElementById("connection-status");
+
+    ws.onopen = () => { dot.className = "connected"; };
+    ws.onclose = () => { dot.className = "disconnected"; setTimeout(connectWS, 5000); };
+    ws.onerror = () => { dot.className = "disconnected"; };
+
+    ws.onmessage = e => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "trade_executed") { refreshTrades(); refreshSummary(); }
+      if (msg.type === "position_update") { refreshPositions(); }
+      if (msg.type === "alert") { toast(msg.data.message, msg.data.type === "CRITICAL" ? "error" : "warn"); }
+    };
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────────
+  function refreshAll() {
+    refreshSummary();
+    refreshPositions();
+    refreshTrades();
+    refreshDecisions();
+    refreshHealth();
+  }
+
+  refreshAll();
+  connectWS();
+  setInterval(refreshAll, 10_000);
+</script>
+</body>
+</html>
