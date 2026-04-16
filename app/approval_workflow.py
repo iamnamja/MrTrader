@@ -181,12 +181,12 @@ class ApprovalWorkflow:
     def _verify_criteria(self, metrics: Dict[str, Any]) -> Tuple[bool, Dict[str, bool]]:
         c = GO_LIVE_CRITERIA
         details = {
-            "sharpe_ratio":    metrics["sharpe_ratio"]    >= c["sharpe_ratio"],
-            "return":          metrics["total_return_pct"] >= c["min_return_pct"],
-            "drawdown":        metrics["max_drawdown_pct"] <= c["max_drawdown_pct"],
-            "win_rate":        metrics["win_rate_pct"]     >= c["min_win_rate"],
-            "trade_count":     metrics["total_trades"]     >= c["min_trades"],
-            "duration":        metrics["duration_days"]    >= c["min_days"],
+            "sharpe_ratio": metrics["sharpe_ratio"] >= c["sharpe_ratio"],
+            "return": metrics["total_return_pct"] >= c["min_return_pct"],
+            "drawdown": metrics["max_drawdown_pct"] <= c["max_drawdown_pct"],
+            "win_rate": metrics["win_rate_pct"] >= c["min_win_rate"],
+            "trade_count": metrics["total_trades"] >= c["min_trades"],
+            "duration": metrics["duration_days"] >= c["min_days"],
         }
 
         for name, passed in details.items():

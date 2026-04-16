@@ -3,15 +3,13 @@ import threading
 import time
 from typing import List, Optional, Dict, Any
 import pandas as pd
-from datetime import datetime, timedelta
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from app.config import settings
-import asyncio
 
 logger = logging.getLogger(__name__)
 

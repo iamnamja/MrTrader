@@ -60,8 +60,6 @@ class FeatureEngineer:
             return None
 
         prices = bars["close"].tolist()
-        highs = bars["high"].tolist()
-        lows = bars["low"].tolist()
         volumes = bars["volume"].tolist()
         current_price = prices[-1]
 

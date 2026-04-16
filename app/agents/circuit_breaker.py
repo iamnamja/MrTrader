@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from threading import Lock
 from typing import Optional
 

@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db, check_db_connection
@@ -162,11 +162,10 @@ async def get_status():
     db_ok = check_db_connection()
     redis_ok = get_redis_queue().health_check()
 
-    alpaca_ok = False
     alpaca_status = "not installed"
     if get_alpaca_client is not None:
         try:
-            alpaca_ok = get_alpaca_client().health_check()
+            get_alpaca_client().health_check()
             alpaca_status = "✓ connected"
         except Exception as e:
             alpaca_status = f"✗ error: {str(e)[:50]}"

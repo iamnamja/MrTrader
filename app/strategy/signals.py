@@ -86,31 +86,31 @@ def generate_signal(symbol: str, bars: pd.DataFrame) -> SignalResult:
         return _no_signal
 
     close = bars["close"]
-    high  = bars["high"]
-    low   = bars["low"]
+    high = bars["high"]
+    low = bars["low"]
 
     # ── Indicators ────────────────────────────────────────────────────────────
     ema_fast_s = close.ewm(span=EMA_FAST, adjust=False).mean()
     ema_slow_s = close.ewm(span=EMA_SLOW, adjust=False).mean()
     ema_trend_s = close.ewm(span=EMA_TREND, adjust=False).mean()
-    rsi_s      = _calc_rsi(close, RSI_PERIOD)
-    atr_val    = _calc_atr(high, low, close, ATR_PERIOD)
+    rsi_s = _calc_rsi(close, RSI_PERIOD)
+    atr_val = _calc_atr(high, low, close, ATR_PERIOD)
 
     if atr_val is None or atr_val <= 0:
         return _no_signal
 
-    price      = float(close.iloc[-1])
-    ema_fast   = float(ema_fast_s.iloc[-1])
-    ema_slow   = float(ema_slow_s.iloc[-1])
-    ema_trend  = float(ema_trend_s.iloc[-1])
-    rsi_now    = float(rsi_s.iloc[-1])
-    rsi_prev   = float(rsi_s.iloc[-2]) if len(rsi_s) >= 2 else rsi_now
+    price = float(close.iloc[-1])
+    ema_fast = float(ema_fast_s.iloc[-1])
+    ema_slow = float(ema_slow_s.iloc[-1])
+    ema_trend = float(ema_trend_s.iloc[-1])
+    rsi_now = float(rsi_s.iloc[-1])
+    rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) >= 2 else rsi_now
     ema_fast_prev = float(ema_fast_s.iloc[-2]) if len(ema_fast_s) >= 2 else ema_fast
     ema_slow_prev = float(ema_slow_s.iloc[-2]) if len(ema_slow_s) >= 2 else ema_slow
 
     # ── Trend filter ──────────────────────────────────────────────────────────
-    trend_ok     = price > ema_trend
-    momentum_ok  = (
+    trend_ok = price > ema_trend
+    momentum_ok = (
         len(close) > MOMENTUM_LOOKBACK and
         price > float(close.iloc[-(MOMENTUM_LOOKBACK + 1)])
     )
@@ -137,19 +137,19 @@ def generate_signal(symbol: str, bars: pd.DataFrame) -> SignalResult:
         return _no_signal
 
     signal_type = "EMA_CROSSOVER" if ema_crossover else "RSI_DIP"
-    stop  = round(price - ATR_STOP_MULT * atr_val, 4)
+    stop = round(price - ATR_STOP_MULT * atr_val, 4)
     target = round(price + ATR_TARGET_MULT * atr_val, 4)
 
     reasoning = {
-        "price":       round(price, 4),
-        "ema_fast":    round(ema_fast, 4),
-        "ema_slow":    round(ema_slow, 4),
-        "ema_trend":   round(ema_trend, 4),
-        "rsi":         round(rsi_now, 2),
-        "atr":         round(atr_val, 4),
-        "stop":        stop,
-        "target":      target,
-        "trend_ok":    trend_ok,
+        "price": round(price, 4),
+        "ema_fast": round(ema_fast, 4),
+        "ema_slow": round(ema_slow, 4),
+        "ema_trend": round(ema_trend, 4),
+        "rsi": round(rsi_now, 2),
+        "atr": round(atr_val, 4),
+        "stop": stop,
+        "target": target,
+        "trend_ok": trend_ok,
         "momentum_ok": momentum_ok,
         "signal_type": signal_type,
     }

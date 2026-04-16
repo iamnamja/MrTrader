@@ -34,6 +34,7 @@ def _alpaca():
     from app.integrations import get_alpaca_client
     return get_alpaca_client()
 
+
 def _redis():
     from app.integrations import get_redis_queue
     return get_redis_queue()
@@ -146,7 +147,6 @@ async def get_open_positions():
 @router.get("/trades", response_model=List[TradeResponse])
 async def get_trade_history(limit: int = 100, status: str = ""):
     """Recent trades from the database. Filter by status=ACTIVE|CLOSED|PENDING."""
-    from typing import Optional as _Opt
     db = get_session()
     try:
         q = db.query(Trade).order_by(desc(Trade.created_at))
@@ -245,14 +245,19 @@ async def get_health_alias():
     db_ok = check_db_connection()
     redis_ok = False
     alpaca_ok = False
-    try: redis_ok = _redis().health_check()
-    except Exception: pass
-    try: alpaca_ok = _alpaca().health_check()
-    except Exception: pass
+    try:
+        redis_ok = _redis().health_check()
+    except Exception:
+        pass
+    try:
+        alpaca_ok = _alpaca().health_check()
+    except Exception:
+        pass
     from app.trading_modes import mode_manager
     from app.live_trading.kill_switch import kill_switch
     status = "healthy" if all([db_ok, redis_ok]) else "degraded"
-    if kill_switch.is_active: status = "halted"
+    if kill_switch.is_active:
+        status = "halted"
     return {
         "status": status,
         "checks": {"database": db_ok, "redis": redis_ok, "alpaca": alpaca_ok},

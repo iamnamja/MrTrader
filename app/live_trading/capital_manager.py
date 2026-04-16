@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from app.config import settings
-
 _CFG_STAGE_INDEX = "capital_ramp.stage_index"
 _CFG_STAGE_START = "capital_ramp.stage_start"
 

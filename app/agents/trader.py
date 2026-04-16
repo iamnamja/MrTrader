@@ -15,7 +15,7 @@ shared with the backtesting engine.
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.agents.base import BaseAgent
 from app.database.models import Order, Trade
