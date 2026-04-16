@@ -4,7 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db, check_db_connection
 from app.integrations import get_alpaca_client, get_redis_queue
+from fastapi.responses import HTMLResponse
 from app.api.orchestrator_routes import router as orchestrator_router
+from app.api.routes import router as dashboard_router
+from app.api.websocket import websocket_endpoint
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +25,7 @@ app = FastAPI(
 
 # Register routers
 app.include_router(orchestrator_router)
+app.include_router(dashboard_router)
 
 # Add CORS middleware
 app.add_middleware(
@@ -233,10 +237,22 @@ async def root():
             "account": "/api/account",
             "positions": "/api/positions",
             "docs": "/docs",
+            "dashboard": "/dashboard",
             "orchestrator": "/api/orchestrator/status",
             "jobs": "/api/orchestrator/jobs",
         },
     }
+
+
+@app.websocket("/ws")
+async def websocket_route(websocket):
+    await websocket_endpoint(websocket)
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard():
+    with open("frontend/dashboard.html") as f:
+        return HTMLResponse(content=f.read())
 
 
 if __name__ == "__main__":
