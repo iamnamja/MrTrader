@@ -86,54 +86,10 @@ class CapitalManager:
 
     # ── Stage management ──────────────────────────────────────────────────────
 
-    def load_state(self) -> bool:
-        """
-        Restore stage + start-time from DB on startup.
-        Returns True if state was found and loaded, False if starting fresh.
-        """
-        try:
-            from app.database.session import get_session
-            from app.database.config_store import get_config
-            db = get_session()
-            try:
-                idx = get_config(db, _CFG_STAGE_INDEX)
-                start = get_config(db, _CFG_STAGE_START)
-                if idx is not None and start is not None:
-                    self._stage_index = int(idx)
-                    self._stage_start = datetime.fromisoformat(start)
-                    logger.info(
-                        "Capital ramp state restored: Stage %d, started %s",
-                        self.current_stage.stage, self._stage_start,
-                    )
-                    return True
-            finally:
-                db.close()
-        except Exception as exc:
-            logger.warning("Could not restore capital ramp state: %s", exc)
-        return False
-
-    def _persist_state(self):
-        """Write current stage/start to DB."""
-        try:
-            from app.database.session import get_session
-            from app.database.config_store import set_config
-            db = get_session()
-            try:
-                set_config(db, _CFG_STAGE_INDEX, self._stage_index,
-                           "Capital ramp stage index (0-based)")
-                set_config(db, _CFG_STAGE_START,
-                           self._stage_start.isoformat() if self._stage_start else None,
-                           "Capital ramp stage start timestamp (ISO)")
-            finally:
-                db.close()
-        except Exception as exc:
-            logger.warning("Could not persist capital ramp state: %s", exc)
-
     def start(self):
         """Call when live trading begins (after approval)."""
         self._stage_index = 0
         self._stage_start = datetime.utcnow()
-        self._persist_state()
         logger.warning("Capital ramp started at Stage 1 ($1,000)")
 
     def can_advance(self, max_drawdown_pct: float, daily_loss_pct: float) -> bool:
@@ -153,7 +109,6 @@ class CapitalManager:
 
         self._stage_index += 1
         self._stage_start = datetime.utcnow()
-        self._persist_state()
         new = self.current_stage
 
         logger.warning(
