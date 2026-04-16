@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db, check_db_connection
 from app.integrations import get_alpaca_client, get_redis_queue
+from app.api.orchestrator_routes import router as orchestrator_router
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +19,9 @@ app = FastAPI(
     description="AI-powered automated day trading system",
     version="0.1.0",
 )
+
+# Register routers
+app.include_router(orchestrator_router)
 
 # Add CORS middleware
 app.add_middleware(
@@ -72,6 +76,22 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"⚠ Alpaca connection failed: {e} (Phase 1 only, will fix in Phase 2)")
 
+    # Start orchestrator (registers + starts all agents)
+    try:
+        from app.agents.portfolio_manager import portfolio_manager
+        from app.agents.risk_manager import risk_manager
+        from app.agents.trader import trader
+        from app.orchestrator import orchestrator
+
+        orchestrator.register_agent("portfolio_manager", portfolio_manager)
+        orchestrator.register_agent("risk_manager", risk_manager)
+        orchestrator.register_agent("trader", trader)
+        await orchestrator.start()
+        logger.info("✓ Orchestrator started")
+    except Exception as e:
+        logger.error(f"✗ Orchestrator startup failed: {e}")
+        raise
+
     logger.info("✓ MrTrader application started successfully")
 
 
@@ -79,6 +99,8 @@ async def startup_event():
 async def shutdown_event():
     """Clean up on shutdown"""
     logger.info("Shutting down MrTrader application...")
+    from app.orchestrator import orchestrator
+    await orchestrator.stop()
 
 
 # Health and Status Endpoints
@@ -211,6 +233,8 @@ async def root():
             "account": "/api/account",
             "positions": "/api/positions",
             "docs": "/docs",
+            "orchestrator": "/api/orchestrator/status",
+            "jobs": "/api/orchestrator/jobs",
         },
     }
 
