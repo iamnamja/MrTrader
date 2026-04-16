@@ -3,470 +3,909 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MrTrader Dashboard</title>
+  <title>MrTrader — Trading Terminal</title>
+
+  <!-- Chart.js for P&L curves + gauges -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Lightweight Charts for candlesticks -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+
   <style>
+    /* ── Reset + Base ─────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --bg:        #0b0e14;
+      --surface:   #131720;
+      --surface2:  #1c2230;
+      --border:    #1e2d40;
+      --text:      #d1d5db;
+      --muted:     #6b7280;
+      --green:     #22c55e;
+      --red:       #ef4444;
+      --blue:      #3b82f6;
+      --yellow:    #eab308;
+      --accent:    #38bdf8;
+      --font:      "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    }
+
+    html, body { height: 100%; }
     body {
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background: #0d0d0d;
-      color: #e0e0e0;
-      padding: 24px;
-    }
-
-    header {
-      text-align: center;
-      margin-bottom: 28px;
-    }
-    header h1 { color: #4ade80; font-size: 2rem; }
-    header p  { color: #888; font-size: 0.9rem; margin-top: 4px; }
-
-    #connection-status {
-      display: inline-block;
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: #555;
-      margin-left: 8px;
-      vertical-align: middle;
-    }
-    #connection-status.connected    { background: #4ade80; }
-    #connection-status.disconnected { background: #ef4444; }
-
-    /* ── KPI grid ───────────────────────────────── */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-
-    .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      padding: 20px;
-    }
-    .card-title {
-      color: #888;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 8px;
-    }
-    .card-value {
-      font-size: 1.8rem;
-      font-weight: 700;
-      color: #4ade80;
-    }
-    .card-value.negative { color: #ef4444; }
-    .card-sub {
-      font-size: 0.78rem;
-      color: #666;
-      margin-top: 4px;
-    }
-
-    /* ── Health bar ─────────────────────────────── */
-    .health-bar {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-    }
-    .health-pill {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 20px;
-      padding: 6px 14px;
-      font-size: 0.8rem;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .health-pill .dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: #555;
-    }
-    .health-pill.ok   .dot { background: #4ade80; }
-    .health-pill.fail .dot { background: #ef4444; }
-
-    /* ── Controls ───────────────────────────────── */
-    .controls {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 28px;
-      flex-wrap: wrap;
-    }
-
-    button {
-      padding: 9px 20px;
-      border: none;
-      border-radius: 6px;
-      font-weight: 600;
-      font-size: 0.85rem;
-      cursor: pointer;
-      transition: opacity 0.15s;
-    }
-    button:hover { opacity: 0.85; }
-    .btn-green  { background: #4ade80; color: #000; }
-    .btn-yellow { background: #facc15; color: #000; }
-    .btn-red    { background: #ef4444; color: #fff; }
-
-    /* ── Sections ───────────────────────────────── */
-    section { margin-bottom: 32px; }
-    section h2 {
-      font-size: 1rem;
-      color: #aaa;
-      border-bottom: 1px solid #2a2a2a;
-      padding-bottom: 8px;
-      margin-bottom: 12px;
-    }
-
-    /* ── Tables ─────────────────────────────────── */
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    th {
-      background: #1f1f1f;
-      color: #4ade80;
-      text-align: left;
-      padding: 10px 12px;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    td {
-      padding: 9px 12px;
-      border-bottom: 1px solid #1f1f1f;
-      white-space: nowrap;
-    }
-    tr:hover td { background: #181818; }
-    .pos { color: #4ade80; }
-    .neg { color: #ef4444; }
-
-    /* ── Status badges ──────────────────────────── */
-    .badge {
-      display: inline-block;
-      border-radius: 4px;
-      padding: 2px 8px;
-      font-size: 0.75rem;
-      font-weight: 600;
-    }
-    .badge-active   { background: #14532d; color: #4ade80; }
-    .badge-closed   { background: #1e293b; color: #94a3b8; }
-    .badge-rejected { background: #450a0a; color: #fca5a5; }
-    .badge-pending  { background: #422006; color: #fb923c; }
-
-    /* ── Toast alerts ───────────────────────────── */
-    #toast-container {
-      position: fixed;
-      bottom: 20px; right: 20px;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      z-index: 999;
+      min-height: 100vh;
     }
-    .toast {
-      background: #1f1f1f;
-      border-left: 4px solid #4ade80;
-      border-radius: 6px;
-      padding: 10px 16px;
-      font-size: 0.85rem;
-      max-width: 320px;
-      animation: slide-in 0.3s ease;
-    }
-    .toast.warn  { border-color: #facc15; }
-    .toast.error { border-color: #ef4444; }
-    @keyframes slide-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-    .last-updated { color: #555; font-size: 0.75rem; text-align: right; margin-bottom: 8px; }
+    /* ── Top bar ──────────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      height: 48px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 100;
+    }
+    #topbar .logo { color: var(--accent); font-size: 15px; font-weight: 700; letter-spacing: 0.04em; }
+    #topbar .logo span { color: var(--green); }
+    #topbar .controls { display: flex; align-items: center; gap: 12px; }
+    #topbar .badge {
+      padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .badge-paper  { background: rgba(234,179,8,.15);  color: var(--yellow); border: 1px solid rgba(234,179,8,.3); }
+    .badge-live   { background: rgba(239,68,68,.15);   color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
+    .badge-healthy{ background: rgba(34,197,94,.15);   color: var(--green);  border: 1px solid rgba(34,197,94,.3); }
+    .badge-degraded{ background: rgba(239,68,68,.15);  color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
+
+    /* WS dot */
+    #ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background .3s; }
+    #ws-dot.on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    #ws-dot.off { background: var(--red); }
+
+    /* ── Tabs ─────────────────────────────────────────────────────── */
+    #tabs {
+      display: flex;
+      gap: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      overflow-x: auto;
+    }
+    .tab {
+      padding: 10px 18px; cursor: pointer; font-size: 12px; font-weight: 500;
+      color: var(--muted); border-bottom: 2px solid transparent;
+      white-space: nowrap; transition: color .2s, border-color .2s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Main layout ──────────────────────────────────────────────── */
+    #main {
+      flex: 1;
+      padding: 16px 20px;
+      overflow-y: auto;
+    }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* ── KPI strip ────────────────────────────────────────────────── */
+    .kpi-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .kpi-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+    .kpi-value { font-size: 22px; font-weight: 700; color: var(--accent); }
+    .kpi-value.pos { color: var(--green); }
+    .kpi-value.neg { color: var(--red); }
+    .kpi-sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+    /* ── Two-column layout ────────────────────────────────────────── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* ── Cards ────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+    /* ── Tables ───────────────────────────────────────────────────── */
+    .tbl-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { color: var(--muted); font-weight: 500; text-align: left; padding: 6px 8px;
+         border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+    td { padding: 8px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+    td.pos { color: var(--green); }
+    td.neg { color: var(--red); }
+    td.sym { color: var(--accent); font-weight: 600; }
+
+    /* ── Chart container ──────────────────────────────────────────── */
+    .chart-box { position: relative; height: 240px; }
+    .chart-box canvas { width: 100% !important; }
+    #candle-container { height: 360px; }
+
+    /* ── Signal feed ──────────────────────────────────────────────── */
+    #signal-feed { max-height: 320px; overflow-y: auto; }
+    .signal-row {
+      display: flex; gap: 10px; align-items: flex-start;
+      padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.04);
+      font-size: 11px;
+    }
+    .signal-row:last-child { border-bottom: none; }
+    .signal-ts { color: var(--muted); white-space: nowrap; min-width: 80px; }
+    .signal-sym { color: var(--accent); font-weight: 600; min-width: 50px; }
+    .signal-type { padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+    .type-buy    { background: rgba(34,197,94,.15); color: var(--green); }
+    .type-sell   { background: rgba(239,68,68,.15); color: var(--red); }
+    .type-signal { background: rgba(59,130,246,.15); color: var(--blue); }
+
+    /* ── Capital ramp ─────────────────────────────────────────────── */
+    .ramp-stages { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+    .ramp-stage { display: flex; align-items: center; gap: 12px; }
+    .ramp-label { min-width: 70px; font-size: 11px; color: var(--muted); }
+    .ramp-bar-bg { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+    .ramp-bar-fill { height: 100%; border-radius: 3px; background: var(--muted); transition: width .4s; }
+    .ramp-bar-fill.current { background: var(--accent); }
+    .ramp-bar-fill.done { background: var(--green); }
+    .ramp-amount { min-width: 70px; text-align: right; font-size: 11px; }
+
+    /* ── Kill switch ──────────────────────────────────────────────── */
+    #kill-btn {
+      background: rgba(239,68,68,.1);
+      border: 2px solid var(--red);
+      color: var(--red);
+      padding: 16px 40px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 700;
+      font-family: var(--font);
+      cursor: pointer;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      transition: background .2s, box-shadow .2s;
+      display: block;
+      margin: 0 auto 20px;
+    }
+    #kill-btn:hover { background: rgba(239,68,68,.25); box-shadow: 0 0 20px rgba(239,68,68,.3); }
+    #kill-btn:disabled { opacity: .5; cursor: not-allowed; }
+    #kill-btn.inactive { background: rgba(239,68,68,.04); }
+    #kill-btn.active { background: rgba(239,68,68,.2); box-shadow: 0 0 30px rgba(239,68,68,.4); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 20px rgba(239,68,68,.4)} 50%{box-shadow:0 0 40px rgba(239,68,68,.7)} }
+
+    #kill-status-box {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 16px; text-align: center; font-size: 13px;
+    }
+    #kill-status-box.is-active { border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.07); }
+
+    /* ── Modal ────────────────────────────────────────────────────── */
+    #modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
+      z-index: 1000; align-items: center; justify-content: center;
+    }
+    #modal-overlay.open { display: flex; }
+    #modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+      max-width: 440px;
+      width: 90%;
+    }
+    #modal h3 { color: var(--red); margin-bottom: 12px; font-size: 15px; }
+    #modal p { color: var(--muted); font-size: 12px; margin-bottom: 20px; line-height: 1.6; }
+    .modal-btns { display: flex; gap: 10px; justify-content: flex-end; }
+    .btn { padding: 8px 20px; border-radius: 5px; border: 1px solid; font-family: var(--font);
+           font-size: 12px; cursor: pointer; font-weight: 600; letter-spacing: .04em; }
+    .btn-cancel { background: transparent; border-color: var(--border); color: var(--muted); }
+    .btn-danger { background: rgba(239,68,68,.15); border-color: var(--red); color: var(--red); }
+    .btn-cancel:hover { border-color: var(--muted); color: var(--text); }
+    .btn-danger:hover { background: rgba(239,68,68,.3); }
+
+    /* ── Toast ────────────────────────────────────────────────────── */
+    #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; }
+    .toast {
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--accent); border-radius: 6px;
+      padding: 10px 16px; font-size: 12px; min-width: 240px; max-width: 360px;
+      animation: slideIn .25s ease; pointer-events: none;
+    }
+    .toast.success { border-left-color: var(--green); }
+    .toast.error   { border-left-color: var(--red); }
+    .toast.warning { border-left-color: var(--yellow); }
+    @keyframes slideIn { from { transform: translateX(120%); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes fadeOut { to { opacity: 0; transform: translateY(8px); } }
+
+    /* ── Health pills row ─────────────────────────────────────────── */
+    .health-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .pill { padding: 4px 12px; border-radius: 12px; font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: .06em; border: 1px solid; }
+    .pill-ok  { background: rgba(34,197,94,.1);  color: var(--green);  border-color: rgba(34,197,94,.3); }
+    .pill-err { background: rgba(239,68,68,.1);   color: var(--red);    border-color: rgba(239,68,68,.3); }
+    .pill-warn{ background: rgba(234,179,8,.1);   color: var(--yellow); border-color: rgba(234,179,8,.3); }
+
+    /* ── Scrollbar ────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   </style>
 </head>
 <body>
 
-<header>
-  <h1>MrTrader <span id="connection-status" title="WebSocket"></span></h1>
-  <p>Automated Trading Dashboard</p>
-</header>
-
-<!-- Health bar -->
-<div class="health-bar">
-  <div class="health-pill" id="hp-db"><span class="dot"></span>Database</div>
-  <div class="health-pill" id="hp-redis"><span class="dot"></span>Redis</div>
-  <div class="health-pill" id="hp-alpaca"><span class="dot"></span>Alpaca</div>
-  <div class="health-pill" id="hp-overall"><span class="dot"></span>Overall</div>
-</div>
-
-<!-- KPI cards -->
-<div class="kpi-grid">
-  <div class="card">
-    <div class="card-title">Account Value</div>
-    <div class="card-value" id="kpi-account">—</div>
-  </div>
-  <div class="card">
-    <div class="card-title">Cash</div>
-    <div class="card-value" id="kpi-cash">—</div>
-  </div>
-  <div class="card">
-    <div class="card-title">Daily P&amp;L</div>
-    <div class="card-value" id="kpi-daily-pnl">—</div>
-    <div class="card-sub" id="kpi-daily-pnl-pct"></div>
-  </div>
-  <div class="card">
-    <div class="card-title">Total P&amp;L</div>
-    <div class="card-value" id="kpi-total-pnl">—</div>
-    <div class="card-sub" id="kpi-total-pnl-pct"></div>
-  </div>
-  <div class="card">
-    <div class="card-title">Open Positions</div>
-    <div class="card-value" id="kpi-positions">—</div>
-  </div>
-  <div class="card">
-    <div class="card-title">Trades Today</div>
-    <div class="card-value" id="kpi-trades-today">—</div>
-    <div class="card-sub" id="kpi-mode"></div>
+<!-- ── Top bar ──────────────────────────────────────────────────────── -->
+<div id="topbar">
+  <div class="logo">MR<span>TRADER</span></div>
+  <div class="controls">
+    <span id="mode-badge" class="badge badge-paper">PAPER</span>
+    <span id="health-badge" class="badge badge-healthy">HEALTHY</span>
+    <span id="clock" style="color:var(--muted);font-size:11px;min-width:150px;text-align:right"></span>
+    <div id="ws-dot" title="WebSocket"></div>
   </div>
 </div>
 
-<div class="last-updated" id="last-updated"></div>
-
-<!-- Controls -->
-<div class="controls">
-  <button class="btn-yellow" onclick="pauseTrading()">Pause Trading</button>
-  <button class="btn-green"  onclick="resumeTrading()">Resume Trading</button>
-  <button class="btn-red"    onclick="killSwitch()">Kill Switch</button>
+<!-- ── Tabs ─────────────────────────────────────────────────────────── -->
+<div id="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="positions">Positions</div>
+  <div class="tab" data-tab="trades">Trade History</div>
+  <div class="tab" data-tab="signals">Signal Monitor</div>
+  <div class="tab" data-tab="ramp">Capital Ramp</div>
+  <div class="tab" data-tab="kill">Kill Switch</div>
 </div>
 
-<!-- Positions table -->
-<section>
-  <h2>Open Positions</h2>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Symbol</th><th>Qty</th><th>Avg Price</th>
-          <th>Current</th><th>Unrealized P&amp;L</th><th>P&amp;L %</th><th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="positions-body"><tr><td colspan="7" style="color:#555">No positions</td></tr></tbody>
-    </table>
-  </div>
-</section>
+<!-- ── Main ─────────────────────────────────────────────────────────── -->
+<div id="main">
 
-<!-- Trades table -->
-<section>
-  <h2>Recent Trades</h2>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>#</th><th>Symbol</th><th>Dir</th><th>Qty</th>
-          <th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Status</th><th>Time</th>
-        </tr>
-      </thead>
-      <tbody id="trades-body"><tr><td colspan="9" style="color:#555">No trades</td></tr></tbody>
-    </table>
-  </div>
-</section>
+  <!-- ── OVERVIEW ─────────────────────────────────────────────────── -->
+  <div class="panel active" id="panel-overview">
+    <div class="kpi-strip" id="kpi-strip">
+      <div class="kpi"><div class="kpi-label">Account Value</div><div class="kpi-value" id="kpi-equity">—</div><div class="kpi-sub">Portfolio equity</div></div>
+      <div class="kpi"><div class="kpi-label">Daily P&amp;L</div><div class="kpi-value" id="kpi-pnl-day">—</div><div class="kpi-sub" id="kpi-pnl-day-pct">—</div></div>
+      <div class="kpi"><div class="kpi-label">Buying Power</div><div class="kpi-value" id="kpi-bp">—</div><div class="kpi-sub">Available cash</div></div>
+      <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-value" id="kpi-positions">—</div><div class="kpi-sub">Active trades</div></div>
+      <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-value" id="kpi-winrate">—</div><div class="kpi-sub">All closed trades</div></div>
+      <div class="kpi"><div class="kpi-label">Max Drawdown</div><div class="kpi-value" id="kpi-dd">—</div><div class="kpi-sub">From peak equity</div></div>
+    </div>
 
-<!-- Agent decisions table -->
-<section>
-  <h2>Agent Decisions</h2>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Time</th><th>Agent</th><th>Decision</th><th>Reasoning</th></tr>
-      </thead>
-      <tbody id="decisions-body"><tr><td colspan="4" style="color:#555">No decisions logged</td></tr></tbody>
-    </table>
-  </div>
-</section>
+    <div class="health-row" id="health-pills">
+      <span class="pill pill-warn">Loading...</span>
+    </div>
 
-<!-- Toast container -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Equity Curve (P&amp;L)</span></div>
+        <div class="chart-box"><canvas id="pnl-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent Decisions</span></div>
+        <div class="tbl-wrap" id="decisions-table-wrap">
+          <table><thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Symbol</th></tr></thead>
+          <tbody id="decisions-tbody"><tr><td colspan="4" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── POSITIONS ────────────────────────────────────────────────── -->
+  <div class="panel" id="panel-positions">
+    <div class="kpi-strip">
+      <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-value" id="pos-count">—</div></div>
+      <div class="kpi"><div class="kpi-label">Unrealized P&amp;L</div><div class="kpi-value" id="pos-unreal-pnl">—</div></div>
+      <div class="kpi"><div class="kpi-label">Largest Position</div><div class="kpi-value" id="pos-largest">—</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Open Positions</span>
+        <button onclick="loadPositions()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px">Refresh</button>
+      </div>
+      <div class="tbl-wrap">
+        <table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P&amp;L</th><th>P&amp;L %</th></tr></thead>
+        <tbody id="positions-tbody"><tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TRADES ────────────────────────────────────────────────────── -->
+  <div class="panel" id="panel-trades">
+    <div class="kpi-strip">
+      <div class="kpi"><div class="kpi-label">Total Trades</div><div class="kpi-value" id="trd-total">—</div></div>
+      <div class="kpi"><div class="kpi-label">Closed Trades</div><div class="kpi-value" id="trd-closed">—</div></div>
+      <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-value" id="trd-wr">—</div></div>
+      <div class="kpi"><div class="kpi-label">Avg Trade P&amp;L</div><div class="kpi-value" id="trd-avg">—</div></div>
+      <div class="kpi"><div class="kpi-label">Total P&amp;L</div><div class="kpi-value" id="trd-total-pnl">—</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Trade History</span>
+        <div style="display:flex;gap:8px">
+          <select id="trd-filter" onchange="loadTrades()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:3px 8px;border-radius:4px;font-size:11px;font-family:var(--font)">
+            <option value="">All</option>
+            <option value="ACTIVE">Active</option>
+            <option value="CLOSED">Closed</option>
+          </select>
+          <button onclick="loadTrades()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px">Refresh</button>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table><thead><tr><th>Symbol</th><th>Dir</th><th>Signal</th><th>Entry</th><th>Exit</th><th>Qty</th><th>P&amp;L</th><th>Status</th><th>Opened</th></tr></thead>
+        <tbody id="trades-tbody"><tr><td colspan="9" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SIGNAL MONITOR ────────────────────────────────────────────── -->
+  <div class="panel" id="panel-signals">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Live Signal Feed</span>
+          <button onclick="clearSignalFeed()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px">Clear</button>
+        </div>
+        <div id="signal-feed"><div style="color:var(--muted);text-align:center;padding:30px;font-size:11px">Waiting for signals via WebSocket...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Agent Decisions (Last 50)</span></div>
+        <div class="tbl-wrap" style="max-height:360px;overflow-y:auto">
+          <table><thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Symbol</th></tr></thead>
+          <tbody id="signal-decisions-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CAPITAL RAMP ───────────────────────────────────────────────── -->
+  <div class="panel" id="panel-ramp">
+    <div class="kpi-strip">
+      <div class="kpi"><div class="kpi-label">Current Stage</div><div class="kpi-value" id="ramp-stage">—</div></div>
+      <div class="kpi"><div class="kpi-label">Approved Capital</div><div class="kpi-value" id="ramp-capital">—</div></div>
+      <div class="kpi"><div class="kpi-label">Days in Stage</div><div class="kpi-value" id="ramp-days">—</div></div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Stage Progress</span></div>
+        <div class="ramp-stages" id="ramp-stages-list">
+          <div style="color:var(--muted);font-size:11px">Loading...</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Advance Capital Stage</span>
+        </div>
+        <div id="ramp-advance-box" style="font-size:12px;line-height:1.7">
+          <div style="color:var(--muted);margin-bottom:16px">Advance only when health criteria are met (drawdown &le; 3%, daily loss &le; 2%).</div>
+          <button onclick="requestAdvance()" class="btn btn-danger" style="border-color:var(--blue);color:var(--blue);background:rgba(59,130,246,.1)">Request Stage Advance</button>
+          <div id="ramp-advance-result" style="margin-top:12px;font-size:11px;color:var(--muted)"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── KILL SWITCH ─────────────────────────────────────────────────── -->
+  <div class="panel" id="panel-kill">
+    <div style="max-width:540px;margin:0 auto;padding-top:20px">
+      <div id="kill-status-box">
+        <div id="kill-status-text" style="font-size:13px;margin-bottom:4px">Kill switch is <strong>INACTIVE</strong></div>
+        <div style="color:var(--muted);font-size:11px">All trading is proceeding normally.</div>
+      </div>
+      <br/>
+      <button id="kill-btn" class="inactive" onclick="onKillClick()">EMERGENCY STOP</button>
+      <button id="reset-btn" onclick="onResetClick()" class="btn" style="display:none;margin:0 auto 20px;border-color:var(--green);color:var(--green);background:rgba(34,197,94,.08)">Reset Kill Switch</button>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent Audit Log</span></div>
+        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto">
+          <table><thead><tr><th>Time</th><th>Action</th><th>Details</th></tr></thead>
+          <tbody id="audit-tbody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<!-- ── Modal ────────────────────────────────────────────────────────── -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h3>Confirm Emergency Stop</h3>
+    <p>This will immediately close ALL open positions with market orders and halt all new trades. This action is logged and cannot be undone automatically.</p>
+    <div class="modal-btns">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmKill()">STOP TRADING NOW</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast container ───────────────────────────────────────────────── -->
 <div id="toast-container"></div>
 
 <script>
-  const API = "";
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  ws: null,
+  pnlChart: null,
+  pnlHistory: { labels: [], data: [] },
+  killActive: false,
+};
 
-  // ── Formatting helpers ──────────────────────────────────────────────────────
-  const fmt$ = v => v == null ? "—" : "$" + parseFloat(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  const fmt% = v => v == null ? "" : (v >= 0 ? "+" : "") + parseFloat(v).toFixed(2) + "%";
-  const fmtDt = iso => new Date(iso).toLocaleTimeString();
-  const fmtDtFull = iso => new Date(iso).toLocaleString();
-  const colorClass = v => v == null ? "" : parseFloat(v) >= 0 ? "pos" : "neg";
+// ── Utilities ──────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
-  function badgeHtml(status) {
-    const cls = {ACTIVE:"badge-active", CLOSED:"badge-closed", REJECTED:"badge-rejected"};
-    return `<span class="badge ${cls[status] || 'badge-pending'}">${status}</span>`;
+function fmt$(v) {
+  if (v == null || isNaN(v)) return '—';
+  return '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+function fmtTs(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
+         d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false});
+}
+function colorClass(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : ''; }
+
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  $('toast-container').appendChild(el);
+  setTimeout(() => {
+    el.style.animation = 'fadeOut .3s ease forwards';
+    setTimeout(() => el.remove(), 300);
+  }, 3500);
+}
+
+// ── Clock ──────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  $('clock').textContent = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '  ' +
+    now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}) + ' UTC';
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Tab navigation ─────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    $('panel-' + tab.dataset.tab).classList.add('active');
+    // Lazy-load panel data
+    const loaders = { positions: loadPositions, trades: loadTrades,
+                      signals: loadDecisions, ramp: loadRamp, kill: loadKillStatus };
+    if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
+  });
+});
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  state.ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  state.ws.onopen = () => {
+    $('ws-dot').className = 'on';
+    toast('WebSocket connected', 'success');
+  };
+  state.ws.onclose = () => {
+    $('ws-dot').className = 'off';
+    setTimeout(connectWS, 3000);
+  };
+  state.ws.onerror = () => { $('ws-dot').className = 'off'; };
+  state.ws.onmessage = e => {
+    try { handleWS(JSON.parse(e.data)); } catch(_) {}
+  };
+}
+
+function handleWS(msg) {
+  const { type, data } = msg;
+  if (type === 'portfolio_update') updateKPIs(data);
+  if (type === 'trade_executed')   addSignalRow(data, 'buy');
+  if (type === 'trade_closed')     addSignalRow(data, 'sell');
+  if (type === 'alert')            toast(data.message || JSON.stringify(data), 'warning');
+  if (type === 'kill_switch')      setKillState(data.active);
+  if (type === 'agent_decision')   addSignalRow(data, 'signal');
+}
+
+// ── Overview — KPIs + chart ────────────────────────────────────────────────
+async function loadOverview() {
+  await Promise.all([loadSummary(), loadDecisionsOverview()]);
+}
+
+async function loadSummary() {
+  try {
+    const r = await fetch('/api/dashboard/summary');
+    const j = await r.json();
+    updateKPIs(j);
+  } catch(e) { console.warn('summary:', e); }
+
+  try {
+    const r = await fetch('/api/dashboard/health');
+    const j = await r.json();
+    updateHealth(j);
+  } catch(e) {}
+}
+
+function updateKPIs(d) {
+  if (!d) return;
+  const eq = d.portfolio_value ?? d.equity;
+  if (eq != null) $('kpi-equity').textContent = fmt$(eq);
+
+  const pnl = d.pnl_today;
+  if (pnl != null) {
+    $('kpi-pnl-day').textContent = fmt$(pnl);
+    $('kpi-pnl-day').className = 'kpi-value ' + colorClass(pnl);
+    const pct = d.pnl_today_pct;
+    $('kpi-pnl-day-pct').textContent = pct != null ? fmtPct(pct) : '';
+    // Push to P&L chart
+    const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false});
+    state.pnlHistory.labels.push(now);
+    state.pnlHistory.data.push(pnl);
+    if (state.pnlHistory.labels.length > 60) {
+      state.pnlHistory.labels.shift();
+      state.pnlHistory.data.shift();
+    }
+    if (state.pnlChart) {
+      state.pnlChart.data.labels = state.pnlHistory.labels;
+      state.pnlChart.data.datasets[0].data = state.pnlHistory.data;
+      state.pnlChart.update('none');
+    }
   }
+  if (d.buying_power != null) $('kpi-bp').textContent = fmt$(d.buying_power);
+  if (d.open_positions != null) $('kpi-positions').textContent = d.open_positions;
+  if (d.win_rate != null) { $('kpi-winrate').textContent = d.win_rate.toFixed(1)+'%'; }
+  if (d.max_drawdown_pct != null) {
+    $('kpi-dd').textContent = d.max_drawdown_pct.toFixed(2)+'%';
+    $('kpi-dd').className = 'kpi-value ' + (d.max_drawdown_pct > 5 ? 'neg' : d.max_drawdown_pct > 3 ? '' : 'pos');
+  }
+}
 
-  // ── Health check ────────────────────────────────────────────────────────────
-  async function refreshHealth() {
-    try {
-      const r = await fetch(`${API}/api/dashboard/system-health`);
-      const d = await r.json();
-      const map = {db: d.database, redis: d.redis, alpaca: d.alpaca, overall: d.overall};
-      const ids = {db: "hp-db", redis: "hp-redis", alpaca: "hp-alpaca", overall: "hp-overall"};
-      for (const [k, v] of Object.entries(ids)) {
-        const el = document.getElementById(v);
-        el.className = "health-pill " + (map[k] === "OK" || map[k] === "HEALTHY" ? "ok" : "fail");
+function updateHealth(h) {
+  if (!h) return;
+  const status = h.status ?? h.system_status ?? 'unknown';
+  $('health-badge').textContent = status.toUpperCase();
+  $('health-badge').className = 'badge ' + (status === 'healthy' ? 'badge-healthy' : 'badge-degraded');
+
+  const pills = $('health-pills');
+  pills.innerHTML = '';
+  const checks = h.checks ?? { database: h.database_ok, redis: h.redis_ok, alpaca: h.alpaca_ok };
+  const names = { database: 'DB', redis: 'Redis', alpaca: 'Alpaca' };
+  for (const [k, v] of Object.entries(checks)) {
+    const ok = v === true || v === 'ok' || v === 'connected';
+    const el = document.createElement('span');
+    el.className = 'pill ' + (ok ? 'pill-ok' : 'pill-err');
+    el.textContent = (names[k] ?? k).toUpperCase();
+    pills.appendChild(el);
+  }
+  // Mode
+  const mode = h.trading_mode ?? h.mode ?? 'paper';
+  $('mode-badge').textContent = mode.toUpperCase();
+  $('mode-badge').className = 'badge ' + (mode === 'live' ? 'badge-live' : 'badge-paper');
+}
+
+// ── P&L Chart ─────────────────────────────────────────────────────────────
+function initPnlChart() {
+  const ctx = $('pnl-chart').getContext('2d');
+  state.pnlChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Daily P&L ($)',
+        data: [],
+        borderColor: '#22c55e',
+        backgroundColor: 'rgba(34,197,94,.07)',
+        fill: true,
+        tension: 0.4,
+        pointRadius: 2,
+        borderWidth: 1.5,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false,
+        backgroundColor: '#1c2230', borderColor: '#1e2d40', borderWidth: 1,
+        titleColor: '#6b7280', bodyColor: '#d1d5db',
+      }},
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,.04)' }, ticks: { color: '#6b7280', maxTicksLimit: 8 } },
+        y: { grid: { color: 'rgba(255,255,255,.04)' }, ticks: { color: '#6b7280',
+          callback: v => '$' + v.toFixed(0) } }
       }
-    } catch(e) { console.warn("Health check failed", e); }
+    }
+  });
+}
+
+// ── Decisions (overview) ───────────────────────────────────────────────────
+async function loadDecisionsOverview() {
+  try {
+    const r = await fetch('/api/dashboard/decisions?limit=10');
+    const j = await r.json();
+    renderDecisions('decisions-tbody', j.data || j);
+  } catch(e) {}
+}
+
+async function loadDecisions() {
+  try {
+    const r = await fetch('/api/dashboard/decisions?limit=50');
+    const j = await r.json();
+    renderDecisions('signal-decisions-tbody', j.data || j);
+  } catch(e) {}
+}
+
+function renderDecisions(tbodyId, rows) {
+  const tb = $(tbodyId);
+  if (!rows?.length) { tb.innerHTML = `<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:16px">No decisions yet</td></tr>`; return; }
+  tb.innerHTML = rows.map(d => `
+    <tr>
+      <td style="color:var(--muted)">${fmtTs(d.timestamp)}</td>
+      <td>${d.agent_name ?? '—'}</td>
+      <td>${d.decision_type ?? '—'}</td>
+      <td class="sym">${d.symbol ?? (d.reasoning?.symbol) ?? '—'}</td>
+    </tr>`).join('');
+}
+
+// ── Signal feed ────────────────────────────────────────────────────────────
+function addSignalRow(data, kind) {
+  const feed = $('signal-feed');
+  const row = document.createElement('div');
+  row.className = 'signal-row';
+  const typeLabel = kind === 'buy' ? 'ENTRY' : kind === 'sell' ? 'EXIT' : 'SIGNAL';
+  const typeClass = kind === 'buy' ? 'type-buy' : kind === 'sell' ? 'type-sell' : 'type-signal';
+  const sym = data.symbol ?? data.reasoning?.symbol ?? '?';
+  const msg = data.action ?? data.decision_type ?? data.message ?? '';
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  row.innerHTML = `
+    <span class="signal-ts">${now}</span>
+    <span class="signal-sym">${sym}</span>
+    <span class="signal-type ${typeClass}">${typeLabel}</span>
+    <span style="color:var(--muted);flex:1">${msg}</span>`;
+  feed.insertBefore(row, feed.firstChild);
+  // Remove placeholder
+  const placeholder = feed.querySelector('div[style]');
+  if (placeholder) placeholder.remove();
+  // Keep last 100
+  while (feed.children.length > 100) feed.removeChild(feed.lastChild);
+}
+
+function clearSignalFeed() {
+  $('signal-feed').innerHTML = '<div style="color:var(--muted);text-align:center;padding:30px;font-size:11px">Feed cleared.</div>';
+}
+
+// ── Positions ──────────────────────────────────────────────────────────────
+async function loadPositions() {
+  try {
+    const r = await fetch('/api/positions');
+    const j = await r.json();
+    const rows = j.data ?? j ?? [];
+    $('pos-count').textContent = rows.length;
+    let totalUnreal = 0;
+    let largest = 0, largestSym = '—';
+    const tb = $('positions-tbody');
+    if (!rows.length) {
+      tb.innerHTML = `<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No open positions</td></tr>`;
+      $('pos-unreal-pnl').textContent = '$0.00';
+      return;
+    }
+    tb.innerHTML = rows.map(p => {
+      const unreal = p.unrealized_pl ?? 0;
+      const unreal_pct = p.unrealized_plpc != null ? p.unrealized_plpc * 100 : null;
+      const mv = p.market_value ?? 0;
+      totalUnreal += unreal;
+      if (mv > largest) { largest = mv; largestSym = p.symbol; }
+      return `<tr>
+        <td class="sym">${p.symbol}</td>
+        <td>${p.qty}</td>
+        <td>${fmt$(p.avg_entry_price)}</td>
+        <td>${fmt$(p.current_price)}</td>
+        <td>${fmt$(mv)}</td>
+        <td class="${colorClass(unreal)}">${fmt$(unreal)}</td>
+        <td class="${colorClass(unreal)}">${unreal_pct != null ? fmtPct(unreal_pct) : '—'}</td>
+      </tr>`;
+    }).join('');
+    $('pos-unreal-pnl').textContent = fmt$(totalUnreal);
+    $('pos-unreal-pnl').className = 'kpi-value ' + colorClass(totalUnreal);
+    $('pos-largest').textContent = largestSym;
+  } catch(e) { console.warn('positions:', e); }
+}
+
+// ── Trades ─────────────────────────────────────────────────────────────────
+async function loadTrades() {
+  const filter = $('trd-filter').value;
+  const url = '/api/dashboard/trades' + (filter ? `?status=${filter}` : '');
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    const rows = j.data ?? j ?? [];
+    // Stats
+    const closed = rows.filter(t => t.status === 'CLOSED');
+    const wins = closed.filter(t => (t.pnl ?? 0) > 0);
+    const totalPnl = closed.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const avgPnl = closed.length ? totalPnl / closed.length : 0;
+    const wr = closed.length ? wins.length / closed.length * 100 : 0;
+    $('trd-total').textContent = rows.length;
+    $('trd-closed').textContent = closed.length;
+    $('trd-wr').textContent = closed.length ? wr.toFixed(1)+'%' : '—';
+    $('trd-avg').textContent = closed.length ? fmt$(avgPnl) : '—';
+    $('trd-avg').className = 'kpi-value ' + colorClass(avgPnl);
+    $('trd-total-pnl').textContent = fmt$(totalPnl);
+    $('trd-total-pnl').className = 'kpi-value ' + colorClass(totalPnl);
+
+    const tb = $('trades-tbody');
+    if (!rows.length) {
+      tb.innerHTML = `<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:20px">No trades found</td></tr>`;
+      return;
+    }
+    tb.innerHTML = rows.map(t => `<tr>
+      <td class="sym">${t.symbol}</td>
+      <td>${t.direction}</td>
+      <td style="color:var(--blue)">${t.signal_type ?? '—'}</td>
+      <td>${fmt$(t.entry_price)}</td>
+      <td>${t.exit_price ? fmt$(t.exit_price) : '<span style="color:var(--muted)">open</span>'}</td>
+      <td>${t.quantity}</td>
+      <td class="${colorClass(t.pnl)}">${t.pnl != null ? fmt$(t.pnl) : '—'}</td>
+      <td><span class="pill ${t.status==='ACTIVE'?'pill-warn':t.status==='CLOSED'?'pill-ok':'pill-err'}">${t.status}</span></td>
+      <td style="color:var(--muted)">${fmtTs(t.created_at)}</td>
+    </tr>`).join('');
+  } catch(e) { console.warn('trades:', e); }
+}
+
+// ── Capital ramp ────────────────────────────────────────────────────────────
+async function loadRamp() {
+  try {
+    const r = await fetch('/api/dashboard/live/status');
+    const j = await r.json();
+    if (j.stage) {
+      $('ramp-stage').textContent = 'Stage ' + j.stage;
+      $('ramp-capital').textContent = fmt$(j.capital);
+      $('ramp-days').textContent = j.days_elapsed != null ? j.days_elapsed + 'd' : '—';
+    }
+    if (j.stages) renderRampStages(j.stages, j.stage);
+  } catch(e) { console.warn('ramp:', e); }
+}
+
+function renderRampStages(stages, currentStage) {
+  const list = $('ramp-stages-list');
+  const maxCap = Math.max(...stages.map(s => s.capital));
+  list.innerHTML = stages.map(s => {
+    const pct = (s.capital / maxCap * 100).toFixed(1);
+    const cls = s.stage < currentStage ? 'done' : s.stage === currentStage ? 'current' : '';
+    return `<div class="ramp-stage">
+      <span class="ramp-label" style="${s.stage===currentStage?'color:var(--accent)':''}">Stage ${s.stage}</span>
+      <div class="ramp-bar-bg"><div class="ramp-bar-fill ${cls}" style="width:${pct}%"></div></div>
+      <span class="ramp-amount" style="${s.stage===currentStage?'color:var(--accent)':''}">
+        ${fmt$(s.capital)} ${s.stage===currentStage?'&larr;':''}
+      </span>
+    </div>`;
+  }).join('');
+}
+
+async function requestAdvance() {
+  try {
+    const r = await fetch('/api/dashboard/live/increase-capital', {method:'POST'});
+    const j = await r.json();
+    $('ramp-advance-result').textContent = JSON.stringify(j, null, 2);
+    if (j.status === 'advanced') { toast('Capital stage advanced!', 'success'); loadRamp(); }
+    else toast(j.detail ?? j.status ?? 'Cannot advance', 'warning');
+  } catch(e) { toast('Request failed', 'error'); }
+}
+
+// ── Kill switch ─────────────────────────────────────────────────────────────
+async function loadKillStatus() {
+  try {
+    const r = await fetch('/api/dashboard/live/status');
+    const j = await r.json();
+    setKillState(j.kill_switch_active ?? false);
+  } catch(e) {}
+  loadAuditLog();
+}
+
+function setKillState(active) {
+  state.killActive = active;
+  const btn = $('kill-btn');
+  const resetBtn = $('reset-btn');
+  const box = $('kill-status-box');
+  const txt = $('kill-status-text');
+  if (active) {
+    btn.className = 'active'; btn.disabled = true;
+    resetBtn.style.display = 'block';
+    box.className = 'is-active';
+    txt.innerHTML = 'Kill switch is <strong style="color:var(--red)">ACTIVE</strong>';
+    $('health-badge').textContent = 'HALTED';
+    $('health-badge').className = 'badge badge-degraded';
+  } else {
+    btn.className = 'inactive'; btn.disabled = false;
+    resetBtn.style.display = 'none';
+    box.className = '';
+    txt.innerHTML = 'Kill switch is <strong>INACTIVE</strong>';
   }
+}
 
-  // ── Summary ─────────────────────────────────────────────────────────────────
-  async function refreshSummary() {
-    try {
-      const r = await fetch(`${API}/api/dashboard/summary`);
-      if (!r.ok) return;
-      const d = await r.json();
+function onKillClick() { $('modal-overlay').classList.add('open'); }
+function closeModal()   { $('modal-overlay').classList.remove('open'); }
 
-      const setKpi = (id, val, cls) => {
-        const el = document.getElementById(id);
-        el.textContent = val;
-        el.className = "card-value" + (cls ? " " + cls : "");
-      };
+async function confirmKill() {
+  closeModal();
+  try {
+    const r = await fetch('/api/dashboard/live/kill-switch', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({reason:'Manual dashboard activation'})});
+    const j = await r.json();
+    toast('Kill switch activated — all positions closing', 'error');
+    setKillState(true);
+    loadAuditLog();
+  } catch(e) { toast('Kill switch request failed', 'error'); }
+}
 
-      setKpi("kpi-account", fmt$(d.account_value));
-      setKpi("kpi-cash",    fmt$(d.cash));
-      setKpi("kpi-daily-pnl",  fmt$(d.daily_pnl),  colorClass(d.daily_pnl));
-      setKpi("kpi-total-pnl",  fmt$(d.total_pnl),  colorClass(d.total_pnl));
+async function onResetClick() {
+  if (!confirm('Reset kill switch and resume trading?')) return;
+  try {
+    const r = await fetch('/api/dashboard/live/kill-switch/reset', {method:'POST'});
+    toast('Kill switch reset — trading resumed', 'success');
+    setKillState(false);
+    loadAuditLog();
+  } catch(e) { toast('Reset failed', 'error'); }
+}
 
-      document.getElementById("kpi-daily-pnl-pct").textContent = fmt%(d.daily_pnl_pct);
-      document.getElementById("kpi-total-pnl-pct").textContent = fmt%(d.total_pnl_pct);
-      document.getElementById("kpi-positions").textContent    = d.open_positions_count;
-      document.getElementById("kpi-trades-today").textContent = d.trades_today_count;
-      document.getElementById("kpi-mode").textContent         = d.trading_mode.toUpperCase();
-      document.getElementById("last-updated").textContent     = "Last updated: " + new Date().toLocaleTimeString();
-    } catch(e) { console.warn("Summary refresh failed", e); }
-  }
+async function loadAuditLog() {
+  try {
+    const r = await fetch('/api/dashboard/live/audit-log?limit=20');
+    const j = await r.json();
+    const rows = j.logs ?? j.data ?? j ?? [];
+    const tb = $('audit-tbody');
+    if (!rows.length) { tb.innerHTML = `<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:16px">No audit entries</td></tr>`; return; }
+    tb.innerHTML = rows.map(a => `<tr>
+      <td style="color:var(--muted);white-space:nowrap">${fmtTs(a.timestamp)}</td>
+      <td style="color:var(--yellow)">${a.action}</td>
+      <td style="color:var(--muted);font-size:10px">${JSON.stringify(a.details ?? {}).slice(0,80)}</td>
+    </tr>`).join('');
+  } catch(e) {}
+}
 
-  // ── Positions ────────────────────────────────────────────────────────────────
-  async function refreshPositions() {
-    try {
-      const r = await fetch(`${API}/api/dashboard/positions`);
-      if (!r.ok) return;
-      const data = await r.json();
-      const tbody = document.getElementById("positions-body");
-      if (!data.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:#555">No positions</td></tr>'; return; }
-      tbody.innerHTML = data.map(p => `
-        <tr>
-          <td><strong>${p.symbol}</strong></td>
-          <td>${p.quantity}</td>
-          <td>${fmt$(p.avg_price)}</td>
-          <td>${fmt$(p.current_price)}</td>
-          <td class="${colorClass(p.pnl_unrealized)}">${fmt$(p.pnl_unrealized)}</td>
-          <td class="${colorClass(p.pnl_unrealized_pct)}">${fmt%(p.pnl_unrealized_pct)}</td>
-          <td><button class="btn-red" style="padding:4px 10px;font-size:0.75rem" onclick="closePosition('${p.symbol}')">Close</button></td>
-        </tr>`).join("");
-    } catch(e) { console.warn("Positions refresh failed", e); }
-  }
+// ── Auto-refresh ────────────────────────────────────────────────────────────
+async function fullRefresh() {
+  await loadSummary();
+  // Refresh active panel
+  const active = document.querySelector('.tab.active')?.dataset.tab;
+  if (active === 'positions') loadPositions();
+  if (active === 'trades')    loadTrades();
+  if (active === 'signals')   loadDecisionsOverview();
+  if (active === 'ramp')      loadRamp();
+  if (active === 'kill')      loadKillStatus();
+}
 
-  // ── Trades ───────────────────────────────────────────────────────────────────
-  async function refreshTrades() {
-    try {
-      const r = await fetch(`${API}/api/dashboard/trades?limit=20`);
-      if (!r.ok) return;
-      const data = await r.json();
-      const tbody = document.getElementById("trades-body");
-      if (!data.length) { tbody.innerHTML = '<tr><td colspan="9" style="color:#555">No trades</td></tr>'; return; }
-      tbody.innerHTML = data.map(t => `
-        <tr>
-          <td>${t.id}</td>
-          <td><strong>${t.symbol}</strong></td>
-          <td>${t.direction}</td>
-          <td>${t.quantity}</td>
-          <td>${fmt$(t.entry_price)}</td>
-          <td>${t.exit_price ? fmt$(t.exit_price) : "—"}</td>
-          <td class="${colorClass(t.pnl)}">${fmt$(t.pnl)}</td>
-          <td>${badgeHtml(t.status)}</td>
-          <td>${fmtDt(t.created_at)}</td>
-        </tr>`).join("");
-    } catch(e) { console.warn("Trades refresh failed", e); }
-  }
-
-  // ── Decisions ────────────────────────────────────────────────────────────────
-  async function refreshDecisions() {
-    try {
-      const r = await fetch(`${API}/api/dashboard/decisions?limit=20`);
-      if (!r.ok) return;
-      const data = await r.json();
-      const tbody = document.getElementById("decisions-body");
-      if (!data.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:#555">No decisions logged</td></tr>'; return; }
-      tbody.innerHTML = data.map(d => `
-        <tr>
-          <td>${fmtDt(d.timestamp)}</td>
-          <td>${d.agent_name}</td>
-          <td>${d.decision_type}</td>
-          <td style="color:#888;font-size:0.8rem;max-width:400px;white-space:normal">${d.reasoning ? JSON.stringify(d.reasoning).slice(0,150) : "—"}</td>
-        </tr>`).join("");
-    } catch(e) { console.warn("Decisions refresh failed", e); }
-  }
-
-  // ── Controls ─────────────────────────────────────────────────────────────────
-  async function pauseTrading() {
-    await fetch(`${API}/api/dashboard/control/pause`, { method: "POST" });
-    toast("Trading paused", "warn");
-  }
-
-  async function resumeTrading() {
-    await fetch(`${API}/api/dashboard/control/resume`, { method: "POST" });
-    toast("Trading resumed");
-  }
-
-  async function killSwitch() {
-    if (!confirm("Close ALL open positions immediately?")) return;
-    const r = await fetch(`${API}/api/dashboard/control/kill-switch`, { method: "POST" });
-    const d = await r.json();
-    toast(`Kill switch: closed ${d.closed?.length ?? 0} position(s)`, "warn");
-    refreshPositions();
-  }
-
-  async function closePosition(symbol) {
-    if (!confirm(`Close position in ${symbol}?`)) return;
-    await fetch(`${API}/api/dashboard/control/close-position/${symbol}`, { method: "POST" });
-    toast(`Closing ${symbol}…`);
-    setTimeout(refreshPositions, 1500);
-  }
-
-  // ── Toast ────────────────────────────────────────────────────────────────────
-  function toast(msg, type = "info") {
-    const c = document.getElementById("toast-container");
-    const el = document.createElement("div");
-    el.className = "toast" + (type === "warn" ? " warn" : type === "error" ? " error" : "");
-    el.textContent = msg;
-    c.appendChild(el);
-    setTimeout(() => el.remove(), 4000);
-  }
-
-  // ── WebSocket ────────────────────────────────────────────────────────────────
-  function connectWS() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
-    const dot = document.getElementById("connection-status");
-
-    ws.onopen = () => { dot.className = "connected"; };
-    ws.onclose = () => { dot.className = "disconnected"; setTimeout(connectWS, 5000); };
-    ws.onerror = () => { dot.className = "disconnected"; };
-
-    ws.onmessage = e => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "trade_executed") { refreshTrades(); refreshSummary(); }
-      if (msg.type === "position_update") { refreshPositions(); }
-      if (msg.type === "alert") { toast(msg.data.message, msg.data.type === "CRITICAL" ? "error" : "warn"); }
-    };
-  }
-
-  // ── Init ──────────────────────────────────────────────────────────────────────
-  function refreshAll() {
-    refreshSummary();
-    refreshPositions();
-    refreshTrades();
-    refreshDecisions();
-    refreshHealth();
-  }
-
-  refreshAll();
+// ── Bootstrap ───────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initPnlChart();
+  loadOverview();
   connectWS();
-  setInterval(refreshAll, 10_000);
+  setInterval(fullRefresh, 15000);
+});
 </script>
 </body>
 </html>
