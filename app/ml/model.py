@@ -1,0 +1,155 @@
+"""
+ML model wrapper for portfolio stock selection.
+
+Supports XGBoost (default) and RandomForest.
+Handles versioned save/load via pickle.
+"""
+
+import logging
+import pickle
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
+
+logger = logging.getLogger(__name__)
+
+
+class PortfolioSelectorModel:
+    """
+    Binary classifier: predicts whether a stock will be a top performer (1)
+    or poor performer (0) over the coming period.
+    """
+
+    def __init__(self, model_type: str = "xgboost"):
+        self.model_type = model_type
+        self.scaler = StandardScaler()
+        self.feature_names: Optional[List[str]] = None
+        self.is_trained = False
+
+        if model_type == "xgboost":
+            self.model = XGBClassifier(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                eval_metric="logloss",
+                verbosity=0,
+            )
+        else:
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                random_state=42,
+            )
+
+    # ─── Training ─────────────────────────────────────────────────────────────
+
+    def train(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Fit the model on pre-engineered features.
+
+        Args:
+            X:             Feature matrix (n_samples, n_features).
+            y:             Binary labels (1 = good performer, 0 = poor).
+            feature_names: Optional list of feature names for logging.
+        """
+        logger.info(
+            "Training %s model — %d samples, %d features",
+            self.model_type, X.shape[0], X.shape[1],
+        )
+
+        X_scaled = self.scaler.fit_transform(X)
+        self.model.fit(X_scaled, y)
+        self.feature_names = feature_names
+        self.is_trained = True
+
+        # Log top features if available
+        if feature_names and hasattr(self.model, "feature_importances_"):
+            pairs = sorted(
+                zip(feature_names, self.model.feature_importances_),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            logger.info("Top 5 features: %s", pairs[:5])
+
+        logger.info("Training complete")
+
+    # ─── Prediction ───────────────────────────────────────────────────────────
+
+    def predict(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Return (class_predictions, class_1_probabilities).
+
+        Raises:
+            RuntimeError: if model has not been trained/loaded yet.
+        """
+        if not self.is_trained:
+            raise RuntimeError("Model has not been trained or loaded yet.")
+
+        X_scaled = self.scaler.transform(X)
+        predictions = self.model.predict(X_scaled)
+        probabilities = self.model.predict_proba(X_scaled)[:, 1]
+        return predictions, probabilities
+
+    # ─── Persistence ──────────────────────────────────────────────────────────
+
+    def save(self, directory: str, version: int) -> str:
+        """Pickle model + scaler to directory. Returns model file path."""
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        model_path = Path(directory) / f"model_v{version}.pkl"
+        scaler_path = Path(directory) / f"scaler_v{version}.pkl"
+        meta_path = Path(directory) / f"meta_v{version}.pkl"
+
+        with open(model_path, "wb") as f:
+            pickle.dump(self.model, f)
+        with open(scaler_path, "wb") as f:
+            pickle.dump(self.scaler, f)
+        with open(meta_path, "wb") as f:
+            pickle.dump({"feature_names": self.feature_names}, f)
+
+        logger.info("Model v%d saved to %s", version, directory)
+        return str(model_path)
+
+    def load(self, directory: str, version: int) -> None:
+        """Load pickled model + scaler from directory."""
+        model_path = Path(directory) / f"model_v{version}.pkl"
+        scaler_path = Path(directory) / f"scaler_v{version}.pkl"
+        meta_path = Path(directory) / f"meta_v{version}.pkl"
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
+        with open(model_path, "rb") as f:
+            self.model = pickle.load(f)
+        with open(scaler_path, "rb") as f:
+            self.scaler = pickle.load(f)
+        if meta_path.exists():
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+                self.feature_names = meta.get("feature_names")
+
+        self.is_trained = True
+        logger.info("Model v%d loaded from %s", version, directory)
+
+    def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
+        """Return sorted (feature, importance) pairs, or None if unavailable."""
+        if not self.is_trained or not hasattr(self.model, "feature_importances_"):
+            return None
+        names = self.feature_names or [f"f{i}" for i in range(len(self.model.feature_importances_))]
+        pairs = sorted(
+            zip(names, self.model.feature_importances_),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        return pairs
