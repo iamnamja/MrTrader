@@ -104,6 +104,8 @@ def test_client(mock_alpaca, mock_redis, db_session):
         patch("app.integrations.get_redis_queue", return_value=mock_redis),
         patch("app.database.check_db_connection", return_value=True),
         patch("app.database.session.get_session", return_value=db_session),
+        patch("app.analytics.signal_attribution.get_session", return_value=db_session),
+        patch("app.analytics.drawdown_analyzer.get_session", return_value=db_session),
         patch("app.orchestrator.AgentOrchestrator.start", new_callable=AsyncMock),
         patch("app.orchestrator.AgentOrchestrator.stop", new_callable=AsyncMock),
         patch("app.main.init_db"),
@@ -119,6 +121,7 @@ def test_client(mock_alpaca, mock_redis, db_session):
 def make_trade(db_session, symbol="AAPL", direction="BUY", status="ACTIVE",
                entry_price=150.0, quantity=10, pnl=None, signal_type="EMA_CROSSOVER"):
     from app.database.models import Trade
+    now = datetime.utcnow()
     t = Trade(
         symbol=symbol,
         direction=direction,
@@ -131,7 +134,8 @@ def make_trade(db_session, symbol="AAPL", direction="BUY", status="ACTIVE",
         target_price=entry_price + 8.0,
         highest_price=entry_price,
         bars_held=0,
-        created_at=datetime.utcnow(),
+        created_at=now,
+        closed_at=now if status == "CLOSED" else None,
     )
     db_session.add(t)
     db_session.flush()
