@@ -4,7 +4,7 @@ Feature engineering for the ML portfolio selection model.
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
 
-Feature groups (42 total):
+Feature groups (48 total):
   1.  RSI (14, 7)                                               — price-only
   2.  MACD (line, signal, histogram)                            — price-only
   3.  EMAs (20, 50, 200) + price position flags                 — price-only
@@ -26,6 +26,9 @@ Feature groups (42 total):
   19. Sector momentum (sector ETF 20d return)                   — yfinance
   20. Insider activity (net buy score)                          — SEC EDGAR
   21. Macro regime (composite score)                            — FRED / existing
+  22. Earnings history: 1q surprise, 2q avg, days since report  — yfinance (free)
+  23. Short interest % of float                                  — yfinance (free)
+  24. Short-term RS vs SPY: 5d, 10d differentials               — computed
 """
 
 import logging
@@ -396,5 +399,54 @@ class FeatureEngineer:
                 features["regime_score"] = float(det.get("composite_score", 0.5))
             except Exception:
                 features["regime_score"] = 0.5
+
+        # ── 22. Earnings history (yfinance — free) ────────────────────────────
+        # PEAD (Post-Earnings Announcement Drift): stocks that beat estimates
+        # continue to outperform for weeks.  Days-since captures drift window.
+        if fetch_fundamentals:
+            try:
+                from app.ml.fundamental_fetcher import get_earnings_history
+                eh = get_earnings_history(symbol)
+                features["earnings_surprise_1q"] = eh["earnings_surprise_1q"]
+                features["earnings_surprise_2q_avg"] = eh["earnings_surprise_2q_avg"]
+                features["days_since_earnings"] = eh["days_since_earnings"]
+            except Exception:
+                features["earnings_surprise_1q"] = 0.0
+                features["earnings_surprise_2q_avg"] = 0.0
+                features["days_since_earnings"] = 90.0
+        else:
+            features["earnings_surprise_1q"] = 0.0
+            features["earnings_surprise_2q_avg"] = 0.0
+            features["days_since_earnings"] = 90.0
+
+        # ── 23. Short interest % of float (yfinance — free) ───────────────────
+        # High short interest + upward price momentum = short-squeeze fuel.
+        if fetch_fundamentals:
+            try:
+                from app.ml.fundamental_fetcher import get_short_interest
+                features["short_interest_pct"] = get_short_interest(symbol)
+            except Exception:
+                features["short_interest_pct"] = 0.0
+        else:
+            features["short_interest_pct"] = 0.0
+
+        # ── 24. Short-term relative strength vs SPY (5d, 10d) ─────────────────
+        # Stock outperforming the market over recent days = institutional buying.
+        lookback_10 = min(10, len(prices) - 1)
+        momentum_10d = (
+            (prices[-1] - prices[-(lookback_10 + 1)]) / prices[-(lookback_10 + 1)]
+            if prices[-(lookback_10 + 1)] else 0.0
+        )
+        if spy_returns is not None and len(spy_returns) >= lookback_5:
+            spy_ret_5d = float(np.sum(spy_returns[-lookback_5:]))
+            features["rs_vs_spy_5d"] = features["momentum_5d"] - spy_ret_5d
+        else:
+            features["rs_vs_spy_5d"] = 0.0
+
+        if spy_returns is not None and len(spy_returns) >= lookback_10:
+            spy_ret_10d = float(np.sum(spy_returns[-lookback_10:]))
+            features["rs_vs_spy_10d"] = momentum_10d - spy_ret_10d
+        else:
+            features["rs_vs_spy_10d"] = 0.0
 
         return features
