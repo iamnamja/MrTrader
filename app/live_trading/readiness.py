@@ -28,6 +28,7 @@ MIN_PAPER_TRADES = 20
 MIN_WIN_RATE = 0.45
 MAX_DRAWDOWN_PCT = 3.0
 MIN_ACCOUNT_EQUITY = 1000.0
+MIN_MODEL_AUC = 0.57          # swing model must exceed this before going live
 
 
 class CheckResult:
@@ -64,6 +65,7 @@ class ReadinessChecker:
             self._check_smtp_configured(),
             self._check_slack_configured(),
             self._check_ml_model_exists(),
+            self._check_model_auc(),
         ]
 
         passed = [c for c in checks if c.passed]
@@ -236,3 +238,38 @@ class ReadinessChecker:
             )
         except Exception as e:
             return CheckResult("ml_model_trained", False, None, f"Could not load portfolio manager: {e}")
+
+    def _check_model_auc(self) -> CheckResult:
+        """Require the latest swing model to have AUC >= MIN_MODEL_AUC."""
+        try:
+            db = get_session()
+            try:
+                from app.database.models import ModelVersion
+                latest = (
+                    db.query(ModelVersion)
+                    .filter_by(model_name="swing")
+                    .order_by(ModelVersion.version.desc())
+                    .first()
+                )
+                if latest is None:
+                    return CheckResult(
+                        "model_auc_sufficient", False, None,
+                        "No swing model found in database — retrain first",
+                    )
+                perf = latest.performance or {}
+                auc = perf.get("auc")
+                if auc is None:
+                    return CheckResult(
+                        "model_auc_sufficient", False, None,
+                        f"Model v{latest.version} has no AUC metric recorded",
+                    )
+                passed = float(auc) >= MIN_MODEL_AUC
+                return CheckResult(
+                    "model_auc_sufficient", passed, round(float(auc), 4),
+                    f"Model v{latest.version} AUC={auc:.4f} "
+                    f"({'≥' if passed else '<'} threshold {MIN_MODEL_AUC})",
+                )
+            finally:
+                db.close()
+        except Exception as e:
+            return CheckResult("model_auc_sufficient", False, None, f"AUC check failed: {e}")
