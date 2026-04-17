@@ -54,8 +54,8 @@ class BacktestResult:
         returns = [t.pnl_pct for t in trades]
         sharpe = _sharpe(returns)
 
-        # Max drawdown on cumulative P&L curve
-        max_dd = _max_drawdown([t.pnl for t in trades])
+        # Max drawdown on cumulative return curve (pct-based, capital-independent)
+        max_dd = _max_drawdown([t.pnl_pct for t in trades])
 
         # Profit factor
         gross_win = sum(t.pnl for t in winners) if winners else 0.0
@@ -92,25 +92,33 @@ class BacktestResult:
 
 
 def _sharpe(returns: List[float], periods_per_year: int = 252) -> float:
-    """Annualised Sharpe ratio (risk-free = 0)."""
+    """
+    Per-trade Sharpe: mean(returns) / std(returns) * sqrt(n_trades_per_year).
+    Annualised assuming ~100 trades/year for a swing strategy.
+    """
     if len(returns) < 2:
         return 0.0
     mean = sum(returns) / len(returns)
     variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
     std = math.sqrt(variance) if variance > 0 else 1e-9
-    return (mean / std) * math.sqrt(periods_per_year)
+    # Scale by sqrt(trades/year) not sqrt(252) — each trade is not a daily return
+    trades_per_year = min(len(returns), periods_per_year)
+    return (mean / std) * math.sqrt(trades_per_year)
 
 
-def _max_drawdown(pnls: List[float]) -> float:
-    """Max drawdown as fraction of peak cumulative P&L (0 = no drawdown)."""
-    cum = 0.0
-    peak = 0.0
+def _max_drawdown(pnl_pcts: List[float]) -> float:
+    """
+    Max drawdown on the cumulative return curve (fraction, 0–1).
+    Uses per-trade pct returns so it's capital-independent.
+    """
+    cum = 1.0   # start at 1.0 (100% of capital)
+    peak = 1.0
     max_dd = 0.0
-    for p in pnls:
-        cum += p
+    for r in pnl_pcts:
+        cum *= (1.0 + r)
         if cum > peak:
             peak = cum
-        dd = (peak - cum) / peak if peak > 0 else 0.0
+        dd = (peak - cum) / peak
         if dd > max_dd:
             max_dd = dd
     return max_dd
