@@ -86,7 +86,7 @@ class ModelTrainer:
         if not symbols_data:
             raise RuntimeError("No historical data fetched.")
 
-        X_train, y_train, X_test, y_test, feature_names = self._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, feature_names, meta_train = self._build_rolling_matrix(
             symbols_data, fetch_fundamentals=fetch_fundamentals
         )
         if len(X_train) == 0:
@@ -103,12 +103,16 @@ class ModelTrainer:
         spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
         logger.info("Class ratio  neg=%d  pos=%d  scale_pos_weight=%.2f", n_neg, n_pos, spw)
 
+        # Build multi-factor sample weights
+        sample_weight = self._build_sample_weights(meta_train)
+
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
         self.model.train(
             X_train, y_train, feature_names,
             scale_pos_weight=spw,
             X_val=X_test, y_val=y_test,
             early_stopping_rounds=30,
+            sample_weight=sample_weight,
         )
 
         # Evaluate on held-out test set
@@ -137,7 +141,7 @@ class ModelTrainer:
         self,
         symbols_data: Dict[str, pd.DataFrame],
         fetch_fundamentals: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[dict]]:
         """
         For each non-overlapping WINDOW_DAYS window across all symbols:
           - features: computed from bars in [window_start, window_end]
@@ -145,12 +149,8 @@ class ModelTrainer:
                       0 if trade hits STOP_PCT first,
                       skipped if neither (ambiguous outcome)
 
-        This outcome-based labeling directly matches the swing backtest logic
-        and trains the model to predict "will this specific trade be a winner?"
-        rather than cross-sectional ranking, which is much noisier at short
-        horizons.
-
-        Returns (X_train, y_train, X_test, y_test, feature_names).
+        Returns (X_train, y_train, X_test, y_test, feature_names, meta_train).
+        meta_train is a list of dicts used to compute sample weights.
         Test set = most recent TEST_FRACTION of windows (time-based split).
         """
         # Build sorted list of window start dates from the earliest common date
@@ -159,12 +159,12 @@ class ModelTrainer:
         ))
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
             logger.warning("Not enough common dates for rolling windows")
-            return np.array([]), np.array([]), np.array([]), np.array([]), []
+            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
 
         # Window start indices (step by STEP_DAYS)
         window_starts = list(range(0, len(all_dates) - WINDOW_DAYS - FORWARD_DAYS, STEP_DAYS))
         if not window_starts:
-            return np.array([]), np.array([]), np.array([]), np.array([]), []
+            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
 
         # Time-based split: last TEST_FRACTION windows -> test
         split_idx = max(1, int(len(window_starts) * (1 - TEST_FRACTION)))
@@ -188,17 +188,17 @@ class ModelTrainer:
             except Exception as exc:
                 logger.warning("FMP prefetch skipped: %s", exc)
 
-        X_train, y_train = self._windows_to_matrix(
+        X_train, y_train, meta_train = self._windows_to_matrix(
             symbols_data, all_dates, train_window_starts,
-            regime_score, fetch_fundamentals
+            regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
-        X_test, y_test = self._windows_to_matrix(
+        X_test, y_test, _ = self._windows_to_matrix(
             symbols_data, all_dates, test_window_starts,
-            regime_score, fetch_fundamentals
+            regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
         feature_names = self._last_feature_names
-        return X_train, y_train, X_test, y_test, feature_names
+        return X_train, y_train, X_test, y_test, feature_names, meta_train
 
     def _windows_to_matrix(
         self,
@@ -207,8 +207,9 @@ class ModelTrainer:
         window_starts: list,
         regime_score: Optional[float],
         fetch_fundamentals: bool,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        X_rows, y_vals = [], []
+        total_windows: int = 1,
+    ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
+        X_rows, y_vals, meta_rows = [], [], []
         self._last_feature_names: List[str] = []
 
         for w_start_idx in window_starts:
@@ -232,9 +233,6 @@ class ModelTrainer:
                     continue
 
                 # ── Outcome-based label ───────────────────────────────────────
-                # Simulate entering at close on w_end_date, exiting when
-                # price hits TARGET_PCT (+5%) or STOP_PCT (-2%) within
-                # FORWARD_DAYS bars.  Skip if neither is hit (ambiguous).
                 entry_rows = df.loc[idx == w_end_date, "close"]
                 if len(entry_rows) == 0:
                     continue
@@ -246,6 +244,7 @@ class ModelTrainer:
                 stop_price = entry_price * (1 - LABEL_STOP_PCT)
 
                 label = None
+                outcome_return = 0.0
                 for bar_offset in range(1, FORWARD_DAYS + 1):
                     future_idx = w_end_idx + bar_offset
                     if future_idx >= len(all_dates):
@@ -256,19 +255,20 @@ class ModelTrainer:
                         continue
                     high = float(bar["high"].iloc[0])
                     low = float(bar["low"].iloc[0])
-                    # Stop checked first (conservative — if both hit, stop wins)
                     if low <= stop_price:
                         label = 0
+                        outcome_return = (low - entry_price) / entry_price
                         break
                     if high >= target_price:
                         label = 1
+                        outcome_return = (high - entry_price) / entry_price
                         break
 
                 if label is None:
                     continue  # neither target nor stop hit — skip
 
                 # ── Features (cache-first) ────────────────────────────────────
-                sector = SECTOR_MAP.get(symbol)
+                sector = SECTOR_MAP.get(symbol) or "Unknown"
                 features = None
                 if self._feature_store is not None:
                     features = self._feature_store.get(symbol, w_end_date)
@@ -291,7 +291,63 @@ class ModelTrainer:
                 X_rows.append(list(features.values()))
                 y_vals.append(label)
 
-        return np.array(X_rows), np.array(y_vals)
+                # Collect metadata for sample weight computation
+                avg_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else 1e6
+                meta_rows.append({
+                    "window_idx": w_start_idx,
+                    "outcome_return": outcome_return,
+                    "vol_percentile": features.get("vol_percentile_52w", 0.5),
+                    "avg_volume": avg_vol,
+                    "sector": sector,
+                })
+
+        return np.array(X_rows), np.array(y_vals), meta_rows
+
+    # ── Sample weighting ─────────────────────────────────────────────────────
+
+    def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
+        """Build multi-factor sample weights from per-sample metadata."""
+        if not meta:
+            return None
+        try:
+            from app.ml.sample_weights import compute_sample_weights
+            # Current vol percentile from regime detector (proxy for today's market)
+            current_vol = self._get_current_vol_percentile()
+            weights = compute_sample_weights(
+                window_indices=[m["window_idx"] for m in meta],
+                total_windows=max(m["window_idx"] for m in meta) + 1,
+                outcome_returns=[m["outcome_return"] for m in meta],
+                vol_percentiles=[m["vol_percentile"] for m in meta],
+                avg_volumes=[m["avg_volume"] for m in meta],
+                sector_labels=[m["sector"] for m in meta],
+                target_pct=LABEL_TARGET_PCT,
+                current_vol_percentile=current_vol,
+            )
+            logger.info("Sample weights built for %d samples", len(weights))
+            return weights
+        except Exception as exc:
+            logger.warning("Sample weight computation failed, using uniform: %s", exc)
+            return None
+
+    def _get_current_vol_percentile(self) -> float:
+        """Estimate current market vol percentile using SPY realized vol."""
+        try:
+            import yfinance as yf
+            spy = yf.download("SPY", period="1y", progress=False, auto_adjust=True)
+            if spy is None or len(spy) < 30:
+                return 0.5
+            closes = spy["Close"].values.astype(float)
+            returns = np.diff(np.log(closes))
+            rv10 = float(np.std(returns[-10:]) * np.sqrt(252))
+            rv_series = [
+                float(np.std(returns[max(0, i-10):i]) * np.sqrt(252))
+                for i in range(10, len(returns) + 1)
+            ]
+            if not rv_series or max(rv_series) == min(rv_series):
+                return 0.5
+            return float(np.clip((rv10 - min(rv_series)) / (max(rv_series) - min(rv_series)), 0, 1))
+        except Exception:
+            return 0.5
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 

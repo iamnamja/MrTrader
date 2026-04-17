@@ -4,7 +4,7 @@ Feature engineering for the ML portfolio selection model.
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
 
-Feature groups (68 total):
+Feature groups (74 total):
   1.  RSI (14, 7)                                               — price-only
   2.  MACD (line, signal, histogram)                            — price-only
   3.  EMAs (20, 50, 200) + price position flags                 — price-only
@@ -35,6 +35,9 @@ Feature groups (68 total):
       ATR trend, Parkinson vol (training); put/call ratio, IV ATM,
       IV premium (live inference only via yfinance)              — computed + yfinance
   27. News sentiment: 3d/7d avg sentiment, article count, momentum  — Polygon news
+  28. FMP enhanced earnings: consecutive beats, revenue surprise     — FMP API
+  29. Volume/price dynamics: VPT momentum, range expansion, VWAP distance — computed
+  30. Daily technicals: Williams %R(14), CCI(20), price acceleration — computed
 """
 
 import logging
@@ -545,5 +548,112 @@ class FeatureEngineer:
                 features.update(_news_default)
         else:
             features.update(_news_default)
+
+        # ── 28. FMP enhanced earnings features ───────────────────────────────
+        _earnings_default = {
+            "fmp_consecutive_beats": 0.0,
+            "fmp_revenue_surprise_1q": 0.0,
+        }
+        if fetch_fundamentals and as_of_date is not None:
+            try:
+                from app.data.fmp_provider import get_earnings_history_fmp
+                records = get_earnings_history_fmp(symbol)
+                pit_date = as_of_date if isinstance(as_of_date, date) else date.fromisoformat(str(as_of_date))
+                from datetime import datetime as _dt
+                past = sorted(
+                    [r for r in records if r.get("date") and
+                     _dt.strptime(r["date"], "%Y-%m-%d").date() <= pit_date],
+                    key=lambda r: r["date"], reverse=True
+                )
+                if past:
+                    # Consecutive quarterly beats (surprise_pct > 0)
+                    beats = 0
+                    for r in past[:4]:
+                        if (r.get("surprise_pct") or 0) > 0:
+                            beats += 1
+                        else:
+                            break
+                    _earnings_default["fmp_consecutive_beats"] = float(beats)
+                    # Surprise magnitude of most recent quarter (signed)
+                    rev_s = past[0].get("surprise_pct") or 0.0
+                    _earnings_default["fmp_revenue_surprise_1q"] = float(
+                        max(-2.0, min(2.0, rev_s))
+                    )
+            except Exception:
+                pass
+        features.update(_earnings_default)
+
+        # ── 29. Volume/price dynamics ─────────────────────────────────────────
+        try:
+            _closes = closes[-20:] if len(closes) >= 20 else closes
+            _volumes = volumes[-20:] if len(volumes) >= 20 else volumes
+            _highs_20 = highs[-20:] if len(highs) >= 20 else highs
+            _lows_20 = lows[-20:] if len(lows) >= 20 else lows
+
+            # Volume Price Trend: cumulative sum of volume * daily return, normalised
+            if len(_closes) >= 2:
+                _rets = np.diff(np.log(_closes))
+                _vpt = float(np.sum(_volumes[1:] * _rets)) / max(float(np.mean(_volumes)), 1e-9)
+            else:
+                _vpt = 0.0
+
+            # Range expansion: recent 10d H-L range vs prior 10d H-L range
+            if len(_highs_20) >= 20:
+                recent_range = float(_highs_20[-10:].max() - _lows_20[-10:].min())
+                prior_range = float(_highs_20[:10].max() - _lows_20[:10].min())
+                _range_exp = float(np.clip(recent_range / max(prior_range, 1e-9), 0, 4.0))
+            else:
+                _range_exp = 1.0
+
+            # 20-day VWAP distance: avg of daily (close - vwap) / vwap
+            if len(_closes) >= 5 and len(_highs_20) == len(_lows_20) == len(_closes):
+                _typical = (_highs_20 + _lows_20 + _closes) / 3.0
+                _cum_tv = np.cumsum(_typical * _volumes)
+                _cum_v = np.cumsum(_volumes)
+                _vwap_series = np.where(_cum_v > 0, _cum_tv / _cum_v, _closes)
+                _vwap_dist = float(np.mean((_closes - _vwap_series) / np.where(_vwap_series > 0, _vwap_series, 1)))
+            else:
+                _vwap_dist = 0.0
+
+            features["vpt_momentum"] = float(np.clip(_vpt, -5.0, 5.0))
+            features["range_expansion"] = _range_exp
+            features["vwap_distance_20d"] = float(np.clip(_vwap_dist, -0.1, 0.1))
+        except Exception:
+            features["vpt_momentum"] = 0.0
+            features["range_expansion"] = 1.0
+            features["vwap_distance_20d"] = 0.0
+
+        # ── 30. Daily technical indicators ───────────────────────────────────
+        try:
+            # Williams %R(14): -100=oversold, 0=overbought → normalise to [-1, 0]
+            if len(highs) >= 14:
+                _h14 = float(highs[-14:].max())
+                _l14 = float(lows[-14:].min())
+                _wr = float((_h14 - closes[-1]) / max(_h14 - _l14, 1e-9) * -1.0)
+                features["williams_r_14"] = float(np.clip(_wr, -1.0, 0.0))
+            else:
+                features["williams_r_14"] = -0.5
+
+            # CCI(20): (typical_price - SMA20) / (0.015 * mean_deviation)
+            if len(closes) >= 20:
+                _tp20 = (highs[-20:] + lows[-20:] + closes[-20:]) / 3.0
+                _sma = float(_tp20.mean())
+                _md = float(np.mean(np.abs(_tp20 - _sma)))
+                _cci = float((_tp20[-1] - _sma) / max(0.015 * _md, 1e-9))
+                features["cci_20"] = float(np.clip(_cci / 200.0, -1.5, 1.5))
+            else:
+                features["cci_20"] = 0.0
+
+            # Price acceleration: (5d momentum) - (10d momentum)
+            if len(closes) >= 11:
+                _mom5 = float((closes[-1] - closes[-6]) / max(closes[-6], 1e-9))
+                _mom10 = float((closes[-1] - closes[-11]) / max(closes[-11], 1e-9))
+                features["price_acceleration"] = float(np.clip(_mom5 - _mom10, -0.1, 0.1))
+            else:
+                features["price_acceleration"] = 0.0
+        except Exception:
+            features["williams_r_14"] = -0.5
+            features["cci_20"] = 0.0
+            features["price_acceleration"] = 0.0
 
         return features

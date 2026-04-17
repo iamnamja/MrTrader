@@ -63,6 +63,7 @@ class PortfolioSelectorModel:
         X_val: Optional[np.ndarray] = None,
         y_val: Optional[np.ndarray] = None,
         early_stopping_rounds: int = 30,
+        sample_weight: Optional[np.ndarray] = None,
     ) -> None:
         """
         Fit the model on pre-engineered features.
@@ -74,6 +75,9 @@ class PortfolioSelectorModel:
             scale_pos_weight:     XGBoost class-weight ratio (n_neg / n_pos).
             X_val / y_val:        Optional validation set for early stopping.
             early_stopping_rounds: Stop if AUC doesn't improve for N rounds.
+            sample_weight:        Per-sample importance weights (n_samples,).
+                                  Combines recency, volatility regime, outcome
+                                  margin, liquidity, and sector diversity weights.
         """
         logger.info(
             "Training %s model — %d samples, %d features",
@@ -84,7 +88,17 @@ class PortfolioSelectorModel:
             self.model.set_params(scale_pos_weight=scale_pos_weight)
             logger.info("scale_pos_weight=%.2f", scale_pos_weight)
 
+        if sample_weight is not None:
+            logger.info(
+                "sample_weight: min=%.3f max=%.3f mean=%.3f",
+                float(sample_weight.min()), float(sample_weight.max()), float(sample_weight.mean()),
+            )
+
         X_scaled = self.scaler.fit_transform(X)
+
+        fit_kwargs = {}
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = sample_weight
 
         if self.model_type == "xgboost" and X_val is not None and y_val is not None:
             X_val_scaled = self.scaler.transform(X_val)
@@ -93,10 +107,11 @@ class PortfolioSelectorModel:
                 X_scaled, y,
                 eval_set=[(X_val_scaled, y_val)],
                 verbose=False,
+                **fit_kwargs,
             )
             logger.info("Early stopping: best iteration = %s", getattr(self.model, "best_iteration", "n/a"))
         else:
-            self.model.fit(X_scaled, y)
+            self.model.fit(X_scaled, y, **fit_kwargs)
 
         self.feature_names = feature_names
         self.is_trained = True

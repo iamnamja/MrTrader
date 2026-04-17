@@ -186,7 +186,7 @@ class TestRollingWindowTraining:
     def test_rolling_matrix_produces_more_samples_than_single_window(self):
         trainer = self._trainer()
         data = self._multi_symbol_data(10, 500)
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             data, fetch_fundamentals=False
         )
         # Rolling should produce many more samples than 10 (single-window)
@@ -197,7 +197,7 @@ class TestRollingWindowTraining:
         from app.ml.training import WINDOW_DAYS as _W, STEP_DAYS as _S, TEST_FRACTION as _T  # noqa
         trainer = self._trainer()
         data = self._multi_symbol_data(8, 600)
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             data, fetch_fundamentals=False
         )
         # Both sets should have samples
@@ -207,7 +207,7 @@ class TestRollingWindowTraining:
     def test_feature_names_consistent(self):
         trainer = self._trainer()
         data = self._multi_symbol_data(8, 500)
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             data, fetch_fundamentals=False
         )
         assert len(names) >= 19  # at least price-only features
@@ -218,7 +218,7 @@ class TestRollingWindowTraining:
         trainer = self._trainer()
         # Only 30 days — not enough for any window
         tiny_data = {"AAPL": _make_daily_df(30), "MSFT": _make_daily_df(30)}
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             tiny_data, fetch_fundamentals=False
         )
         assert len(X_train) == 0
@@ -226,7 +226,7 @@ class TestRollingWindowTraining:
     def test_labels_are_binary(self):
         trainer = self._trainer()
         data = self._multi_symbol_data(10, 500)
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             data, fetch_fundamentals=False
         )
         if len(y_train) > 0:
@@ -236,7 +236,7 @@ class TestRollingWindowTraining:
         """Train and test X arrays must not overlap (time-based split)."""
         trainer = self._trainer()
         data = self._multi_symbol_data(12, 700)
-        X_train, y_train, X_test, y_test, names = trainer._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, names, _ = trainer._build_rolling_matrix(
             data, fetch_fundamentals=False
         )
         # Shapes must be consistent
