@@ -560,3 +560,47 @@ async def check_earnings_blackout(symbol: str):
     except Exception as exc:
         logger.error("Earnings blackout check error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/analytics/regime")
+async def get_market_regime():
+    """Return current VIX-based market regime."""
+    try:
+        from app.strategy.regime_detector import regime_detector
+        regime = regime_detector.get_regime()
+        vix = regime_detector.get_vix()
+        return {
+            "regime": regime,
+            "vix": round(vix, 2) if vix is not None else None,
+            "trend_following_active": regime_detector.trend_following_active(),
+            "mean_reversion_active": regime_detector.mean_reversion_active(),
+            "position_size_multiplier": regime_detector.position_size_multiplier(),
+        }
+    except Exception as exc:
+        logger.error("Regime detection error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/analytics/portfolio-heat")
+async def get_portfolio_heat():
+    """Return current portfolio heat (total risk as % of account value)."""
+    try:
+        from app.integrations import get_alpaca_client
+        from app.strategy.portfolio_heat import (
+            MAX_PORTFOLIO_HEAT_PCT,
+            get_portfolio_heat as _get_heat,
+        )
+        client = get_alpaca_client()
+        account = client.get_account()
+        positions = client.get_positions()
+        account_value = float(account.get("portfolio_value", 0))
+        heat = _get_heat(positions, account_value)
+        return {
+            "portfolio_heat_pct": round(heat * 100, 2),
+            "max_heat_pct": round(MAX_PORTFOLIO_HEAT_PCT * 100, 2),
+            "headroom_pct": round((MAX_PORTFOLIO_HEAT_PCT - heat) * 100, 2),
+            "positions": len(positions),
+        }
+    except Exception as exc:
+        logger.error("Portfolio heat error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))

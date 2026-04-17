@@ -22,6 +22,7 @@ from app.agents.risk_rules import (
     validate_buying_power,
     validate_daily_loss,
     validate_open_positions,
+    validate_portfolio_heat,
     validate_position_size,
     validate_sector_concentration,
 )
@@ -201,7 +202,17 @@ class RiskManager(BaseAgent):
             reasoning["failed_rule"] = "open_positions"
             return False, reasoning
 
-        # ── Rule 7: Dynamic Stop Loss ─────────────────────────────────────────
+        # ── Rule 7: Portfolio Heat ────────────────────────────────────────────
+        atr = proposal.get("atr")
+        stop_loss_est = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
+        new_trade_risk = (entry_price - stop_loss_est) * quantity
+        ok, msg = validate_portfolio_heat(new_trade_risk, positions, account_value, self.limits)
+        reasoning["checks"].append({"rule": "portfolio_heat", "ok": ok, "msg": msg})
+        if not ok:
+            reasoning["failed_rule"] = "portfolio_heat"
+            return False, reasoning
+
+        # ── Rule 8: Dynamic Stop Loss ─────────────────────────────────────────
         atr = proposal.get("atr")  # optional; caller can supply ATR
         stop_loss = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
         stop_msg = f"Stop loss set at ${stop_loss:.2f}"
