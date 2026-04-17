@@ -25,6 +25,7 @@ class TestApprovalWorkflowStateMachine:
             q = db.query.return_value
             q.filter_by.return_value.order_by.return_value.first.return_value = None
             q.filter_by.return_value.first.return_value = None
+            q.filter_by.return_value.all.return_value = []
             q.filter.return_value.first.return_value = None
             q.filter.return_value.count.return_value = 0
             q.filter.return_value.all.return_value = []
