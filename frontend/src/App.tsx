@@ -7,7 +7,7 @@ import type {
   Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
   ReadinessReport, ReadinessCheckItem, AttributionItem,
   MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
-  RegimeDetail,
+  RegimeDetail, PerformanceReview, DriftItem,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -1068,6 +1068,151 @@ function AnalyticsPanel() {
   )
 }
 
+// ── Performance Review Panel ───────────────────────────────────────────────────
+function PerformanceReviewPanel() {
+  const [data, setData] = useState<PerformanceReview | null>(null)
+  const [days, setDays] = useState(30)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async (d: number) => {
+    setLoading(true)
+    try {
+      const j = await api.performanceReview(d) as PerformanceReview
+      setData(j)
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load(days) }, [load, days])
+
+  const statusColor = (s: string) =>
+    s === 'ok' ? C.green : s === 'warn' ? C.yellow : C.red
+
+  const driftRow = (item: DriftItem) => (
+    <tr key={item.metric}>
+      <td style={s.td}>{item.metric}</td>
+      <td style={{ ...s.td, color: C.accent }}>{item.live.toFixed(2)}</td>
+      <td style={{ ...s.td, color: C.muted }}>{item.target.toFixed(2)}</td>
+      <td style={{ ...s.td, color: item.delta >= 0 ? C.green : C.red }}>
+        {item.delta >= 0 ? '+' : ''}{item.delta.toFixed(2)}
+      </td>
+      <td style={s.td}>
+        <span style={{
+          fontSize: 10, padding: '2px 8px', borderRadius: 8, fontWeight: 600,
+          background: `${statusColor(item.status)}1a`, color: statusColor(item.status),
+          border: `1px solid ${statusColor(item.status)}4d`,
+        }}>{item.status.toUpperCase()}</span>
+      </td>
+    </tr>
+  )
+
+  if (!data) return (
+    <div style={{ color: C.muted, textAlign: 'center', padding: 40 }}>
+      {loading ? 'Loading…' : 'No data'}
+    </div>
+  )
+
+  const overallColor = statusColor(data.overall_status)
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+        {[7, 30, 90].map(d => (
+          <button key={d} onClick={() => setDays(d)} style={{
+            ...btnStyle,
+            borderColor: days === d ? C.accent : undefined,
+            color: days === d ? C.accent : undefined,
+          }}>{d}d</button>
+        ))}
+        <button onClick={() => load(days)} disabled={loading} style={btnStyle}>Refresh</button>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: C.muted }}>
+          {data.start_date} → {data.end_date}
+        </span>
+      </div>
+
+      {/* Status banner */}
+      <div style={{
+        ...s.card, marginBottom: 16,
+        borderColor: overallColor,
+        background: `${overallColor}08`,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: overallColor }}>
+            {data.overall_status === 'ok' ? '✓ On track vs backtest'
+              : data.overall_status === 'warn' ? '⚠ Minor drift detected'
+              : '⚡ Significant drift — review needed'}
+          </span>
+          <span style={{ fontSize: 11, color: C.muted }}>
+            {data.alerts} alert{data.alerts !== 1 ? 's' : ''} · {data.warnings} warning{data.warnings !== 1 ? 's' : ''}
+          </span>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Trades" value={String(data.total_trades)} sub={`${data.wins} wins`} />
+        <KpiCard label="Win Rate" value={data.win_rate_pct.toFixed(1) + '%'}
+          color={data.win_rate_pct >= 50 ? C.green : C.red} sub="target 55%" />
+        <KpiCard label="Total P&L" value={fmt$(data.total_pnl)} color={clr(data.total_pnl)} />
+        <KpiCard label="Avg P&L / Trade" value={fmt$(data.avg_pnl_per_trade)} color={clr(data.avg_pnl_per_trade)} />
+        <KpiCard label="Sharpe (est.)" value={data.sharpe_estimate != null ? data.sharpe_estimate.toFixed(2) : '—'}
+          color={data.sharpe_estimate != null ? (data.sharpe_estimate >= 1 ? C.green : C.yellow) : undefined} />
+        <KpiCard label="Alpha vs SPY"
+          value={data.alpha_pct != null ? (data.alpha_pct >= 0 ? '+' : '') + data.alpha_pct.toFixed(2) + '%' : '—'}
+          color={data.alpha_pct != null ? clr(data.alpha_pct) : undefined}
+          sub={`SPY: ${data.spy_return_pct >= 0 ? '+' : ''}${data.spy_return_pct.toFixed(2)}%`} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        {/* Drift vs backtest */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Drift vs Backtest Targets</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Metric', 'Live', 'Target', 'Delta', 'Status'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {data.drift.length === 0
+                ? <tr><td colSpan={5} style={{ ...s.td, color: C.muted, textAlign: 'center' }}>No data yet</td></tr>
+                : data.drift.map(driftRow)}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Per-signal breakdown */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>By Signal Type</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Signal', 'Trades', 'Win%', 'Avg P&L', 'Total'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {Object.keys(data.by_signal).length === 0
+                ? <tr><td colSpan={5} style={{ ...s.td, color: C.muted, textAlign: 'center' }}>No trades yet</td></tr>
+                : Object.entries(data.by_signal)
+                    .sort((a, b) => b[1].total_pnl - a[1].total_pnl)
+                    .map(([sig, g]) => (
+                    <tr key={sig}>
+                      <td style={{ ...s.td, color: C.accent }}>{sig}</td>
+                      <td style={s.td}>{g.trades}</td>
+                      <td style={{ ...s.td, color: g.win_rate >= 50 ? C.green : C.red }}>{g.win_rate}%</td>
+                      <td style={{ ...s.td, color: clr(g.avg_pnl) }}>{fmt$(g.avg_pnl)}</td>
+                      <td style={{ ...s.td, color: clr(g.total_pnl) }}>{fmt$(g.total_pnl)}</td>
+                    </tr>
+                  ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Watchlist Panel ────────────────────────────────────────────────────────────
 function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' | 'warning' | 'info') => void }) {
   const [tickers, setTickers] = useState<import('./types').WatchlistTicker[]>([])
@@ -1213,7 +1358,7 @@ function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' 
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -1337,6 +1482,7 @@ export default function App() {
         {tab === 'Readiness' && <ReadinessPanel />}
         {tab === 'Analytics' && <AnalyticsPanel />}
         {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
+        {tab === 'Performance' && <PerformanceReviewPanel />}
       </div>
 
       <ToastContainer toasts={toasts} />
