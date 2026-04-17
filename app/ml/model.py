@@ -17,6 +17,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:
+    _LGBM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,8 +38,57 @@ class PortfolioSelectorModel:
         self.feature_names: Optional[List[str]] = None
         self.is_trained = False
         self._lr_model: Optional[LogisticRegression] = None  # second estimator for ensemble
+        self._lgbm_model = None  # second estimator for lgbm_ensemble
 
-        if model_type in ("xgboost", "ensemble"):
+        if model_type == "lgbm_ensemble":
+            if not _LGBM_AVAILABLE:
+                raise ImportError("lightgbm not installed — pip install lightgbm")
+            self.model = XGBClassifier(
+                n_estimators=300,
+                max_depth=4,
+                learning_rate=0.03,
+                subsample=0.7,
+                colsample_bytree=0.6,
+                min_child_weight=10,
+                gamma=0.1,
+                reg_alpha=0.1,
+                reg_lambda=1.5,
+                random_state=42,
+                eval_metric="auc",
+                verbosity=0,
+            )
+            self._lgbm_model = LGBMClassifier(
+                n_estimators=500,
+                num_leaves=31,
+                max_depth=6,
+                learning_rate=0.01,
+                subsample=0.7,
+                subsample_freq=1,
+                colsample_bytree=0.7,
+                reg_alpha=1.0,
+                reg_lambda=1.0,
+                min_child_samples=50,
+                random_state=42,
+                verbose=-1,
+            )
+        elif model_type == "lgbm":
+            if not _LGBM_AVAILABLE:
+                raise ImportError("lightgbm not installed — pip install lightgbm")
+            self.model = LGBMClassifier(
+                n_estimators=600,
+                num_leaves=31,
+                max_depth=6,
+                learning_rate=0.01,
+                subsample=0.7,
+                subsample_freq=1,
+                colsample_bytree=0.7,
+                reg_alpha=1.0,
+                reg_lambda=1.0,
+                min_child_samples=50,
+                random_state=42,
+                verbose=-1,
+            )
+        elif model_type in ("xgboost", "ensemble"):
             self.model = XGBClassifier(
                 n_estimators=400,
                 max_depth=4,          # shallower = less overfitting with many features
@@ -94,7 +149,7 @@ class PortfolioSelectorModel:
             self.model_type, X.shape[0], X.shape[1],
         )
 
-        if scale_pos_weight is not None and self.model_type in ("xgboost", "ensemble"):
+        if scale_pos_weight is not None and self.model_type in ("xgboost", "ensemble", "lgbm_ensemble"):
             self.model.set_params(scale_pos_weight=scale_pos_weight)
             logger.info("scale_pos_weight=%.2f", scale_pos_weight)
 
@@ -110,7 +165,17 @@ class PortfolioSelectorModel:
         if sample_weight is not None:
             fit_kwargs["sample_weight"] = sample_weight
 
-        if self.model_type in ("xgboost", "ensemble") and X_val is not None and y_val is not None:
+        if self.model_type == "lgbm" and X_val is not None and y_val is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            from lightgbm import early_stopping, log_evaluation
+            self.model.fit(
+                X_scaled, y,
+                eval_set=[(X_val_scaled, y_val)],
+                callbacks=[early_stopping(early_stopping_rounds, verbose=False), log_evaluation(-1)],
+                **fit_kwargs,
+            )
+            logger.info("LGBM early stopping: best iteration = %s", getattr(self.model, "best_iteration_", "n/a"))
+        elif self.model_type in ("xgboost", "ensemble", "lgbm_ensemble") and X_val is not None and y_val is not None:
             X_val_scaled = self.scaler.transform(X_val)
             self.model.set_params(early_stopping_rounds=early_stopping_rounds)
             self.model.fit(
@@ -128,6 +193,12 @@ class PortfolioSelectorModel:
             lr_kwargs = {"sample_weight": sample_weight} if sample_weight is not None else {}
             self._lr_model.fit(X_scaled, y, **lr_kwargs)
             logger.info("Ensemble LR component trained")
+
+        # Train the LGBM blend model for lgbm_ensemble mode
+        if self.model_type == "lgbm_ensemble" and self._lgbm_model is not None:
+            lgbm_kwargs = {"sample_weight": sample_weight} if sample_weight is not None else {}
+            self._lgbm_model.fit(X_scaled, y, **lgbm_kwargs)
+            logger.info("LGBM ensemble component trained")
 
         self.feature_names = feature_names
         self.is_trained = True
@@ -157,15 +228,21 @@ class PortfolioSelectorModel:
 
         X_scaled = self.scaler.transform(X)
 
-        xgb_proba = self.model.predict_proba(X_scaled)[:, 1]
+        primary_proba = self.model.predict_proba(X_scaled)[:, 1]
 
         if self.model_type == "ensemble" and self._lr_model is not None:
             lr_proba = self._lr_model.predict_proba(X_scaled)[:, 1]
             # 70/30 blend: XGBoost carries more weight (stronger non-linear signal),
             # LR acts as a regularising anchor that avoids extreme overconfident predictions
-            probabilities = 0.70 * xgb_proba + 0.30 * lr_proba
+            probabilities = 0.70 * primary_proba + 0.30 * lr_proba
+        elif self.model_type == "lgbm_ensemble" and self._lgbm_model is not None:
+            lgbm_proba = self._lgbm_model.predict_proba(X_scaled)[:, 1]
+            # 50/50 XGBoost + LightGBM: both tree ensembles with different learning strategies
+            # XGBoost: depth-wise, strong regularisation; LightGBM: leaf-wise, faster convergence
+            # Equal blend reduces variance vs either alone on noisy financial labels
+            probabilities = 0.50 * primary_proba + 0.50 * lgbm_proba
         else:
-            probabilities = xgb_proba
+            probabilities = primary_proba
 
         predictions = (probabilities >= 0.5).astype(int)
         return predictions, probabilities
@@ -188,6 +265,7 @@ class PortfolioSelectorModel:
                 "feature_names": self.feature_names,
                 "model_type": self.model_type,
                 "lr_model": self._lr_model,
+                "lgbm_model": self._lgbm_model,
             }, f)
 
         logger.info("Model v%d saved to %s", version, directory)
@@ -219,6 +297,7 @@ class PortfolioSelectorModel:
                 self.feature_names = meta.get("feature_names")
                 self.model_type = meta.get("model_type", self.model_type)
                 self._lr_model = meta.get("lr_model")
+                self._lgbm_model = meta.get("lgbm_model")
 
         self.is_trained = True
         logger.info("Model v%d loaded from %s", version, directory)
