@@ -147,6 +147,14 @@ class ModelTrainer:
         # Regime score once per run (same macro context)
         regime_score = self._get_regime_score()
 
+        # Pre-fetch fundamentals once per symbol to warm the cache.
+        # The rolling loop calls engineer_features ~20x per symbol; without this
+        # each call would hit the yfinance API independently.
+        if fetch_fundamentals:
+            from app.ml.fundamental_fetcher import prefetch_fundamentals
+            logger.info("Pre-fetching fundamentals for %d symbols...", len(symbols_data))
+            prefetch_fundamentals(list(symbols_data.keys()))
+
         X_train, y_train = self._windows_to_matrix(
             symbols_data, all_dates, train_window_starts,
             regime_score, fetch_fundamentals

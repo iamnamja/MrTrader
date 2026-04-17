@@ -46,11 +46,26 @@ def get_fundamentals(symbol: str) -> Dict[str, float]:
       pe_ratio, pb_ratio, profit_margin, revenue_growth,
       debt_to_equity, earnings_proximity_days
     All values are floats; missing data → 0.0.
+
+    Cache hierarchy: in-memory → disk (TTL 24 h) → yfinance API.
     """
     now = time.time()
+
+    # 1. In-memory cache
     cached = _fund_cache.get(symbol)
     if cached and now - cached[1] < _FUND_TTL:
         return cached[0]
+
+    # 2. Disk cache
+    try:
+        from app.data.cache import get_cache
+        disk_data = get_cache().get_json(f"fundamentals/{symbol}", ttl=_FUND_TTL)
+        if disk_data is not None:
+            clean = {k: v for k, v in disk_data.items() if not k.startswith("_")}
+            _fund_cache[symbol] = (clean, now)
+            return clean
+    except Exception:
+        pass
 
     result = {
         "pe_ratio": 0.0,
@@ -100,6 +115,38 @@ def get_fundamentals(symbol: str) -> Dict[str, float]:
         logger.debug("Fundamentals fetch failed for %s: %s", symbol, exc)
 
     _fund_cache[symbol] = (result, now)
+
+    # 3. Write to disk cache for next run
+    try:
+        from app.data.cache import get_cache
+        get_cache().put_json(f"fundamentals/{symbol}", result)
+    except Exception:
+        pass
+
+    return result
+
+
+def prefetch_fundamentals(symbols: list) -> Dict[str, Dict[str, float]]:
+    """
+    Pre-fetch fundamentals for all symbols once and warm both caches.
+
+    Use this at the start of a training run so each rolling window can
+    read from in-memory cache instead of calling the API 20x per symbol.
+
+    Returns a dict of symbol → fundamentals for direct lookup.
+    """
+    result = {}
+    for symbol in symbols:
+        try:
+            result[symbol] = get_fundamentals(symbol)
+        except Exception as exc:
+            logger.debug("prefetch_fundamentals failed for %s: %s", symbol, exc)
+            result[symbol] = {
+                "pe_ratio": 0.0, "pb_ratio": 0.0, "profit_margin": 0.0,
+                "revenue_growth": 0.0, "debt_to_equity": 0.0,
+                "earnings_proximity_days": 90.0,
+            }
+    logger.info("prefetch_fundamentals: loaded %d symbols", len(result))
     return result
 
 
