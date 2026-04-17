@@ -574,20 +574,31 @@ async def check_earnings_blackout(symbol: str):
 
 @router.get("/analytics/regime")
 async def get_market_regime():
-    """Return current VIX-based market regime."""
+    """Return composite VIX+macro regime detail."""
     try:
         from app.strategy.regime_detector import regime_detector
-        regime = regime_detector.get_regime()
-        vix = regime_detector.get_vix()
-        return {
-            "regime": regime,
-            "vix": round(vix, 2) if vix is not None else None,
-            "trend_following_active": regime_detector.trend_following_active(),
-            "mean_reversion_active": regime_detector.mean_reversion_active(),
-            "position_size_multiplier": regime_detector.position_size_multiplier(),
-        }
+        detail = regime_detector.get_regime_detail()
+        detail["trend_following_active"] = regime_detector.trend_following_active()
+        detail["mean_reversion_active"] = regime_detector.mean_reversion_active()
+        detail["position_size_multiplier"] = regime_detector.position_size_multiplier()
+        return detail
     except Exception as exc:
         logger.error("Regime detection error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/analytics/macro")
+async def get_macro_indicators():
+    """Return FRED macro indicators + macro risk score."""
+    try:
+        from app.macro.fred_client import fred_client
+        indicators = fred_client.get_all()
+        return {
+            "indicators": indicators,
+            "macro_risk_score": fred_client.macro_risk_score(),
+        }
+    except Exception as exc:
+        logger.error("Macro indicators error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

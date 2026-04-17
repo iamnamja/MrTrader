@@ -234,9 +234,13 @@ class TestGenerateSignalRegime:
 
 class TestPhase16Endpoints:
     def test_regime_endpoint(self, test_client):
+        detail = {
+            "regime": "LOW", "composite_score": 0.1, "vix": 12.5,
+            "vix_score": 0.1, "macro_score": 0.0, "vix_weight": 0.7, "macro_weight": 0.3,
+            "macro_indicators": {},
+        }
         with patch("app.strategy.regime_detector.regime_detector") as mock_rd:
-            mock_rd.get_regime.return_value = "LOW"
-            mock_rd.get_vix.return_value = 12.5
+            mock_rd.get_regime_detail.return_value = detail
             mock_rd.trend_following_active.return_value = True
             mock_rd.mean_reversion_active.return_value = False
             mock_rd.position_size_multiplier.return_value = 1.0

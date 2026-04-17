@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = 0.02  # 2%
     max_account_drawdown_pct: float = 0.05  # 5%
 
+    # External data
+    fred_api_key: Optional[str] = None   # https://fred.stlouisfed.org/docs/api/api_key.html
+
     # Alerts — Slack
     slack_webhook_url: Optional[str] = None
     # Alerts — Email (SMTP)
