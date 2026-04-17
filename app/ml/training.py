@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = "app/ml/models"
 
 # Rolling window config
-WINDOW_DAYS = 63        # ~1 quarter of trading days
-FORWARD_DAYS = 63       # predict return over next quarter
-STEP_DAYS = 21          # step between windows (~monthly, overlapping for more samples)
+WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
+FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_DAYS=10
+STEP_DAYS = 10          # non-overlapping steps aligned to forward period
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
 
