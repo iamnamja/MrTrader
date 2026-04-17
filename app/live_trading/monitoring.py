@@ -137,7 +137,8 @@ class LiveTradingMonitor:
         if not settings.slack_webhook_url:
             return
         try:
-            import urllib.request, json
+            import json
+            import urllib.request
             emoji = {"CRITICAL": ":red_circle:", "WARNING": ":warning:", "INFO": ":white_check_mark:"}.get(severity, "")
             payload = json.dumps({"text": f"{emoji} *{title}*\n{message}"}).encode()
             req = urllib.request.Request(

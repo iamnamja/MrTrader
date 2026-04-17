@@ -19,7 +19,7 @@ from app.agents.base import BaseAgent
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, SP_100_TICKERS
+from app.utils.constants import MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, SP_100_TICKERS
 
 logger = logging.getLogger(__name__)
 

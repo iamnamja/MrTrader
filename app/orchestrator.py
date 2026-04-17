@@ -216,7 +216,7 @@ class AgentOrchestrator:
             from app.database.models import AgentDecision
             record = AgentDecision(
                 agent_name=agent_name,
-                decision_type=f"AGENT_ERROR",
+                decision_type="AGENT_ERROR",
                 reasoning={"error": error_message},
                 timestamp=datetime.utcnow(),
             )

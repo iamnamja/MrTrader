@@ -14,6 +14,9 @@ from app.database.models import AuditLog
 logger = logging.getLogger(__name__)
 
 
+_CFG_KS_ACTIVE = "kill_switch.active"
+
+
 class KillSwitch:
     """One-button emergency stop: close all positions and halt new trades."""
 
@@ -26,6 +29,35 @@ class KillSwitch:
     def is_active(self) -> bool:
         return self._active
 
+    def load_state(self) -> bool:
+        """Restore kill-switch state from DB on startup."""
+        try:
+            from app.database.config_store import get_config
+            db = get_session()
+            try:
+                val = get_config(db, _CFG_KS_ACTIVE)
+                if val is not None:
+                    self._active = bool(val)
+                    if self._active:
+                        logger.warning("Kill switch restored as ACTIVE from persisted state")
+                    return True
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("Could not restore kill switch state: %s", exc)
+        return False
+
+    def _persist_state(self):
+        try:
+            from app.database.config_store import set_config
+            db = get_session()
+            try:
+                set_config(db, _CFG_KS_ACTIVE, self._active, "Kill switch active flag")
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("Could not persist kill switch state: %s", exc)
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def activate(self, reason: str = "Manual activation") -> Dict[str, Any]:
@@ -35,6 +67,7 @@ class KillSwitch:
         """
         logger.critical("KILL SWITCH ACTIVATED — reason: %s", reason)
         self._active = True
+        self._persist_state()
 
         alpaca = self._alpaca()
         closed: List[str] = []
@@ -71,6 +104,7 @@ class KillSwitch:
     def reset(self, reason: str = "Manual reset"):
         """Re-enable trading after reviewing and resolving the issue."""
         self._active = False
+        self._persist_state()
         logger.warning("Kill switch RESET — reason: %s", reason)
         self._audit({"status": "reset", "reason": reason,
                      "reset_at": datetime.utcnow().isoformat()},
