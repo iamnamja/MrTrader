@@ -6,6 +6,7 @@ import { api } from './api'
 import type {
   Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
   ReadinessReport, ReadinessCheckItem, AttributionItem,
+  MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -626,6 +627,209 @@ function Badge({ label, color }: { label: string; color: string }) {
   )
 }
 
+// ── Session Control Panel ─────────────────────────────────────────────────────
+function SessionPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void }) {
+  const [orch, setOrch] = useState<OrchestratorStatus | null>(null)
+  const [market, setMarket] = useState<MarketStatus | null>(null)
+  const [jobs, setJobs] = useState<ScheduledJob[]>([])
+  const [log, setLog] = useState<SessionLogEntry[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [s, m, j, l] = await Promise.all([
+        api.orchStatus() as Promise<OrchestratorStatus>,
+        api.marketStatus() as Promise<MarketStatus>,
+        api.orchJobs() as Promise<{ jobs: ScheduledJob[] }>,
+        api.sessionLog(50) as Promise<{ entries: SessionLogEntry[] }>,
+      ])
+      setOrch(s); setMarket(m)
+      setJobs(j.jobs ?? []); setLog(l.entries ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadAll(); const id = setInterval(loadAll, 10000); return () => clearInterval(id) }, [loadAll])
+
+  async function act(label: string, fn: () => Promise<unknown>, successMsg: string) {
+    setBusy(label)
+    try { await fn(); toast(successMsg, 'success'); await loadAll() }
+    catch (e) { toast(`${label} failed`, 'error') }
+    finally { setBusy(null) }
+  }
+
+  const agentColor = (s: string) =>
+    s === 'running' ? C.green : s === 'error' ? C.red : s === 'paused' ? C.yellow : C.muted
+
+  const logColor = (level: string) =>
+    level === 'ERROR' ? C.red : level === 'WARNING' ? C.yellow : level === 'INFO' ? C.green : C.muted
+
+  const isTrading = orch?.running && !Object.values(orch.agents).every(v => v === 'paused')
+
+  return (
+    <div>
+      {/* Market + orchestrator header strip */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <div style={s.kpi}>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Market</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: market?.is_open ? C.green : C.muted }}>
+            {market ? (market.is_open ? 'OPEN' : 'CLOSED') : '—'}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{market?.current_time_et ?? '—'}</div>
+        </div>
+        <div style={s.kpi}>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Next Event</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>
+            {market?.next_event.event === 'market_open' ? 'Opens' : 'Closes'}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+            {market?.next_event.minutes != null
+              ? `in ${market.next_event.minutes} min`
+              : `${market?.next_event.date} @ ${market?.next_event.time}`}
+          </div>
+        </div>
+        <div style={s.kpi}>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Orchestrator</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: orch?.running ? C.green : C.red }}>
+            {orch ? (orch.running ? 'RUNNING' : 'STOPPED') : '—'}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{orch?.scheduled_jobs ?? 0} scheduled jobs</div>
+        </div>
+        <div style={s.kpi}>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Trading</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: isTrading ? C.green : C.yellow }}>
+            {isTrading ? 'ACTIVE' : 'PAUSED'}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Agent pipeline</div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        {/* Controls */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Controls</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <CtrlBtn label="Run One Cycle" color={C.blue} busy={busy}
+              onClick={() => act('Run One Cycle', api.triggerCycle, 'Cycle started — watch session log')} />
+            <CtrlBtn label="Retrain ML Model" color={C.accent} busy={busy}
+              onClick={() => act('Retrain ML Model', api.triggerRetraining, 'Retraining started')} />
+            {isTrading
+              ? <CtrlBtn label="Pause Trading" color={C.yellow} busy={busy}
+                  onClick={() => act('Pause Trading', api.pauseTrading, 'Trading paused')} />
+              : <CtrlBtn label="Resume Trading" color={C.green} busy={busy}
+                  onClick={() => act('Resume Trading', api.resumeTrading, 'Trading resumed')} />
+            }
+            <button onClick={loadAll} style={{ ...btnStyle, padding: '6px 12px', color: C.muted }}>Refresh</button>
+          </div>
+        </div>
+
+        {/* Agent health */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Agent Status</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {orch && Object.keys(orch.agents).length > 0
+              ? Object.entries(orch.agents).map(([name, status]) => (
+                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: C.text }}>{name.replace(/_/g, ' ')}</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                    background: `${agentColor(status)}1a`, color: agentColor(status),
+                    border: `1px solid ${agentColor(status)}4d`,
+                    textTransform: 'uppercase',
+                  }}>{status}</span>
+                </div>
+              ))
+              : <div style={{ color: C.muted, fontSize: 11 }}>No agents registered — app may be starting up</div>
+            }
+            {orch && Object.keys(orch.queues ?? {}).length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', marginBottom: 6 }}>Queue Depths</div>
+                {Object.entries(orch.queues).map(([q, n]) => (
+                  <div key={q} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
+                    <span style={{ color: C.muted }}>{q.replace(/_/g, ' ')}</span>
+                    <span style={{ color: n > 0 ? C.yellow : C.muted }}>{n}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Scheduler jobs */}
+      <div style={{ ...s.card, marginBottom: 12 }}>
+        <div style={s.cardTitle}>Scheduled Jobs</div>
+        {jobs.length === 0
+          ? <div style={{ color: C.muted, fontSize: 11 }}>No jobs — scheduler may not be running</div>
+          : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr>
+                {['Job', 'Next Run', 'Status', 'Action'].map(h => <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {jobs.map(j => (
+                  <tr key={j.id}>
+                    <td style={{ ...s.td, color: C.accent }}>{j.id}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{j.next_run_time ? j.next_run_time.slice(0, 19) : '—'}</td>
+                    <td style={s.td}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 8,
+                        background: j.paused ? `${C.yellow}1a` : `${C.green}1a`,
+                        color: j.paused ? C.yellow : C.green,
+                        border: `1px solid ${j.paused ? C.yellow : C.green}4d`,
+                      }}>{j.paused ? 'PAUSED' : 'ACTIVE'}</span>
+                    </td>
+                    <td style={s.td}>
+                      <button
+                        onClick={() => act(j.id, () => j.paused ? api.resumeJob(j.id) : api.pauseJob(j.id), `Job ${j.id} ${j.paused ? 'resumed' : 'paused'}`)}
+                        disabled={busy !== null}
+                        style={{ ...btnStyle, fontSize: 10, padding: '2px 8px', color: j.paused ? C.green : C.yellow }}
+                      >{j.paused ? 'Resume' : 'Pause'}</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </div>
+
+      {/* Session log */}
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={s.cardTitle}>Session Log</div>
+          <button onClick={loadAll} style={{ ...btnStyle, fontSize: 10 }}>Refresh</button>
+        </div>
+        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+          {log.length === 0
+            ? <div style={{ color: C.muted, fontSize: 11, textAlign: 'center', padding: 20 }}>No events yet</div>
+            : log.map((e, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid rgba(255,255,255,.04)`, fontSize: 11 }}>
+                <span style={{ color: C.muted, whiteSpace: 'nowrap', minWidth: 140 }}>{e.timestamp.slice(0, 19)}</span>
+                <span style={{ color: logColor(e.level), minWidth: 52, fontWeight: 600 }}>{e.level}</span>
+                <span style={{ color: C.text, flex: 1 }}>{e.message}</span>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CtrlBtn({ label, color, busy, onClick }: {
+  label: string; color: string; busy: string | null; onClick: () => void
+}) {
+  const isMe = busy === label
+  return (
+    <button onClick={onClick} disabled={busy !== null} style={{
+      background: `${color}1a`, border: `1px solid ${color}4d`, color,
+      padding: '10px 16px', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer',
+      fontFamily: 'inherit', fontSize: 12, fontWeight: 600, letterSpacing: '.04em',
+      opacity: busy && !isMe ? 0.5 : 1, textAlign: 'left',
+    }}>
+      {isMe ? '⟳ Working...' : label}
+    </button>
+  )
+}
+
 // ── Readiness Panel ───────────────────────────────────────────────────────────
 function ReadinessPanel() {
   const [report, setReport] = useState<ReadinessReport | null>(null)
@@ -791,7 +995,7 @@ function AnalyticsPanel() {
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Readiness', 'Analytics'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -911,6 +1115,7 @@ export default function App() {
         {tab === 'Signal Monitor' && <SignalsPanel feed={signalFeed} decisions={decisions} />}
         {tab === 'Capital Ramp' && <RampPanel toast={toast} />}
         {tab === 'Kill Switch' && <KillPanel toast={toast} />}
+        {tab === 'Session' && <SessionPanel toast={toast} />}
         {tab === 'Readiness' && <ReadinessPanel />}
         {tab === 'Analytics' && <AnalyticsPanel />}
       </div>
