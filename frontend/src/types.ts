@@ -129,6 +129,16 @@ export interface SessionLogEntry {
   detail: Record<string, unknown>
 }
 
+export interface ConfigSchemaEntry {
+  key: string
+  default: number
+  type: 'int' | 'float'
+  min: number
+  max: number
+  description: string
+  group: string
+}
+
 export interface DriftItem {
   metric: string
   live: number

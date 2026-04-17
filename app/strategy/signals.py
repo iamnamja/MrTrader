@@ -23,7 +23,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ── Strategy parameters (must stay in sync with backtest.py params) ───────────
+# ── Strategy parameters (module-level defaults / backtest constants) ──────────
 RSI_PERIOD = 14
 RSI_DIP_ENTRY = 45          # RSI level for dip-and-recovery signal
 EMA_FAST = 20
@@ -35,6 +35,31 @@ ATR_TARGET_MULT = 4.0
 TRAIL_ACTIVATION = 0.04     # start trailing once up 4%
 TRAIL_PCT = 0.03            # trail 3% below highest close
 MOMENTUM_LOOKBACK = 63      # bars (~3 months on daily)
+
+
+def _get_params(db=None) -> dict:
+    """Return strategy params, pulling DB overrides when db is provided."""
+    if db is None:
+        return {
+            "RSI_PERIOD": RSI_PERIOD, "RSI_DIP_ENTRY": RSI_DIP_ENTRY,
+            "EMA_FAST": EMA_FAST, "EMA_SLOW": EMA_SLOW,
+            "ATR_STOP_MULT": ATR_STOP_MULT, "ATR_TARGET_MULT": ATR_TARGET_MULT,
+            "TRAIL_ACTIVATION": TRAIL_ACTIVATION, "TRAIL_PCT": TRAIL_PCT,
+        }
+    try:
+        from app.database.agent_config import get_agent_config
+        return {
+            "RSI_PERIOD": get_agent_config(db, "strategy.rsi_period"),
+            "RSI_DIP_ENTRY": get_agent_config(db, "strategy.rsi_dip_entry"),
+            "EMA_FAST": get_agent_config(db, "strategy.ema_fast"),
+            "EMA_SLOW": get_agent_config(db, "strategy.ema_slow"),
+            "ATR_STOP_MULT": get_agent_config(db, "strategy.atr_stop_mult"),
+            "ATR_TARGET_MULT": get_agent_config(db, "strategy.atr_target_mult"),
+            "TRAIL_ACTIVATION": get_agent_config(db, "strategy.trail_activation_pct"),
+            "TRAIL_PCT": get_agent_config(db, "strategy.trail_pct"),
+        }
+    except Exception:
+        return _get_params(None)
 
 
 @dataclass
@@ -72,6 +97,7 @@ def generate_signal(
     bars: pd.DataFrame,
     check_earnings: bool = True,
     check_regime: bool = True,
+    db=None,
 ) -> SignalResult:
     """
     Compute a trading signal from an OHLCV DataFrame of daily bars.
@@ -88,6 +114,7 @@ def generate_signal(
     Returns:
         SignalResult with action="BUY" if entry criteria met, else "HOLD".
     """
+    p = _get_params(db)
     _no_signal = _make_no_signal(bars)
 
     if bars is None or len(bars) < EMA_TREND + 10:
@@ -99,10 +126,10 @@ def generate_signal(
     low = bars["low"]
 
     # ── Indicators ────────────────────────────────────────────────────────────
-    ema_fast_s = close.ewm(span=EMA_FAST, adjust=False).mean()
-    ema_slow_s = close.ewm(span=EMA_SLOW, adjust=False).mean()
+    ema_fast_s = close.ewm(span=p["EMA_FAST"], adjust=False).mean()
+    ema_slow_s = close.ewm(span=p["EMA_SLOW"], adjust=False).mean()
     ema_trend_s = close.ewm(span=EMA_TREND, adjust=False).mean()
-    rsi_s = _calc_rsi(close, RSI_PERIOD)
+    rsi_s = _calc_rsi(close, p["RSI_PERIOD"])
     atr_val = _calc_atr(high, low, close, ATR_PERIOD)
 
     if atr_val is None or atr_val <= 0:
@@ -153,8 +180,8 @@ def generate_signal(
                             return _no_signal
                     except Exception as exc:
                         logger.debug("Earnings filter error for %s: %s", symbol, exc)
-                stop = round(price - ATR_STOP_MULT * atr_val, 4)
-                target = round(price + ATR_TARGET_MULT * atr_val, 4)
+                stop = round(price - p["ATR_STOP_MULT"] * atr_val, 4)
+                target = round(price + p["ATR_TARGET_MULT"] * atr_val, 4)
                 logger.info("%s: BUY signal [MEAN_REVERSION]  price=%.2f  regime=%s", symbol, price, regime)
                 return SignalResult(
                     action="BUY",
@@ -180,8 +207,8 @@ def generate_signal(
         50 < rsi_now < 70
     )
     rsi_dip = (
-        rsi_prev < RSI_DIP_ENTRY and
-        rsi_now >= RSI_DIP_ENTRY and
+        rsi_prev < p["RSI_DIP_ENTRY"] and
+        rsi_now >= p["RSI_DIP_ENTRY"] and
         price > ema_fast
     )
 
@@ -199,8 +226,8 @@ def generate_signal(
             logger.debug("Earnings filter error for %s: %s", symbol, exc)
 
     signal_type = "EMA_CROSSOVER" if ema_crossover else "RSI_DIP"
-    stop = round(price - ATR_STOP_MULT * atr_val, 4)
-    target = round(price + ATR_TARGET_MULT * atr_val, 4)
+    stop = round(price - p["ATR_STOP_MULT"] * atr_val, 4)
+    target = round(price + p["ATR_TARGET_MULT"] * atr_val, 4)
 
     reasoning = {
         "price": round(price, 4),
@@ -239,6 +266,7 @@ def check_exit(
     highest_price: float,
     bars_held: int,
     min_hold_bars: int = 3,
+    db=None,
 ) -> tuple[bool, str, float]:
     """
     Check whether an open position should be exited.
@@ -246,6 +274,7 @@ def check_exit(
     Returns:
         (should_exit, reason, updated_stop_price)
     """
+    p = _get_params(db)
     # Never exit within the minimum hold period
     if bars_held < min_hold_bars:
         return False, "", stop_price
@@ -253,8 +282,8 @@ def check_exit(
     # Update trailing stop
     pnl_pct = (current_price - entry_price) / entry_price
     new_stop = stop_price
-    if pnl_pct >= TRAIL_ACTIVATION:
-        trail_stop = highest_price * (1 - TRAIL_PCT)
+    if pnl_pct >= p["TRAIL_ACTIVATION"]:
+        trail_stop = highest_price * (1 - p["TRAIL_PCT"])
         if trail_stop > stop_price:
             new_stop = trail_stop
 
