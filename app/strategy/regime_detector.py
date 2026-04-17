@@ -41,9 +41,9 @@ class RegimeDetector:
             return self._cached_vix
         try:
             import yfinance as yf
-            df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True)
+            df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=10)
             if not df.empty:
-                vix = float(df["Close"].iloc[-1])
+                vix = float(df["Close"].iat[-1])
                 self._cached_vix = vix
                 self._cache_ts = now
                 return vix

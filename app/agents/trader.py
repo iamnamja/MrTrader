@@ -84,8 +84,8 @@ class Trader(BaseAgent):
                     await self._force_close_intraday()
                     self._force_closed_today = True
 
-                # Check VIX / market volatility (cached, won't hammer yfinance)
-                circuit_breaker.check_market_volatility()
+                # Check VIX / market volatility in thread pool (yfinance is sync)
+                await asyncio.to_thread(circuit_breaker.check_market_volatility)
 
                 if circuit_breaker.is_open:
                     self.logger.warning(
