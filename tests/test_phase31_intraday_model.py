@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_5min_df(n=100, start="2024-01-02 09:30"):
+def _make_5min_df(n=100, start="2024-01-02 09:30", base_price=100.0):
     idx = pd.date_range(start=start, periods=n, freq="5min")
     np.random.seed(42)
-    prices = 100 + np.cumsum(np.random.randn(n) * 0.1)
+    prices = base_price + np.cumsum(np.random.randn(n) * 0.1)
     return pd.DataFrame({
         "open": prices * 0.999,
         "high": prices * 1.002,
@@ -164,6 +164,60 @@ class TestIntradayFeatures:
         feats = compute_intraday_features(bars)
         assert np.isfinite(feats["ret_30m"])
 
+    def test_williams_r_in_zero_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert 0.0 <= feats["williams_r"] <= 1.0
+
+    def test_gap_fill_pct_zero_when_no_prior_close(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert feats["gap_fill_pct"] == 1.0  # no gap = fully "filled"
+
+    def test_gap_fill_pct_with_gap_up(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40, base_price=110.0)
+        prior_close = 100.0  # gap up by 10%
+        feats = compute_intraday_features(bars, prior_close=prior_close)
+        assert 0.0 <= feats["gap_fill_pct"] <= 1.0
+
+    def test_session_hl_position_in_zero_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert 0.0 <= feats["session_hl_position"] <= 1.0
+
+    def test_vwap_cross_count_non_negative(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert feats["vwap_cross_count"] >= 0.0
+
+    def test_obv_slope_finite(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert np.isfinite(feats["obv_slope"])
+
+    def test_wick_ratios_sum_leq_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert feats["upper_wick_ratio"] + feats["lower_wick_ratio"] + feats["body_ratio"] <= 1.01
+
+    def test_consecutive_bars_positive_for_uptrend(self):
+        from app.ml.intraday_features import compute_intraday_features
+        prices = np.linspace(100, 120, 40)
+        bars = _make_5min_df(40)
+        bars["close"] = prices
+        bars["open"] = prices * 0.999
+        bars["high"] = prices * 1.002
+        bars["low"] = prices * 0.997
+        feats = compute_intraday_features(bars)
+        assert feats["consecutive_bars"] > 0
+
 
 # ── Indicator helpers ─────────────────────────────────────────────────────────
 
@@ -181,7 +235,6 @@ class TestIndicatorHelpers:
     def test_bollinger_pct_b_midpoint_on_flat(self):
         from app.ml.intraday_features import _bollinger_pct_b
         flat = np.full(30, 100.0)
-        # All same price → std=0 → clipped to 0.5
         assert _bollinger_pct_b(flat) == 0.5
 
     def test_stochastic_k_midpoint_at_center(self):
@@ -191,6 +244,37 @@ class TestIndicatorHelpers:
         lows = np.array([88.0, 93.0, 98.0, 103.0, 108.0])
         k = _stochastic_k(highs, lows, closes, period=5)
         assert 0.0 <= k <= 100.0
+
+    def test_williams_r_range(self):
+        from app.ml.intraday_features import _williams_r
+        closes = np.array([90.0, 95.0, 100.0, 105.0, 110.0])
+        highs = closes + 2.0
+        lows = closes - 2.0
+        r = _williams_r(highs, lows, closes, period=5)
+        assert -100.0 <= r <= 0.0
+
+    def test_obv_increases_on_up_days(self):
+        from app.ml.intraday_features import _obv
+        closes = np.array([100.0, 101.0, 102.0, 103.0])
+        volumes = np.array([1000.0, 1000.0, 1000.0, 1000.0])
+        obv = _obv(closes, volumes)
+        assert obv[-1] > obv[0]
+
+    def test_consecutive_bars_negative_for_downtrend(self):
+        from app.ml.intraday_features import _consecutive_bars
+        closes = np.array([110.0, 109.0, 108.0, 107.0, 106.0])
+        assert _consecutive_bars(closes) < 0
+
+    def test_vwap_cross_count_choppy(self):
+        from app.ml.intraday_features import _vwap_cross_count
+        # Alternating up/down around a stable VWAP → many crosses
+        closes = np.array([100.0 + (1 if i % 2 == 0 else -1) for i in range(30)],
+                          dtype=float)
+        highs = closes + 0.5
+        lows = closes - 0.5
+        volumes = np.ones(30) * 1000.0
+        count = _vwap_cross_count(closes, highs, lows, volumes)
+        assert count > 5
 
 
 # ── Training pipeline ─────────────────────────────────────────────────────────

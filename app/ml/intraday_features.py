@@ -1,12 +1,15 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (25 total):
+Features (33 total):
   ── Price / structure ──────────────────────────────────────────────────────
-  orb_position        Price position within opening 30-min range (0=low,1=high)
+  orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
   vwap_distance       (close - VWAP) / VWAP — signed distance from fair value
+  vwap_cross_count    Number of times price crossed VWAP today
   gap_pct             Overnight gap: (open - prior_close) / prior_close
+  gap_fill_pct        Fraction of opening gap already filled (0=unfilled, 1=full)
+  session_hl_position (close - session_low) / (session_high - session_low)
   prev_day_high_dist  (close - prior_day_high) / close
   prev_day_low_dist   (close - prior_day_low) / close
 
@@ -18,16 +21,24 @@ Features (25 total):
   bb_position         Bollinger Band %B: 0=lower band, 1=upper band
 
   ── Momentum ──────────────────────────────────────────────────────────────
-  rsi_14              RSI(14) on 5-min closes (0-100, normalised to 0-1)
+  rsi_14              RSI(14) on 5-min closes, normalised to [0, 1]
   session_return      (close - first_open) / first_open
   ret_15m             Return over last 3 bars (~15 min)
   ret_30m             Return over last 6 bars (~30 min)
-  stoch_k             Stochastic %K(14) — close position within 14-bar range
+  stoch_k             Stochastic %K(14), normalised to [0, 1]
+  williams_r          Williams %R(14), normalised to [0, 1]
 
   ── Volume / order flow ───────────────────────────────────────────────────
   volume_surge        Last bar volume / 20-bar average volume
   cum_delta           Cumulative buying pressure: sum(close>open bars) / n_bars
   vol_trend           Volume EMA(10) slope (rising volume = momentum)
+  obv_slope           On-balance volume EMA(10) slope (volume confirms price)
+
+  ── Candlestick / structure ───────────────────────────────────────────────
+  upper_wick_ratio    Upper wick / total range — rejection / selling pressure
+  lower_wick_ratio    Lower wick / total range — support / buying pressure
+  body_ratio          Candle body / total range — conviction of last bar
+  consecutive_bars    Signed count of consecutive same-direction closes (+up/-down)
 
   ── Volatility ────────────────────────────────────────────────────────────
   atr_norm            ATR(14) / close — normalised intraday volatility
@@ -35,7 +46,7 @@ Features (25 total):
 
   ── Market context ────────────────────────────────────────────────────────
   spy_session_return  SPY return from session open (benchmark direction)
-  spy_rsi_14          SPY RSI(14) — market momentum context
+  spy_rsi_14          SPY RSI(14), normalised to [0, 1]
   rel_vol_spy         Stock 20-bar avg vol / SPY 20-bar avg vol
 
   ── Session timing ────────────────────────────────────────────────────────
@@ -104,22 +115,42 @@ def compute_intraday_features(
     vwap = cum_tp_vol[-1] / cum_vol[-1] if cum_vol[-1] > 0 else last_close
     feats["vwap_distance"] = float((last_close - vwap) / vwap) if vwap != 0 else 0.0
 
-    # ── Gap ───────────────────────────────────────────────────────────────
+    # VWAP cross count: number of times closes crossed VWAP
+    feats["vwap_cross_count"] = float(_vwap_cross_count(closes, highs, lows, volumes))
+
+    # ── Gap and gap fill ──────────────────────────────────────────────────
     if prior_close and prior_close > 0:
-        feats["gap_pct"] = float((first_open - prior_close) / prior_close)
+        gap = float(first_open - prior_close)
+        gap_pct = gap / prior_close
+        feats["gap_pct"] = gap_pct
+        # Gap fill: how much of the gap has been retraced
+        if abs(gap) > 1e-6:
+            if gap > 0:  # gap up — fill = price came back down toward prior_close
+                filled = float(min(first_open - lows.min(), abs(gap)) / abs(gap))
+            else:  # gap down — fill = price came back up toward prior_close
+                filled = float(min(highs.max() - first_open, abs(gap)) / abs(gap))
+            feats["gap_fill_pct"] = float(np.clip(filled, 0.0, 1.0))
+        else:
+            feats["gap_fill_pct"] = 1.0
     else:
         feats["gap_pct"] = 0.0
+        feats["gap_fill_pct"] = 1.0
+
+    # ── Session high/low position ─────────────────────────────────────────
+    session_high = float(highs.max())
+    session_low = float(lows.min())
+    session_range = session_high - session_low if session_high > session_low else 1e-6
+    feats["session_hl_position"] = float((last_close - session_low) / session_range)
 
     # ── Prior-day S/R levels ──────────────────────────────────────────────
-    if prior_day_high and prior_day_high > 0:
-        feats["prev_day_high_dist"] = float((last_close - prior_day_high) / last_close)
-    else:
-        feats["prev_day_high_dist"] = 0.0
-
-    if prior_day_low and prior_day_low > 0:
-        feats["prev_day_low_dist"] = float((last_close - prior_day_low) / last_close)
-    else:
-        feats["prev_day_low_dist"] = 0.0
+    feats["prev_day_high_dist"] = (
+        float((last_close - prior_day_high) / last_close)
+        if prior_day_high and prior_day_high > 0 else 0.0
+    )
+    feats["prev_day_low_dist"] = (
+        float((last_close - prior_day_low) / last_close)
+        if prior_day_low and prior_day_low > 0 else 0.0
+    )
 
     # ── EMAs ──────────────────────────────────────────────────────────────
     ema9 = _ema(closes, 9)
@@ -135,11 +166,15 @@ def compute_intraday_features(
     # ── Bollinger Bands %B (20-period, 2 std) ─────────────────────────────
     feats["bb_position"] = _bollinger_pct_b(closes, period=20, num_std=2.0)
 
-    # ── RSI(14) normalised to 0-1 ─────────────────────────────────────────
+    # ── RSI(14) normalised to [0, 1] ──────────────────────────────────────
     feats["rsi_14"] = _rsi(closes, 14) / 100.0
 
-    # ── Stochastic %K(14) normalised to 0-1 ──────────────────────────────
+    # ── Stochastic %K(14) normalised to [0, 1] ────────────────────────────
     feats["stoch_k"] = _stochastic_k(highs, lows, closes, period=14) / 100.0
+
+    # ── Williams %R(14) normalised to [0, 1] ─────────────────────────────
+    # Raw Williams %R is [-100, 0]; we flip and normalise to [0, 1]
+    feats["williams_r"] = (_williams_r(highs, lows, closes, period=14) + 100.0) / 100.0
 
     # ── Momentum ──────────────────────────────────────────────────────────
     feats["session_return"] = (
@@ -169,12 +204,25 @@ def compute_intraday_features(
         float(volumes[-vol_window - 1:-1].mean()) if vol_window > 0 else float(volumes[-1])
     )
     feats["volume_surge"] = float(volumes[-1] / avg_vol) if avg_vol > 0 else 1.0
-
-    # Cumulative delta: fraction of bars where close > open (buying pressure)
     feats["cum_delta"] = float(np.sum(closes > opens) / len(closes))
-
-    # Volume EMA slope: (vol_ema_last - vol_ema_prev) / vol_ema_prev
     feats["vol_trend"] = _ema_slope(volumes, period=10)
+
+    # ── OBV slope ─────────────────────────────────────────────────────────
+    obv = _obv(closes, volumes)
+    feats["obv_slope"] = _ema_slope(obv, period=10)
+
+    # ── Candlestick structure (last bar) ──────────────────────────────────
+    last_high = highs[-1]
+    last_low = lows[-1]
+    last_open = opens[-1]
+    bar_range = last_high - last_low if last_high > last_low else 1e-6
+    body = abs(last_close - last_open)
+    upper_wick = last_high - max(last_close, last_open)
+    lower_wick = min(last_close, last_open) - last_low
+    feats["upper_wick_ratio"] = float(upper_wick / bar_range)
+    feats["lower_wick_ratio"] = float(lower_wick / bar_range)
+    feats["body_ratio"] = float(body / bar_range)
+    feats["consecutive_bars"] = float(_consecutive_bars(closes))
 
     # ── SPY context ───────────────────────────────────────────────────────
     if spy_bars is not None and len(spy_bars) >= 2:
@@ -199,7 +247,7 @@ def compute_intraday_features(
         feats["rel_vol_spy"] = 1.0
 
     # ── Time of day ───────────────────────────────────────────────────────
-    feats["time_of_day"] = float(min(len(bars) / 78, 1.0))  # 78 bars = 6.5 hr session
+    feats["time_of_day"] = float(min(len(bars) / 78, 1.0))
 
     return feats
 
@@ -279,6 +327,19 @@ def _stochastic_k(
     return float(np.clip((closes[-1] - lo) / (h - lo) * 100.0, 0.0, 100.0))
 
 
+def _williams_r(
+    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14
+) -> float:
+    """Williams %R: returns value in [-100, 0]. -100=oversold, 0=overbought."""
+    if len(closes) < period:
+        return -50.0
+    h = float(highs[-period:].max())
+    lo = float(lows[-period:].min())
+    if h == lo:
+        return -50.0
+    return float(np.clip((h - closes[-1]) / (h - lo) * -100.0, -100.0, 0.0))
+
+
 def _atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
     if len(closes) < 2:
         return float(highs[-1] - lows[-1])
@@ -304,16 +365,69 @@ def _ema_slope(values: np.ndarray, period: int = 10) -> float:
     return float((series[-1] - prev) / prev)
 
 
+def _obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
+    obv = np.zeros(len(closes))
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv[i] = obv[i - 1] + volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv[i] = obv[i - 1] - volumes[i]
+        else:
+            obv[i] = obv[i - 1]
+    return obv
+
+
+def _vwap_cross_count(
+    closes: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    volumes: np.ndarray,
+) -> int:
+    """Count how many times the close crossed the rolling VWAP."""
+    typical = (highs + lows + closes) / 3.0
+    cum_vol = np.cumsum(volumes)
+    cum_tp_vol = np.cumsum(typical * volumes)
+    vwap_series = np.where(cum_vol > 0, cum_tp_vol / cum_vol, closes)
+    crosses = 0
+    for i in range(1, len(closes)):
+        was_above = closes[i - 1] >= vwap_series[i - 1]
+        is_above = closes[i] >= vwap_series[i]
+        if was_above != is_above:
+            crosses += 1
+    return crosses
+
+
+def _consecutive_bars(closes: np.ndarray) -> float:
+    """
+    Signed count of consecutive same-direction closes ending at the last bar.
+    Positive = consecutive up closes, negative = consecutive down closes.
+    """
+    if len(closes) < 2:
+        return 0.0
+    direction = 1 if closes[-1] >= closes[-2] else -1
+    count = 1
+    for i in range(len(closes) - 2, 0, -1):
+        bar_dir = 1 if closes[i] >= closes[i - 1] else -1
+        if bar_dir == direction:
+            count += 1
+        else:
+            break
+    return float(direction * count)
+
+
 FEATURE_NAMES = [
     # Price / structure
-    "orb_position", "orb_breakout", "vwap_distance", "gap_pct",
+    "orb_position", "orb_breakout", "vwap_distance", "vwap_cross_count",
+    "gap_pct", "gap_fill_pct", "session_hl_position",
     "prev_day_high_dist", "prev_day_low_dist",
     # Trend / moving averages
     "ema9_dist", "ema20_dist", "ema_cross", "macd_hist", "bb_position",
     # Momentum
-    "rsi_14", "session_return", "ret_15m", "ret_30m", "stoch_k",
+    "rsi_14", "session_return", "ret_15m", "ret_30m", "stoch_k", "williams_r",
     # Volume / order flow
-    "volume_surge", "cum_delta", "vol_trend",
+    "volume_surge", "cum_delta", "vol_trend", "obv_slope",
+    # Candlestick
+    "upper_wick_ratio", "lower_wick_ratio", "body_ratio", "consecutive_bars",
     # Volatility
     "atr_norm", "range_compression",
     # Market context

@@ -90,6 +90,108 @@ class TestFeatureEngineerEnriched:
         result = fe.engineer_features("AAPL", bars, fetch_fundamentals=False)
         assert result is not None
 
+    def test_new_technical_indicators_present(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        for key in [
+            "atr_norm", "bb_position", "stoch_k", "adx_14",
+            "rs_vs_spy", "consecutive_days", "momentum_60d",
+            "price_above_ema200", "dist_from_ema200",
+            "near_52w_high", "volume_trend",
+        ]:
+            assert key in result, f"Missing feature: {key}"
+
+    def test_adx_in_zero_one(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        assert 0.0 <= result["adx_14"] <= 1.0
+
+    def test_bb_position_in_zero_one(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        assert 0.0 <= result["bb_position"] <= 1.0
+
+    def test_stoch_k_in_zero_one(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        assert 0.0 <= result["stoch_k"] <= 1.0
+
+    def test_rs_vs_spy_uses_spy_returns(self):
+        fe = self._fe()
+        spy_rets = np.zeros(260)  # flat SPY → rs_vs_spy == momentum_20d
+        result = fe.engineer_features(
+            "AAPL", _make_bars(260), fetch_fundamentals=False, spy_returns=spy_rets
+        )
+        assert np.isfinite(result["rs_vs_spy"])
+
+    def test_rs_vs_spy_zero_without_spy_data(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        assert result["rs_vs_spy"] == 0.0
+
+    def test_all_features_finite(self):
+        fe = self._fe()
+        result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        for k, v in result.items():
+            assert np.isfinite(v), f"Feature {k} is not finite: {v}"
+
+    def test_consecutive_days_signed(self):
+        fe = self._fe()
+        bars = _make_bars(100)
+        # Uptrending tail: last 10 bars strictly increasing
+        prices = bars["close"].values.copy()
+        for i in range(-10, 0):
+            prices[i] = prices[i - 1] + 1.0
+        bars["close"] = prices
+        bars["high"] = prices * 1.005
+        bars["low"] = prices * 0.995
+        bars["open"] = prices * 0.999
+        result = fe.engineer_features("AAPL", bars, fetch_fundamentals=False)
+        assert result["consecutive_days"] > 0
+
+
+# ── _adx helper ───────────────────────────────────────────────────────────────
+
+class TestSwingIndicatorHelpers:
+
+    def test_adx_trending_market(self):
+        from app.ml.features import _adx
+        n = 100
+        prices = np.linspace(100, 150, n)
+        highs = prices + 1.0
+        lows = prices - 1.0
+        adx = _adx(highs, lows, prices, period=14)
+        assert adx > 20.0  # strong trend
+
+    def test_adx_flat_market_low(self):
+        from app.ml.features import _adx
+        np.random.seed(0)
+        prices = 100 + np.random.randn(100) * 0.1
+        highs = prices + 0.2
+        lows = prices - 0.2
+        adx = _adx(highs, lows, prices, period=14)
+        assert adx < 50.0
+
+    def test_bollinger_pct_b_clip(self):
+        from app.ml.features import _bollinger_pct_b
+        prices = np.linspace(80, 120, 30)
+        b = _bollinger_pct_b(prices)
+        assert 0.0 <= b <= 1.0
+
+    def test_stochastic_k_range(self):
+        from app.ml.features import _stochastic_k
+        np.random.seed(1)
+        prices = 100 + np.cumsum(np.random.randn(30) * 0.5)
+        highs = prices + 1.0
+        lows = prices - 1.0
+        k = _stochastic_k(highs, lows, prices)
+        assert 0.0 <= k <= 100.0
+
+    def test_consecutive_days_negative_downtrend(self):
+        from app.ml.features import _consecutive_days
+        prices = np.array([110.0, 109.0, 108.0, 107.0, 106.0, 105.0])
+        assert _consecutive_days(prices) < 0
+
 
 # ── get_fundamentals ──────────────────────────────────────────────────────────
 
