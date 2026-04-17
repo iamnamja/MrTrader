@@ -91,8 +91,15 @@ class IntradayBacktester:
                 # Feature window: first FEATURE_BARS bars (≈ 09:45)
                 feat_bars = day_bars.iloc[:FEATURE_BARS]
                 spy_day = self._get_spy_day(spy_data, day)
+                prior_close, prior_day_high, prior_day_low = self._prior_day_ohlc(
+                    df, df_idx, day
+                )
 
-                feats = compute_intraday_features(feat_bars, spy_day)
+                feats = compute_intraday_features(
+                    feat_bars, spy_day, prior_close,
+                    prior_day_high=prior_day_high,
+                    prior_day_low=prior_day_low,
+                )
                 if feats is None:
                     continue
 
@@ -181,3 +188,21 @@ class IntradayBacktester:
         mask = spy_idx.normalize().date == day
         result = spy_data.loc[mask]
         return result if len(result) > 0 else None
+
+    def _prior_day_ohlc(
+        self, df: pd.DataFrame, df_idx: pd.DatetimeIndex, day: date
+    ) -> tuple:
+        """Return (prior_close, prior_day_high, prior_day_low) for the session before `day`."""
+        prior_mask = df_idx.normalize().date < day
+        if not prior_mask.any():
+            return None, None, None
+        prior_bars = df.loc[prior_mask]
+        last_day = prior_bars.index.normalize().date[-1]
+        last_day_bars = prior_bars.loc[prior_bars.index.normalize().date == last_day]
+        if len(last_day_bars) == 0:
+            return None, None, None
+        return (
+            float(last_day_bars["close"].iloc[-1]),
+            float(last_day_bars["high"].max()),
+            float(last_day_bars["low"].min()),
+        )

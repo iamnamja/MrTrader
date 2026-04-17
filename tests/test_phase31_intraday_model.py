@@ -70,7 +70,7 @@ class TestIntradayFeatures:
         from app.ml.intraday_features import compute_intraday_features
         bars = _make_5min_df(40)
         feats = compute_intraday_features(bars)
-        assert 0.0 <= feats["rsi_14"] <= 100.0
+        assert 0.0 <= feats["rsi_14"] <= 1.0  # normalised to [0, 1]
 
     def test_gap_pct_uses_prior_close(self):
         from app.ml.intraday_features import compute_intraday_features
@@ -106,6 +106,91 @@ class TestIntradayFeatures:
         feats = compute_intraday_features(bars, prior_close=100.0)
         for k, v in feats.items():
             assert np.isfinite(v), f"Feature {k} is not finite: {v}"
+
+    def test_bb_position_in_zero_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert 0.0 <= feats["bb_position"] <= 1.0
+
+    def test_stoch_k_in_zero_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert 0.0 <= feats["stoch_k"] <= 1.0
+
+    def test_cum_delta_in_zero_one(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars)
+        assert 0.0 <= feats["cum_delta"] <= 1.0
+
+    def test_ema_cross_positive_when_trending_up(self):
+        from app.ml.intraday_features import compute_intraday_features
+        # Strongly uptrending bars: EMA9 > EMA20
+        prices = np.linspace(100, 130, 40)
+        bars = _make_5min_df(40)
+        bars["close"] = prices
+        bars["open"] = prices * 0.999
+        bars["high"] = prices * 1.002
+        bars["low"] = prices * 0.997
+        feats = compute_intraday_features(bars)
+        assert feats["ema_cross"] > 0
+
+    def test_prior_day_levels_populated(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(
+            bars, prior_close=100.0, prior_day_high=105.0, prior_day_low=95.0
+        )
+        assert feats["prev_day_high_dist"] != 0.0
+        assert feats["prev_day_low_dist"] != 0.0
+
+    def test_macd_hist_is_finite(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(50)
+        feats = compute_intraday_features(bars)
+        assert np.isfinite(feats["macd_hist"])
+
+    def test_spy_rsi_defaults_to_half_when_no_spy(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(40)
+        feats = compute_intraday_features(bars, spy_bars=None)
+        assert feats["spy_rsi_14"] == 0.5
+
+    def test_ret_30m_uses_six_bar_lookback(self):
+        from app.ml.intraday_features import compute_intraday_features
+        bars = _make_5min_df(20)
+        feats = compute_intraday_features(bars)
+        assert np.isfinite(feats["ret_30m"])
+
+
+# ── Indicator helpers ─────────────────────────────────────────────────────────
+
+class TestIndicatorHelpers:
+
+    def test_ema_single_value(self):
+        from app.ml.intraday_features import _ema
+        assert _ema(np.array([5.0]), 9) == 5.0
+
+    def test_macd_histogram_zero_on_flat(self):
+        from app.ml.intraday_features import _macd_histogram
+        flat = np.full(50, 100.0)
+        assert abs(_macd_histogram(flat)) < 1e-6
+
+    def test_bollinger_pct_b_midpoint_on_flat(self):
+        from app.ml.intraday_features import _bollinger_pct_b
+        flat = np.full(30, 100.0)
+        # All same price → std=0 → clipped to 0.5
+        assert _bollinger_pct_b(flat) == 0.5
+
+    def test_stochastic_k_midpoint_at_center(self):
+        from app.ml.intraday_features import _stochastic_k
+        closes = np.array([90.0, 95.0, 100.0, 105.0, 110.0])
+        highs = np.array([92.0, 97.0, 102.0, 107.0, 112.0])
+        lows = np.array([88.0, 93.0, 98.0, 103.0, 108.0])
+        k = _stochastic_k(highs, lows, closes, period=5)
+        assert 0.0 <= k <= 100.0
 
 
 # ── Training pipeline ─────────────────────────────────────────────────────────
