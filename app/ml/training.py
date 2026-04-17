@@ -38,13 +38,18 @@ TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
 LABEL_STOP_PCT = 0.02     # fallback fixed stop
 
-# ATR-adaptive labeling — v17: SYMMETRIC target = stop = 1.0x ATR
-# v15/v16 had asymmetric 1.5x target / 0.75x stop → created class imbalance
-# Symmetric thresholds produce ~50/50 split and remove directional bias in label construction
-ATR_MULT_TARGET = 1.0     # target = 1.0x the stock's 14-day ATR (symmetric)
-ATR_MULT_STOP = 1.0       # stop  = 1.0x the stock's 14-day ATR (symmetric)
-ATR_MIN_TARGET = 0.01     # floor: never require less than 1% move
-ATR_MAX_TARGET = 0.06     # ceiling: never require more than 6% move
+# ATR-adaptive labeling — v19: ASYMMETRIC 1.5x target / 0.5x stop
+# Restores R:R > 1 (3:1) — only labels a winner when move > stop distance by 3x.
+# Tighter stop (0.5x vs old 0.75x) = cleaner, more decisive labels.
+# v17/v18 used symmetric 1.0x/1.0x which produced ~50/50 labels but random AUC.
+ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
+ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR (tight = decisive labels)
+ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
+ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
+
+# v19: Volume confirmation — require avg forward volume > this fraction of historical avg
+# to label a winner. Filters out low-conviction price moves not backed by volume.
+VOL_CONFIRM_THRESHOLD = 0.9  # forward avg volume must be >= 90% of window avg volume
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
@@ -78,14 +83,25 @@ def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
 class ModelTrainer:
     """
     Orchestrates data fetching, rolling-window labelling,
-    feature engineering, and XGBoost training for the swing model.
+    feature engineering, and XGBoost/LightGBM training for the swing model.
+
+    model_type options: "xgboost", "lgbm", "ensemble", "lgbm_ensemble"
+    top_n_features: if set, selects top-N features by mutual information before training
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance", use_feature_store: bool = True):
+    def __init__(
+        self,
+        model_dir: str = MODEL_DIR,
+        provider: str = "yfinance",
+        use_feature_store: bool = True,
+        model_type: str = "xgboost",
+        top_n_features: Optional[int] = None,
+    ):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
-        self.model = PortfolioSelectorModel(model_type="xgboost")
+        self.model = PortfolioSelectorModel(model_type=model_type)
         self._provider_name = provider
+        self.top_n_features = top_n_features
         if use_feature_store:
             from app.ml.feature_store import FeatureStore
             self._feature_store: Optional[object] = FeatureStore(f"{model_dir}/feature_store.db")
@@ -134,6 +150,13 @@ class ModelTrainer:
             "Train: %d samples | Test: %d samples | Features: %d",
             len(X_train), len(X_test), len(feature_names),
         )
+
+        # Feature selection (if configured)
+        if self.top_n_features and len(feature_names) > self.top_n_features:
+            X_train, X_test, feature_names = self._select_top_features(
+                X_train, y_train, X_test, feature_names, self.top_n_features
+            )
+            logger.info("Feature selection: kept top %d features", len(feature_names))
 
         # Correct for class imbalance: stops (~70%) outnumber targets (~30%)
         n_neg = int((y_train == 0).sum())
@@ -291,6 +314,7 @@ class ModelTrainer:
 
                 label = None
                 outcome_return = 0.0
+                forward_volumes = []
                 for bar_offset in range(1, FORWARD_DAYS + 1):
                     future_idx = w_end_idx + bar_offset
                     if future_idx >= len(all_dates):
@@ -301,12 +325,20 @@ class ModelTrainer:
                         continue
                     high = float(bar["high"].iloc[0])
                     low = float(bar["low"].iloc[0])
+                    if "volume" in bar.columns:
+                        forward_volumes.append(float(bar["volume"].iloc[0]))
                     if low <= stop_price:
                         label = 0
                         outcome_return = (low - entry_price) / entry_price
                         break
                     if high >= target_price:
-                        label = 1
+                        # v19: volume confirmation — require meaningful volume to validate winner
+                        avg_fwd_vol = float(np.mean(forward_volumes)) if forward_volumes else entry_price
+                        window_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else avg_fwd_vol
+                        if window_vol > 0 and avg_fwd_vol < VOL_CONFIRM_THRESHOLD * window_vol:
+                            label = 0  # price hit target but volume didn't confirm — treat as stop
+                        else:
+                            label = 1
                         outcome_return = (high - entry_price) / entry_price
                         break
 
@@ -350,6 +382,27 @@ class ModelTrainer:
         return np.array(X_rows), np.array(y_vals), meta_rows
 
     # ── Sample weighting ─────────────────────────────────────────────────────
+
+    def _select_top_features(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        feature_names: List[str],
+        top_n: int,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """Select top-N features by mutual information score (training data only)."""
+        try:
+            from sklearn.feature_selection import mutual_info_classif
+            scores = mutual_info_classif(X_train, y_train, random_state=42)
+            top_idx = np.argsort(scores)[::-1][:top_n]
+            top_idx_sorted = sorted(top_idx)
+            selected_names = [feature_names[i] for i in top_idx_sorted]
+            logger.info("Top %d features by MI: %s", top_n, selected_names[:10])
+            return X_train[:, top_idx_sorted], X_test[:, top_idx_sorted], selected_names
+        except Exception as exc:
+            logger.warning("Feature selection failed, using all: %s", exc)
+            return X_train, X_test, feature_names
 
     def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
         """Build multi-factor sample weights from per-sample metadata."""

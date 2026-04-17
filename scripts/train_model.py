@@ -180,7 +180,6 @@ def run_rolling_pipeline(
 
     trainer = ModelTrainer(
         model_type=model_type,
-        label_scheme=label_scheme,
         top_n_features=top_n_features if top_n_features > 0 else None,
     )
 
