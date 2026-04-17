@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
+MAX_INTRADAY_POSITIONS = 3   # hard cap on concurrent intraday trades
 
 
 class RiskManager(BaseAgent):
@@ -44,10 +45,10 @@ class RiskManager(BaseAgent):
     def __init__(self, limits: Optional[RiskLimits] = None):
         super().__init__("risk_manager")
         self.limits = limits or RiskLimits()
-        # Sector mapping: symbol → sector (extend as needed; fallback = UNKNOWN)
         self._sector_map: Dict[str, str] = {}
-        # Track equity high-water mark for drawdown calculation
         self._peak_equity: Optional[float] = None
+        # Count of open intraday positions (updated on approve/exit messages)
+        self._open_intraday_count: int = 0
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -96,6 +97,9 @@ class RiskManager(BaseAgent):
 
     async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any]) -> None:
         from datetime import datetime
+
+        if proposal.get("trade_type") == "intraday":
+            self._open_intraday_count += 1
 
         approved_proposal = {
             **proposal,
@@ -155,6 +159,23 @@ class RiskManager(BaseAgent):
         except Exception:
             pass
 
+        symbol = proposal.get("symbol", "")
+        quantity = proposal.get("quantity", 0)
+        entry_price = proposal.get("entry_price", 0.0)
+        trade_cost = quantity * entry_price
+
+        # ── Rule 0: Intraday position cap ────────────────────────────────────
+        if proposal.get("trade_type") == "intraday":
+            if self._open_intraday_count >= MAX_INTRADAY_POSITIONS:
+                msg = (f"Intraday position cap reached "
+                       f"({self._open_intraday_count}/{MAX_INTRADAY_POSITIONS})")
+                reasoning["failed_rule"] = "intraday_position_cap"
+                reasoning["checks"].append({"rule": "intraday_position_cap", "ok": False,
+                                            "msg": msg})
+                return False, reasoning
+            reasoning["checks"].append({"rule": "intraday_position_cap", "ok": True,
+                                        "msg": f"intraday count={self._open_intraday_count}"})
+
         # ── Fetch live account + position data ───────────────────────────────
         try:
             account, positions = self._fetch_account_state()
@@ -169,14 +190,8 @@ class RiskManager(BaseAgent):
         buying_power = account["buying_power"]
         current_equity = account["equity"]
 
-        # Update high-water mark
         if self._peak_equity is None or current_equity > self._peak_equity:
             self._peak_equity = current_equity
-
-        symbol = proposal["symbol"]
-        quantity = proposal["quantity"]
-        entry_price = proposal["entry_price"]
-        trade_cost = quantity * entry_price
 
         # ── Rule 1: Buying Power ──────────────────────────────────────────────
         ok, msg = validate_buying_power(trade_cost, buying_power, self.limits)
@@ -237,8 +252,13 @@ class RiskManager(BaseAgent):
             return False, reasoning
 
         # ── Rule 8: Dynamic Stop Loss ─────────────────────────────────────────
-        atr = proposal.get("atr")  # optional; caller can supply ATR
-        stop_loss = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
+        atr = proposal.get("atr")
+        if proposal.get("trade_type") == "intraday":
+            # Intraday: use tight 0.5% stop from proposal or 0.5% of entry
+            intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
+            stop_loss = min(intraday_stop, entry_price * 0.995)
+        else:
+            stop_loss = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
         stop_msg = f"Stop loss set at ${stop_loss:.2f}"
         reasoning["checks"].append({"rule": "stop_loss", "ok": True, "msg": stop_msg})
         reasoning["stop_loss"] = stop_loss
@@ -269,6 +289,14 @@ class RiskManager(BaseAgent):
         """Update the symbol→sector mapping (called externally or at startup)."""
         self._sector_map.update(sector_map)
         self.logger.info("Sector map updated: %d symbols", len(self._sector_map))
+
+    def on_intraday_position_closed(self) -> None:
+        """Call when an intraday position is closed to free the slot."""
+        self._open_intraday_count = max(0, self._open_intraday_count - 1)
+
+    def reset_intraday_count(self) -> None:
+        """Reset daily intraday counter (call at EOD after force-close)."""
+        self._open_intraday_count = 0
 
     def pause(self) -> None:
         """Pause processing new proposals (e.g. on drawdown breach)."""
