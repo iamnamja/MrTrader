@@ -57,6 +57,36 @@ def _trades_today_count() -> int:
         db.close()
 
 
+def _win_rate_and_drawdown():
+    """Compute win rate and max drawdown from all closed trades in the DB."""
+    db = get_session()
+    try:
+        closed = db.query(Trade).filter(Trade.status == "CLOSED").all()
+        if not closed:
+            return None, None
+        pnls = [float(t.pnl) for t in closed if t.pnl is not None]
+        if not pnls:
+            return None, None
+        wins = sum(1 for p in pnls if p > 0)
+        win_rate = round(wins / len(pnls) * 100, 1)
+        # Peak-to-trough drawdown on cumulative P&L curve
+        cum = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for p in pnls:
+            cum += p
+            if cum > peak:
+                peak = cum
+            dd = (peak - cum) / max(abs(peak), 1e-6) * 100
+            if dd > max_dd:
+                max_dd = dd
+        return win_rate, round(max_dd, 2)
+    except Exception:
+        return None, None
+    finally:
+        db.close()
+
+
 def _system_status() -> str:
     checks = [
         check_db_connection(),
@@ -99,6 +129,8 @@ async def get_dashboard_summary():
         total_pnl = account_value - initial_capital
         total_pnl_pct = (total_pnl / initial_capital) * 100
 
+        win_rate, max_dd = _win_rate_and_drawdown()
+
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
             account_value=account_value,
@@ -112,6 +144,8 @@ async def get_dashboard_summary():
             trades_today_count=_trades_today_count(),
             trading_mode=settings.trading_mode,
             system_status=_system_status(),
+            win_rate=win_rate,
+            max_drawdown_pct=max_dd,
         )
     except Exception as exc:
         logger.error("Dashboard summary error: %s", exc)

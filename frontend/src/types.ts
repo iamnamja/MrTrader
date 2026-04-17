@@ -1,12 +1,24 @@
 export interface Summary {
+  // Current API field names
+  account_value?: number
+  daily_pnl?: number
+  daily_pnl_pct?: number
+  open_positions_count?: number
+  win_rate?: number
+  max_drawdown_pct?: number
+  buying_power?: number
+  cash?: number
+  total_pnl?: number
+  total_pnl_pct?: number
+  trades_today_count?: number
+  trading_mode?: string
+  system_status?: string
+  // Legacy / WS-push field names (keep for backwards compat)
   portfolio_value?: number
   equity?: number
   pnl_today?: number
   pnl_today_pct?: number
-  buying_power?: number
   open_positions?: number
-  win_rate?: number
-  max_drawdown_pct?: number
 }
 
 export interface Health {

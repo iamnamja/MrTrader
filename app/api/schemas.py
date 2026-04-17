@@ -55,6 +55,8 @@ class DashboardSummaryResponse(BaseModel):
     trades_today_count: int
     trading_mode: str
     system_status: str
+    win_rate: Optional[float] = None        # % of closed trades that were profitable
+    max_drawdown_pct: Optional[float] = None  # peak-to-trough drawdown from closed trades
 
 
 class SystemHealthResponse(BaseModel):
