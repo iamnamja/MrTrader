@@ -303,9 +303,10 @@ class FeatureEngineer:
             float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
         )
 
-        # ── 9. Momentum (5d, 20d, 60d) ───────────────────────────────────────
+        # ── 9. Momentum (5d, 20d, 60d, 252d) ────────────────────────────────────
         lookback_20 = min(20, len(prices) - 1)
         lookback_60 = min(60, len(prices) - 1)
+        lookback_252 = min(252, len(prices) - 1)
         features["momentum_5d"] = (
             (prices[-1] - prices[-(lookback_5 + 1)]) / prices[-(lookback_5 + 1)]
             if prices[-(lookback_5 + 1)] else 0.0
@@ -317,6 +318,13 @@ class FeatureEngineer:
         features["momentum_60d"] = (
             (prices[-1] - prices[-(lookback_60 + 1)]) / prices[-(lookback_60 + 1)]
             if prices[-(lookback_60 + 1)] else 0.0
+        )
+        # 12-month momentum (most well-documented equity factor); skip last month (reversal)
+        # Uses prices[-21] as "1 month ago" to exclude short-term reversal component
+        _p_12m = prices[-(lookback_252 + 1)]
+        _p_1m = prices[-(min(21, len(prices) - 1) + 1)] if len(prices) > 22 else prices[-1]
+        features["momentum_252d_ex1m"] = (
+            (_p_1m - _p_12m) / _p_12m if _p_12m > 0 else 0.0
         )
 
         # ── 10. ATR(14) normalised ────────────────────────────────────────────
@@ -459,6 +467,12 @@ class FeatureEngineer:
             features["rs_vs_spy_10d"] = momentum_10d - spy_ret_10d
         else:
             features["rs_vs_spy_10d"] = 0.0
+
+        if spy_returns is not None and len(spy_returns) >= lookback_60:
+            spy_ret_60d = float(np.sum(spy_returns[-lookback_60:]))
+            features["rs_vs_spy_60d"] = features["momentum_60d"] - spy_ret_60d
+        else:
+            features["rs_vs_spy_60d"] = 0.0
 
         # ── 25. FMP point-in-time fundamentals ───────────────────────────────
         # as_of_date lets training pass the window end date so we use only data
