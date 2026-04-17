@@ -92,7 +92,13 @@ class ModelTrainer:
             len(X_train), len(X_test), len(feature_names),
         )
 
-        self.model.train(X_train, y_train, feature_names)
+        # Correct for class imbalance: stops (~70%) outnumber targets (~30%)
+        n_neg = int((y_train == 0).sum())
+        n_pos = int((y_train == 1).sum())
+        spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+        logger.info("Class ratio  neg=%d  pos=%d  scale_pos_weight=%.2f", n_neg, n_pos, spw)
+
+        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw)
 
         # Evaluate on held-out test set
         metrics = self._evaluate(X_test, y_test)
