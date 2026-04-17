@@ -124,6 +124,14 @@ async def startup_event():
         logger.error("Orchestrator startup failed: %s", e)
         raise
 
+    # Pre-warm the dashboard summary cache so the first browser request is instant
+    try:
+        from app.api.routes import get_dashboard_summary
+        await get_dashboard_summary()
+        logger.info("✓ Dashboard cache warmed")
+    except Exception as e:
+        logger.warning("Cache warm-up skipped: %s", e)
+
     logger.info("MrTrader application started successfully")
 
 
