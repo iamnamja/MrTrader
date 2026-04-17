@@ -211,9 +211,9 @@ class FeatureEngineer:
             features["regime_score"] = float(regime_score)
         else:
             try:
-                from app.macro.regime_detector import RegimeDetector
+                from app.strategy.regime_detector import RegimeDetector
                 detector = RegimeDetector()
-                det = detector.detect_regime()
+                det = detector.get_regime_detail()
                 features["regime_score"] = float(det.get("composite_score", 0.5))
             except Exception:
                 features["regime_score"] = 0.5
