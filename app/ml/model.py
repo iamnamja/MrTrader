@@ -17,6 +17,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:
+    _LGBM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +39,24 @@ class PortfolioSelectorModel:
         self.is_trained = False
         self._lr_model: Optional[LogisticRegression] = None  # second estimator for ensemble
 
-        if model_type in ("xgboost", "ensemble"):
+        if model_type == "lgbm":
+            if not _LGBM_AVAILABLE:
+                raise ImportError("lightgbm not installed — pip install lightgbm")
+            self.model = LGBMClassifier(
+                n_estimators=600,
+                num_leaves=31,          # conservative: prevents overfit on noisy data
+                max_depth=6,
+                learning_rate=0.01,     # slow careful learning
+                subsample=0.7,
+                subsample_freq=1,
+                colsample_bytree=0.7,
+                reg_alpha=1.0,          # strong L1
+                reg_lambda=1.0,         # strong L2
+                min_child_samples=50,   # require ≥50 samples per leaf
+                random_state=42,
+                verbose=-1,
+            )
+        elif model_type in ("xgboost", "ensemble"):
             self.model = XGBClassifier(
                 n_estimators=400,
                 max_depth=4,          # shallower = less overfitting with many features
@@ -110,7 +133,17 @@ class PortfolioSelectorModel:
         if sample_weight is not None:
             fit_kwargs["sample_weight"] = sample_weight
 
-        if self.model_type in ("xgboost", "ensemble") and X_val is not None and y_val is not None:
+        if self.model_type == "lgbm" and X_val is not None and y_val is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            from lightgbm import early_stopping, log_evaluation
+            self.model.fit(
+                X_scaled, y,
+                eval_set=[(X_val_scaled, y_val)],
+                callbacks=[early_stopping(early_stopping_rounds, verbose=False), log_evaluation(-1)],
+                **fit_kwargs,
+            )
+            logger.info("LGBM early stopping: best iteration = %s", getattr(self.model, "best_iteration_", "n/a"))
+        elif self.model_type in ("xgboost", "ensemble") and X_val is not None and y_val is not None:
             X_val_scaled = self.scaler.transform(X_val)
             self.model.set_params(early_stopping_rounds=early_stopping_rounds)
             self.model.fit(

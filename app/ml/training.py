@@ -75,14 +75,29 @@ def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
 class ModelTrainer:
     """
     Orchestrates data fetching, rolling-window labelling,
-    feature engineering, and XGBoost training for the swing model.
+    feature engineering, and XGBoost/LightGBM training for the swing model.
+
+    label_scheme options:
+      "atr"             — (default) hit ATR target vs stop within FORWARD_DAYS
+      "cross_sectional" — rank stocks by raw 10-day return; top 30% = 1, bottom 30% = 0
+      "spy_relative"    — rank by (stock_return - SPY_return); top 30% = 1, bottom 30% = 0
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance", use_feature_store: bool = True):
+    def __init__(
+        self,
+        model_dir: str = MODEL_DIR,
+        provider: str = "yfinance",
+        use_feature_store: bool = True,
+        model_type: str = "xgboost",
+        label_scheme: str = "atr",
+        top_n_features: Optional[int] = None,
+    ):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
-        self.model = PortfolioSelectorModel(model_type="xgboost")
+        self.model = PortfolioSelectorModel(model_type=model_type)
         self._provider_name = provider
+        self.label_scheme = label_scheme
+        self.top_n_features = top_n_features
         if use_feature_store:
             from app.ml.feature_store import FeatureStore
             self._feature_store: Optional[object] = FeatureStore(f"{model_dir}/feature_store.db")
@@ -132,6 +147,13 @@ class ModelTrainer:
             len(X_train), len(X_test), len(feature_names),
         )
 
+        # Feature selection: keep top N by mutual information if requested
+        if self.top_n_features and len(feature_names) > self.top_n_features:
+            X_train, X_test, feature_names = self._select_top_features(
+                X_train, y_train, X_test, feature_names, self.top_n_features
+            )
+            logger.info("Feature selection: kept top %d features", len(feature_names))
+
         # Correct for class imbalance: stops (~70%) outnumber targets (~30%)
         n_neg = int((y_train == 0).sum())
         n_pos = int((y_train == 1).sum())
@@ -140,6 +162,11 @@ class ModelTrainer:
 
         # Build multi-factor sample weights
         sample_weight = self._build_sample_weights(meta_train)
+
+        # LightGBM doesn't support scale_pos_weight the same way — use class_weight instead
+        if self.model.model_type == "lgbm":
+            self.model.model.set_params(class_weight={0: 1.0, 1: float(spw)})
+            spw = None  # don't pass as XGBoost param
 
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
         self.model.train(
@@ -223,13 +250,31 @@ class ModelTrainer:
             except Exception as exc:
                 logger.warning("FMP prefetch skipped: %s", exc)
 
+        # Fetch SPY data for spy_relative labeling
+        spy_data: Optional[pd.DataFrame] = None
+        if self.label_scheme == "spy_relative":
+            try:
+                import yfinance as yf
+                _spy_raw = yf.download("SPY", start=all_dates[0], end=all_dates[-1],
+                                       progress=False, auto_adjust=True)
+                if isinstance(_spy_raw.columns, pd.MultiIndex):
+                    _spy_raw.columns = _spy_raw.columns.get_level_values(0)
+                _spy_raw.columns = [c.lower() for c in _spy_raw.columns]
+                if not _spy_raw.empty and "close" in _spy_raw.columns:
+                    spy_data = _spy_raw
+                    logger.info("SPY data fetched for spy_relative labeling")
+            except Exception as exc:
+                logger.warning("Could not fetch SPY for spy_relative: %s", exc)
+
         X_train, y_train, meta_train = self._windows_to_matrix(
             symbols_data, all_dates, train_window_starts,
-            regime_score, fetch_fundamentals, total_windows=len(window_starts)
+            regime_score, fetch_fundamentals, total_windows=len(window_starts),
+            spy_data=spy_data,
         )
         X_test, y_test, _ = self._windows_to_matrix(
             symbols_data, all_dates, test_window_starts,
-            regime_score, fetch_fundamentals, total_windows=len(window_starts)
+            regime_score, fetch_fundamentals, total_windows=len(window_starts),
+            spy_data=spy_data,
         )
 
         feature_names = self._last_feature_names
@@ -243,6 +288,7 @@ class ModelTrainer:
         regime_score: Optional[float],
         fetch_fundamentals: bool,
         total_windows: int = 1,
+        spy_data: Optional[pd.DataFrame] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
         X_rows, y_vals, meta_rows = [], [], []
         self._last_feature_names: List[str] = []
@@ -254,6 +300,14 @@ class ModelTrainer:
 
             w_start_date = all_dates[w_start_idx]
             w_end_date = all_dates[w_end_idx]
+
+            # ── Cross-sectional labeling: compute returns for all symbols ──
+            if self.label_scheme in ("cross_sectional", "spy_relative"):
+                cs_labels, cs_returns = self._cross_sectional_labels(
+                    symbols_data, all_dates, w_end_idx, spy_data
+                )
+            else:
+                cs_labels, cs_returns = {}, {}
 
             for symbol, df in symbols_data.items():
                 idx = df.index.date
@@ -267,7 +321,7 @@ class ModelTrainer:
                 if len(window_df) < FeatureEngineer.MIN_BARS:
                     continue
 
-                # ── Outcome-based label ───────────────────────────────────────
+                # ── Label assignment ──────────────────────────────────────────
                 entry_rows = df.loc[idx == w_end_date, "close"]
                 if len(entry_rows) == 0:
                     continue
@@ -275,33 +329,38 @@ class ModelTrainer:
                 if entry_price <= 0:
                     continue
 
-                target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
-                target_price = entry_price * (1 + target_pct)
-                stop_price = entry_price * (1 - stop_pct)
-
-                label = None
-                outcome_return = 0.0
-                for bar_offset in range(1, FORWARD_DAYS + 1):
-                    future_idx = w_end_idx + bar_offset
-                    if future_idx >= len(all_dates):
-                        break
-                    future_date = all_dates[future_idx]
-                    bar = df.loc[idx == future_date]
-                    if len(bar) == 0:
+                if self.label_scheme in ("cross_sectional", "spy_relative"):
+                    label = cs_labels.get(symbol)
+                    outcome_return = cs_returns.get(symbol, 0.0)
+                    if label is None:
+                        continue  # in the dropped middle 40%
+                else:
+                    # ATR-adaptive label (original)
+                    target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+                    target_price = entry_price * (1 + target_pct)
+                    stop_price = entry_price * (1 - stop_pct)
+                    label = None
+                    outcome_return = 0.0
+                    for bar_offset in range(1, FORWARD_DAYS + 1):
+                        future_idx = w_end_idx + bar_offset
+                        if future_idx >= len(all_dates):
+                            break
+                        future_date = all_dates[future_idx]
+                        bar = df.loc[idx == future_date]
+                        if len(bar) == 0:
+                            continue
+                        high = float(bar["high"].iloc[0])
+                        low = float(bar["low"].iloc[0])
+                        if low <= stop_price:
+                            label = 0
+                            outcome_return = (low - entry_price) / entry_price
+                            break
+                        if high >= target_price:
+                            label = 1
+                            outcome_return = (high - entry_price) / entry_price
+                            break
+                    if label is None:
                         continue
-                    high = float(bar["high"].iloc[0])
-                    low = float(bar["low"].iloc[0])
-                    if low <= stop_price:
-                        label = 0
-                        outcome_return = (low - entry_price) / entry_price
-                        break
-                    if high >= target_price:
-                        label = 1
-                        outcome_return = (high - entry_price) / entry_price
-                        break
-
-                if label is None:
-                    continue  # neither target nor stop hit — skip
 
                 # ── Features (cache-first) ────────────────────────────────────
                 sector = SECTOR_MAP.get(symbol) or "Unknown"
@@ -327,7 +386,6 @@ class ModelTrainer:
                 X_rows.append(list(features.values()))
                 y_vals.append(label)
 
-                # Collect metadata for sample weight computation
                 avg_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else 1e6
                 meta_rows.append({
                     "window_idx": w_start_idx,
@@ -338,6 +396,68 @@ class ModelTrainer:
                 })
 
         return np.array(X_rows), np.array(y_vals), meta_rows
+
+    def _cross_sectional_labels(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        all_dates: list,
+        w_end_idx: int,
+        spy_data: Optional[pd.DataFrame] = None,
+    ) -> Tuple[Dict[str, int], Dict[str, float]]:
+        """
+        Rank all symbols by their FORWARD_DAYS forward return from w_end_date.
+        Top 30% → label 1, bottom 30% → label 0, middle 40% → None (skipped).
+        For spy_relative: adjusts returns by SPY return before ranking.
+        """
+        w_end_date = all_dates[w_end_idx]
+        future_idx = min(w_end_idx + FORWARD_DAYS, len(all_dates) - 1)
+        future_date = all_dates[future_idx]
+
+        # SPY return for the same period (for spy_relative scheme)
+        spy_return = 0.0
+        if self.label_scheme == "spy_relative" and spy_data is not None:
+            try:
+                spy_idx = spy_data.index.date
+                spy_entry = spy_data.loc[spy_idx == w_end_date, "close"]
+                spy_exit = spy_data.loc[spy_idx == future_date, "close"]
+                if len(spy_entry) > 0 and len(spy_exit) > 0:
+                    spy_return = float(spy_exit.iloc[0] - spy_entry.iloc[0]) / float(spy_entry.iloc[0])
+            except Exception:
+                pass
+
+        returns: Dict[str, float] = {}
+        for symbol, df in symbols_data.items():
+            try:
+                idx = df.index.date
+                entry_rows = df.loc[idx == w_end_date, "close"]
+                exit_rows = df.loc[idx == future_date, "close"]
+                if len(entry_rows) == 0 or len(exit_rows) == 0:
+                    continue
+                entry = float(entry_rows.iloc[0])
+                if entry <= 0:
+                    continue
+                raw_ret = (float(exit_rows.iloc[0]) - entry) / entry
+                returns[symbol] = raw_ret - spy_return  # subtract SPY if spy_relative
+            except Exception:
+                continue
+
+        if len(returns) < 3:
+            return {}, {}
+
+        sorted_syms = sorted(returns.keys(), key=lambda s: returns[s])
+        n = len(sorted_syms)
+        bottom_cut = int(n * 0.30)
+        top_cut = int(n * 0.70)
+
+        labels: Dict[str, int] = {}
+        for i, sym in enumerate(sorted_syms):
+            if i < bottom_cut:
+                labels[sym] = 0
+            elif i >= top_cut:
+                labels[sym] = 1
+            # else: skip middle 40%
+
+        return labels, returns
 
     # ── Sample weighting ─────────────────────────────────────────────────────
 
@@ -364,6 +484,27 @@ class ModelTrainer:
         except Exception as exc:
             logger.warning("Sample weight computation failed, using uniform: %s", exc)
             return None
+
+    def _select_top_features(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        feature_names: List[str],
+        top_n: int,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """Select top-N features by mutual information score."""
+        try:
+            from sklearn.feature_selection import mutual_info_classif
+            scores = mutual_info_classif(X_train, y_train, random_state=42)
+            top_idx = np.argsort(scores)[::-1][:top_n]
+            top_idx_sorted = sorted(top_idx)
+            selected_names = [feature_names[i] for i in top_idx_sorted]
+            logger.info("Top %d features by MI: %s", top_n, selected_names[:10])
+            return X_train[:, top_idx_sorted], X_test[:, top_idx_sorted], selected_names
+        except Exception as exc:
+            logger.warning("Feature selection failed, using all: %s", exc)
+            return X_train, X_test, feature_names
 
     def _get_current_vol_percentile(self) -> float:
         """Estimate current market vol percentile using SPY realized vol."""

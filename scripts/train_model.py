@@ -161,6 +161,9 @@ def run_rolling_pipeline(
     fetch_fundamentals: bool,
     years: int,
     dry_run: bool,
+    model_type: str = "xgboost",
+    label_scheme: str = "atr",
+    top_n_features: int = 0,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
@@ -171,9 +174,15 @@ def run_rolling_pipeline(
     header(3, 6, "Building rolling-window feature matrix")
     info(f"Window: {WINDOW_DAYS} trading days  |  Forward: {FORWARD_DAYS} days  "
          f"|  Test split: last {int(TEST_FRACTION*100)}% of windows")
+    info(f"Model type: {model_type}  |  Label scheme: {label_scheme}"
+         + (f"  |  Top-N features: {top_n_features}" if top_n_features else ""))
     print()
 
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(
+        model_type=model_type,
+        label_scheme=label_scheme,
+        top_n_features=top_n_features if top_n_features > 0 else None,
+    )
 
     # Regime score
     try:
@@ -199,8 +208,16 @@ def run_rolling_pipeline(
     ok(f"Features      : {len(feature_names)}")
     info(f"  {', '.join(feature_names)}")
 
+    # Apply feature selection if requested (after matrix build)
+    if top_n_features > 0 and len(feature_names) > top_n_features:
+        X_train, X_test, feature_names = trainer._select_top_features(
+            X_train, y_train, X_test, feature_names, top_n_features
+        )
+        ok(f"Feature selection: kept top {len(feature_names)} features")
+        info(f"  {', '.join(feature_names)}")
+
     # Step 4
-    header(4, 6, "Training XGBoost model")
+    header(4, 6, f"Training {model_type.upper()} model")
     print("  Training...", end="", flush=True)
     trainer.model.train(X_train, y_train, feature_names)
     elapsed = time.time() - t0
@@ -300,6 +317,20 @@ def main():
         "--dry-run", action="store_true",
         help="Run full pipeline but do not save the model",
     )
+    parser.add_argument(
+        "--model-type", default="xgboost",
+        choices=["xgboost", "lgbm", "ensemble"],
+        help="Model architecture (default: xgboost)",
+    )
+    parser.add_argument(
+        "--label-scheme", default="atr",
+        choices=["atr", "cross_sectional", "spy_relative"],
+        help="Labeling scheme: atr (ATR-hit), cross_sectional (rank by return), spy_relative (rank by SPY-adjusted return)",
+    )
+    parser.add_argument(
+        "--top-features", type=int, default=0,
+        help="Keep only top-N features by mutual information (0 = keep all)",
+    )
     args = parser.parse_args()
 
     symbols = args.symbols or SP_100_TICKERS
@@ -312,6 +343,10 @@ def main():
     print(f"  History       : {args.years} year(s)")
     fund_label = "yes (yfinance + AV + EDGAR)" if fetch_fundamentals else "no (price-only, faster)"
     print(f"  Fundamentals  : {fund_label}")
+    print(f"  Model type    : {args.model_type}")
+    print(f"  Label scheme  : {args.label_scheme}")
+    if args.top_features:
+        print(f"  Top features  : {args.top_features}")
     print(f"  Dry run       : {'yes -- model will NOT be saved' if args.dry_run else 'no'}")
     print(f"{BOLD}{'=' * 60}{RESET}")
 
@@ -329,7 +364,10 @@ def main():
 
     # Steps 3-6 (rolling windows + train + evaluate + save)
     version = run_rolling_pipeline(
-        symbols_data, fetch_fundamentals, args.years, args.dry_run
+        symbols_data, fetch_fundamentals, args.years, args.dry_run,
+        model_type=args.model_type,
+        label_scheme=args.label_scheme,
+        top_n_features=args.top_features,
     )
 
     elapsed = time.time() - t_start
