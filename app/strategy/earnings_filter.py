@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class EarningsFilter:
         return self._get_next_earnings(symbol)
 
     def _get_next_earnings(self, symbol: str) -> Optional[date]:
-        cached, fetched_at = self._cache.get(symbol, (None, 0.0))
+        cached, fetched_at = self._cache.get(symbol, (None, -CACHE_TTL_SECONDS - 1))
         if time.monotonic() - fetched_at < CACHE_TTL_SECONDS:
             return cached
         result = self._fetch(symbol)
