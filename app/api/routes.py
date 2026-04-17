@@ -87,11 +87,11 @@ def _win_rate_and_drawdown():
         db.close()
 
 
-def _system_status() -> str:
+def _system_status(alpaca_ok: bool = True) -> str:
     checks = [
         check_db_connection(),
         _redis().health_check(),
-        _alpaca().health_check(),
+        alpaca_ok,
     ]
     if all(checks):
         return "healthy"
@@ -129,7 +129,11 @@ async def get_dashboard_summary():
         total_pnl = account_value - initial_capital
         total_pnl_pct = (total_pnl / initial_capital) * 100
 
-        win_rate, max_dd = _win_rate_and_drawdown()
+        (win_rate, max_dd), trades_count, sys_status = await asyncio.gather(
+            asyncio.to_thread(_win_rate_and_drawdown),
+            asyncio.to_thread(_trades_today_count),
+            asyncio.to_thread(_system_status, True),
+        )
 
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
@@ -141,9 +145,9 @@ async def get_dashboard_summary():
             total_pnl=round(total_pnl, 2),
             total_pnl_pct=round(total_pnl_pct, 2),
             open_positions_count=len(positions),
-            trades_today_count=_trades_today_count(),
+            trades_today_count=trades_count,
             trading_mode=settings.trading_mode,
-            system_status=_system_status(),
+            system_status=sys_status,
             win_rate=win_rate,
             max_drawdown_pct=max_dd,
         )
@@ -281,19 +285,14 @@ async def get_daily_metrics(days: int = 30):
 # ─── System health ────────────────────────────────────────────────────────────
 
 @router.get("/health")
+@ttl_cache(seconds=20)
 async def get_health_alias():
     """Health check alias for dashboard polling."""
     db_ok = check_db_connection()
-    redis_ok = False
-    alpaca_ok = False
-    try:
-        redis_ok = _redis().health_check()
-    except Exception:
-        pass
-    try:
-        alpaca_ok = _alpaca().health_check()
-    except Exception:
-        pass
+    redis_ok, alpaca_ok = await asyncio.gather(
+        asyncio.to_thread(_redis().health_check),
+        asyncio.to_thread(_alpaca().health_check),
+    )
     from app.trading_modes import mode_manager
     from app.live_trading.kill_switch import kill_switch
     status = "healthy" if all([db_ok, redis_ok]) else "degraded"
@@ -313,12 +312,10 @@ async def get_health_alias():
 async def get_system_health():
     """Full system health check."""
     db_ok = check_db_connection()
-    redis_ok = _redis().health_check()
-    alpaca_ok = False
-    try:
-        alpaca_ok = await asyncio.to_thread(_alpaca().health_check)
-    except Exception:
-        pass
+    redis_ok, alpaca_ok = await asyncio.gather(
+        asyncio.to_thread(_redis().health_check),
+        asyncio.to_thread(_alpaca().health_check),
+    )
 
     return SystemHealthResponse(
         database="OK" if db_ok else "FAIL",
