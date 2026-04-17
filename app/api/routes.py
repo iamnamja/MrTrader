@@ -3,11 +3,13 @@ Dashboard API routes — metrics, positions, trades, decisions, controls,
 paper-trading approval workflow, and live-trading capital management.
 """
 
+import asyncio
 import logging
 from datetime import date, datetime
 from typing import List
 
 from fastapi import APIRouter, HTTPException
+from app.api.cache import ttl_cache
 from sqlalchemy import desc
 
 from app.api.schemas import (
@@ -71,11 +73,15 @@ def _system_status() -> str:
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
+@ttl_cache(seconds=15)
 async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
         alpaca = _alpaca()
-        account = alpaca.get_account()
+        account, positions = await asyncio.gather(
+            asyncio.to_thread(alpaca.get_account),
+            asyncio.to_thread(alpaca.get_positions),
+        )
 
         db = get_session()
         try:
@@ -102,7 +108,7 @@ async def get_dashboard_summary():
             daily_pnl_pct=round(daily_pnl_pct, 2),
             total_pnl=round(total_pnl, 2),
             total_pnl_pct=round(total_pnl_pct, 2),
-            open_positions_count=len(alpaca.get_positions()),
+            open_positions_count=len(positions),
             trades_today_count=_trades_today_count(),
             trading_mode=settings.trading_mode,
             system_status=_system_status(),
@@ -115,10 +121,11 @@ async def get_dashboard_summary():
 # ─── Positions ────────────────────────────────────────────────────────────────
 
 @router.get("/positions", response_model=List[PositionResponse])
+@ttl_cache(seconds=10)
 async def get_open_positions():
     """Live open positions from Alpaca."""
     try:
-        raw = _alpaca().get_positions()
+        raw = await asyncio.to_thread(_alpaca().get_positions)
         result = []
         for pos in raw:
             qty = pos.get("quantity") or pos.get("qty", 0)
@@ -268,13 +275,14 @@ async def get_health_alias():
 
 
 @router.get("/system-health", response_model=SystemHealthResponse)
+@ttl_cache(seconds=20)
 async def get_system_health():
     """Full system health check."""
     db_ok = check_db_connection()
     redis_ok = _redis().health_check()
     alpaca_ok = False
     try:
-        alpaca_ok = _alpaca().health_check()
+        alpaca_ok = await asyncio.to_thread(_alpaca().health_check)
     except Exception:
         pass
 
@@ -414,6 +422,7 @@ async def approve_and_go_live():
 # ─── Live trading monitoring & capital management (Phase 9) ───────────────────
 
 @router.get("/live/status")
+@ttl_cache(seconds=15)
 async def get_live_trading_status():
     """Real-time live account health plus current capital stage."""
     from app.live_trading.monitoring import monitor
@@ -421,7 +430,7 @@ async def get_live_trading_status():
     from app.live_trading.kill_switch import kill_switch
     from app.trading_modes import mode_manager
 
-    health = monitor.health_check()
+    health = await asyncio.to_thread(monitor.health_check)
     return {
         **health,
         "trading_mode":    mode_manager.mode.value,
@@ -573,29 +582,39 @@ async def check_earnings_blackout(symbol: str):
 
 
 @router.get("/analytics/regime")
+@ttl_cache(seconds=60)
 async def get_market_regime():
     """Return composite VIX+macro regime detail."""
     try:
         from app.strategy.regime_detector import regime_detector
-        detail = regime_detector.get_regime_detail()
-        detail["trend_following_active"] = regime_detector.trend_following_active()
-        detail["mean_reversion_active"] = regime_detector.mean_reversion_active()
-        detail["position_size_multiplier"] = regime_detector.position_size_multiplier()
-        return detail
+
+        def _fetch():
+            detail = regime_detector.get_regime_detail()
+            detail["trend_following_active"] = regime_detector.trend_following_active()
+            detail["mean_reversion_active"] = regime_detector.mean_reversion_active()
+            detail["position_size_multiplier"] = regime_detector.position_size_multiplier()
+            return detail
+
+        return await asyncio.to_thread(_fetch)
     except Exception as exc:
         logger.error("Regime detection error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/analytics/macro")
+@ttl_cache(seconds=300)
 async def get_macro_indicators():
     """Return FRED macro indicators + macro risk score."""
     try:
         from app.macro.fred_client import fred_client
-        indicators = fred_client.get_all()
+
+        def _fetch():
+            return fred_client.get_all(), fred_client.macro_risk_score()
+
+        indicators, macro_risk_score = await asyncio.to_thread(_fetch)
         return {
             "indicators": indicators,
-            "macro_risk_score": fred_client.macro_risk_score(),
+            "macro_risk_score": macro_risk_score,
         }
     except Exception as exc:
         logger.error("Macro indicators error: %s", exc)
