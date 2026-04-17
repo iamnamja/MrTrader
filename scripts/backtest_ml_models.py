@@ -1,0 +1,273 @@
+"""
+CLI: backtest the swing and/or intraday ML models.
+
+Usage:
+  python scripts/backtest_ml_models.py
+  python scripts/backtest_ml_models.py --model swing --years 2
+  python scripts/backtest_ml_models.py --model intraday --days 55 --symbols AAPL MSFT NVDA
+  python scripts/backtest_ml_models.py --model both
+"""
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+
+
+def _c(colour, text):
+    return f"{colour}{text}{RESET}"
+
+
+def header(title):
+    print(f"\n{BOLD}{CYAN}{'=' * 60}{RESET}")
+    print(f"{BOLD}{CYAN}  {title}{RESET}")
+    print(_c(DIM, "-" * 60))
+
+
+def ok(msg):
+    print(f"  {GREEN}OK{RESET}  {msg}")
+
+
+def warn(msg):
+    print(f"  {YELLOW}!!{RESET}  {msg}")
+
+
+def fail(msg):
+    print(f"  {RED}FAIL{RESET}  {msg}")
+
+
+def info(msg):
+    print(f"     {msg}")
+
+
+def _print_result(result):
+    s = result.summary()
+    print()
+    ok(f"Model type     : {s['model_type']}")
+    ok(f"Total trades   : {s['total_trades']}")
+    ok(f"Win rate       : {s['win_rate']}")
+    ok(f"Avg P&L/trade  : {s['avg_pnl_pct']}")
+    ok(f"Avg hold       : {s['avg_hold_bars']} bars")
+    ok(f"Sharpe ratio   : {s['sharpe_ratio']}")
+    ok(f"Max drawdown   : {s['max_drawdown_pct']}")
+    ok(f"Profit factor  : {s['profit_factor']}")
+    ok(f"Total P&L      : {s['total_pnl']}")
+    print()
+
+    sharpe = result.sharpe_ratio
+    if sharpe >= 1.0:
+        print(f"  {GREEN}{BOLD}>> Strong signal -- Sharpe >= 1.0{RESET}")
+    elif sharpe >= 0.5:
+        print(f"  {YELLOW}{BOLD}>> Moderate -- Sharpe 0.5-1.0, consider more data{RESET}")
+    else:
+        print(f"  {RED}{BOLD}>> Weak signal -- Sharpe < 0.5, do not trade live{RESET}")
+
+    win_rate = result.win_rate
+    pf = result.profit_factor
+    if win_rate >= 0.5 and pf >= 1.2:
+        print(f"  {GREEN}{BOLD}>> Win rate {win_rate:.0%} + profit factor {pf:.2f}"
+              f" -- proceed{RESET}")
+    elif result.total_trades < 30:
+        print(f"  {YELLOW}{BOLD}>> Only {result.total_trades} trades"
+              f" -- expand data for significance{RESET}")
+
+    if result.total_trades > 0:
+        print()
+        info("Exit breakdown:")
+        by_reason = {}
+        for t in result.trades:
+            by_reason[t.exit_reason] = by_reason.get(t.exit_reason, 0) + 1
+        for reason, cnt in sorted(by_reason.items(), key=lambda x: -x[1]):
+            pct = cnt / result.total_trades
+            bar_w = int(30 * pct)
+            print(f"     {reason:<15} {'#' * bar_w} {cnt} ({pct:.0%})")
+
+
+def run_swing_backtest(symbols, years):
+    import yfinance as yf
+    from datetime import datetime, timedelta
+    from app.backtesting.swing_backtest import SwingBacktester
+
+    header("Swing Model Backtest  (daily bars)")
+    info(f"Symbols: {len(symbols)}  |  History: {years} year(s)")
+
+    end = datetime.now()
+    start = end - timedelta(days=365 * years + 100)
+    info(f"Downloading {start.date()} -> {end.date()}...")
+
+    symbols_data = {}
+    try:
+        raw = yf.download(
+            symbols, start=start.date().isoformat(), end=end.date().isoformat(),
+            interval="1d", progress=False, auto_adjust=True, group_by="ticker",
+        )
+        for sym in symbols:
+            try:
+                df = raw[sym].copy() if len(symbols) > 1 else raw.copy()
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                df = df.dropna(subset=["close"])
+                if len(df) >= 50:
+                    symbols_data[sym] = df
+            except Exception:
+                pass
+    except Exception as exc:
+        fail(f"Download failed: {exc}")
+        return None
+
+    ok(f"Downloaded data for {len(symbols_data)} symbols")
+
+    model = _load_model("swing")
+    if model is None:
+        warn("No swing model -- train first: python scripts/train_model.py")
+        return None
+
+    t0 = time.time()
+    bt = SwingBacktester(model=model)
+    result = bt.run(symbols_data, fetch_fundamentals=False)
+    elapsed = time.time() - t0
+
+    ok(f"Backtest completed in {elapsed:.1f}s")
+    _print_result(result)
+    return result
+
+
+def run_intraday_backtest(symbols, days):
+    import yfinance as yf
+    from datetime import datetime, timedelta
+    from app.backtesting.intraday_backtest import IntradayBacktester
+
+    header("Intraday Model Backtest  (5-min bars)")
+    info(f"Symbols: {len(symbols)}  |  History: {days} day(s)")
+
+    end = datetime.now()
+    start = end - timedelta(days=days + 5)
+    info(f"Downloading 5-min bars {start.date()} -> {end.date()}...")
+
+    symbols_data = {}
+    for sym in symbols:
+        try:
+            df = yf.download(
+                sym, start=start.isoformat(), end=end.isoformat(),
+                interval="5m", progress=False, auto_adjust=True,
+            )
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.lower() for c in df.columns]
+            if len(df) >= 12:
+                symbols_data[sym] = df
+        except Exception:
+            pass
+
+    ok(f"Downloaded data for {len(symbols_data)} symbols")
+
+    spy_data = None
+    try:
+        spy_data = yf.download(
+            "SPY", start=start.isoformat(), end=end.isoformat(),
+            interval="5m", progress=False, auto_adjust=True,
+        )
+        if isinstance(spy_data.columns, pd.MultiIndex):
+            spy_data.columns = spy_data.columns.get_level_values(0)
+        spy_data.columns = [c.lower() for c in spy_data.columns]
+    except Exception:
+        pass
+
+    model = _load_model("intraday")
+    if model is None:
+        warn("No intraday model -- train first (IntradayModelTrainer)")
+        return None
+
+    t0 = time.time()
+    bt = IntradayBacktester(model=model)
+    result = bt.run(symbols_data, spy_data)
+    elapsed = time.time() - t0
+
+    ok(f"Backtest completed in {elapsed:.1f}s")
+    _print_result(result)
+    return result
+
+
+def _load_model(model_name):
+    import os
+    try:
+        from app.database.models import ModelVersion
+        from app.database.session import get_session
+        from app.ml.model import PortfolioSelectorModel
+
+        db = get_session()
+        try:
+            latest = (
+                db.query(ModelVersion)
+                .filter_by(model_name=model_name, status="ACTIVE")
+                .order_by(ModelVersion.version.desc())
+                .first()
+            )
+            if latest and latest.model_path:
+                m = PortfolioSelectorModel()
+                directory = os.path.dirname(latest.model_path)
+                m.load(directory, latest.version, model_name=model_name)
+                return m
+        finally:
+            db.close()
+    except Exception as exc:
+        warn(f"Could not load {model_name} model: {exc}")
+    return None
+
+
+def main():
+    from app.utils.constants import SP_100_TICKERS
+
+    parser = argparse.ArgumentParser(
+        description="MrTrader ML model backtest runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--model", choices=["swing", "intraday", "both"], default="both",
+    )
+    parser.add_argument("--years", type=int, default=2,
+                        help="Years of daily history for swing (default: 2)")
+    parser.add_argument("--days", type=int, default=55,
+                        help="Days of 5-min history for intraday (default: 55)")
+    parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
+    args = parser.parse_args()
+
+    symbols = args.symbols or SP_100_TICKERS[:30]
+
+    print(f"\n{BOLD}{'=' * 60}{RESET}")
+    print(f"{BOLD}  MrTrader -- ML Model Backtest{RESET}")
+    print(f"{BOLD}{'=' * 60}{RESET}")
+    print(f"  Model   : {args.model}")
+    print(f"  Symbols : {len(symbols)}")
+    print(f"{BOLD}{'=' * 60}{RESET}")
+
+    t_start = time.time()
+
+    if args.model in ("swing", "both"):
+        run_swing_backtest(symbols, args.years)
+
+    if args.model in ("intraday", "both"):
+        run_intraday_backtest(symbols, args.days)
+
+    elapsed = time.time() - t_start
+    print(f"\n{BOLD}{'=' * 60}{RESET}")
+    print(f"{BOLD}  Done in {elapsed:.0f}s{RESET}")
+    print(f"{BOLD}{'=' * 60}{RESET}\n")
+
+
+if __name__ == "__main__":
+    main()
