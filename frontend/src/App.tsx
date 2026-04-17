@@ -1,0 +1,754 @@
+import { useEffect, useRef, useState, useCallback } from 'react'
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from 'recharts'
+import { api } from './api'
+import type {
+  Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
+} from './types'
+
+// ── Colours / tokens ──────────────────────────────────────────────────────────
+const C = {
+  bg: '#0b0e14', surface: '#131720', surface2: '#1c2230', border: '#1e2d40',
+  text: '#d1d5db', muted: '#6b7280', green: '#22c55e', red: '#ef4444',
+  blue: '#3b82f6', yellow: '#eab308', accent: '#38bdf8',
+}
+
+// ── Inline style helpers ───────────────────────────────────────────────────────
+const s = {
+  card: {
+    background: C.surface, border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: 16,
+  } as React.CSSProperties,
+  cardTitle: {
+    fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '.06em',
+    color: C.muted, marginBottom: 12,
+  } as React.CSSProperties,
+  kpi: {
+    background: C.surface, border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: '14px 16px',
+  } as React.CSSProperties,
+  th: {
+    color: C.muted, fontWeight: 500, textAlign: 'left' as const,
+    padding: '6px 8px', borderBottom: `1px solid ${C.border}`,
+    fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '.05em',
+  } as React.CSSProperties,
+  td: {
+    padding: '8px 8px', borderBottom: `1px solid rgba(255,255,255,.04)`,
+    fontSize: 12,
+  } as React.CSSProperties,
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+function fmt$(v: number | null | undefined) {
+  if (v == null || isNaN(v)) return '—'
+  return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtPct(v: number | null | undefined) {
+  if (v == null || isNaN(v)) return '—'
+  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+}
+function fmtTs(iso: string | undefined) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+function clr(v: number | undefined | null) {
+  if (v == null) return C.text
+  return v > 0 ? C.green : v < 0 ? C.red : C.text
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+interface ToastMsg { id: number; text: string; type: 'success' | 'error' | 'warning' | 'info' }
+let _toastId = 0
+function useToasts() {
+  const [toasts, setToasts] = useState<ToastMsg[]>([])
+  const add = useCallback((text: string, type: ToastMsg['type'] = 'info') => {
+    const id = ++_toastId
+    setToasts(t => [...t, { id, text, type }])
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3800)
+  }, [])
+  return { toasts, add }
+}
+
+function ToastContainer({ toasts }: { toasts: ToastMsg[] }) {
+  const borderColor = (t: ToastMsg) =>
+    t.type === 'success' ? C.green : t.type === 'error' ? C.red : t.type === 'warning' ? C.yellow : C.accent
+  return (
+    <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 2000, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          background: C.surface, border: `1px solid ${C.border}`,
+          borderLeft: `3px solid ${borderColor(t)}`, borderRadius: 6,
+          padding: '10px 16px', fontSize: 12, minWidth: 240, maxWidth: 360,
+        }}>{t.text}</div>
+      ))}
+    </div>
+  )
+}
+
+// ── KPI Card ──────────────────────────────────────────────────────────────────
+function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  return (
+    <div style={s.kpi}>
+      <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color ?? C.accent }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{sub}</div>}
+    </div>
+  )
+}
+
+// ── Overview Panel ────────────────────────────────────────────────────────────
+function OverviewPanel({ summary, health, pnlHistory, decisions }: {
+  summary: Summary; health: Health | null
+  pnlHistory: { time: string; pnl: number }[]
+  decisions: Decision[]
+}) {
+  const mode = health?.trading_mode ?? health?.mode ?? 'paper'
+  const status = health?.status ?? health?.system_status ?? 'unknown'
+  const checks = health?.checks ?? { database: health?.database_ok, redis: health?.redis_ok, alpaca: health?.alpaca_ok }
+
+  return (
+    <div>
+      {/* Health pills */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <Pill label={mode.toUpperCase()} ok={mode !== 'live'} warn={mode !== 'live'} />
+        <Pill label={status.toUpperCase()} ok={status === 'healthy'} />
+        {Object.entries(checks ?? {}).map(([k, v]) => {
+          const ok = v === true || v === 'ok' || v === 'connected'
+          const names: Record<string, string> = { database: 'DB', redis: 'Redis', alpaca: 'Alpaca' }
+          return <Pill key={k} label={(names[k] ?? k).toUpperCase()} ok={!!ok} />
+        })}
+      </div>
+
+      {/* KPI strip */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Account Value" value={fmt$(summary.portfolio_value ?? summary.equity)} sub="Portfolio equity" />
+        <KpiCard label="Daily P&L" value={fmt$(summary.pnl_today)}
+          sub={summary.pnl_today_pct != null ? fmtPct(summary.pnl_today_pct) : undefined}
+          color={clr(summary.pnl_today)} />
+        <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
+        <KpiCard label="Open Positions" value={summary.open_positions?.toString() ?? '—'} sub="Active trades" />
+        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'} sub="All closed trades" />
+        <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
+          color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
+          sub="From peak equity" />
+      </div>
+
+      {/* Charts + decisions */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={s.card}>
+          <div style={s.cardTitle}>Equity Curve (P&L)</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={pnlHistory}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.04)" />
+              <XAxis dataKey="time" tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false} />
+              <YAxis tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false}
+                tickFormatter={v => '$' + v.toFixed(0)} />
+              <Tooltip contentStyle={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 11 }}
+                labelStyle={{ color: C.muted }} itemStyle={{ color: C.green }} />
+              <Line type="monotone" dataKey="pnl" stroke={C.green} strokeWidth={1.5}
+                dot={false} fill="rgba(34,197,94,.07)" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={s.card}>
+          <div style={s.cardTitle}>Recent Decisions</div>
+          <DecisionsTable rows={decisions.slice(0, 10)} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Pill({ label, ok, warn }: { label: string; ok: boolean; warn?: boolean }) {
+  const color = warn ? C.yellow : ok ? C.green : C.red
+  return (
+    <span style={{
+      padding: '4px 12px', borderRadius: 12, fontSize: 10, fontWeight: 600,
+      textTransform: 'uppercase', letterSpacing: '.06em',
+      background: `${color}1a`, color, border: `1px solid ${color}4d`,
+    }}>{label}</span>
+  )
+}
+
+// ── Positions Panel ────────────────────────────────────────────────────────────
+function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
+  const [rows, setRows] = useState<Position[]>([])
+  const load = useCallback(async () => {
+    try {
+      const j = await api.positions() as { data?: Position[] } | Position[]
+      setRows((j as { data?: Position[] }).data ?? (j as Position[]) ?? [])
+    } catch { /* ignore */ }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const totalUnreal = rows.reduce((s, p) => s + (p.unrealized_pl ?? 0), 0)
+  const largest = rows.reduce((m, p) => (p.market_value ?? 0) > (m.market_value ?? 0) ? p : m, rows[0])
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Open Positions" value={String(rows.length)} />
+        <KpiCard label="Unrealized P&L" value={fmt$(totalUnreal)} color={clr(totalUnreal)} />
+        <KpiCard label="Largest Position" value={largest?.symbol ?? '—'} />
+      </div>
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={s.cardTitle}>Open Positions</div>
+          <button onClick={() => { load(); onRefresh() }} style={btnStyle}>Refresh</button>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Symbol', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.length === 0
+                ? <tr><td colSpan={7} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No open positions</td></tr>
+                : rows.map(p => {
+                  const pct = p.unrealized_plpc != null ? p.unrealized_plpc * 100 : null
+                  return (
+                    <tr key={p.symbol}>
+                      <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
+                      <td style={s.td}>{p.qty}</td>
+                      <td style={s.td}>{fmt$(p.avg_entry_price)}</td>
+                      <td style={s.td}>{fmt$(p.current_price)}</td>
+                      <td style={s.td}>{fmt$(p.market_value)}</td>
+                      <td style={{ ...s.td, color: clr(p.unrealized_pl) }}>{fmt$(p.unrealized_pl)}</td>
+                      <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
+                    </tr>
+                  )
+                })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Trades Panel ───────────────────────────────────────────────────────────────
+function TradesPanel() {
+  const [rows, setRows] = useState<Trade[]>([])
+  const [filter, setFilter] = useState('')
+  const load = useCallback(async (f = filter) => {
+    try {
+      const j = await api.trades(f || undefined) as { data?: Trade[] } | Trade[]
+      setRows((j as { data?: Trade[] }).data ?? (j as Trade[]) ?? [])
+    } catch { /* ignore */ }
+  }, [filter])
+  useEffect(() => { load() }, [load])
+
+  const closed = rows.filter(t => t.status === 'CLOSED')
+  const wins = closed.filter(t => (t.pnl ?? 0) > 0)
+  const totalPnl = closed.reduce((s, t) => s + (t.pnl ?? 0), 0)
+  const avgPnl = closed.length ? totalPnl / closed.length : 0
+  const wr = closed.length ? wins.length / closed.length * 100 : 0
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Total Trades" value={String(rows.length)} />
+        <KpiCard label="Closed Trades" value={String(closed.length)} />
+        <KpiCard label="Win Rate" value={closed.length ? wr.toFixed(1) + '%' : '—'} />
+        <KpiCard label="Avg Trade P&L" value={closed.length ? fmt$(avgPnl) : '—'} color={clr(avgPnl)} />
+        <KpiCard label="Total P&L" value={fmt$(totalPnl)} color={clr(totalPnl)} />
+      </div>
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={s.cardTitle}>Trade History</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select value={filter}
+              onChange={e => { setFilter(e.target.value); load(e.target.value) }}
+              style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, padding: '3px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'inherit' }}>
+              <option value="">All</option>
+              <option value="ACTIVE">Active</option>
+              <option value="CLOSED">Closed</option>
+            </select>
+            <button onClick={() => load()} style={btnStyle}>Refresh</button>
+          </div>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Symbol', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.length === 0
+                ? <tr><td colSpan={9} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
+                : rows.map((t, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
+                    <td style={s.td}>{t.direction}</td>
+                    <td style={{ ...s.td, color: C.blue }}>{t.signal_type ?? '—'}</td>
+                    <td style={s.td}>{fmt$(t.entry_price)}</td>
+                    <td style={s.td}>{t.exit_price ? fmt$(t.exit_price) : <span style={{ color: C.muted }}>open</span>}</td>
+                    <td style={s.td}>{t.quantity}</td>
+                    <td style={{ ...s.td, color: clr(t.pnl) }}>{t.pnl != null ? fmt$(t.pnl) : '—'}</td>
+                    <td style={s.td}>
+                      <StatusPill status={t.status} />
+                    </td>
+                    <td style={{ ...s.td, color: C.muted }}>{fmtTs(t.created_at)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatusPill({ status }: { status: string }) {
+  const color = status === 'ACTIVE' ? C.yellow : status === 'CLOSED' ? C.green : C.red
+  return (
+    <span style={{
+      padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600,
+      background: `${color}1a`, color, border: `1px solid ${color}4d`,
+    }}>{status}</span>
+  )
+}
+
+// ── Signal Monitor Panel ───────────────────────────────────────────────────────
+interface SignalRow { time: string; symbol: string; kind: 'buy' | 'sell' | 'signal'; msg: string }
+
+function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decision[] }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={s.card}>
+        <div style={s.cardTitle}>Live Signal Feed</div>
+        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+          {feed.length === 0
+            ? <div style={{ color: C.muted, textAlign: 'center', padding: 30, fontSize: 11 }}>Waiting for signals via WebSocket...</div>
+            : feed.map((row, i) => {
+              const color = row.kind === 'buy' ? C.green : row.kind === 'sell' ? C.red : C.blue
+              const label = row.kind === 'buy' ? 'ENTRY' : row.kind === 'sell' ? 'EXIT' : 'SIGNAL'
+              return (
+                <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: `1px solid rgba(255,255,255,.04)`, fontSize: 11 }}>
+                  <span style={{ color: C.muted, minWidth: 80, whiteSpace: 'nowrap' }}>{row.time}</span>
+                  <span style={{ color: C.accent, fontWeight: 600, minWidth: 50 }}>{row.symbol}</span>
+                  <span style={{ padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600, background: `${color}26`, color }}>{label}</span>
+                  <span style={{ color: C.muted, flex: 1 }}>{row.msg}</span>
+                </div>
+              )
+            })}
+        </div>
+      </div>
+      <div style={s.card}>
+        <div style={s.cardTitle}>Agent Decisions (Last 50)</div>
+        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+          <DecisionsTable rows={decisions} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DecisionsTable({ rows }: { rows: Decision[] }) {
+  if (!rows.length) {
+    return <div style={{ color: C.muted, textAlign: 'center', padding: 16, fontSize: 11 }}>No decisions yet</div>
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <thead><tr>
+        {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={s.th}>{h}</th>)}
+      </tr></thead>
+      <tbody>
+        {rows.map((d, i) => (
+          <tr key={i}>
+            <td style={{ ...s.td, color: C.muted }}>{fmtTs(d.timestamp)}</td>
+            <td style={s.td}>{d.agent_name ?? '—'}</td>
+            <td style={s.td}>{d.decision_type ?? '—'}</td>
+            <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{d.symbol ?? d.reasoning?.symbol ?? '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// ── Capital Ramp Panel ────────────────────────────────────────────────────────
+function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void }) {
+  const [status, setStatus] = useState<LiveStatus>({})
+  const [advanceMsg, setAdvanceMsg] = useState('')
+  const load = useCallback(async () => {
+    try {
+      const j = await api.liveStatus() as LiveStatus
+      setStatus(j)
+    } catch { /* ignore */ }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const maxCap = Math.max(...(status.stages ?? []).map(s => s.capital), 1)
+
+  async function advance() {
+    try {
+      const j = await api.increaseCapital() as { status?: string; detail?: string }
+      setAdvanceMsg(JSON.stringify(j, null, 2))
+      if (j.status === 'advanced') { toast('Capital stage advanced!', 'success'); load() }
+      else toast(j.detail ?? j.status ?? 'Cannot advance', 'warning')
+    } catch { toast('Request failed', 'error') }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Current Stage" value={status.stage != null ? 'Stage ' + status.stage : '—'} />
+        <KpiCard label="Approved Capital" value={fmt$(status.capital)} />
+        <KpiCard label="Days in Stage" value={status.days_elapsed != null ? status.days_elapsed + 'd' : '—'} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={s.card}>
+          <div style={s.cardTitle}>Stage Progress</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+            {(status.stages ?? []).map(stage => {
+              const pct = (stage.capital / maxCap * 100).toFixed(1)
+              const isCurrent = stage.stage === status.stage
+              const isDone = (status.stage ?? 0) > stage.stage
+              const barColor = isDone ? C.green : isCurrent ? C.accent : C.muted
+              return (
+                <div key={stage.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ minWidth: 70, fontSize: 11, color: isCurrent ? C.accent : C.muted }}>Stage {stage.stage}</span>
+                  <div style={{ flex: 1, height: 6, background: C.surface2, borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: pct + '%', height: '100%', background: barColor, borderRadius: 3, transition: 'width .4s' }} />
+                  </div>
+                  <span style={{ minWidth: 80, textAlign: 'right', fontSize: 11, color: isCurrent ? C.accent : C.muted }}>
+                    {fmt$(stage.capital)} {isCurrent ? '←' : ''}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        <div style={s.card}>
+          <div style={s.cardTitle}>Advance Capital Stage</div>
+          <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+            <div style={{ color: C.muted, marginBottom: 16 }}>Advance only when health criteria are met (drawdown ≤ 3%, daily loss ≤ 2%).</div>
+            <button onClick={advance} style={{
+              background: 'rgba(59,130,246,.1)', border: `1px solid ${C.blue}`,
+              color: C.blue, padding: '8px 20px', borderRadius: 5, cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: 12, fontWeight: 600, letterSpacing: '.04em',
+            }}>Request Stage Advance</button>
+            {advanceMsg && <pre style={{ marginTop: 12, fontSize: 10, color: C.muted, whiteSpace: 'pre-wrap' }}>{advanceMsg}</pre>}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Kill Switch Panel ─────────────────────────────────────────────────────────
+function KillPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void }) {
+  const [active, setActive] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([])
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const j = await api.liveStatus() as { kill_switch_active?: boolean }
+      setActive(j.kill_switch_active ?? false)
+    } catch { /* ignore */ }
+    try {
+      const j = await api.auditLog() as { logs?: AuditEntry[]; data?: AuditEntry[] } | AuditEntry[]
+      setAuditLog((j as { logs?: AuditEntry[] }).logs ?? (j as { data?: AuditEntry[] }).data ?? (j as AuditEntry[]) ?? [])
+    } catch { /* ignore */ }
+  }, [])
+  useEffect(() => { loadStatus() }, [loadStatus])
+
+  async function confirmKill() {
+    setShowModal(false)
+    try {
+      await api.killSwitch('Manual dashboard activation')
+      toast('Kill switch activated — all positions closing', 'error')
+      setActive(true)
+      loadStatus()
+    } catch { toast('Kill switch request failed', 'error') }
+  }
+
+  async function reset() {
+    if (!confirm('Reset kill switch and resume trading?')) return
+    try {
+      await api.resetKillSwitch()
+      toast('Kill switch reset — trading resumed', 'success')
+      setActive(false)
+      loadStatus()
+    } catch { toast('Reset failed', 'error') }
+  }
+
+  return (
+    <div style={{ maxWidth: 540, margin: '0 auto', paddingTop: 20 }}>
+      {/* Status box */}
+      <div style={{
+        ...s.card,
+        textAlign: 'center',
+        ...(active ? { borderColor: 'rgba(239,68,68,.4)', background: 'rgba(239,68,68,.07)' } : {}),
+        marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>
+          Kill switch is <strong style={{ color: active ? C.red : C.text }}>{active ? 'ACTIVE' : 'INACTIVE'}</strong>
+        </div>
+        <div style={{ color: C.muted, fontSize: 11 }}>
+          {active ? 'All new trades are halted.' : 'All trading is proceeding normally.'}
+        </div>
+      </div>
+
+      {/* Kill button */}
+      {!active && (
+        <button onClick={() => setShowModal(true)} style={{
+          display: 'block', margin: '0 auto 20px', width: '100%',
+          background: 'rgba(239,68,68,.1)', border: `2px solid ${C.red}`, color: C.red,
+          padding: '16px 40px', borderRadius: 8, fontSize: 16, fontWeight: 700,
+          fontFamily: 'inherit', cursor: 'pointer', letterSpacing: '.06em', textTransform: 'uppercase',
+        }}>EMERGENCY STOP</button>
+      )}
+      {active && (
+        <button onClick={reset} style={{
+          display: 'block', margin: '0 auto 20px', width: '100%',
+          background: 'rgba(34,197,94,.08)', border: `1px solid ${C.green}`, color: C.green,
+          padding: '12px 40px', borderRadius: 8, fontSize: 14, fontWeight: 600,
+          fontFamily: 'inherit', cursor: 'pointer', letterSpacing: '.04em',
+        }}>Reset Kill Switch</button>
+      )}
+
+      {/* Audit log */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>Recent Audit Log</div>
+        <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Time', 'Action', 'Details'].map(h => <th key={h} style={s.th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {auditLog.length === 0
+                ? <tr><td colSpan={3} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 16 }}>No audit entries</td></tr>
+                : auditLog.map((a, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(a.timestamp)}</td>
+                    <td style={{ ...s.td, color: C.yellow }}>{a.action}</td>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{JSON.stringify(a.details ?? {}).slice(0, 80)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Confirm modal */}
+      {showModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)',
+          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div style={{ ...s.card, maxWidth: 440, width: '90%' }}>
+            <h3 style={{ color: C.red, marginBottom: 12, fontSize: 15 }}>Confirm Emergency Stop</h3>
+            <p style={{ color: C.muted, fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
+              This will immediately close ALL open positions with market orders and halt all new trades.
+              This action is logged and cannot be undone automatically.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowModal(false)} style={btnStyle}>Cancel</button>
+              <button onClick={confirmKill} style={{
+                ...btnStyle, background: 'rgba(239,68,68,.15)', borderColor: C.red, color: C.red,
+              }}>STOP TRADING NOW</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const btnStyle: React.CSSProperties = {
+  background: 'none', border: `1px solid ${C.border}`, color: C.muted,
+  padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+  fontFamily: 'inherit',
+}
+
+// ── Top Bar ────────────────────────────────────────────────────────────────────
+function TopBar({ health, wsConnected }: { health: Health | null; wsConnected: boolean }) {
+  const [clock, setClock] = useState('')
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date()
+      setClock(
+        now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + '  ' +
+        now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) + ' UTC'
+      )
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const mode = health?.trading_mode ?? health?.mode ?? 'paper'
+  const status = health?.status ?? health?.system_status ?? 'unknown'
+  const modeColor = mode === 'live' ? C.red : C.yellow
+  const statusColor = status === 'healthy' ? C.green : C.red
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '0 20px', height: 48, background: C.surface,
+      borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100,
+    }}>
+      <div style={{ color: C.accent, fontSize: 15, fontWeight: 700, letterSpacing: '.04em' }}>
+        MR<span style={{ color: C.green }}>TRADER</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Badge label={mode.toUpperCase()} color={modeColor} />
+        <Badge label={status.toUpperCase()} color={statusColor} />
+        <span style={{ color: C.muted, fontSize: 11, minWidth: 150, textAlign: 'right' }}>{clock}</span>
+        <div title="WebSocket" style={{
+          width: 8, height: 8, borderRadius: '50%',
+          background: wsConnected ? C.green : C.red,
+          boxShadow: wsConnected ? `0 0 6px ${C.green}` : 'none',
+          transition: 'background .3s',
+        }} />
+      </div>
+    </div>
+  )
+}
+
+function Badge({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{
+      padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      textTransform: 'uppercase', letterSpacing: '.06em',
+      background: `${color}26`, color, border: `1px solid ${color}4d`,
+    }}>{label}</span>
+  )
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch'] as const
+type Tab = typeof TABS[number]
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>('Overview')
+  const [summary, setSummary] = useState<Summary>({})
+  const [health, setHealth] = useState<Health | null>(null)
+  const [pnlHistory, setPnlHistory] = useState<{ time: string; pnl: number }[]>([])
+  const [decisions, setDecisions] = useState<Decision[]>([])
+  const [signalFeed, setSignalFeed] = useState<SignalRow[]>([])
+  const [wsConnected, setWsConnected] = useState(false)
+  const wsRef = useRef<WebSocket | null>(null)
+  const { toasts, add: toast } = useToasts()
+
+  // Load summary + health
+  const loadSummary = useCallback(async () => {
+    try {
+      const j = await api.summary() as Summary
+      setSummary(j)
+      if (j.pnl_today != null) {
+        const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+        setPnlHistory(h => {
+          const next = [...h, { time: now, pnl: j.pnl_today! }]
+          return next.length > 60 ? next.slice(-60) : next
+        })
+      }
+    } catch { /* ignore */ }
+    try {
+      const j = await api.health() as Health
+      setHealth(j)
+    } catch { /* ignore */ }
+  }, [])
+
+  const loadDecisions = useCallback(async () => {
+    try {
+      const j = await api.decisions(50) as { data?: Decision[] } | Decision[]
+      setDecisions((j as { data?: Decision[] }).data ?? (j as Decision[]) ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  // WebSocket
+  useEffect(() => {
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const ws = new WebSocket(`${proto}://${location.host}/ws`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setWsConnected(true)
+        toast('WebSocket connected', 'success')
+      }
+      ws.onclose = () => {
+        setWsConnected(false)
+        setTimeout(connect, 3000)
+      }
+      ws.onerror = () => setWsConnected(false)
+      ws.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data) as WsMessage
+          handleWs(msg)
+        } catch { /* ignore */ }
+      }
+    }
+
+    function handleWs(msg: WsMessage) {
+      const { type, data } = msg
+      if (type === 'portfolio_update') {
+        setSummary(s => ({ ...s, ...data }))
+      }
+      if (type === 'trade_executed' || type === 'trade_closed' || type === 'agent_decision') {
+        const kind: SignalRow['kind'] = type === 'trade_executed' ? 'buy' : type === 'trade_closed' ? 'sell' : 'signal'
+        const sym = (data.symbol as string) ?? (data.reasoning as { symbol?: string } | undefined)?.symbol ?? '?'
+        const msgText = (data.action as string) ?? (data.decision_type as string) ?? (data.message as string) ?? ''
+        const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+        setSignalFeed(f => [{ time: now, symbol: sym, kind, msg: msgText }, ...f].slice(0, 100))
+      }
+      if (type === 'alert') toast((data.message as string) ?? JSON.stringify(data), 'warning')
+    }
+
+    connect()
+    return () => { wsRef.current?.close() }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Initial load + polling
+  useEffect(() => {
+    loadSummary()
+    loadDecisions()
+    const id = setInterval(() => { loadSummary(); loadDecisions() }, 15000)
+    return () => clearInterval(id)
+  }, [loadSummary, loadDecisions])
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text }}>
+      <TopBar health={health} wsConnected={wsConnected} />
+
+      {/* Tab bar */}
+      <div style={{
+        display: 'flex', background: C.surface, borderBottom: `1px solid ${C.border}`,
+        padding: '0 20px', overflowX: 'auto',
+      }}>
+        {TABS.map(t => (
+          <div key={t} onClick={() => setTab(t)} style={{
+            padding: '10px 18px', cursor: 'pointer', fontSize: 12, fontWeight: 500,
+            color: tab === t ? C.accent : C.muted,
+            borderBottom: tab === t ? `2px solid ${C.accent}` : '2px solid transparent',
+            whiteSpace: 'nowrap', transition: 'color .2s, border-color .2s',
+          }}>{t}</div>
+        ))}
+      </div>
+
+      {/* Panels */}
+      <div style={{ flex: 1, padding: '16px 20px', overflowY: 'auto' }}>
+        {tab === 'Overview' && (
+          <OverviewPanel summary={summary} health={health} pnlHistory={pnlHistory} decisions={decisions} />
+        )}
+        {tab === 'Positions' && <PositionsPanel onRefresh={loadSummary} />}
+        {tab === 'Trades' && <TradesPanel />}
+        {tab === 'Signal Monitor' && <SignalsPanel feed={signalFeed} decisions={decisions} />}
+        {tab === 'Capital Ramp' && <RampPanel toast={toast} />}
+        {tab === 'Kill Switch' && <KillPanel toast={toast} />}
+      </div>
+
+      <ToastContainer toasts={toasts} />
+    </div>
+  )
+}

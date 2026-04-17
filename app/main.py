@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db, check_db_connection
 from app.integrations import get_alpaca_client, get_redis_queue
+import os
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from app.api.orchestrator_routes import router as orchestrator_router
 from app.api.routes import router as dashboard_router
 from app.api.websocket import websocket_endpoint
@@ -285,9 +287,21 @@ async def websocket_route(websocket):
     await websocket_endpoint(websocket)
 
 
+_REACT_DIST = "frontend/dist"
+_REACT_INDEX = os.path.join(_REACT_DIST, "index.html")
+_LEGACY_HTML = "frontend/dashboard.html"
+
+# Mount React build assets if the dist folder exists
+if os.path.isdir(_REACT_DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_REACT_DIST, "assets")), name="assets")
+
+
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard():
-    with open("frontend/dashboard.html") as f:
+    if os.path.isfile(_REACT_INDEX):
+        with open(_REACT_INDEX) as f:
+            return HTMLResponse(content=f.read())
+    with open(_LEGACY_HTML) as f:
         return HTMLResponse(content=f.read())
 
 
