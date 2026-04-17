@@ -29,4 +29,15 @@ export const api = {
   increaseCapital: () => post('/api/dashboard/live/increase-capital'),
   readiness: () => get('/api/dashboard/live/readiness'),
   signalAttribution: (days = 90) => get(`/api/dashboard/analytics/signal-attribution?days=${days}`),
+  // Orchestrator
+  orchStatus: () => get('/api/orchestrator/status'),
+  marketStatus: () => get('/api/orchestrator/market-status'),
+  sessionLog: (limit = 50) => get(`/api/orchestrator/session-log?limit=${limit}`),
+  orchJobs: () => get('/api/orchestrator/jobs'),
+  pauseTrading: () => post('/api/orchestrator/pause-trading'),
+  resumeTrading: () => post('/api/orchestrator/resume-trading'),
+  triggerCycle: () => post('/api/orchestrator/trigger-cycle'),
+  triggerRetraining: () => post('/api/orchestrator/trigger-retraining'),
+  pauseJob: (id: string) => post(`/api/orchestrator/jobs/${id}/pause`),
+  resumeJob: (id: string) => post(`/api/orchestrator/jobs/${id}/resume`),
 }

@@ -99,3 +99,32 @@ export interface AttributionItem {
   win_rate: number
   avg_pnl: number
 }
+
+export interface MarketStatus {
+  is_open: boolean
+  current_time_et: string
+  weekday: string
+  next_event: { event: string; minutes?: number; date?: string; time?: string }
+}
+
+export interface OrchestratorStatus {
+  running: boolean
+  agents: Record<string, string>
+  scheduled_jobs: number
+  queues: Record<string, number>
+  market?: MarketStatus
+}
+
+export interface ScheduledJob {
+  id: string
+  name: string
+  next_run_time: string | null
+  paused: boolean
+}
+
+export interface SessionLogEntry {
+  timestamp: string
+  level: string
+  message: string
+  detail: Record<string, unknown>
+}
