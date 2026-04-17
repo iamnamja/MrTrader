@@ -32,13 +32,17 @@ class PortfolioSelectorModel:
 
         if model_type == "xgboost":
             self.model = XGBClassifier(
-                n_estimators=100,
-                max_depth=6,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
+                n_estimators=400,
+                max_depth=4,          # shallower = less overfitting with many features
+                learning_rate=0.03,   # lower lr needs more trees but generalises better
+                subsample=0.7,
+                colsample_bytree=0.6, # use 60% of features per tree — reduces feature correlation
+                min_child_weight=10,  # require ≥10 samples per leaf — prevents noise splits
+                gamma=0.1,            # min loss reduction to make a split
+                reg_alpha=0.1,        # L1 regularisation
+                reg_lambda=1.5,       # L2 regularisation
                 random_state=42,
-                eval_metric="logloss",
+                eval_metric="auc",
                 verbosity=0,
             )
         else:
@@ -56,17 +60,20 @@ class PortfolioSelectorModel:
         y: np.ndarray,
         feature_names: Optional[List[str]] = None,
         scale_pos_weight: Optional[float] = None,
+        X_val: Optional[np.ndarray] = None,
+        y_val: Optional[np.ndarray] = None,
+        early_stopping_rounds: int = 30,
     ) -> None:
         """
         Fit the model on pre-engineered features.
 
         Args:
-            X:                Feature matrix (n_samples, n_features).
-            y:                Binary labels (1 = good performer, 0 = poor).
-            feature_names:    Optional list of feature names for logging.
-            scale_pos_weight: XGBoost class-weight ratio (n_neg / n_pos).
-                              Pass this when labels are imbalanced so the model
-                              doesn't collapse to predicting the majority class.
+            X:                    Feature matrix (n_samples, n_features).
+            y:                    Binary labels (1 = good performer, 0 = poor).
+            feature_names:        Optional list of feature names for logging.
+            scale_pos_weight:     XGBoost class-weight ratio (n_neg / n_pos).
+            X_val / y_val:        Optional validation set for early stopping.
+            early_stopping_rounds: Stop if AUC doesn't improve for N rounds.
         """
         logger.info(
             "Training %s model — %d samples, %d features",
@@ -78,7 +85,19 @@ class PortfolioSelectorModel:
             logger.info("scale_pos_weight=%.2f", scale_pos_weight)
 
         X_scaled = self.scaler.fit_transform(X)
-        self.model.fit(X_scaled, y)
+
+        if self.model_type == "xgboost" and X_val is not None and y_val is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            self.model.set_params(early_stopping_rounds=early_stopping_rounds)
+            self.model.fit(
+                X_scaled, y,
+                eval_set=[(X_val_scaled, y_val)],
+                verbose=False,
+            )
+            logger.info("Early stopping: best iteration = %s", getattr(self.model, "best_iteration", "n/a"))
+        else:
+            self.model.fit(X_scaled, y)
+
         self.feature_names = feature_names
         self.is_trained = True
 
