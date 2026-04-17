@@ -521,6 +521,16 @@ async def get_live_audit_log(limit: int = 100):
         db.close()
 
 
+@router.get("/live/readiness")
+async def live_readiness_check():
+    """
+    Pre-flight checklist for switching to live trading.
+    Returns a structured pass/fail report for all safety criteria.
+    """
+    from app.live_trading.readiness import ReadinessChecker
+    return ReadinessChecker().run()
+
+
 # ─── Analytics ────────────────────────────────────────────────────────────────
 
 @router.get("/analytics/signal-attribution")
