@@ -43,11 +43,16 @@ class ModelTrainer:
     feature engineering, and XGBoost training for the swing model.
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance"):
+    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance", use_feature_store: bool = True):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type="xgboost")
         self._provider_name = provider
+        if use_feature_store:
+            from app.ml.feature_store import FeatureStore
+            self._feature_store: Optional[object] = FeatureStore(f"{model_dir}/feature_store.db")
+        else:
+            self._feature_store = None
 
     @property
     def _provider(self):
@@ -262,15 +267,21 @@ class ModelTrainer:
                 if label is None:
                     continue  # neither target nor stop hit — skip
 
-                # ── Features ─────────────────────────────────────────────────
+                # ── Features (cache-first) ────────────────────────────────────
                 sector = SECTOR_MAP.get(symbol)
-                features = self.feature_engineer.engineer_features(
-                    symbol, window_df,
-                    sector=sector,
-                    regime_score=regime_score,
-                    fetch_fundamentals=fetch_fundamentals,
-                    as_of_date=w_end_date,
-                )
+                features = None
+                if self._feature_store is not None:
+                    features = self._feature_store.get(symbol, w_end_date)
+                if features is None:
+                    features = self.feature_engineer.engineer_features(
+                        symbol, window_df,
+                        sector=sector,
+                        regime_score=regime_score,
+                        fetch_fundamentals=fetch_fundamentals,
+                        as_of_date=w_end_date,
+                    )
+                    if features is not None and self._feature_store is not None:
+                        self._feature_store.put(symbol, w_end_date, features)
                 if features is None:
                     continue
 
