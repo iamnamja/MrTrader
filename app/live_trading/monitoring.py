@@ -131,6 +131,17 @@ class LiveTradingMonitor:
         # Slack if configured
         self._slack(severity, title, message)
 
+        # Email if configured
+        self._email(severity, title, message)
+
+    @staticmethod
+    def _email(severity: str, title: str, message: str):
+        from app.alerts.email_sender import send_email_alert, build_alert_html
+        subject = f"{severity}: {title}"
+        body_text = f"{title}\n\n{message}\n\nSeverity: {severity}"
+        body_html = build_alert_html(severity, title, message)
+        send_email_alert(subject, body_text, body_html)
+
     @staticmethod
     def _slack(severity: str, title: str, message: str):
         from app.config import settings
