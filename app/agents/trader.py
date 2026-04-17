@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
 CHECK_INTERVAL = 300      # seconds between full scan cycles
 MIN_BARS = 220            # minimum daily bars required for EMA(200) + buffer
+INTRADAY_FORCE_CLOSE_HOUR = 15
+INTRADAY_FORCE_CLOSE_MINUTE = 45  # 3:45 PM ET force-flat all intraday positions
 
 
 class Trader(BaseAgent):
@@ -42,7 +44,10 @@ class Trader(BaseAgent):
         self.approved_symbols: Dict[str, Dict[str, Any]] = {}   # symbol → proposal
         self.active_positions: Dict[str, Dict[str, Any]] = {}   # symbol → position state
         # position state keys:
-        #   entry_price, stop_price, target_price, highest_price, bars_held, trade_id
+        #   entry_price, stop_price, target_price, highest_price, bars_held, trade_id,
+        #   trade_type ("swing" | "intraday")
+        self._force_closed_today: bool = False
+        self._last_date: str = ""
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -53,6 +58,12 @@ class Trader(BaseAgent):
 
         while self.status == "running":
             try:
+                now = datetime.now()
+                today = now.strftime("%Y-%m-%d")
+                if today != self._last_date:
+                    self._force_closed_today = False
+                    self._last_date = today
+
                 # Drain all pending approved proposals (non-blocking)
                 while True:
                     proposal = self.get_message(APPROVED_TRADES_QUEUE, timeout=1)
@@ -62,6 +73,16 @@ class Trader(BaseAgent):
                     if symbol:
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
+
+                # 3:45 PM ET: force-close all intraday positions
+                if (
+                    now.weekday() < 5
+                    and now.hour == INTRADAY_FORCE_CLOSE_HOUR
+                    and now.minute >= INTRADAY_FORCE_CLOSE_MINUTE
+                    and not self._force_closed_today
+                ):
+                    await self._force_close_intraday()
+                    self._force_closed_today = True
 
                 # Check VIX / market volatility (cached, won't hammer yfinance)
                 circuit_breaker.check_market_volatility()
@@ -177,6 +198,7 @@ class Trader(BaseAgent):
             db.add(db_order)
             db.commit()
 
+            proposal = self.approved_symbols.get(symbol, {})
             self.active_positions[symbol] = {
                 "entry_price":   filled_price,
                 "stop_price":    result.stop_price,
@@ -184,6 +206,7 @@ class Trader(BaseAgent):
                 "highest_price": filled_price,
                 "bars_held":     0,
                 "trade_id":      trade.id,
+                "trade_type":    proposal.get("trade_type", "swing"),
             }
             self.approved_symbols.pop(symbol, None)
 
@@ -279,10 +302,19 @@ class Trader(BaseAgent):
             db.add(db_order)
             db.commit()
 
+            trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
             self.active_positions.pop(symbol, None)
 
             # Update circuit breaker with win/loss
             circuit_breaker.record_trade_result(won=(pnl > 0))
+
+            # Release intraday slot in risk manager
+            if trade_type == "intraday":
+                try:
+                    from app.agents.risk_manager import risk_manager
+                    risk_manager.on_intraday_position_closed()
+                except Exception:
+                    pass
 
             self.logger.info(
                 "EXITED %s @ $%.2f | reason=%s | PnL=$%.2f",
@@ -304,6 +336,47 @@ class Trader(BaseAgent):
             self.logger.error("Failed to record exit for %s: %s", symbol, e)
         finally:
             db.close()
+
+    # ─── Intraday Force Close ─────────────────────────────────────────────────
+
+    async def _force_close_intraday(self):
+        """
+        Force-close all active intraday positions at 3:45 PM ET.
+        Prevents overnight exposure from intraday trades.
+        """
+        intraday_symbols = [
+            sym for sym, pos in self.active_positions.items()
+            if pos.get("trade_type") == "intraday"
+        ]
+        if not intraday_symbols:
+            return
+
+        self.logger.warning(
+            "3:45 PM force-close: closing %d intraday position(s): %s",
+            len(intraday_symbols), intraday_symbols,
+        )
+
+        from app.integrations import get_alpaca_client
+        alpaca = get_alpaca_client()
+
+        for symbol in intraday_symbols:
+            try:
+                await self._execute_exit(symbol, alpaca.get_latest_price(symbol) or 0,
+                                         "FORCE_CLOSE_EOD", alpaca)
+            except Exception as exc:
+                self.logger.error("Force-close failed for %s: %s", symbol, exc)
+
+        # Notify risk manager to reset intraday counter
+        try:
+            from app.agents.risk_manager import risk_manager
+            risk_manager.reset_intraday_count()
+        except Exception:
+            pass
+
+        await self.log_decision(
+            "INTRADAY_FORCE_CLOSED",
+            reasoning={"symbols": intraday_symbols, "count": len(intraday_symbols)},
+        )
 
 
 # Module-level singleton
