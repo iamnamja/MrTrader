@@ -12,8 +12,14 @@ hit avoids all API calls and computation; only new dates require fresh work.
 The store is append-only from the training pipeline perspective.  Live
 inference never reads from it — it always uses fresh data.
 
+Versioning: SCHEMA_VERSION is stored in a metadata table.  When the version
+in the DB doesn't match the current code version, the cache is automatically
+cleared so stale feature vectors (missing new columns) are never served.
+Bump SCHEMA_VERSION whenever engineer_features() adds or removes features.
+
 Schema:
   features(symbol TEXT, as_of_date TEXT, features_json TEXT, created_at TEXT)
+  meta(key TEXT PRIMARY KEY, value TEXT)
 """
 
 import json
@@ -26,6 +32,10 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = "app/ml/models/feature_store.db"
+
+# Bump this whenever engineer_features() gains or loses columns.
+# Mismatch → cache auto-cleared on startup.
+SCHEMA_VERSION = "v2"  # v1=66 features, v2=74 features (Phase 43)
 
 
 class FeatureStore:
@@ -59,6 +69,32 @@ class FeatureStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbol_date ON features(symbol, as_of_date)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        self._check_version()
+
+    def _check_version(self) -> None:
+        """Clear cache if stored schema version doesn't match current code version."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            stored = row["value"] if row else None
+        if stored != SCHEMA_VERSION:
+            count = self.count()
+            if count > 0:
+                logger.warning(
+                    "Feature store schema version mismatch (stored=%s current=%s) — "
+                    "clearing %d stale entries",
+                    stored, SCHEMA_VERSION, count,
+                )
+                self.clear()
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                    (SCHEMA_VERSION,),
+                )
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=30)
@@ -143,5 +179,6 @@ class FeatureStore:
             return cursor.rowcount
 
     def clear(self) -> None:
+        """Delete all cached feature rows (preserves schema version record)."""
         with self._conn() as conn:
             conn.execute("DELETE FROM features")
