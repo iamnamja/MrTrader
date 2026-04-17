@@ -137,6 +137,15 @@ export interface MacroIndicators {
   unemployment_rate: number | null
 }
 
+export interface WatchlistTicker {
+  id: number
+  symbol: string
+  sector: string | null
+  notes: string | null
+  active: boolean
+  added_at: string | null
+}
+
 export interface RegimeDetail {
   regime: string
   composite_score: number

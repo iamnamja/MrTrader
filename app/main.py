@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.orchestrator_routes import router as orchestrator_router
 from app.api.routes import router as dashboard_router
+from app.api.watchlist_routes import router as watchlist_router
 from app.api.websocket import websocket_endpoint
 
 # Configure logging
@@ -28,6 +29,7 @@ app = FastAPI(
 # Register routers
 app.include_router(orchestrator_router)
 app.include_router(dashboard_router)
+app.include_router(watchlist_router)
 
 # Add CORS middleware
 app.add_middleware(

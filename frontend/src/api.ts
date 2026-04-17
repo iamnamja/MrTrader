@@ -43,4 +43,13 @@ export const api = {
   // Macro
   macroIndicators: () => get('/api/dashboard/analytics/macro'),
   regimeDetail: () => get('/api/dashboard/analytics/regime'),
+  // Watchlist
+  watchlist: (activeOnly?: boolean) => get(`/api/watchlist${activeOnly ? '?active_only=true' : ''}`),
+  watchlistAdd: (symbol: string, sector?: string, notes?: string) =>
+    post('/api/watchlist', { symbol, sector, notes }),
+  watchlistDelete: (symbol: string) =>
+    fetch(`/api/watchlist/${symbol}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() }),
+  watchlistPatch: (symbol: string, patch: { active?: boolean; notes?: string; sector?: string }) =>
+    fetch(`/api/watchlist/${symbol}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() }),
+  watchlistBulk: () => post('/api/watchlist/bulk'),
 }

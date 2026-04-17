@@ -102,6 +102,27 @@ class PortfolioManager(BaseAgent):
                 await self.log_decision("PORTFOLIO_MANAGER_ERROR", reasoning={"error": str(e)})
                 await asyncio.sleep(10)
 
+    # ─── Ticker Universe ──────────────────────────────────────────────────────
+
+    def _get_universe(self) -> List[str]:
+        """Return active tickers from DB watchlist; fall back to SP_100_TICKERS."""
+        try:
+            from app.database.session import get_session
+            from app.database.models import WatchlistTicker
+            db = get_session()
+            try:
+                tickers = [
+                    r.symbol for r in
+                    db.query(WatchlistTicker).filter(WatchlistTicker.active == 1).all()
+                ]
+                if tickers:
+                    return tickers
+            finally:
+                db.close()
+        except Exception as exc:
+            self.logger.debug("Watchlist DB unavailable, using SP_100: %s", exc)
+        return list(SP_100_TICKERS)
+
     # ─── Instrument Selection ─────────────────────────────────────────────────
 
     async def select_instruments(self):
@@ -117,7 +138,7 @@ class PortfolioManager(BaseAgent):
 
         features_by_symbol: Dict[str, Dict[str, float]] = {}
 
-        for symbol in SP_100_TICKERS:
+        for symbol in self._get_universe():
             try:
                 bars = self._alpaca.get_bars(symbol, timeframe="1D", limit=300)
                 if bars.empty:
