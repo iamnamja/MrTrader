@@ -199,12 +199,12 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
 
       {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <KpiCard label="Account Value" value={fmt$(summary.portfolio_value ?? summary.equity)} sub="Portfolio equity" />
-        <KpiCard label="Daily P&L" value={fmt$(summary.pnl_today)}
-          sub={summary.pnl_today_pct != null ? fmtPct(summary.pnl_today_pct) : undefined}
-          color={clr(summary.pnl_today)} />
+        <KpiCard label="Account Value" value={fmt$(summary.account_value ?? summary.portfolio_value ?? summary.equity)} sub="Portfolio equity" />
+        <KpiCard label="Daily P&L" value={fmt$(summary.daily_pnl ?? summary.pnl_today)}
+          sub={(summary.daily_pnl_pct ?? summary.pnl_today_pct) != null ? fmtPct(summary.daily_pnl_pct ?? summary.pnl_today_pct) : undefined}
+          color={clr(summary.daily_pnl ?? summary.pnl_today)} />
         <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
-        <KpiCard label="Open Positions" value={summary.open_positions?.toString() ?? '—'} sub="Active trades" />
+        <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
         <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'} sub="All closed trades" />
         <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
           color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
@@ -1616,10 +1616,11 @@ export default function App() {
     try {
       const j = await api.summary() as Summary
       setSummary(j)
-      if (j.pnl_today != null) {
+      const pnlVal = j.daily_pnl ?? j.pnl_today
+      if (pnlVal != null) {
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
         setPnlHistory(h => {
-          const next = [...h, { time: now, pnl: j.pnl_today! }]
+          const next = [...h, { time: now, pnl: pnlVal }]
           return next.length > 60 ? next.slice(-60) : next
         })
       }
