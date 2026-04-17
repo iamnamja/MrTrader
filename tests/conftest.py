@@ -112,8 +112,15 @@ def test_client(mock_alpaca, mock_redis, db_session):
         patch("app.startup_reconciler.reconcile", return_value={"ghost_positions": [], "orphaned_orders": []}),
     ):
         from app.main import app
+        from app.database.session import get_db
+
+        def override_get_db():
+            yield db_session
+
+        app.dependency_overrides[get_db] = override_get_db
         with TestClient(app, raise_server_exceptions=False) as client:
             yield client
+        app.dependency_overrides.pop(get_db, None)
 
 
 # ── Sample model factories ─────────────────────────────────────────────────────
