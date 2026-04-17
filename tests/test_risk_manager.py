@@ -185,21 +185,21 @@ class TestOpenPositions:
         assert ok is True
 
     def test_under_limit(self, limits):
-        ok, msg = validate_open_positions(5, limits)
+        ok, msg = validate_open_positions(3, limits)
         assert ok is True
 
     def test_one_below_limit(self, limits):
-        ok, msg = validate_open_positions(9, limits)
+        ok, msg = validate_open_positions(4, limits)
         assert ok is True
 
     def test_at_limit(self, limits):
-        # 10 open positions — at limit, should block new ones
-        ok, msg = validate_open_positions(10, limits)
+        # 5 open positions — at limit, should block new ones
+        ok, msg = validate_open_positions(5, limits)
         assert ok is False
         assert "limit" in msg.lower()
 
     def test_over_limit(self, limits):
-        ok, msg = validate_open_positions(11, limits)
+        ok, msg = validate_open_positions(6, limits)
         assert ok is False
 
     def test_custom_limit(self):
@@ -276,5 +276,5 @@ class TestRiskLimitsDefaults:
         assert lim.MAX_SECTOR_CONCENTRATION_PCT == 0.20
         assert lim.MAX_DAILY_LOSS_PCT == 0.02
         assert lim.MAX_ACCOUNT_DRAWDOWN_PCT == 0.05
-        assert lim.MAX_OPEN_POSITIONS == 10
+        assert lim.MAX_OPEN_POSITIONS == 5
         assert lim.STOP_LOSS_BASE_PCT == 0.02

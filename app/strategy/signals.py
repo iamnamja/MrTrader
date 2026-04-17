@@ -71,6 +71,7 @@ def generate_signal(
     symbol: str,
     bars: pd.DataFrame,
     check_earnings: bool = True,
+    check_regime: bool = True,
 ) -> SignalResult:
     """
     Compute a trading signal from an OHLCV DataFrame of daily bars.
@@ -81,6 +82,8 @@ def generate_signal(
                          Index should be datetime.  Minimum ~210 rows for EMA(200).
         check_earnings:  if True, suppress BUY signals during earnings blackout window.
                          Set False in backtesting to avoid live API calls.
+        check_regime:    if True, consult regime_detector to allow/suppress strategies.
+                         Set False in backtesting to avoid live VIX API calls.
 
     Returns:
         SignalResult with action="BUY" if entry criteria met, else "HOLD".
@@ -125,6 +128,49 @@ def generate_signal(
             "%s: trend filter failed — trend_ok=%s momentum_ok=%s",
             symbol, trend_ok, momentum_ok,
         )
+        return _no_signal
+
+    # ── Regime filter ─────────────────────────────────────────────────────────
+    regime = None
+    if check_regime:
+        try:
+            from app.strategy.regime_detector import regime_detector
+            regime = regime_detector.get_regime()
+        except Exception as exc:
+            logger.debug("Regime detector error for %s: %s", symbol, exc)
+
+    # ── Mean-reversion path (HIGH/MEDIUM regime) ──────────────────────────────
+    if check_regime and regime in ("HIGH", "MEDIUM"):
+        try:
+            from app.strategy.mean_reversion import check_mean_reversion_signal
+            mr_signal = check_mean_reversion_signal(symbol, bars)
+            if mr_signal == "BUY":
+                if check_earnings:
+                    try:
+                        from app.strategy.earnings_filter import is_earnings_blackout
+                        if is_earnings_blackout(symbol):
+                            logger.info("%s: mean-reversion BUY suppressed — earnings blackout", symbol)
+                            return _no_signal
+                    except Exception as exc:
+                        logger.debug("Earnings filter error for %s: %s", symbol, exc)
+                stop = round(price - ATR_STOP_MULT * atr_val, 4)
+                target = round(price + ATR_TARGET_MULT * atr_val, 4)
+                logger.info("%s: BUY signal [MEAN_REVERSION]  price=%.2f  regime=%s", symbol, price, regime)
+                return SignalResult(
+                    action="BUY",
+                    signal_type="MEAN_REVERSION",
+                    entry_price=price,
+                    stop_price=stop,
+                    target_price=target,
+                    atr=atr_val,
+                    reasoning={"signal_type": "MEAN_REVERSION", "regime": regime, "price": round(price, 4)},
+                )
+        except Exception as exc:
+            logger.debug("Mean reversion check error for %s: %s", symbol, exc)
+
+    # ── Trend-following path (suppressed in HIGH regime) ─────────────────────
+    if check_regime and regime == "HIGH":
+        logger.debug("%s: trend-following suppressed — HIGH volatility regime", symbol)
         return _no_signal
 
     # ── Entry signals ─────────────────────────────────────────────────────────
