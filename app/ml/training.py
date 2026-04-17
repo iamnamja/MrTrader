@@ -144,6 +144,13 @@ class ModelTrainer:
         # Build multi-factor sample weights
         sample_weight = self._build_sample_weights(meta_train)
 
+        # LightGBM-based models use class_weight instead of scale_pos_weight
+        if self.model.model_type in ("lgbm", "lgbm_ensemble"):
+            self.model.model.set_params(class_weight={0: 1.0, 1: float(spw)})
+            if self.model.model_type == "lgbm_ensemble" and self.model._lgbm_model is not None:
+                self.model._lgbm_model.set_params(class_weight={0: 1.0, 1: float(spw)})
+            spw = None  # don't pass as XGBoost param
+
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
         self.model.train(
             X_train, y_train, feature_names,
