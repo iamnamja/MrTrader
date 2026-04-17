@@ -30,18 +30,21 @@ MODEL_DIR = "app/ml/models"
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
 FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_DAYS=10
-STEP_DAYS = 5           # 5-day step gives ~2x samples; still non-overlapping vs FORWARD_DAYS
+# v17 fix: STEP_DAYS = FORWARD_DAYS avoids overlapping forward windows (label leakage).
+# v15/v16 used STEP_DAYS=5 which meant consecutive windows shared 5 of 10 forward days.
+STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
-LABEL_TARGET_PCT = 0.03   # fallback fixed target (used for sample weight scaling only)
-LABEL_STOP_PCT = 0.02     # fallback fixed stop (used when ATR unavailable)
+LABEL_TARGET_PCT = 0.03   # fallback fixed target
+LABEL_STOP_PCT = 0.02     # fallback fixed stop
 
-# ATR-adaptive labeling (Phase 44): target = ATR_MULT_TARGET * ATR14, stop = ATR_MULT_STOP * ATR14
-# Adapts to each stock's volatility regime — high-vol stocks need bigger moves to confirm signal
-ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
-ATR_MULT_STOP = 0.75      # stop = 0.75x the stock's 14-day ATR (tighter than target)
-ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
-ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
+# ATR-adaptive labeling — v17: SYMMETRIC target = stop = 1.0x ATR
+# v15/v16 had asymmetric 1.5x target / 0.75x stop → created class imbalance
+# Symmetric thresholds produce ~50/50 split and remove directional bias in label construction
+ATR_MULT_TARGET = 1.0     # target = 1.0x the stock's 14-day ATR (symmetric)
+ATR_MULT_STOP = 1.0       # stop  = 1.0x the stock's 14-day ATR (symmetric)
+ATR_MIN_TARGET = 0.01     # floor: never require less than 1% move
+ATR_MAX_TARGET = 0.06     # ceiling: never require more than 6% move
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
