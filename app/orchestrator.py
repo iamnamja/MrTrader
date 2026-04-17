@@ -102,6 +102,12 @@ class AgentOrchestrator:
             job_id="model_retraining_trigger"
         )
 
+        # Post-market health check + session summary at 16:15 ET
+        scheduler.schedule_daily_at_time(
+            self._trigger_daily_summary, hour=16, minute=15,
+            job_id="daily_session_summary"
+        )
+
     # ─── Agent runner ─────────────────────────────────────────────────────────
 
     async def _run_agent(self, name: str, agent) -> None:
@@ -147,6 +153,20 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Retraining trigger failed: %s", exc)
             await self._log_error("model_trainer", str(exc))
+
+    async def _trigger_daily_summary(self) -> None:
+        """Run post-market health check and store the daily session summary."""
+        logger.info("Orchestrator: running daily session summary")
+        try:
+            from app.live_trading.monitoring import monitor
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, monitor.daily_session_summary)
+            logger.info(
+                "Daily summary stored: P&L=%.2f status=%s",
+                summary["pnl_today"], summary["status"],
+            )
+        except Exception as exc:
+            logger.error("Daily summary failed: %s", exc)
 
     async def _health_check(self) -> None:
         """Verify DB, Redis, and Alpaca; pause trading if any critical service is down."""

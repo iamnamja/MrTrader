@@ -62,4 +62,11 @@ export const api = {
   watchlistPatch: (symbol: string, patch: { active?: boolean; notes?: string; sector?: string }) =>
     fetch(`/api/watchlist/${symbol}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() }),
   watchlistBulk: () => post('/api/watchlist/bulk'),
+  // Monitor
+  monitorHealth: () => get('/api/dashboard/monitor/health'),
+  monitorSummary: () => get('/api/dashboard/monitor/summary'),
+  monitorRunSummary: () => post('/api/dashboard/monitor/run-summary'),
+  monitorHistory: (days = 7) => get(`/api/dashboard/monitor/history?days=${days}`),
+  // AI briefing
+  aiBriefing: () => get('/api/orchestrator/ai-briefing'),
 }

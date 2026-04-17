@@ -198,3 +198,31 @@ export interface RegimeDetail {
   mean_reversion_active: boolean
   position_size_multiplier: number
 }
+
+export interface MonitorHealth {
+  timestamp: string
+  alpaca_connected: boolean
+  account_value: number
+  buying_power: number
+  cash: number
+  open_positions: number
+  trades_today: number
+  pnl_today: number
+  pnl_today_pct: number
+  max_drawdown_pct: number
+  status: 'healthy' | 'warning' | 'critical'
+  consecutive_losing_days: number
+}
+
+export interface DailySummary {
+  date: string
+  timestamp: string
+  trades_today: number
+  pnl_today: number
+  pnl_today_pct: number
+  account_value: number
+  max_drawdown_pct: number
+  status: string
+  consecutive_losing_days: number
+  open_positions: number
+}
