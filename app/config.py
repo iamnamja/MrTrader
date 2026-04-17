@@ -27,9 +27,14 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = 0.02  # 2%
     max_account_drawdown_pct: float = 0.05  # 5%
 
-    # Alerts
+    # Alerts — Slack
     slack_webhook_url: Optional[str] = None
+    # Alerts — Email (SMTP)
     alert_email: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
 
     # Application
     log_level: str = "INFO"
