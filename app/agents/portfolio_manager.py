@@ -2,10 +2,10 @@
 Portfolio Manager Agent — daily ML-driven instrument selection.
 
 Cycle:
-  1. At market open (09:30 ET, weekdays): run ML model on S&P 100
-  2. Select top 10 stocks by predicted probability
-  3. Send trade proposals to Risk Manager via Redis queue `trade_proposals`
-  4. At 17:00 ET: retrain model with latest data
+  1. At 09:30 ET: run swing model (daily bars) → proposals tagged trade_type="swing"
+  2. At 09:45 ET: run intraday model (5-min bars) → proposals tagged trade_type="intraday"
+  3. Send all proposals to Risk Manager via Redis queue `trade_proposals`
+  4. At 17:00 ET: retrain swing model with latest daily data
 """
 
 import asyncio
@@ -25,22 +25,28 @@ logger = logging.getLogger(__name__)
 
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
 TOP_N_STOCKS = 10
+TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
 POSITION_RISK_PCT = 0.02       # risk 2% of account per trade for sizing
+INTRADAY_SCAN_MINUTE = 45      # 09:45 ET for intraday scan
 
 
 class PortfolioManager(BaseAgent):
     """
-    Runs on a 60-second heartbeat. At market open it selects instruments
-    via the ML model; at 17:00 it retrains the model.
+    Runs on a 60-second heartbeat.
+    09:30: swing model selection (daily bars)
+    09:45: intraday model selection (5-min bars)
+    17:00: retrain swing model
     """
 
     def __init__(self):
         super().__init__("portfolio_manager")
         self.feature_engineer = FeatureEngineer()
-        self.model = PortfolioSelectorModel(model_type="xgboost")
+        self.model = PortfolioSelectorModel(model_type="xgboost")           # swing
+        self.intraday_model = PortfolioSelectorModel(model_type="xgboost")  # intraday
         self.trainer = ModelTrainer()
         self._selected_today: bool = False
+        self._selected_intraday_today: bool = False
         self._retrained_today: bool = False
         self._last_date: Optional[str] = None
 
@@ -66,12 +72,13 @@ class PortfolioManager(BaseAgent):
                 # Reset daily flags at midnight
                 if today != self._last_date:
                     self._selected_today = False
+                    self._selected_intraday_today = False
                     self._retrained_today = False
                     self._last_date = today
 
                 is_weekday = now.weekday() < 5
 
-                # Market open: select instruments
+                # 09:30: swing model selection
                 if (
                     is_weekday
                     and now.hour == MARKET_OPEN_HOUR
@@ -80,6 +87,16 @@ class PortfolioManager(BaseAgent):
                 ):
                     await self.select_instruments()
                     self._selected_today = True
+
+                # 09:45: intraday model selection
+                if (
+                    is_weekday
+                    and now.hour == MARKET_OPEN_HOUR
+                    and now.minute == INTRADAY_SCAN_MINUTE
+                    and not self._selected_intraday_today
+                ):
+                    await self.select_intraday_instruments()
+                    self._selected_intraday_today = True
 
                 # 17:00: retrain model
                 if (
@@ -194,6 +211,87 @@ class PortfolioManager(BaseAgent):
             },
         )
 
+    # ─── Intraday Selection ───────────────────────────────────────────────────
+
+    async def select_intraday_instruments(self):
+        """Run intraday model on 5-min bars, send intraday proposals."""
+        self.logger.info("Selecting intraday instruments (09:45 scan)...")
+
+        if not self.intraday_model.is_trained:
+            self.logger.warning("No intraday model available — skipping intraday scan")
+            return
+
+        features_by_symbol: Dict[str, Dict[str, float]] = {}
+
+        for symbol in self._get_universe()[:50]:  # limit to 50 for speed
+            try:
+                from app.ml.intraday_features import compute_intraday_features, MIN_BARS
+                bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
+                if bars is None or bars.empty or len(bars) < MIN_BARS:
+                    continue
+                feats = compute_intraday_features(bars)
+                if feats is not None:
+                    features_by_symbol[symbol] = feats
+            except Exception as exc:
+                self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
+
+        if not features_by_symbol:
+            self.logger.warning("No intraday features computed")
+            return
+
+        symbols = list(features_by_symbol.keys())
+        X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+
+        try:
+            _, probabilities = self.intraday_model.predict(X)
+        except Exception as exc:
+            self.logger.error("Intraday model prediction failed: %s", exc)
+            return
+
+        min_conf = MIN_CONFIDENCE
+        ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+        selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:TOP_N_INTRADAY]
+
+        if not selected:
+            self.logger.info("No intraday candidates above confidence threshold")
+            return
+
+        self.logger.info("Intraday selected: %s", [s for s, _ in selected])
+
+        try:
+            account = self._alpaca.get_account()
+            account_value = account["portfolio_value"]
+        except Exception:
+            account_value = 20_000.0
+
+        for symbol, confidence in selected:
+            price = self._alpaca.get_latest_price(symbol)
+            if price is None or price <= 0:
+                continue
+            quantity = self._calculate_quantity(price, account_value)
+            proposal: Dict[str, Any] = {
+                "symbol": symbol,
+                "direction": "BUY",
+                "quantity": quantity,
+                "entry_price": price,
+                "confidence": float(confidence),
+                "stop_loss": round(price * 0.995, 2),      # tight 0.5% stop
+                "profit_target": round(price * 1.01, 2),  # 1% target
+                "source_agent": "portfolio_manager",
+                "trade_type": "intraday",
+            }
+            self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
+            self.logger.info(
+                "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
+                symbol, price, confidence,
+            )
+
+        await self.log_decision(
+            "INTRADAY_INSTRUMENTS_SELECTED",
+            reasoning={"selected": [{"symbol": s, "confidence": round(float(p), 4)}
+                                    for s, p in selected]},
+        )
+
     # ─── Proposal Building ────────────────────────────────────────────────────
 
     async def _build_proposals(self, selected: List[tuple]) -> List[Dict[str, Any]]:
@@ -220,6 +318,7 @@ class PortfolioManager(BaseAgent):
                 "stop_loss": round(price * 0.98, 2),
                 "profit_target": round(price * 1.05, 2),
                 "source_agent": "portfolio_manager",
+                "trade_type": "swing",
             }
             # Optional AI signal review (non-blocking)
             try:
@@ -278,32 +377,40 @@ class PortfolioManager(BaseAgent):
     # ─── Model Loading ────────────────────────────────────────────────────────
 
     def _try_load_model(self) -> bool:
-        """Attempt to load the latest model from DB. Returns True on success."""
+        """Attempt to load the latest swing + intraday models from DB."""
         from app.database.models import ModelVersion
         from app.database.session import get_session
+        import os
 
         db = get_session()
+        swing_loaded = intraday_loaded = False
         try:
-            latest = (
-                db.query(ModelVersion)
-                .filter_by(model_name="portfolio_selector", status="ACTIVE")
-                .order_by(ModelVersion.version.desc())
-                .first()
-            )
-            if latest and latest.model_path:
-                import os
-                directory = os.path.dirname(latest.model_path)
-                self.model.load(directory, latest.version)
-                self.logger.info("Loaded model v%d", latest.version)
-                return True
-            else:
-                self.logger.info("No trained model found in DB — will train on first run")
-                return False
-        except Exception as e:
-            self.logger.warning("Could not load model: %s", e)
-            return False
+            for model_name, model_obj in [
+                ("swing", self.model),
+                ("intraday", self.intraday_model),
+            ]:
+                latest = (
+                    db.query(ModelVersion)
+                    .filter_by(model_name=model_name, status="ACTIVE")
+                    .order_by(ModelVersion.version.desc())
+                    .first()
+                )
+                if latest and latest.model_path:
+                    directory = os.path.dirname(latest.model_path)
+                    try:
+                        model_obj.load(directory, latest.version, model_name=model_name)
+                        self.logger.info("Loaded %s model v%d", model_name, latest.version)
+                        if model_name == "swing":
+                            swing_loaded = True
+                        else:
+                            intraday_loaded = True
+                    except Exception as exc:
+                        self.logger.warning("Could not load %s model: %s", model_name, exc)
+                else:
+                    self.logger.info("No %s model in DB yet", model_name)
         finally:
             db.close()
+        return swing_loaded or intraday_loaded
 
 
 # Module-level singleton (lazy — no connections at import time)
