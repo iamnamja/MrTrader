@@ -1613,8 +1613,12 @@ export default function App() {
 
   // Load summary + health
   const loadSummary = useCallback(async () => {
-    try {
-      const j = await api.summary() as Summary
+    const [summaryResult, healthResult] = await Promise.allSettled([
+      api.summary() as Promise<Summary>,
+      api.health() as Promise<Health>,
+    ])
+    if (summaryResult.status === 'fulfilled') {
+      const j = summaryResult.value
       setSummary(j)
       const pnlVal = j.daily_pnl ?? j.pnl_today
       if (pnlVal != null) {
@@ -1624,11 +1628,8 @@ export default function App() {
           return next.length > 60 ? next.slice(-60) : next
         })
       }
-    } catch { /* ignore */ }
-    try {
-      const j = await api.health() as Health
-      setHealth(j)
-    } catch { /* ignore */ }
+    }
+    if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
   }, [])
 
   const loadDecisions = useCallback(async () => {
@@ -1640,6 +1641,7 @@ export default function App() {
 
   // WebSocket
   useEffect(() => {
+    let retryDelay = 3000
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
       const ws = new WebSocket(`${proto}://${location.host}/ws`)
@@ -1647,11 +1649,13 @@ export default function App() {
 
       ws.onopen = () => {
         setWsConnected(true)
+        retryDelay = 3000
         toast('WebSocket connected', 'success')
       }
       ws.onclose = () => {
         setWsConnected(false)
-        setTimeout(connect, 3000)
+        retryDelay = Math.min(retryDelay * 2, 30000)  // exponential backoff, max 30s
+        setTimeout(connect, retryDelay)
       }
       ws.onerror = () => setWsConnected(false)
       ws.onmessage = e => {
