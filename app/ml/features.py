@@ -4,7 +4,7 @@ Feature engineering for the ML portfolio selection model.
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
 
-Feature groups (64 total):
+Feature groups (68 total):
   1.  RSI (14, 7)                                               — price-only
   2.  MACD (line, signal, histogram)                            — price-only
   3.  EMAs (20, 50, 200) + price position flags                 — price-only
@@ -34,6 +34,7 @@ Feature groups (64 total):
   26. Volatility/options: vol percentile, vol regime, vol-of-vol,
       ATR trend, Parkinson vol (training); put/call ratio, IV ATM,
       IV premium (live inference only via yfinance)              — computed + yfinance
+  27. News sentiment: 3d/7d avg sentiment, article count, momentum  — Polygon news
 """
 
 import logging
@@ -524,5 +525,25 @@ class FeatureEngineer:
                 "options_iv_atm": 0.0,
                 "options_iv_premium": 0.0,
             })
+
+        # ── 27. News sentiment (Polygon) ──────────────────────────────────────
+        # Point-in-time during training: only articles published before as_of_date.
+        # 3-day and 7-day rolling sentiment + article count + momentum (3d-7d shift).
+        _news_default = {
+            "news_sentiment_3d": 0.0,
+            "news_sentiment_7d": 0.0,
+            "news_article_count_7d": 0.0,
+            "news_sentiment_momentum": 0.0,
+        }
+        if fetch_fundamentals:
+            try:
+                from app.ml.news_features import get_news_features
+                news = get_news_features(symbol, as_of_date=as_of_date)
+                features.update(news)
+            except Exception as exc:
+                logger.debug("News features failed for %s: %s", symbol, exc)
+                features.update(_news_default)
+        else:
+            features.update(_news_default)
 
         return features
