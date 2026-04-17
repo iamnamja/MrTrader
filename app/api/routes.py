@@ -602,6 +602,17 @@ async def get_macro_indicators():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/analytics/performance-review")
+async def get_performance_review(days: int = 30):
+    """Return paper trading performance review with backtest drift analysis."""
+    try:
+        from app.analytics.performance_review import get_performance_review as _review
+        return _review(days=days)
+    except Exception as exc:
+        logger.error("Performance review error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/analytics/portfolio-heat")
 async def get_portfolio_heat():
     """Return current portfolio heat (total risk as % of account value)."""

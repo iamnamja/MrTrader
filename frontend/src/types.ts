@@ -129,6 +129,35 @@ export interface SessionLogEntry {
   detail: Record<string, unknown>
 }
 
+export interface DriftItem {
+  metric: string
+  live: number
+  target: number
+  delta: number
+  pct_diff: number
+  status: 'ok' | 'warn' | 'alert'
+}
+
+export interface PerformanceReview {
+  period_days: number
+  start_date: string
+  end_date: string
+  total_trades: number
+  wins: number
+  win_rate_pct: number
+  total_pnl: number
+  avg_pnl_per_trade: number
+  sharpe_estimate: number | null
+  spy_return_pct: number
+  alpha_pct: number | null
+  by_signal: Record<string, { trades: number; wins: number; total_pnl: number; win_rate: number; avg_pnl: number }>
+  backtest_targets: Record<string, number>
+  drift: DriftItem[]
+  alerts: number
+  warnings: number
+  overall_status: 'ok' | 'warn' | 'alert'
+}
+
 export interface MacroIndicators {
   fed_funds_rate: number | null
   yield_10y: number | null

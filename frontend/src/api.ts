@@ -40,6 +40,8 @@ export const api = {
   triggerRetraining: () => post('/api/orchestrator/trigger-retraining'),
   pauseJob: (id: string) => post(`/api/orchestrator/jobs/${id}/pause`),
   resumeJob: (id: string) => post(`/api/orchestrator/jobs/${id}/resume`),
+  // Performance review
+  performanceReview: (days = 30) => get(`/api/dashboard/analytics/performance-review?days=${days}`),
   // Macro
   macroIndicators: () => get('/api/dashboard/analytics/macro'),
   regimeDetail: () => get('/api/dashboard/analytics/regime'),
