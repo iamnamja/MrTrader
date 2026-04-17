@@ -162,9 +162,21 @@ class PortfolioManager(BaseAgent):
             self.logger.error("Model prediction failed: %s", e)
             return
 
-        # Pick top N with confidence above threshold
+        # Pick top N with confidence above threshold (read live config from DB)
+        min_conf, top_n = MIN_CONFIDENCE, TOP_N_STOCKS
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            _db = get_session()
+            try:
+                min_conf = get_agent_config(_db, "pm.min_confidence")
+                top_n = get_agent_config(_db, "pm.top_n_stocks")
+            finally:
+                _db.close()
+        except Exception:
+            pass
         ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
-        selected = [(sym, prob) for sym, prob in ranked if prob >= MIN_CONFIDENCE][:TOP_N_STOCKS]
+        selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:top_n]
 
         self.logger.info("Selected %d instruments: %s", len(selected), [s for s, _ in selected])
 
@@ -213,8 +225,19 @@ class PortfolioManager(BaseAgent):
         return proposals
 
     def _calculate_quantity(self, price: float, account_value: float) -> int:
-        """Size position at POSITION_RISK_PCT of account value."""
-        risk_dollars = account_value * POSITION_RISK_PCT
+        """Size position at pm.position_risk_pct of account value (DB-configurable)."""
+        risk_pct = POSITION_RISK_PCT
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            _db = get_session()
+            try:
+                risk_pct = get_agent_config(_db, "pm.position_risk_pct")
+            finally:
+                _db.close()
+        except Exception:
+            pass
+        risk_dollars = account_value * risk_pct
         qty = int(risk_dollars / price)
         return max(qty, 1)
 

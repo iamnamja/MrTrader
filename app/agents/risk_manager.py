@@ -131,6 +131,17 @@ class RiskManager(BaseAgent):
         """
         reasoning: Dict[str, Any] = {"checks": [], "proposal": proposal}
 
+        # Reload limits from DB so UI changes take effect without restart
+        try:
+            from app.database.session import get_session
+            _db = get_session()
+            try:
+                self.limits = RiskLimits.from_db(_db)
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
         # ── Fetch live account + position data ───────────────────────────────
         try:
             account, positions = self._fetch_account_state()

@@ -40,6 +40,14 @@ export const api = {
   triggerRetraining: () => post('/api/orchestrator/trigger-retraining'),
   pauseJob: (id: string) => post(`/api/orchestrator/jobs/${id}/pause`),
   resumeJob: (id: string) => post(`/api/orchestrator/jobs/${id}/resume`),
+  // Agent config
+  configSchema: () => get('/api/config/schema'),
+  configValues: () => get('/api/config'),
+  configUpdate: (key: string, value: number) => fetch(`/api/config/${key}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  }).then(r => { if (!r.ok) return r.json().then(j => Promise.reject(new Error(j.detail))); return r.json() }),
+  configReset: () => post('/api/config/reset'),
   // Performance review
   performanceReview: (days = 30) => get(`/api/dashboard/analytics/performance-review?days=${days}`),
   // Macro
