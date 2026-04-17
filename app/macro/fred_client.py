@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 CACHE_TTL = 3600  # 1 hour — macro data doesn't move intraday
 
 _FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.json"
-_FRED_API  = "https://api.stlouisfed.org/fred/series/observations"
+_FRED_API = "https://api.stlouisfed.org/fred/series/observations"
 
 
 class FredClient:

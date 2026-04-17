@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 # ── Backtest reference targets (from phase-7 backtesting results) ─────────────
 # These serve as the "expected" baseline for drift detection.
 _BACKTEST_TARGETS = {
-    "win_rate_pct": 55.0,      # % of winning trades
-    "avg_pnl_per_trade": 12.0, # $ average P&L per closed trade
-    "max_drawdown_pct": 5.0,   # % max drawdown
-    "sharpe_estimate": 1.2,    # annualised Sharpe
+    "win_rate_pct": 55.0,  # % of winning trades
+    "avg_pnl_per_trade": 12.0,  # $ average P&L per closed trade
+    "max_drawdown_pct": 5.0,  # % max drawdown
+    "sharpe_estimate": 1.2,  # annualised Sharpe
 }
 
 
