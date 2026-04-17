@@ -30,10 +30,10 @@ MODEL_DIR = "app/ml/models"
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
 FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_DAYS=10
-STEP_DAYS = 10          # non-overlapping steps aligned to forward period
+STEP_DAYS = 5           # 5-day step gives ~2x samples; still non-overlapping vs FORWARD_DAYS
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
-LABEL_TARGET_PCT = 0.05   # matches TARGET_PCT in swing_backtest.py
+LABEL_TARGET_PCT = 0.03   # 3% target — achievable in 10 days, gives ~45% positive labels
 LABEL_STOP_PCT = 0.02     # matches STOP_PCT in swing_backtest.py
 
 
