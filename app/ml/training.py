@@ -33,8 +33,43 @@ FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_
 STEP_DAYS = 5           # 5-day step gives ~2x samples; still non-overlapping vs FORWARD_DAYS
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
-LABEL_TARGET_PCT = 0.03   # 3% target — achievable in 10 days, gives ~45% positive labels
-LABEL_STOP_PCT = 0.02     # matches STOP_PCT in swing_backtest.py
+LABEL_TARGET_PCT = 0.03   # fallback fixed target (used for sample weight scaling only)
+LABEL_STOP_PCT = 0.02     # fallback fixed stop (used when ATR unavailable)
+
+# ATR-adaptive labeling (Phase 44): target = ATR_MULT_TARGET * ATR14, stop = ATR_MULT_STOP * ATR14
+# Adapts to each stock's volatility regime — high-vol stocks need bigger moves to confirm signal
+ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
+ATR_MULT_STOP = 0.75      # stop = 0.75x the stock's 14-day ATR (tighter than target)
+ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
+ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
+
+
+def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
+    """
+    Compute ATR-adaptive target and stop percentages for labeling.
+
+    Uses 14-day ATR of the feature window to scale thresholds to each stock's
+    actual volatility. A 1.5x ATR target on TSLA (~3% ATR) gives 4.5% vs
+    1.5% on PG (~1% ATR) — both meaningful for their respective regimes.
+    Falls back to fixed constants if ATR is unavailable.
+    """
+    try:
+        highs = window_df["high"].values[-15:].astype(float)
+        lows = window_df["low"].values[-15:].astype(float)
+        closes = window_df["close"].values[-15:].astype(float)
+        if len(closes) < 2:
+            raise ValueError("insufficient bars")
+        tr = np.maximum(
+            highs[1:] - lows[1:],
+            np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
+        )
+        atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
+        atr_pct = atr / max(entry_price, 1e-6)
+        target_pct = float(np.clip(ATR_MULT_TARGET * atr_pct, ATR_MIN_TARGET, ATR_MAX_TARGET))
+        stop_pct = float(np.clip(ATR_MULT_STOP * atr_pct, ATR_MIN_TARGET / 2, ATR_MAX_TARGET / 2))
+        return target_pct, stop_pct
+    except Exception:
+        return LABEL_TARGET_PCT, LABEL_STOP_PCT
 
 
 class ModelTrainer:
@@ -240,8 +275,9 @@ class ModelTrainer:
                 if entry_price <= 0:
                     continue
 
-                target_price = entry_price * (1 + LABEL_TARGET_PCT)
-                stop_price = entry_price * (1 - LABEL_STOP_PCT)
+                target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+                target_price = entry_price * (1 + target_pct)
+                stop_price = entry_price * (1 - stop_pct)
 
                 label = None
                 outcome_return = 0.0
