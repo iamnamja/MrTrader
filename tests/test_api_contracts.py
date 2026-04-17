@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from app.api.cache import _store as _cache_store
 
 
 # ── Client factory (context-manager — keeps patches alive during requests) ────
@@ -107,6 +108,14 @@ class TestHealthEndpoints:
 
 
 # ── Positions ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def clear_api_cache():
+    """Clear TTL cache before each test so cached responses don't bleed across tests."""
+    _cache_store.clear()
+    yield
+    _cache_store.clear()
+
 
 class TestPositionsEndpoint:
     def test_empty_positions(self):
