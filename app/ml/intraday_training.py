@@ -190,10 +190,14 @@ class IntradayModelTrainer:
                     spy_mask = spy_idx.normalize().date == day
                     spy_day_bars = spy_data.loc[spy_mask] if spy_mask.any() else None
 
-                # Prior day close for gap calculation
-                prior_close = self._prior_close(df, day)
+                # Prior day close / high / low for gap and S/R features
+                prior_close, prior_day_high, prior_day_low = self._prior_day_ohlc(df, day)
 
-                feats = compute_intraday_features(feat_bars, spy_day_bars, prior_close)
+                feats = compute_intraday_features(
+                    feat_bars, spy_day_bars, prior_close,
+                    prior_day_high=prior_day_high,
+                    prior_day_low=prior_day_low,
+                )
                 if feats is None:
                     continue
 
@@ -205,16 +209,24 @@ class IntradayModelTrainer:
 
         return np.array(X_rows), np.array(y_vals)
 
-    def _prior_close(self, df: pd.DataFrame, day: date) -> Optional[float]:
+    def _prior_day_ohlc(
+        self, df: pd.DataFrame, day: date
+    ) -> tuple:
+        """Return (prior_close, prior_day_high, prior_day_low) for the day before `day`."""
         idx = pd.DatetimeIndex(df.index)
-        prior_days = idx[idx.normalize().date < day]
-        if len(prior_days) == 0:
-            return None
-        last_prior = prior_days[-1]
-        prior_bars = df.loc[df.index <= last_prior]
-        if len(prior_bars) == 0:
-            return None
-        return float(prior_bars["close"].iloc[-1])
+        prior_mask = idx.normalize().date < day
+        if not prior_mask.any():
+            return None, None, None
+        prior_bars = df.loc[prior_mask]
+        last_day = prior_bars.index.normalize().date[-1]
+        last_day_bars = prior_bars.loc[prior_bars.index.normalize().date == last_day]
+        if len(last_day_bars) == 0:
+            return None, None, None
+        return (
+            float(last_day_bars["close"].iloc[-1]),
+            float(last_day_bars["high"].max()),
+            float(last_day_bars["low"].min()),
+        )
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 

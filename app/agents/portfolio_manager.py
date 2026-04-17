@@ -229,7 +229,18 @@ class PortfolioManager(BaseAgent):
                 bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
                 if bars is None or bars.empty or len(bars) < MIN_BARS:
                     continue
-                feats = compute_intraday_features(bars)
+                # Fetch prior-day daily bar for S/R and gap features
+                daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=2)
+                prior_close = prior_high = prior_low = None
+                if daily is not None and len(daily) >= 2:
+                    prev = daily.iloc[-2]
+                    prior_close = float(prev["close"])
+                    prior_high = float(prev["high"])
+                    prior_low = float(prev["low"])
+                feats = compute_intraday_features(
+                    bars, prior_close=prior_close,
+                    prior_day_high=prior_high, prior_day_low=prior_low,
+                )
                 if feats is not None:
                     features_by_symbol[symbol] = feats
             except Exception as exc:
