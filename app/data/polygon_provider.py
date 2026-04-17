@@ -19,7 +19,7 @@ Live signal generation:
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -53,7 +53,7 @@ class PolygonProvider(DataProvider):
         self._s3_secret = s3_secret_key or settings.polygon_s3_secret_key
         self._s3_endpoint = s3_endpoint or settings.polygon_s3_endpoint
         self._s3_bucket = s3_bucket or settings.polygon_s3_bucket
-        self._s3: Optional["PolygonS3"] = None  # lazy init
+        self._s3: Optional[Any] = None  # lazy init — PolygonS3 loaded on demand
 
     @property
     def name(self) -> str:

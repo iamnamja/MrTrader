@@ -20,8 +20,7 @@ call when the plan is upgraded.
 """
 
 import logging
-from datetime import date, timedelta
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -107,8 +106,8 @@ def compute_vol_features(
     # ATR trend: ATR(5) / ATR(20)
     if len(highs) >= 20 and len(lows) >= 20:
         tr = np.maximum(highs[1:] - lows[1:],
-             np.maximum(np.abs(highs[1:] - prices[:-1]),
-                        np.abs(lows[1:] - prices[:-1])))
+                        np.maximum(np.abs(highs[1:] - prices[:-1]),
+                                   np.abs(lows[1:] - prices[:-1])))
         atr5 = float(np.mean(tr[-5:])) if len(tr) >= 5 else None
         atr20 = float(np.mean(tr[-20:])) if len(tr) >= 20 else None
         if atr5 and atr20 and atr20 > 0:

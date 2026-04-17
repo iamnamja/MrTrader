@@ -20,7 +20,7 @@ All endpoints use FMP's /stable/ API (v4 — post-Aug 2025 plan).
 import logging
 import time
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import requests
 

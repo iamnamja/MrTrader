@@ -14,7 +14,6 @@ Key metrics:
 """
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -89,7 +88,6 @@ class PaperValidator:
         returns = [p / max(e, 1e-9) for p, e in zip(pnls, entry_prices)]
 
         wins = sum(1 for p in pnls if p > 0)
-        losses = sum(1 for p in pnls if p <= 0)
         win_rate = wins / len(pnls)
 
         gross_wins = sum(p for p in pnls if p > 0)
