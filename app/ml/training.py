@@ -1,17 +1,20 @@
 """
-Daily model training pipeline for the portfolio selection model.
+Model training pipeline — swing (daily) model.
 
-Uses yfinance for historical OHLCV data (free, no API key required).
-Labels: top 30% return stocks = 1, bottom 30% = 0, middle 40% = skipped.
+Key improvements over v1:
+  - Rolling quarterly windows: ~12 windows x 82 symbols = ~900 samples
+  - Time-based train/test split (train on older periods, test on recent)
+    prevents data leakage and gives honest out-of-sample metrics
+  - Uses DataProvider abstraction — swap yfinance for any future source
+    by passing provider="polygon" etc.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime, timedelta, date
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from app.config import settings
 from app.database.models import ModelVersion
@@ -24,117 +27,263 @@ logger = logging.getLogger(__name__)
 
 MODEL_DIR = "app/ml/models"
 
+# Rolling window config
+WINDOW_DAYS = 63        # ~1 quarter of trading days
+FORWARD_DAYS = 63       # predict return over next quarter
+STEP_DAYS = 63          # step between windows (non-overlapping quarters)
+TEST_FRACTION = 0.25    # most recent 25% of windows = test set
+
 
 class ModelTrainer:
-    """Orchestrates data fetching, labelling, feature engineering, and model training."""
+    """
+    Orchestrates data fetching, rolling-window labelling,
+    feature engineering, and XGBoost training for the swing model.
+    """
 
-    def __init__(self, model_dir: str = MODEL_DIR):
+    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance"):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type="xgboost")
+        self._provider_name = provider
 
-    # ─── Public API ───────────────────────────────────────────────────────────
+    @property
+    def _provider(self):
+        from app.data import get_provider
+        return get_provider(self._provider_name)
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def train_model(
         self,
         symbols: Optional[List[str]] = None,
         years: Optional[int] = None,
+        fetch_fundamentals: bool = True,
     ) -> int:
         """
-        Full pipeline: fetch → label → engineer → train → save → log.
-
-        Returns:
-            Version number of the newly trained model.
+        Full pipeline: fetch -> rolling windows -> features -> train -> save.
+        Returns version number of the saved model.
         """
         symbols = symbols or SP_100_TICKERS
         years = years or settings.historical_data_years
 
-        logger.info("Starting training pipeline — %d symbols, %d years", len(symbols), years)
+        logger.info(
+            "Starting swing training — %d symbols, %d years, provider=%s",
+            len(symbols), years, self._provider_name,
+        )
 
-        symbols_data = self._fetch_historical_data(symbols, years)
+        end_dt = date.today()
+        start_dt = end_dt - timedelta(days=365 * years + FORWARD_DAYS + 30)
+
+        symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         if not symbols_data:
-            raise RuntimeError("No historical data fetched — check network / yfinance.")
+            raise RuntimeError("No historical data fetched.")
 
-        labels = self._create_labels(symbols_data)
+        X_train, y_train, X_test, y_test, feature_names = self._build_rolling_matrix(
+            symbols_data, fetch_fundamentals=fetch_fundamentals
+        )
+        if len(X_train) == 0:
+            raise RuntimeError("No valid training samples after rolling windows.")
 
-        X, y, feature_names = self._build_feature_matrix(symbols_data, labels)
-        if len(X) == 0:
-            raise RuntimeError("No valid samples after feature engineering.")
+        logger.info(
+            "Train: %d samples | Test: %d samples | Features: %d",
+            len(X_train), len(X_test), len(feature_names),
+        )
 
-        self.model.train(X, y, feature_names)
+        self.model.train(X_train, y_train, feature_names)
 
-        version = self._next_version()
-        saved_path = self.model.save(self.model_dir, version)
-        self._record_version(version, len(X), saved_path, years)
+        # Evaluate on held-out test set
+        metrics = self._evaluate(X_test, y_test)
+        logger.info("Out-of-sample metrics: %s", metrics)
 
-        logger.info("Training complete — model v%d saved", version)
+        version = self._next_version("swing")
+        saved_path = self.model.save(self.model_dir, version, model_name="swing")
+        self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
+
         return version
 
-    # ─── Data Fetching ────────────────────────────────────────────────────────
+    # ── Data fetching ─────────────────────────────────────────────────────────
 
-    def _fetch_historical_data(
-        self, symbols: List[str], years: int
+    def _fetch_data(
+        self, symbols: List[str], start: date, end: date
     ) -> Dict[str, pd.DataFrame]:
-        """Download daily OHLCV bars from yfinance for each symbol."""
-        end = datetime.now()
-        start = end - timedelta(days=365 * years)
-        data: Dict[str, pd.DataFrame] = {}
-
-        logger.info("Downloading data from %s to %s", start.date(), end.date())
-
-        for symbol in symbols:
-            try:
-                df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
-                # yfinance may return MultiIndex columns when auto_adjust=True
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.columns = [c.lower() for c in df.columns]
-                if not df.empty and "close" in df.columns:
-                    data[symbol] = df
-                    logger.debug("Downloaded %d bars for %s", len(df), symbol)
-            except Exception as e:
-                logger.warning("Could not download %s: %s", symbol, e)
-
-        logger.info("Downloaded data for %d / %d symbols", len(data), len(symbols))
+        logger.info("Fetching daily bars %s -> %s", start, end)
+        data = self._provider.get_daily_bars_bulk(symbols, start, end)
+        logger.info("Got data for %d / %d symbols", len(data), len(symbols))
         return data
 
-    # ─── Labelling ────────────────────────────────────────────────────────────
+    # ── Rolling window labelling ──────────────────────────────────────────────
 
-    def _create_labels(self, symbols_data: Dict[str, pd.DataFrame]) -> Dict[str, Optional[int]]:
+    def _build_rolling_matrix(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        fetch_fundamentals: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         """
-        Label stocks by total return over the period:
-          - Top 30%  → 1  (good performer)
-          - Bottom 30% → 0  (poor performer)
-          - Middle 40% → None (skipped)
+        For each non-overlapping WINDOW_DAYS window across all symbols:
+          - features: computed from bars in [window_start, window_end]
+          - label:    top/bottom 30% of forward return over next FORWARD_DAYS
+
+        Returns (X_train, y_train, X_test, y_test, feature_names).
+        Test set = most recent TEST_FRACTION of windows (time-based split).
         """
-        returns: List[tuple] = []
+        # Build sorted list of window start dates from the earliest common date
+        all_dates = sorted(set.intersection(
+            *[set(df.index.date) for df in symbols_data.values()]
+        ))
+        if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
+            logger.warning("Not enough common dates for rolling windows")
+            return np.array([]), np.array([]), np.array([]), np.array([]), []
+
+        # Window start indices (step by STEP_DAYS)
+        window_starts = list(range(0, len(all_dates) - WINDOW_DAYS - FORWARD_DAYS, STEP_DAYS))
+        if not window_starts:
+            return np.array([]), np.array([]), np.array([]), np.array([]), []
+
+        # Time-based split: last TEST_FRACTION windows -> test
+        split_idx = max(1, int(len(window_starts) * (1 - TEST_FRACTION)))
+        train_window_starts = window_starts[:split_idx]
+        test_window_starts = window_starts[split_idx:]
+
+        # Regime score once per run (same macro context)
+        regime_score = self._get_regime_score()
+
+        X_train, y_train = self._windows_to_matrix(
+            symbols_data, all_dates, train_window_starts,
+            regime_score, fetch_fundamentals
+        )
+        X_test, y_test = self._windows_to_matrix(
+            symbols_data, all_dates, test_window_starts,
+            regime_score, fetch_fundamentals
+        )
+
+        feature_names = self._last_feature_names
+        return X_train, y_train, X_test, y_test, feature_names
+
+    def _windows_to_matrix(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        all_dates: list,
+        window_starts: list,
+        regime_score: Optional[float],
+        fetch_fundamentals: bool,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        X_rows, y_vals = [], []
+        self._last_feature_names: List[str] = []
+
+        for w_start_idx in window_starts:
+            w_end_idx = w_start_idx + WINDOW_DAYS
+            fwd_end_idx = min(w_end_idx + FORWARD_DAYS, len(all_dates) - 1)
+
+            w_start_date = all_dates[w_start_idx]
+            w_end_date = all_dates[w_end_idx]
+            fwd_end_date = all_dates[fwd_end_idx]
+
+            # Forward returns for each symbol in this window
+            fwd_returns: Dict[str, float] = {}
+            for symbol, df in symbols_data.items():
+                try:
+                    idx = df.index.date
+                    entry = df.loc[idx == w_end_date, "close"]
+                    exit_ = df.loc[idx == fwd_end_date, "close"]
+                    if len(entry) and len(exit_):
+                        fwd_returns[symbol] = float(
+                            (exit_.iloc[0] - entry.iloc[0]) / entry.iloc[0]
+                        )
+                except Exception:
+                    pass
+
+            if len(fwd_returns) < 6:
+                continue
+
+            # Label: top 30% = 1, bottom 30% = 0, middle = skip
+            sorted_ret = sorted(fwd_returns.items(), key=lambda x: x[1])
+            n = len(sorted_ret)
+            lo = int(n * 0.30)
+            hi = int(n * 0.70)
+            labels = {}
+            for i, (sym, _) in enumerate(sorted_ret):
+                if i < lo:
+                    labels[sym] = 0
+                elif i >= hi:
+                    labels[sym] = 1
+                # middle 40% skipped
+
+            # Features for each labeled symbol
+            for symbol, label in labels.items():
+                df = symbols_data[symbol]
+                try:
+                    idx = df.index.date
+                    window_df = df.loc[(idx >= w_start_date) & (idx <= w_end_date)]
+                except Exception:
+                    continue
+
+                if len(window_df) < FeatureEngineer.MIN_BARS:
+                    continue
+
+                sector = SECTOR_MAP.get(symbol)
+                features = self.feature_engineer.engineer_features(
+                    symbol, window_df,
+                    sector=sector,
+                    regime_score=regime_score,
+                    fetch_fundamentals=fetch_fundamentals,
+                )
+                if features is None:
+                    continue
+
+                if not self._last_feature_names:
+                    self._last_feature_names = list(features.keys())
+
+                X_rows.append(list(features.values()))
+                y_vals.append(label)
+
+        return np.array(X_rows), np.array(y_vals)
+
+    # ── Evaluation ────────────────────────────────────────────────────────────
+
+    def _evaluate(self, X_test: np.ndarray, y_test: np.ndarray) -> Dict:
+        if len(X_test) == 0:
+            return {}
+        try:
+            from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
+            preds, proba = self.model.predict(X_test)
+            return {
+                "accuracy": round(float(accuracy_score(y_test, preds)), 4),
+                "precision": round(float(precision_score(y_test, preds, zero_division=0)), 4),
+                "auc": round(float(roc_auc_score(y_test, proba)), 4),
+                "n_test": len(y_test),
+            }
+        except Exception as exc:
+            logger.warning("Evaluation failed: %s", exc)
+            return {}
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _get_regime_score(self) -> Optional[float]:
+        try:
+            from app.strategy.regime_detector import RegimeDetector
+            det = RegimeDetector().get_regime_detail()
+            return float(det.get("composite_score", 0.5))
+        except Exception:
+            return 0.5
+
+    # ── Legacy compatibility: kept so existing code calling _create_labels works
+    def _create_labels(
+        self, symbols_data: Dict[str, pd.DataFrame]
+    ) -> Dict[str, Optional[int]]:
+        """Single-window labels (kept for CLI dry-run compatibility)."""
+        returns = []
         for symbol, df in symbols_data.items():
             close = df["close"]
             if len(close) >= 2:
-                total_return = (close.iloc[-1] - close.iloc[0]) / close.iloc[0]
-                returns.append((symbol, float(total_return)))
-
+                ret = (close.iloc[-1] - close.iloc[0]) / close.iloc[0]
+                returns.append((symbol, float(ret)))
         returns.sort(key=lambda x: x[1])
         n = len(returns)
-        low_threshold = int(n * 0.30)
-        high_threshold = int(n * 0.70)
-
+        lo, hi = int(n * 0.30), int(n * 0.70)
         labels: Dict[str, Optional[int]] = {}
-        for i, (symbol, _) in enumerate(returns):
-            if i < low_threshold:
-                labels[symbol] = 0
-            elif i >= high_threshold:
-                labels[symbol] = 1
-            else:
-                labels[symbol] = None
-
-        good = sum(1 for v in labels.values() if v == 1)
-        bad = sum(1 for v in labels.values() if v == 0)
-        skipped = n - good - bad
-        logger.info("Labels: %d good, %d poor, %d skipped", good, bad, skipped)
+        for i, (sym, _) in enumerate(returns):
+            labels[sym] = 0 if i < lo else (1 if i >= hi else None)
         return labels
-
-    # ─── Feature Matrix ───────────────────────────────────────────────────────
 
     def _build_feature_matrix(
         self,
@@ -142,53 +291,36 @@ class ModelTrainer:
         labels: Dict[str, Optional[int]],
         fetch_fundamentals: bool = True,
     ):
-        """Build numpy arrays X, y and feature_names from labelled symbol data."""
-        # Pre-fetch a single regime score — same macro context for all symbols
-        regime_score: Optional[float] = None
-        try:
-            from app.strategy.regime_detector import RegimeDetector
-            det = RegimeDetector().get_regime_detail()
-            regime_score = float(det.get("composite_score", 0.5))
-        except Exception:
-            pass
-
+        """Single-window feature matrix (kept for CLI dry-run compatibility)."""
+        regime_score = self._get_regime_score()
         X_rows, y_vals = [], []
         feature_names: Optional[List[str]] = None
-
         for symbol, df in symbols_data.items():
             label = labels.get(symbol)
             if label is None:
                 continue
-
             sector = SECTOR_MAP.get(symbol)
             features = self.feature_engineer.engineer_features(
-                symbol, df,
-                sector=sector,
+                symbol, df, sector=sector,
                 regime_score=regime_score,
                 fetch_fundamentals=fetch_fundamentals,
             )
             if features is None:
                 continue
-
             if feature_names is None:
                 feature_names = list(features.keys())
-
             X_rows.append(list(features.values()))
             y_vals.append(label)
-
-        logger.info(
-            "Feature matrix: %d samples × %d features", len(X_rows), len(feature_names or [])
-        )
         return np.array(X_rows), np.array(y_vals), feature_names or []
 
-    # ─── DB helpers ───────────────────────────────────────────────────────────
+    # ── DB helpers ────────────────────────────────────────────────────────────
 
-    def _next_version(self) -> int:
+    def _next_version(self, model_name: str = "swing") -> int:
         db = get_session()
         try:
             latest = (
                 db.query(ModelVersion)
-                .filter_by(model_name="portfolio_selector")
+                .filter_by(model_name=model_name)
                 .order_by(ModelVersion.version.desc())
                 .first()
             )
@@ -196,26 +328,28 @@ class ModelTrainer:
         finally:
             db.close()
 
-    def _record_version(self, version: int, n_samples: int, model_path: str, years: int) -> None:
+    def _record_version(
+        self, version: int, n_train: int, n_test: int,
+        model_path: str, years: int, metrics: Dict
+    ) -> None:
         db = get_session()
         try:
-            end = datetime.now()
-            start = end - timedelta(days=365 * years)
-            record = ModelVersion(
-                model_name="portfolio_selector",
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=365 * years)
+            db.add(ModelVersion(
+                model_name="swing",
                 version=version,
                 training_date=datetime.utcnow(),
-                data_range_start=start.strftime("%Y-%m-%d"),
-                data_range_end=end.strftime("%Y-%m-%d"),
-                performance={"n_samples": n_samples},
+                data_range_start=start_dt.strftime("%Y-%m-%d"),
+                data_range_end=end_dt.strftime("%Y-%m-%d"),
+                performance={**metrics, "n_train": n_train, "n_test": n_test},
                 status="ACTIVE",
                 model_path=model_path,
-            )
-            db.add(record)
+            ))
             db.commit()
-            logger.info("Model v%d metadata saved to DB", version)
-        except Exception as e:
+            logger.info("Swing model v%d saved to DB", version)
+        except Exception as exc:
             db.rollback()
-            logger.error("Failed to save model version to DB: %s", e)
+            logger.error("Failed to save model version: %s", exc)
         finally:
             db.close()
