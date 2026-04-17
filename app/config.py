@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     # Accepts ALPHA_VANTAGE_API_KEY or ALPHA_ADVANTAGE_API_KEY (common typo)
     alpha_vantage_api_key: Optional[str] = None
     alpha_advantage_api_key: Optional[str] = None  # alias for typo-tolerant .env
+    # Financial Modeling Prep — fundamentals, earnings history, analyst ratings
+    fmp_api_key: Optional[str] = None
+    # Polygon.io — intraday bars, options flow, news sentiment
+    polygon_api_key: Optional[str] = None
+    polygon_s3_access_key: Optional[str] = None   # for bulk flat-file downloads
+    polygon_s3_secret_key: Optional[str] = None
+    polygon_s3_endpoint: Optional[str] = None
+    polygon_s3_bucket: Optional[str] = None
     reddit_client_id: Optional[str] = None
     reddit_client_secret: Optional[str] = None
     reddit_user_agent: str = "MrTrader/1.0"
