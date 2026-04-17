@@ -44,19 +44,19 @@ class AgentDecisionResponse(BaseModel):
 
 class DashboardSummaryResponse(BaseModel):
     timestamp: datetime
-    account_value: float
-    buying_power: float
-    cash: float
-    daily_pnl: float
-    daily_pnl_pct: float
-    total_pnl: float
-    total_pnl_pct: float
-    open_positions_count: int
-    trades_today_count: int
+    account_value: Optional[float] = None
+    buying_power: Optional[float] = None
+    cash: Optional[float] = None
+    daily_pnl: float = 0.0
+    daily_pnl_pct: Optional[float] = None
+    total_pnl: Optional[float] = None
+    total_pnl_pct: Optional[float] = None
+    open_positions_count: int = 0
+    trades_today_count: int = 0
     trading_mode: str
     system_status: str
-    win_rate: Optional[float] = None        # % of closed trades that were profitable
-    max_drawdown_pct: Optional[float] = None  # peak-to-trough drawdown from closed trades
+    win_rate: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
 
 
 class SystemHealthResponse(BaseModel):
