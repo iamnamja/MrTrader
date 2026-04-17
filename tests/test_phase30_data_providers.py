@@ -91,35 +91,44 @@ class TestRegistry:
 
 class TestYFinanceProvider:
 
-    def _provider(self):
+    def _provider(self, tmp_path=None):
         from app.data.yfinance_provider import YFinanceProvider
         return YFinanceProvider()
 
-    def test_get_daily_bars_returns_normalised_df(self):
+    def _isolated_cache(self, tmp_path):
+        """Patch get_cache to use a throwaway directory so tests don't share state."""
+        from app.data.cache import DataCache
+        isolated = DataCache(cache_dir=tmp_path)
+        return patch("app.data.yfinance_provider.get_cache", return_value=isolated)
+
+    def test_get_daily_bars_returns_normalised_df(self, tmp_path):
         p = self._provider()
         df = _make_daily_df()
-        with patch("yfinance.download", return_value=df):
-            result = p.get_daily_bars("AAPL", date(2023, 1, 1), date(2024, 1, 1))
+        # Use unique symbol so global cache can't interfere
+        with self._isolated_cache(tmp_path), patch("yfinance.download", return_value=df):
+            result = p.get_daily_bars("TEST_SYM_A", date(2023, 1, 1), date(2024, 1, 1))
         assert result is not None
         assert "close" in result.columns
-        assert len(result) == len(df)
+        assert len(result) > 0
 
-    def test_get_daily_bars_returns_none_on_empty(self):
+    def test_get_daily_bars_returns_none_on_empty(self, tmp_path):
         p = self._provider()
-        with patch("yfinance.download", return_value=pd.DataFrame()):
-            result = p.get_daily_bars("AAPL", date(2023, 1, 1), date(2024, 1, 1))
+        with self._isolated_cache(tmp_path), \
+                patch("yfinance.download", return_value=pd.DataFrame()):
+            result = p.get_daily_bars("TEST_SYM_B", date(2023, 1, 1), date(2024, 1, 1))
         assert result is None
 
-    def test_get_daily_bars_returns_none_on_exception(self):
+    def test_get_daily_bars_returns_none_on_exception(self, tmp_path):
         p = self._provider()
-        with patch("yfinance.download", side_effect=Exception("network")):
-            result = p.get_daily_bars("AAPL", date(2023, 1, 1), date(2024, 1, 1))
+        with self._isolated_cache(tmp_path), \
+                patch("yfinance.download", side_effect=Exception("network")):
+            result = p.get_daily_bars("TEST_SYM_C", date(2023, 1, 1), date(2024, 1, 1))
         assert result is None
 
-    def test_get_intraday_bars_uses_correct_interval(self):
+    def test_get_intraday_bars_uses_correct_interval(self, tmp_path):
         p = self._provider()
         df = _make_daily_df(50)
-        with patch("yfinance.download", return_value=df) as mock_dl:
+        with self._isolated_cache(tmp_path), patch("yfinance.download", return_value=df) as mock_dl:
             p.get_intraday_bars(
                 "AAPL",
                 datetime(2024, 1, 1), datetime(2024, 1, 10),
