@@ -335,7 +335,7 @@ class PortfolioManager(BaseAgent):
             try:
                 from app.ai.claude_client import review_pm_signal
                 from app.strategy.regime_detector import regime_detector
-                regime = regime_detector.get_regime()
+                regime = await asyncio.to_thread(regime_detector.get_regime)
                 ai_summary = review_pm_signal(
                     symbol=symbol,
                     signal_type="ML_SELECTION",

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,29 +63,25 @@ async def startup_event():
         raise RuntimeError("Cannot connect to database")
     logger.info("✓ Database connection verified")
 
-    # Check Redis connection
+    # Check Redis + Alpaca concurrently (both are sync network calls)
     try:
         redis_queue = get_redis_queue()
-        if redis_queue.health_check():
+        redis_ok, alpaca_ok = await asyncio.gather(
+            asyncio.to_thread(redis_queue.health_check),
+            asyncio.to_thread(get_alpaca_client().health_check),
+        )
+        if redis_ok:
             logger.info("✓ Redis connection verified")
         else:
             raise RuntimeError("Redis health check failed")
-    except Exception as e:
-        logger.error(f"✗ Redis connection failed: {e}")
-        raise
-
-    # Check Alpaca connection (optional for Phase 1)
-    try:
-        if get_alpaca_client is not None:
-            alpaca = get_alpaca_client()
-            if alpaca.health_check():
-                logger.info("✓ Alpaca connection verified")
-            else:
-                logger.warning("⚠ Alpaca health check failed (will be fixed in Phase 2)")
+        if alpaca_ok:
+            logger.info("✓ Alpaca connection verified")
         else:
-            logger.warning("⚠ Alpaca not installed yet (Phase 1 only, will add in Phase 2)")
+            logger.warning("⚠ Alpaca health check failed")
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.warning(f"⚠ Alpaca connection failed: {e} (Phase 1 only, will fix in Phase 2)")
+        logger.warning(f"⚠ Startup check failed: {e}")
 
     # Restore persisted state (kill switch + capital ramp)
     try:
@@ -102,12 +99,11 @@ async def startup_event():
         from app.startup_reconciler import reconcile
         from app.database.session import get_session
         alpaca = get_alpaca_client()
-        if alpaca.health_check():
-            db = get_session()
-            try:
-                reconcile(alpaca, db)
-            finally:
-                db.close()
+        db = get_session()
+        try:
+            await asyncio.to_thread(reconcile, alpaca, db)
+        finally:
+            db.close()
     except Exception as e:
         logger.warning("Startup reconciliation skipped: %s", e)
 
@@ -166,18 +162,11 @@ async def health_check():
 async def get_status():
     """Get system status"""
     db_ok = check_db_connection()
-    redis_ok = get_redis_queue().health_check()
-
-    alpaca_status = "not installed"
-    if get_alpaca_client is not None:
-        try:
-            get_alpaca_client().health_check()
-            alpaca_status = "✓ connected"
-        except Exception as e:
-            alpaca_status = f"✗ error: {str(e)[:50]}"
-    else:
-        alpaca_status = "⚠ not installed (Phase 1 only)"
-
+    redis_ok, alpaca_ok = await asyncio.gather(
+        asyncio.to_thread(get_redis_queue().health_check),
+        asyncio.to_thread(get_alpaca_client().health_check),
+    )
+    alpaca_status = "✓ connected" if alpaca_ok else "✗ error"
     status = "healthy" if all([db_ok, redis_ok]) else "degraded"
 
     return {
