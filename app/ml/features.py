@@ -585,14 +585,14 @@ class FeatureEngineer:
 
         # ── 29. Volume/price dynamics ─────────────────────────────────────────
         try:
-            _closes = closes[-20:] if len(closes) >= 20 else closes
+            _px = prices[-20:] if len(prices) >= 20 else prices
             _volumes = volumes[-20:] if len(volumes) >= 20 else volumes
             _highs_20 = highs[-20:] if len(highs) >= 20 else highs
             _lows_20 = lows[-20:] if len(lows) >= 20 else lows
 
             # Volume Price Trend: cumulative sum of volume * daily return, normalised
-            if len(_closes) >= 2:
-                _rets = np.diff(np.log(_closes))
+            if len(_px) >= 2:
+                _rets = np.diff(np.log(_px))
                 _vpt = float(np.sum(_volumes[1:] * _rets)) / max(float(np.mean(_volumes)), 1e-9)
             else:
                 _vpt = 0.0
@@ -606,12 +606,14 @@ class FeatureEngineer:
                 _range_exp = 1.0
 
             # 20-day VWAP distance: avg of daily (close - vwap) / vwap
-            if len(_closes) >= 5 and len(_highs_20) == len(_lows_20) == len(_closes):
-                _typical = (_highs_20 + _lows_20 + _closes) / 3.0
+            if len(_px) >= 5 and len(_highs_20) == len(_lows_20) == len(_px):
+                _typical = (_highs_20 + _lows_20 + _px) / 3.0
                 _cum_tv = np.cumsum(_typical * _volumes)
                 _cum_v = np.cumsum(_volumes)
-                _vwap_series = np.where(_cum_v > 0, _cum_tv / _cum_v, _closes)
-                _vwap_dist = float(np.mean((_closes - _vwap_series) / np.where(_vwap_series > 0, _vwap_series, 1)))
+                _vwap_series = np.where(_cum_v > 0, _cum_tv / _cum_v, _px)
+                _vwap_dist = float(np.mean(
+                    (_px - _vwap_series) / np.where(_vwap_series > 0, _vwap_series, 1)
+                ))
             else:
                 _vwap_dist = 0.0
 
@@ -629,14 +631,14 @@ class FeatureEngineer:
             if len(highs) >= 14:
                 _h14 = float(highs[-14:].max())
                 _l14 = float(lows[-14:].min())
-                _wr = float((_h14 - closes[-1]) / max(_h14 - _l14, 1e-9) * -1.0)
+                _wr = float((_h14 - prices[-1]) / max(_h14 - _l14, 1e-9) * -1.0)
                 features["williams_r_14"] = float(np.clip(_wr, -1.0, 0.0))
             else:
                 features["williams_r_14"] = -0.5
 
             # CCI(20): (typical_price - SMA20) / (0.015 * mean_deviation)
-            if len(closes) >= 20:
-                _tp20 = (highs[-20:] + lows[-20:] + closes[-20:]) / 3.0
+            if len(prices) >= 20:
+                _tp20 = (highs[-20:] + lows[-20:] + prices[-20:]) / 3.0
                 _sma = float(_tp20.mean())
                 _md = float(np.mean(np.abs(_tp20 - _sma)))
                 _cci = float((_tp20[-1] - _sma) / max(0.015 * _md, 1e-9))
@@ -645,9 +647,9 @@ class FeatureEngineer:
                 features["cci_20"] = 0.0
 
             # Price acceleration: (5d momentum) - (10d momentum)
-            if len(closes) >= 11:
-                _mom5 = float((closes[-1] - closes[-6]) / max(closes[-6], 1e-9))
-                _mom10 = float((closes[-1] - closes[-11]) / max(closes[-11], 1e-9))
+            if len(prices) >= 11:
+                _mom5 = float((prices[-1] - prices[-6]) / max(prices[-6], 1e-9))
+                _mom10 = float((prices[-1] - prices[-11]) / max(prices[-11], 1e-9))
                 features["price_acceleration"] = float(np.clip(_mom5 - _mom10, -0.1, 0.1))
             else:
                 features["price_acceleration"] = 0.0
