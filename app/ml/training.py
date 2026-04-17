@@ -33,6 +33,9 @@ FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_
 STEP_DAYS = 10          # non-overlapping steps aligned to forward period
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
+LABEL_TARGET_PCT = 0.05   # matches TARGET_PCT in swing_backtest.py
+LABEL_STOP_PCT = 0.02     # matches STOP_PCT in swing_backtest.py
+
 
 class ModelTrainer:
     """
@@ -121,7 +124,14 @@ class ModelTrainer:
         """
         For each non-overlapping WINDOW_DAYS window across all symbols:
           - features: computed from bars in [window_start, window_end]
-          - label:    top/bottom 30% of forward return over next FORWARD_DAYS
+          - label:    1 if trade hits TARGET_PCT within FORWARD_DAYS bars,
+                      0 if trade hits STOP_PCT first,
+                      skipped if neither (ambiguous outcome)
+
+        This outcome-based labeling directly matches the swing backtest logic
+        and trains the model to predict "will this specific trade be a winner?"
+        rather than cross-sectional ranking, which is much noisier at short
+        horizons.
 
         Returns (X_train, y_train, X_test, y_test, feature_names).
         Test set = most recent TEST_FRACTION of windows (time-based split).
@@ -180,47 +190,17 @@ class ModelTrainer:
 
         for w_start_idx in window_starts:
             w_end_idx = w_start_idx + WINDOW_DAYS
-            fwd_end_idx = min(w_end_idx + FORWARD_DAYS, len(all_dates) - 1)
+            if w_end_idx + FORWARD_DAYS >= len(all_dates):
+                continue
 
             w_start_date = all_dates[w_start_idx]
             w_end_date = all_dates[w_end_idx]
-            fwd_end_date = all_dates[fwd_end_idx]
 
-            # Forward returns for each symbol in this window
-            fwd_returns: Dict[str, float] = {}
             for symbol, df in symbols_data.items():
+                idx = df.index.date
+
+                # ── Feature window ────────────────────────────────────────────
                 try:
-                    idx = df.index.date
-                    entry = df.loc[idx == w_end_date, "close"]
-                    exit_ = df.loc[idx == fwd_end_date, "close"]
-                    if len(entry) and len(exit_):
-                        fwd_returns[symbol] = float(
-                            (exit_.iloc[0] - entry.iloc[0]) / entry.iloc[0]
-                        )
-                except Exception:
-                    pass
-
-            if len(fwd_returns) < 6:
-                continue
-
-            # Label: top 30% = 1, bottom 30% = 0, middle = skip
-            sorted_ret = sorted(fwd_returns.items(), key=lambda x: x[1])
-            n = len(sorted_ret)
-            lo = int(n * 0.30)
-            hi = int(n * 0.70)
-            labels = {}
-            for i, (sym, _) in enumerate(sorted_ret):
-                if i < lo:
-                    labels[sym] = 0
-                elif i >= hi:
-                    labels[sym] = 1
-                # middle 40% skipped
-
-            # Features for each labeled symbol
-            for symbol, label in labels.items():
-                df = symbols_data[symbol]
-                try:
-                    idx = df.index.date
                     window_df = df.loc[(idx >= w_start_date) & (idx <= w_end_date)]
                 except Exception:
                     continue
@@ -228,6 +208,43 @@ class ModelTrainer:
                 if len(window_df) < FeatureEngineer.MIN_BARS:
                     continue
 
+                # ── Outcome-based label ───────────────────────────────────────
+                # Simulate entering at close on w_end_date, exiting when
+                # price hits TARGET_PCT (+5%) or STOP_PCT (-2%) within
+                # FORWARD_DAYS bars.  Skip if neither is hit (ambiguous).
+                entry_rows = df.loc[idx == w_end_date, "close"]
+                if len(entry_rows) == 0:
+                    continue
+                entry_price = float(entry_rows.iloc[0])
+                if entry_price <= 0:
+                    continue
+
+                target_price = entry_price * (1 + LABEL_TARGET_PCT)
+                stop_price = entry_price * (1 - LABEL_STOP_PCT)
+
+                label = None
+                for bar_offset in range(1, FORWARD_DAYS + 1):
+                    future_idx = w_end_idx + bar_offset
+                    if future_idx >= len(all_dates):
+                        break
+                    future_date = all_dates[future_idx]
+                    bar = df.loc[idx == future_date]
+                    if len(bar) == 0:
+                        continue
+                    high = float(bar["high"].iloc[0])
+                    low = float(bar["low"].iloc[0])
+                    # Stop checked first (conservative — if both hit, stop wins)
+                    if low <= stop_price:
+                        label = 0
+                        break
+                    if high >= target_price:
+                        label = 1
+                        break
+
+                if label is None:
+                    continue  # neither target nor stop hit — skip
+
+                # ── Features ─────────────────────────────────────────────────
                 sector = SECTOR_MAP.get(symbol)
                 features = self.feature_engineer.engineer_features(
                     symbol, window_df,
