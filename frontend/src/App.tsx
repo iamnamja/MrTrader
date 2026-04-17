@@ -7,7 +7,7 @@ import type {
   Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
   ReadinessReport, ReadinessCheckItem, AttributionItem,
   MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
-  RegimeDetail, PerformanceReview, DriftItem,
+  RegimeDetail, PerformanceReview, DriftItem, ConfigSchemaEntry,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -1068,6 +1068,142 @@ function AnalyticsPanel() {
   )
 }
 
+// ── Agent Config Panel ─────────────────────────────────────────────────────────
+function ConfigPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' | 'warning' | 'info') => void }) {
+  const [schema, setSchema] = useState<ConfigSchemaEntry[]>([])
+  const [values, setValues] = useState<Record<string, number>>({})
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState<Record<string, boolean>>({})
+
+  const load = useCallback(async () => {
+    try {
+      const [s, v] = await Promise.all([
+        api.configSchema() as Promise<{ schema: ConfigSchemaEntry[] }>,
+        api.configValues() as Promise<{ config: Record<string, number> }>,
+      ])
+      setSchema(s.schema)
+      setValues(v.config)
+      // Init edits with current values
+      const e: Record<string, string> = {}
+      for (const [k, val] of Object.entries(v.config)) e[k] = String(val)
+      setEdits(e)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const save = async (key: string) => {
+    const raw = edits[key]
+    const numVal = parseFloat(raw)
+    if (isNaN(numVal)) { toast(`Invalid value for ${key}`, 'error'); return }
+    setSaving(s => ({ ...s, [key]: true }))
+    try {
+      await api.configUpdate(key, numVal)
+      setValues(v => ({ ...v, [key]: numVal }))
+      toast(`Saved ${key} = ${numVal}`, 'success')
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast(`${key}: ${msg}`, 'error')
+      setEdits(ed => ({ ...ed, [key]: String(values[key] ?? '') }))
+    } finally {
+      setSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
+  const reset = async () => {
+    try {
+      await api.configReset()
+      toast('All settings reset to defaults', 'info')
+      load()
+    } catch { toast('Reset failed', 'error') }
+  }
+
+  const isDirty = (key: string) => String(values[key] ?? '') !== edits[key]
+
+  // Group entries
+  const groups = schema.reduce<Record<string, ConfigSchemaEntry[]>>((acc, s) => {
+    (acc[s.group] ??= []).push(s)
+    return acc
+  }, {})
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: C.muted }}>
+          Changes take effect on the next agent cycle — no restart needed.
+        </div>
+        <button onClick={reset} style={{ ...btnStyle, borderColor: C.yellow, color: C.yellow }}>
+          Reset All to Defaults
+        </button>
+      </div>
+
+      {Object.entries(groups).map(([group, entries]) => (
+        <div key={group} style={{ ...s.card, marginBottom: 12 }}>
+          <div style={s.cardTitle}>{group}</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Parameter', 'Description', 'Range', 'Value', ''].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {entries.map(entry => {
+                const dirty = isDirty(entry.key)
+                const isSaving = saving[entry.key]
+                return (
+                  <tr key={entry.key}>
+                    <td style={{ ...s.td, color: C.accent, fontFamily: 'monospace', fontSize: 11 }}>
+                      {entry.key}
+                    </td>
+                    <td style={{ ...s.td, color: C.muted, maxWidth: 280 }}>{entry.description}</td>
+                    <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' as const }}>
+                      {entry.min} – {entry.max}
+                    </td>
+                    <td style={s.td}>
+                      <input
+                        type="number"
+                        value={edits[entry.key] ?? String(entry.default)}
+                        step={entry.type === 'int' ? 1 : 0.01}
+                        min={entry.min}
+                        max={entry.max}
+                        onChange={e => setEdits(ed => ({ ...ed, [entry.key]: e.target.value }))}
+                        onKeyDown={e => e.key === 'Enter' && save(entry.key)}
+                        style={{
+                          width: 90, background: C.surface2,
+                          border: `1px solid ${dirty ? C.yellow : C.border}`,
+                          color: dirty ? C.yellow : C.text,
+                          borderRadius: 4, padding: '4px 8px', fontSize: 12, outline: 'none',
+                        }}
+                      />
+                      {entry.default !== undefined && (
+                        <span style={{ marginLeft: 6, fontSize: 10, color: C.muted }}>
+                          def: {entry.default}
+                        </span>
+                      )}
+                    </td>
+                    <td style={s.td}>
+                      {dirty && (
+                        <button
+                          onClick={() => save(entry.key)}
+                          disabled={isSaving}
+                          style={{ ...btnStyle, fontSize: 10, padding: '3px 10px',
+                            borderColor: C.green, color: C.green }}
+                        >
+                          {isSaving ? '…' : 'Save'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Performance Review Panel ───────────────────────────────────────────────────
 function PerformanceReviewPanel() {
   const [data, setData] = useState<PerformanceReview | null>(null)
@@ -1358,7 +1494,7 @@ function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' 
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -1483,6 +1619,7 @@ export default function App() {
         {tab === 'Analytics' && <AnalyticsPanel />}
         {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
         {tab === 'Performance' && <PerformanceReviewPanel />}
+        {tab === 'Config' && <ConfigPanel toast={toast} />}
       </div>
 
       <ToastContainer toasts={toasts} />

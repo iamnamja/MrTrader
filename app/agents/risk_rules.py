@@ -22,6 +22,21 @@ class RiskLimits:
     NORMAL_VOLATILITY_ATR_RATIO: float = 0.02  # base ATR/price ratio for stop-loss calc
     STOP_LOSS_BASE_PCT: float = 0.02           # 2% stop loss at normal volatility
 
+    @classmethod
+    def from_db(cls, db) -> "RiskLimits":
+        """Build RiskLimits pulling values from DB config, falling back to defaults."""
+        try:
+            from app.database.agent_config import get_agent_config
+            return cls(
+                MAX_POSITION_SIZE_PCT=get_agent_config(db, "risk.max_position_size_pct"),
+                MAX_SECTOR_CONCENTRATION_PCT=get_agent_config(db, "risk.max_sector_concentration_pct"),
+                MAX_DAILY_LOSS_PCT=get_agent_config(db, "risk.max_daily_loss_pct"),
+                MAX_ACCOUNT_DRAWDOWN_PCT=get_agent_config(db, "risk.max_account_drawdown_pct"),
+                MAX_OPEN_POSITIONS=get_agent_config(db, "risk.max_open_positions"),
+            )
+        except Exception:
+            return cls()
+
 
 # ─── Rule 1: Buying Power ─────────────────────────────────────────────────────
 
