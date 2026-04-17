@@ -1,7 +1,7 @@
 """
 Intraday model training pipeline.
 
-Label: did price move >= TARGET_PCT in the right direction within HOLD_BARS bars?
+Label: outcome-based — price hits +TARGET_PCT before -STOP_PCT within HOLD_BARS bars.
 Window: each trading day is one window per stock.
 Train/test split: last TEST_FRACTION of days = test (time-based, no leakage).
 
@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = "app/ml/models"
 
 # Training config
-TARGET_PCT = 0.005       # 0.5% move = winning intraday trade
+TARGET_PCT = 0.005       # 0.5% intraday profit target
+STOP_PCT = 0.003         # 0.3% intraday stop loss
 HOLD_BARS = 24           # 2 hours of 5-min bars to achieve the target
 TEST_FRACTION = 0.20     # most recent 20% of days = test
 MIN_DAYS = 20            # minimum trading days needed for a symbol
@@ -78,19 +79,26 @@ class IntradayModelTrainer:
         if not symbols_data:
             raise RuntimeError("No 5-min data fetched.")
 
+        # Fetch daily bars for vol-context features
+        daily_data = self._fetch_daily(symbols, start_dt, end_dt)
+
         X_train, y_train, X_test, y_test, feature_names = self._build_daily_matrix(
-            symbols_data, spy_data
+            symbols_data, spy_data, daily_data
         )
 
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after per-day labelling.")
 
+        n_neg = int((y_train == 0).sum())
+        n_pos = int((y_train == 1).sum())
+        spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+
         logger.info(
-            "Train: %d samples | Test: %d samples | Features: %d",
-            len(X_train), len(X_test), len(feature_names),
+            "Train: %d samples (pos=%d neg=%d spw=%.2f) | Test: %d | Features: %d",
+            len(X_train), n_pos, n_neg, spw, len(X_test), len(feature_names),
         )
 
-        self.model.train(X_train, y_train, feature_names)
+        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw)
 
         metrics = self._evaluate(X_test, y_test)
         logger.info("Intraday OOS metrics: %s", metrics)
@@ -111,17 +119,31 @@ class IntradayModelTrainer:
         logger.info("Got 5-min data for %d / %d symbols", len(data), len(symbols))
         return data
 
+    def _fetch_daily(
+        self, symbols: List[str], start: datetime, end: datetime
+    ) -> Dict[str, pd.DataFrame]:
+        try:
+            # Extend start by 252 business days for vol percentile calculation
+            daily_start = start - timedelta(days=365)
+            data = self._provider.get_daily_bars_bulk(symbols, daily_start, end)
+            logger.info("Got daily bars for %d / %d symbols", len(data), len(symbols))
+            return data
+        except Exception as exc:
+            logger.warning("Daily bar fetch failed: %s", exc)
+            return {}
+
     # ── Per-day labelling + feature matrix ───────────────────────────────────
 
     def _build_daily_matrix(
         self,
         symbols_data: Dict[str, pd.DataFrame],
         spy_data: Optional[pd.DataFrame],
+        daily_data: Optional[Dict[str, pd.DataFrame]] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         """
         For each (symbol, trading_day):
           - features: computed from bars up to HOLD_BARS before session end
-          - label:    did price hit +TARGET_PCT within the next HOLD_BARS bars?
+          - label:    1 if high hits +TARGET_PCT before low hits -STOP_PCT (outcome-based)
 
         Time-based split: last TEST_FRACTION of trading days -> test.
         """
@@ -143,8 +165,8 @@ class IntradayModelTrainer:
         train_days = sorted_days[:split_idx]
         test_days = sorted_days[split_idx:]
 
-        X_train, y_train = self._days_to_matrix(symbols_data, spy_data, train_days)
-        X_test, y_test = self._days_to_matrix(symbols_data, spy_data, test_days)
+        X_train, y_train = self._days_to_matrix(symbols_data, spy_data, train_days, daily_data)
+        X_test, y_test = self._days_to_matrix(symbols_data, spy_data, test_days, daily_data)
 
         return X_train, y_train, X_test, y_test, self._last_feature_names
 
@@ -153,6 +175,7 @@ class IntradayModelTrainer:
         symbols_data: Dict[str, pd.DataFrame],
         spy_data: Optional[pd.DataFrame],
         trading_days: List[date],
+        daily_data: Optional[Dict[str, pd.DataFrame]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         X_rows, y_vals = [], []
         self._last_feature_names: List[str] = []
@@ -162,6 +185,7 @@ class IntradayModelTrainer:
                 continue
 
             df_idx = pd.DatetimeIndex(df.index)
+            daily_df = (daily_data or {}).get(sym)
 
             for day in trading_days:
                 # Bars for this symbol on this day
@@ -178,10 +202,18 @@ class IntradayModelTrainer:
                 if len(feat_bars) < MIN_BARS:
                     continue
 
-                # Label: price rises >= TARGET_PCT within HOLD_BARS
+                # Outcome-based label: 1 if target hit before stop within HOLD_BARS
                 entry_price = float(feat_bars["close"].iloc[-1])
-                future_highs = future_bars["high"].values.astype(float)
-                label = int(any(h >= entry_price * (1 + TARGET_PCT) for h in future_highs))
+                target_price = entry_price * (1 + TARGET_PCT)
+                stop_price = entry_price * (1 - STOP_PCT)
+                label = 0
+                for _, bar in future_bars.iterrows():
+                    if float(bar["high"]) >= target_price:
+                        label = 1
+                        break
+                    if float(bar["low"]) <= stop_price:
+                        label = 0
+                        break
 
                 # SPY bars for same day
                 spy_day_bars = None
@@ -193,10 +225,17 @@ class IntradayModelTrainer:
                 # Prior day close / high / low for gap and S/R features
                 prior_close, prior_day_high, prior_day_low = self._prior_day_ohlc(df, day)
 
+                # Daily bars up to this day for vol-context features
+                daily_bars_as_of = None
+                if daily_df is not None and len(daily_df) > 0:
+                    d_idx = pd.DatetimeIndex(daily_df.index)
+                    daily_bars_as_of = daily_df.loc[d_idx.normalize().date < day]
+
                 feats = compute_intraday_features(
                     feat_bars, spy_day_bars, prior_close,
                     prior_day_high=prior_day_high,
                     prior_day_low=prior_day_low,
+                    daily_bars=daily_bars_as_of,
                 )
                 if feats is None:
                     continue

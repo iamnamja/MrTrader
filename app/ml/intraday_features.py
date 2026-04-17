@@ -1,7 +1,7 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (33 total):
+Features (37 total):
   ── Price / structure ──────────────────────────────────────────────────────
   orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
@@ -51,6 +51,11 @@ Features (33 total):
 
   ── Session timing ────────────────────────────────────────────────────────
   time_of_day         Fraction of 6.5-hr session elapsed (0=open, 1=close)
+
+  ── Daily vol context (from prior daily bars) ─────────────────────────────
+  daily_vol_percentile  Realized vol percentile vs 52-week range [0,1]
+  daily_vol_regime      Short/long vol ratio — expanding vs contracting
+  daily_parkinson_vol   Parkinson high-low vol estimator (annualised)
 """
 
 import logging
@@ -70,6 +75,7 @@ def compute_intraday_features(
     prior_close: Optional[float] = None,
     prior_day_high: Optional[float] = None,
     prior_day_low: Optional[float] = None,
+    daily_bars: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict[str, float]]:
     """
     Compute intraday features from a slice of 5-min OHLCV bars.
@@ -248,6 +254,21 @@ def compute_intraday_features(
 
     # ── Time of day ───────────────────────────────────────────────────────
     feats["time_of_day"] = float(min(len(bars) / 78, 1.0))
+
+    # ── Daily vol context ─────────────────────────────────────────────────
+    if daily_bars is not None and len(daily_bars) >= 22:
+        from app.ml.options_features import compute_vol_features
+        d_closes = daily_bars["close"].values.astype(float)
+        d_highs = daily_bars["high"].values.astype(float)
+        d_lows = daily_bars["low"].values.astype(float)
+        vf = compute_vol_features(d_closes, d_highs, d_lows)
+        feats["daily_vol_percentile"] = vf["vol_percentile_52w"]
+        feats["daily_vol_regime"] = vf["vol_regime"]
+        feats["daily_parkinson_vol"] = vf["parkinson_vol"]
+    else:
+        feats["daily_vol_percentile"] = 0.5
+        feats["daily_vol_regime"] = 1.0
+        feats["daily_parkinson_vol"] = 0.0
 
     return feats
 
@@ -434,4 +455,6 @@ FEATURE_NAMES = [
     "spy_session_return", "spy_rsi_14", "rel_vol_spy",
     # Session timing
     "time_of_day",
+    # Daily vol context
+    "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
 ]
