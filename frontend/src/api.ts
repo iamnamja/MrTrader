@@ -27,4 +27,6 @@ export const api = {
   killSwitch: (reason: string) => post('/api/dashboard/live/kill-switch', { reason }),
   resetKillSwitch: () => post('/api/dashboard/live/kill-switch/reset'),
   increaseCapital: () => post('/api/dashboard/live/increase-capital'),
+  readiness: () => get('/api/dashboard/live/readiness'),
+  signalAttribution: (days = 90) => get(`/api/dashboard/analytics/signal-attribution?days=${days}`),
 }

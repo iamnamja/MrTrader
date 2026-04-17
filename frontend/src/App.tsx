@@ -5,6 +5,7 @@ import {
 import { api } from './api'
 import type {
   Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
+  ReadinessReport, ReadinessCheckItem, AttributionItem,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -625,8 +626,172 @@ function Badge({ label, color }: { label: string; color: string }) {
   )
 }
 
+// ── Readiness Panel ───────────────────────────────────────────────────────────
+function ReadinessPanel() {
+  const [report, setReport] = useState<ReadinessReport | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await api.readiness() as ReadinessReport
+      setReport(r)
+    } catch { /* ignore */ } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const iconFor = (item: ReadinessCheckItem) => {
+    if (item.passed) return { sym: '✓', color: C.green }
+    if (item.check === 'smtp_configured' || item.check === 'slack_configured')
+      return { sym: '⚠', color: C.yellow }
+    return { sym: '✗', color: C.red }
+  }
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.accent, marginBottom: 4 }}>Live Trading Readiness</div>
+          <div style={{ fontSize: 11, color: C.muted }}>Run this checklist before switching TRADING_MODE=live</div>
+        </div>
+        <button onClick={load} disabled={loading} style={{ ...btnStyle, padding: '6px 16px' }}>
+          {loading ? 'Checking...' : 'Re-run checks'}
+        </button>
+      </div>
+
+      {report && (
+        <>
+          {/* Summary badge */}
+          <div style={{
+            ...s.card, marginBottom: 16, textAlign: 'center',
+            borderColor: report.ready ? `${C.green}66` : `${C.red}66`,
+            background: report.ready ? `${C.green}0d` : `${C.red}0d`,
+          }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: report.ready ? C.green : C.red, marginBottom: 4 }}>
+              {report.ready ? '✓ READY FOR LIVE TRADING' : '✗ NOT READY'}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted }}>{report.summary} · {report.timestamp.slice(0, 19)} UTC</div>
+          </div>
+
+          {/* All checks */}
+          <div style={s.card}>
+            <div style={s.cardTitle}>Checks</div>
+            {report.all_checks.map((item, i) => {
+              const { sym, color } = iconFor(item)
+              return (
+                <div key={i} style={{
+                  display: 'flex', gap: 12, alignItems: 'flex-start',
+                  padding: '10px 0', borderBottom: i < report.all_checks.length - 1 ? `1px solid rgba(255,255,255,.04)` : 'none',
+                }}>
+                  <span style={{ color, fontWeight: 700, fontSize: 14, minWidth: 16 }}>{sym}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: item.passed ? C.text : color, marginBottom: 2 }}>
+                      {item.check.replace(/_/g, ' ')}
+                      {item.value != null && (
+                        <span style={{ fontWeight: 400, color: C.muted, marginLeft: 8 }}>[{String(item.value)}]</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>{item.detail}</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {report.ready && (
+            <div style={{ ...s.card, marginTop: 16, borderColor: `${C.green}66` }}>
+              <div style={s.cardTitle}>Next Steps to Go Live</div>
+              <ol style={{ paddingLeft: 20, fontSize: 12, lineHeight: 2, color: C.muted }}>
+                <li>Change <span style={{ color: C.accent }}>TRADING_MODE=live</span> in your <code>.env</code></li>
+                <li>Update <span style={{ color: C.accent }}>ALPACA_BASE_URL=https://api.alpaca.markets</span></li>
+                <li>Restart the app: <span style={{ color: C.accent }}>make down && make up</span></li>
+                <li>Monitor the dashboard closely for the first hour</li>
+                <li>Keep Stage 1 capital ($1k) for at least 2 weeks before advancing</li>
+              </ol>
+            </div>
+          )}
+        </>
+      )}
+
+      {!report && !loading && (
+        <div style={{ ...s.card, textAlign: 'center', color: C.muted, padding: 40 }}>
+          Click "Re-run checks" to start the readiness check
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Analytics Panel ────────────────────────────────────────────────────────────
+function AnalyticsPanel() {
+  const [attribution, setAttribution] = useState<AttributionItem[]>([])
+  const [days, setDays] = useState(90)
+
+  const load = useCallback(async (d = days) => {
+    try {
+      const j = await api.signalAttribution(d) as { attribution?: AttributionItem[] } | AttributionItem[]
+      setAttribution((j as { attribution?: AttributionItem[] }).attribution ?? (j as AttributionItem[]) ?? [])
+    } catch { /* ignore */ }
+  }, [days])
+
+  useEffect(() => { load() }, [load])
+
+  const totalPnl = attribution.reduce((s, a) => s + a.total_pnl, 0)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.accent }}>Signal Attribution</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {[30, 90, 180].map(d => (
+            <button key={d} onClick={() => { setDays(d); load(d) }} style={{
+              ...btnStyle,
+              color: days === d ? C.accent : C.muted,
+              borderColor: days === d ? C.accent : C.border,
+            }}>{d}d</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Total Signals Traded" value={String(attribution.reduce((s, a) => s + a.count, 0))} />
+        <KpiCard label={`Total P&L (${days}d)`} value={fmt$(totalPnl)} color={clr(totalPnl)} />
+      </div>
+
+      <div style={s.card}>
+        <div style={s.cardTitle}>Performance by Signal Type</div>
+        {attribution.length === 0
+          ? <div style={{ color: C.muted, textAlign: 'center', padding: 30, fontSize: 11 }}>No data for this period</div>
+          : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr>
+                {['Signal Type', 'Trades', 'Win Rate', 'Avg P&L', 'Total P&L'].map(h => (
+                  <th key={h} style={s.th}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {attribution.map((a, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, color: C.blue, fontWeight: 600 }}>{a.signal_type}</td>
+                    <td style={s.td}>{a.count}</td>
+                    <td style={{ ...s.td, color: clr(a.win_rate - 0.5) }}>{(a.win_rate * 100).toFixed(1)}%</td>
+                    <td style={{ ...s.td, color: clr(a.avg_pnl) }}>{fmt$(a.avg_pnl)}</td>
+                    <td style={{ ...s.td, color: clr(a.total_pnl) }}>{fmt$(a.total_pnl)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Readiness', 'Analytics'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -746,6 +911,8 @@ export default function App() {
         {tab === 'Signal Monitor' && <SignalsPanel feed={signalFeed} decisions={decisions} />}
         {tab === 'Capital Ramp' && <RampPanel toast={toast} />}
         {tab === 'Kill Switch' && <KillPanel toast={toast} />}
+        {tab === 'Readiness' && <ReadinessPanel />}
+        {tab === 'Analytics' && <AnalyticsPanel />}
       </div>
 
       <ToastContainer toasts={toasts} />
