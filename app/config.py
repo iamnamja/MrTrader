@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # External data
     fred_api_key: Optional[str] = None   # https://fred.stlouisfed.org/docs/api/api_key.html
     anthropic_api_key: Optional[str] = None  # https://console.anthropic.com/
+    # Accepts ALPHA_VANTAGE_API_KEY or ALPHA_ADVANTAGE_API_KEY (common typo)
+    alpha_vantage_api_key: Optional[str] = None
+    alpha_advantage_api_key: Optional[str] = None  # alias for typo-tolerant .env
+    reddit_client_id: Optional[str] = None
+    reddit_client_secret: Optional[str] = None
+    reddit_user_agent: str = "MrTrader/1.0"
 
     # Alerts — Slack
     slack_webhook_url: Optional[str] = None
