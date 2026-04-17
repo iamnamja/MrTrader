@@ -30,7 +30,7 @@ MODEL_DIR = "app/ml/models"
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of trading days
 FORWARD_DAYS = 63       # predict return over next quarter
-STEP_DAYS = 63          # step between windows (non-overlapping quarters)
+STEP_DAYS = 21          # step between windows (~monthly, overlapping for more samples)
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
 
