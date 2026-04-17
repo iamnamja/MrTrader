@@ -73,3 +73,29 @@ export interface WsMessage {
   type: string
   data: Record<string, unknown>
 }
+
+export interface ReadinessCheckItem {
+  check: string
+  passed: boolean
+  value: unknown
+  detail: string
+}
+
+export interface ReadinessReport {
+  ready: boolean
+  timestamp: string
+  summary: string
+  blockers: ReadinessCheckItem[]
+  warnings: ReadinessCheckItem[]
+  passed: ReadinessCheckItem[]
+  all_checks: ReadinessCheckItem[]
+}
+
+export interface AttributionItem {
+  signal_type: string
+  count: number
+  wins: number
+  total_pnl: number
+  win_rate: number
+  avg_pnl: number
+}
