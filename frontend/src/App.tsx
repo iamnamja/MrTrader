@@ -7,6 +7,7 @@ import type {
   Summary, Health, Position, Trade, Decision, LiveStatus, AuditEntry, WsMessage,
   ReadinessReport, ReadinessCheckItem, AttributionItem,
   MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
+  RegimeDetail,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -101,6 +102,78 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
   )
 }
 
+// ── Macro Widget ──────────────────────────────────────────────────────────────
+function MacroWidget() {
+  const [regime, setRegime] = useState<RegimeDetail | null>(null)
+  useEffect(() => {
+    api.regimeDetail().then(d => setRegime(d as RegimeDetail)).catch(() => {})
+  }, [])
+
+  if (!regime) return null
+
+  const regimeColor = regime.regime === 'LOW' ? C.green : regime.regime === 'HIGH' ? C.red : C.yellow
+  const ind = regime.macro_indicators
+
+  const rows: [string, number | null, string][] = [
+    ['Fed Funds Rate', ind.fed_funds_rate, '%'],
+    ['10Y Yield', ind.yield_10y, '%'],
+    ['Yield Spread (10Y-2Y)', ind.yield_spread_10y2y, '%'],
+    ['CPI YoY', ind.cpi_yoy, '%'],
+    ['Unemployment', ind.unemployment_rate, '%'],
+  ]
+
+  return (
+    <div style={s.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={s.cardTitle}>Market Regime & Macro</div>
+        <span style={{
+          padding: '3px 10px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+          background: `${regimeColor}1a`, color: regimeColor, border: `1px solid ${regimeColor}4d`,
+          letterSpacing: '.06em',
+        }}>{regime.regime}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+        <div style={{ textAlign: 'center' as const }}>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>Composite</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: regimeColor }}>{(regime.composite_score * 100).toFixed(1)}</div>
+          <div style={{ fontSize: 9, color: C.muted }}>risk score /100</div>
+        </div>
+        <div style={{ textAlign: 'center' as const }}>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>VIX</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.accent }}>{regime.vix != null ? regime.vix.toFixed(1) : '—'}</div>
+          <div style={{ fontSize: 9, color: C.muted }}>score {(regime.vix_score * 100).toFixed(0)}/100</div>
+        </div>
+        <div style={{ textAlign: 'center' as const }}>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>Macro</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.blue }}>{(regime.macro_score * 100).toFixed(0)}</div>
+          <div style={{ fontSize: 9, color: C.muted }}>risk score /100</div>
+        </div>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <tbody>
+          {rows.map(([label, val, unit]) => (
+            <tr key={label}>
+              <td style={{ ...s.td, color: C.muted, fontSize: 11 }}>{label}</td>
+              <td style={{ ...s.td, textAlign: 'right' as const, color: C.text, fontWeight: 600 }}>
+                {val != null ? val.toFixed(2) + unit : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, fontSize: 10, color: C.muted }}>
+        <span style={{ color: regime.trend_following_active ? C.green : C.red }}>
+          ● Trend {regime.trend_following_active ? 'ON' : 'OFF'}
+        </span>
+        <span style={{ color: regime.mean_reversion_active ? C.green : C.red }}>
+          ● MeanRev {regime.mean_reversion_active ? 'ON' : 'OFF'}
+        </span>
+        <span>Size ×{regime.position_size_multiplier}</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Overview Panel ────────────────────────────────────────────────────────────
 function OverviewPanel({ summary, health, pnlHistory, decisions }: {
   summary: Summary; health: Health | null
@@ -138,8 +211,8 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           sub="From peak equity" />
       </div>
 
-      {/* Charts + decisions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      {/* Charts + decisions + macro */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={s.card}>
           <div style={s.cardTitle}>Equity Curve (P&L)</div>
           <ResponsiveContainer width="100%" height={220}>
@@ -160,6 +233,7 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           <DecisionsTable rows={decisions.slice(0, 10)} />
         </div>
       </div>
+      <MacroWidget />
     </div>
   )
 }
