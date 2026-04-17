@@ -286,7 +286,7 @@ def main():
         description="Train the MrTrader portfolio selection model",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--years", type=int, default=3, help="Years of history (default: 3)")
+    parser.add_argument("--years", type=int, default=5, help="Years of history (default: 5)")
     parser.add_argument(
         "--symbols", nargs="+", default=None,
         metavar="TICKER",
