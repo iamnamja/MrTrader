@@ -36,7 +36,7 @@ def _log(level: str, message: str, detail: dict | None = None):
 # ── Market helpers ─────────────────────────────────────────────────────────────
 
 _ET = pytz.timezone("America/New_York")
-_MARKET_OPEN  = dtime(9, 30)
+_MARKET_OPEN = dtime(9, 30)
 _MARKET_CLOSE = dtime(16, 0)
 
 
@@ -47,11 +47,11 @@ def _now_et() -> datetime:
 
 def _market_status() -> Dict[str, Any]:
     """Determine whether the US equity market is currently open."""
-    now_et     = _now_et()
+    now_et = _now_et()
     is_weekday = now_et.weekday() < 5
-    cur_time   = now_et.time().replace(tzinfo=None)
-    in_hours   = _MARKET_OPEN <= cur_time < _MARKET_CLOSE
-    is_open    = is_weekday and in_hours
+    cur_time = now_et.time().replace(tzinfo=None)
+    in_hours = _MARKET_OPEN <= cur_time < _MARKET_CLOSE
+    is_open = is_weekday and in_hours
 
     if is_open:
         # Minutes until 16:00 today
