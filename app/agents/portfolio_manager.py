@@ -211,7 +211,7 @@ class PortfolioManager(BaseAgent):
                 continue
 
             quantity = self._calculate_quantity(price, account_value)
-            proposals.append({
+            proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
                 "quantity": quantity,
@@ -220,7 +220,25 @@ class PortfolioManager(BaseAgent):
                 "stop_loss": round(price * 0.98, 2),
                 "profit_target": round(price * 1.05, 2),
                 "source_agent": "portfolio_manager",
-            })
+            }
+            # Optional AI signal review (non-blocking)
+            try:
+                from app.ai.claude_client import review_pm_signal
+                from app.strategy.regime_detector import regime_detector
+                regime = regime_detector.get_regime()
+                ai_summary = review_pm_signal(
+                    symbol=symbol,
+                    signal_type="ML_SELECTION",
+                    confidence=float(confidence),
+                    reasoning={"price": price, "stop": proposal["stop_loss"],
+                               "target": proposal["profit_target"]},
+                    regime=regime,
+                )
+                if ai_summary:
+                    proposal["ai_review"] = ai_summary
+            except Exception:
+                pass
+            proposals.append(proposal)
 
         return proposals
 

@@ -216,3 +216,40 @@ async def trigger_retraining():
 
     asyncio.create_task(_retrain())
     return {"status": "retraining_started", "message": "Retraining running in background"}
+
+
+@router.get("/ai-briefing")
+async def get_ai_briefing():
+    """Generate a Claude AI daily briefing from recent pending proposals."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import AgentDecision
+        from app.ai.claude_client import summarise_daily_proposals
+        from datetime import date
+
+        db = get_session()
+        try:
+            today = date.today().isoformat()
+            decisions = (
+                db.query(AgentDecision)
+                .filter(
+                    AgentDecision.decision_type == "TRADE_PROPOSAL",
+                    AgentDecision.timestamp >= f"{today}T00:00:00",
+                )
+                .order_by(AgentDecision.timestamp.desc())
+                .limit(15)
+                .all()
+            )
+            proposals = [d.reasoning for d in decisions if d.reasoning]
+        finally:
+            db.close()
+
+        summary = summarise_daily_proposals(proposals)
+        return {
+            "proposals_reviewed": len(proposals),
+            "briefing": summary,
+            "ai_available": summary is not None,
+        }
+    except Exception as exc:
+        logger.error("AI briefing error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))

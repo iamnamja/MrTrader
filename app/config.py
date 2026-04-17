@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     # External data
     fred_api_key: Optional[str] = None   # https://fred.stlouisfed.org/docs/api/api_key.html
+    anthropic_api_key: Optional[str] = None  # https://console.anthropic.com/
 
     # Alerts — Slack
     slack_webhook_url: Optional[str] = None
