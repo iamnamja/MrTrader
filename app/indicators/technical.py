@@ -9,7 +9,7 @@ Edge-case handling:
 - NaN values in input are forward-filled before computation.
 """
 
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -130,7 +130,7 @@ def calculate_atr(
     Returns None if insufficient data.
     """
     h = _to_series(highs)
-    l = _to_series(lows)
+    lo = _to_series(lows)
     c = _to_series(closes)
 
     if len(c) < period + 1:
@@ -138,7 +138,7 @@ def calculate_atr(
 
     prev_close = c.shift(1)
     tr = pd.concat(
-        [h - l, (h - prev_close).abs(), (l - prev_close).abs()], axis=1
+        [h - lo, (h - prev_close).abs(), (lo - prev_close).abs()], axis=1
     ).max(axis=1)
 
     atr = tr.ewm(com=period - 1, min_periods=period).mean()

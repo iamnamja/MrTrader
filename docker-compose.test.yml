@@ -1,0 +1,40 @@
+version: "3.9"
+
+# Test environment — spins up Postgres + Redis for integration tests.
+# Usage:
+#   docker-compose -f docker-compose.test.yml up -d
+#   pytest tests/ --cov=app
+#   docker-compose -f docker-compose.test.yml down -v
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: mrtrader
+      POSTGRES_PASSWORD: mrtrader_password
+      POSTGRES_DB: mrtrader_test
+    ports:
+      - "5433:5432"     # 5433 to avoid clashing with local Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrtrader"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"     # 6380 to avoid clashing with local Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+# To run tests against this environment:
+#
+#   DATABASE_URL=postgresql://mrtrader:mrtrader_password@localhost:5433/mrtrader_test \
+#   REDIS_URL=redis://localhost:6380 \
+#   ALPACA_API_KEY=test \
+#   ALPACA_SECRET_KEY=test \
+#   pytest tests/ --ignore=tests/test_strategy_regression.py

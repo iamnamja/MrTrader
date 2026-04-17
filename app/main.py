@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db, check_db_connection
@@ -80,6 +80,31 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"⚠ Alpaca connection failed: {e} (Phase 1 only, will fix in Phase 2)")
 
+    # Restore persisted state (kill switch + capital ramp)
+    try:
+        from app.live_trading.kill_switch import kill_switch
+        from app.live_trading.capital_manager import capital_manager
+        kill_switch.load_state()
+        capital_manager.load_state()
+        logger.info("State restored (kill_switch=%s, capital_stage=%s)",
+                    kill_switch.is_active, capital_manager.current_stage.stage)
+    except Exception as e:
+        logger.warning("State restore warning: %s", e)
+
+    # Startup reconciliation (Alpaca vs DB)
+    try:
+        from app.startup_reconciler import reconcile
+        from app.database.session import get_session
+        alpaca = get_alpaca_client()
+        if alpaca.health_check():
+            db = get_session()
+            try:
+                reconcile(alpaca, db)
+            finally:
+                db.close()
+    except Exception as e:
+        logger.warning("Startup reconciliation skipped: %s", e)
+
     # Start orchestrator (registers + starts all agents)
     try:
         from app.agents.portfolio_manager import portfolio_manager
@@ -91,12 +116,12 @@ async def startup_event():
         orchestrator.register_agent("risk_manager", risk_manager)
         orchestrator.register_agent("trader", trader)
         await orchestrator.start()
-        logger.info("✓ Orchestrator started")
+        logger.info("Orchestrator started")
     except Exception as e:
-        logger.error(f"✗ Orchestrator startup failed: {e}")
+        logger.error("Orchestrator startup failed: %s", e)
         raise
 
-    logger.info("✓ MrTrader application started successfully")
+    logger.info("MrTrader application started successfully")
 
 
 @app.on_event("shutdown")
@@ -112,11 +137,23 @@ async def shutdown_event():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
+    """
+    Health check endpoint.
+    Returns 503 when the kill switch is active or the circuit breaker is open
+    so that load balancers and monitoring tools can detect the degraded state.
+    """
+    from fastapi.responses import JSONResponse
+    from app.live_trading.kill_switch import kill_switch
+    from app.agents.circuit_breaker import circuit_breaker
+
+    degraded = kill_switch.is_active or circuit_breaker.is_open
+    body = {
+        "status": "degraded" if degraded else "healthy",
         "version": "0.1.0",
+        "kill_switch": kill_switch.is_active,
+        "circuit_breaker": circuit_breaker.status(),
     }
+    return JSONResponse(content=body, status_code=503 if degraded else 200)
 
 
 @app.get("/api/status")
@@ -125,11 +162,10 @@ async def get_status():
     db_ok = check_db_connection()
     redis_ok = get_redis_queue().health_check()
 
-    alpaca_ok = False
     alpaca_status = "not installed"
     if get_alpaca_client is not None:
         try:
-            alpaca_ok = get_alpaca_client().health_check()
+            get_alpaca_client().health_check()
             alpaca_status = "✓ connected"
         except Exception as e:
             alpaca_status = f"✗ error: {str(e)[:50]}"

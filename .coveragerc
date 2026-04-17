@@ -1,0 +1,7 @@
+[run]
+omit =
+    app/backtest/*
+    app/integrations/*
+
+[report]
+fail_under = 58

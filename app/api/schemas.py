@@ -3,7 +3,7 @@ Pydantic schemas for dashboard API responses.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
@@ -26,6 +26,9 @@ class TradeResponse(BaseModel):
     quantity: int
     pnl: Optional[float] = None
     status: str
+    signal_type: Optional[str] = None
+    stop_price: Optional[float] = None
+    target_price: Optional[float] = None
     created_at: datetime
     closed_at: Optional[datetime] = None
 

@@ -34,6 +34,7 @@ def _alpaca():
     from app.integrations import get_alpaca_client
     return get_alpaca_client()
 
+
 def _redis():
     from app.integrations import get_redis_queue
     return get_redis_queue()
@@ -144,16 +145,14 @@ async def get_open_positions():
 # ─── Trade history ────────────────────────────────────────────────────────────
 
 @router.get("/trades", response_model=List[TradeResponse])
-async def get_trade_history(limit: int = 50):
-    """Recent trades from the database."""
+async def get_trade_history(limit: int = 100, status: str = ""):
+    """Recent trades from the database. Filter by status=ACTIVE|CLOSED|PENDING."""
     db = get_session()
     try:
-        trades = (
-            db.query(Trade)
-            .order_by(desc(Trade.created_at))
-            .limit(min(limit, 200))
-            .all()
-        )
+        q = db.query(Trade).order_by(desc(Trade.created_at))
+        if status:
+            q = q.filter(Trade.status == status.upper())
+        trades = q.limit(min(limit, 500)).all()
         return [
             TradeResponse(
                 id=t.id,
@@ -164,6 +163,9 @@ async def get_trade_history(limit: int = 50):
                 quantity=t.quantity,
                 pnl=t.pnl,
                 status=t.status,
+                signal_type=getattr(t, 'signal_type', None),
+                stop_price=getattr(t, 'stop_price', None),
+                target_price=getattr(t, 'target_price', None),
                 created_at=t.created_at,
                 closed_at=t.closed_at,
             )
@@ -236,6 +238,34 @@ async def get_daily_metrics(days: int = 30):
 
 
 # ─── System health ────────────────────────────────────────────────────────────
+
+@router.get("/health")
+async def get_health_alias():
+    """Health check alias for dashboard polling."""
+    db_ok = check_db_connection()
+    redis_ok = False
+    alpaca_ok = False
+    try:
+        redis_ok = _redis().health_check()
+    except Exception:
+        pass
+    try:
+        alpaca_ok = _alpaca().health_check()
+    except Exception:
+        pass
+    from app.trading_modes import mode_manager
+    from app.live_trading.kill_switch import kill_switch
+    status = "healthy" if all([db_ok, redis_ok]) else "degraded"
+    if kill_switch.is_active:
+        status = "halted"
+    return {
+        "status": status,
+        "checks": {"database": db_ok, "redis": redis_ok, "alpaca": alpaca_ok},
+        "trading_mode": mode_manager.mode.value,
+        "kill_switch_active": kill_switch.is_active,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 @router.get("/system-health", response_model=SystemHealthResponse)
 async def get_system_health():
