@@ -1068,8 +1068,152 @@ function AnalyticsPanel() {
   )
 }
 
+// ── Watchlist Panel ────────────────────────────────────────────────────────────
+function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' | 'warning' | 'info') => void }) {
+  const [tickers, setTickers] = useState<import('./types').WatchlistTicker[]>([])
+  const [newSym, setNewSym] = useState('')
+  const [newSector, setNewSector] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const j = await api.watchlist() as { tickers: import('./types').WatchlistTicker[] }
+      setTickers(j.tickers ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const addTicker = async () => {
+    const sym = newSym.trim().toUpperCase()
+    if (!sym) return
+    setLoading(true)
+    try {
+      await api.watchlistAdd(sym, newSector.trim() || undefined)
+      toast(`Added ${sym}`, 'success')
+      setNewSym(''); setNewSector('')
+      load()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast(`Failed to add ${sym}: ${msg}`, 'error')
+    } finally { setLoading(false) }
+  }
+
+  const toggleActive = async (sym: string, current: boolean) => {
+    try {
+      await api.watchlistPatch(sym, { active: !current })
+      setTickers(ts => ts.map(t => t.symbol === sym ? { ...t, active: !current } : t))
+    } catch { toast(`Failed to update ${sym}`, 'error') }
+  }
+
+  const removeTicker = async (sym: string) => {
+    try {
+      await api.watchlistDelete(sym)
+      toast(`Removed ${sym}`, 'info')
+      setTickers(ts => ts.filter(t => t.symbol !== sym))
+    } catch { toast(`Failed to remove ${sym}`, 'error') }
+  }
+
+  const bulkLoad = async () => {
+    setLoading(true)
+    try {
+      const j = await api.watchlistBulk() as { total_added: number }
+      toast(`Loaded S&P 100 — ${j.total_added} added`, 'success')
+      load()
+    } catch { toast('Bulk load failed', 'error') }
+    finally { setLoading(false) }
+  }
+
+  const active = tickers.filter(t => t.active).length
+  const inactive = tickers.length - active
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Total Tickers" value={String(tickers.length)} />
+        <KpiCard label="Active" value={String(active)} color={C.green} />
+        <KpiCard label="Disabled" value={String(inactive)} color={inactive > 0 ? C.yellow : C.muted} />
+      </div>
+
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={s.cardTitle}>Add Ticker</div>
+          <button onClick={bulkLoad} disabled={loading} style={btnStyle}>Load S&amp;P 100</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={newSym} onChange={e => setNewSym(e.target.value.toUpperCase())}
+            placeholder="Symbol (e.g. TSLA)" maxLength={10}
+            style={{ flex: 1, background: C.surface2, border: `1px solid ${C.border}`, color: C.text,
+              borderRadius: 4, padding: '6px 10px', fontSize: 12, outline: 'none' }}
+            onKeyDown={e => e.key === 'Enter' && addTicker()}
+          />
+          <input
+            value={newSector} onChange={e => setNewSector(e.target.value)}
+            placeholder="Sector (optional)"
+            style={{ flex: 1, background: C.surface2, border: `1px solid ${C.border}`, color: C.text,
+              borderRadius: 4, padding: '6px 10px', fontSize: 12, outline: 'none' }}
+          />
+          <button onClick={addTicker} disabled={loading || !newSym.trim()} style={btnStyle}>Add</button>
+        </div>
+      </div>
+
+      <div style={{ ...s.card, marginTop: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={s.cardTitle}>Ticker Universe ({tickers.length})</div>
+          <button onClick={load} style={btnStyle}>Refresh</button>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Symbol', 'Sector', 'Status', 'Added', 'Actions'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {tickers.length === 0
+                ? <tr><td colSpan={5} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>
+                    No tickers — click "Load S&P 100" to seed defaults
+                  </td></tr>
+                : tickers.map(t => (
+                  <tr key={t.symbol}>
+                    <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{t.symbol}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{t.sector ?? '—'}</td>
+                    <td style={s.td}>
+                      <span style={{
+                        fontSize: 10, padding: '2px 8px', borderRadius: 8, fontWeight: 600,
+                        background: t.active ? `${C.green}1a` : `${C.muted}1a`,
+                        color: t.active ? C.green : C.muted,
+                        border: `1px solid ${t.active ? C.green : C.muted}4d`,
+                      }}>{t.active ? 'Active' : 'Disabled'}</span>
+                    </td>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>
+                      {t.added_at ? new Date(t.added_at).toLocaleDateString() : '—'}
+                    </td>
+                    <td style={s.td}>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button onClick={() => toggleActive(t.symbol, t.active)}
+                          style={{ ...btnStyle, fontSize: 10, padding: '3px 8px' }}>
+                          {t.active ? 'Disable' : 'Enable'}
+                        </button>
+                        <button onClick={() => removeTicker(t.symbol)}
+                          style={{ ...btnStyle, fontSize: 10, padding: '3px 8px', borderColor: C.red, color: C.red }}>
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -1192,6 +1336,7 @@ export default function App() {
         {tab === 'Session' && <SessionPanel toast={toast} />}
         {tab === 'Readiness' && <ReadinessPanel />}
         {tab === 'Analytics' && <AnalyticsPanel />}
+        {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
       </div>
 
       <ToastContainer toasts={toasts} />

@@ -150,6 +150,21 @@ class Configuration(Base):
         return f"<Configuration {self.key}={self.value}>"
 
 
+class WatchlistTicker(Base):
+    """Dynamic ticker universe for portfolio manager selection."""
+    __tablename__ = "watchlist_tickers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), unique=True, nullable=False, index=True)
+    sector = Column(String(50), nullable=True)
+    notes = Column(String(255), nullable=True)
+    active = Column(Integer, default=1)  # 1=active, 0=disabled
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<WatchlistTicker {self.symbol} active={self.active}>"
+
+
 class TradingSession(Base):
     """TradingSession model - track trading sessions and approval"""
     __tablename__ = "trading_sessions"
