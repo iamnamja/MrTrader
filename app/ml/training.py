@@ -170,6 +170,12 @@ class ModelTrainer:
             from app.ml.fundamental_fetcher import prefetch_fundamentals
             logger.info("Pre-fetching fundamentals for %d symbols...", len(symbols_data))
             prefetch_fundamentals(list(symbols_data.keys()))
+            # Pre-warm FMP caches (earnings history + analyst grades for all symbols)
+            try:
+                from app.data.fmp_provider import prefetch_fmp
+                prefetch_fmp(list(symbols_data.keys()))
+            except Exception as exc:
+                logger.warning("FMP prefetch skipped: %s", exc)
 
         X_train, y_train = self._windows_to_matrix(
             symbols_data, all_dates, train_window_starts,
@@ -257,6 +263,7 @@ class ModelTrainer:
                     sector=sector,
                     regime_score=regime_score,
                     fetch_fundamentals=fetch_fundamentals,
+                    as_of_date=w_end_date,
                 )
                 if features is None:
                     continue
