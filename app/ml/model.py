@@ -36,7 +36,7 @@ class PortfolioSelectorModel:
                 max_depth=4,          # shallower = less overfitting with many features
                 learning_rate=0.03,   # lower lr needs more trees but generalises better
                 subsample=0.7,
-                colsample_bytree=0.6, # use 60% of features per tree — reduces feature correlation
+                colsample_bytree=0.6,  # use 60% of features per tree — reduces feature correlation
                 min_child_weight=10,  # require ≥10 samples per leaf — prevents noise splits
                 gamma=0.1,            # min loss reduction to make a split
                 reg_alpha=0.1,        # L1 regularisation

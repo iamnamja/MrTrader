@@ -26,7 +26,7 @@ don't inflate or deflate the effective sample count:
 
 import logging
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import List
 
 import numpy as np
 
