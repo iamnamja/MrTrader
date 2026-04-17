@@ -186,7 +186,7 @@ def run_rolling_pipeline(
 
     print()
     t0 = time.time()
-    X_train, y_train, X_test, y_test, feature_names = trainer._build_rolling_matrix(
+    X_train, y_train, X_test, y_test, feature_names, _meta = trainer._build_rolling_matrix(
         symbols_data, fetch_fundamentals=fetch_fundamentals
     )
 
