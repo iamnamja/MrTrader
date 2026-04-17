@@ -67,14 +67,20 @@ class SignalResult:
         return self.reward_per_share / self.risk_per_share
 
 
-def generate_signal(symbol: str, bars: pd.DataFrame) -> SignalResult:
+def generate_signal(
+    symbol: str,
+    bars: pd.DataFrame,
+    check_earnings: bool = True,
+) -> SignalResult:
     """
     Compute a trading signal from an OHLCV DataFrame of daily bars.
 
     Args:
-        symbol: ticker (used only for logging)
-        bars:   DataFrame with lowercase columns: open, high, low, close, volume
-                Index should be datetime.  Minimum ~210 rows for EMA(200).
+        symbol:          ticker (used only for logging)
+        bars:            DataFrame with lowercase columns: open, high, low, close, volume
+                         Index should be datetime.  Minimum ~210 rows for EMA(200).
+        check_earnings:  if True, suppress BUY signals during earnings blackout window.
+                         Set False in backtesting to avoid live API calls.
 
     Returns:
         SignalResult with action="BUY" if entry criteria met, else "HOLD".
@@ -135,6 +141,16 @@ def generate_signal(symbol: str, bars: pd.DataFrame) -> SignalResult:
 
     if not (ema_crossover or rsi_dip):
         return _no_signal
+
+    # Earnings blackout: suppress BUY signals near earnings releases
+    if check_earnings:
+        try:
+            from app.strategy.earnings_filter import is_earnings_blackout
+            if is_earnings_blackout(symbol):
+                logger.info("%s: BUY suppressed — earnings blackout", symbol)
+                return _no_signal
+        except Exception as exc:
+            logger.debug("Earnings filter error for %s: %s", symbol, exc)
 
     signal_type = "EMA_CROSSOVER" if ema_crossover else "RSI_DIP"
     stop = round(price - ATR_STOP_MULT * atr_val, 4)
