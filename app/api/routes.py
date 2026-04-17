@@ -519,3 +519,44 @@ async def get_live_audit_log(limit: int = 100):
         ]
     finally:
         db.close()
+
+
+# ─── Analytics ────────────────────────────────────────────────────────────────
+
+@router.get("/analytics/signal-attribution")
+async def get_signal_attribution(days: int = 90):
+    """Performance breakdown by signal type (EMA_CROSSOVER vs RSI_DIP)."""
+    try:
+        from app.analytics.signal_attribution import get_signal_attribution as _sa
+        return {"days": days, "attribution": _sa(days=days)}
+    except Exception as exc:
+        logger.error("Signal attribution error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/analytics/drawdown")
+async def get_drawdown_analytics(days: int = 90):
+    """Drawdown analytics: worst sequences, per-symbol breakdown."""
+    try:
+        from app.analytics.drawdown_analyzer import get_drawdown_summary
+        return get_drawdown_summary(days=days)
+    except Exception as exc:
+        logger.error("Drawdown analytics error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/analytics/earnings-blackout/{symbol}")
+async def check_earnings_blackout(symbol: str):
+    """Check if a symbol is in an earnings blackout window."""
+    try:
+        from app.strategy.earnings_filter import earnings_filter
+        blackout = earnings_filter.is_blackout(symbol.upper())
+        next_date = earnings_filter.next_earnings_date(symbol.upper())
+        return {
+            "symbol": symbol.upper(),
+            "blackout_active": blackout,
+            "next_earnings_date": next_date.isoformat() if next_date else None,
+        }
+    except Exception as exc:
+        logger.error("Earnings blackout check error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
