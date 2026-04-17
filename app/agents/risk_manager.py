@@ -118,6 +118,19 @@ class RiskManager(BaseAgent):
             proposal.get("direction"),
             reasoning.get("failed_rule"),
         )
+        # Optional AI veto explanation (non-blocking)
+        try:
+            from app.ai.claude_client import explain_risk_veto
+            ai_explanation = explain_risk_veto(
+                symbol=proposal.get("symbol", "?"),
+                failed_rule=reasoning.get("failed_rule", "unknown"),
+                veto_reason=reasoning.get("message", ""),
+                proposal=proposal,
+            )
+            if ai_explanation:
+                reasoning["ai_veto_explanation"] = ai_explanation
+        except Exception:
+            pass
         await self.log_decision("TRADE_REJECTED", reasoning=reasoning)
 
     # ─── Validation Engine ────────────────────────────────────────────────────
