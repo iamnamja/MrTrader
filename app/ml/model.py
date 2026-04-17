@@ -104,12 +104,12 @@ class PortfolioSelectorModel:
 
     # ─── Persistence ──────────────────────────────────────────────────────────
 
-    def save(self, directory: str, version: int) -> str:
+    def save(self, directory: str, version: int, model_name: str = "model") -> str:
         """Pickle model + scaler to directory. Returns model file path."""
         Path(directory).mkdir(parents=True, exist_ok=True)
-        model_path = Path(directory) / f"model_v{version}.pkl"
-        scaler_path = Path(directory) / f"scaler_v{version}.pkl"
-        meta_path = Path(directory) / f"meta_v{version}.pkl"
+        model_path = Path(directory) / f"{model_name}_v{version}.pkl"
+        scaler_path = Path(directory) / f"{model_name}_scaler_v{version}.pkl"
+        meta_path = Path(directory) / f"{model_name}_meta_v{version}.pkl"
 
         with open(model_path, "wb") as f:
             pickle.dump(self.model, f)
@@ -121,11 +121,18 @@ class PortfolioSelectorModel:
         logger.info("Model v%d saved to %s", version, directory)
         return str(model_path)
 
-    def load(self, directory: str, version: int) -> None:
+    def load(self, directory: str, version: int, model_name: str = "model") -> None:
         """Load pickled model + scaler from directory."""
-        model_path = Path(directory) / f"model_v{version}.pkl"
-        scaler_path = Path(directory) / f"scaler_v{version}.pkl"
-        meta_path = Path(directory) / f"meta_v{version}.pkl"
+        # Support legacy filenames (model_v{n}.pkl) and new namespaced ones
+        model_path = Path(directory) / f"{model_name}_v{version}.pkl"
+        if not model_path.exists():
+            model_path = Path(directory) / f"model_v{version}.pkl"
+        scaler_path = Path(directory) / f"{model_name}_scaler_v{version}.pkl"
+        if not scaler_path.exists():
+            scaler_path = Path(directory) / f"scaler_v{version}.pkl"
+        meta_path = Path(directory) / f"{model_name}_meta_v{version}.pkl"
+        if not meta_path.exists():
+            meta_path = Path(directory) / f"meta_v{version}.pkl"
 
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")

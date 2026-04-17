@@ -21,14 +21,14 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # -- Make sure project root is on the path -------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # noqa: E402 -- sys.path must be set before project imports
-import numpy as np  # noqa: E402
+import numpy as np  # noqa: E402, F401
 import yfinance as yf  # noqa: E402
 
 # -- Colour helpers (works on Windows 10+ and all Unix terminals) --------------
@@ -154,207 +154,127 @@ def download_data(
     return data
 
 
-# -- Step 3: Build feature matrix ----------------------------------------------
+# -- Steps 3-6: Rolling window training (new pipeline) ------------------------
 
-def build_features(
+def run_rolling_pipeline(
     symbols_data: dict,
     fetch_fundamentals: bool,
-) -> tuple:
-    from app.ml.features import FeatureEngineer
-    from app.ml.training import ModelTrainer
-    from app.utils.constants import SECTOR_MAP
+    years: int,
+    dry_run: bool,
+):
+    """
+    Steps 3-6 combined using the new rolling-window ModelTrainer.
+    Produces honest out-of-sample metrics via time-based train/test split.
+    """
+    from app.ml.training import ModelTrainer, WINDOW_DAYS, FORWARD_DAYS, TEST_FRACTION
 
-    header(3, 6, "Building feature matrix")
-
-    # Labels (top 30% = 1, bottom 30% = 0)
-    trainer = ModelTrainer()
-    labels = trainer._create_labels(symbols_data)
-    good = sum(1 for v in labels.values() if v == 1)
-    bad = sum(1 for v in labels.values() if v == 0)
-    skipped = sum(1 for v in labels.values() if v is None)
-    info(f"Labels -> {good} top performers, {bad} poor performers, {skipped} middle (skipped)")
+    header(3, 6, "Building rolling-window feature matrix")
+    info(f"Window: {WINDOW_DAYS} trading days  |  Forward: {FORWARD_DAYS} days  "
+         f"|  Test split: last {int(TEST_FRACTION*100)}% of windows")
     print()
 
-    # Regime score (single fetch for all symbols)
-    regime_score: Optional[float] = None
+    trainer = ModelTrainer()
+
+    # Regime score
     try:
         from app.strategy.regime_detector import RegimeDetector
         det = RegimeDetector().get_regime_detail()
         regime_score = float(det.get("composite_score", 0.5))
         ok(f"Regime score: {regime_score:.3f}  ({det.get('regime', '?')})")
     except Exception as exc:
-        warn(f"Regime detector unavailable ({exc}) -- using neutral 0.5")
-        regime_score = 0.5
+        warn(f"Regime detector unavailable ({exc}) -- using 0.5")
 
     print()
-    fe = FeatureEngineer()
-    X_rows, y_vals, feature_names = [], [], None
-    symbols = [s for s, lbl in labels.items() if lbl is not None]
-
-    for i, symbol in enumerate(symbols, 1):
-        bar = progress_bar(i, len(symbols))
-        print(f"\r  {bar}  {symbol:<6}", end="", flush=True)
-
-        label = labels[symbol]
-        df = symbols_data[symbol]
-        sector = SECTOR_MAP.get(symbol)
-
-        features = fe.engineer_features(
-            symbol, df,
-            sector=sector,
-            regime_score=regime_score,
-            fetch_fundamentals=fetch_fundamentals,
-        )
-        if features is None:
-            continue
-
-        if feature_names is None:
-            feature_names = list(features.keys())
-        X_rows.append(list(features.values()))
-        y_vals.append(label)
-
-    print()
-    print()
-    X = np.array(X_rows)
-    y = np.array(y_vals)
-    feature_names = feature_names or []
-
-    ok(f"Feature matrix: {X.shape[0]} samples ? {X.shape[1]} features")
-    info(f"Feature names: {', '.join(feature_names)}")
-    return X, y, feature_names
-
-
-# -- Step 4: Train model -------------------------------------------------------
-
-def train_model(X: "np.ndarray", y: "np.ndarray", feature_names: List[str]):
-    from sklearn.model_selection import train_test_split
-    from app.ml.model import PortfolioSelectorModel
-
-    header(4, 6, "Training XGBoost model")
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    info(f"Train: {len(X_train)} samples | Test (held-out): {len(X_test)} samples")
-    print()
-
-    model = PortfolioSelectorModel(model_type="xgboost")
     t0 = time.time()
+    X_train, y_train, X_test, y_test, feature_names = trainer._build_rolling_matrix(
+        symbols_data, fetch_fundamentals=fetch_fundamentals
+    )
+
+    if len(X_train) == 0:
+        fail("No samples after rolling window labelling")
+        return None
+
+    ok(f"Train samples : {len(X_train)}")
+    ok(f"Test samples  : {len(X_test)}  (most recent {int(TEST_FRACTION*100)}% of windows)")
+    ok(f"Features      : {len(feature_names)}")
+    info(f"  {', '.join(feature_names)}")
+
+    # Step 4
+    header(4, 6, "Training XGBoost model")
     print("  Training...", end="", flush=True)
-    model.train(X_train, y_train, feature_names)
+    trainer.model.train(X_train, y_train, feature_names)
     elapsed = time.time() - t0
     print("\r", end="")
     ok(f"Training complete in {elapsed:.1f}s")
 
-    return model, X_test, y_test
+    # Step 5
+    header(5, 6, "Out-of-sample evaluation  (time-based held-out set)")
 
-
-# -- Step 5: Evaluate ----------------------------------------------------------
-
-def evaluate(model, X_test: "np.ndarray", y_test: "np.ndarray", feature_names: List[str]):
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
-
-    header(5, 6, "Out-of-sample evaluation")
-
-    preds, proba = model.predict(X_test)
-
-    acc = accuracy_score(y_test, preds)
-    prec = precision_score(y_test, preds, zero_division=0)
-    rec = recall_score(y_test, preds, zero_division=0)
-    try:
-        auc = roc_auc_score(y_test, proba)
-    except Exception:
-        auc = float("nan")
-
-    ok(f"Accuracy  : {acc:.1%}")
-    ok(f"Precision : {prec:.1%}  (of predicted winners, how many actually won)")
-    ok(f"Recall    : {rec:.1%}  (of actual winners, how many were caught)")
-    ok(f"ROC-AUC   : {auc:.3f}  (0.5 = random, 1.0 = perfect)")
-
-    # Qualitative verdict
-    print()
-    if auc >= 0.65:
-        print(f"  {GREEN}{BOLD}>> Model looks promising -- AUC >= 0.65{RESET}")
-    elif auc >= 0.55:
-        print(f"  {YELLOW}{BOLD}>> Moderate edge -- consider more data or features{RESET}")
+    if len(X_test) == 0:
+        warn("No test samples — increase --years to get a larger dataset")
+        metrics = {}
     else:
-        print(f"  {RED}{BOLD}>> Weak signal -- AUC near random, do not trade live yet{RESET}")
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+        preds, proba = trainer.model.predict(X_test)
+        acc = accuracy_score(y_test, preds)
+        prec = precision_score(y_test, preds, zero_division=0)
+        rec = recall_score(y_test, preds, zero_division=0)
+        try:
+            auc = roc_auc_score(y_test, proba)
+        except Exception:
+            auc = float("nan")
 
-    # Feature importances (top 10)
-    try:
-        pairs = model.feature_importance()
-        if pairs:
-            print()
-            info("Top 10 features by importance:")
-            top = pairs[:10]
-            max_imp = top[0][1] if top else 1
-            for fname, imp in top:
-                bar_w = int(30 * imp / max_imp)
-                bar = "#" * bar_w
-                print(f"     {fname:<30} {bar} {imp:.4f}")
-    except Exception:
-        pass
+        ok(f"Accuracy  : {acc:.1%}")
+        ok(f"Precision : {prec:.1%}  (of predicted winners, how many actually won)")
+        ok(f"Recall    : {rec:.1%}  (of actual winners, how many were caught)")
+        ok(f"ROC-AUC   : {auc:.3f}  (0.5 = random, 1.0 = perfect)")
+        print()
+        if auc >= 0.65:
+            print(f"  {GREEN}{BOLD}>> Promising -- AUC >= 0.65{RESET}")
+        elif auc >= 0.55:
+            print(f"  {YELLOW}{BOLD}>> Moderate edge -- consider more data or features{RESET}")
+        else:
+            print(f"  {RED}{BOLD}>> Weak signal -- AUC near random, do not trade live{RESET}")
 
-    return {"accuracy": acc, "precision": prec, "recall": rec, "auc": auc}
+        # Feature importance bar chart
+        try:
+            pairs = trainer.model.feature_importance()
+            if pairs:
+                print()
+                info("Top 10 features by importance:")
+                top = pairs[:10]
+                max_imp = top[0][1] if top else 1
+                for fname, imp in top:
+                    bar_w = int(30 * imp / max_imp)
+                    print(f"     {fname:<30} {'#' * bar_w} {imp:.4f}")
+        except Exception:
+            pass
 
+        metrics = {"accuracy": acc, "precision": prec, "recall": rec, "auc": auc}
 
-# -- Step 6: Save model --------------------------------------------------------
-
-def save_model(model, metrics: dict, n_samples: int, years: int, dry_run: bool):
+    # Step 6
     header(6, 6, "Saving model")
 
     if dry_run:
-        warn("Dry-run mode -- model NOT saved to disk or DB")
+        warn("Dry-run -- model NOT saved")
         return None
+
+    MODEL_DIR = ROOT / "app" / "ml" / "models"
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    version = trainer._next_version("swing")
+    path = trainer.model.save(str(MODEL_DIR), version, model_name="swing")
+    ok(f"Model saved -> {path}")
 
     try:
-        from app.database.session import get_session
-        from app.database.models import ModelVersion
-
-        MODEL_DIR = ROOT / "app" / "ml" / "models"
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        db = get_session()
-        try:
-            latest = (
-                db.query(ModelVersion)
-                .filter_by(model_name="portfolio_selector")
-                .order_by(ModelVersion.version.desc())
-                .first()
-            )
-            version = (latest.version + 1) if latest else 1
-        finally:
-            db.close()
-
-        path = model.save(str(MODEL_DIR), version)
-        ok(f"Model saved -> {path}")
-
-        end_dt = datetime.now()
-        start_dt = end_dt - timedelta(days=365 * years)
-        db = get_session()
-        try:
-            db.add(ModelVersion(
-                model_name="portfolio_selector",
-                version=version,
-                training_date=datetime.utcnow(),
-                data_range_start=start_dt.strftime("%Y-%m-%d"),
-                data_range_end=end_dt.strftime("%Y-%m-%d"),
-                performance={**metrics, "n_samples": n_samples},
-                status="ACTIVE",
-                model_path=path,
-            ))
-            db.commit()
-            ok(f"Version v{version} recorded in database")
-        except Exception as exc:
-            warn(f"DB record skipped (DB not running?): {exc}")
-        finally:
-            db.close()
-
-        return version
-
+        trainer._record_version(
+            version, len(X_train), len(X_test), path, years, metrics
+        )
+        ok(f"Version v{version} recorded in database")
     except Exception as exc:
-        warn(f"Could not save model: {exc}")
-        return None
+        warn(f"DB record skipped (DB not running?): {exc}")
+
+    return version
 
 
 # -- Main ----------------------------------------------------------------------
@@ -403,29 +323,14 @@ def main():
 
     # Step 2
     symbols_data = download_data(symbols, args.years)
-    if len(symbols_data) < 10:
+    if len(symbols_data) < 3:
         fail("Too few symbols downloaded -- check network connection")
         sys.exit(1)
 
-    # Step 3
-    X, y, feature_names = build_features(symbols_data, fetch_fundamentals)
-    if len(X) == 0:
-        fail("No samples after feature engineering")
-        sys.exit(1)
-
-    if args.dry_run and len(X) > 0:
-        ok("Dry-run complete -- features look good, exiting without training")
-        print()
-        sys.exit(0)
-
-    # Step 4
-    model, X_test, y_test = train_model(X, y, feature_names)
-
-    # Step 5
-    metrics = evaluate(model, X_test, y_test, feature_names)
-
-    # Step 6
-    version = save_model(model, metrics, len(X), args.years, args.dry_run)
+    # Steps 3-6 (rolling windows + train + evaluate + save)
+    version = run_rolling_pipeline(
+        symbols_data, fetch_fundamentals, args.years, args.dry_run
+    )
 
     elapsed = time.time() - t_start
     print(f"\n{BOLD}{'=' * 60}{RESET}")
