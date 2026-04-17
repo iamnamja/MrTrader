@@ -17,7 +17,8 @@ class RiskLimits:
     MAX_SECTOR_CONCENTRATION_PCT: float = 0.20  # 20% – max one sector / account value
     MAX_DAILY_LOSS_PCT: float = 0.02           # 2%  – max daily loss / account value
     MAX_ACCOUNT_DRAWDOWN_PCT: float = 0.05     # 5%  – max (peak-current) / peak
-    MAX_OPEN_POSITIONS: int = 10               # absolute position count limit
+    MAX_OPEN_POSITIONS: int = 5                # absolute position count limit
+    MAX_PORTFOLIO_HEAT_PCT: float = 0.06       # 6%  – total risk across all positions
     NORMAL_VOLATILITY_ATR_RATIO: float = 0.02  # base ATR/price ratio for stop-loss calc
     STOP_LOSS_BASE_PCT: float = 0.02           # 2% stop loss at normal volatility
 
@@ -197,7 +198,22 @@ def validate_open_positions(
     )
 
 
-# ─── Rule 7: Dynamic Stop Loss ────────────────────────────────────────────────
+# ─── Rule 7: Portfolio Heat ──────────────────────────────────────────────────
+
+def validate_portfolio_heat(
+    new_trade_risk: float,
+    positions: List[Dict],
+    account_value: float,
+    limits: RiskLimits = None,
+) -> Tuple[bool, str]:
+    """Ensure total portfolio risk stays below MAX_PORTFOLIO_HEAT_PCT."""
+    if limits is None:
+        limits = RiskLimits()
+    from app.strategy.portfolio_heat import validate_portfolio_heat as _check
+    return _check(new_trade_risk, positions, account_value, limits.MAX_PORTFOLIO_HEAT_PCT)
+
+
+# ─── Rule 8: Dynamic Stop Loss ────────────────────────────────────────────────
 
 def calculate_dynamic_stop_loss(
     entry_price: float,
