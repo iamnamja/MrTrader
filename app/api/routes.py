@@ -102,16 +102,28 @@ def _system_status(alpaca_ok: bool = True) -> str:
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
+ALPACA_TIMEOUT = 8.0  # seconds before giving up and returning partial data
+
+
 @router.get("/summary", response_model=DashboardSummaryResponse)
-@ttl_cache(seconds=15)
+@ttl_cache(seconds=60)
 async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
-        alpaca = _alpaca()
-        account, positions = await asyncio.gather(
-            asyncio.to_thread(alpaca.get_account),
-            asyncio.to_thread(alpaca.get_positions),
-        )
+        # Alpaca calls have an 8s timeout — returns partial data if slow
+        account: dict | None = None
+        positions: list = []
+        try:
+            alpaca = _alpaca()
+            account, positions = await asyncio.wait_for(
+                asyncio.gather(
+                    asyncio.to_thread(alpaca.get_account),
+                    asyncio.to_thread(alpaca.get_positions),
+                ),
+                timeout=ALPACA_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Alpaca unavailable for summary (%s) — returning DB-only data", exc)
 
         db = get_session()
         try:
@@ -121,29 +133,34 @@ async def get_dashboard_summary():
         finally:
             db.close()
 
-        account_value = float(account["portfolio_value"])
-        previous_value = account_value - daily_pnl
-        daily_pnl_pct = (daily_pnl / previous_value * 100) if previous_value > 0 else 0.0
+        account_value = float(account["portfolio_value"]) if account else None
+        buying_power = float(account["buying_power"]) if account else None
+        cash = float(account["cash"]) if account else None
 
-        initial_capital = 20_000.0
-        total_pnl = account_value - initial_capital
-        total_pnl_pct = (total_pnl / initial_capital) * 100
+        if account_value is not None:
+            previous_value = account_value - daily_pnl
+            daily_pnl_pct = (daily_pnl / previous_value * 100) if previous_value > 0 else 0.0
+            initial_capital = 20_000.0
+            total_pnl = round(account_value - initial_capital, 2)
+            total_pnl_pct = round((total_pnl / initial_capital) * 100, 2)
+        else:
+            daily_pnl_pct = total_pnl = total_pnl_pct = None
 
         (win_rate, max_dd), trades_count, sys_status = await asyncio.gather(
             asyncio.to_thread(_win_rate_and_drawdown),
             asyncio.to_thread(_trades_today_count),
-            asyncio.to_thread(_system_status, True),
+            asyncio.to_thread(_system_status, account is not None),
         )
 
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
             account_value=account_value,
-            buying_power=float(account["buying_power"]),
-            cash=float(account["cash"]),
+            buying_power=buying_power,
+            cash=cash,
             daily_pnl=daily_pnl,
-            daily_pnl_pct=round(daily_pnl_pct, 2),
-            total_pnl=round(total_pnl, 2),
-            total_pnl_pct=round(total_pnl_pct, 2),
+            daily_pnl_pct=daily_pnl_pct,
+            total_pnl=total_pnl,
+            total_pnl_pct=total_pnl_pct,
             open_positions_count=len(positions),
             trades_today_count=trades_count,
             trading_mode=settings.trading_mode,
@@ -285,14 +302,20 @@ async def get_daily_metrics(days: int = 30):
 # ─── System health ────────────────────────────────────────────────────────────
 
 @router.get("/health")
-@ttl_cache(seconds=20)
+@ttl_cache(seconds=60)
 async def get_health_alias():
     """Health check alias for dashboard polling."""
     db_ok = check_db_connection()
-    redis_ok, alpaca_ok = await asyncio.gather(
-        asyncio.to_thread(_redis().health_check),
-        asyncio.to_thread(_alpaca().health_check),
-    )
+    try:
+        redis_ok, alpaca_ok = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(_redis().health_check),
+                asyncio.to_thread(_alpaca().health_check),
+            ),
+            timeout=ALPACA_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        redis_ok, alpaca_ok = False, False
     from app.trading_modes import mode_manager
     from app.live_trading.kill_switch import kill_switch
     status = "healthy" if all([db_ok, redis_ok]) else "degraded"
@@ -308,14 +331,20 @@ async def get_health_alias():
 
 
 @router.get("/system-health", response_model=SystemHealthResponse)
-@ttl_cache(seconds=20)
+@ttl_cache(seconds=60)
 async def get_system_health():
     """Full system health check."""
     db_ok = check_db_connection()
-    redis_ok, alpaca_ok = await asyncio.gather(
-        asyncio.to_thread(_redis().health_check),
-        asyncio.to_thread(_alpaca().health_check),
-    )
+    try:
+        redis_ok, alpaca_ok = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(_redis().health_check),
+                asyncio.to_thread(_alpaca().health_check),
+            ),
+            timeout=ALPACA_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        redis_ok, alpaca_ok = False, False
 
     return SystemHealthResponse(
         database="OK" if db_ok else "FAIL",
