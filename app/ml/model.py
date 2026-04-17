@@ -55,19 +55,27 @@ class PortfolioSelectorModel:
         X: np.ndarray,
         y: np.ndarray,
         feature_names: Optional[List[str]] = None,
+        scale_pos_weight: Optional[float] = None,
     ) -> None:
         """
         Fit the model on pre-engineered features.
 
         Args:
-            X:             Feature matrix (n_samples, n_features).
-            y:             Binary labels (1 = good performer, 0 = poor).
-            feature_names: Optional list of feature names for logging.
+            X:                Feature matrix (n_samples, n_features).
+            y:                Binary labels (1 = good performer, 0 = poor).
+            feature_names:    Optional list of feature names for logging.
+            scale_pos_weight: XGBoost class-weight ratio (n_neg / n_pos).
+                              Pass this when labels are imbalanced so the model
+                              doesn't collapse to predicting the majority class.
         """
         logger.info(
             "Training %s model — %d samples, %d features",
             self.model_type, X.shape[0], X.shape[1],
         )
+
+        if scale_pos_weight is not None and self.model_type == "xgboost":
+            self.model.set_params(scale_pos_weight=scale_pos_weight)
+            logger.info("scale_pos_weight=%.2f", scale_pos_weight)
 
         X_scaled = self.scaler.fit_transform(X)
         self.model.fit(X_scaled, y)
