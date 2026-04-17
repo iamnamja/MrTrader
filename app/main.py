@@ -13,6 +13,7 @@ from app.api.routes import router as dashboard_router
 from app.api.watchlist_routes import router as watchlist_router
 from app.api.config_routes import router as config_router
 from app.api.websocket import websocket_endpoint
+from fastapi import WebSocket as _WebSocket
 
 # Configure logging
 logging.basicConfig(
@@ -276,7 +277,7 @@ async def root():
 
 
 @app.websocket("/ws")
-async def websocket_route(websocket):
+async def websocket_route(websocket: _WebSocket):
     await websocket_endpoint(websocket)
 
 
