@@ -110,9 +110,9 @@ class CircuitBreaker:
 
         try:
             import yfinance as yf
-            vix_df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True)
+            vix_df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=10)
             if not vix_df.empty:
-                vix = float(vix_df["Close"].iloc[-1])
+                vix = float(vix_df["Close"].iat[-1])
                 self._last_vix = vix
                 self._last_vix_check = now
                 if vix > VIX_PAUSE_THRESHOLD:
