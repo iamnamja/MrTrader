@@ -146,8 +146,8 @@ class ModelTrainer:
         # Pre-fetch a single regime score — same macro context for all symbols
         regime_score: Optional[float] = None
         try:
-            from app.macro.regime_detector import RegimeDetector
-            det = RegimeDetector().detect_regime()
+            from app.strategy.regime_detector import RegimeDetector
+            det = RegimeDetector().get_regime_detail()
             regime_score = float(det.get("composite_score", 0.5))
         except Exception:
             pass
