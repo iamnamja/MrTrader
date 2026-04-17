@@ -4,7 +4,7 @@ Feature engineering for the ML portfolio selection model.
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
 
-Feature groups (56 total):
+Feature groups (64 total):
   1.  RSI (14, 7)                                               — price-only
   2.  MACD (line, signal, histogram)                            — price-only
   3.  EMAs (20, 50, 200) + price position flags                 — price-only
@@ -31,6 +31,9 @@ Feature groups (56 total):
   24. Short-term RS vs SPY: 5d, 10d differentials               — computed
   25. FMP point-in-time: earnings surprises, analyst momentum,
       institutional ownership (8 features)                      — FMP API
+  26. Volatility/options: vol percentile, vol regime, vol-of-vol,
+      ATR trend, Parkinson vol (training); put/call ratio, IV ATM,
+      IV premium (live inference only via yfinance)              — computed + yfinance
 """
 
 import logging
@@ -485,6 +488,41 @@ class FeatureEngineer:
                 "fmp_analyst_momentum_30d": 0.0,
                 "fmp_inst_ownership_pct": 0.0,
                 "fmp_inst_change_pct": 0.0,
+            })
+
+        # ── 26. Volatility / options proxy features ───────────────────────────
+        # Price-derived vol features available for all historical windows.
+        # Live options features (put/call ratio, IV) added when fetch_fundamentals
+        # is True and as_of_date is None (i.e. live inference, not training).
+        try:
+            from app.ml.options_features import compute_vol_features
+            vol_feats = compute_vol_features(prices, highs, lows)
+            features.update(vol_feats)
+        except Exception as exc:
+            logger.debug("Vol features failed for %s: %s", symbol, exc)
+            features.update({
+                "vol_percentile_52w": 0.5, "vol_regime": 1.0,
+                "vol_of_vol": 0.0, "atr_trend": 1.0, "parkinson_vol": 0.0,
+            })
+
+        # Live options (yfinance) — only at inference time, not during training
+        if fetch_fundamentals and as_of_date is None:
+            try:
+                from app.ml.options_features import get_live_options_features
+                opt = get_live_options_features(symbol)
+                features.update(opt)
+            except Exception as exc:
+                logger.debug("Live options failed for %s: %s", symbol, exc)
+                features.update({
+                    "options_put_call_ratio": 1.0,
+                    "options_iv_atm": 0.0,
+                    "options_iv_premium": 0.0,
+                })
+        else:
+            features.update({
+                "options_put_call_ratio": 1.0,
+                "options_iv_atm": 0.0,
+                "options_iv_premium": 0.0,
             })
 
         return features
