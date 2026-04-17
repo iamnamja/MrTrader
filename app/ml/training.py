@@ -18,7 +18,7 @@ from app.database.models import ModelVersion
 from app.database.session import get_session
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
-from app.utils.constants import SP_100_TICKERS
+from app.utils.constants import SP_100_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,8 @@ class ModelTrainer:
 
         good = sum(1 for v in labels.values() if v == 1)
         bad = sum(1 for v in labels.values() if v == 0)
-        logger.info("Labels: %d good performers, %d poor performers, %d skipped", good, bad, n - good - bad)
+        skipped = n - good - bad
+        logger.info("Labels: %d good, %d poor, %d skipped", good, bad, skipped)
         return labels
 
     # ─── Feature Matrix ───────────────────────────────────────────────────────
@@ -139,8 +140,18 @@ class ModelTrainer:
         self,
         symbols_data: Dict[str, pd.DataFrame],
         labels: Dict[str, Optional[int]],
+        fetch_fundamentals: bool = True,
     ):
         """Build numpy arrays X, y and feature_names from labelled symbol data."""
+        # Pre-fetch a single regime score — same macro context for all symbols
+        regime_score: Optional[float] = None
+        try:
+            from app.macro.regime_detector import RegimeDetector
+            det = RegimeDetector().detect_regime()
+            regime_score = float(det.get("composite_score", 0.5))
+        except Exception:
+            pass
+
         X_rows, y_vals = [], []
         feature_names: Optional[List[str]] = None
 
@@ -149,7 +160,13 @@ class ModelTrainer:
             if label is None:
                 continue
 
-            features = self.feature_engineer.engineer_features(symbol, df)
+            sector = SECTOR_MAP.get(symbol)
+            features = self.feature_engineer.engineer_features(
+                symbol, df,
+                sector=sector,
+                regime_score=regime_score,
+                fetch_fundamentals=fetch_fundamentals,
+            )
             if features is None:
                 continue
 
@@ -159,7 +176,9 @@ class ModelTrainer:
             X_rows.append(list(features.values()))
             y_vals.append(label)
 
-        logger.info("Feature matrix: %d samples × %d features", len(X_rows), len(feature_names or []))
+        logger.info(
+            "Feature matrix: %d samples × %d features", len(X_rows), len(feature_names or [])
+        )
         return np.array(X_rows), np.array(y_vals), feature_names or []
 
     # ─── DB helpers ───────────────────────────────────────────────────────────

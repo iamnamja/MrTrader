@@ -3,8 +3,18 @@ Feature engineering for the ML portfolio selection model.
 
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
+
+Feature groups (25 total):
+  1. Technical (RSI, MACD, EMA, momentum, volatility, volume)  — price-only
+  2. Fundamentals (P/E, P/B, margins, revenue growth, D/E)     — yfinance
+  3. Earnings (proximity days, surprise %)                      — yfinance + AV
+  4. Sector momentum (sector ETF 20d return)                    — yfinance
+  5. Insider activity (net buy score)                           — SEC EDGAR
+  6. Macro regime (composite score)                             — FRED / existing
+  7. Sentiment                                                  — caller-supplied
 """
 
+import logging
 from typing import Dict, Optional
 
 import numpy as np
@@ -16,12 +26,13 @@ from app.indicators.technical import (
     calculate_rsi,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Lower-case all column names so Alpaca and yfinance DataFrames work identically."""
     df = df.copy()
     df.columns = [c.lower() for c in df.columns]
-    # yfinance uses "adj close"; rename to "close" if "close" is absent
     if "close" not in df.columns and "adj close" in df.columns:
         df = df.rename(columns={"adj close": "close"})
     return df
@@ -30,7 +41,6 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
 class FeatureEngineer:
     """Extract a fixed feature vector for any stock given its OHLCV history."""
 
-    # Minimum bars needed to compute all features
     MIN_BARS = 52
 
     def engineer_features(
@@ -38,14 +48,20 @@ class FeatureEngineer:
         symbol: str,
         bars: pd.DataFrame,
         sentiment: Optional[float] = None,
+        sector: Optional[str] = None,
+        regime_score: Optional[float] = None,
+        fetch_fundamentals: bool = True,
     ) -> Optional[Dict[str, float]]:
         """
         Compute features for a single stock.
 
         Args:
-            symbol:    Stock ticker (used only for logging).
-            bars:      OHLCV DataFrame (Alpaca or yfinance format).
-            sentiment: Optional news sentiment score in [-1, 1].
+            symbol:             Stock ticker.
+            bars:               OHLCV DataFrame (Alpaca or yfinance format).
+            sentiment:          Optional news sentiment score in [-1, 1].
+            sector:             GICS sector string (used for ETF momentum lookup).
+            regime_score:       Composite macro regime score from RegimeDetector.
+            fetch_fundamentals: Set False in backtests to skip live API calls.
 
         Returns:
             Dict of feature_name → float, or None if insufficient data.
@@ -93,7 +109,9 @@ class FeatureEngineer:
 
         # ── 4. Price change ───────────────────────────────────────────────────
         prev_close = prices[-2] if len(prices) > 1 else current_price
-        features["price_change_pct"] = (current_price - prev_close) / prev_close if prev_close else 0.0
+        features["price_change_pct"] = (
+            (current_price - prev_close) / prev_close if prev_close else 0.0
+        )
 
         # ── 5. 52-week high / low ratio ───────────────────────────────────────
         lookback = min(252, len(prices))
@@ -103,8 +121,10 @@ class FeatureEngineer:
         features["price_to_52w_low"] = current_price / low_52w if low_52w else 1.0
 
         # ── 6. Volume ratio ───────────────────────────────────────────────────
-        avg_volume = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else float(np.mean(volumes))
-        features["volume_ratio"] = (volumes[-1] / avg_volume) if avg_volume > 0 else 1.0
+        avg_vol = (
+            float(np.mean(volumes[-20:])) if len(volumes) >= 20 else float(np.mean(volumes))
+        )
+        features["volume_ratio"] = (volumes[-1] / avg_vol) if avg_vol > 0 else 1.0
 
         # ── 7. Trend flags ────────────────────────────────────────────────────
         lookback_5 = min(5, len(prices) - 1)
@@ -113,14 +133,89 @@ class FeatureEngineer:
 
         # ── 8. Volatility (annualised) ────────────────────────────────────────
         returns = np.diff(prices) / np.array(prices[:-1])
-        features["volatility"] = float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
+        features["volatility"] = (
+            float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
+        )
 
         # ── 9. Momentum ───────────────────────────────────────────────────────
         lookback_20 = min(20, len(prices) - 1)
-        features["momentum_5d"] = (prices[-1] - prices[-(lookback_5 + 1)]) / prices[-(lookback_5 + 1)] if prices[-(lookback_5 + 1)] else 0.0
-        features["momentum_20d"] = (prices[-1] - prices[-(lookback_20 + 1)]) / prices[-(lookback_20 + 1)] if prices[-(lookback_20 + 1)] else 0.0
+        features["momentum_5d"] = (
+            (prices[-1] - prices[-(lookback_5 + 1)]) / prices[-(lookback_5 + 1)]
+            if prices[-(lookback_5 + 1)] else 0.0
+        )
+        features["momentum_20d"] = (
+            (prices[-1] - prices[-(lookback_20 + 1)]) / prices[-(lookback_20 + 1)]
+            if prices[-(lookback_20 + 1)] else 0.0
+        )
 
         # ── 10. Sentiment ─────────────────────────────────────────────────────
         features["sentiment"] = float(sentiment) if sentiment is not None else 0.0
+
+        # ── 11-16. Fundamentals (yfinance) ────────────────────────────────────
+        if fetch_fundamentals:
+            try:
+                from app.ml.fundamental_fetcher import get_fundamentals
+                fund = get_fundamentals(symbol)
+                features["pe_ratio"] = fund["pe_ratio"]
+                features["pb_ratio"] = fund["pb_ratio"]
+                features["profit_margin"] = fund["profit_margin"]
+                features["revenue_growth"] = fund["revenue_growth"]
+                features["debt_to_equity"] = fund["debt_to_equity"]
+                features["earnings_proximity_days"] = fund["earnings_proximity_days"]
+            except Exception as exc:
+                logger.debug("Fundamental features skipped for %s: %s", symbol, exc)
+                features.update({
+                    "pe_ratio": 0.0, "pb_ratio": 0.0, "profit_margin": 0.0,
+                    "revenue_growth": 0.0, "debt_to_equity": 0.0,
+                    "earnings_proximity_days": 90.0,
+                })
+        else:
+            features.update({
+                "pe_ratio": 0.0, "pb_ratio": 0.0, "profit_margin": 0.0,
+                "revenue_growth": 0.0, "debt_to_equity": 0.0,
+                "earnings_proximity_days": 90.0,
+            })
+
+        # ── 17. Sector ETF momentum ───────────────────────────────────────────
+        if fetch_fundamentals and sector:
+            try:
+                from app.ml.fundamental_fetcher import get_sector_momentum
+                features["sector_momentum"] = get_sector_momentum(sector)
+            except Exception:
+                features["sector_momentum"] = 0.0
+        else:
+            features["sector_momentum"] = 0.0
+
+        # ── 18. Insider activity score (SEC EDGAR Form 4) ─────────────────────
+        if fetch_fundamentals:
+            try:
+                from app.ml.fundamental_fetcher import get_insider_score
+                features["insider_score"] = get_insider_score(symbol)
+            except Exception:
+                features["insider_score"] = 0.0
+        else:
+            features["insider_score"] = 0.0
+
+        # ── 19. Earnings surprise (Alpha Vantage) ─────────────────────────────
+        if fetch_fundamentals:
+            try:
+                from app.ml.fundamental_fetcher import get_earnings_surprise
+                features["earnings_surprise"] = get_earnings_surprise(symbol)
+            except Exception:
+                features["earnings_surprise"] = 0.0
+        else:
+            features["earnings_surprise"] = 0.0
+
+        # ── 20. Macro regime score ────────────────────────────────────────────
+        if regime_score is not None:
+            features["regime_score"] = float(regime_score)
+        else:
+            try:
+                from app.macro.regime_detector import RegimeDetector
+                detector = RegimeDetector()
+                det = detector.detect_regime()
+                features["regime_score"] = float(det.get("composite_score", 0.5))
+            except Exception:
+                features["regime_score"] = 0.5
 
         return features
