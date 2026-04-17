@@ -4,7 +4,7 @@ Feature engineering for the ML portfolio selection model.
 Accepts OHLCV DataFrames from either Alpaca (lowercase columns) or
 yfinance (capitalized columns) — both are normalised internally.
 
-Feature groups (48 total):
+Feature groups (56 total):
   1.  RSI (14, 7)                                               — price-only
   2.  MACD (line, signal, histogram)                            — price-only
   3.  EMAs (20, 50, 200) + price position flags                 — price-only
@@ -29,9 +29,12 @@ Feature groups (48 total):
   22. Earnings history: 1q surprise, 2q avg, days since report  — yfinance (free)
   23. Short interest % of float                                  — yfinance (free)
   24. Short-term RS vs SPY: 5d, 10d differentials               — computed
+  25. FMP point-in-time: earnings surprises, analyst momentum,
+      institutional ownership (8 features)                      — FMP API
 """
 
 import logging
+from datetime import date
 from typing import Dict, Optional
 
 import numpy as np
@@ -193,6 +196,7 @@ class FeatureEngineer:
         regime_score: Optional[float] = None,
         fetch_fundamentals: bool = True,
         spy_returns: Optional[np.ndarray] = None,
+        as_of_date: Optional["date"] = None,
     ) -> Optional[Dict[str, float]]:
         """
         Compute features for a single stock.
@@ -448,5 +452,39 @@ class FeatureEngineer:
             features["rs_vs_spy_10d"] = momentum_10d - spy_ret_10d
         else:
             features["rs_vs_spy_10d"] = 0.0
+
+        # ── 25. FMP point-in-time fundamentals ───────────────────────────────
+        # as_of_date lets training pass the window end date so we use only data
+        # known at that time — eliminates the look-ahead bias that kept AUC at 0.51.
+        # Live inference passes None → uses today.
+        if fetch_fundamentals:
+            pit_date = as_of_date if as_of_date is not None else date.today()
+            try:
+                from app.data.fmp_provider import get_fmp_features_at
+                fmp = get_fmp_features_at(symbol, pit_date)
+                features.update(fmp)
+            except Exception as exc:
+                logger.debug("FMP features skipped for %s: %s", symbol, exc)
+                features.update({
+                    "fmp_surprise_1q": 0.0,
+                    "fmp_surprise_2q_avg": 0.0,
+                    "fmp_days_since_earnings": 90.0,
+                    "fmp_analyst_upgrades_30d": 0.0,
+                    "fmp_analyst_downgrades_30d": 0.0,
+                    "fmp_analyst_momentum_30d": 0.0,
+                    "fmp_inst_ownership_pct": 0.0,
+                    "fmp_inst_change_pct": 0.0,
+                })
+        else:
+            features.update({
+                "fmp_surprise_1q": 0.0,
+                "fmp_surprise_2q_avg": 0.0,
+                "fmp_days_since_earnings": 90.0,
+                "fmp_analyst_upgrades_30d": 0.0,
+                "fmp_analyst_downgrades_30d": 0.0,
+                "fmp_analyst_momentum_30d": 0.0,
+                "fmp_inst_ownership_pct": 0.0,
+                "fmp_inst_change_pct": 0.0,
+            })
 
         return features
