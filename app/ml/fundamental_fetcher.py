@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
+import numpy as np
+import pandas as pd
 import requests
 import yfinance as yf
 
@@ -146,6 +148,15 @@ def prefetch_fundamentals(symbols: list) -> Dict[str, Dict[str, float]]:
                 "revenue_growth": 0.0, "debt_to_equity": 0.0,
                 "earnings_proximity_days": 90.0,
             }
+        # Warm earnings history and short interest caches in same pass
+        try:
+            get_earnings_history(symbol)
+        except Exception:
+            pass
+        try:
+            get_short_interest(symbol)
+        except Exception:
+            pass
     logger.info("prefetch_fundamentals: loaded %d symbols", len(result))
     return result
 
@@ -292,3 +303,109 @@ def get_earnings_surprise(symbol: str, api_key: Optional[str] = None) -> float:
 
     _av_cache[symbol] = (surprise, now)
     return surprise
+
+
+# ── Earnings history (yfinance — no API key needed) ───────────────────────────
+
+_earnh_cache: Dict[str, tuple] = {}
+_EARNH_TTL = 86_400  # 24 h
+
+
+def get_earnings_history(symbol: str) -> Dict[str, float]:
+    """
+    Return earnings history features from yfinance (free, no API key).
+
+    Returns dict with:
+      earnings_surprise_1q  — most recent quarterly EPS surprise (actual-est)/|est|
+      earnings_surprise_2q_avg — mean surprise over last 2 quarters
+      days_since_earnings   — calendar days since last earnings report
+    """
+    now = time.time()
+    cached = _earnh_cache.get(symbol)
+    if cached and now - cached[1] < _EARNH_TTL:
+        return cached[0]
+
+    result = {
+        "earnings_surprise_1q": 0.0,
+        "earnings_surprise_2q_avg": 0.0,
+        "days_since_earnings": 90.0,
+    }
+
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.earnings_history
+        if hist is None or hist.empty:
+            # Fallback: try quarterly_earnings
+            hist = ticker.quarterly_earnings
+            if hist is None or hist.empty:
+                _earnh_cache[symbol] = (result, now)
+                return result
+
+        # earnings_history has columns: EPS Estimate, Reported EPS, Surprise(%)
+        # quarterly_earnings has columns: Revenue, Earnings (no surprise)
+        surprises = []
+        report_dates = []
+
+        if "Reported EPS" in hist.columns and "EPS Estimate" in hist.columns:
+            for idx_val, row in hist.iterrows():
+                est = row.get("EPS Estimate")
+                actual = row.get("Reported EPS")
+                if est is not None and actual is not None:
+                    try:
+                        est_f, actual_f = float(est), float(actual)
+                        if abs(est_f) > 0.001:
+                            surprises.append(
+                                float(max(-1.0, min(1.0, (actual_f - est_f) / abs(est_f))))
+                            )
+                    except (ValueError, TypeError):
+                        pass
+                # Track report date for days_since
+                try:
+                    report_dates.append(pd.to_datetime(idx_val))
+                except Exception:
+                    pass
+
+        if surprises:
+            result["earnings_surprise_1q"] = surprises[0]
+            result["earnings_surprise_2q_avg"] = float(np.mean(surprises[:2]))
+
+        if report_dates:
+            latest = max(report_dates)
+            result["days_since_earnings"] = float(
+                max(0, min(365, (datetime.now() - latest).days))
+            )
+
+    except Exception as exc:
+        logger.debug("Earnings history fetch failed for %s: %s", symbol, exc)
+
+    _earnh_cache[symbol] = (result, now)
+    return result
+
+
+# ── Short interest (yfinance — free) ─────────────────────────────────────────
+
+_si_cache: Dict[str, tuple] = {}
+_SI_TTL = 86_400  # 24 h
+
+
+def get_short_interest(symbol: str) -> float:
+    """
+    Return short interest as a fraction of float (e.g. 0.05 = 5% short).
+    Uses yfinance info.shortPercentOfFloat.  Returns 0.0 on failure.
+    """
+    now = time.time()
+    cached = _si_cache.get(symbol)
+    if cached and now - cached[1] < _SI_TTL:
+        return cached[0]
+
+    value = 0.0
+    try:
+        info = yf.Ticker(symbol).info or {}
+        spf = info.get("shortPercentOfFloat") or info.get("shortRatio")
+        if spf is not None:
+            value = float(min(spf, 1.0))  # cap at 100%
+    except Exception as exc:
+        logger.debug("Short interest fetch failed for %s: %s", symbol, exc)
+
+    _si_cache[symbol] = (value, now)
+    return value
