@@ -128,3 +128,25 @@ export interface SessionLogEntry {
   message: string
   detail: Record<string, unknown>
 }
+
+export interface MacroIndicators {
+  fed_funds_rate: number | null
+  yield_10y: number | null
+  yield_spread_10y2y: number | null
+  cpi_yoy: number | null
+  unemployment_rate: number | null
+}
+
+export interface RegimeDetail {
+  regime: string
+  composite_score: number
+  vix: number | null
+  vix_score: number
+  macro_score: number
+  vix_weight: number
+  macro_weight: number
+  macro_indicators: MacroIndicators
+  trend_following_active: boolean
+  mean_reversion_active: boolean
+  position_size_multiplier: number
+}
