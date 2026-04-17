@@ -69,3 +69,10 @@ def _ensure_defaults_registered() -> None:
             _registry["alpaca"] = AlpacaProvider()
         except Exception as exc:
             logger.debug("Alpaca provider not registered (keys missing?): %s", exc)
+
+    if "polygon" not in _registry:
+        try:
+            from app.data.polygon_provider import PolygonProvider
+            _registry["polygon"] = PolygonProvider()
+        except Exception as exc:
+            logger.debug("Polygon provider not registered: %s", exc)
