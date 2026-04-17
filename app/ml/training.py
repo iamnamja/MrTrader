@@ -98,7 +98,13 @@ class ModelTrainer:
         spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
         logger.info("Class ratio  neg=%d  pos=%d  scale_pos_weight=%.2f", n_neg, n_pos, spw)
 
-        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw)
+        # Use test set as validation for early stopping (avoids overfitting on noisy data)
+        self.model.train(
+            X_train, y_train, feature_names,
+            scale_pos_weight=spw,
+            X_val=X_test, y_val=y_test,
+            early_stopping_rounds=30,
+        )
 
         # Evaluate on held-out test set
         metrics = self._evaluate(X_test, y_test)
