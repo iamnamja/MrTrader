@@ -4,10 +4,15 @@ Live trading health monitor.
 Performs comprehensive health checks against the Alpaca account and the
 local database, determines an overall status level, and fires alerts when
 thresholds are breached.
+
+Phase 27 additions:
+  - Consecutive losing day tracking (alert at 2+, block at 3+)
+  - daily_session_summary(): end-of-day digest stored in AuditLog + sent via email
+  - last_summary property: most recent summary dict for the dashboard
 """
 import logging
 from datetime import datetime, date
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from app.database.session import get_session
 from app.database.models import Trade, RiskMetric, AuditLog
@@ -17,12 +22,17 @@ logger = logging.getLogger(__name__)
 # ── Alert throttle: minimum seconds between identical alert types ─────────────
 _ALERT_COOLDOWN = 300  # 5 minutes
 
+# ── Consecutive losing day thresholds ─────────────────────────────────────────
+_WARN_LOSING_DAYS = 2
+_BLOCK_LOSING_DAYS = 3
+
 
 class LiveTradingMonitor:
     """Comprehensive health checks and threshold alerts for live trading."""
 
     def __init__(self):
         self._last_alert: Dict[str, datetime] = {}
+        self._last_summary: Optional[Dict[str, Any]] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -76,8 +86,92 @@ class LiveTradingMonitor:
         finally:
             db.close()
 
+        # Consecutive losing days
+        health["consecutive_losing_days"] = self._consecutive_losing_days()
         self._check_thresholds(health)
         return health
+
+    @property
+    def last_summary(self) -> Optional[Dict[str, Any]]:
+        """Return the most recent daily session summary (or None if not yet run)."""
+        return self._last_summary
+
+    def daily_session_summary(self) -> Dict[str, Any]:
+        """
+        Build and store an end-of-day session summary.
+        Persists to AuditLog and fires an email alert.
+        Called by the post-market scheduler job.
+        """
+        health = self.health_check()
+        consecutive = health.get("consecutive_losing_days", 0)
+
+        summary: Dict[str, Any] = {
+            "date": date.today().isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
+            "trades_today": health["trades_today"],
+            "pnl_today": health["pnl_today"],
+            "pnl_today_pct": health["pnl_today_pct"],
+            "account_value": health["account_value"],
+            "max_drawdown_pct": health["max_drawdown_pct"],
+            "status": health["status"],
+            "consecutive_losing_days": consecutive,
+            "open_positions": health["open_positions"],
+        }
+
+        # Persist to audit log
+        db = get_session()
+        try:
+            db.add(AuditLog(
+                action="DAILY_SESSION_SUMMARY",
+                details=summary,
+                timestamp=datetime.utcnow(),
+            ))
+            db.commit()
+        except Exception as exc:
+            logger.error("Failed to persist daily summary: %s", exc)
+        finally:
+            db.close()
+
+        # Email the summary
+        title = f"Daily Session Summary — {summary['date']}"
+        lines = [
+            f"P&L today: ${summary['pnl_today']:+.2f} ({summary['pnl_today_pct']:+.2f}%)",
+            f"Trades: {summary['trades_today']}",
+            f"Account value: ${summary['account_value']:,.2f}",
+            f"Max drawdown: {summary['max_drawdown_pct']:.2f}%",
+            f"Status: {summary['status'].upper()}",
+        ]
+        if consecutive >= _WARN_LOSING_DAYS:
+            lines.append(f"⚠ {consecutive} consecutive losing days")
+        self._alert("INFO" if summary["status"] == "healthy" else "WARNING",
+                    title, "\n".join(lines))
+
+        self._last_summary = summary
+        logger.info("Daily session summary stored: %s", summary["date"])
+        return summary
+
+    # ── Consecutive losing day tracking ───────────────────────────────────────
+
+    def _consecutive_losing_days(self) -> int:
+        """Count how many of the most recent trading days had negative P&L."""
+        db = get_session()
+        try:
+            metrics: List[RiskMetric] = (
+                db.query(RiskMetric)
+                .order_by(RiskMetric.date.desc())
+                .limit(10)
+                .all()
+            )
+        finally:
+            db.close()
+
+        count = 0
+        for m in metrics:
+            if m.daily_pnl is not None and m.daily_pnl < 0:
+                count += 1
+            else:
+                break  # streak broken
+        return count
 
     # ── Threshold checks & alerts ─────────────────────────────────────────────
 
@@ -99,6 +193,14 @@ class LiveTradingMonitor:
         if daily_loss > 5.0:
             self._alert("INFO", "Strong Daily Performance",
                         f"Daily P&L: +{daily_loss:.2f}%")
+
+        consecutive = health.get("consecutive_losing_days", 0)
+        if consecutive >= _BLOCK_LOSING_DAYS:
+            self._alert("CRITICAL", "Consecutive Losing Days",
+                        f"{consecutive} losing days in a row — consider pausing trading")
+        elif consecutive >= _WARN_LOSING_DAYS:
+            self._alert("WARNING", "Losing Day Streak",
+                        f"{consecutive} consecutive losing days")
 
     def _alert(self, severity: str, title: str, message: str):
         key = f"{severity}:{title}"
@@ -150,7 +252,10 @@ class LiveTradingMonitor:
         try:
             import json
             import urllib.request
-            emoji = {"CRITICAL": ":red_circle:", "WARNING": ":warning:", "INFO": ":white_check_mark:"}.get(severity, "")
+            _EMOJI = {
+                "CRITICAL": ":red_circle:", "WARNING": ":warning:", "INFO": ":white_check_mark:",
+            }
+            emoji = _EMOJI.get(severity, "")
             payload = json.dumps({"text": f"{emoji} *{title}*\n{message}"}).encode()
             req = urllib.request.Request(
                 settings.slack_webhook_url,

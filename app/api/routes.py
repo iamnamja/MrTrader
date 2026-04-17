@@ -636,3 +636,64 @@ async def get_portfolio_heat():
     except Exception as exc:
         logger.error("Portfolio heat error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/monitor/health")
+async def get_monitor_health():
+    """Run a live health check via LiveTradingMonitor."""
+    try:
+        from app.live_trading.monitoring import monitor
+        return monitor.health_check()
+    except Exception as exc:
+        logger.error("Monitor health check error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/monitor/summary")
+async def get_monitor_summary():
+    """Return the last daily session summary (or None if not yet run today)."""
+    try:
+        from app.live_trading.monitoring import monitor
+        return {"summary": monitor.last_summary}
+    except Exception as exc:
+        logger.error("Monitor summary error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/monitor/run-summary")
+async def run_daily_summary():
+    """Manually trigger a daily session summary (for testing / on-demand review)."""
+    try:
+        from app.live_trading.monitoring import monitor
+        summary = monitor.daily_session_summary()
+        return summary
+    except Exception as exc:
+        logger.error("Manual summary error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/monitor/history")
+async def get_monitor_history(days: int = 7):
+    """Return daily session summaries from AuditLog for the last N days."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import AuditLog
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        db = get_session()
+        try:
+            rows = (
+                db.query(AuditLog)
+                .filter(
+                    AuditLog.action == "DAILY_SESSION_SUMMARY",
+                    AuditLog.timestamp >= cutoff,
+                )
+                .order_by(AuditLog.timestamp.desc())
+                .all()
+            )
+            return {"history": [r.details for r in rows if r.details]}
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.error("Monitor history error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))

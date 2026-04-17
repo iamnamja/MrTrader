@@ -1493,8 +1493,111 @@ function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' 
   )
 }
 
+// ── Monitor Panel ─────────────────────────────────────────────────────────────
+function MonitorPanel() {
+  const [health, setHealth] = useState<Record<string, unknown> | null>(null)
+  const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
+  const [history, setHistory] = useState<Record<string, unknown>[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const [h, s, hist] = await Promise.all([
+        api.monitorHealth() as Promise<Record<string, unknown>>,
+        api.monitorSummary() as Promise<Record<string, unknown>>,
+        api.monitorHistory(7) as Promise<{ history: Record<string, unknown>[] }>,
+      ])
+      setHealth(h); setSummary(s); setHistory(hist.history ?? [])
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const statusColor = (s: unknown) =>
+    s === 'critical' ? C.red : s === 'warning' ? C.yellow : C.green
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>Health Monitor</h2>
+        <button onClick={load} style={{ ...btnStyle, opacity: loading ? 0.5 : 1 }} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+      {error && <div style={{ color: C.red, marginBottom: 12 }}>{error}</div>}
+
+      {health && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+          {[
+            { label: 'Status', value: String(health.status ?? '—').toUpperCase(), color: statusColor(health.status) },
+            { label: 'Account Value', value: `$${Number(health.account_value ?? 0).toLocaleString()}` },
+            { label: 'P&L Today', value: `$${Number(health.pnl_today ?? 0).toFixed(2)}` },
+            { label: 'P&L Today %', value: `${Number(health.pnl_today_pct ?? 0).toFixed(2)}%` },
+            { label: 'Max Drawdown', value: `${Number(health.max_drawdown_pct ?? 0).toFixed(2)}%` },
+            { label: 'Open Positions', value: String(health.open_positions ?? 0) },
+            { label: 'Trades Today', value: String(health.trades_today ?? 0) },
+            { label: 'Losing Streak', value: `${health.consecutive_losing_days ?? 0} days`, color: Number(health.consecutive_losing_days ?? 0) >= 3 ? C.red : Number(health.consecutive_losing_days ?? 0) >= 2 ? C.yellow : undefined },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '12px 16px' }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: color ?? C.text }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {summary && (summary as { summary?: unknown }).summary !== undefined && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Last Session Summary</div>
+          <pre style={{ margin: 0, fontSize: 12, color: C.muted, whiteSpace: 'pre-wrap' }}>
+            {JSON.stringify((summary as { summary?: unknown }).summary, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Session History (7 days)</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: C.muted, borderBottom: `1px solid ${C.border}` }}>
+                  {['Date', 'P&L', 'P&L %', 'Trades', 'Drawdown %', 'Status', 'Losing Streak'].map(h => (
+                    <th key={h} style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((row, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: '6px 12px' }}>{String(row.date ?? '—')}</td>
+                    <td style={{ padding: '6px 12px', color: Number(row.pnl_today ?? 0) >= 0 ? C.green : C.red }}>
+                      ${Number(row.pnl_today ?? 0).toFixed(2)}
+                    </td>
+                    <td style={{ padding: '6px 12px' }}>{Number(row.pnl_today_pct ?? 0).toFixed(2)}%</td>
+                    <td style={{ padding: '6px 12px' }}>{String(row.trades_today ?? 0)}</td>
+                    <td style={{ padding: '6px 12px' }}>{Number(row.max_drawdown_pct ?? 0).toFixed(2)}%</td>
+                    <td style={{ padding: '6px 12px', color: statusColor(row.status) }}>
+                      {String(row.status ?? '—').toUpperCase()}
+                    </td>
+                    <td style={{ padding: '6px 12px' }}>{String(row.consecutive_losing_days ?? 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -1620,6 +1723,7 @@ export default function App() {
         {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
         {tab === 'Performance' && <PerformanceReviewPanel />}
         {tab === 'Config' && <ConfigPanel toast={toast} />}
+        {tab === 'Monitor' && <MonitorPanel />}
       </div>
 
       <ToastContainer toasts={toasts} />
