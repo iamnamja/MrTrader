@@ -91,12 +91,14 @@ class ModelTrainer:
         provider: str = "yfinance",
         use_feature_store: bool = True,
         model_type: str = "xgboost",
+        label_scheme: str = "atr",
         top_n_features: Optional[int] = None,
     ):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type=model_type)
         self._provider_name = provider
+        self.label_scheme = label_scheme
         self.top_n_features = top_n_features
         if use_feature_store:
             from app.ml.feature_store import FeatureStore
@@ -217,8 +219,27 @@ class ModelTrainer:
         meta_train is a list of dicts used to compute sample weights.
         Test set = most recent TEST_FRACTION of windows (time-based split).
         """
+        # For spy_relative labeling, ensure SPY is in symbols_data
+        if self.label_scheme == "spy_relative" and "SPY" not in symbols_data:
+            try:
+                import yfinance as yf
+                from datetime import datetime as dt
+                dates = sorted(set.union(*[set(df.index.date) for df in symbols_data.values()]))
+                spy_df = yf.download("SPY", start=dates[0], end=dates[-1], progress=False, auto_adjust=True)
+                if isinstance(spy_df.columns, pd.MultiIndex):
+                    spy_df.columns = spy_df.columns.get_level_values(0)
+                spy_df.columns = [c.lower() for c in spy_df.columns]
+                if not spy_df.empty:
+                    symbols_data = dict(symbols_data)  # don't mutate caller's dict
+                    symbols_data["SPY"] = spy_df
+                    logger.info("Downloaded SPY for spy_relative labeling")
+            except Exception as exc:
+                logger.warning("Could not download SPY for spy_relative labeling: %s", exc)
+
         # Build sorted list of window start dates from the earliest common date
         all_dates = sorted(set.intersection(
+            *[set(df.index.date) for df in symbols_data.values() if df is not symbols_data.get("SPY")]
+        ) if self.label_scheme == "spy_relative" else set.intersection(
             *[set(df.index.date) for df in symbols_data.values()]
         ))
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
@@ -304,36 +325,67 @@ class ModelTrainer:
                 if entry_price <= 0:
                     continue
 
-                target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
-                target_price = entry_price * (1 + target_pct)
-                stop_price = entry_price * (1 - stop_pct)
-
                 label = None
                 outcome_return = 0.0
-                forward_volumes = []
-                for bar_offset in range(1, FORWARD_DAYS + 1):
-                    future_idx = w_end_idx + bar_offset
+
+                if self.label_scheme == "spy_relative":
+                    # Label = 1 if 21-day return beats SPY by >2%, 0 if underperforms SPY
+                    future_idx = w_end_idx + FORWARD_DAYS
                     if future_idx >= len(all_dates):
-                        break
-                    future_date = all_dates[future_idx]
-                    bar = df.loc[idx == future_date]
-                    if len(bar) == 0:
                         continue
-                    high = float(bar["high"].iloc[0])
-                    low = float(bar["low"].iloc[0])
-                    if "volume" in bar.columns:
-                        forward_volumes.append(float(bar["volume"].iloc[0]))
-                    if low <= stop_price:
-                        label = 0
-                        outcome_return = (low - entry_price) / entry_price
-                        break
-                    if high >= target_price:
+                    future_date = all_dates[future_idx]
+                    future_bar = df.loc[idx == future_date, "close"]
+                    if len(future_bar) == 0:
+                        continue
+                    stock_ret = (float(future_bar.iloc[0]) - entry_price) / entry_price
+                    # Get SPY return over same period
+                    spy_df = symbols_data.get("SPY")
+                    if spy_df is not None:
+                        spy_idx = spy_df.index.normalize() if hasattr(spy_df.index, "normalize") else spy_df.index
+                        spy_entry = spy_df.loc[spy_idx == w_end_date, "close"]
+                        spy_future = spy_df.loc[spy_idx == future_date, "close"]
+                        if len(spy_entry) > 0 and len(spy_future) > 0:
+                            spy_ret = (float(spy_future.iloc[0]) - float(spy_entry.iloc[0])) / float(spy_entry.iloc[0])
+                        else:
+                            spy_ret = 0.0
+                    else:
+                        spy_ret = 0.0
+                    excess = stock_ret - spy_ret
+                    if excess > 0.02:
                         label = 1
-                        outcome_return = (high - entry_price) / entry_price
-                        break
+                    elif excess < 0.0:
+                        label = 0
+                    # else: ambiguous (0-2% outperformance) — skip
+                    outcome_return = stock_ret
+                else:
+                    # Default: ATR-hit labeling
+                    target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+                    target_price = entry_price * (1 + target_pct)
+                    stop_price = entry_price * (1 - stop_pct)
+                    forward_volumes = []
+                    for bar_offset in range(1, FORWARD_DAYS + 1):
+                        future_idx = w_end_idx + bar_offset
+                        if future_idx >= len(all_dates):
+                            break
+                        future_date = all_dates[future_idx]
+                        bar = df.loc[idx == future_date]
+                        if len(bar) == 0:
+                            continue
+                        high = float(bar["high"].iloc[0])
+                        low = float(bar["low"].iloc[0])
+                        if "volume" in bar.columns:
+                            forward_volumes.append(float(bar["volume"].iloc[0]))
+                        if low <= stop_price:
+                            label = 0
+                            outcome_return = (low - entry_price) / entry_price
+                            break
+                        if high >= target_price:
+                            label = 1
+                            outcome_return = (high - entry_price) / entry_price
+                            break
 
                 if label is None:
-                    continue  # neither target nor stop hit — skip
+                    continue  # ambiguous outcome — skip
 
                 # ── Features (cache-first) ────────────────────────────────────
                 sector = SECTOR_MAP.get(symbol) or "Unknown"
