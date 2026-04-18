@@ -180,7 +180,6 @@ def run_rolling_pipeline(
 
     trainer = ModelTrainer(
         model_type=model_type,
-        label_scheme=label_scheme,
         top_n_features=top_n_features if top_n_features > 0 else None,
     )
 
@@ -208,7 +207,7 @@ def run_rolling_pipeline(
     ok(f"Features      : {len(feature_names)}")
     info(f"  {', '.join(feature_names)}")
 
-    # Apply feature selection if requested (after matrix build)
+    # Apply feature selection if requested
     if top_n_features > 0 and len(feature_names) > top_n_features:
         X_train, X_test, feature_names = trainer._select_top_features(
             X_train, y_train, X_test, feature_names, top_n_features
@@ -319,13 +318,13 @@ def main():
     )
     parser.add_argument(
         "--model-type", default="xgboost",
-        choices=["xgboost", "lgbm", "ensemble"],
+        choices=["xgboost", "lgbm", "ensemble", "lgbm_ensemble"],
         help="Model architecture (default: xgboost)",
     )
     parser.add_argument(
         "--label-scheme", default="atr",
         choices=["atr", "cross_sectional", "spy_relative"],
-        help="Labeling scheme: atr (ATR-hit), cross_sectional (rank by return), spy_relative (rank by SPY-adjusted return)",
+        help="Labeling scheme (default: atr)",
     )
     parser.add_argument(
         "--top-features", type=int, default=0,

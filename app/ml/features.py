@@ -639,6 +639,30 @@ class FeatureEngineer:
             features["range_expansion"] = 1.0
             features["vwap_distance_20d"] = 0.0
 
+        # ── 30a. Sector-neutral momentum & mean-reversion ────────────────────
+        # Sector-neutral: stock's 20d/60d alpha vs sector ETF (pure alpha signal)
+        features["momentum_20d_sector_neutral"] = features["momentum_20d"] - features["sector_momentum"]
+        features["momentum_60d_sector_neutral"] = features["momentum_60d"] - features["sector_momentum"]
+
+        # Mean-reversion z-score: std devs above 60d rolling mean of 20d returns
+        if len(prices) >= 63:
+            _rolling = np.array([
+                (prices[i] - prices[i - 20]) / max(prices[i - 20], 1e-6)
+                for i in range(20, min(63, len(prices)))
+            ])
+            _rz_std = float(_rolling.std()) if len(_rolling) > 1 else 1e-6
+            features["mean_reversion_zscore"] = float(
+                np.clip((features["momentum_20d"] - float(_rolling.mean())) / max(_rz_std, 1e-6), -4.0, 4.0)
+            )
+        else:
+            features["mean_reversion_zscore"] = 0.0
+
+        # Up-day ratio: % of last 20 days closing higher than prior day
+        if len(prices) >= 21:
+            features["up_day_ratio_20d"] = float((np.diff(prices[-21:]) > 0).sum()) / 20.0
+        else:
+            features["up_day_ratio_20d"] = 0.5
+
         # ── 30. Daily technical indicators ───────────────────────────────────
         try:
             # Williams %R(14): -100=oversold, 0=overbought → normalise to [-1, 0]

@@ -29,22 +29,23 @@ MODEL_DIR = "app/ml/models"
 
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
-FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_DAYS=10
-# v17 fix: STEP_DAYS = FORWARD_DAYS avoids overlapping forward windows (label leakage).
-# v15/v16 used STEP_DAYS=5 which meant consecutive windows shared 5 of 10 forward days.
-STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
+FORWARD_DAYS = 21       # v20: 21-day forward window — longer horizon = less noise, cleaner signal
+# STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
+STEP_DAYS = 21          # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
 LABEL_STOP_PCT = 0.02     # fallback fixed stop
 
-# ATR-adaptive labeling — v17: SYMMETRIC target = stop = 1.0x ATR
-# v15/v16 had asymmetric 1.5x target / 0.75x stop → created class imbalance
-# Symmetric thresholds produce ~50/50 split and remove directional bias in label construction
-ATR_MULT_TARGET = 1.0     # target = 1.0x the stock's 14-day ATR (symmetric)
-ATR_MULT_STOP = 1.0       # stop  = 1.0x the stock's 14-day ATR (symmetric)
-ATR_MIN_TARGET = 0.01     # floor: never require less than 1% move
-ATR_MAX_TARGET = 0.06     # ceiling: never require more than 6% move
+# ATR-adaptive labeling — v19: ASYMMETRIC 1.5x target / 0.5x stop
+# Restores R:R > 1 (3:1) — only labels a winner when move > stop distance by 3x.
+# Tighter stop (0.5x vs old 0.75x) = cleaner, more decisive labels.
+# v17/v18 used symmetric 1.0x/1.0x which produced ~50/50 labels but random AUC.
+ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
+ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR (tight = decisive labels)
+ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
+ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
+
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
@@ -80,10 +81,8 @@ class ModelTrainer:
     Orchestrates data fetching, rolling-window labelling,
     feature engineering, and XGBoost/LightGBM training for the swing model.
 
-    label_scheme options:
-      "atr"             — (default) hit ATR target vs stop within FORWARD_DAYS
-      "cross_sectional" — rank stocks by raw 10-day return; top 30% = 1, bottom 30% = 0
-      "spy_relative"    — rank by (stock_return - SPY_return); top 30% = 1, bottom 30% = 0
+    model_type options: "xgboost", "lgbm", "ensemble", "lgbm_ensemble"
+    top_n_features: if set, selects top-N features by mutual information before training
     """
 
     def __init__(
@@ -150,7 +149,7 @@ class ModelTrainer:
             len(X_train), len(X_test), len(feature_names),
         )
 
-        # Feature selection: keep top N by mutual information if requested
+        # Feature selection (if configured)
         if self.top_n_features and len(feature_names) > self.top_n_features:
             X_train, X_test, feature_names = self._select_top_features(
                 X_train, y_train, X_test, feature_names, self.top_n_features
@@ -166,9 +165,11 @@ class ModelTrainer:
         # Build multi-factor sample weights
         sample_weight = self._build_sample_weights(meta_train)
 
-        # LightGBM doesn't support scale_pos_weight the same way — use class_weight instead
-        if self.model.model_type == "lgbm":
+        # LightGBM-based models use class_weight instead of scale_pos_weight
+        if self.model.model_type in ("lgbm", "lgbm_ensemble"):
             self.model.model.set_params(class_weight={0: 1.0, 1: float(spw)})
+            if self.model.model_type == "lgbm_ensemble" and self.model._lgbm_model is not None:
+                self.model._lgbm_model.set_params(class_weight={0: 1.0, 1: float(spw)})
             spw = None  # don't pass as XGBoost param
 
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
@@ -218,8 +219,27 @@ class ModelTrainer:
         meta_train is a list of dicts used to compute sample weights.
         Test set = most recent TEST_FRACTION of windows (time-based split).
         """
+        # For spy_relative labeling, ensure SPY is in symbols_data
+        if self.label_scheme == "spy_relative" and "SPY" not in symbols_data:
+            try:
+                import yfinance as yf
+                from datetime import datetime as dt
+                dates = sorted(set.union(*[set(df.index.date) for df in symbols_data.values()]))
+                spy_df = yf.download("SPY", start=dates[0], end=dates[-1], progress=False, auto_adjust=True)
+                if isinstance(spy_df.columns, pd.MultiIndex):
+                    spy_df.columns = spy_df.columns.get_level_values(0)
+                spy_df.columns = [c.lower() for c in spy_df.columns]
+                if not spy_df.empty:
+                    symbols_data = dict(symbols_data)  # don't mutate caller's dict
+                    symbols_data["SPY"] = spy_df
+                    logger.info("Downloaded SPY for spy_relative labeling")
+            except Exception as exc:
+                logger.warning("Could not download SPY for spy_relative labeling: %s", exc)
+
         # Build sorted list of window start dates from the earliest common date
         all_dates = sorted(set.intersection(
+            *[set(df.index.date) for df in symbols_data.values() if df is not symbols_data.get("SPY")]
+        ) if self.label_scheme == "spy_relative" else set.intersection(
             *[set(df.index.date) for df in symbols_data.values()]
         ))
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
@@ -253,31 +273,13 @@ class ModelTrainer:
             except Exception as exc:
                 logger.warning("FMP prefetch skipped: %s", exc)
 
-        # Fetch SPY data for spy_relative labeling
-        spy_data: Optional[pd.DataFrame] = None
-        if self.label_scheme == "spy_relative":
-            try:
-                import yfinance as yf
-                _spy_raw = yf.download("SPY", start=all_dates[0], end=all_dates[-1],
-                                       progress=False, auto_adjust=True)
-                if isinstance(_spy_raw.columns, pd.MultiIndex):
-                    _spy_raw.columns = _spy_raw.columns.get_level_values(0)
-                _spy_raw.columns = [c.lower() for c in _spy_raw.columns]
-                if not _spy_raw.empty and "close" in _spy_raw.columns:
-                    spy_data = _spy_raw
-                    logger.info("SPY data fetched for spy_relative labeling")
-            except Exception as exc:
-                logger.warning("Could not fetch SPY for spy_relative: %s", exc)
-
         X_train, y_train, meta_train = self._windows_to_matrix(
             symbols_data, all_dates, train_window_starts,
-            regime_score, fetch_fundamentals, total_windows=len(window_starts),
-            spy_data=spy_data,
+            regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
         X_test, y_test, _ = self._windows_to_matrix(
             symbols_data, all_dates, test_window_starts,
-            regime_score, fetch_fundamentals, total_windows=len(window_starts),
-            spy_data=spy_data,
+            regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
         feature_names = self._last_feature_names
@@ -291,7 +293,6 @@ class ModelTrainer:
         regime_score: Optional[float],
         fetch_fundamentals: bool,
         total_windows: int = 1,
-        spy_data: Optional[pd.DataFrame] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
         X_rows, y_vals, meta_rows = [], [], []
         self._last_feature_names: List[str] = []
@@ -303,14 +304,6 @@ class ModelTrainer:
 
             w_start_date = all_dates[w_start_idx]
             w_end_date = all_dates[w_end_idx]
-
-            # ── Cross-sectional labeling: compute returns for all symbols ──
-            if self.label_scheme in ("cross_sectional", "spy_relative"):
-                cs_labels, cs_returns = self._cross_sectional_labels(
-                    symbols_data, all_dates, w_end_idx, spy_data
-                )
-            else:
-                cs_labels, cs_returns = {}, {}
 
             for symbol, df in symbols_data.items():
                 idx = df.index.date
@@ -324,7 +317,7 @@ class ModelTrainer:
                 if len(window_df) < FeatureEngineer.MIN_BARS:
                     continue
 
-                # ── Label assignment ──────────────────────────────────────────
+                # ── Outcome-based label ───────────────────────────────────────
                 entry_rows = df.loc[idx == w_end_date, "close"]
                 if len(entry_rows) == 0:
                     continue
@@ -332,18 +325,44 @@ class ModelTrainer:
                 if entry_price <= 0:
                     continue
 
-                if self.label_scheme in ("cross_sectional", "spy_relative"):
-                    label = cs_labels.get(symbol)
-                    outcome_return = cs_returns.get(symbol, 0.0)
-                    if label is None:
-                        continue  # in the dropped middle 40%
+                label = None
+                outcome_return = 0.0
+
+                if self.label_scheme == "spy_relative":
+                    # Label = 1 if 21-day return beats SPY by >2%, 0 if underperforms SPY
+                    future_idx = w_end_idx + FORWARD_DAYS
+                    if future_idx >= len(all_dates):
+                        continue
+                    future_date = all_dates[future_idx]
+                    future_bar = df.loc[idx == future_date, "close"]
+                    if len(future_bar) == 0:
+                        continue
+                    stock_ret = (float(future_bar.iloc[0]) - entry_price) / entry_price
+                    # Get SPY return over same period
+                    spy_df = symbols_data.get("SPY")
+                    if spy_df is not None:
+                        spy_idx = spy_df.index.normalize() if hasattr(spy_df.index, "normalize") else spy_df.index
+                        spy_entry = spy_df.loc[spy_idx == w_end_date, "close"]
+                        spy_future = spy_df.loc[spy_idx == future_date, "close"]
+                        if len(spy_entry) > 0 and len(spy_future) > 0:
+                            spy_ret = (float(spy_future.iloc[0]) - float(spy_entry.iloc[0])) / float(spy_entry.iloc[0])
+                        else:
+                            spy_ret = 0.0
+                    else:
+                        spy_ret = 0.0
+                    excess = stock_ret - spy_ret
+                    if excess > 0.02:
+                        label = 1
+                    elif excess < 0.0:
+                        label = 0
+                    # else: ambiguous (0-2% outperformance) — skip
+                    outcome_return = stock_ret
                 else:
-                    # ATR-adaptive label (original)
+                    # Default: ATR-hit labeling
                     target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
                     target_price = entry_price * (1 + target_pct)
                     stop_price = entry_price * (1 - stop_pct)
-                    label = None
-                    outcome_return = 0.0
+                    forward_volumes = []
                     for bar_offset in range(1, FORWARD_DAYS + 1):
                         future_idx = w_end_idx + bar_offset
                         if future_idx >= len(all_dates):
@@ -354,6 +373,8 @@ class ModelTrainer:
                             continue
                         high = float(bar["high"].iloc[0])
                         low = float(bar["low"].iloc[0])
+                        if "volume" in bar.columns:
+                            forward_volumes.append(float(bar["volume"].iloc[0]))
                         if low <= stop_price:
                             label = 0
                             outcome_return = (low - entry_price) / entry_price
@@ -362,8 +383,9 @@ class ModelTrainer:
                             label = 1
                             outcome_return = (high - entry_price) / entry_price
                             break
-                    if label is None:
-                        continue
+
+                if label is None:
+                    continue  # ambiguous outcome — skip
 
                 # ── Features (cache-first) ────────────────────────────────────
                 sector = SECTOR_MAP.get(symbol) or "Unknown"
@@ -394,6 +416,7 @@ class ModelTrainer:
                 X_rows.append(list(features.values()))
                 y_vals.append(label)
 
+                # Collect metadata for sample weight computation
                 avg_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else 1e6
                 meta_rows.append({
                     "window_idx": w_start_idx,
@@ -405,69 +428,28 @@ class ModelTrainer:
 
         return np.array(X_rows), np.array(y_vals), meta_rows
 
-    def _cross_sectional_labels(
-        self,
-        symbols_data: Dict[str, pd.DataFrame],
-        all_dates: list,
-        w_end_idx: int,
-        spy_data: Optional[pd.DataFrame] = None,
-    ) -> Tuple[Dict[str, int], Dict[str, float]]:
-        """
-        Rank all symbols by their FORWARD_DAYS forward return from w_end_date.
-        Top 30% → label 1, bottom 30% → label 0, middle 40% → None (skipped).
-        For spy_relative: adjusts returns by SPY return before ranking.
-        """
-        w_end_date = all_dates[w_end_idx]
-        future_idx = min(w_end_idx + FORWARD_DAYS, len(all_dates) - 1)
-        future_date = all_dates[future_idx]
-
-        # SPY return for the same period (for spy_relative scheme)
-        spy_return = 0.0
-        if self.label_scheme == "spy_relative" and spy_data is not None:
-            try:
-                spy_idx = spy_data.index.date
-                spy_entry = spy_data.loc[spy_idx == w_end_date, "close"]
-                spy_exit = spy_data.loc[spy_idx == future_date, "close"]
-                if len(spy_entry) > 0 and len(spy_exit) > 0:
-                    spy_return = float(spy_exit.iloc[0] - spy_entry.iloc[0]) / float(spy_entry.iloc[0])
-            except Exception:
-                pass
-
-        returns: Dict[str, float] = {}
-        for symbol, df in symbols_data.items():
-            try:
-                idx = df.index.date
-                entry_rows = df.loc[idx == w_end_date, "close"]
-                exit_rows = df.loc[idx == future_date, "close"]
-                if len(entry_rows) == 0 or len(exit_rows) == 0:
-                    continue
-                entry = float(entry_rows.iloc[0])
-                if entry <= 0:
-                    continue
-                raw_ret = (float(exit_rows.iloc[0]) - entry) / entry
-                returns[symbol] = raw_ret - spy_return  # subtract SPY if spy_relative
-            except Exception:
-                continue
-
-        if len(returns) < 3:
-            return {}, {}
-
-        sorted_syms = sorted(returns.keys(), key=lambda s: returns[s])
-        n = len(sorted_syms)
-        bottom_cut = int(n * 0.30)
-        top_cut = int(n * 0.70)
-
-        labels: Dict[str, int] = {}
-        for i, sym in enumerate(sorted_syms):
-            if i < bottom_cut:
-                labels[sym] = 0
-            elif i >= top_cut:
-                labels[sym] = 1
-            # else: skip middle 40%
-
-        return labels, returns
-
     # ── Sample weighting ─────────────────────────────────────────────────────
+
+    def _select_top_features(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        feature_names: List[str],
+        top_n: int,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """Select top-N features by mutual information score (training data only)."""
+        try:
+            from sklearn.feature_selection import mutual_info_classif
+            scores = mutual_info_classif(X_train, y_train, random_state=42)
+            top_idx = np.argsort(scores)[::-1][:top_n]
+            top_idx_sorted = sorted(top_idx)
+            selected_names = [feature_names[i] for i in top_idx_sorted]
+            logger.info("Top %d features by MI: %s", top_n, selected_names[:10])
+            return X_train[:, top_idx_sorted], X_test[:, top_idx_sorted], selected_names
+        except Exception as exc:
+            logger.warning("Feature selection failed, using all: %s", exc)
+            return X_train, X_test, feature_names
 
     def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
         """Build multi-factor sample weights from per-sample metadata."""
@@ -492,27 +474,6 @@ class ModelTrainer:
         except Exception as exc:
             logger.warning("Sample weight computation failed, using uniform: %s", exc)
             return None
-
-    def _select_top_features(
-        self,
-        X_train: np.ndarray,
-        y_train: np.ndarray,
-        X_test: np.ndarray,
-        feature_names: List[str],
-        top_n: int,
-    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """Select top-N features by mutual information score."""
-        try:
-            from sklearn.feature_selection import mutual_info_classif
-            scores = mutual_info_classif(X_train, y_train, random_state=42)
-            top_idx = np.argsort(scores)[::-1][:top_n]
-            top_idx_sorted = sorted(top_idx)
-            selected_names = [feature_names[i] for i in top_idx_sorted]
-            logger.info("Top %d features by MI: %s", top_n, selected_names[:10])
-            return X_train[:, top_idx_sorted], X_test[:, top_idx_sorted], selected_names
-        except Exception as exc:
-            logger.warning("Feature selection failed, using all: %s", exc)
-            return X_train, X_test, feature_names
 
     def _get_current_vol_percentile(self) -> float:
         """Estimate current market vol percentile using SPY realized vol."""
