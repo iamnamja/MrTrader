@@ -370,6 +370,11 @@ class ModelTrainer:
                 features = None
                 if self._feature_store is not None:
                     features = self._feature_store.get(symbol, w_end_date)
+                    # Discard stale cache entries whose feature count doesn't match current code.
+                    # Mixing feature counts across windows causes inhomogeneous np.array errors.
+                    if features is not None and self._last_feature_names and \
+                            len(features) != len(self._last_feature_names):
+                        features = None
                 if features is None:
                     features = self.feature_engineer.engineer_features(
                         symbol, window_df,
