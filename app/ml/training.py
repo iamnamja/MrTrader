@@ -29,10 +29,9 @@ MODEL_DIR = "app/ml/models"
 
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
-FORWARD_DAYS = 10       # predict return over next 2 weeks — matches MAX_HOLD_DAYS=10
-# v17 fix: STEP_DAYS = FORWARD_DAYS avoids overlapping forward windows (label leakage).
-# v15/v16 used STEP_DAYS=5 which meant consecutive windows shared 5 of 10 forward days.
-STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
+FORWARD_DAYS = 21       # v20: 21-day forward window — longer horizon = less noise, cleaner signal
+# STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
+STEP_DAYS = 21          # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
@@ -47,9 +46,6 @@ ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR (tight = decisiv
 ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
 ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 
-# v19: Volume confirmation — require avg forward volume > this fraction of historical avg
-# to label a winner. Filters out low-conviction price moves not backed by volume.
-VOL_CONFIRM_THRESHOLD = 0.9  # forward avg volume must be >= 90% of window avg volume
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
@@ -332,13 +328,7 @@ class ModelTrainer:
                         outcome_return = (low - entry_price) / entry_price
                         break
                     if high >= target_price:
-                        # v19: volume confirmation — require meaningful volume to validate winner
-                        avg_fwd_vol = float(np.mean(forward_volumes)) if forward_volumes else entry_price
-                        window_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else avg_fwd_vol
-                        if window_vol > 0 and avg_fwd_vol < VOL_CONFIRM_THRESHOLD * window_vol:
-                            label = 0  # price hit target but volume didn't confirm — treat as stop
-                        else:
-                            label = 1
+                        label = 1
                         outcome_return = (high - entry_price) / entry_price
                         break
 
