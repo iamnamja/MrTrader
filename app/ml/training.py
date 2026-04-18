@@ -81,10 +81,20 @@ class ModelTrainer:
     feature engineering, and XGBoost training for the swing model.
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance", use_feature_store: bool = True):
+    def __init__(
+        self,
+        model_dir: str = MODEL_DIR,
+        provider: str = "yfinance",
+        use_feature_store: bool = True,
+        model_type: str = "xgboost",
+        label_scheme: str = "atr",
+        top_n_features: Optional[int] = None,
+    ):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
-        self.model = PortfolioSelectorModel(model_type="xgboost")
+        self.model = PortfolioSelectorModel(model_type=model_type)
+        self.label_scheme = label_scheme
+        self.top_n_features = top_n_features
         self._provider_name = provider
         if use_feature_store:
             from app.ml.feature_store import FeatureStore
