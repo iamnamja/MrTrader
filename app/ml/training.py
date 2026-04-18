@@ -366,6 +366,27 @@ class ModelTrainer:
 
     # ── Sample weighting ─────────────────────────────────────────────────────
 
+    def _select_top_features(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        feature_names: List[str],
+        top_n: int,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """Select top-N features by mutual information score (training data only)."""
+        try:
+            from sklearn.feature_selection import mutual_info_classif
+            scores = mutual_info_classif(X_train, y_train, random_state=42)
+            top_idx = np.argsort(scores)[::-1][:top_n]
+            top_idx_sorted = sorted(top_idx)
+            selected_names = [feature_names[i] for i in top_idx_sorted]
+            logger.info("Top %d features by MI: %s", top_n, selected_names[:10])
+            return X_train[:, top_idx_sorted], X_test[:, top_idx_sorted], selected_names
+        except Exception as exc:
+            logger.warning("Feature selection failed, using all: %s", exc)
+            return X_train, X_test, feature_names
+
     def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
         """Build multi-factor sample weights from per-sample metadata."""
         if not meta:
