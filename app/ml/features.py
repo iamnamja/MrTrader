@@ -663,6 +663,42 @@ class FeatureEngineer:
         else:
             features["up_day_ratio_20d"] = 0.5
 
+        # ── 30b. Quality / trend consistency features (v19) ───────────────────
+        # Trend consistency: fraction of last 63 days where price > 50-day EMA
+        # High consistency = institutional conviction, sustained accumulation
+        if len(prices) >= 63:
+            _k50 = 2.0 / 51.0
+            _ema50_window = float(np.mean(prices[:50]))
+            _above_count = 0
+            for _i in range(50, min(len(prices), 63 + 50)):
+                _ema50_window = prices[_i] * _k50 + _ema50_window * (1 - _k50)
+                if prices[_i] > _ema50_window:
+                    _above_count += 1
+            _window_len = min(len(prices), 63 + 50) - 50
+            features["trend_consistency_63d"] = float(_above_count) / max(_window_len, 1)
+        else:
+            features["trend_consistency_63d"] = 0.5
+
+        # Volume-price trend confirmation: do up days have higher vol than down days?
+        # Ratio > 1 = buying pressure; < 1 = distribution
+        if len(prices) >= 21 and len(volumes) >= 21:
+            _rets20 = np.diff(prices[-21:])
+            _vols20 = volumes[-20:]
+            _up_vol = float(np.mean(_vols20[_rets20 > 0])) if np.any(_rets20 > 0) else 0.0
+            _down_vol = float(np.mean(_vols20[_rets20 <= 0])) if np.any(_rets20 <= 0) else 1e-6
+            features["vol_price_confirmation"] = float(np.clip(_up_vol / max(_down_vol, 1e-6), 0.0, 4.0))
+        else:
+            features["vol_price_confirmation"] = 1.0
+
+        # Price efficiency: fraction of gross move captured vs total path length
+        # High efficiency = directional conviction; low = choppiness
+        if len(prices) >= 20:
+            _net = abs(prices[-1] - prices[-20])
+            _path = float(np.sum(np.abs(np.diff(prices[-20:]))))
+            features["price_efficiency_20d"] = float(np.clip(_net / max(_path, 1e-6), 0.0, 1.0))
+        else:
+            features["price_efficiency_20d"] = 0.5
+
         # ── 30. Daily technical indicators ───────────────────────────────────
         try:
             # Williams %R(14): -100=oversold, 0=overbought → normalise to [-1, 0]
