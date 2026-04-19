@@ -1611,16 +1611,13 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null)
   const { toasts, add: toast } = useToasts()
 
-  // Load summary + health
+  // Load summary and health independently — summary renders immediately, health updates the status badge
   const loadSummary = useCallback(async () => {
-    const [summaryResult, healthResult] = await Promise.allSettled([
-      api.summary() as Promise<Summary>,
-      api.health() as Promise<Health>,
-    ])
-    if (summaryResult.status === 'fulfilled') {
-      const j = summaryResult.value
-      setSummary(j)
-      const pnlVal = j.daily_pnl ?? j.pnl_today
+    // Fire both but don't wait — each updates state as soon as it resolves
+    api.summary().then((j: unknown) => {
+      const s = j as Summary
+      setSummary(s)
+      const pnlVal = s.daily_pnl ?? s.pnl_today
       if (pnlVal != null) {
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
         setPnlHistory(h => {
@@ -1628,8 +1625,8 @@ export default function App() {
           return next.length > 60 ? next.slice(-60) : next
         })
       }
-    }
-    if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
+    }).catch(() => {})
+    api.health().then((j: unknown) => setHealth(j as Health)).catch(() => {})
   }, [])
 
   const loadDecisions = useCallback(async () => {

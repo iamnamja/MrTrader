@@ -88,11 +88,15 @@ def _win_rate_and_drawdown():
 
 
 def _system_status(alpaca_ok: bool = True) -> str:
-    checks = [
-        check_db_connection(),
-        _redis().health_check(),
-        alpaca_ok,
-    ]
+    try:
+        db_ok = check_db_connection()
+    except Exception:
+        db_ok = False
+    try:
+        redis_ok = _redis().health_check()
+    except Exception:
+        redis_ok = False
+    checks = [db_ok, redis_ok, alpaca_ok]
     if all(checks):
         return "healthy"
     if any(checks):
@@ -102,7 +106,7 @@ def _system_status(alpaca_ok: bool = True) -> str:
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
-ALPACA_TIMEOUT = 8.0  # seconds before giving up and returning partial data
+ALPACA_TIMEOUT = 4.0  # seconds before giving up and returning partial data
 
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
@@ -110,28 +114,43 @@ ALPACA_TIMEOUT = 8.0  # seconds before giving up and returning partial data
 async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
-        # Alpaca calls have an 8s timeout — returns partial data if slow
-        account: dict | None = None
-        positions: list = []
-        try:
-            alpaca = _alpaca()
-            account, positions = await asyncio.wait_for(
-                asyncio.gather(
-                    asyncio.to_thread(alpaca.get_account),
-                    asyncio.to_thread(alpaca.get_positions),
-                ),
-                timeout=ALPACA_TIMEOUT,
-            )
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning("Alpaca unavailable for summary (%s) — returning DB-only data", exc)
+        # Fire Alpaca, DB queries, and stats all in parallel — don't wait for Alpaca before starting DB work
+        def _fetch_alpaca():
+            try:
+                alpaca = _alpaca()
+                acct = alpaca.get_account()
+                pos = alpaca.get_positions()
+                return acct, pos
+            except Exception:
+                return None, []
 
-        db = get_session()
+        def _fetch_daily_pnl():
+            db = get_session()
+            try:
+                today = date.today().isoformat()
+                metric = db.query(RiskMetric).filter_by(date=today).first()
+                return float(metric.daily_pnl) if metric and metric.daily_pnl else 0.0
+            except Exception:
+                return 0.0
+            finally:
+                db.close()
+
+        (account, positions), daily_pnl, (win_rate, max_dd), trades_count = await asyncio.gather(
+            asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT),
+            asyncio.to_thread(_fetch_daily_pnl),
+            asyncio.to_thread(_win_rate_and_drawdown),
+            asyncio.to_thread(_trades_today_count),
+        )
+
+        if account is None:
+            logger.warning("Alpaca unavailable for summary — returning DB-only data")
+
         try:
-            today = date.today().isoformat()
-            metric = db.query(RiskMetric).filter_by(date=today).first()
-            daily_pnl = float(metric.daily_pnl) if metric and metric.daily_pnl else 0.0
-        finally:
-            db.close()
+            sys_status = await asyncio.wait_for(
+                asyncio.to_thread(_system_status, account is not None), timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            sys_status = "degraded"
 
         account_value = float(account["portfolio_value"]) if account else None
         buying_power = float(account["buying_power"]) if account else None
@@ -145,12 +164,6 @@ async def get_dashboard_summary():
             total_pnl_pct = round((total_pnl / initial_capital) * 100, 2)
         else:
             daily_pnl_pct = total_pnl = total_pnl_pct = None
-
-        (win_rate, max_dd), trades_count, sys_status = await asyncio.gather(
-            asyncio.to_thread(_win_rate_and_drawdown),
-            asyncio.to_thread(_trades_today_count),
-            asyncio.to_thread(_system_status, account is not None),
-        )
 
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
