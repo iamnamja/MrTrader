@@ -196,7 +196,8 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           return <Pill key={k} label={(names[k] ?? k).toUpperCase()} ok={!!ok} />
         })}
         {summary.timestamp && (() => {
-          const ts = new Date(summary.timestamp)
+          const raw = summary.timestamp!
+          const ts = new Date(raw.endsWith('Z') ? raw : raw + 'Z')
           const ageMs = Date.now() - ts.getTime()
           const ageSec = Math.round(ageMs / 1000)
           const cached = ageMs > 10_000  // older than 10s = came from cache
