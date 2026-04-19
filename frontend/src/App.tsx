@@ -1707,7 +1707,7 @@ export default function App() {
   useEffect(() => {
     loadSummary()
     loadDecisions()
-    const id = setInterval(() => { loadSummary(); loadDecisions() }, 15000)
+    const id = setInterval(() => { loadSummary(); loadDecisions() }, 10000)
     return () => clearInterval(id)
   }, [loadSummary, loadDecisions])
 

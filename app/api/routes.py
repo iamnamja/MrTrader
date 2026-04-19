@@ -110,7 +110,7 @@ ALPACA_TIMEOUT = 4.0  # seconds before giving up and returning partial data
 
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
-@ttl_cache(seconds=15)
+@ttl_cache(seconds=10)
 async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
@@ -315,7 +315,7 @@ async def get_daily_metrics(days: int = 30):
 # ─── System health ────────────────────────────────────────────────────────────
 
 @router.get("/health")
-@ttl_cache(seconds=15)
+@ttl_cache(seconds=10)
 async def get_health_alias():
     """Health check alias for dashboard polling."""
     db_ok = check_db_connection()
