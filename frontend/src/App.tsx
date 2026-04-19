@@ -208,7 +208,7 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           const ts = new Date(raw.endsWith('Z') ? raw : raw + 'Z')
           const ageMs = Date.now() - ts.getTime()
           const ageSec = Math.round(ageMs / 1000)
-          const cached = ageMs > 10_000  // older than 10s = came from cache
+          const cached = ageMs > 20_000  // older than 20s = came from cache
           const label = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec/60)}m ago`
           return (
             <span style={{ fontSize: 10, color: cached ? C.yellow : C.green, marginLeft: 4 }}>
