@@ -187,7 +187,7 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
   return (
     <div>
       {/* Health pills */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
         <Pill label={mode.toUpperCase()} ok={mode !== 'live'} warn={mode !== 'live'} />
         <Pill label={status.toUpperCase()} ok={status === 'healthy'} />
         {Object.entries(checks ?? {}).map(([k, v]) => {
@@ -195,6 +195,18 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           const names: Record<string, string> = { database: 'DB', redis: 'Redis', alpaca: 'Alpaca' }
           return <Pill key={k} label={(names[k] ?? k).toUpperCase()} ok={!!ok} />
         })}
+        {summary.timestamp && (() => {
+          const ts = new Date(summary.timestamp)
+          const ageMs = Date.now() - ts.getTime()
+          const ageSec = Math.round(ageMs / 1000)
+          const cached = ageMs > 10_000  // older than 10s = came from cache
+          const label = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec/60)}m ago`
+          return (
+            <span style={{ fontSize: 10, color: cached ? C.yellow : C.green, marginLeft: 4 }}>
+              {cached ? '○ cached' : '● live'} · {label}
+            </span>
+          )
+        })()}
       </div>
 
       {/* KPI strip */}
