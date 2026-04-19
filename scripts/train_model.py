@@ -296,7 +296,7 @@ def run_rolling_pipeline(
 # -- Main ----------------------------------------------------------------------
 
 def main():
-    from app.utils.constants import SP_100_TICKERS
+    from app.utils.constants import RUSSELL_1000_TICKERS
 
     parser = argparse.ArgumentParser(
         description="Train the MrTrader portfolio selection model",
@@ -332,7 +332,7 @@ def main():
     )
     args = parser.parse_args()
 
-    symbols = args.symbols or SP_100_TICKERS
+    symbols = args.symbols or RUSSELL_1000_TICKERS
     fetch_fundamentals = not args.no_fundamentals
 
     print(f"\n{BOLD}{'=' * 60}{RESET}")

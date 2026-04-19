@@ -29,9 +29,9 @@ MODEL_DIR = "app/ml/models"
 
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
-FORWARD_DAYS = 21       # v20: 21-day forward window — longer horizon = less noise, cleaner signal
+FORWARD_DAYS = 10       # v25: 10-day forward (empirically better AUC than 21d/63d)
 # STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
-STEP_DAYS = 21          # non-overlapping forward windows → cleaner labels
+STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
