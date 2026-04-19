@@ -125,7 +125,15 @@ function MacroWidget() {
   return (
     <div style={s.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={s.cardTitle}>Market Regime & Macro</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={s.cardTitle}>Market Regime & Macro</div>
+          {regime.fetched_at && (() => {
+            const ageSec = Math.round((Date.now() - new Date(regime.fetched_at!).getTime()) / 1000)
+            const label = ageSec < 60 ? `${ageSec}s ago` : ageSec < 3600 ? `${Math.round(ageSec/60)}m ago` : `${Math.round(ageSec/3600)}h ago`
+            // VIX is ~15min delayed by yfinance free tier; FRED data is weekly/monthly
+            return <span style={{ fontSize: 10, color: C.muted }}>VIX ~15min delayed · FRED updated {label}</span>
+          })()}
+        </div>
         <span style={{
           padding: '3px 10px', borderRadius: 10, fontSize: 10, fontWeight: 700,
           background: `${regimeColor}1a`, color: regimeColor, border: `1px solid ${regimeColor}4d`,

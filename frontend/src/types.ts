@@ -210,6 +210,7 @@ export interface RegimeDetail {
   trend_following_active: boolean
   mean_reversion_active: boolean
   position_size_multiplier: number
+  fetched_at?: string
 }
 
 export interface MonitorHealth {
