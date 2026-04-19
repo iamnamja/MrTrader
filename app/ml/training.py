@@ -219,8 +219,8 @@ class ModelTrainer:
         meta_train is a list of dicts used to compute sample weights.
         Test set = most recent TEST_FRACTION of windows (time-based split).
         """
-        # For spy_relative labeling, ensure SPY is in symbols_data
-        if self.label_scheme == "spy_relative" and "SPY" not in symbols_data:
+        # Always download SPY — used as date spine for rolling windows and for spy_relative labeling
+        if "SPY" not in symbols_data:
             try:
                 import yfinance as yf
                 from datetime import datetime as dt
@@ -232,16 +232,26 @@ class ModelTrainer:
                 if not spy_df.empty:
                     symbols_data = dict(symbols_data)  # don't mutate caller's dict
                     symbols_data["SPY"] = spy_df
-                    logger.info("Downloaded SPY for spy_relative labeling")
+                    logger.info("Downloaded SPY as date spine")
             except Exception as exc:
                 logger.warning("Could not download SPY for spy_relative labeling: %s", exc)
 
-        # Build sorted list of window start dates from the earliest common date
-        all_dates = sorted(set.intersection(
-            *[set(df.index.date) for df in symbols_data.values() if df is not symbols_data.get("SPY")]
-        ) if self.label_scheme == "spy_relative" else set.intersection(
-            *[set(df.index.date) for df in symbols_data.values()]
-        ))
+        # Use SPY as the date spine (most complete US trading calendar).
+        # Falling back to union-of-all avoids the intersection collapsing to nothing
+        # when symbols have different listing histories (e.g. Russell 1000 has many
+        # recent IPOs that reduce the intersection to zero).
+        spy_df = symbols_data.get("SPY")
+        if spy_df is not None:
+            all_dates = sorted(set(spy_df.index.date))
+        else:
+            # Use union then filter to dates present in at least half the symbols
+            from collections import Counter
+            date_counts = Counter(
+                d for df in symbols_data.values() for d in df.index.date
+            )
+            min_symbols = max(1, len(symbols_data) // 2)
+            all_dates = sorted(d for d, cnt in date_counts.items() if cnt >= min_symbols)
+
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
             logger.warning("Not enough common dates for rolling windows")
             return np.array([]), np.array([]), np.array([]), np.array([]), [], []
