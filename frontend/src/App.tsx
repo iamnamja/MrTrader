@@ -226,10 +226,11 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           color={clr(summary.daily_pnl ?? summary.pnl_today)} />
         <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
-        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'} sub="All closed trades" />
+        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'}
+          sub={summary.win_rate != null ? 'All closed trades' : 'No closed trades yet'} />
         <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
           color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
-          sub="From peak equity" />
+          sub={summary.max_drawdown_pct != null ? 'From peak equity' : 'No closed trades yet'} />
       </div>
 
       {/* Charts + decisions + macro */}
@@ -447,6 +448,24 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
   )
 }
 
+function decisionColor(type: string | undefined): string {
+  const t = (type ?? '').toUpperCase()
+  if (t.includes('BUY') || t.includes('APPROVED') || t.includes('OPEN')) return C.green
+  if (t.includes('SELL') || t.includes('CLOSE') || t.includes('REJECT') || t.includes('FORCE')) return C.red
+  if (t.includes('WARN') || t.includes('RISK')) return C.yellow
+  return C.muted
+}
+
+function extractSymbol(d: Decision): string {
+  if (d.symbol) return d.symbol
+  const r = d.reasoning as Record<string, unknown> | undefined
+  if (!r) return '—'
+  if (typeof r.symbol === 'string') return r.symbol
+  if (Array.isArray(r.symbols) && r.symbols.length) return (r.symbols as string[]).join(', ')
+  if (typeof r.ticker === 'string') return r.ticker
+  return '—'
+}
+
 function DecisionsTable({ rows }: { rows: Decision[] }) {
   if (!rows.length) {
     return <div style={{ color: C.muted, textAlign: 'center', padding: 16, fontSize: 11 }}>No decisions yet</div>
@@ -457,14 +476,21 @@ function DecisionsTable({ rows }: { rows: Decision[] }) {
         {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={s.th}>{h}</th>)}
       </tr></thead>
       <tbody>
-        {rows.map((d, i) => (
-          <tr key={i}>
-            <td style={{ ...s.td, color: C.muted }}>{fmtTs(d.timestamp)}</td>
-            <td style={s.td}>{d.agent_name ?? '—'}</td>
-            <td style={s.td}>{d.decision_type ?? '—'}</td>
-            <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{d.symbol ?? d.reasoning?.symbol ?? '—'}</td>
-          </tr>
-        ))}
+        {rows.map((d, i) => {
+          const color = decisionColor(d.decision_type)
+          const sym = extractSymbol(d)
+          return (
+            <tr key={i}>
+              <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(d.timestamp)}</td>
+              <td style={{ ...s.td, color: C.muted }}>{d.agent_name ?? '—'}</td>
+              <td style={s.td}>
+                <span style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                  background: `${color}22`, color }}>{d.decision_type ?? '—'}</span>
+              </td>
+              <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{sym}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )
