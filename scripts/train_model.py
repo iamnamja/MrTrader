@@ -264,20 +264,34 @@ def run_rolling_pipeline(
             ok(f"  Window {w}d: AUC={r['metrics'].get('auc', '?'):.3f}  Recall={r['metrics'].get('recall', '?'):.1%}")
     else:
         print("  Training...", end="", flush=True)
-        n_neg = int((y_train == 0).sum())
-        n_pos = int((y_train == 1).sum())
-        spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
-        sample_weight = trainer._build_sample_weights(meta_train)
-        trainer.model.train(
-            X_train, y_train, feature_names,
-            scale_pos_weight=spw,
-            X_val=X_test, y_val=y_test,
-            early_stopping_rounds=30,
-            sample_weight=sample_weight,
-        )
-        elapsed = time.time() - t0
-        print("\r", end="")
-        ok(f"Training complete in {elapsed:.1f}s  (scale_pos_weight={spw:.1f})")
+        if model_type == "lambdarank":
+            X_train, y_train, train_groups = trainer._build_lambdarank_groups(X_train, y_train, meta_train)
+            val_groups = np.array([len(X_test)], dtype=np.int32) if len(X_test) > 0 else None
+            trainer.model.train(
+                X_train, y_train, feature_names,
+                X_val=X_test, y_val=y_test,
+                early_stopping_rounds=30,
+                groups=train_groups,
+                val_groups=val_groups,
+            )
+            elapsed = time.time() - t0
+            print("\r", end="")
+            ok(f"LambdaRank training complete in {elapsed:.1f}s  ({len(train_groups)} groups)")
+        else:
+            n_neg = int((y_train == 0).sum())
+            n_pos = int((y_train == 1).sum())
+            spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+            sample_weight = trainer._build_sample_weights(meta_train)
+            trainer.model.train(
+                X_train, y_train, feature_names,
+                scale_pos_weight=spw,
+                X_val=X_test, y_val=y_test,
+                early_stopping_rounds=30,
+                sample_weight=sample_weight,
+            )
+            elapsed = time.time() - t0
+            print("\r", end="")
+            ok(f"Training complete in {elapsed:.1f}s  (scale_pos_weight={spw:.1f})")
 
     # Step 5
     header(5, 6, "Out-of-sample evaluation  (time-based held-out set)")
@@ -315,10 +329,17 @@ def run_rolling_pipeline(
             ok(f"Threshold : {tuned_t:.2f}  (tuned on val set to maximise F1)")
             preds, proba = trainer.model.predict(X_test, threshold=tuned_t)
 
-        # For regression label schemes, binarize y_test (top-20% = 1) before classification metrics
+        # For regression/rank label schemes, binarize y_test before classification metrics
         import numpy as _np
         _is_reg = label_scheme in ("return_regression", "return_blend")
-        y_test_bin = (_np.array(y_test) >= _np.percentile(y_test, 80)).astype(int) if _is_reg else y_test
+        _is_rank = label_scheme == "lambdarank"
+        if _is_rank:
+            # Quintile labels 0-4; treat 4 (top quintile) as positive
+            y_test_bin = (_np.array(y_test) >= 4).astype(int)
+        elif _is_reg:
+            y_test_bin = (_np.array(y_test) >= _np.percentile(y_test, 80)).astype(int)
+        else:
+            y_test_bin = y_test
         acc = accuracy_score(y_test_bin, preds)
         prec = precision_score(y_test_bin, preds, zero_division=0)
         rec = recall_score(y_test_bin, preds, zero_division=0)
@@ -445,12 +466,12 @@ def main():
     )
     parser.add_argument(
         "--model-type", default="xgboost",
-        choices=["xgboost", "lgbm", "ensemble", "lgbm_ensemble"],
+        choices=["xgboost", "lgbm", "ensemble", "lgbm_ensemble", "lambdarank"],
         help="Model architecture (default: xgboost)",
     )
     parser.add_argument(
         "--label-scheme", default="atr",
-        choices=["atr", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend"],
+        choices=["atr", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank"],
         help="Labeling scheme (default: atr)",
     )
     parser.add_argument(

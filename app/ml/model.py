@@ -18,7 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 
 try:
-    from lightgbm import LGBMClassifier
+    from lightgbm import LGBMClassifier, LGBMRanker
     _LGBM_AVAILABLE = True
 except ImportError:
     _LGBM_AVAILABLE = False
@@ -133,20 +133,14 @@ class PortfolioSelectorModel:
         early_stopping_rounds: int = 30,
         sample_weight: Optional[np.ndarray] = None,
         feature_weights: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        val_groups: Optional[np.ndarray] = None,
     ) -> None:
         """
         Fit the model on pre-engineered features.
 
-        Args:
-            X:                    Feature matrix (n_samples, n_features).
-            y:                    Binary labels (1 = good performer, 0 = poor).
-            feature_names:        Optional list of feature names for logging.
-            scale_pos_weight:     XGBoost class-weight ratio (n_neg / n_pos).
-            X_val / y_val:        Optional validation set for early stopping.
-            early_stopping_rounds: Stop if AUC doesn't improve for N rounds.
-            sample_weight:        Per-sample importance weights (n_samples,).
-                                  Combines recency, volatility regime, outcome
-                                  margin, liquidity, and sector diversity weights.
+        groups / val_groups are accepted for API compatibility with LambdaRankModel
+        but are ignored by classifier/regressor models.
         """
         logger.info(
             "Training %s model — %d samples, %d features",
@@ -525,6 +519,8 @@ class TwoStageModel:
         early_stopping_rounds: int = 30,
         sample_weight: Optional[np.ndarray] = None,
         feature_weights: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        val_groups: Optional[np.ndarray] = None,
     ) -> None:
         self.feature_names = feature_names
         self._split_feature_indices(feature_names or [f"f{i}" for i in range(X.shape[1])])
@@ -674,6 +670,8 @@ class ThreeStageModel:
         early_stopping_rounds: int = 30,
         sample_weight: Optional[np.ndarray] = None,
         feature_weights: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        val_groups: Optional[np.ndarray] = None,
     ) -> None:
         self.feature_names = feature_names
         self._split_feature_indices(feature_names or [f"f{i}" for i in range(X.shape[1])])
@@ -750,3 +748,149 @@ class ThreeStageModel:
             obj = pickle.load(f)
         self.__dict__.update(obj.__dict__)
         logger.info("ThreeStageModel v%d loaded", version)
+
+
+# ── LambdaRank model ──────────────────────────────────────────────────────────
+
+class LambdaRankModel:
+    """
+    Learning-to-rank model using LightGBM LambdaRank.
+
+    Instead of binary classification, directly optimizes ranking quality
+    (NDCG) within each window group. Stocks are assigned ordinal relevance
+    labels 0-4 (quintiles by 10-day return within the window).
+
+    Predict returns a normalized ranking score [0, 1] — higher = better rank.
+    """
+
+    def __init__(self):
+        if not _LGBM_AVAILABLE:
+            raise ImportError("lightgbm not installed — pip install lightgbm")
+        self.model_type = "lambdarank"
+        self.scaler = StandardScaler()
+        self.feature_names: Optional[List[str]] = None
+        self.is_trained = False
+        self.predict_threshold: float = 0.5
+        self._feature_weights: Optional[np.ndarray] = None
+        self.model = LGBMRanker(
+            objective="lambdarank",
+            n_estimators=600,
+            num_leaves=31,
+            max_depth=6,
+            learning_rate=0.01,
+            subsample=0.7,
+            subsample_freq=1,
+            colsample_bytree=0.7,
+            reg_alpha=1.0,
+            reg_lambda=1.0,
+            min_child_samples=20,
+            random_state=42,
+            verbose=-1,
+            lambdarank_truncation_level=4,
+        )
+
+    def train(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Optional[List[str]] = None,
+        scale_pos_weight: Optional[float] = None,
+        X_val: Optional[np.ndarray] = None,
+        y_val: Optional[np.ndarray] = None,
+        early_stopping_rounds: int = 30,
+        sample_weight: Optional[np.ndarray] = None,
+        feature_weights: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        val_groups: Optional[np.ndarray] = None,
+    ) -> None:
+        if groups is None:
+            raise ValueError("LambdaRankModel requires 'groups' (array of group sizes).")
+
+        logger.info(
+            "LambdaRank training — %d samples, %d features, %d groups",
+            X.shape[0], X.shape[1], len(groups),
+        )
+
+        if feature_weights is not None and len(feature_weights) == X.shape[1]:
+            self._feature_weights = feature_weights / (feature_weights.mean() + 1e-9)
+            X = X * self._feature_weights
+            if X_val is not None:
+                X_val = X_val * self._feature_weights
+
+        X_scaled = self.scaler.fit_transform(X)
+
+        fit_kwargs: dict = {}
+        if X_val is not None and y_val is not None and val_groups is not None:
+            X_val_scaled = self.scaler.transform(X_val)
+            from lightgbm import early_stopping, log_evaluation
+            fit_kwargs["eval_set"] = [(X_val_scaled, y_val)]
+            fit_kwargs["eval_group"] = [val_groups]
+            fit_kwargs["callbacks"] = [
+                early_stopping(early_stopping_rounds, verbose=False),
+                log_evaluation(-1),
+            ]
+
+        self.model.fit(X_scaled, y, group=groups, **fit_kwargs)
+        logger.info("LambdaRank fit done; best_iteration=%s", getattr(self.model, "best_iteration_", "n/a"))
+
+        self.feature_names = feature_names
+        self.is_trained = True
+        logger.info("LambdaRank training complete")
+
+    def predict(
+        self, X: np.ndarray, threshold: Optional[float] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if not self.is_trained:
+            raise RuntimeError("LambdaRankModel has not been trained yet.")
+
+        if self._feature_weights is not None and len(self._feature_weights) == X.shape[1]:
+            X = X * self._feature_weights
+
+        X_scaled = self.scaler.transform(X)
+        raw_scores = self.model.predict(X_scaled).astype(float)
+        lo, hi = raw_scores.min(), raw_scores.max()
+        probabilities = (raw_scores - lo) / (hi - lo + 1e-9)
+        t = threshold if threshold is not None else self.predict_threshold
+        predictions = (probabilities >= t).astype(int)
+        return predictions, probabilities
+
+    def tune_threshold(self, X_val: np.ndarray, y_val: np.ndarray, metric: str = "f1") -> float:
+        from sklearn.metrics import f1_score
+        _, probabilities = self.predict(X_val, threshold=0.5)
+        # y_val may be raw float returns (test set) or quintile ints
+        if np.issubdtype(y_val.dtype, np.floating) and not np.all(np.isin(y_val, [0.0, 1.0, 2.0, 3.0, 4.0])):
+            # raw return labels: top-20% = positive
+            y_bin = (y_val >= np.percentile(y_val, 80)).astype(int)
+        else:
+            # quintile labels 0-4: top quintile (4) = positive
+            y_bin = (y_val >= 4).astype(int)
+        best_t, best_score = 0.5, 0.0
+        for t in np.arange(0.20, 0.65, 0.05):
+            preds = (probabilities >= t).astype(int)
+            score = f1_score(y_bin, preds, zero_division=0)
+            if score > best_score:
+                best_score, best_t = score, float(t)
+        self.predict_threshold = best_t
+        logger.info("LambdaRank threshold tuned: %.2f (F1=%.4f)", best_t, best_score)
+        return best_t
+
+    def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
+        if not self.is_trained or not hasattr(self.model, "feature_importances_"):
+            return None
+        names = self.feature_names or [f"f{i}" for i in range(len(self.model.feature_importances_))]
+        return sorted(zip(names, self.model.feature_importances_), key=lambda x: x[1], reverse=True)
+
+    def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        path = Path(directory) / f"{model_name}_v{version}.pkl"
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        logger.info("LambdaRankModel v%d saved to %s", version, directory)
+        return str(path)
+
+    def load(self, directory: str, version: int, model_name: str = "model") -> None:
+        path = Path(directory) / f"{model_name}_v{version}.pkl"
+        with open(path, "rb") as f:
+            obj = pickle.load(f)
+        self.__dict__.update(obj.__dict__)
+        logger.info("LambdaRankModel v%d loaded", version)

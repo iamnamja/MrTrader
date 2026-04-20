@@ -106,7 +106,10 @@ class ModelTrainer:
     ):
         self.model_dir = model_dir
         self.feature_engineer = FeatureEngineer()
-        if three_stage:
+        if model_type == "lambdarank":
+            from app.ml.model import LambdaRankModel
+            self.model = LambdaRankModel()
+        elif three_stage:
             from app.ml.model import ThreeStageModel
             self.model = ThreeStageModel(model_type=model_type)
         elif two_stage:
@@ -199,34 +202,49 @@ class ModelTrainer:
             best_params = self._tune_hyperparams(X_train, y_train, n_trials=self.hpo_trials)
             self.model.model.set_params(**best_params)
 
-        # Correct for class imbalance (not applicable to regression labels)
-        if self.label_scheme in ("return_regression",):
+        # LambdaRank: convert float returns → quintile ranks, sort by window, build groups
+        train_groups = None
+        val_groups = None
+        if self.label_scheme == "lambdarank":
+            X_train, y_train, train_groups = self._build_lambdarank_groups(X_train, y_train, meta_train)
+            # val groups: use window_idx from test meta (not available via current return signature)
+            # build approximate groups from test set meta by re-sorting if possible
+            # For simplicity, build uniform groups for val (1 group = entire test set)
+            val_groups = np.array([len(X_test)], dtype=np.int32) if len(X_test) > 0 else None
             spw = None
-            logger.info("Return regression mode — skipping class imbalance correction")
+            sample_weight = None  # lambdarank doesn't use per-sample weights the same way
+            logger.info("LambdaRank: %d train groups, %d samples", len(train_groups), len(X_train))
         else:
-            n_neg = int((y_train == 0).sum())
-            n_pos = int((y_train == 1).sum())
-            spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
-            logger.info("Class ratio  neg=%d  pos=%d  scale_pos_weight=%.2f", n_neg, n_pos, spw)
+            # Correct for class imbalance (not applicable to regression labels)
+            if self.label_scheme in ("return_regression",):
+                spw = None
+                logger.info("Return regression mode — skipping class imbalance correction")
+            else:
+                n_neg = int((y_train == 0).sum())
+                n_pos = int((y_train == 1).sum())
+                spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+                logger.info("Class ratio  neg=%d  pos=%d  scale_pos_weight=%.2f", n_neg, n_pos, spw)
 
-        # Build multi-factor sample weights
-        sample_weight = self._build_sample_weights(meta_train)
+            # Build multi-factor sample weights
+            sample_weight = self._build_sample_weights(meta_train)
 
-        # LightGBM-based models use class_weight instead of scale_pos_weight
-        if self.model.model_type in ("lgbm", "lgbm_ensemble"):
-            self.model.model.set_params(class_weight={0: 1.0, 1: float(spw)})
-            if self.model.model_type == "lgbm_ensemble" and self.model._lgbm_model is not None:
-                self.model._lgbm_model.set_params(class_weight={0: 1.0, 1: float(spw)})
-            spw = None  # don't pass as XGBoost param
+            # LightGBM-based models use class_weight instead of scale_pos_weight
+            if self.model.model_type in ("lgbm", "lgbm_ensemble"):
+                self.model.model.set_params(class_weight={0: 1.0, 1: float(spw)})
+                if self.model.model_type == "lgbm_ensemble" and self.model._lgbm_model is not None:
+                    self.model._lgbm_model.set_params(class_weight={0: 1.0, 1: float(spw)})
+                spw = None  # don't pass as XGBoost param
 
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
         self.model.train(
             X_train, y_train, feature_names,
-            scale_pos_weight=spw,
+            scale_pos_weight=spw if self.label_scheme != "lambdarank" else None,
             X_val=X_test, y_val=y_test,
             early_stopping_rounds=30,
             sample_weight=sample_weight,
             feature_weights=mi_scores,
+            groups=train_groups,
+            val_groups=val_groups,
         )
 
         # Tune prediction threshold on validation set
@@ -488,7 +506,7 @@ class ModelTrainer:
             label = None
             outcome_return = 0.0
 
-            if self.label_scheme in ("cross_sectional", "sector_relative", "return_regression", "return_blend"):
+            if self.label_scheme in ("cross_sectional", "sector_relative", "return_regression", "return_blend", "lambdarank"):
                 future_idx = w_end_idx + FORWARD_DAYS
                 if future_idx >= len(all_dates):
                     continue
@@ -499,7 +517,10 @@ class ModelTrainer:
                 stock_ret = (float(future_bar.iloc[0]) - entry_price) / entry_price
                 outcome_return = stock_ret
 
-                if self.label_scheme == "return_regression":
+                if self.label_scheme == "lambdarank":
+                    # Store raw return as float label; converted to quintile ranks post-collection
+                    label = stock_ret
+                elif self.label_scheme == "return_regression":
                     # Continuous float label — XGBRegressor path
                     label = stock_ret
                 elif self.label_scheme == "return_blend":
@@ -820,6 +841,54 @@ class ModelTrainer:
             return float(np.clip((rv10 - min(rv_series)) / (max(rv_series) - min(rv_series)), 0, 1))
         except Exception:
             return 0.5
+
+    def _build_lambdarank_groups(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        meta: List[dict],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Convert float return labels to quintile ranks (0-4) within each window,
+        sort samples by window_idx so all samples in a group are contiguous,
+        and return (X_sorted, y_quintile, group_sizes).
+
+        LGBMRanker requires samples grouped by query (here: window) and sorted
+        so that all rows in the same group are contiguous.
+        """
+        from scipy.stats import rankdata
+
+        window_idx = np.array([m["window_idx"] for m in meta])
+        sort_order = np.argsort(window_idx, kind="stable")
+        X_sorted = X[sort_order]
+        y_sorted = y[sort_order]
+        window_idx_sorted = window_idx[sort_order]
+
+        # Compute quintile labels (0-4) within each window
+        y_quintile = np.zeros(len(y_sorted), dtype=np.int32)
+        unique_windows = np.unique(window_idx_sorted)
+        for w in unique_windows:
+            mask = window_idx_sorted == w
+            rets = y_sorted[mask]
+            if len(rets) < 2:
+                y_quintile[mask] = 2  # single sample gets middle quintile
+                continue
+            ranks = rankdata(rets, method="average")  # 1..n
+            quintiles = np.floor((ranks - 1) / len(ranks) * 5).astype(int)
+            quintiles = np.clip(quintiles, 0, 4)
+            y_quintile[mask] = quintiles
+
+        # Group sizes: how many samples per window
+        _, group_sizes = np.unique(window_idx_sorted, return_counts=True)
+        group_sizes = group_sizes.astype(np.int32)
+
+        logger.info(
+            "LambdaRank groups: %d windows, avg %.1f stocks/window, quintile dist %s",
+            len(group_sizes),
+            float(np.mean(group_sizes)),
+            {q: int((y_quintile == q).sum()) for q in range(5)},
+        )
+        return X_sorted, y_quintile, group_sizes
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
