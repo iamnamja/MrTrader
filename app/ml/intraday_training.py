@@ -100,6 +100,7 @@ class IntradayModelTrainer:
         end_dt = datetime.now(tz=timezone.utc)
         start_dt = end_dt - timedelta(days=days + 10)  # buffer for weekends/holidays
 
+        self._force_refresh = force_refresh
         logger.info(
             "Intraday training | symbols=%d  days=%d  provider=%s  cache=%s",
             len(symbols), days, self._provider_name, CACHE_DIR,
@@ -107,7 +108,7 @@ class IntradayModelTrainer:
 
         # ── 1. Fetch / refresh data ───────────────────────────────────────────
         t0 = datetime.now()
-        symbols_data = self._fetch_all(symbols, start_dt, end_dt, force_refresh)
+        symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         spy_data = self._fetch_spy(start_dt, end_dt, force_refresh) if fetch_spy else None
         daily_data = self._fetch_daily_all(symbols, start_dt, end_dt)
         logger.info("Data fetch complete in %.1fs — %d/%d symbols",
@@ -118,7 +119,7 @@ class IntradayModelTrainer:
 
         # ── 2. Build feature matrix (parallel per symbol) ─────────────────────
         t1 = datetime.now()
-        X_train, y_train, X_test, y_test, feature_names = self._build_matrix_parallel(
+        X_train, y_train, X_test, y_test, feature_names = self._build_daily_matrix(
             symbols_data, spy_data, daily_data
         )
         logger.info("Feature matrix built in %.1fs — %d train / %d test rows, %d features",
@@ -324,6 +325,13 @@ class IntradayModelTrainer:
 
     def _fetch_daily(self, symbols, start, end):
         return self._fetch_daily_all(symbols, start, end)
+
+    # Public-facing names used by tests and train_model
+    def _fetch_data(self, symbols, start, end):
+        return self._fetch_all(symbols, start, end, force_refresh=self._force_refresh)
+
+    def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None):
+        return self._build_matrix_parallel(symbols_data, spy_data, daily_data or {})
 
     def _fetch_daily_all(
         self, symbols: List[str], start: datetime, end: datetime
