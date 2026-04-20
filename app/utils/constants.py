@@ -75,6 +75,71 @@ SP_500_TICKERS = [
     "AES", "NRG", "VST", "CWEN",
 ]
 
+# ─── Russell 1000 Extra Tickers ──────────────────────────────────────────────
+# Mid/large-cap Russell 1000 members not already in SP_500_TICKERS (as of 2026).
+# yfinance will silently skip any delisted or unresolvable symbols.
+RUSSELL_1000_EXTRA = [
+    # Technology / Software
+    "UBER", "ABNB", "DASH", "RBLX", "COIN", "HOOD", "SOFI", "AFRM",
+    "HUBS", "TWLO", "DOCN", "GTLB", "MDB", "DDOG", "ZI", "BILL",
+    "PCTY", "SMAR", "APPN", "COUP", "JAMF", "FROG", "ESTC", "ELASTIC",
+    "PSTG", "NTDOY", "GRAB", "SE", "RELY", "FLYW", "EFX", "VRSK",
+    "LDOS", "SAIC", "CACI", "BAH", "CSIQ", "RUN", "ENPH", "SEDG",
+    "APPS", "IRBT", "SMCI", "ONTO", "CRUS", "WOLF", "AMBA", "SLAB",
+    "FORM", "ACLS", "MKSI", "COHU", "ICHR", "UCTT",
+    # Consumer / Retail
+    "DUOL", "PINS", "SNAP", "LYFT", "DKNG", "PENN", "CHWY", "W",
+    "ETSY", "POSHMARK", "REAL", "RENT", "PRTY", "BYND", "APRN",
+    "ELF", "ULTA", "SFM", "GO", "FOUR", "FWRG", "JACK", "CAKE",
+    "TXRH", "EAT", "DIN", "BLMN", "SHAK", "RRGB", "NDLS",
+    "BOOT", "CROX", "SKX", "GOOS", "PVH", "LULU", "VFC",
+    "WSM", "RH", "ARHAUS", "HIBB", "CATO", "ANF", "AEO", "GPS",
+    "CHICO", "EXPR", "JOANN", "TLYS",
+    # Financials / Fintech
+    "SQ", "AFRM", "UPST", "LC", "OPEN", "CURO", "WRLD", "RM",
+    "CACC", "DT", "TREE", "RATE", "HMST", "COLB", "PACW", "WAL",
+    "BOKF", "IBOC", "CVBF", "TCBK", "HOPE", "NBTB", "TBNK",
+    "OFG", "BRKL", "DCOM", "EGBN", "WASH", "NYCB", "TBK",
+    "WSFS", "UMBF", "FFIN", "CBTX", "HTLF", "PPBI", "BANR",
+    "SFNC", "FBMS", "CATY", "HAFC", "BCAL", "PFBC",
+    # Health Care
+    "DOCS", "ACAD", "HALO", "INSM", "ITCI", "SAVA", "RCKT", "BEAM",
+    "EDIT", "NTLA", "CRSP", "FATE", "BLUE", "SGMO", "RARE", "FOLD",
+    "IONS", "SRPT", "PTCT", "NBIX", "ARWR", "MDGL", "RYTM",
+    "AXSM", "INVA", "PCRX", "PAHC", "LNTH", "DVAX", "VNDA",
+    "QDEL", "ONEM", "OCDX", "MMSI", "NVCR", "GKOS", "ICAD",
+    "OMCL", "NTRA", "NVST", "HSIC", "PDCO", "XRAY",
+    # Industrials
+    "GTLS", "GNSS", "FSS", "ROAD", "MATX", "ARCB", "MRTN",
+    "HUBG", "ECHO", "RADX", "RXO", "GXO", "DSVL", "LSTR",
+    "MWA", "BMI", "RBC", "WIRE", "AIN", "TREX", "FBHS",
+    "AZEK", "PGTI", "PATK", "DOOR", "UFPI", "UFP", "LPX",
+    "BECN", "IBP", "BLDR", "GMS", "SITE", "POOL", "LESL",
+    "SSD", "NCS", "AWI", "TILE", "APOG", "LYTS",
+    # Energy
+    "AR", "CTRA", "SM", "MTDR", "ESTE", "BATL", "TALO",
+    "PDCE", "VTLE", "CLR", "MRO", "PR", "GPOR", "SWN",
+    "RRC", "CNX", "CHRD", "CIVI", "DEN", "ERF",
+    "HESM", "ENLC", "DKL", "MPLX", "TRGP", "GLP", "NGL",
+    # Materials
+    "CC", "HUN", "OLN", "RPM", "FUL", "H", "KWR",
+    "TROX", "TPC", "HWKN", "BCPC", "GEF", "SLVM", "BERY",
+    "ATI", "CENX", "AMG", "CSTM", "KALU", "MTRN", "SCCO",
+    "MP", "NOVT", "ITRI", "REXNORD", "GNRC",
+    # Real Estate
+    "IRT", "NHI", "LTC", "SBRA", "GMRE", "GOOD", "LAND",
+    "IIPR", "SAFE", "PINE", "ALEX", "ROIC", "KITE", "RPAI",
+    "NXRT", "APTS", "CLPR", "AIRC", "NRE", "JBGS",
+    "NFIN", "EQC", "PDM", "HIW", "CIO", "OFC",
+    "COLD", "FR", "EGP", "STAG", "REXR", "ILPT",
+    # Utilities
+    "SPWR", "NOVA", "RUN", "ARRY", "STEM", "BE",
+    "ORA", "GPRE", "CLNE", "TPVG", "HASI", "CWEN",
+    "BEP", "BEPC", "NEP", "NRUC",
+]
+
+RUSSELL_1000_TICKERS = list(dict.fromkeys(SP_500_TICKERS + RUSSELL_1000_EXTRA))
+
 # ─── S&P 100 Tickers ─────────────────────────────────────────────────────────
 # Note: BRK.B → BRK-B for yfinance compatibility
 SP_100_TICKERS = [

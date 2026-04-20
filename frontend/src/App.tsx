@@ -125,7 +125,15 @@ function MacroWidget() {
   return (
     <div style={s.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={s.cardTitle}>Market Regime & Macro</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={s.cardTitle}>Market Regime & Macro</div>
+          {regime.fetched_at && (() => {
+            const ageSec = Math.round((Date.now() - new Date(regime.fetched_at!).getTime()) / 1000)
+            const label = ageSec < 60 ? `${ageSec}s ago` : ageSec < 3600 ? `${Math.round(ageSec/60)}m ago` : `${Math.round(ageSec/3600)}h ago`
+            // VIX is ~15min delayed by yfinance free tier; FRED data is weekly/monthly
+            return <span style={{ fontSize: 10, color: C.muted }}>VIX ~15min delayed · FRED updated {label}</span>
+          })()}
+        </div>
         <span style={{
           padding: '3px 10px', borderRadius: 10, fontSize: 10, fontWeight: 700,
           background: `${regimeColor}1a`, color: regimeColor, border: `1px solid ${regimeColor}4d`,
@@ -187,7 +195,7 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
   return (
     <div>
       {/* Health pills */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
         <Pill label={mode.toUpperCase()} ok={mode !== 'live'} warn={mode !== 'live'} />
         <Pill label={status.toUpperCase()} ok={status === 'healthy'} />
         {Object.entries(checks ?? {}).map(([k, v]) => {
@@ -195,6 +203,19 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           const names: Record<string, string> = { database: 'DB', redis: 'Redis', alpaca: 'Alpaca' }
           return <Pill key={k} label={(names[k] ?? k).toUpperCase()} ok={!!ok} />
         })}
+        {summary.timestamp && (() => {
+          const raw = summary.timestamp!
+          const ts = new Date(raw.endsWith('Z') ? raw : raw + 'Z')
+          const ageMs = Date.now() - ts.getTime()
+          const ageSec = Math.round(ageMs / 1000)
+          const cached = ageMs > 20_000  // older than 20s = came from cache
+          const label = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec/60)}m ago`
+          return (
+            <span style={{ fontSize: 10, color: cached ? C.yellow : C.green, marginLeft: 4 }}>
+              {cached ? '○ cached' : '● live'} · {label}
+            </span>
+          )
+        })()}
       </div>
 
       {/* KPI strip */}
@@ -205,10 +226,11 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           color={clr(summary.daily_pnl ?? summary.pnl_today)} />
         <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
-        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'} sub="All closed trades" />
+        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'}
+          sub={summary.win_rate != null ? 'All closed trades' : 'No closed trades yet'} />
         <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
           color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
-          sub="From peak equity" />
+          sub={summary.max_drawdown_pct != null ? 'From peak equity' : 'No closed trades yet'} />
       </div>
 
       {/* Charts + decisions + macro */}
@@ -426,6 +448,24 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
   )
 }
 
+function decisionColor(type: string | undefined): string {
+  const t = (type ?? '').toUpperCase()
+  if (t.includes('BUY') || t.includes('APPROVED') || t.includes('OPEN')) return C.green
+  if (t.includes('SELL') || t.includes('CLOSE') || t.includes('REJECT') || t.includes('FORCE')) return C.red
+  if (t.includes('WARN') || t.includes('RISK')) return C.yellow
+  return C.muted
+}
+
+function extractSymbol(d: Decision): string {
+  if (d.symbol) return d.symbol
+  const r = d.reasoning as Record<string, unknown> | undefined
+  if (!r) return '—'
+  if (typeof r.symbol === 'string') return r.symbol
+  if (Array.isArray(r.symbols) && r.symbols.length) return (r.symbols as string[]).join(', ')
+  if (typeof r.ticker === 'string') return r.ticker
+  return '—'
+}
+
 function DecisionsTable({ rows }: { rows: Decision[] }) {
   if (!rows.length) {
     return <div style={{ color: C.muted, textAlign: 'center', padding: 16, fontSize: 11 }}>No decisions yet</div>
@@ -436,14 +476,21 @@ function DecisionsTable({ rows }: { rows: Decision[] }) {
         {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={s.th}>{h}</th>)}
       </tr></thead>
       <tbody>
-        {rows.map((d, i) => (
-          <tr key={i}>
-            <td style={{ ...s.td, color: C.muted }}>{fmtTs(d.timestamp)}</td>
-            <td style={s.td}>{d.agent_name ?? '—'}</td>
-            <td style={s.td}>{d.decision_type ?? '—'}</td>
-            <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{d.symbol ?? d.reasoning?.symbol ?? '—'}</td>
-          </tr>
-        ))}
+        {rows.map((d, i) => {
+          const color = decisionColor(d.decision_type)
+          const sym = extractSymbol(d)
+          return (
+            <tr key={i}>
+              <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(d.timestamp)}</td>
+              <td style={{ ...s.td, color: C.muted }}>{d.agent_name ?? '—'}</td>
+              <td style={s.td}>
+                <span style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                  background: `${color}22`, color }}>{d.decision_type ?? '—'}</span>
+              </td>
+              <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{sym}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )
@@ -1611,16 +1658,13 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null)
   const { toasts, add: toast } = useToasts()
 
-  // Load summary + health
+  // Load summary and health independently — summary renders immediately, health updates the status badge
   const loadSummary = useCallback(async () => {
-    const [summaryResult, healthResult] = await Promise.allSettled([
-      api.summary() as Promise<Summary>,
-      api.health() as Promise<Health>,
-    ])
-    if (summaryResult.status === 'fulfilled') {
-      const j = summaryResult.value
-      setSummary(j)
-      const pnlVal = j.daily_pnl ?? j.pnl_today
+    // Fire both but don't wait — each updates state as soon as it resolves
+    api.summary().then((j: unknown) => {
+      const s = j as Summary
+      setSummary(s)
+      const pnlVal = s.daily_pnl ?? s.pnl_today
       if (pnlVal != null) {
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
         setPnlHistory(h => {
@@ -1628,8 +1672,8 @@ export default function App() {
           return next.length > 60 ? next.slice(-60) : next
         })
       }
-    }
-    if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
+    }).catch(() => {})
+    api.health().then((j: unknown) => setHealth(j as Health)).catch(() => {})
   }, [])
 
   const loadDecisions = useCallback(async () => {
@@ -1689,7 +1733,7 @@ export default function App() {
   useEffect(() => {
     loadSummary()
     loadDecisions()
-    const id = setInterval(() => { loadSummary(); loadDecisions() }, 15000)
+    const id = setInterval(() => { loadSummary(); loadDecisions() }, 10000)
     return () => clearInterval(id)
   }, [loadSummary, loadDecisions])
 

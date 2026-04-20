@@ -66,7 +66,9 @@ class Trader(BaseAgent):
 
                 # Drain all pending approved proposals (non-blocking)
                 while True:
-                    proposal = self.get_message(APPROVED_TRADES_QUEUE, timeout=1)
+                    proposal = await asyncio.to_thread(
+                        self.get_message, APPROVED_TRADES_QUEUE, 1
+                    )
                     if proposal is None:
                         break
                     symbol = proposal.get("symbol")

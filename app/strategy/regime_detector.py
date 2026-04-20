@@ -98,6 +98,7 @@ class RegimeDetector:
         except Exception:
             macro_indicators = {}
 
+        from datetime import datetime
         return {
             "regime": regime,
             "composite_score": composite,
@@ -107,6 +108,7 @@ class RegimeDetector:
             "vix_weight": VIX_WEIGHT,
             "macro_weight": MACRO_WEIGHT,
             "macro_indicators": macro_indicators,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
         }
 
     def trend_following_active(self) -> bool:

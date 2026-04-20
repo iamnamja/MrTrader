@@ -29,6 +29,12 @@ backtrader==1.9.78.123
 
 # Technical Indicators
 ta==0.11.0
+pandas-ta>=0.3.14b
+
+# Analytics & Portfolio Optimization
+quantstats>=0.0.62
+PyPortfolioOpt>=1.5.0
+vectorbt>=0.26.0
 
 # Sentiment Analysis
 nltk==3.8.1

@@ -13,6 +13,7 @@ export interface Summary {
   trades_today_count?: number
   trading_mode?: string
   system_status?: string
+  timestamp?: string
   // Legacy / WS-push field names (keep for backwards compat)
   portfolio_value?: number
   equity?: number
@@ -209,6 +210,7 @@ export interface RegimeDetail {
   trend_following_active: boolean
   mean_reversion_active: boolean
   position_size_multiplier: number
+  fetched_at?: string
 }
 
 export interface MonitorHealth {
