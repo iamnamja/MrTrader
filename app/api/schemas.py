@@ -15,6 +15,9 @@ class PositionResponse(BaseModel):
     current_price: Optional[float] = None
     pnl_unrealized: Optional[float] = None
     pnl_unrealized_pct: Optional[float] = None
+    stop_price: Optional[float] = None
+    target_price: Optional[float] = None
+    signal_type: Optional[str] = None
 
 
 class TradeResponse(BaseModel):
@@ -54,6 +57,10 @@ class DashboardSummaryResponse(BaseModel):
     total_pnl_pct: Optional[float] = None
     open_positions_count: int = 0
     trades_today_count: int = 0
+    capital_deployed: Optional[float] = None
+    capital_deployed_pct: Optional[float] = None
+    last_signal_type: Optional[str] = None
+    last_signal_age_hours: Optional[float] = None
     trading_mode: str
     system_status: str
     win_rate: Optional[float] = None

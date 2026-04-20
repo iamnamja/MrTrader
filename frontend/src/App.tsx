@@ -188,9 +188,24 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
   pnlHistory: { time: string; pnl: number }[]
   decisions: Decision[]
 }) {
+  const [positions, setPositions] = useState<import('./types').Position[]>([])
+  useEffect(() => {
+    api.positions().then((j: unknown) => {
+      const arr = (j as { data?: import('./types').Position[] }).data ?? (j as import('./types').Position[]) ?? []
+      setPositions(arr)
+    }).catch(() => {})
+  }, [summary.timestamp])
+
   const mode = health?.trading_mode ?? health?.mode ?? 'paper'
   const status = health?.status ?? health?.system_status ?? 'unknown'
   const checks = health?.checks ?? { database: health?.database_ok, redis: health?.redis_ok, alpaca: health?.alpaca_ok }
+
+  const lastSigLabel = (() => {
+    const h = summary.last_signal_age_hours
+    if (h == null) return '—'
+    if (h < 1) return `${Math.round(h * 60)}m ago`
+    return `${h.toFixed(0)}h ago`
+  })()
 
   return (
     <div>
@@ -208,7 +223,7 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           const ts = new Date(raw.endsWith('Z') ? raw : raw + 'Z')
           const ageMs = Date.now() - ts.getTime()
           const ageSec = Math.round(ageMs / 1000)
-          const cached = ageMs > 20_000  // older than 20s = came from cache
+          const cached = ageMs > 20_000
           const label = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec/60)}m ago`
           return (
             <span style={{ fontSize: 10, color: cached ? C.yellow : C.green, marginLeft: 4 }}>
@@ -219,21 +234,31 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
       </div>
 
       {/* KPI strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
         <KpiCard label="Account Value" value={fmt$(summary.account_value ?? summary.portfolio_value ?? summary.equity)} sub="Portfolio equity" />
         <KpiCard label="Daily P&L" value={fmt$(summary.daily_pnl ?? summary.pnl_today)}
           sub={(summary.daily_pnl_pct ?? summary.pnl_today_pct) != null ? fmtPct(summary.daily_pnl_pct ?? summary.pnl_today_pct) : undefined}
           color={clr(summary.daily_pnl ?? summary.pnl_today)} />
+        <KpiCard label="Total P&L" value={fmt$(summary.total_pnl)}
+          sub={summary.total_pnl_pct != null ? fmtPct(summary.total_pnl_pct) : undefined}
+          color={clr(summary.total_pnl)} />
         <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
+        <KpiCard label="Trades Today" value={summary.trades_today_count?.toString() ?? '0'} sub="Orders executed" />
+        <KpiCard label="Capital Deployed"
+          value={summary.capital_deployed_pct != null ? summary.capital_deployed_pct.toFixed(1) + '%' : '—'}
+          sub={summary.capital_deployed != null ? fmt$(summary.capital_deployed) + ' in market' : undefined} />
         <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'}
           sub={summary.win_rate != null ? 'All closed trades' : 'No closed trades yet'} />
         <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
           color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
           sub={summary.max_drawdown_pct != null ? 'From peak equity' : 'No closed trades yet'} />
+        <KpiCard label="Last Signal" value={lastSigLabel}
+          sub={summary.last_signal_type ?? 'No signal yet'}
+          color={summary.last_signal_type ? C.accent : C.muted} />
       </div>
 
-      {/* Charts + decisions + macro */}
+      {/* Equity curve (left) + Open Positions (right) */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={s.card}>
           <div style={s.cardTitle}>Equity Curve (P&L)</div>
@@ -251,11 +276,50 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           </ResponsiveContainer>
         </div>
         <div style={s.card}>
+          <div style={s.cardTitle}>Open Positions</div>
+          {positions.length === 0
+            ? <div style={{ color: C.muted, fontSize: 11, padding: '16px 0' }}>No open positions</div>
+            : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>
+                {['Symbol', 'Qty', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                  <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {positions.map((p, i) => {
+                  const qty = p.qty ?? p.quantity ?? 0
+                  const entry = p.avg_entry_price ?? p.avg_price ?? 0
+                  const cur = p.current_price ?? 0
+                  const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
+                  const retPct = p.pnl_unrealized_pct ?? p.unrealized_plpc ?? (entry > 0 ? (cur - entry) / entry * 100 : 0)
+                  const retColor = retPct > 0 ? C.green : retPct < 0 ? C.red : C.muted
+                  return (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
+                      <td style={s.td}>{qty}</td>
+                      <td style={s.td}>{fmt$(entry)}</td>
+                      <td style={s.td}>{fmt$(cur)}</td>
+                      <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
+                      <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{p.stop_price ? fmt$(p.stop_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{p.target_price ? fmt$(p.target_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          }
+        </div>
+      </div>
+
+      {/* Macro (left) + Recent Decisions (right) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <MacroWidget />
+        <div style={s.card}>
           <div style={s.cardTitle}>Recent Decisions</div>
           <DecisionsTable rows={decisions.slice(0, 10)} />
         </div>
       </div>
-      <MacroWidget />
     </div>
   )
 }

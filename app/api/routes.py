@@ -156,6 +156,36 @@ async def get_dashboard_summary():
         else:
             daily_pnl_pct = total_pnl = total_pnl_pct = None
 
+        # Capital deployed = sum of market_value across open positions
+        capital_deployed = sum(
+            float(p.get("market_value") or (float(p.get("avg_entry_price", 0) or p.get("avg_price", 0)) * int(p.get("qty", 0) or p.get("quantity", 0))))
+            for p in (positions or [])
+        )
+        capital_deployed_pct = round(capital_deployed / account_value * 100, 1) if account_value else None
+
+        # Last signal from most recent TRADE_ENTERED decision
+        def _last_signal():
+            db = get_session()
+            try:
+                d = (
+                    db.query(AgentDecision)
+                    .filter(AgentDecision.decision_type == "TRADE_ENTERED")
+                    .order_by(desc(AgentDecision.timestamp))
+                    .first()
+                )
+                if not d:
+                    return None, None
+                r = d.reasoning or {}
+                sig = r.get("signal_type", "TRADE")
+                age_hours = round((datetime.utcnow() - d.timestamp).total_seconds() / 3600, 1)
+                return sig, age_hours
+            except Exception:
+                return None, None
+            finally:
+                db.close()
+
+        last_signal_type, last_signal_age = await asyncio.to_thread(_last_signal)
+
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
             account_value=account_value,
@@ -167,6 +197,10 @@ async def get_dashboard_summary():
             total_pnl_pct=total_pnl_pct,
             open_positions_count=len(positions),
             trades_today_count=trades_count,
+            capital_deployed=round(capital_deployed, 2),
+            capital_deployed_pct=capital_deployed_pct,
+            last_signal_type=last_signal_type,
+            last_signal_age_hours=last_signal_age,
             trading_mode=settings.trading_mode,
             system_status=sys_status,
             win_rate=win_rate,
@@ -182,9 +216,23 @@ async def get_dashboard_summary():
 @router.get("/positions", response_model=List[PositionResponse])
 @ttl_cache(seconds=10)
 async def get_open_positions():
-    """Live open positions from Alpaca."""
+    """Live open positions from Alpaca, enriched with stop/target/signal from DB."""
     try:
         raw = await asyncio.to_thread(_alpaca().get_positions)
+
+        # Enrich with stop/target/signal from active DB trades
+        def _db_trade_meta():
+            db = get_session()
+            try:
+                trades = db.query(Trade).filter(Trade.status == "ACTIVE").all()
+                return {t.symbol: t for t in trades}
+            except Exception:
+                return {}
+            finally:
+                db.close()
+
+        db_trades = await asyncio.to_thread(_db_trade_meta)
+
         result = []
         for pos in raw:
             qty = pos.get("quantity") or pos.get("qty", 0)
@@ -194,6 +242,7 @@ async def get_open_positions():
             pnl_pct = None
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
+            t = db_trades.get(pos["symbol"])
             result.append(PositionResponse(
                 symbol=pos["symbol"],
                 quantity=int(qty),
@@ -201,6 +250,9 @@ async def get_open_positions():
                 current_price=float(current) if current else None,
                 pnl_unrealized=float(pnl) if pnl is not None else None,
                 pnl_unrealized_pct=pnl_pct,
+                stop_price=float(t.stop_price) if t and t.stop_price else None,
+                target_price=float(t.target_price) if t and t.target_price else None,
+                signal_type=t.signal_type if t else None,
             ))
         return result
     except Exception as exc:
