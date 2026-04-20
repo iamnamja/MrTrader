@@ -183,17 +183,28 @@ function MacroWidget() {
 }
 
 // ── Overview Panel ────────────────────────────────────────────────────────────
-function OverviewPanel({ summary, health, pnlHistory, decisions }: {
+type ChartRange = '1d' | '1w' | '1m'
+
+function OverviewPanel({ summary, health, decisions }: {
   summary: Summary; health: Health | null
-  pnlHistory: { time: string; pnl: number }[]
   decisions: Decision[]
 }) {
   const [positions, setPositions] = useState<import('./types').Position[]>([])
+  const [chartRange, setChartRange] = useState<ChartRange>('1d')
+  const [equityHistory, setEquityHistory] = useState<{ time: string; pnl: number }[]>([])
+
   useEffect(() => {
     fetch('/api/dashboard/positions').then(r => r.json()).then((arr: import('./types').Position[]) => {
       setPositions(Array.isArray(arr) ? arr : [])
     }).catch(() => {})
   }, [summary.timestamp])
+
+  useEffect(() => {
+    fetch(`/api/dashboard/metrics/equity-history?range=${chartRange}`)
+      .then(r => r.json())
+      .then(pts => setEquityHistory(Array.isArray(pts) ? pts : []))
+      .catch(() => {})
+  }, [chartRange, summary.timestamp])
 
   const mode = health?.trading_mode ?? health?.mode ?? 'paper'
   const status = health?.status ?? health?.system_status ?? 'unknown'
@@ -260,15 +271,28 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
       {/* Equity curve (left) + Open Positions (right) */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={s.card}>
-          <div style={s.cardTitle}>Equity Curve (P&L)</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={pnlHistory}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={s.cardTitle}>Equity Curve (P&L)</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['1d', '1w', '1m'] as ChartRange[]).map(r => (
+                <button key={r} onClick={() => setChartRange(r)} style={{
+                  padding: '2px 10px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                  cursor: 'pointer', border: `1px solid ${chartRange === r ? C.accent : C.border}`,
+                  background: chartRange === r ? `${C.accent}22` : 'transparent',
+                  color: chartRange === r ? C.accent : C.muted,
+                }}>{r.toUpperCase()}</button>
+              ))}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={210}>
+            <LineChart data={equityHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.04)" />
               <XAxis dataKey="time" tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false}
                 tickFormatter={v => '$' + v.toFixed(0)} />
               <Tooltip contentStyle={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 11 }}
-                labelStyle={{ color: C.muted }} itemStyle={{ color: C.green }} />
+                labelStyle={{ color: C.muted }} itemStyle={{ color: C.green }}
+                formatter={(v: number) => ['$' + v.toFixed(2), 'P&L']} />
               <Line type="monotone" dataKey="pnl" stroke={C.green} strokeWidth={1.5}
                 dot={false} fill="rgba(34,197,94,.07)" />
             </LineChart>
@@ -1831,7 +1855,7 @@ export default function App() {
       {/* Panels */}
       <div style={{ flex: 1, padding: '16px 20px', overflowY: 'auto' }}>
         {tab === 'Overview' && (
-          <OverviewPanel summary={summary} health={health} pnlHistory={pnlHistory} decisions={decisions} />
+          <OverviewPanel summary={summary} health={health} decisions={decisions} />
         )}
         {tab === 'Positions' && <PositionsPanel onRefresh={loadSummary} />}
         {tab === 'Trades' && <TradesPanel />}

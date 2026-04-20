@@ -355,6 +355,87 @@ async def get_agent_decisions(limit: int = 50):
         db.close()
 
 
+# ─── Equity history ───────────────────────────────────────────────────────────
+
+@router.get("/metrics/equity-history")
+async def get_equity_history(range: str = "1d"):
+    """
+    Equity curve built from closed trades + today's unrealized P&L.
+
+    range: '1d' (intraday ticks), '1w' (7 days), '1m' (30 days)
+    Returns list of {time, pnl, equity} points sorted ascending.
+    """
+    INITIAL_CAPITAL = 20_000.0
+
+    def _build():
+        db = get_session()
+        try:
+            now = datetime.utcnow()
+            if range == "1w":
+                cutoff = now.replace(hour=0, minute=0, second=0) - __import__('datetime').timedelta(days=6)
+            elif range == "1m":
+                cutoff = now.replace(hour=0, minute=0, second=0) - __import__('datetime').timedelta(days=29)
+            else:  # 1d — today only
+                cutoff = now.replace(hour=0, minute=0, second=0)
+
+            closed = (
+                db.query(Trade)
+                .filter(Trade.status == "CLOSED", Trade.closed_at >= cutoff)
+                .order_by(Trade.closed_at)
+                .all()
+            )
+
+            points = []
+            if range == "1d":
+                # Group closed trades by 15-min bucket within today
+                from collections import defaultdict
+                buckets: dict = defaultdict(float)
+                for t in closed:
+                    if t.closed_at and t.pnl is not None:
+                        bucket = t.closed_at.replace(minute=(t.closed_at.minute // 15) * 15, second=0, microsecond=0)
+                        buckets[bucket] += float(t.pnl)
+                cum = 0.0
+                for ts in sorted(buckets):
+                    cum += buckets[ts]
+                    points.append({"time": ts.strftime("%H:%M"), "pnl": round(cum, 2)})
+            else:
+                # Group by calendar day
+                from collections import defaultdict
+                by_day: dict = defaultdict(float)
+                for t in closed:
+                    if t.closed_at and t.pnl is not None:
+                        day = t.closed_at.strftime("%b %d")
+                        by_day[day] += float(t.pnl)
+                cum = 0.0
+                for day in sorted(by_day):
+                    cum += by_day[day]
+                    points.append({"time": day, "pnl": round(cum, 2)})
+
+            return points
+        finally:
+            db.close()
+
+    points = await asyncio.to_thread(_build)
+
+    # Always append current live unrealized P&L as the last point
+    try:
+        positions = await asyncio.wait_for(
+            asyncio.to_thread(_alpaca().get_positions), timeout=ALPACA_TIMEOUT
+        )
+        live_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
+        closed_pnl = points[-1]["pnl"] if points else 0.0
+        label = datetime.utcnow().strftime("%H:%M") if range == "1d" else "Now"
+        points.append({"time": label, "pnl": round(closed_pnl + live_pnl, 2)})
+    except Exception:
+        pass
+
+    # If no history at all, seed with a zero point so chart renders
+    if not points:
+        points = [{"time": "Open", "pnl": 0.0}]
+
+    return points
+
+
 # ─── Daily metrics ────────────────────────────────────────────────────────────
 
 @router.get("/metrics/daily", response_model=List[DailyMetricResponse])
