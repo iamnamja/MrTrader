@@ -106,9 +106,9 @@ def get_polygon_financial_features(symbol: str, as_of: date) -> Dict[str, float]
         # Most recent quarter
         q0 = past[0]
         rev0 = _extract(q0, "income_statement", "revenues")
-        op0  = _extract(q0, "income_statement", "operating_income_loss")
+        op0 = _extract(q0, "income_statement", "operating_income_loss")
         ocf0 = _extract(q0, "cash_flow_statement", "net_cash_flow_from_operating_activities")
-        rd0  = _extract(q0, "income_statement", "research_and_development")
+        rd0 = _extract(q0, "income_statement", "research_and_development")
 
         if rev0 and abs(rev0) > 0:
             if ocf0 is not None:
@@ -121,12 +121,12 @@ def get_polygon_financial_features(symbol: str, as_of: date) -> Dict[str, float]
             if len(past) > lag:
                 q_lag = past[lag]
                 rev_lag = _extract(q_lag, "income_statement", "revenues")
-                op_lag  = _extract(q_lag, "income_statement", "operating_income_loss")
+                op_lag = _extract(q_lag, "income_statement", "operating_income_loss")
                 if (rev0 and rev_lag and abs(rev_lag) > 0
                         and op0 is not None and op_lag is not None):
                     rev_growth = (rev0 - rev_lag) / abs(rev_lag)
                     # Operating margin now vs a year ago
-                    op_margin_now  = op0  / rev0  if abs(rev0)  > 0 else 0.0
+                    op_margin_now = op0 / rev0 if abs(rev0) > 0 else 0.0
                     op_margin_then = op_lag / rev_lag if abs(rev_lag) > 0 else 0.0
                     op_leverage = (op_margin_now - op_margin_then) - rev_growth * 0.0
                     # Simpler: change in operating margin YoY

@@ -4,7 +4,7 @@ Quantstats-powered performance tearsheet from closed trade history.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd

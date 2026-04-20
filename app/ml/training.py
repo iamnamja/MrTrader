@@ -50,7 +50,6 @@ ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
 ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 
 
-
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
     """
     Compute ATR-adaptive target and stop percentages for labeling.
@@ -307,7 +306,6 @@ class ModelTrainer:
         if "SPY" not in symbols_data:
             try:
                 import yfinance as yf
-                from datetime import datetime as dt
                 dates = sorted(set.union(*[set(df.index.date) for df in symbols_data.values()]))
                 spy_df = yf.download("SPY", start=dates[0], end=dates[-1], progress=False, auto_adjust=True)
                 if isinstance(spy_df.columns, pd.MultiIndex):

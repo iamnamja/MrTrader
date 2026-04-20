@@ -462,7 +462,6 @@ class PortfolioManager(BaseAgent):
         """Attempt to load the latest swing + intraday models from DB."""
         from app.database.models import ModelVersion
         from app.database.session import get_session
-        import os
 
         db = get_session()
         swing_loaded = intraday_loaded = False

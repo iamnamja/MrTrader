@@ -1003,7 +1003,6 @@ class FeatureEngineer:
             # Alpha054: intraday body vs range — gap/reversal signal
             if len(_c) >= 5 and len(_o) >= 5 and len(_h) >= 5 and len(_l) >= 5:
                 _hl = _h[-1] - _l[-1]
-                _oc = abs(_o[-1] - _c[-1])
                 wq_a54 = float(np.clip((_l[-1] - _c[-1]) / max(_hl, 1e-9), -1.0, 0.0))
             else:
                 wq_a54 = 0.0
@@ -1024,9 +1023,11 @@ class FeatureEngineer:
             features["wq_alpha55"] = wq_a55
         except Exception as exc:
             logger.debug("WorldQuant alphas failed: %s", exc)
-            for _k in ["wq_alpha3","wq_alpha4","wq_alpha6","wq_alpha12","wq_alpha33",
-                        "wq_alpha34","wq_alpha35","wq_alpha40","wq_alpha43","wq_alpha44",
-                        "wq_alpha46","wq_alpha53","wq_alpha54","wq_alpha55"]:
+            for _k in [
+                "wq_alpha3", "wq_alpha4", "wq_alpha6", "wq_alpha12", "wq_alpha33",
+                "wq_alpha34", "wq_alpha35", "wq_alpha40", "wq_alpha43", "wq_alpha44",
+                "wq_alpha46", "wq_alpha53", "wq_alpha54", "wq_alpha55",
+            ]:
                 features.setdefault(_k, 0.0)
 
         # ── 34. Short-term reversal signals ──────────────────────────────────────
