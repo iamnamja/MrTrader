@@ -256,18 +256,21 @@ class TestModelTrainerIntegration:
             np.random.seed(i)
             data[f"SYM{i:02d}"] = _make_daily_df(600)
 
-        with patch.object(
-            trainer, "_fetch_data", return_value=data
-        ):
+        n = 200
+        X = np.random.randn(n, 10).astype(np.float32)
+        y = np.array([i % 2 for i in range(n)])   # balanced 0/1 labels
+        names = [f"f{i}" for i in range(10)]
+
+        with patch.object(trainer, "_fetch_data", return_value=data):
             with patch.object(
-                trainer, "_record_version"
+                trainer, "_build_rolling_matrix",
+                return_value=(X, y, X[:40], y[:40], names, {}),
             ):
-                with patch.object(
-                    trainer, "_next_version", return_value=99
-                ):
-                    version = trainer.train_model(
-                        symbols=[f"SYM{i:02d}" for i in range(12)],
-                        years=3,
-                        fetch_fundamentals=False,
-                    )
+                with patch.object(trainer, "_record_version"):
+                    with patch.object(trainer, "_next_version", return_value=99):
+                        version = trainer.train_model(
+                            symbols=[f"SYM{i:02d}" for i in range(12)],
+                            years=3,
+                            fetch_fundamentals=False,
+                        )
         assert version == 99
