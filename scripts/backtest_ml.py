@@ -173,10 +173,15 @@ def score_window(
     sector_cap: float,
     stock_cap: float,
     sector_map: Dict[str, str],
+    feature_store=None,  # Phase 3: FeatureStore for cached fundamentals
 ) -> Optional[dict]:
-    """Score all stocks for one window. Returns meta dict or None."""
-    from app.ml.features import FeatureEngineer
+    """Score all stocks for one window. Returns meta dict or None.
 
+    Phase 3: if feature_store is provided, cached fundamental features
+    (FMP earnings, analyst ratings, short interest, news sentiment) are
+    loaded from the SQLite cache instead of being zeroed out, matching
+    the feature distribution the model was trained on.
+    """
     feats_dicts, scored_syms, adv_map = [], [], {}
     model_feature_names = getattr(model, "feature_names", None)
 
@@ -186,16 +191,24 @@ def score_window(
         window_df = df.loc[(idx >= w_start_date) & (idx <= w_end_date)]
         if len(window_df) < fe.MIN_BARS:
             continue
-        try:
-            feats = fe.engineer_features(
-                sym, window_df,
-                sector=sector_map.get(sym) or "Unknown",
-                fetch_fundamentals=False,
-                regime_score=0.5,  # neutral; avoids live VIX fetch in backtest
-                as_of_date=w_end_date,
-            )
-        except Exception:
-            continue
+
+        # Phase 3A: try feature store first (has full fundamentals, point-in-time safe)
+        feats = None
+        if feature_store is not None:
+            feats = feature_store.get(sym, w_end_date)
+
+        # Fall back to live feature engineering (price-derived only)
+        if feats is None:
+            try:
+                feats = fe.engineer_features(
+                    sym, window_df,
+                    sector=sector_map.get(sym) or "Unknown",
+                    fetch_fundamentals=False,
+                    regime_score=0.5,
+                    as_of_date=w_end_date,
+                )
+            except Exception:
+                continue
         if feats is None:
             continue
 
@@ -210,7 +223,7 @@ def score_window(
     if not feats_dicts:
         return None
 
-    # Align to model's training feature set to handle feature additions post-training
+    # Align to model's training feature set (handles post-training feature additions)
     if model_feature_names:
         feature_rows = [
             [d.get(f, 0.0) for f in model_feature_names]
@@ -235,7 +248,8 @@ def score_window(
         selected, scores, sector_map, {}, init_cash, sector_cap, stock_cap
     )
 
-    # ADV cap logging
+    # ADV cap: log which positions would be reduced (Phase 3 note: actual sizing
+    # reduction happens in vectorbt via size_type; this is diagnostic only)
     capped = []
     if adv_cap:
         per_pos = init_cash / max(len(approved), 1)
@@ -250,6 +264,7 @@ def score_window(
         "n_scored": len(scored_syms),
         "adv_capped": len(capped),
         "top_score": ranked[0][1] if ranked else 0.0,
+        "fs_hits": len(feats_dicts),  # how many came from feature store
     }
 
 
@@ -264,19 +279,38 @@ def generate_ml_signals(
     sector_cap: float = 0.30,
     stock_cap: float = 0.10,
     window_starts_override: Optional[List[int]] = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[dict]]:
+    entry_at_open: bool = True,   # Phase 3B: enter at next-day open, not same-day close
+    model_dir: str = "app/ml/models",
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, List[dict]]:
     """
     Generate entry/exit signals from ML ranking scores.
 
-    window_starts_override: if provided, use these specific window indices
-    (used by walk-forward to pass only the test-fold windows).
-    embargo_days: skip this many windows at the train/test boundary (Phase 2).
+    Phase 3 additions:
+    - feature_store: loads cached full-feature vectors (with fundamentals) from
+      the training SQLite cache, eliminating the 0-fill degradation for ~40 features.
+    - entry_at_open: if True (default), entry signal fires on w_end_date+1 (next
+      trading day open) instead of w_end_date close, avoiding same-bar lookahead.
+
+    Returns: close_df, open_df, entries_df, exits_df, window_meta
     """
     from app.ml.training import WINDOW_DAYS, FORWARD_DAYS, STEP_DAYS, TEST_FRACTION
     from app.ml.features import FeatureEngineer
     from app.utils.constants import SECTOR_MAP
 
     fe = FeatureEngineer()
+
+    # Phase 3A: wire feature store for cached historical fundamentals
+    feature_store = None
+    fs_path = Path(model_dir) / "feature_store.db"
+    if fs_path.exists():
+        try:
+            from app.ml.feature_store import FeatureStore
+            feature_store = FeatureStore(str(fs_path))
+            ok(f"Feature store loaded ({fs_path.name}) — fundamentals available for backtest")
+        except Exception as e:
+            warn(f"Feature store unavailable: {e} — using price-only features")
+    else:
+        warn("No feature store found — using price-only features (fundamentals zeroed)")
 
     spy_df = symbols_data.get("SPY")
     if spy_df is not None:
@@ -293,20 +327,23 @@ def generate_ml_signals(
         test_windows = window_starts_override
     else:
         split_idx = max(1, int(len(window_starts) * (1 - TEST_FRACTION)))
-        # Apply embargo: skip first `embargo_days` test windows
         test_windows = window_starts[split_idx + embargo_days:]
 
     info(f"Windows to evaluate: {len(test_windows)}  "
-         f"(embargo={embargo_days}, sector_cap={sector_cap:.0%}, stock_cap={stock_cap:.0%})")
+         f"(embargo={embargo_days}, sector_cap={sector_cap:.0%}, stock_cap={stock_cap:.0%}, "
+         f"entry={'open+1' if entry_at_open else 'close'})")
 
     trading_syms = [s for s in symbols_data if s != "SPY"]
 
-    all_close = {}
+    all_close, all_open = {}, {}
     for sym in trading_syms:
         df = symbols_data[sym]
         all_close[sym] = pd.Series(df["close"].values, index=pd.to_datetime(df.index))
+        if "open" in df.columns:
+            all_open[sym] = pd.Series(df["open"].values, index=pd.to_datetime(df.index))
 
-    close_df  = pd.DataFrame(all_close).sort_index()
+    close_df   = pd.DataFrame(all_close).sort_index()
+    open_df    = pd.DataFrame(all_open).sort_index() if all_open else close_df.copy()
     entries_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
     exits_df   = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
     window_meta = []
@@ -325,11 +362,17 @@ def generate_ml_signals(
             symbols_data, model, trading_syms,
             w_start_date, w_end_date, fe,
             adv_cap, init_cash, top_n, sector_cap, stock_cap, SECTOR_MAP,
+            feature_store=feature_store,
         )
         if meta is None:
             continue
 
-        entry_ts = pd.Timestamp(w_end_date)
+        # Phase 3B: enter at next-day open (w_end_idx+1), not same-day close
+        if entry_at_open and w_end_idx + 1 < len(all_dates):
+            entry_date = all_dates[w_end_idx + 1]
+        else:
+            entry_date = w_end_date
+        entry_ts = pd.Timestamp(entry_date)
         exit_ts  = pd.Timestamp(exit_date)
 
         if entry_ts in entries_df.index:
@@ -341,13 +384,16 @@ def generate_ml_signals(
                 if sym in exits_df.columns:
                     exits_df.loc[exit_ts, sym] = True
 
-        meta.update({"window_end": w_end_date, "exit_date": exit_date})
+        meta.update({"window_end": w_end_date, "entry_date": entry_date, "exit_date": exit_date})
         window_meta.append(meta)
 
+    fs_hit_rate = np.mean([m.get("fs_hits", 0) / max(m["n_scored"], 1)
+                           for m in window_meta]) if window_meta else 0
     ok(f"Signals: {len(window_meta)} windows, "
        f"avg {np.mean([m['n_scored'] for m in window_meta]):.0f} scored/window, "
-       f"avg {np.mean([len(m['selected']) for m in window_meta]):.0f} selected/window")
-    return close_df, entries_df, exits_df, window_meta
+       f"avg {np.mean([len(m['selected']) for m in window_meta]):.0f} selected/window, "
+       f"fs_hit={fs_hit_rate:.0%}")
+    return close_df, open_df, entries_df, exits_df, window_meta
 
 
 # -- Walk-forward CV (Phase 2) ------------------------------------------------─
@@ -438,12 +484,13 @@ def run_walk_forward(
             continue
 
         # Score test windows
-        _, entries_df, exits_df, window_meta = generate_ml_signals(
+        _, _, entries_df, exits_df, window_meta = generate_ml_signals(
             symbols_data, trainer.model, top_n, years=5,
             adv_cap=adv_cap, init_cash=init_cash,
             embargo_days=0,  # already applied above
             sector_cap=sector_cap, stock_cap=stock_cap,
             window_starts_override=test_window_starts,
+            entry_at_open=True,
         )
 
         # Compute fold return from window_meta
@@ -614,7 +661,7 @@ def run_ml_backtest(
     from app.utils.constants import RUSSELL_1000_TICKERS
 
     print(f"\n{BOLD}{'='*60}{RESET}")
-    print(f"{BOLD}  MrTrader — ML Backtest (Phase 1+2){RESET}")
+    print(f"{BOLD}  MrTrader — ML Backtest (Phase 3){RESET}")
     print(f"{'='*60}")
     info(f"top_n={top_n}  years={years}  cash=${init_cash:,.0f}  embargo={embargo_days}d")
     info(f"sector_cap={sector_cap:.0%}  stock_cap={stock_cap:.0%}  adv_cap={'on' if adv_cap else 'off'}")
@@ -681,25 +728,31 @@ def run_ml_backtest(
         print(f"\n{'='*60}\n")
         return fold_results
 
-    # -- Static model backtest (Phase 1 + Phase 2 enhancements) ----------------
+    # -- Static model backtest (Phase 1 + 2 + 3) --------------------------------
     header("Generating ML signals")
-    close_df, entries_df, exits_df, window_meta = generate_ml_signals(
+    close_df, open_df, entries_df, exits_df, window_meta = generate_ml_signals(
         symbols_data, model, top_n, years, adv_cap, init_cash,
         embargo_days, sector_cap, stock_cap,
+        entry_at_open=True,  # Phase 3B: enter next-day open
+        model_dir=model_dir,
     )
 
     if entries_df.values.sum() == 0:
         warn("No entry signals — check model version and data overlap")
         return
 
-    # Risk limit summary
     total_rejected = sum(len(m.get("rejected_risk", [])) for m in window_meta)
     if total_rejected > 0:
         info(f"Risk limits rejected {total_rejected} positions across all windows")
 
     header("Running vectorbt backtest")
+    # Phase 3B: use open prices for entries (realistic fill at next-day open)
+    # close prices used for exits and P&L marking
     pf = vbt.Portfolio.from_signals(
-        close_df, entries_df, exits_df,
+        close_df,
+        entries_df,
+        exits_df,
+        open=open_df,
         init_cash=init_cash,
         fees=0.0,
         slippage=0.0005,
@@ -745,6 +798,7 @@ def run_ml_backtest(
     if window_meta:
         info(f"OOS windows evaluated : {len(window_meta)}")
         info(f"Avg stocks scored/win : {np.mean([m['n_scored'] for m in window_meta]):.0f}")
+        info(f"Feature store hit rate: {np.mean([m.get('fs_hits',0)/max(m['n_scored'],1) for m in window_meta]):.0%}")
         info(f"Avg ADV-capped/win    : {np.mean([m['adv_capped'] for m in window_meta]):.1f}")
         info(f"Avg top-1 score       : {np.mean([m['top_score'] for m in window_meta]):.3f}")
         all_sel = [s for m in window_meta for s in m["selected"]]
