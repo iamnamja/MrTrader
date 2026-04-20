@@ -358,80 +358,40 @@ async def get_agent_decisions(limit: int = 50):
 # ─── Equity history ───────────────────────────────────────────────────────────
 
 @router.get("/metrics/equity-history")
+@ttl_cache(seconds=60)
 async def get_equity_history(range: str = "1d"):
     """
-    Equity curve built from closed trades + today's unrealized P&L.
+    Equity curve from Alpaca portfolio history API — reflects all account
+    activity regardless of whether trades were entered via this app.
 
-    range: '1d' (intraday ticks), '1w' (7 days), '1m' (30 days)
-    Returns list of {time, pnl, equity} points sorted ascending.
+    range: '1d' (5-min bars today), '1w' (daily, 7 days), '1m' (daily, 30 days)
     """
-    INITIAL_CAPITAL = 20_000.0
+    def _fetch():
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+        period_map = {"1d": "1D", "1w": "1W", "1m": "1M"}
+        tf_map = {"1d": "5Min", "1w": "1D", "1m": "1D"}
+        period = period_map.get(range, "1D")
+        timeframe = tf_map.get(range, "5Min")
+        req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+        hist = _alpaca().trading_client.get_portfolio_history(req)
 
-    def _build():
-        db = get_session()
-        try:
-            now = datetime.utcnow()
-            if range == "1w":
-                cutoff = now.replace(hour=0, minute=0, second=0) - __import__('datetime').timedelta(days=6)
-            elif range == "1m":
-                cutoff = now.replace(hour=0, minute=0, second=0) - __import__('datetime').timedelta(days=29)
-            else:  # 1d — today only
-                cutoff = now.replace(hour=0, minute=0, second=0)
+        timestamps = hist.timestamp or []
+        pnl_series = hist.profit_loss or []
 
-            closed = (
-                db.query(Trade)
-                .filter(Trade.status == "CLOSED", Trade.closed_at >= cutoff)
-                .order_by(Trade.closed_at)
-                .all()
-            )
+        points = []
+        for ts, pnl in zip(timestamps, pnl_series):
+            if pnl is None:
+                continue
+            dt = datetime.utcfromtimestamp(ts)
+            label = dt.strftime("%H:%M") if range == "1d" else dt.strftime("%b %d")
+            points.append({"time": label, "pnl": round(float(pnl), 2)})
+        return points
 
-            points = []
-            if range == "1d":
-                # Group closed trades by 15-min bucket within today
-                from collections import defaultdict
-                buckets: dict = defaultdict(float)
-                for t in closed:
-                    if t.closed_at and t.pnl is not None:
-                        bucket = t.closed_at.replace(minute=(t.closed_at.minute // 15) * 15, second=0, microsecond=0)
-                        buckets[bucket] += float(t.pnl)
-                cum = 0.0
-                for ts in sorted(buckets):
-                    cum += buckets[ts]
-                    points.append({"time": ts.strftime("%H:%M"), "pnl": round(cum, 2)})
-            else:
-                # Group by calendar day
-                from collections import defaultdict
-                by_day: dict = defaultdict(float)
-                for t in closed:
-                    if t.closed_at and t.pnl is not None:
-                        day = t.closed_at.strftime("%b %d")
-                        by_day[day] += float(t.pnl)
-                cum = 0.0
-                for day in sorted(by_day):
-                    cum += by_day[day]
-                    points.append({"time": day, "pnl": round(cum, 2)})
-
-            return points
-        finally:
-            db.close()
-
-    points = await asyncio.to_thread(_build)
-
-    # Always append current live unrealized P&L as the last point
     try:
-        positions = await asyncio.wait_for(
-            asyncio.to_thread(_alpaca().get_positions), timeout=ALPACA_TIMEOUT
-        )
-        live_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
-        closed_pnl = points[-1]["pnl"] if points else 0.0
-        label = datetime.utcnow().strftime("%H:%M") if range == "1d" else "Now"
-        points.append({"time": label, "pnl": round(closed_pnl + live_pnl, 2)})
-    except Exception:
-        pass
-
-    # If no history at all, seed with a zero point so chart renders
-    if not points:
-        points = [{"time": "Open", "pnl": 0.0}]
+        points = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=10.0)
+    except Exception as exc:
+        logger.warning("Portfolio history unavailable: %s", exc)
+        points = [{"time": "—", "pnl": 0.0}]
 
     return points
 
