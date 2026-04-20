@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import multiprocessing
 import numpy as np
 import pandas as pd
 
@@ -48,7 +49,7 @@ MIN_DAYS = 20            # minimum trading days needed per symbol
 # Parallelism config
 FETCH_CHUNK_SIZE = 100   # symbols per Alpaca API call
 FETCH_WORKERS = 4        # parallel API calls (stay well under 180 req/min)
-FEATURE_WORKERS = 8      # parallel symbol feature computation
+FEATURE_WORKERS = min(16, multiprocessing.cpu_count())  # threads; numpy/pandas release GIL
 
 
 class IntradayModelTrainer:
@@ -376,21 +377,16 @@ class IntradayModelTrainer:
         X_test_parts, y_test_parts = [], []
         feature_names: List[str] = []
 
-        syms = list(symbols_data.items())
-
-        def _process_symbol(args):
-            sym, df = args
-            return _symbol_to_rows(
-                sym, df,
-                spy_by_day,
-                daily_data.get(sym),
-                train_days,
-                test_days,
-            )
+        syms = list(symbols_data.keys())
+        # Pack args as tuples for ProcessPoolExecutor (must be picklable)
+        tasks = [
+            (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days)
+            for sym in syms
+        ]
 
         with ThreadPoolExecutor(max_workers=FEATURE_WORKERS,
                                 thread_name_prefix="features") as pool:
-            futures = {pool.submit(_process_symbol, item): item[0] for item in syms}
+            futures = {pool.submit(_symbol_to_rows, t): t[0] for t in tasks}
             done = 0
             for future in as_completed(futures):
                 sym = futures[future]
@@ -492,32 +488,42 @@ def _index_by_day(df: pd.DataFrame) -> Dict[date, pd.DataFrame]:
 
 
 def _symbol_to_rows(
-    sym: str,
-    df: pd.DataFrame,
-    spy_by_day: Dict[date, pd.DataFrame],
-    daily_df: Optional[pd.DataFrame],
-    train_days: set,
-    test_days: set,
+    args: tuple,
 ) -> Tuple[List, List, List, List, List[str]]:
     """
     Compute feature rows + outcome labels for one symbol across all days.
     Returns (train_rows, train_labels, test_rows, test_labels, feature_names).
+
+    Accepts a single tuple so ProcessPoolExecutor can pickle it:
+        (sym, df, spy_by_day, daily_df, train_days, test_days)
     """
+    sym, df, spy_by_day, daily_df, train_days, test_days = args
+
     if df is None or len(df) == 0:
         return [], [], [], [], []
 
+    # Pre-group 5-min bars by date once — avoids O(n_bars × n_days) repeated masking
     df_idx = pd.DatetimeIndex(df.index)
+    date_arr = np.array(df_idx.normalize().date)
+    day_groups: Dict[date, pd.DataFrame] = {}
+    for d in np.unique(date_arr):
+        day_groups[d] = df.iloc[date_arr == d]
+
+    # Pre-group daily bars by date for O(1) slicing
+    daily_date_arr = None
+    if daily_df is not None and len(daily_df) > 0:
+        d_idx = pd.DatetimeIndex(daily_df.index)
+        daily_date_arr = np.array(d_idx.normalize().date)
+
     train_rows, train_labels = [], []
     test_rows, test_labels = [], []
     feature_names: List[str] = []
 
     all_days = sorted(train_days | test_days)
 
-    for day in all_days:
-        day_mask = df_idx.normalize().date == day
-        day_bars = df.loc[day_mask]
-
-        if len(day_bars) < MIN_BARS + HOLD_BARS:
+    for i, day in enumerate(all_days):
+        day_bars = day_groups.get(day)
+        if day_bars is None or len(day_bars) < MIN_BARS + HOLD_BARS:
             continue
 
         feat_bars = day_bars.iloc[:-HOLD_BARS]
@@ -538,14 +544,19 @@ def _symbol_to_rows(
             if float(bar["low"]) <= stop_price:
                 break
 
-        # Prior-day OHLC
-        prior_close, prior_high, prior_low = _prior_day_ohlc(df, df_idx, day)
+        # Prior-day OHLC — use pre-grouped dict, look back one step
+        prior_close = prior_high = prior_low = None
+        prior_days = [d for d in all_days[:i] if d in day_groups]
+        if prior_days:
+            prev = day_groups[prior_days[-1]]
+            prior_close = float(prev["close"].iloc[-1])
+            prior_high = float(prev["high"].max())
+            prior_low = float(prev["low"].min())
 
-        # Daily bars up to this day
+        # Daily bars up to this day (O(1) slice via precomputed date array)
         daily_as_of = None
-        if daily_df is not None and len(daily_df) > 0:
-            d_idx = pd.DatetimeIndex(daily_df.index)
-            daily_as_of = daily_df.loc[d_idx.normalize().date < day]
+        if daily_df is not None and daily_date_arr is not None:
+            daily_as_of = daily_df.iloc[daily_date_arr < day]
 
         feats = compute_intraday_features(
             feat_bars,
@@ -572,21 +583,3 @@ def _symbol_to_rows(
     return train_rows, train_labels, test_rows, test_labels, feature_names
 
 
-def _prior_day_ohlc(
-    df: pd.DataFrame,
-    df_idx: pd.DatetimeIndex,
-    day: date,
-) -> tuple:
-    prior_mask = df_idx.normalize().date < day
-    if not prior_mask.any():
-        return None, None, None
-    prior_bars = df.loc[prior_mask]
-    last_day = prior_bars.index.normalize().date[-1]
-    last_day_bars = prior_bars.loc[prior_bars.index.normalize().date == last_day]
-    if len(last_day_bars) == 0:
-        return None, None, None
-    return (
-        float(last_day_bars["close"].iloc[-1]),
-        float(last_day_bars["high"].max()),
-        float(last_day_bars["low"].min()),
-    )
