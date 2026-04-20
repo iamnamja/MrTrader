@@ -37,19 +37,14 @@ class AlpacaProvider(DataProvider):
     ) -> Optional[pd.DataFrame]:
         try:
             client = self._client()
-            bars = client.get_bars(
+            df = client.get_bars(
                 symbol,
                 timeframe="1Day",
-                start=start.isoformat(),
-                end=end.isoformat(),
+                start=start if isinstance(start, str) else start.isoformat(),
+                end=end if isinstance(end, str) else end.isoformat(),
             )
-            df = pd.DataFrame(bars)
-            if df.empty:
+            if df is None or df.empty:
                 return None
-            df = self._normalise(df)
-            # Alpaca uses 't' for timestamp
-            if "t" in df.columns and df.index.dtype == object:
-                df.index = pd.to_datetime(df["t"])
             cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
             return df[cols].astype(float)
         except Exception as exc:
@@ -75,18 +70,14 @@ class AlpacaProvider(DataProvider):
                 end = end.replace(tzinfo=timezone.utc)
 
             client = self._client()
-            bars = client.get_bars(
+            df = client.get_bars(
                 symbol,
                 timeframe=timeframe,
                 start=start.isoformat(),
                 end=end.isoformat(),
             )
-            df = pd.DataFrame(bars)
-            if df.empty:
+            if df is None or df.empty:
                 return None
-            df = self._normalise(df)
-            if "t" in df.columns and df.index.dtype == object:
-                df.index = pd.to_datetime(df["t"])
             cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
             return df[cols].astype(float)
         except Exception as exc:

@@ -94,16 +94,17 @@ class PortfolioSelectorModel:
         elif model_type in ("xgboost", "ensemble"):
             self.model = XGBClassifier(
                 n_estimators=400,
-                max_depth=4,          # shallower = less overfitting with many features
-                learning_rate=0.03,   # lower lr needs more trees but generalises better
+                max_depth=4,
+                learning_rate=0.03,
                 subsample=0.7,
-                colsample_bytree=0.6,  # use 60% of features per tree — reduces feature correlation
-                min_child_weight=10,  # require ≥10 samples per leaf — prevents noise splits
-                gamma=0.1,            # min loss reduction to make a split
-                reg_alpha=0.1,        # L1 regularisation
-                reg_lambda=1.5,       # L2 regularisation
+                colsample_bytree=0.6,
+                min_child_weight=10,
+                gamma=0.1,
+                reg_alpha=0.1,
+                reg_lambda=1.5,
                 random_state=42,
                 eval_metric="auc",
+                nthread=-1,           # use all CPU cores
                 verbosity=0,
             )
             if model_type == "ensemble":

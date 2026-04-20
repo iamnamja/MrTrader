@@ -260,16 +260,17 @@ class AlpacaClient:
             tf = timeframe_map.get(timeframe, TimeFrame(5, TimeFrameUnit.Minute))
 
             is_daily = timeframe in ("1D", "1Day")
+            # IEX feed works on free tier for both intraday and daily with date ranges.
+            # Only omit feed for the limit-based (recent) daily path where default works.
             if start is not None or end is not None:
-                # Explicit date range provided
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
                     timeframe=tf,
                     start=start,
                     end=end,
+                    feed="iex",
                 )
             elif is_daily:
-                # Alpaca ignores `limit` for daily bars; use start date instead
                 _start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
@@ -281,6 +282,7 @@ class AlpacaClient:
                     symbol_or_symbols=symbol,
                     timeframe=tf,
                     limit=limit,
+                    feed="iex",
                 )
 
             _rate_limiter.acquire()
