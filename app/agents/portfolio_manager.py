@@ -171,7 +171,16 @@ class PortfolioManager(BaseAgent):
             return
 
         symbols = list(features_by_symbol.keys())
-        X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        # Align features to model's training set (handles post-training feature additions)
+        model_feature_names = getattr(self.model, "feature_names", None)
+        if model_feature_names:
+            X = np.array([
+                [features_by_symbol[s].get(f, 0.0) for f in model_feature_names]
+                for s in symbols
+            ])
+        else:
+            X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        X = np.nan_to_num(X)
 
         try:
             _, probabilities = self.model.predict(X)
@@ -469,14 +478,20 @@ class PortfolioManager(BaseAgent):
                     .first()
                 )
                 if latest and latest.model_path:
-                    directory = os.path.dirname(latest.model_path)
                     try:
-                        model_obj.load(directory, latest.version, model_name=model_name)
-                        self.logger.info("Loaded %s model v%d", model_name, latest.version)
+                        import pickle
+                        with open(latest.model_path, "rb") as f:
+                            loaded = pickle.load(f)
                         if model_name == "swing":
+                            self.model = loaded
                             swing_loaded = True
                         else:
+                            self.intraday_model = loaded
                             intraday_loaded = True
+                        self.logger.info(
+                            "Loaded %s model v%d (%s)",
+                            model_name, latest.version, type(loaded).__name__,
+                        )
                     except Exception as exc:
                         self.logger.warning("Could not load %s model: %s", model_name, exc)
                 else:
