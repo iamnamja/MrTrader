@@ -885,3 +885,211 @@ class LambdaRankModel:
             obj = pickle.load(f)
         self.__dict__.update(obj.__dict__)
         logger.info("LambdaRankModel v%d loaded", version)
+
+
+# ── DoubleEnsemble model ──────────────────────────────────────────────────────
+
+class DoubleEnsembleModel:
+    """
+    DoubleEnsemble (inspired by Qlib's DoubleEnsemble, AAAI 2021).
+
+    Two orthogonal diversity mechanisms applied to LGBMRanker base learners:
+
+    1. Feature subsampling (S-DEnsemble): each learner sees a different random
+       60% of features. Forces learners to discover independent signals.
+
+    2. Sample reweighting (R-DEnsemble): learners are trained sequentially.
+       After each round, samples whose ranking was already predicted well get
+       DOWN-weighted (so the next learner focuses on hard cases). Implemented
+       by shuffling the labels of easy samples to give them zero gradient
+       signal — the same trick Qlib uses.
+
+    Final prediction = average of all learner ranking scores, normalized [0,1].
+
+    n_estimators: number of base LGBMRanker learners (default 5).
+    feature_fraction: fraction of features per learner (default 0.6).
+    """
+
+    def __init__(self, n_estimators: int = 5, feature_fraction: float = 0.6):
+        if not _LGBM_AVAILABLE:
+            raise ImportError("lightgbm not installed — pip install lightgbm")
+        self.model_type = "double_ensemble"
+        self.n_estimators = n_estimators
+        self.feature_fraction = feature_fraction
+        self.scaler = StandardScaler()
+        self.feature_names: Optional[List[str]] = None
+        self.is_trained = False
+        self.predict_threshold: float = 0.5
+        self._feature_weights: Optional[np.ndarray] = None
+        self._learners: List = []          # fitted LGBMRanker instances
+        self._feature_indices: List[List[int]] = []  # which features each learner uses
+
+    def _make_learner(self) -> "LGBMRanker":
+        return LGBMRanker(
+            objective="lambdarank",
+            n_estimators=400,
+            num_leaves=31,
+            max_depth=6,
+            learning_rate=0.02,
+            subsample=0.7,
+            subsample_freq=1,
+            colsample_bytree=0.7,
+            reg_alpha=1.0,
+            reg_lambda=1.0,
+            min_child_samples=20,
+            random_state=None,  # set per-learner below
+            verbose=-1,
+            lambdarank_truncation_level=4,
+        )
+
+    def train(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: Optional[List[str]] = None,
+        scale_pos_weight: Optional[float] = None,
+        X_val: Optional[np.ndarray] = None,
+        y_val: Optional[np.ndarray] = None,
+        early_stopping_rounds: int = 30,
+        sample_weight: Optional[np.ndarray] = None,
+        feature_weights: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        val_groups: Optional[np.ndarray] = None,
+    ) -> None:
+        if groups is None:
+            raise ValueError("DoubleEnsembleModel requires 'groups' (array of group sizes).")
+
+        logger.info(
+            "DoubleEnsemble training — %d samples, %d features, %d groups, %d learners",
+            X.shape[0], X.shape[1], len(groups), self.n_estimators,
+        )
+
+        if feature_weights is not None and len(feature_weights) == X.shape[1]:
+            self._feature_weights = feature_weights / (feature_weights.mean() + 1e-9)
+            X = X * self._feature_weights
+
+        X_scaled = self.scaler.fit_transform(X)
+        n_features = X_scaled.shape[1]
+        n_select = max(1, int(n_features * self.feature_fraction))
+
+        # Cumulative prediction scores for sample reweighting
+        cum_scores = np.zeros(len(y), dtype=float)
+        rng = np.random.default_rng(42)
+
+        self._learners = []
+        self._feature_indices = []
+
+        for k in range(self.n_estimators):
+            # --- Feature subsampling (S-DEnsemble) ---
+            feat_idx = sorted(rng.choice(n_features, size=n_select, replace=False).tolist())
+            X_sub = X_scaled[:, feat_idx]
+
+            # --- Sample reweighting (R-DEnsemble) ---
+            # After round 0, shuffle labels of "easy" samples (those whose score
+            # already ranks them correctly relative to their window group).
+            # This zeroes out their gradient contribution, forcing the next
+            # learner to focus on hard / novel samples.
+            y_train = y.copy()
+            if k > 0:
+                # Compute per-window rank correlation of cum_scores vs y
+                offset = 0
+                for g_size in groups:
+                    seg_scores = cum_scores[offset: offset + g_size]
+                    seg_y = y[offset: offset + g_size]
+                    # Easy = samples in top-half of BOTH score and label (already ranked well)
+                    score_rank = np.argsort(np.argsort(seg_scores))
+                    label_rank = np.argsort(np.argsort(seg_y))
+                    easy = (score_rank >= g_size // 2) & (label_rank >= g_size // 2)
+                    # Shuffle labels of easy samples within the group (kill their gradient)
+                    easy_idx = np.where(easy)[0]
+                    if len(easy_idx) > 1:
+                        shuffled = easy_idx.copy()
+                        rng.shuffle(shuffled)
+                        y_train[offset + easy_idx] = y_train[offset + shuffled]
+                    offset += g_size
+
+            learner = self._make_learner()
+            learner.set_params(random_state=42 + k)
+            learner.fit(X_sub, y_train, group=groups)
+
+            # Accumulate raw scores for next round's reweighting
+            raw = learner.predict(X_sub).astype(float)
+            cum_scores += raw
+
+            self._learners.append(learner)
+            self._feature_indices.append(feat_idx)
+            logger.info("  Learner %d/%d trained (features: %d)", k + 1, self.n_estimators, n_select)
+
+        self.feature_names = feature_names
+        self.is_trained = True
+        logger.info("DoubleEnsemble training complete (%d learners)", self.n_estimators)
+
+    def predict(
+        self, X: np.ndarray, threshold: Optional[float] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if not self.is_trained:
+            raise RuntimeError("DoubleEnsembleModel has not been trained yet.")
+
+        if self._feature_weights is not None and len(self._feature_weights) == X.shape[1]:
+            X = X * self._feature_weights
+
+        X_scaled = self.scaler.transform(X)
+
+        # Average raw scores across all learners (each uses its own feature subset)
+        all_scores = np.zeros(len(X), dtype=float)
+        for learner, feat_idx in zip(self._learners, self._feature_indices):
+            all_scores += learner.predict(X_scaled[:, feat_idx]).astype(float)
+        all_scores /= len(self._learners)
+
+        lo, hi = all_scores.min(), all_scores.max()
+        probabilities = (all_scores - lo) / (hi - lo + 1e-9)
+        t = threshold if threshold is not None else self.predict_threshold
+        predictions = (probabilities >= t).astype(int)
+        return predictions, probabilities
+
+    def tune_threshold(self, X_val: np.ndarray, y_val: np.ndarray, metric: str = "f1") -> float:
+        from sklearn.metrics import f1_score
+        _, probabilities = self.predict(X_val, threshold=0.5)
+        if np.issubdtype(y_val.dtype, np.floating) and not np.all(np.isin(y_val, [0.0, 1.0, 2.0, 3.0, 4.0])):
+            y_bin = (y_val >= np.percentile(y_val, 80)).astype(int)
+        else:
+            y_bin = (y_val >= 4).astype(int)
+        best_t, best_score = 0.5, 0.0
+        for t in np.arange(0.20, 0.65, 0.05):
+            preds = (probabilities >= t).astype(int)
+            score = f1_score(y_bin, preds, zero_division=0)
+            if score > best_score:
+                best_score, best_t = score, float(t)
+        self.predict_threshold = best_t
+        logger.info("DoubleEnsemble threshold tuned: %.2f (F1=%.4f)", best_t, best_score)
+        return best_t
+
+    def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
+        if not self.is_trained:
+            return None
+        combined: dict = {}
+        for learner, feat_idx in zip(self._learners, self._feature_indices):
+            if not hasattr(learner, "feature_importances_"):
+                continue
+            names = (
+                [self.feature_names[i] for i in feat_idx]
+                if self.feature_names else [f"f{i}" for i in feat_idx]
+            )
+            for name, imp in zip(names, learner.feature_importances_):
+                combined[name] = combined.get(name, 0.0) + imp
+        return sorted(combined.items(), key=lambda x: x[1], reverse=True) if combined else None
+
+    def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        path = Path(directory) / f"{model_name}_v{version}.pkl"
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        logger.info("DoubleEnsembleModel v%d saved to %s", version, directory)
+        return str(path)
+
+    def load(self, directory: str, version: int, model_name: str = "model") -> None:
+        path = Path(directory) / f"{model_name}_v{version}.pkl"
+        with open(path, "rb") as f:
+            obj = pickle.load(f)
+        self.__dict__.update(obj.__dict__)
+        logger.info("DoubleEnsembleModel v%d loaded", version)

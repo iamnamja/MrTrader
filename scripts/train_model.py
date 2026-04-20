@@ -264,19 +264,15 @@ def run_rolling_pipeline(
             ok(f"  Window {w}d: AUC={r['metrics'].get('auc', '?'):.3f}  Recall={r['metrics'].get('recall', '?'):.1%}")
     else:
         print("  Training...", end="", flush=True)
-        if model_type == "lambdarank":
+        if model_type in ("lambdarank", "double_ensemble"):
             X_train, y_train, train_groups = trainer._build_lambdarank_groups(X_train, y_train, meta_train)
-            val_groups = np.array([len(X_test)], dtype=np.int32) if len(X_test) > 0 else None
             trainer.model.train(
                 X_train, y_train, feature_names,
-                X_val=X_test, y_val=y_test,
-                early_stopping_rounds=30,
                 groups=train_groups,
-                val_groups=val_groups,
             )
             elapsed = time.time() - t0
             print("\r", end="")
-            ok(f"LambdaRank training complete in {elapsed:.1f}s  ({len(train_groups)} groups)")
+            ok(f"{model_type} training complete in {elapsed:.1f}s  ({len(train_groups)} groups)")
         else:
             n_neg = int((y_train == 0).sum())
             n_pos = int((y_train == 1).sum())
@@ -332,7 +328,7 @@ def run_rolling_pipeline(
         # For regression/rank label schemes, binarize y_test before classification metrics
         import numpy as _np
         _is_reg = label_scheme in ("return_regression", "return_blend")
-        _is_rank = label_scheme == "lambdarank"
+        _is_rank = label_scheme == "lambdarank" or model_type == "double_ensemble"
         if _is_rank:
             # Quintile labels 0-4; treat 4 (top quintile) as positive
             y_test_bin = (_np.array(y_test) >= 4).astype(int)
@@ -466,7 +462,7 @@ def main():
     )
     parser.add_argument(
         "--model-type", default="xgboost",
-        choices=["xgboost", "lgbm", "ensemble", "lgbm_ensemble", "lambdarank"],
+        choices=["xgboost", "lgbm", "ensemble", "lgbm_ensemble", "lambdarank", "double_ensemble"],
         help="Model architecture (default: xgboost)",
     )
     parser.add_argument(
