@@ -88,11 +88,15 @@ def _win_rate_and_drawdown():
 
 
 def _system_status(alpaca_ok: bool = True) -> str:
-    checks = [
-        check_db_connection(),
-        _redis().health_check(),
-        alpaca_ok,
-    ]
+    try:
+        db_ok = check_db_connection()
+    except Exception:
+        db_ok = False
+    try:
+        redis_ok = _redis().health_check()
+    except Exception:
+        redis_ok = False
+    checks = [db_ok, redis_ok, alpaca_ok]
     if all(checks):
         return "healthy"
     if any(checks):
@@ -102,36 +106,42 @@ def _system_status(alpaca_ok: bool = True) -> str:
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
-ALPACA_TIMEOUT = 8.0  # seconds before giving up and returning partial data
+ALPACA_TIMEOUT = 4.0  # seconds before giving up and returning partial data
 
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
-@ttl_cache(seconds=60)
+@ttl_cache(seconds=10)
 async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
-        # Alpaca calls have an 8s timeout — returns partial data if slow
-        account: dict | None = None
-        positions: list = []
-        try:
-            alpaca = _alpaca()
-            account, positions = await asyncio.wait_for(
-                asyncio.gather(
-                    asyncio.to_thread(alpaca.get_account),
-                    asyncio.to_thread(alpaca.get_positions),
-                ),
-                timeout=ALPACA_TIMEOUT,
-            )
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning("Alpaca unavailable for summary (%s) — returning DB-only data", exc)
+        # Fire Alpaca, DB queries, and stats all in parallel — don't wait for Alpaca before starting DB work
+        def _fetch_alpaca():
+            try:
+                alpaca = _alpaca()
+                acct = alpaca.get_account()
+                pos = alpaca.get_positions()
+                return acct, pos
+            except Exception:
+                return None, []
 
-        db = get_session()
+        (account, positions), (win_rate, max_dd), trades_count = await asyncio.gather(
+            asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT),
+            asyncio.to_thread(_win_rate_and_drawdown),
+            asyncio.to_thread(_trades_today_count),
+        )
+
+        # Daily P&L = sum of unrealized P&L on open positions (what Alpaca tracks)
+        daily_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
+
+        if account is None:
+            logger.warning("Alpaca unavailable for summary — returning DB-only data")
+
         try:
-            today = date.today().isoformat()
-            metric = db.query(RiskMetric).filter_by(date=today).first()
-            daily_pnl = float(metric.daily_pnl) if metric and metric.daily_pnl else 0.0
-        finally:
-            db.close()
+            sys_status = await asyncio.wait_for(
+                asyncio.to_thread(_system_status, account is not None), timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            sys_status = "degraded"
 
         account_value = float(account["portfolio_value"]) if account else None
         buying_power = float(account["buying_power"]) if account else None
@@ -146,11 +156,35 @@ async def get_dashboard_summary():
         else:
             daily_pnl_pct = total_pnl = total_pnl_pct = None
 
-        (win_rate, max_dd), trades_count, sys_status = await asyncio.gather(
-            asyncio.to_thread(_win_rate_and_drawdown),
-            asyncio.to_thread(_trades_today_count),
-            asyncio.to_thread(_system_status, account is not None),
+        # Capital deployed = sum of market_value across open positions
+        capital_deployed = sum(
+            float(p.get("market_value") or (float(p.get("avg_entry_price", 0) or p.get("avg_price", 0)) * int(p.get("qty", 0) or p.get("quantity", 0))))
+            for p in (positions or [])
         )
+        capital_deployed_pct = round(capital_deployed / account_value * 100, 1) if account_value else None
+
+        # Last signal from most recent TRADE_ENTERED decision
+        def _last_signal():
+            db = get_session()
+            try:
+                d = (
+                    db.query(AgentDecision)
+                    .filter(AgentDecision.decision_type == "TRADE_ENTERED")
+                    .order_by(desc(AgentDecision.timestamp))
+                    .first()
+                )
+                if not d:
+                    return None, None
+                r = d.reasoning or {}
+                sig = r.get("signal_type", "TRADE")
+                age_hours = round((datetime.utcnow() - d.timestamp).total_seconds() / 3600, 1)
+                return sig, age_hours
+            except Exception:
+                return None, None
+            finally:
+                db.close()
+
+        last_signal_type, last_signal_age = await asyncio.to_thread(_last_signal)
 
         return DashboardSummaryResponse(
             timestamp=datetime.utcnow(),
@@ -163,6 +197,10 @@ async def get_dashboard_summary():
             total_pnl_pct=total_pnl_pct,
             open_positions_count=len(positions),
             trades_today_count=trades_count,
+            capital_deployed=round(capital_deployed, 2),
+            capital_deployed_pct=capital_deployed_pct,
+            last_signal_type=last_signal_type,
+            last_signal_age_hours=last_signal_age,
             trading_mode=settings.trading_mode,
             system_status=sys_status,
             win_rate=win_rate,
@@ -178,9 +216,23 @@ async def get_dashboard_summary():
 @router.get("/positions", response_model=List[PositionResponse])
 @ttl_cache(seconds=10)
 async def get_open_positions():
-    """Live open positions from Alpaca."""
+    """Live open positions from Alpaca, enriched with stop/target/signal from DB."""
     try:
         raw = await asyncio.to_thread(_alpaca().get_positions)
+
+        # Enrich with stop/target/signal from active DB trades
+        def _db_trade_meta():
+            db = get_session()
+            try:
+                trades = db.query(Trade).filter(Trade.status == "ACTIVE").all()
+                return {t.symbol: t for t in trades}
+            except Exception:
+                return {}
+            finally:
+                db.close()
+
+        db_trades = await asyncio.to_thread(_db_trade_meta)
+
         result = []
         for pos in raw:
             qty = pos.get("quantity") or pos.get("qty", 0)
@@ -190,6 +242,7 @@ async def get_open_positions():
             pnl_pct = None
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
+            t = db_trades.get(pos["symbol"])
             result.append(PositionResponse(
                 symbol=pos["symbol"],
                 quantity=int(qty),
@@ -197,6 +250,9 @@ async def get_open_positions():
                 current_price=float(current) if current else None,
                 pnl_unrealized=float(pnl) if pnl is not None else None,
                 pnl_unrealized_pct=pnl_pct,
+                stop_price=float(t.stop_price) if t and t.stop_price else None,
+                target_price=float(t.target_price) if t and t.target_price else None,
+                signal_type=t.signal_type if t else None,
             ))
         return result
     except Exception as exc:
@@ -253,6 +309,33 @@ async def get_agent_decisions(limit: int = 50):
             .limit(min(limit, 200))
             .all()
         )
+        # Build trade_id → symbol map for quick lookup
+        trade_ids = [d.trade_id for d in decisions if d.trade_id is not None]
+        trade_symbols: dict = {}
+        if trade_ids:
+            trades = db.query(Trade).filter(Trade.id.in_(trade_ids)).all()
+            trade_symbols = {t.id: t.symbol for t in trades}
+
+        def _extract_symbol(d: AgentDecision) -> str | None:
+            # 1. from trade join (TRADE_ENTERED / TRADE_EXITED)
+            if d.trade_id and d.trade_id in trade_symbols:
+                return trade_symbols[d.trade_id]
+            r = d.reasoning or {}
+            # 2. direct symbol/ticker key
+            for key in ("symbol", "ticker"):
+                if isinstance(r.get(key), str):
+                    return r[key]
+            # 3. nested proposal.symbol (TRADE_APPROVED from risk manager)
+            proposal = r.get("proposal")
+            if isinstance(proposal, dict) and isinstance(proposal.get("symbol"), str):
+                return proposal["symbol"]
+            # 4. symbols list or selected list (INSTRUMENTS_SELECTED)
+            syms = r.get("symbols") or r.get("selected")
+            if isinstance(syms, list) and syms:
+                first = syms[0]
+                return first if isinstance(first, str) else (first.get("symbol") if isinstance(first, dict) else None)
+            return None
+
         return [
             AgentDecisionResponse(
                 id=d.id,
@@ -261,6 +344,7 @@ async def get_agent_decisions(limit: int = 50):
                 trade_id=d.trade_id,
                 reasoning=d.reasoning,
                 timestamp=d.timestamp,
+                symbol=_extract_symbol(d),
             )
             for d in decisions
         ]
@@ -269,6 +353,47 @@ async def get_agent_decisions(limit: int = 50):
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         db.close()
+
+
+# ─── Equity history ───────────────────────────────────────────────────────────
+
+@router.get("/metrics/equity-history")
+@ttl_cache(seconds=60)
+async def get_equity_history(range: str = "1d"):
+    """
+    Equity curve from Alpaca portfolio history API — reflects all account
+    activity regardless of whether trades were entered via this app.
+
+    range: '1d' (5-min bars today), '1w' (daily, 7 days), '1m' (daily, 30 days)
+    """
+    def _fetch():
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+        period_map = {"1d": "1D", "1w": "1W", "1m": "1M"}
+        tf_map = {"1d": "5Min", "1w": "1D", "1m": "1D"}
+        period = period_map.get(range, "1D")
+        timeframe = tf_map.get(range, "5Min")
+        req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+        hist = _alpaca().trading_client.get_portfolio_history(req)
+
+        timestamps = hist.timestamp or []
+        pnl_series = hist.profit_loss or []
+
+        points = []
+        for ts, pnl in zip(timestamps, pnl_series):
+            if pnl is None:
+                continue
+            dt = datetime.utcfromtimestamp(ts)
+            label = dt.strftime("%H:%M") if range == "1d" else dt.strftime("%b %d")
+            points.append({"time": label, "pnl": round(float(pnl), 2)})
+        return points
+
+    try:
+        points = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=10.0)
+    except Exception as exc:
+        logger.warning("Portfolio history unavailable: %s", exc)
+        points = [{"time": "—", "pnl": 0.0}]
+
+    return points
 
 
 # ─── Daily metrics ────────────────────────────────────────────────────────────
@@ -302,7 +427,7 @@ async def get_daily_metrics(days: int = 30):
 # ─── System health ────────────────────────────────────────────────────────────
 
 @router.get("/health")
-@ttl_cache(seconds=60)
+@ttl_cache(seconds=10)
 async def get_health_alias():
     """Health check alias for dashboard polling."""
     db_ok = check_db_connection()

@@ -209,3 +209,4 @@ __marimo__/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+app/ml/models/feature_store.db

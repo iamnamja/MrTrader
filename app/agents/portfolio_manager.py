@@ -171,7 +171,16 @@ class PortfolioManager(BaseAgent):
             return
 
         symbols = list(features_by_symbol.keys())
-        X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        # Align features to model's training set (handles post-training feature additions)
+        model_feature_names = getattr(self.model, "feature_names", None)
+        if model_feature_names:
+            X = np.array([
+                [features_by_symbol[s].get(f, 0.0) for f in model_feature_names]
+                for s in symbols
+            ])
+        else:
+            X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        X = np.nan_to_num(X)
 
         try:
             _, probabilities = self.model.predict(X)
@@ -192,7 +201,20 @@ class PortfolioManager(BaseAgent):
                 _db.close()
         except Exception:
             pass
-        ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+        # Apply FMP price-target consensus boost.
+        # Stocks trading below analyst consensus get a small upward nudge to their
+        # model score — this signal is forward-looking at 10 days (mean reversion
+        # toward consensus) but can't be used in training (no historical timeseries).
+        # Cap boost at +0.05 so it never overrides a weak model score.
+        target_upside = self._fetch_target_upside(symbols)
+        boosted_probs = []
+        for sym, prob in zip(symbols, probabilities):
+            upside = target_upside.get(sym, 0.0)
+            # Only boost if upside > 10% (stock meaningfully below consensus)
+            boost = min(0.05, max(0.0, upside * 0.15)) if upside > 0.10 else 0.0
+            boosted_probs.append(float(prob) + boost)
+
+        ranked = sorted(zip(symbols, boosted_probs), key=lambda x: x[1], reverse=True)
         selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:top_n]
 
         self.logger.info("Selected %d instruments: %s", len(selected), [s for s, _ in selected])
@@ -208,6 +230,8 @@ class PortfolioManager(BaseAgent):
             reasoning={
                 "selected": [{"symbol": s, "confidence": round(float(p), 4)} for s, p in selected],
                 "total_evaluated": len(symbols),
+                "price_target_boost_applied": sum(1 for s in [sym for sym, _ in selected]
+                                                  if target_upside.get(s, 0.0) > 0.10),
             },
         )
 
@@ -352,6 +376,53 @@ class PortfolioManager(BaseAgent):
 
         return proposals
 
+    def _fetch_target_upside(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Return FMP price-target upside ratio for each symbol.
+        upside = (targetConsensus - current_price) / current_price
+        Positive = stock trading below consensus, negative = above.
+        Returns {} on any failure — boost is optional, never blocks selection.
+        """
+        result: Dict[str, float] = {}
+        try:
+            import requests
+            from app.config import settings
+            key = settings.fmp_api_key
+            if not key:
+                return result
+            # Fetch current prices via Alpaca snapshot
+            prices: Dict[str, float] = {}
+            for sym in symbols:
+                try:
+                    bars = self._alpaca.get_bars(sym, timeframe="1D", limit=1)
+                    if not bars.empty:
+                        prices[sym] = float(bars["close"].iloc[-1])
+                except Exception:
+                    pass
+            # Fetch consensus targets (one request per symbol — cached 24h by FMP)
+            base = "https://financialmodelingprep.com/stable"
+            for sym in symbols:
+                price = prices.get(sym)
+                if not price or price <= 0:
+                    continue
+                try:
+                    r = requests.get(
+                        f"{base}/price-target-consensus",
+                        params={"symbol": sym, "apikey": key},
+                        timeout=5,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data:
+                            target = data[0].get("targetConsensus") or data[0].get("targetMedian")
+                            if target and float(target) > 0:
+                                result[sym] = (float(target) - price) / price
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.logger.debug("Price target upside fetch failed: %s", exc)
+        return result
+
     def _calculate_quantity(self, price: float, account_value: float) -> int:
         """Size position at pm.position_risk_pct of account value (DB-configurable)."""
         risk_pct = POSITION_RISK_PCT
@@ -407,14 +478,20 @@ class PortfolioManager(BaseAgent):
                     .first()
                 )
                 if latest and latest.model_path:
-                    directory = os.path.dirname(latest.model_path)
                     try:
-                        model_obj.load(directory, latest.version, model_name=model_name)
-                        self.logger.info("Loaded %s model v%d", model_name, latest.version)
+                        import pickle
+                        with open(latest.model_path, "rb") as f:
+                            loaded = pickle.load(f)
                         if model_name == "swing":
+                            self.model = loaded
                             swing_loaded = True
                         else:
+                            self.intraday_model = loaded
                             intraday_loaded = True
+                        self.logger.info(
+                            "Loaded %s model v%d (%s)",
+                            model_name, latest.version, type(loaded).__name__,
+                        )
                     except Exception as exc:
                         self.logger.warning("Could not load %s model: %s", model_name, exc)
                 else:

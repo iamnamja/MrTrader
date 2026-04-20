@@ -11,8 +11,13 @@ export interface Summary {
   total_pnl?: number
   total_pnl_pct?: number
   trades_today_count?: number
+  capital_deployed?: number
+  capital_deployed_pct?: number
+  last_signal_type?: string
+  last_signal_age_hours?: number
   trading_mode?: string
   system_status?: string
+  timestamp?: string
   // Legacy / WS-push field names (keep for backwards compat)
   portfolio_value?: number
   equity?: number
@@ -34,12 +39,19 @@ export interface Health {
 
 export interface Position {
   symbol: string
-  qty: number
+  qty?: number
+  quantity?: number
   avg_entry_price?: number
+  avg_price?: number
   current_price?: number
   market_value?: number
   unrealized_pl?: number
+  pnl_unrealized?: number
   unrealized_plpc?: number
+  pnl_unrealized_pct?: number
+  stop_price?: number
+  target_price?: number
+  signal_type?: string
 }
 
 export interface Trade {
@@ -209,6 +221,7 @@ export interface RegimeDetail {
   trend_following_active: boolean
   mean_reversion_active: boolean
   position_size_multiplier: number
+  fetched_at?: string
 }
 
 export interface MonitorHealth {

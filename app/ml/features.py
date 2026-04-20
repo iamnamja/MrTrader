@@ -38,6 +38,11 @@ Feature groups (74 total):
   28. FMP enhanced earnings: consecutive beats, revenue surprise     — FMP API
   29. Volume/price dynamics: VPT momentum, range expansion, VWAP distance — computed
   30. Daily technicals: Williams %R(14), CCI(20), price acceleration — computed
+  33. WorldQuant 101 alphas: 14 formulaic alphas (open-volume divergence,
+      intraday reversal, stochastic-vol rank, momentum-reversal composites) — computed
+  34. Short-term reversal: 3d, 5d, 5d vol-weighted reversal signals     — computed
+  35. VRP, beta, opex, earnings drift: realized-vol spread, 252d beta,
+      days-to-opex, earnings PEAD decay signal                          — computed
 """
 
 import logging
@@ -234,6 +239,7 @@ class FeatureEngineer:
         highs = bars["high"].to_numpy(dtype=float)
         lows = bars["low"].to_numpy(dtype=float)
         volumes = bars["volume"].to_numpy(dtype=float)
+        opens = bars["open"].to_numpy(dtype=float) if "open" in bars.columns else prices
         current_price = prices[-1]
 
         features: Dict[str, float] = {}
@@ -303,9 +309,10 @@ class FeatureEngineer:
             float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
         )
 
-        # ── 9. Momentum (5d, 20d, 60d) ───────────────────────────────────────
+        # ── 9. Momentum (5d, 20d, 60d, 252d) ────────────────────────────────────
         lookback_20 = min(20, len(prices) - 1)
         lookback_60 = min(60, len(prices) - 1)
+        lookback_252 = min(252, len(prices) - 1)
         features["momentum_5d"] = (
             (prices[-1] - prices[-(lookback_5 + 1)]) / prices[-(lookback_5 + 1)]
             if prices[-(lookback_5 + 1)] else 0.0
@@ -317,6 +324,13 @@ class FeatureEngineer:
         features["momentum_60d"] = (
             (prices[-1] - prices[-(lookback_60 + 1)]) / prices[-(lookback_60 + 1)]
             if prices[-(lookback_60 + 1)] else 0.0
+        )
+        # 12-month momentum (most well-documented equity factor); skip last month (reversal)
+        # Uses prices[-21] as "1 month ago" to exclude short-term reversal component
+        _p_12m = prices[-(lookback_252 + 1)]
+        _p_1m = prices[-(min(21, len(prices) - 1) + 1)] if len(prices) > 22 else prices[-1]
+        features["momentum_252d_ex1m"] = (
+            (_p_1m - _p_12m) / _p_12m if _p_12m > 0 else 0.0
         )
 
         # ── 10. ATR(14) normalised ────────────────────────────────────────────
@@ -460,6 +474,12 @@ class FeatureEngineer:
         else:
             features["rs_vs_spy_10d"] = 0.0
 
+        if spy_returns is not None and len(spy_returns) >= lookback_60:
+            spy_ret_60d = float(np.sum(spy_returns[-lookback_60:]))
+            features["rs_vs_spy_60d"] = features["momentum_60d"] - spy_ret_60d
+        else:
+            features["rs_vs_spy_60d"] = 0.0
+
         # ── 25. FMP point-in-time fundamentals ───────────────────────────────
         # as_of_date lets training pass the window end date so we use only data
         # known at that time — eliminates the look-ahead bias that kept AUC at 0.51.
@@ -583,7 +603,25 @@ class FeatureEngineer:
                 pass
         features.update(_earnings_default)
 
-        # ── 29. Volume/price dynamics ─────────────────────────────────────────
+        # ── 29. Polygon financials (FCF margin, operating leverage, R&D intensity)
+        _poly_fin_default = {
+            "fcf_margin": 0.0,
+            "operating_leverage": 0.0,
+            "rd_intensity": 0.0,
+        }
+        if fetch_fundamentals:
+            try:
+                from app.data.polygon_financials import get_polygon_financial_features
+                pit_date = as_of_date if as_of_date is not None else date.today()
+                poly_fin = get_polygon_financial_features(symbol, pit_date)
+                features.update(poly_fin)
+            except Exception as exc:
+                logger.debug("Polygon financials features skipped for %s: %s", symbol, exc)
+                features.update(_poly_fin_default)
+        else:
+            features.update(_poly_fin_default)
+
+        # ── 30. Volume/price dynamics ─────────────────────────────────────────
         try:
             _px = prices[-20:] if len(prices) >= 20 else prices
             _volumes = volumes[-20:] if len(volumes) >= 20 else volumes
@@ -625,6 +663,66 @@ class FeatureEngineer:
             features["range_expansion"] = 1.0
             features["vwap_distance_20d"] = 0.0
 
+        # ── 30a. Sector-neutral momentum & mean-reversion ────────────────────
+        # Sector-neutral: stock's 20d/60d alpha vs sector ETF (pure alpha signal)
+        features["momentum_20d_sector_neutral"] = features["momentum_20d"] - features["sector_momentum"]
+        features["momentum_60d_sector_neutral"] = features["momentum_60d"] - features["sector_momentum"]
+
+        # Mean-reversion z-score: std devs above 60d rolling mean of 20d returns
+        if len(prices) >= 63:
+            _rolling = np.array([
+                (prices[i] - prices[i - 20]) / max(prices[i - 20], 1e-6)
+                for i in range(20, min(63, len(prices)))
+            ])
+            _rz_std = float(_rolling.std()) if len(_rolling) > 1 else 1e-6
+            features["mean_reversion_zscore"] = float(
+                np.clip((features["momentum_20d"] - float(_rolling.mean())) / max(_rz_std, 1e-6), -4.0, 4.0)
+            )
+        else:
+            features["mean_reversion_zscore"] = 0.0
+
+        # Up-day ratio: % of last 20 days closing higher than prior day
+        if len(prices) >= 21:
+            features["up_day_ratio_20d"] = float((np.diff(prices[-21:]) > 0).sum()) / 20.0
+        else:
+            features["up_day_ratio_20d"] = 0.5
+
+        # ── 30b. Quality / trend consistency features (v19) ───────────────────
+        # Trend consistency: fraction of last 63 days where price > 50-day EMA
+        # High consistency = institutional conviction, sustained accumulation
+        if len(prices) >= 63:
+            _k50 = 2.0 / 51.0
+            _ema50_window = float(np.mean(prices[:50]))
+            _above_count = 0
+            for _i in range(50, min(len(prices), 63 + 50)):
+                _ema50_window = prices[_i] * _k50 + _ema50_window * (1 - _k50)
+                if prices[_i] > _ema50_window:
+                    _above_count += 1
+            _window_len = min(len(prices), 63 + 50) - 50
+            features["trend_consistency_63d"] = float(_above_count) / max(_window_len, 1)
+        else:
+            features["trend_consistency_63d"] = 0.5
+
+        # Volume-price trend confirmation: do up days have higher vol than down days?
+        # Ratio > 1 = buying pressure; < 1 = distribution
+        if len(prices) >= 21 and len(volumes) >= 21:
+            _rets20 = np.diff(prices[-21:])
+            _vols20 = volumes[-20:]
+            _up_vol = float(np.mean(_vols20[_rets20 > 0])) if np.any(_rets20 > 0) else 0.0
+            _down_vol = float(np.mean(_vols20[_rets20 <= 0])) if np.any(_rets20 <= 0) else 1e-6
+            features["vol_price_confirmation"] = float(np.clip(_up_vol / max(_down_vol, 1e-6), 0.0, 4.0))
+        else:
+            features["vol_price_confirmation"] = 1.0
+
+        # Price efficiency: fraction of gross move captured vs total path length
+        # High efficiency = directional conviction; low = choppiness
+        if len(prices) >= 20:
+            _net = abs(prices[-1] - prices[-20])
+            _path = float(np.sum(np.abs(np.diff(prices[-20:]))))
+            features["price_efficiency_20d"] = float(np.clip(_net / max(_path, 1e-6), 0.0, 1.0))
+        else:
+            features["price_efficiency_20d"] = 0.5
+
         # ── 30. Daily technical indicators ───────────────────────────────────
         try:
             # Williams %R(14): -100=oversold, 0=overbought → normalise to [-1, 0]
@@ -657,5 +755,404 @@ class FeatureEngineer:
             features["williams_r_14"] = -0.5
             features["cci_20"] = 0.0
             features["price_acceleration"] = 0.0
+
+        # ── 31. pandas-ta extended indicators ────────────────────────────────
+        try:
+            import pandas_ta as pta
+            _df_ta = pd.DataFrame({
+                "open": opens if opens is not None else prices,
+                "high": highs,
+                "low": lows,
+                "close": prices,
+                "volume": volumes,
+            })
+
+            # Stochastic RSI: smoother overbought/oversold than plain RSI
+            _srsi = pta.stochrsi(_df_ta["close"], length=14, rsi_length=14, k=3, d=3)
+            if _srsi is not None and not _srsi.empty:
+                _k_col = [c for c in _srsi.columns if "STOCHRSIk" in c]
+                _d_col = [c for c in _srsi.columns if "STOCHRSId" in c]
+                _k = float(_srsi[_k_col[0]].iloc[-1]) if _k_col and not pd.isna(_srsi[_k_col[0]].iloc[-1]) else 50.0
+                _d = float(_srsi[_d_col[0]].iloc[-1]) if _d_col and not pd.isna(_srsi[_d_col[0]].iloc[-1]) else 50.0
+                features["stochrsi_k"] = float(np.clip(_k / 100.0, 0.0, 1.0))
+                features["stochrsi_d"] = float(np.clip(_d / 100.0, 0.0, 1.0))
+                features["stochrsi_signal"] = float(np.clip((_k - _d) / 100.0, -1.0, 1.0))
+            else:
+                features["stochrsi_k"] = 0.5
+                features["stochrsi_d"] = 0.5
+                features["stochrsi_signal"] = 0.0
+
+            # Keltner Channels: ATR-based bands — position within channel
+            _kc = pta.kc(_df_ta["high"], _df_ta["low"], _df_ta["close"], length=20, scalar=2.0)
+            if _kc is not None and not _kc.empty and len(prices) > 0:
+                _kcu_col = [c for c in _kc.columns if "KCUe" in c]
+                _kcl_col = [c for c in _kc.columns if "KCLe" in c]
+                if _kcu_col and _kcl_col:
+                    _kcu = float(_kc[_kcu_col[0]].iloc[-1])
+                    _kcl = float(_kc[_kcl_col[0]].iloc[-1])
+                    _band = max(_kcu - _kcl, 1e-9)
+                    features["keltner_position"] = float(np.clip((prices[-1] - _kcl) / _band, -0.2, 1.2))
+                else:
+                    features["keltner_position"] = 0.5
+            else:
+                features["keltner_position"] = 0.5
+
+            # Chaikin Money Flow (20): volume-weighted buying/selling pressure [-1, 1]
+            _cmf = pta.cmf(_df_ta["high"], _df_ta["low"], _df_ta["close"], _df_ta["volume"], length=20)
+            if _cmf is not None and len(_cmf) > 0:
+                _cmf_val = float(_cmf.iloc[-1])
+                features["cmf_20"] = float(np.clip(_cmf_val if not np.isnan(_cmf_val) else 0.0, -1.0, 1.0))
+            else:
+                features["cmf_20"] = 0.0
+
+            # DEMA (Double EMA, 20d): trend-following, less lag than EMA
+            _dema = pta.dema(_df_ta["close"], length=20)
+            if _dema is not None and len(_dema) > 0 and prices[-1] > 0:
+                _dema_val = float(_dema.iloc[-1])
+                features["dema_20_dist"] = float(np.clip((prices[-1] - _dema_val) / max(_dema_val, 1e-9), -0.15, 0.15))
+            else:
+                features["dema_20_dist"] = 0.0
+
+        except Exception as _ta_exc:
+            logger.debug("pandas-ta features failed: %s", _ta_exc)
+            features.setdefault("stochrsi_k", 0.5)
+            features.setdefault("stochrsi_d", 0.5)
+            features.setdefault("stochrsi_signal", 0.0)
+            features.setdefault("keltner_position", 0.5)
+            features.setdefault("cmf_20", 0.0)
+            features.setdefault("dema_20_dist", 0.0)
+
+        # ── 32. Entry-timing & vol-expansion features ─────────────────────────
+        try:
+            # Vol expansion: current 10-day realized vol vs 90-day realized vol.
+            # > 1 = vol expanding (breakout context); < 1 = vol contracting (consolidation).
+            if len(prices) >= 91:
+                _rets_all = np.diff(np.log(prices + 1e-9))
+                _rv10 = float(np.std(_rets_all[-10:]) * np.sqrt(252))
+                _rv90 = float(np.std(_rets_all[-90:]) * np.sqrt(252))
+                features["vol_expansion"] = float(np.clip(_rv10 / max(_rv90, 1e-9), 0.2, 5.0))
+            else:
+                features["vol_expansion"] = 1.0
+
+            # ADX slope: is momentum strengthening or fading?
+            # Positive = trend accelerating; negative = trend weakening.
+            if len(prices) >= 20 and len(highs) >= 20 and len(lows) >= 20:
+                _adx_now = _adx(highs, lows, prices, period=14)
+                _adx_5ago = _adx(highs[:-5], lows[:-5], prices[:-5], period=14) if len(prices) > 19 else _adx_now
+                features["adx_slope"] = float(np.clip(_adx_now - _adx_5ago, -30.0, 30.0))
+            else:
+                features["adx_slope"] = 0.0
+
+            # Volume surge: mean volume of last 3 bars vs 20-day avg.
+            # > 1.5 = institutional participation; < 0.7 = low-conviction move.
+            if len(volumes) >= 20:
+                _avg_vol20 = float(np.mean(volumes[-20:]))
+                _surge_vol = float(np.mean(volumes[-3:]))
+                features["volume_surge_3d"] = float(np.clip(_surge_vol / max(_avg_vol20, 1e-9), 0.1, 10.0))
+            else:
+                features["volume_surge_3d"] = 1.0
+
+            # Consolidation position: where is price within its recent 20-day range?
+            # 0 = at 20d low (potential base); 1 = at 20d high (breakout zone).
+            if len(prices) >= 20:
+                _h20 = float(highs[-20:].max())
+                _l20 = float(lows[-20:].min())
+                _range20 = max(_h20 - _l20, 1e-9)
+                features["consolidation_position"] = float(np.clip((prices[-1] - _l20) / _range20, 0.0, 1.0))
+            else:
+                features["consolidation_position"] = 0.5
+
+        except Exception:
+            features.setdefault("vol_expansion", 1.0)
+            features.setdefault("adx_slope", 0.0)
+            features.setdefault("volume_surge_3d", 1.0)
+            features.setdefault("consolidation_position", 0.5)
+
+        # ── 33. WorldQuant 101 formulaic alphas (subset, OHLCV-only) ─────────────
+        # Kakushadze (2016) arxiv:1601.00991 — production-grade alpha factors.
+        # Using a curated 15 that target 5-20 day momentum/reversal/volume patterns.
+        try:
+            _c = prices       # close prices array
+            _h = highs
+            _l = lows
+            _o = opens if len(opens) == len(_c) else _c
+            _v = volumes
+
+            def _ts_rank(arr, n):
+                """Rank of last value among trailing n values, scaled to [0,1]."""
+                if len(arr) < n:
+                    return 0.5
+                window = arr[-n:]
+                return float(np.sum(window < window[-1])) / (n - 1 + 1e-9)
+
+            def _ts_corr(a, b, n):
+                """Pearson correlation of trailing n values."""
+                if len(a) < n or len(b) < n:
+                    return 0.0
+                x, y = a[-n:], b[-n:]
+                if np.std(x) < 1e-9 or np.std(y) < 1e-9:
+                    return 0.0
+                return float(np.corrcoef(x, y)[0, 1])
+
+            def _ts_stddev(arr, n):
+                return float(np.std(arr[-n:])) if len(arr) >= n else 0.0
+
+            def _rank_arr(arr):
+                """Cross-sectional rank stub — for single-stock use, returns ts_rank."""
+                return _ts_rank(arr, min(len(arr), 20))
+
+            _rets = np.diff(np.log(np.where(_c > 0, _c, 1e-9)))
+
+            # Alpha003: -corr(rank(open), rank(volume), 10) — open-volume divergence
+            wq_a3 = -_ts_corr(_o, _v, 10)
+
+            # Alpha006: -corr(open, volume, 10) — raw open-volume momentum
+            wq_a6 = -_ts_corr(_o, _v, 10) if len(_o) >= 10 else 0.0
+
+            # Alpha012: sign(Δvol) * (-Δclose) — volume-direction reversal
+            if len(_c) >= 2 and len(_v) >= 2:
+                wq_a12 = float(np.sign(_v[-1] - _v[-2]) * -(_c[-1] - _c[-2]))
+                wq_a12 = float(np.clip(wq_a12 / max(abs(_c[-1]), 1e-9), -0.1, 0.1))
+            else:
+                wq_a12 = 0.0
+
+            # Alpha033: rank(-(1 - open/close)) — intraday reversal strength
+            if len(_c) >= 5 and len(_o) >= 5 and _c[-1] > 0:
+                _oc_ratios = np.array([-(1 - o / c) for o, c in zip(_o[-20:], _c[-20:]) if c > 0])
+                wq_a33 = _ts_rank(_oc_ratios, min(len(_oc_ratios), 10))
+            else:
+                wq_a33 = 0.5
+
+            # Alpha034: rank(1 - rank(std(ret,2)/std(ret,5))) + rank(1 - rank(Δclose))
+            if len(_rets) >= 5:
+                _std2 = float(np.std(_rets[-2:])) if len(_rets) >= 2 else 0.0
+                _std5 = float(np.std(_rets[-5:])) if len(_rets) >= 5 else 1e-9
+                _ratio = _std2 / max(_std5, 1e-9)
+                _dc = _rets[-1] if len(_rets) >= 1 else 0.0
+                wq_a34 = float(np.clip(1.0 - _ratio - _dc, -2.0, 2.0))
+            else:
+                wq_a34 = 0.0
+
+            # Alpha035: ts_rank(vol,32) * (1 - ts_rank(high-low range, 16)) * (1 - ts_rank(ret,32))
+            # High volume + low range + low return → pending breakout signal
+            if len(_v) >= 32 and len(_rets) >= 32:
+                _hl_range = _h - _l
+                wq_a35 = (
+                    _ts_rank(_v, 32)
+                    * (1.0 - _ts_rank(_hl_range, 16))
+                    * (1.0 - _ts_rank(_rets, 32))
+                )
+            else:
+                wq_a35 = 0.0
+
+            # Alpha040: -rank(std(high,10)) * corr(high,volume,10)
+            if len(_h) >= 10:
+                _std_h10 = _ts_stddev(_h, 10) / max(_c[-1], 1e-9)
+                _corr_hv10 = _ts_corr(_h, _v, 10)
+                wq_a40 = float(np.clip(-_std_h10 * _corr_hv10, -0.5, 0.5))
+            else:
+                wq_a40 = 0.0
+
+            # Alpha043: (volume/adv20) * (-Δclose_7d) — volume-amplified 7d reversal
+            if len(_c) >= 8 and len(_v) >= 20:
+                _adv20 = float(np.mean(_v[-20:]))
+                _vol_ratio = float(_v[-1]) / max(_adv20, 1)
+                _delta7 = (_c[-1] - _c[-8]) / max(_c[-8], 1e-9)
+                wq_a43 = float(np.clip(_vol_ratio * -_delta7, -1.0, 1.0))
+            else:
+                wq_a43 = 0.0
+
+            # Alpha044: -corr(high, rank(volume), 5) — high-volume divergence signal
+            wq_a44 = float(np.clip(-_ts_corr(_h, _v, 5), -1.0, 1.0)) if len(_h) >= 5 else 0.0
+
+            # Alpha053: -delta(((close-low)-(high-close))/(close-low+ε), 9)
+            # Negative momentum of money-flow ratio (stochastic-like)
+            if len(_c) >= 11 and len(_h) >= 11 and len(_l) >= 11:
+                def _mfr(i):
+                    hl = _h[i] - _l[i]
+                    return (((_c[i] - _l[i]) - (_h[i] - _c[i])) / max(hl, 1e-9))
+                wq_a53 = float(np.clip(-(_mfr(-1) - _mfr(-10)), -1.0, 1.0))
+            else:
+                wq_a53 = 0.0
+
+            # Alpha055: -corr(rank((close-tsmin(low,12))/(tsmax(high,12)-tsmin(low,12))), rank(vol), 6)
+            # Rank-volume correlation of normalized price position — stochastic-volume divergence
+            if len(_c) >= 12 and len(_h) >= 12 and len(_l) >= 12 and len(_v) >= 6:
+                _ts_min_low = float(np.min(_l[-12:]))
+                _ts_max_hi = float(np.max(_h[-12:]))
+                _range12 = max(_ts_max_hi - _ts_min_low, 1e-9)
+                _norm_pos = np.array([(_c[i] - _ts_min_low) / _range12 for i in range(-12, 0)])
+                wq_a55 = float(np.clip(-_ts_corr(_norm_pos, _v[-12:], 6), -1.0, 1.0))
+            else:
+                wq_a55 = 0.0
+
+            # Alpha004: -ts_rank(rank(low), 9) — low-price momentum reversal
+            wq_a4 = float(1.0 - _ts_rank(_l, 9)) if len(_l) >= 9 else 0.5
+
+            # Alpha046: acceleration of 10d momentum (decay signal)
+            # Compares (delay20-delay10)/10 vs (delay10-close)/10; negative accel = reversal
+            if len(_c) >= 21:
+                _d20 = _c[-21]
+                _d10 = _c[-11]
+                _now = _c[-1]
+                _accel = ((_d20 - _d10) / 10.0) - ((_d10 - _now) / 10.0)
+                wq_a46 = float(np.clip(-_accel / max(abs(_now), 1e-9), -0.1, 0.1))
+            else:
+                wq_a46 = 0.0
+
+            # Alpha054: intraday body vs range — gap/reversal signal
+            if len(_c) >= 5 and len(_o) >= 5 and len(_h) >= 5 and len(_l) >= 5:
+                _hl = _h[-1] - _l[-1]
+                _oc = abs(_o[-1] - _c[-1])
+                wq_a54 = float(np.clip((_l[-1] - _c[-1]) / max(_hl, 1e-9), -1.0, 0.0))
+            else:
+                wq_a54 = 0.0
+
+            features["wq_alpha3"] = float(np.clip(wq_a3, -1.0, 1.0))
+            features["wq_alpha4"] = float(np.clip(wq_a4, 0.0, 1.0))
+            features["wq_alpha6"] = float(np.clip(wq_a6, -1.0, 1.0))
+            features["wq_alpha12"] = wq_a12
+            features["wq_alpha33"] = wq_a33
+            features["wq_alpha34"] = wq_a34
+            features["wq_alpha35"] = wq_a35
+            features["wq_alpha40"] = wq_a40
+            features["wq_alpha43"] = wq_a43
+            features["wq_alpha44"] = wq_a44
+            features["wq_alpha46"] = wq_a46
+            features["wq_alpha53"] = wq_a53
+            features["wq_alpha54"] = wq_a54
+            features["wq_alpha55"] = wq_a55
+        except Exception as exc:
+            logger.debug("WorldQuant alphas failed: %s", exc)
+            for _k in ["wq_alpha3","wq_alpha4","wq_alpha6","wq_alpha12","wq_alpha33",
+                        "wq_alpha34","wq_alpha35","wq_alpha40","wq_alpha43","wq_alpha44",
+                        "wq_alpha46","wq_alpha53","wq_alpha54","wq_alpha55"]:
+                features.setdefault(_k, 0.0)
+
+        # ── 34. Short-term reversal signals ──────────────────────────────────────
+        # 5-day price reversal: prior losers tend to revert within 10 days.
+        # Volume-weighted reversal is more reliable (high-vol selloffs revert more).
+        try:
+            if len(prices) >= 6:
+                _ret5 = float((prices[-1] - prices[-6]) / max(prices[-6], 1e-9))
+                features["reversal_5d"] = float(np.clip(-_ret5, -0.2, 0.2))
+            else:
+                features["reversal_5d"] = 0.0
+
+            # Volume-weighted reversal: weight the 5d return by relative volume
+            if len(prices) >= 6 and len(volumes) >= 20:
+                _adv20 = float(np.mean(volumes[-20:]))
+                _recent_vol_ratio = float(np.mean(volumes[-5:])) / max(_adv20, 1)
+                features["reversal_5d_vol_weighted"] = float(
+                    np.clip(-_ret5 * _recent_vol_ratio, -0.5, 0.5)
+                ) if len(prices) >= 6 else 0.0
+            else:
+                features["reversal_5d_vol_weighted"] = 0.0
+
+            # 3-day micro-reversal (captures even shorter noise reversion)
+            if len(prices) >= 4:
+                _ret3 = float((prices[-1] - prices[-4]) / max(prices[-4], 1e-9))
+                features["reversal_3d"] = float(np.clip(-_ret3, -0.15, 0.15))
+            else:
+                features["reversal_3d"] = 0.0
+        except Exception as exc:
+            logger.debug("Reversal features failed: %s", exc)
+            features.setdefault("reversal_5d", 0.0)
+            features.setdefault("reversal_5d_vol_weighted", 0.0)
+            features.setdefault("reversal_3d", 0.0)
+
+        # ── 35. VRP, beta, opex calendar, earnings drift ─────────────────────────
+
+        # 35a. Volatility Risk Premium: implied vol minus 20d realized vol.
+        # High VRP = expensive options relative to realised movement → mean-reversion signal.
+        try:
+            if len(prices) >= 21:
+                _log_rets = np.diff(np.log(np.where(prices > 0, prices, 1e-9)))
+                _realized_vol_20d = float(np.std(_log_rets[-20:])) * np.sqrt(252)
+            else:
+                _realized_vol_20d = 0.0
+            _iv_atm = float(features.get("options_iv_atm", 0.0))
+            # VRP only meaningful when we have live IV; clip to avoid outliers
+            features["vrp"] = float(np.clip(_iv_atm - _realized_vol_20d, -0.5, 0.5))
+            features["realized_vol_20d"] = float(np.clip(_realized_vol_20d, 0.0, 2.0))
+        except Exception as exc:
+            logger.debug("VRP features failed for %s: %s", symbol, exc)
+            features["vrp"] = 0.0
+            features["realized_vol_20d"] = 0.0
+
+        # 35b. Days to next monthly options expiration (3rd Friday of each month).
+        # Gamma-pinning compresses stocks before expiration; post-expiry release drives moves.
+        try:
+            from datetime import date as _date, timedelta as _td
+            _ref = as_of_date if as_of_date is not None else _date.today()
+
+            def _next_opex(d):
+                # Find 3rd Friday of current month; if past, use next month
+                for month_offset in range(3):
+                    if month_offset == 0:
+                        y, m = d.year, d.month
+                    else:
+                        m = d.month + month_offset
+                        y = d.year + (m - 1) // 12
+                        m = ((m - 1) % 12) + 1
+                    # 3rd Friday: find first Friday then +14 days
+                    first_day = _date(y, m, 1)
+                    days_to_friday = (4 - first_day.weekday()) % 7
+                    third_friday = first_day + _td(days=days_to_friday + 14)
+                    if third_friday >= d:
+                        return third_friday
+                return d + _td(days=7)  # fallback
+
+            _opex = _next_opex(_ref)
+            _days_to_opex = (_opex - _ref).days
+            features["days_to_opex"] = float(np.clip(_days_to_opex, 0, 30))
+            # Binary flag: within 3 days of expiration (gamma pin zone)
+            features["near_opex"] = 1.0 if _days_to_opex <= 3 else 0.0
+        except Exception as exc:
+            logger.debug("Opex calendar failed for %s: %s", symbol, exc)
+            features["days_to_opex"] = 15.0
+            features["near_opex"] = 0.0
+
+        # 35c. Rolling 252-day beta vs SPY.
+        # Low-beta stocks have systematic edge (Betting Against Beta, Sharpe 0.594).
+        # Also used as risk-adjustment context for momentum signals.
+        try:
+            if spy_returns is not None and len(spy_returns) >= 60 and len(prices) >= 61:
+                _stock_rets = np.diff(np.log(np.where(prices > 0, prices, 1e-9)))
+                _n = min(252, len(_stock_rets), len(spy_returns))
+                _sr = _stock_rets[-_n:]
+                _mr = spy_returns[-_n:]
+                if len(_sr) == len(_mr) and np.std(_mr) > 1e-9:
+                    _cov = float(np.cov(_sr, _mr)[0, 1])
+                    _var_m = float(np.var(_mr))
+                    _beta = float(np.clip(_cov / _var_m, -3.0, 3.0))
+                else:
+                    _beta = 1.0
+            else:
+                _beta = 1.0
+            features["beta_252d"] = _beta
+            # Beta deviation from 1.0: how much this stock amplifies/dampens market moves
+            features["beta_deviation"] = float(np.clip(abs(_beta - 1.0), 0.0, 2.0))
+        except Exception as exc:
+            logger.debug("Beta features failed for %s: %s", symbol, exc)
+            features["beta_252d"] = 1.0
+            features["beta_deviation"] = 0.0
+
+        # 35d. Earnings drift signal: decaying directional signal post-announcement.
+        # sign(surprise) × decay(days_since) captures ongoing PEAD (post-earnings drift).
+        # Fades to 0 after ~30 days, strongest in first 1-5 days after announcement.
+        try:
+            _surprise = float(features.get("earnings_surprise_1q", features.get("earnings_surprise", 0.0)))
+            _days_since = float(features.get("days_since_earnings", features.get("fmp_days_since_earnings", 90.0)))
+            _days_since = max(_days_since, 1.0)
+            # Exponential decay: half-life ~7 days; zero by day 30
+            _decay = float(np.exp(-_days_since / 7.0))
+            features["earnings_drift_signal"] = float(np.clip(np.sign(_surprise) * _decay, -1.0, 1.0))
+            # Interaction: large surprise + recent = strong drift
+            features["earnings_pead_strength"] = float(np.clip(_surprise * _decay, -0.5, 0.5))
+        except Exception as exc:
+            logger.debug("Earnings drift failed for %s: %s", symbol, exc)
+            features["earnings_drift_signal"] = 0.0
+            features["earnings_pead_strength"] = 0.0
 
         return features

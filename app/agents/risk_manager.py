@@ -59,7 +59,9 @@ class RiskManager(BaseAgent):
 
         while self.status == "running":
             try:
-                proposal = self.get_message(TRADE_PROPOSALS_QUEUE, timeout=5)
+                proposal = await asyncio.to_thread(
+                    self.get_message, TRADE_PROPOSALS_QUEUE, 3
+                )
                 if proposal is None:
                     await asyncio.sleep(0)  # yield control
                     continue

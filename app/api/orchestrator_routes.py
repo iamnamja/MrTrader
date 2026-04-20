@@ -170,26 +170,13 @@ async def trigger_one_cycle():
         try:
             pm = orchestrator.agents.get("portfolio_manager")
             if pm:
-                _log("INFO", "PM: running instrument selection")
+                _log("INFO", "PM: running instrument selection (v37 LambdaRank)")
                 await pm.select_instruments()
+                _log("INFO", "PM: proposals sent to trade_proposals queue — Risk Manager + Trader will pick up automatically")
             else:
-                _log("WARNING", "PM agent not registered")
+                _log("WARNING", "PM agent not registered — start the app first")
 
-            risk = orchestrator.agents.get("risk_manager")
-            if risk:
-                _log("INFO", "RiskManager: processing proposals")
-                await risk.process_proposals()
-            else:
-                _log("WARNING", "Risk agent not registered — skipping")
-
-            trader = orchestrator.agents.get("trader")
-            if trader:
-                _log("INFO", "Trader: processing approved trades")
-                await trader.process_approved_trades()
-            else:
-                _log("WARNING", "Trader agent not registered — skipping")
-
-            _log("INFO", "Manual cycle complete")
+            _log("INFO", "Manual cycle complete — monitor logs for Risk/Trader activity")
         except Exception as exc:
             logger.error("Manual cycle error: %s", exc)
             _log("ERROR", f"Manual cycle failed: {exc}")

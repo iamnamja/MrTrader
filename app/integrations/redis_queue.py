@@ -14,7 +14,11 @@ class RedisQueue:
     def __init__(self, url: str = None):
         self.url = url or settings.redis_url
         try:
-            self.redis_client = redis.from_url(self.url, decode_responses=True)
+            self.redis_client = redis.from_url(
+                self.url, decode_responses=True,
+                socket_connect_timeout=3,
+                # No socket_timeout here — blpop needs to hold the socket open for its full timeout duration
+            )
             self.redis_client.ping()
             logger.info("Connected to Redis")
         except Exception as e:
@@ -143,12 +147,18 @@ class RedisQueue:
             return 0
 
     def health_check(self) -> bool:
-        """Check if Redis is accessible"""
+        """Check if Redis is accessible using a short-timeout probe connection."""
         try:
-            self.redis_client.ping()
+            import redis as _redis
+            probe = _redis.from_url(
+                self.url, decode_responses=True,
+                socket_timeout=2, socket_connect_timeout=2,
+            )
+            probe.ping()
+            probe.close()
             return True
         except Exception as e:
-            logger.error(f"Redis health check failed: {e}")
+            logger.warning(f"Redis health check failed: {e}")
             return False
 
 

@@ -35,6 +35,7 @@ ATR_TARGET_MULT = 4.0
 TRAIL_ACTIVATION = 0.04     # start trailing once up 4%
 TRAIL_PCT = 0.03            # trail 3% below highest close
 MOMENTUM_LOOKBACK = 63      # bars (~3 months on daily)
+ML_SCORE_THRESHOLD = 0.55   # LambdaRank confidence gate for ML_RANK signal
 
 
 def _get_params(db=None) -> dict:
@@ -97,6 +98,7 @@ def generate_signal(
     bars: pd.DataFrame,
     check_earnings: bool = True,
     check_regime: bool = True,
+    ml_score: Optional[float] = None,
     db=None,
 ) -> SignalResult:
     """
@@ -201,6 +203,8 @@ def generate_signal(
         return _no_signal
 
     # ── Entry signals ─────────────────────────────────────────────────────────
+    ml_triggered = ml_score is not None and ml_score >= ML_SCORE_THRESHOLD
+
     ema_crossover = (
         ema_fast > ema_slow and
         ema_fast_prev <= ema_slow_prev and
@@ -212,7 +216,7 @@ def generate_signal(
         price > ema_fast
     )
 
-    if not (ema_crossover or rsi_dip):
+    if not (ml_triggered or ema_crossover or rsi_dip):
         return _no_signal
 
     # Earnings blackout: suppress BUY signals near earnings releases
@@ -225,7 +229,7 @@ def generate_signal(
         except Exception as exc:
             logger.debug("Earnings filter error for %s: %s", symbol, exc)
 
-    signal_type = "EMA_CROSSOVER" if ema_crossover else "RSI_DIP"
+    signal_type = "ML_RANK" if ml_triggered else ("EMA_CROSSOVER" if ema_crossover else "RSI_DIP")
     stop = round(price - p["ATR_STOP_MULT"] * atr_val, 4)
     target = round(price + p["ATR_TARGET_MULT"] * atr_val, 4)
 
@@ -266,6 +270,7 @@ def check_exit(
     highest_price: float,
     bars_held: int,
     min_hold_bars: int = 3,
+    max_hold_bars: int = 10,
     db=None,
 ) -> tuple[bool, str, float]:
     """
@@ -278,6 +283,11 @@ def check_exit(
     # Never exit within the minimum hold period
     if bars_held < min_hold_bars:
         return False, "", stop_price
+
+    # Force-close at max hold horizon (aligns with ML training window)
+    if bars_held >= max_hold_bars:
+        pnl_pct = (current_price - entry_price) / entry_price
+        return True, f"max_hold_{max_hold_bars}d (P&L={pnl_pct*100:+.1f}%)", stop_price
 
     # Update trailing stop
     pnl_pct = (current_price - entry_price) / entry_price

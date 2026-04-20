@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import pandas as pd
 from alpaca.trading.client import TradingClient
@@ -8,7 +9,7 @@ from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -239,37 +240,60 @@ class AlpacaClient:
 
         Args:
             symbol: Stock symbol
-            timeframe: '1Min', '5Min', '15Min', '1H', '1D'
+            timeframe: '1Min', '5Min', '15Min', '1H', '1D', '1Day'
             limit: Number of bars to fetch
         """
         try:
-            # Map timeframe strings to TimeFrame enum
             timeframe_map = {
-                "1Min": TimeFrame.MINUTE,
-                "5Min": TimeFrame.FIVE_MIN,
-                "15Min": TimeFrame.FIFTEEN_MIN,
-                "1H": TimeFrame.HOUR,
-                "1D": TimeFrame.DAY,
+                "1Min": TimeFrame.Minute,
+                "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+                "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+                "1H": TimeFrame.Hour,
+                "1D": TimeFrame.Day,
+                "1Day": TimeFrame.Day,
             }
 
-            tf = timeframe_map.get(timeframe, TimeFrame.FIVE_MIN)
+            tf = timeframe_map.get(timeframe, TimeFrame(5, TimeFrameUnit.Minute))
 
-            request = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=tf,
-                limit=limit,
-            )
+            # Alpaca ignores `limit` for daily bars; use start date instead
+            is_daily = timeframe in ("1D", "1Day")
+            if is_daily:
+                start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
+                request = StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=tf,
+                    start=start,
+                )
+            else:
+                request = StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=tf,
+                    limit=limit,
+                )
 
             _rate_limiter.acquire()
             bars = self.data_client.get_stock_bars(request)
 
-            if symbol in bars:
-                df = bars[symbol].df
-                df.index.name = "timestamp"
-                return df
-            else:
-                logger.warning(f"No data found for {symbol}")
-                return pd.DataFrame()
+            try:
+                symbol_bars = bars[symbol]
+                if symbol_bars:
+                    records = [
+                        {
+                            "open": b.open, "high": b.high, "low": b.low,
+                            "close": b.close, "volume": b.volume,
+                            "vwap": getattr(b, "vwap", None),
+                            "trade_count": getattr(b, "trade_count", None),
+                        }
+                        for b in symbol_bars
+                    ]
+                    timestamps = [b.timestamp for b in symbol_bars]
+                    df = pd.DataFrame(records, index=pd.DatetimeIndex(timestamps, name="timestamp"))
+                    # Keep only the last `limit` rows
+                    return df.tail(limit)
+            except (KeyError, TypeError):
+                pass
+            logger.warning(f"No data found for {symbol}")
+            return pd.DataFrame()
 
         except Exception as e:
             logger.error(f"Error fetching bars for {symbol}: {e}")
@@ -280,16 +304,18 @@ class AlpacaClient:
         try:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame.MINUTE,
+                timeframe=TimeFrame.Minute,
                 limit=1,
             )
             _rate_limiter.acquire()
             bars = self.data_client.get_stock_bars(request)
 
-            if symbol in bars:
-                df = bars[symbol].df
-                if not df.empty:
-                    return float(df["close"].iloc[-1])
+            try:
+                symbol_bars = bars[symbol]
+                if symbol_bars:
+                    return float(symbol_bars[-1].close)
+            except (KeyError, TypeError, IndexError):
+                pass
             return None
         except Exception as e:
             logger.error(f"Error fetching latest price for {symbol}: {e}")

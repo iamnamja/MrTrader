@@ -125,7 +125,15 @@ function MacroWidget() {
   return (
     <div style={s.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={s.cardTitle}>Market Regime & Macro</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={s.cardTitle}>Market Regime & Macro</div>
+          {regime.fetched_at && (() => {
+            const ageSec = Math.round((Date.now() - new Date(regime.fetched_at!).getTime()) / 1000)
+            const label = ageSec < 60 ? `${ageSec}s ago` : ageSec < 3600 ? `${Math.round(ageSec/60)}m ago` : `${Math.round(ageSec/3600)}h ago`
+            // VIX is ~15min delayed by yfinance free tier; FRED data is weekly/monthly
+            return <span style={{ fontSize: 10, color: C.muted }}>VIX ~15min delayed · FRED updated {label}</span>
+          })()}
+        </div>
         <span style={{
           padding: '3px 10px', borderRadius: 10, fontSize: 10, fontWeight: 700,
           background: `${regimeColor}1a`, color: regimeColor, border: `1px solid ${regimeColor}4d`,
@@ -175,19 +183,44 @@ function MacroWidget() {
 }
 
 // ── Overview Panel ────────────────────────────────────────────────────────────
-function OverviewPanel({ summary, health, pnlHistory, decisions }: {
+type ChartRange = '1d' | '1w' | '1m'
+
+function OverviewPanel({ summary, health, decisions }: {
   summary: Summary; health: Health | null
-  pnlHistory: { time: string; pnl: number }[]
   decisions: Decision[]
 }) {
+  const [positions, setPositions] = useState<import('./types').Position[]>([])
+  const [chartRange, setChartRange] = useState<ChartRange>('1d')
+  const [equityHistory, setEquityHistory] = useState<{ time: string; pnl: number }[]>([])
+
+  useEffect(() => {
+    fetch('/api/dashboard/positions').then(r => r.json()).then((arr: import('./types').Position[]) => {
+      setPositions(Array.isArray(arr) ? arr : [])
+    }).catch(() => {})
+  }, [summary.timestamp])
+
+  useEffect(() => {
+    fetch(`/api/dashboard/metrics/equity-history?range=${chartRange}`)
+      .then(r => r.json())
+      .then(pts => setEquityHistory(Array.isArray(pts) ? pts : []))
+      .catch(() => {})
+  }, [chartRange, summary.timestamp])
+
   const mode = health?.trading_mode ?? health?.mode ?? 'paper'
   const status = health?.status ?? health?.system_status ?? 'unknown'
   const checks = health?.checks ?? { database: health?.database_ok, redis: health?.redis_ok, alpaca: health?.alpaca_ok }
 
+  const lastSigLabel = (() => {
+    const h = summary.last_signal_age_hours
+    if (h == null) return '—'
+    if (h < 1) return `${Math.round(h * 60)}m ago`
+    return `${h.toFixed(0)}h ago`
+  })()
+
   return (
     <div>
       {/* Health pills */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
         <Pill label={mode.toUpperCase()} ok={mode !== 'live'} warn={mode !== 'live'} />
         <Pill label={status.toUpperCase()} ok={status === 'healthy'} />
         {Object.entries(checks ?? {}).map(([k, v]) => {
@@ -195,45 +228,130 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
           const names: Record<string, string> = { database: 'DB', redis: 'Redis', alpaca: 'Alpaca' }
           return <Pill key={k} label={(names[k] ?? k).toUpperCase()} ok={!!ok} />
         })}
+        {summary.timestamp && (() => {
+          const raw = summary.timestamp!
+          const ts = new Date(raw.endsWith('Z') ? raw : raw + 'Z')
+          const ageMs = Date.now() - ts.getTime()
+          const ageSec = Math.round(ageMs / 1000)
+          const cached = ageMs > 20_000
+          const label = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec/60)}m ago`
+          return (
+            <span style={{ fontSize: 10, color: cached ? C.yellow : C.green, marginLeft: 4 }}>
+              {cached ? '○ cached' : '● live'} · {label}
+            </span>
+          )
+        })()}
       </div>
 
       {/* KPI strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
         <KpiCard label="Account Value" value={fmt$(summary.account_value ?? summary.portfolio_value ?? summary.equity)} sub="Portfolio equity" />
         <KpiCard label="Daily P&L" value={fmt$(summary.daily_pnl ?? summary.pnl_today)}
           sub={(summary.daily_pnl_pct ?? summary.pnl_today_pct) != null ? fmtPct(summary.daily_pnl_pct ?? summary.pnl_today_pct) : undefined}
           color={clr(summary.daily_pnl ?? summary.pnl_today)} />
+        <KpiCard label="Total P&L" value={fmt$(summary.total_pnl)}
+          sub={summary.total_pnl_pct != null ? fmtPct(summary.total_pnl_pct) : undefined}
+          color={clr(summary.total_pnl)} />
         <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
-        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'} sub="All closed trades" />
+        <KpiCard label="Trades Today" value={summary.trades_today_count?.toString() ?? '0'} sub="Orders executed" />
+        <KpiCard label="Capital Deployed"
+          value={summary.capital_deployed_pct != null ? summary.capital_deployed_pct.toFixed(1) + '%' : '—'}
+          sub={summary.capital_deployed != null ? fmt$(summary.capital_deployed) + ' in market' : undefined} />
+        <KpiCard label="Win Rate" value={summary.win_rate != null ? summary.win_rate.toFixed(1) + '%' : '—'}
+          sub={summary.win_rate != null ? 'All closed trades' : 'No closed trades yet'} />
         <KpiCard label="Max Drawdown" value={summary.max_drawdown_pct != null ? summary.max_drawdown_pct.toFixed(2) + '%' : '—'}
           color={summary.max_drawdown_pct != null ? (summary.max_drawdown_pct > 5 ? C.red : summary.max_drawdown_pct > 3 ? C.yellow : C.green) : undefined}
-          sub="From peak equity" />
+          sub={summary.max_drawdown_pct != null ? 'From peak equity' : 'No closed trades yet'} />
+        <KpiCard label="Last Signal" value={lastSigLabel}
+          sub={summary.last_signal_type ?? 'No signal yet'}
+          color={summary.last_signal_type ? C.accent : C.muted} />
       </div>
 
-      {/* Charts + decisions + macro */}
+      {/* Equity curve (left) + Open Positions (right) */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={s.card}>
-          <div style={s.cardTitle}>Equity Curve (P&L)</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={pnlHistory}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={s.cardTitle}>Equity Curve (P&L)</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['1d', '1w', '1m'] as ChartRange[]).map(r => (
+                <button key={r} onClick={() => setChartRange(r)} style={{
+                  padding: '2px 10px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                  cursor: 'pointer', border: `1px solid ${chartRange === r ? C.accent : C.border}`,
+                  background: chartRange === r ? `${C.accent}22` : 'transparent',
+                  color: chartRange === r ? C.accent : C.muted,
+                }}>{r.toUpperCase()}</button>
+              ))}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={210}>
+            <LineChart data={equityHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.04)" />
               <XAxis dataKey="time" tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis tick={{ fill: C.muted, fontSize: 10 }} tickLine={false} axisLine={false}
                 tickFormatter={v => '$' + v.toFixed(0)} />
               <Tooltip contentStyle={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 11 }}
-                labelStyle={{ color: C.muted }} itemStyle={{ color: C.green }} />
+                labelStyle={{ color: C.muted }} itemStyle={{ color: C.green }}
+                formatter={(v: number) => ['$' + v.toFixed(2), 'P&L']} />
               <Line type="monotone" dataKey="pnl" stroke={C.green} strokeWidth={1.5}
                 dot={false} fill="rgba(34,197,94,.07)" />
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <div style={s.card}>
-          <div style={s.cardTitle}>Recent Decisions</div>
-          <DecisionsTable rows={decisions.slice(0, 10)} />
+        <div style={{ ...s.card, display: 'flex', flexDirection: 'column' }}>
+          <div style={s.cardTitle}>Open Positions</div>
+          {positions.length === 0
+            ? <div style={{ color: C.muted, fontSize: 11, padding: '16px 0' }}>No open positions</div>
+            : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead><tr>
+                  {['Symbol', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                    <th key={h} style={s.th}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {positions.map((p, i) => {
+                    const qty = p.quantity ?? p.qty ?? 0
+                    const entry = p.avg_price ?? p.avg_entry_price ?? 0
+                    const cur = p.current_price ?? 0
+                    const marketValue = cur * qty
+                    const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
+                    const retPct = p.pnl_unrealized_pct ?? p.unrealized_plpc ?? (entry > 0 ? (cur - entry) / entry * 100 : 0)
+                    const retColor = retPct > 0 ? C.green : retPct < 0 ? C.red : C.muted
+                    const stop = p.stop_price ?? null
+                    const target = p.target_price ?? null
+                    const sig = p.signal_type ?? null
+                    return (
+                      <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
+                        <td style={s.td}>{qty}</td>
+                        <td style={s.td}>{fmt$(marketValue)}</td>
+                        <td style={s.td}>{fmt$(entry)}</td>
+                        <td style={s.td}>{fmt$(cur)}</td>
+                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
+                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
+                        <td style={{ ...s.td, color: C.muted }}>{stop != null ? fmt$(stop) : '—'}</td>
+                        <td style={{ ...s.td, color: C.muted }}>{target != null ? fmt$(target) : '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          }
         </div>
       </div>
-      <MacroWidget />
+
+      {/* Macro (left) + Recent Decisions (right) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <MacroWidget />
+        <div style={{ ...s.card, display: 'flex', flexDirection: 'column' }}>
+          <div style={s.cardTitle}>Recent Decisions</div>
+          <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
+            <DecisionsTable rows={decisions.slice(0, 50)} />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -426,6 +544,24 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
   )
 }
 
+function decisionColor(type: string | undefined): string {
+  const t = (type ?? '').toUpperCase()
+  if (t.includes('BUY') || t.includes('APPROVED') || t.includes('OPEN')) return C.green
+  if (t.includes('SELL') || t.includes('CLOSE') || t.includes('REJECT') || t.includes('FORCE')) return C.red
+  if (t.includes('WARN') || t.includes('RISK')) return C.yellow
+  return C.muted
+}
+
+function extractSymbol(d: Decision): string {
+  if (d.symbol) return d.symbol
+  const r = d.reasoning as Record<string, unknown> | undefined
+  if (!r) return '—'
+  if (typeof r.symbol === 'string') return r.symbol
+  if (Array.isArray(r.symbols) && r.symbols.length) return (r.symbols as string[]).join(', ')
+  if (typeof r.ticker === 'string') return r.ticker
+  return '—'
+}
+
 function DecisionsTable({ rows }: { rows: Decision[] }) {
   if (!rows.length) {
     return <div style={{ color: C.muted, textAlign: 'center', padding: 16, fontSize: 11 }}>No decisions yet</div>
@@ -436,14 +572,21 @@ function DecisionsTable({ rows }: { rows: Decision[] }) {
         {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={s.th}>{h}</th>)}
       </tr></thead>
       <tbody>
-        {rows.map((d, i) => (
-          <tr key={i}>
-            <td style={{ ...s.td, color: C.muted }}>{fmtTs(d.timestamp)}</td>
-            <td style={s.td}>{d.agent_name ?? '—'}</td>
-            <td style={s.td}>{d.decision_type ?? '—'}</td>
-            <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{d.symbol ?? d.reasoning?.symbol ?? '—'}</td>
-          </tr>
-        ))}
+        {rows.map((d, i) => {
+          const color = decisionColor(d.decision_type)
+          const sym = extractSymbol(d)
+          return (
+            <tr key={i}>
+              <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(d.timestamp)}</td>
+              <td style={{ ...s.td, color: C.muted }}>{d.agent_name ?? '—'}</td>
+              <td style={s.td}>
+                <span style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                  background: `${color}22`, color }}>{d.decision_type ?? '—'}</span>
+              </td>
+              <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{sym}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )
@@ -1611,16 +1754,13 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null)
   const { toasts, add: toast } = useToasts()
 
-  // Load summary + health
+  // Load summary and health independently — summary renders immediately, health updates the status badge
   const loadSummary = useCallback(async () => {
-    const [summaryResult, healthResult] = await Promise.allSettled([
-      api.summary() as Promise<Summary>,
-      api.health() as Promise<Health>,
-    ])
-    if (summaryResult.status === 'fulfilled') {
-      const j = summaryResult.value
-      setSummary(j)
-      const pnlVal = j.daily_pnl ?? j.pnl_today
+    // Fire both but don't wait — each updates state as soon as it resolves
+    api.summary().then((j: unknown) => {
+      const s = j as Summary
+      setSummary(s)
+      const pnlVal = s.daily_pnl ?? s.pnl_today
       if (pnlVal != null) {
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
         setPnlHistory(h => {
@@ -1628,13 +1768,13 @@ export default function App() {
           return next.length > 60 ? next.slice(-60) : next
         })
       }
-    }
-    if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
+    }).catch(() => {})
+    api.health().then((j: unknown) => setHealth(j as Health)).catch(() => {})
   }, [])
 
   const loadDecisions = useCallback(async () => {
     try {
-      const j = await api.decisions(50) as { data?: Decision[] } | Decision[]
+      const j = await api.decisions(100) as { data?: Decision[] } | Decision[]
       setDecisions((j as { data?: Decision[] }).data ?? (j as Decision[]) ?? [])
     } catch { /* ignore */ }
   }, [])
@@ -1689,7 +1829,7 @@ export default function App() {
   useEffect(() => {
     loadSummary()
     loadDecisions()
-    const id = setInterval(() => { loadSummary(); loadDecisions() }, 15000)
+    const id = setInterval(() => { loadSummary(); loadDecisions() }, 10000)
     return () => clearInterval(id)
   }, [loadSummary, loadDecisions])
 
@@ -1715,7 +1855,7 @@ export default function App() {
       {/* Panels */}
       <div style={{ flex: 1, padding: '16px 20px', overflowY: 'auto' }}>
         {tab === 'Overview' && (
-          <OverviewPanel summary={summary} health={health} pnlHistory={pnlHistory} decisions={decisions} />
+          <OverviewPanel summary={summary} health={health} decisions={decisions} />
         )}
         {tab === 'Positions' && <PositionsPanel onRefresh={loadSummary} />}
         {tab === 'Trades' && <TradesPanel />}
