@@ -142,7 +142,8 @@ class Trader(BaseAgent):
             )
             return
 
-        result = generate_signal(symbol, bars)
+        ml_score = proposal.get("confidence")
+        result = generate_signal(symbol, bars, ml_score=ml_score)
         if not result.is_buy:
             return
 
