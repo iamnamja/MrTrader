@@ -124,23 +124,14 @@ async def get_dashboard_summary():
             except Exception:
                 return None, []
 
-        def _fetch_daily_pnl():
-            db = get_session()
-            try:
-                today = date.today().isoformat()
-                metric = db.query(RiskMetric).filter_by(date=today).first()
-                return float(metric.daily_pnl) if metric and metric.daily_pnl else 0.0
-            except Exception:
-                return 0.0
-            finally:
-                db.close()
-
-        (account, positions), daily_pnl, (win_rate, max_dd), trades_count = await asyncio.gather(
+        (account, positions), (win_rate, max_dd), trades_count = await asyncio.gather(
             asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT),
-            asyncio.to_thread(_fetch_daily_pnl),
             asyncio.to_thread(_win_rate_and_drawdown),
             asyncio.to_thread(_trades_today_count),
         )
+
+        # Daily P&L = sum of unrealized P&L on open positions (what Alpaca tracks)
+        daily_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
 
         if account is None:
             logger.warning("Alpaca unavailable for summary — returning DB-only data")
@@ -266,6 +257,28 @@ async def get_agent_decisions(limit: int = 50):
             .limit(min(limit, 200))
             .all()
         )
+        # Build trade_id → symbol map for quick lookup
+        trade_ids = [d.trade_id for d in decisions if d.trade_id is not None]
+        trade_symbols: dict = {}
+        if trade_ids:
+            trades = db.query(Trade).filter(Trade.id.in_(trade_ids)).all()
+            trade_symbols = {t.id: t.symbol for t in trades}
+
+        def _extract_symbol(d: AgentDecision) -> str | None:
+            # 1. from trade join
+            if d.trade_id and d.trade_id in trade_symbols:
+                return trade_symbols[d.trade_id]
+            # 2. from reasoning dict
+            r = d.reasoning or {}
+            for key in ("symbol", "ticker"):
+                if isinstance(r.get(key), str):
+                    return r[key]
+            syms = r.get("symbols") or r.get("selected")
+            if isinstance(syms, list) and syms:
+                first = syms[0]
+                return first if isinstance(first, str) else (first.get("symbol") if isinstance(first, dict) else None)
+            return None
+
         return [
             AgentDecisionResponse(
                 id=d.id,
@@ -274,6 +287,7 @@ async def get_agent_decisions(limit: int = 50):
                 trade_id=d.trade_id,
                 reasoning=d.reasoning,
                 timestamp=d.timestamp,
+                symbol=_extract_symbol(d),
             )
             for d in decisions
         ]

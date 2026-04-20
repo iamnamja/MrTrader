@@ -40,6 +40,7 @@ class AgentDecisionResponse(BaseModel):
     trade_id: Optional[int] = None
     reasoning: Optional[Dict[str, Any]] = None
     timestamp: datetime
+    symbol: Optional[str] = None
 
 
 class DashboardSummaryResponse(BaseModel):
