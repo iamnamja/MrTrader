@@ -120,7 +120,7 @@ class ModelTrainer:
         self._provider_name = provider
         self.label_scheme = label_scheme
         self.top_n_features = top_n_features
-        self.n_workers = n_workers if n_workers > 0 else min(os.cpu_count() or 4, 8)
+        self.n_workers = n_workers if (n_workers and n_workers > 0) else min(os.cpu_count() or 4, 8)
         self.hpo_trials = hpo_trials
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold

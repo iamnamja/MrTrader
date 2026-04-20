@@ -819,18 +819,9 @@ class LambdaRankModel:
 
         X_scaled = self.scaler.fit_transform(X)
 
-        fit_kwargs: dict = {}
-        if X_val is not None and y_val is not None and val_groups is not None:
-            X_val_scaled = self.scaler.transform(X_val)
-            from lightgbm import early_stopping, log_evaluation
-            fit_kwargs["eval_set"] = [(X_val_scaled, y_val)]
-            fit_kwargs["eval_group"] = [val_groups]
-            fit_kwargs["callbacks"] = [
-                early_stopping(early_stopping_rounds, verbose=False),
-                log_evaluation(-1),
-            ]
-
-        self.model.fit(X_scaled, y, group=groups, **fit_kwargs)
+        # LGBMRanker limits each validation query to ≤10k rows; our test set is a
+        # single large group so we skip early stopping and just train all estimators.
+        self.model.fit(X_scaled, y, group=groups)
         logger.info("LambdaRank fit done; best_iteration=%s", getattr(self.model, "best_iteration_", "n/a"))
 
         self.feature_names = feature_names
