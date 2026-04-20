@@ -109,6 +109,9 @@ class ModelTrainer:
         if model_type == "lambdarank":
             from app.ml.model import LambdaRankModel
             self.model = LambdaRankModel()
+        elif model_type == "double_ensemble":
+            from app.ml.model import DoubleEnsembleModel
+            self.model = DoubleEnsembleModel()
         elif three_stage:
             from app.ml.model import ThreeStageModel
             self.model = ThreeStageModel(model_type=model_type)
@@ -207,13 +210,10 @@ class ModelTrainer:
         val_groups = None
         if self.label_scheme == "lambdarank":
             X_train, y_train, train_groups = self._build_lambdarank_groups(X_train, y_train, meta_train)
-            # val groups: use window_idx from test meta (not available via current return signature)
-            # build approximate groups from test set meta by re-sorting if possible
-            # For simplicity, build uniform groups for val (1 group = entire test set)
-            val_groups = np.array([len(X_test)], dtype=np.int32) if len(X_test) > 0 else None
+            val_groups = None
             spw = None
-            sample_weight = None  # lambdarank doesn't use per-sample weights the same way
-            logger.info("LambdaRank: %d train groups, %d samples", len(train_groups), len(X_train))
+            sample_weight = None
+            logger.info("LambdaRank/DoubleEnsemble: %d train groups, %d samples", len(train_groups), len(X_train))
         else:
             # Correct for class imbalance (not applicable to regression labels)
             if self.label_scheme in ("return_regression",):
