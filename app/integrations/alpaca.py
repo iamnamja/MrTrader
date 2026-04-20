@@ -234,6 +234,8 @@ class AlpacaClient:
         symbol: str,
         timeframe: str = "5Min",
         limit: int = 100,
+        start=None,
+        end=None,
     ) -> pd.DataFrame:
         """
         Get historical bars (OHLCV data)
@@ -241,7 +243,9 @@ class AlpacaClient:
         Args:
             symbol: Stock symbol
             timeframe: '1Min', '5Min', '15Min', '1H', '1D', '1Day'
-            limit: Number of bars to fetch
+            limit: Number of bars to fetch (ignored for daily if start/end provided)
+            start: Optional start datetime/date
+            end: Optional end datetime/date
         """
         try:
             timeframe_map = {
@@ -255,14 +259,22 @@ class AlpacaClient:
 
             tf = timeframe_map.get(timeframe, TimeFrame(5, TimeFrameUnit.Minute))
 
-            # Alpaca ignores `limit` for daily bars; use start date instead
             is_daily = timeframe in ("1D", "1Day")
-            if is_daily:
-                start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
+            if start is not None or end is not None:
+                # Explicit date range provided
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
                     timeframe=tf,
                     start=start,
+                    end=end,
+                )
+            elif is_daily:
+                # Alpaca ignores `limit` for daily bars; use start date instead
+                _start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
+                request = StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=tf,
+                    start=_start,
                 )
             else:
                 request = StockBarsRequest(

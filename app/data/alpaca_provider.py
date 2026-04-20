@@ -100,40 +100,48 @@ class AlpacaProvider(DataProvider):
         end: datetime,
         interval_minutes: int = 5,
     ) -> dict:
-        """Alpaca supports multi-symbol requests — more efficient than looping."""
-        timeframe_map = {1: "1Min", 5: "5Min", 15: "15Min", 30: "30Min", 60: "1Hour"}
-        timeframe = timeframe_map.get(interval_minutes, "5Min")
+        """Use Alpaca multi-symbol request for efficiency."""
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from app.config import settings
+
+        tf_map = {1: TimeFrame.Minute, 5: TimeFrame(5, TimeFrameUnit.Minute),
+                  15: TimeFrame(15, TimeFrameUnit.Minute), 60: TimeFrame.Hour}
+        tf = tf_map.get(interval_minutes, TimeFrame(5, TimeFrameUnit.Minute))
+
         try:
             if start.tzinfo is None:
                 start = start.replace(tzinfo=timezone.utc)
             if end.tzinfo is None:
                 end = end.replace(tzinfo=timezone.utc)
 
-            client = self._client()
-            multi = client.get_bars(
-                symbols,
-                timeframe=timeframe,
-                start=start.isoformat(),
-                end=end.isoformat(),
+            data_client = StockHistoricalDataClient(
+                api_key=settings.alpaca_api_key,
+                secret_key=settings.alpaca_secret_key,
             )
+            req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=tf,
+                                   start=start, end=end)
+            bars_resp = data_client.get_stock_bars(req)
+
             result = {}
-            for symbol in symbols:
+            for sym in symbols:
                 try:
-                    bars = multi.get(symbol, [])
-                    df = pd.DataFrame(bars)
-                    if df.empty:
+                    sym_bars = bars_resp[sym]
+                    if not sym_bars:
                         continue
-                    df = self._normalise(df)
-                    if "t" in df.columns:
-                        df.index = pd.to_datetime(df["t"])
-                    cols = [c for c in ["open", "high", "low", "close", "volume"]
-                            if c in df.columns]
-                    result[symbol] = df[cols].astype(float)
-                except Exception:
+                    records = [{"open": b.open, "high": b.high, "low": b.low,
+                                "close": b.close, "volume": b.volume}
+                               for b in sym_bars]
+                    timestamps = [b.timestamp for b in sym_bars]
+                    df = pd.DataFrame(records, index=pd.DatetimeIndex(timestamps, name="timestamp"))
+                    result[sym] = df.astype(float)
+                except (KeyError, TypeError):
                     pass
+            logger.info("Alpaca bulk intraday: got %d / %d symbols", len(result), len(symbols))
             return result
         except Exception as exc:
-            logger.warning("Alpaca bulk intraday failed: %s — falling back", exc)
+            logger.warning("Alpaca bulk intraday failed: %s — falling back to serial", exc)
             return super().get_intraday_bars_bulk(symbols, start, end, interval_minutes)
 
     # ── Health ────────────────────────────────────────────────────────────────

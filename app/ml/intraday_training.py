@@ -5,7 +5,7 @@ Label: outcome-based — price hits +TARGET_PCT before -STOP_PCT within HOLD_BAR
 Window: each trading day is one window per stock.
 Train/test split: last TEST_FRACTION of days = test (time-based, no leakage).
 
-Data source: yfinance 5-min for training history, Alpaca for live.
+Data source: Alpaca 5-min bars (unlimited free history).
 """
 
 import logging
@@ -39,7 +39,7 @@ class IntradayModelTrainer:
     feature engineering, and XGBoost training for the intraday model.
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "yfinance"):
+    def __init__(self, model_dir: str = MODEL_DIR, provider: str = "alpaca"):
         self.model_dir = model_dir
         self.model = PortfolioSelectorModel(model_type="xgboost")
         self._provider_name = provider
