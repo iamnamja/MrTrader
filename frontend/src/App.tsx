@@ -275,39 +275,46 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <div style={s.card}>
+        <div style={{ ...s.card, display: 'flex', flexDirection: 'column' }}>
           <div style={s.cardTitle}>Open Positions</div>
           {positions.length === 0
             ? <div style={{ color: C.muted, fontSize: 11, padding: '16px 0' }}>No open positions</div>
-            : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead><tr>
-                {['Symbol', 'Qty', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
-                  <th key={h} style={s.th}>{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {positions.map((p, i) => {
-                  const qty = p.qty ?? p.quantity ?? 0
-                  const entry = p.avg_entry_price ?? p.avg_price ?? 0
-                  const cur = p.current_price ?? 0
-                  const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
-                  const retPct = p.pnl_unrealized_pct ?? p.unrealized_plpc ?? (entry > 0 ? (cur - entry) / entry * 100 : 0)
-                  const retColor = retPct > 0 ? C.green : retPct < 0 ? C.red : C.muted
-                  return (
-                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
-                      <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
-                      <td style={s.td}>{qty}</td>
-                      <td style={s.td}>{fmt$(entry)}</td>
-                      <td style={s.td}>{fmt$(cur)}</td>
-                      <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
-                      <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
-                      <td style={{ ...s.td, color: C.muted }}>{p.stop_price ? fmt$(p.stop_price) : '—'}</td>
-                      <td style={{ ...s.td, color: C.muted }}>{p.target_price ? fmt$(p.target_price) : '—'}</td>
-                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead><tr>
+                  {['Symbol', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                    <th key={h} style={s.th}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {positions.map((p, i) => {
+                    const qty = p.qty ?? p.quantity ?? 0
+                    const entry = p.avg_entry_price ?? p.avg_price ?? 0
+                    const cur = p.current_price ?? 0
+                    const marketValue = cur * qty
+                    const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
+                    const retPct = p.pnl_unrealized_pct ?? p.unrealized_plpc ?? (entry > 0 ? (cur - entry) / entry * 100 : 0)
+                    const retColor = retPct > 0 ? C.green : retPct < 0 ? C.red : C.muted
+                    const stop = p.stop_price ?? null
+                    const target = p.target_price ?? null
+                    const sig = p.signal_type ?? null
+                    return (
+                      <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
+                        <td style={s.td}>{qty}</td>
+                        <td style={s.td}>{fmt$(marketValue)}</td>
+                        <td style={s.td}>{fmt$(entry)}</td>
+                        <td style={s.td}>{fmt$(cur)}</td>
+                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
+                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
+                        <td style={{ ...s.td, color: C.muted }}>{stop != null ? fmt$(stop) : '—'}</td>
+                        <td style={{ ...s.td, color: C.muted }}>{target != null ? fmt$(target) : '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           }
         </div>
       </div>
