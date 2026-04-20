@@ -190,9 +190,8 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
 }) {
   const [positions, setPositions] = useState<import('./types').Position[]>([])
   useEffect(() => {
-    api.positions().then((j: unknown) => {
-      const arr = (j as { data?: import('./types').Position[] }).data ?? (j as import('./types').Position[]) ?? []
-      setPositions(arr)
+    fetch('/api/dashboard/positions').then(r => r.json()).then((arr: import('./types').Position[]) => {
+      setPositions(Array.isArray(arr) ? arr : [])
     }).catch(() => {})
   }, [summary.timestamp])
 
@@ -287,8 +286,8 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
                 </tr></thead>
                 <tbody>
                   {positions.map((p, i) => {
-                    const qty = p.qty ?? p.quantity ?? 0
-                    const entry = p.avg_entry_price ?? p.avg_price ?? 0
+                    const qty = p.quantity ?? p.qty ?? 0
+                    const entry = p.avg_price ?? p.avg_entry_price ?? 0
                     const cur = p.current_price ?? 0
                     const marketValue = cur * qty
                     const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
