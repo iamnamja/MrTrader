@@ -317,14 +317,19 @@ async def get_agent_decisions(limit: int = 50):
             trade_symbols = {t.id: t.symbol for t in trades}
 
         def _extract_symbol(d: AgentDecision) -> str | None:
-            # 1. from trade join
+            # 1. from trade join (TRADE_ENTERED / TRADE_EXITED)
             if d.trade_id and d.trade_id in trade_symbols:
                 return trade_symbols[d.trade_id]
-            # 2. from reasoning dict
             r = d.reasoning or {}
+            # 2. direct symbol/ticker key
             for key in ("symbol", "ticker"):
                 if isinstance(r.get(key), str):
                     return r[key]
+            # 3. nested proposal.symbol (TRADE_APPROVED from risk manager)
+            proposal = r.get("proposal")
+            if isinstance(proposal, dict) and isinstance(proposal.get("symbol"), str):
+                return proposal["symbol"]
+            # 4. symbols list or selected list (INSTRUMENTS_SELECTED)
             syms = r.get("symbols") or r.get("selected")
             if isinstance(syms, list) and syms:
                 first = syms[0]

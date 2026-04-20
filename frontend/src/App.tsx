@@ -315,9 +315,11 @@ function OverviewPanel({ summary, health, pnlHistory, decisions }: {
       {/* Macro (left) + Recent Decisions (right) */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <MacroWidget />
-        <div style={s.card}>
+        <div style={{ ...s.card, display: 'flex', flexDirection: 'column' }}>
           <div style={s.cardTitle}>Recent Decisions</div>
-          <DecisionsTable rows={decisions.slice(0, 10)} />
+          <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
+            <DecisionsTable rows={decisions.slice(0, 50)} />
+          </div>
         </div>
       </div>
     </div>
@@ -1742,7 +1744,7 @@ export default function App() {
 
   const loadDecisions = useCallback(async () => {
     try {
-      const j = await api.decisions(50) as { data?: Decision[] } | Decision[]
+      const j = await api.decisions(100) as { data?: Decision[] } | Decision[]
       setDecisions((j as { data?: Decision[] }).data ?? (j as Decision[]) ?? [])
     } catch { /* ignore */ }
   }, [])
