@@ -23,6 +23,10 @@ class RiskLimits:
     STOP_LOSS_BASE_PCT: float = 0.02           # 2% stop loss at normal volatility
     max_spread_pct: float = 0.0015             # 0.15% max bid-ask spread
     max_adtv_pct: float = 0.01                 # 1% max trade cost as fraction of 20d ADTV
+    max_correlation: float = 0.75              # max 60-day return correlation with open positions
+    max_portfolio_beta: float = 1.30           # max portfolio beta vs SPY
+    high_beta_threshold: float = 1.20          # beta above which a stock is "high-beta"
+    max_factor_concentration: float = 0.60     # max fraction of portfolio in same sector
 
     @classmethod
     def from_db(cls, db) -> "RiskLimits":
@@ -37,6 +41,10 @@ class RiskLimits:
                 MAX_OPEN_POSITIONS=get_agent_config(db, "risk.max_open_positions"),
                 max_spread_pct=get_agent_config(db, "risk.max_spread_pct"),
                 max_adtv_pct=get_agent_config(db, "risk.max_adtv_pct"),
+                max_correlation=get_agent_config(db, "risk.max_correlation"),
+                max_portfolio_beta=get_agent_config(db, "risk.max_portfolio_beta"),
+                high_beta_threshold=get_agent_config(db, "risk.high_beta_threshold"),
+                max_factor_concentration=get_agent_config(db, "risk.max_factor_concentration"),
             )
         except Exception:
             return cls()

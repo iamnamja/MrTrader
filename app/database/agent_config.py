@@ -120,6 +120,43 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Safety-net max hold in daily bars before forced exit",
         "group": "Strategy",
     },
+    # Risk Intelligence (Phase 19)
+    {
+        "key": "risk.max_correlation",
+        "default": 0.75,
+        "type": "float",
+        "min": 0.30,
+        "max": 0.99,
+        "description": "Max 60-day return correlation with any open position before rejecting entry",
+        "group": "Risk Manager",
+    },
+    {
+        "key": "risk.max_portfolio_beta",
+        "default": 1.30,
+        "type": "float",
+        "min": 0.50,
+        "max": 3.00,
+        "description": "Max portfolio beta vs SPY before blocking high-beta new entries",
+        "group": "Risk Manager",
+    },
+    {
+        "key": "risk.high_beta_threshold",
+        "default": 1.20,
+        "type": "float",
+        "min": 0.50,
+        "max": 2.50,
+        "description": "Beta above which a new position is considered high-beta",
+        "group": "Risk Manager",
+    },
+    {
+        "key": "risk.max_factor_concentration",
+        "default": 0.60,
+        "type": "float",
+        "min": 0.20,
+        "max": 0.90,
+        "description": "Max fraction of portfolio capital in the same sector/factor",
+        "group": "Risk Manager",
+    },
     # Execution quality
     {
         "key": "risk.max_spread_pct",

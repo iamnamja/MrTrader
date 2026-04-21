@@ -344,6 +344,38 @@ class RiskManager(BaseAgent):
                 self.logger.debug("ADTV check error for %s: %s", symbol, exc)
                 reasoning["checks"].append({"rule": "adtv_liquidity", "ok": True, "msg": f"ADTV check skipped: {exc}"})
 
+        # ── Rule 9: Correlation Check (swing only) ───────────────────────────
+        if proposal.get("trade_type") == "swing" and positions:
+            corr_result = await asyncio.to_thread(
+                self._check_correlation, symbol, positions, self.limits.max_correlation
+            )
+            reasoning["checks"].append({"rule": "correlation", **corr_result})
+            if not corr_result["ok"]:
+                reasoning["failed_rule"] = "correlation"
+                return False, reasoning
+
+        # ── Rule 10: Beta-Adjusted Exposure (swing only) ─────────────────────
+        if proposal.get("trade_type") == "swing":
+            beta_result = await asyncio.to_thread(
+                self._check_beta_exposure, symbol, trade_cost, positions,
+                account_value, self.limits,
+            )
+            reasoning["checks"].append({"rule": "beta_exposure", **beta_result})
+            if not beta_result["ok"]:
+                reasoning["failed_rule"] = "beta_exposure"
+                return False, reasoning
+
+        # ── Rule 11: Factor/Sector Concentration (swing only) ────────────────
+        if proposal.get("trade_type") == "swing":
+            factor_result = self._check_factor_concentration(
+                symbol, trade_cost, positions, account_value,
+                self.limits.max_factor_concentration,
+            )
+            reasoning["checks"].append({"rule": "factor_concentration", **factor_result})
+            if not factor_result["ok"]:
+                reasoning["failed_rule"] = "factor_concentration"
+                return False, reasoning
+
         # ── Rule 8: Dynamic Stop Loss ─────────────────────────────────────────
         atr = proposal.get("atr")
         if proposal.get("trade_type") == "intraday":
@@ -357,6 +389,153 @@ class RiskManager(BaseAgent):
         reasoning["stop_loss"] = stop_loss
 
         return True, reasoning
+
+    # ─── Phase 19: Risk Intelligence Helpers ─────────────────────────────────
+
+    def _check_correlation(
+        self, symbol: str, positions: list, max_corr: float
+    ) -> dict:
+        """
+        Compute 60-day return correlation between proposed symbol and each open
+        position. Returns ok=False with the worst offender if any exceed max_corr.
+        Skips check (ok=True) if bars unavailable.
+        """
+        try:
+            import numpy as np
+            from app.integrations import get_alpaca_client
+            client = get_alpaca_client()
+
+            bars_new = client.get_bars(symbol, timeframe="1Day", limit=65)
+            if bars_new is None or len(bars_new) < 20:
+                return {"ok": True, "msg": "correlation: insufficient bars — skipped"}
+
+            returns_new = bars_new["close"].pct_change().dropna().values
+            worst_corr, worst_sym = 0.0, ""
+
+            open_syms = [p["symbol"] for p in positions if p.get("symbol") != symbol]
+            for open_sym in open_syms:
+                try:
+                    bars_open = client.get_bars(open_sym, timeframe="1Day", limit=65)
+                    if bars_open is None or len(bars_open) < 20:
+                        continue
+                    returns_open = bars_open["close"].pct_change().dropna().values
+                    n = min(len(returns_new), len(returns_open))
+                    if n < 10:
+                        continue
+                    corr = float(np.corrcoef(returns_new[-n:], returns_open[-n:])[0, 1])
+                    if corr > worst_corr:
+                        worst_corr, worst_sym = corr, open_sym
+                except Exception:
+                    continue
+
+            if worst_corr > max_corr:
+                return {
+                    "ok": False,
+                    "msg": (f"Correlation {worst_corr:.2f} with {worst_sym} "
+                            f"exceeds limit {max_corr:.2f}"),
+                }
+            return {
+                "ok": True,
+                "msg": f"max correlation={worst_corr:.2f} with {worst_sym or 'none'} (limit {max_corr:.2f})",
+            }
+        except Exception as exc:
+            self.logger.debug("Correlation check error for %s: %s", symbol, exc)
+            return {"ok": True, "msg": f"correlation check skipped: {exc}"}
+
+    def _compute_beta(self, symbol: str, lookback: int = 252) -> float:
+        """
+        Compute beta of symbol vs SPY using OLS regression on daily returns.
+        Returns 1.0 on failure (neutral assumption).
+        """
+        try:
+            import numpy as np
+            from app.integrations import get_alpaca_client
+            client = get_alpaca_client()
+            bars_sym = client.get_bars(symbol, timeframe="1Day", limit=lookback + 5)
+            bars_spy = client.get_bars("SPY", timeframe="1Day", limit=lookback + 5)
+            if bars_sym is None or bars_spy is None:
+                return 1.0
+            r_sym = bars_sym["close"].pct_change().dropna().values
+            r_spy = bars_spy["close"].pct_change().dropna().values
+            n = min(len(r_sym), len(r_spy))
+            if n < 30:
+                return 1.0
+            r_sym, r_spy = r_sym[-n:], r_spy[-n:]
+            cov = float(np.cov(r_sym, r_spy)[0, 1])
+            var = float(np.var(r_spy))
+            return round(cov / var, 4) if var > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _check_beta_exposure(
+        self, symbol: str, trade_cost: float, positions: list,
+        account_value: float, limits,
+    ) -> dict:
+        """
+        Compute current portfolio beta. If portfolio beta > max_portfolio_beta
+        and the proposed stock's beta > high_beta_threshold, reject.
+        """
+        try:
+            # Portfolio beta = Σ(position_value × beta_i) / account_value
+            portfolio_beta = 0.0
+            for pos in positions:
+                pos_sym = pos.get("symbol", "")
+                pos_val = abs(float(pos.get("market_value") or 0))
+                pos_beta = self._compute_beta(pos_sym, lookback=63)
+                portfolio_beta += pos_val * pos_beta
+            portfolio_beta = portfolio_beta / max(account_value, 1.0)
+
+            new_beta = self._compute_beta(symbol, lookback=63)
+            prospective_beta = (portfolio_beta * account_value + trade_cost * new_beta) / max(
+                account_value + trade_cost, 1.0
+            )
+
+            if (portfolio_beta > limits.max_portfolio_beta
+                    and new_beta > limits.high_beta_threshold):
+                return {
+                    "ok": False,
+                    "msg": (f"Portfolio beta {portfolio_beta:.2f} > limit {limits.max_portfolio_beta:.2f} "
+                            f"and {symbol} beta={new_beta:.2f} > {limits.high_beta_threshold:.2f}"),
+                }
+            return {
+                "ok": True,
+                "msg": (f"portfolio_beta={portfolio_beta:.2f} prospective={prospective_beta:.2f} "
+                        f"{symbol}_beta={new_beta:.2f}"),
+            }
+        except Exception as exc:
+            self.logger.debug("Beta check error for %s: %s", symbol, exc)
+            return {"ok": True, "msg": f"beta check skipped: {exc}"}
+
+    def _check_factor_concentration(
+        self, symbol: str, trade_cost: float, positions: list,
+        account_value: float, max_factor_conc: float,
+    ) -> dict:
+        """
+        Use sector as a factor proxy. Reject if adding this position would push
+        the sector above max_factor_concentration of account value.
+        """
+        try:
+            new_sector = self._sector_map.get(symbol, "UNKNOWN")
+            sector_value = trade_cost
+            for pos in positions:
+                pos_sym = pos.get("symbol", "")
+                if self._sector_map.get(pos_sym, "UNKNOWN") == new_sector:
+                    sector_value += abs(float(pos.get("market_value") or 0))
+
+            sector_pct = sector_value / max(account_value, 1.0)
+            if sector_pct > max_factor_conc:
+                return {
+                    "ok": False,
+                    "msg": (f"Factor/sector '{new_sector}' concentration {sector_pct:.1%} "
+                            f"> limit {max_factor_conc:.1%}"),
+                }
+            return {
+                "ok": True,
+                "msg": f"sector '{new_sector}' concentration={sector_pct:.1%} (limit {max_factor_conc:.1%})",
+            }
+        except Exception as exc:
+            self.logger.debug("Factor concentration check error for %s: %s", symbol, exc)
+            return {"ok": True, "msg": f"factor check skipped: {exc}"}
 
     # ─── Data Helpers ─────────────────────────────────────────────────────────
 
