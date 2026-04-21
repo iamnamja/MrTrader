@@ -109,7 +109,7 @@ def main() -> int:
             model_dir=args.model_dir,
             n_workers=n_workers,
         )
-        version = trainer.train(symbols=SP_500_TICKERS, years=args.years)
+        version = trainer.train_model(symbols=SP_500_TICKERS, years=args.years)
         logger.info("Retrain complete — new model version: v%d", version)
     except Exception as exc:
         logger.error("Retrain failed: %s", exc, exc_info=True)

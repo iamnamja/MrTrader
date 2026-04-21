@@ -33,7 +33,7 @@ def main():
     # Step 2: retrain on SP-500 universe
     logger.info("Starting SP-500 swing model retrain (%d symbols)...", len(SP_500_TICKERS))
     trainer = ModelTrainer()
-    version = trainer.train(symbols=SP_500_TICKERS, years=5)
+    version = trainer.train_model(symbols=SP_500_TICKERS, years=5)
     logger.info("Retrain complete — model version %s", version)
     return version
 
