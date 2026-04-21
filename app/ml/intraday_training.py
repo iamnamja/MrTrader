@@ -40,16 +40,22 @@ CACHE_DIR = Path("data/cache/5min")
 META_FILE = CACHE_DIR / "_meta.json"
 
 # Training config
-TARGET_PCT = 0.005       # 0.5% intraday profit target
-STOP_PCT = 0.003         # 0.3% intraday stop loss
+TARGET_PCT = 0.005       # 0.5% intraday profit target (fallback)
+STOP_PCT = 0.003         # 0.3% intraday stop loss (fallback)
 HOLD_BARS = 24           # 2 hours of 5-min bars to achieve the target
 TEST_FRACTION = 0.20     # most recent 20% of days = test
 MIN_DAYS = 20            # minimum trading days needed per symbol
 
+# ATR-adaptive labeling (iter 1)
+ATR_MULT_TARGET = 1.2    # target = 1.2x prior-day range (as ATR proxy)
+ATR_MULT_STOP = 0.6      # stop   = 0.6x prior-day range  → 2:1 R:R
+ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
+ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
+
 # Parallelism config
 FETCH_CHUNK_SIZE = 100   # symbols per Alpaca API call
 FETCH_WORKERS = 4        # parallel API calls (stay well under 180 req/min)
-FEATURE_WORKERS = min(16, multiprocessing.cpu_count())  # threads; numpy/pandas release GIL
+FEATURE_WORKERS = min(24, multiprocessing.cpu_count())  # threads; numpy/pandas release GIL
 
 
 class IntradayModelTrainer:
@@ -119,7 +125,7 @@ class IntradayModelTrainer:
 
         # ── 2. Build feature matrix (parallel per symbol) ─────────────────────
         t1 = datetime.now()
-        X_train, y_train, X_test, y_test, feature_names = self._build_daily_matrix(
+        X_train, y_train, X_test, y_test, feature_names, raw_train = self._build_daily_matrix(
             symbols_data, spy_data, daily_data
         )
         logger.info("Feature matrix built in %.1fs — %d train / %d test rows, %d features",
@@ -135,9 +141,78 @@ class IntradayModelTrainer:
         spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
         logger.info("Class balance: pos=%d  neg=%d  scale_pos_weight=%.2f", n_pos, n_neg, spw)
 
-        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw)
+        # Sample weights: exponential recency decay (half-life = 180 days)
+        sample_weight = None
+        if len(raw_train) > 0:
+            day_ords = raw_train[:, 0]
+            max_ord = day_ords.max()
+            half_life = 180.0
+            sample_weight = np.exp((day_ords - max_ord) * np.log(2) / half_life).astype(np.float32)
+            sample_weight /= sample_weight.mean()  # normalise to mean=1
+            logger.info("Sample weights: min=%.3f  max=%.3f", sample_weight.min(), sample_weight.max())
 
-        metrics = self._evaluate(X_test, y_test)
+        # HPO: tune XGBoost hyperparameters with Optuna (50 trials, CV on train)
+        try:
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            from sklearn.model_selection import StratifiedKFold
+            from xgboost import XGBClassifier
+
+            def _objective(trial):
+                params = {
+                    "n_estimators": trial.suggest_int("n_estimators", 200, 600),
+                    "max_depth": trial.suggest_int("max_depth", 3, 6),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
+                    "subsample": trial.suggest_float("subsample", 0.5, 0.9),
+                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 0.8),
+                    "min_child_weight": trial.suggest_int("min_child_weight", 5, 30),
+                    "gamma": trial.suggest_float("gamma", 0.0, 0.5),
+                    "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 0.5),
+                    "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
+                    "scale_pos_weight": spw,
+                    "nthread": -1, "verbosity": 0, "eval_metric": "auc",
+                    "random_state": 42,
+                }
+                cv = StratifiedKFold(n_splits=3, shuffle=False)
+                aucs = []
+                for tr_idx, va_idx in cv.split(X_train, y_train):
+                    Xtr, Xva = X_train[tr_idx], X_train[va_idx]
+                    ytr, yva = y_train[tr_idx], y_train[va_idx]
+                    sw_tr = sample_weight[tr_idx] if sample_weight is not None else None
+                    clf = XGBClassifier(**params)
+                    clf.fit(Xtr, ytr, sample_weight=sw_tr)
+                    from sklearn.metrics import roc_auc_score
+                    aucs.append(roc_auc_score(yva, clf.predict_proba(Xva)[:, 1]))
+                return float(np.mean(aucs))
+
+            study = optuna.create_study(direction="maximize")
+            study.optimize(_objective, n_trials=50, show_progress_bar=False)
+            best = study.best_params
+            logger.info("HPO best params: %s  AUC=%.4f", best, study.best_value)
+            self.model.model.set_params(**best)
+        except Exception as exc:
+            logger.warning("HPO failed, using defaults: %s", exc)
+
+        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw,
+                         sample_weight=sample_weight)
+
+        # LightGBM ensemble: train LGBM alongside XGBoost, soft-vote probabilities
+        lgbm_proba_test = None
+        try:
+            from lightgbm import LGBMClassifier
+            lgbm = LGBMClassifier(
+                n_estimators=400, learning_rate=0.03, max_depth=6,
+                subsample=0.73, colsample_bytree=0.58, min_child_samples=24,
+                class_weight={0: 1.0, 1: float(spw)},
+                n_jobs=-1, random_state=42, verbose=-1,
+            )
+            lgbm.fit(X_train, y_train, sample_weight=sample_weight)
+            lgbm_proba_test = lgbm.predict_proba(X_test)[:, 1]
+            logger.info("LightGBM trained — ensemble enabled")
+        except Exception as exc:
+            logger.warning("LightGBM training failed: %s", exc)
+
+        metrics = self._evaluate(X_test, y_test, lgbm_proba=lgbm_proba_test)
         logger.info("OOS metrics: %s", metrics)
 
         # ── 4. Save ───────────────────────────────────────────────────────────
@@ -331,7 +406,10 @@ class IntradayModelTrainer:
         return self._fetch_all(symbols, start, end, force_refresh=self._force_refresh)
 
     def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None):
-        return self._build_matrix_parallel(symbols_data, spy_data, daily_data or {})
+        X_tr, y_tr, X_te, y_te, fnames, raw_tr = self._build_matrix_parallel(
+            symbols_data, spy_data, daily_data or {}
+        )
+        return X_tr, y_tr, X_te, y_te, fnames, raw_tr
 
     def _fetch_daily_all(
         self, symbols: List[str], start: datetime, end: datetime
@@ -373,12 +451,11 @@ class IntradayModelTrainer:
         # Precompute SPY day-slices once to avoid per-symbol work
         spy_by_day = _index_by_day(spy_data) if spy_data is not None else {}
 
-        X_train_parts, y_train_parts = [], []
-        X_test_parts, y_test_parts = [], []
+        X_train_parts, raw_train_parts = [], []
+        X_test_parts, raw_test_parts = [], []
         feature_names: List[str] = []
 
         syms = list(symbols_data.keys())
-        # Pack args as tuples for ProcessPoolExecutor (must be picklable)
         tasks = [
             (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days)
             for sym in syms
@@ -391,13 +468,13 @@ class IntradayModelTrainer:
             for future in as_completed(futures):
                 sym = futures[future]
                 try:
-                    rows_train, labels_train, rows_test, labels_test, fnames = future.result()
+                    rows_train, raw_train, rows_test, raw_test, fnames = future.result()
                     if rows_train:
                         X_train_parts.append(np.array(rows_train, dtype=np.float32))
-                        y_train_parts.append(np.array(labels_train, dtype=np.int8))
+                        raw_train_parts.append(np.array(raw_train, dtype=np.float64))
                     if rows_test:
                         X_test_parts.append(np.array(rows_test, dtype=np.float32))
-                        y_test_parts.append(np.array(labels_test, dtype=np.int8))
+                        raw_test_parts.append(np.array(raw_test, dtype=np.float64))
                     if fnames and not feature_names:
                         feature_names.extend(fnames)
                 except Exception as exc:
@@ -406,21 +483,49 @@ class IntradayModelTrainer:
                 if done % 100 == 0:
                     logger.info("Features: %d/%d symbols processed", done, len(syms))
 
-        X_train = np.vstack(X_train_parts) if X_train_parts else np.array([])
-        y_train = np.concatenate(y_train_parts) if y_train_parts else np.array([])
-        X_test = np.vstack(X_test_parts) if X_test_parts else np.array([])
-        y_test = np.concatenate(y_test_parts) if y_test_parts else np.array([])
+        # ── Cross-sectional re-labeling (iter 2) ─────────────────────────────
+        # Each future result also carries (day, best_return) per row.
+        # We rank symbols within each day; top 20% → label 1.
+        # Rebuild y from cross-sectional ranks rather than absolute ATR labels.
+        def _cross_sectional_labels(X_parts, raw_parts):
+            """Re-label rows by ranking best_return within each trading day."""
+            if not X_parts:
+                return np.array([]), np.array([])
+            X = np.vstack(X_parts)
+            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, best_return]
+            days_ord = raws[:, 0]
+            returns = raws[:, 1]
+            labels = np.zeros(len(X), dtype=np.int8)
+            for d in np.unique(days_ord):
+                mask = days_ord == d
+                if mask.sum() < 5:
+                    continue
+                threshold = np.percentile(returns[mask], 80)  # top 20%
+                labels[mask] = (returns[mask] >= threshold).astype(np.int8)
+            return X, labels
 
-        return X_train, y_train, X_test, y_test, feature_names
+        X_train, y_train = _cross_sectional_labels(X_train_parts, raw_train_parts)
+        X_test, y_test = _cross_sectional_labels(X_test_parts, raw_test_parts)
+
+        # Keep raw_train for sample-weight computation in caller
+        raw_train = np.concatenate(raw_train_parts) if raw_train_parts else np.array([])
+        return X_train, y_train, X_test, y_test, feature_names, raw_train
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
-    def _evaluate(self, X_test: np.ndarray, y_test: np.ndarray) -> Dict:
+    def _evaluate(self, X_test: np.ndarray, y_test: np.ndarray,
+                  lgbm_proba: Optional[np.ndarray] = None) -> Dict:
         if len(X_test) == 0:
             return {}
         try:
             from sklearn.metrics import accuracy_score, precision_score, roc_auc_score
-            preds, proba = self.model.predict(X_test)
+            _, xgb_proba = self.model.predict(X_test)
+            if lgbm_proba is not None:
+                proba = (xgb_proba + lgbm_proba) / 2.0
+                logger.info("Using XGBoost+LightGBM ensemble probabilities")
+            else:
+                proba = xgb_proba
+            preds = (proba >= 0.5).astype(int)
             return {
                 "accuracy": round(float(accuracy_score(y_test, preds)), 4),
                 "precision": round(float(precision_score(y_test, preds, zero_division=0)), 4),
@@ -515,8 +620,8 @@ def _symbol_to_rows(
         d_idx = pd.DatetimeIndex(daily_df.index)
         daily_date_arr = np.array(d_idx.normalize().date)
 
-    train_rows, train_labels = [], []
-    test_rows, test_labels = [], []
+    train_rows, train_raw = [], []
+    test_rows, test_raw = [], []
     feature_names: List[str] = []
 
     all_days = sorted(train_days | test_days)
@@ -532,18 +637,6 @@ def _symbol_to_rows(
         if len(feat_bars) < MIN_BARS:
             continue
 
-        # Outcome label
-        entry = float(feat_bars["close"].iloc[-1])
-        target_price = entry * (1 + TARGET_PCT)
-        stop_price = entry * (1 - STOP_PCT)
-        label = 0
-        for _, bar in future_bars.iterrows():
-            if float(bar["high"]) >= target_price:
-                label = 1
-                break
-            if float(bar["low"]) <= stop_price:
-                break
-
         # Prior-day OHLC — use pre-grouped dict, look back one step
         prior_close = prior_high = prior_low = None
         prior_days = [d for d in all_days[:i] if d in day_groups]
@@ -552,6 +645,10 @@ def _symbol_to_rows(
             prior_close = float(prev["close"].iloc[-1])
             prior_high = float(prev["high"].max())
             prior_low = float(prev["low"].min())
+
+        # Compute best intraday return over HOLD_BARS (used for cross-sectional ranking)
+        entry = float(feat_bars["close"].iloc[-1])
+        best_return = float((future_bars["high"].max() - entry) / max(entry, 1e-6))
 
         # Daily bars up to this day (O(1) slice via precomputed date array)
         daily_as_of = None
@@ -573,13 +670,15 @@ def _symbol_to_rows(
             feature_names = list(feats.keys())
 
         row = list(feats.values())
+        # raw = [day_ordinal, best_return] for cross-sectional ranking in caller
+        day_ord = float(day.toordinal())
         if day in train_days:
             train_rows.append(row)
-            train_labels.append(label)
+            train_raw.append([day_ord, best_return])
         else:
             test_rows.append(row)
-            test_labels.append(label)
+            test_raw.append([day_ord, best_return])
 
-    return train_rows, train_labels, test_rows, test_labels, feature_names
+    return train_rows, train_raw, test_rows, test_raw, feature_names
 
 
