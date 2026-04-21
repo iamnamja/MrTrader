@@ -122,7 +122,10 @@ class ModelTrainer:
         self._provider_name = provider
         self.label_scheme = label_scheme
         self.top_n_features = top_n_features
-        self.n_workers = n_workers if (n_workers and n_workers > 0) else min(os.cpu_count() or 4, 8)
+        # Default: all logical CPUs. Caller can pass n_workers to override.
+        # Feature engineering is numpy-heavy and releases the GIL, so threads
+        # beyond 8 still yield speedups on machines with 16+ cores.
+        self.n_workers = n_workers if (n_workers and n_workers > 0) else (os.cpu_count() or 4)
         self.hpo_trials = hpo_trials
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold
@@ -392,7 +395,10 @@ class ModelTrainer:
         window_starts: list,
     ) -> Dict[int, Any]:
         """
-        Pre-compute cross-sectional return thresholds for all windows (serial).
+        Pre-compute cross-sectional return thresholds for all windows.
+
+        Windows are processed in parallel (ThreadPoolExecutor) — each window
+        is independent (read-only access to symbols_data).
 
         label_scheme == "cross_sectional":
             returns {w_start_idx: float}  — global 80th-pct threshold
@@ -405,16 +411,16 @@ class ModelTrainer:
         sector_relative = self.label_scheme in ("sector_relative", "atr_and_sector", "return_blend")
         use_blend = self.label_scheme == "return_blend"
 
-        for w_start_idx in window_starts:
+        def _compute_one_window(w_start_idx: int):
+            """Compute threshold(s) for one window. Returns (w_start_idx, result) or None."""
             w_end_idx = w_start_idx + WINDOW_DAYS
             future_idx = w_end_idx + FORWARD_DAYS
             if future_idx >= len(all_dates):
-                continue
+                return None
             w_end_date = all_dates[w_end_idx]
             future_date = all_dates[future_idx]
             mid_date = all_dates[w_end_idx + 5] if use_blend and w_end_idx + 5 < len(all_dates) else None
 
-            # Collect per-symbol returns (and sector tag)
             sym_returns: Dict[str, float] = {}
             sym_sectors: Dict[str, str] = {}
             for sym, df in symbols_data.items():
@@ -438,30 +444,30 @@ class ModelTrainer:
                     sym_sectors[sym] = SECTOR_MAP.get(sym) or "Unknown"
 
             if not sym_returns:
-                continue
+                return None
 
             if not sector_relative:
                 sorted_rets = sorted(sym_returns.values())
-                thresholds[w_start_idx] = sorted_rets[int(len(sorted_rets) * 0.80)]
+                return w_start_idx, sorted_rets[int(len(sorted_rets) * 0.80)]
             else:
-                # Group returns by sector, compute per-sector 80th percentile
                 from collections import defaultdict
                 sector_rets: Dict[str, List[float]] = defaultdict(list)
                 for sym, ret in sym_returns.items():
                     sector_rets[sym_sectors[sym]].append(ret)
-
                 sector_thresh: Dict[str, float] = {}
                 for sec, rets in sector_rets.items():
-                    if len(rets) >= 3:  # need ≥3 peers for meaningful percentile
+                    if len(rets) >= 3:
                         sorted_r = sorted(rets)
                         sector_thresh[sec] = sorted_r[int(len(sorted_r) * 0.80)]
-
-                # Global fallback for sectors with too few peers
                 all_sorted = sorted(sym_returns.values())
-                global_thresh = all_sorted[int(len(all_sorted) * 0.80)]
-                sector_thresh["__global__"] = global_thresh
+                sector_thresh["__global__"] = all_sorted[int(len(all_sorted) * 0.80)]
+                return w_start_idx, sector_thresh
 
-                thresholds[w_start_idx] = sector_thresh
+        # Windows are independent — compute in parallel
+        with ThreadPoolExecutor(max_workers=self.n_workers) as pool:
+            for result in pool.map(_compute_one_window, window_starts):
+                if result is not None:
+                    thresholds[result[0]] = result[1]
 
         return thresholds
 
