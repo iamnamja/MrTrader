@@ -915,3 +915,46 @@ async def get_monitor_history(days: int = 7):
     except Exception as exc:
         logger.error("Monitor history error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Phase B4: Model version comparison ─────────────────────────────────────
+
+@router.get("/model/versions")
+async def get_model_versions(limit: int = 10):
+    """
+    Return the last N swing model versions with performance metrics,
+    SHAP top features, and AUC drift flag.
+    """
+    try:
+        from app.database.models import ModelVersion
+        db = get_session()
+        try:
+            versions = (
+                db.query(ModelVersion)
+                .filter(ModelVersion.model_name == "swing")
+                .order_by(desc(ModelVersion.version))
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for mv in versions:
+                perf = mv.performance or {}
+                auc = perf.get("auc")
+                result.append({
+                    "version": mv.version,
+                    "training_date": mv.training_date.isoformat() if mv.training_date else None,
+                    "status": mv.status,
+                    "auc": auc,
+                    "drift_flag": (auc is not None and auc < 0.65),
+                    "accuracy": perf.get("accuracy"),
+                    "n_train": perf.get("n_train"),
+                    "n_test": perf.get("n_test"),
+                    "shap_top_features": perf.get("shap_top_features"),
+                    "data_range": f"{mv.data_range_start} → {mv.data_range_end}",
+                })
+            return {"versions": result, "total": len(result)}
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.error("Model versions error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
