@@ -442,7 +442,7 @@ class IntradayModelTrainer:
         sorted_days = sorted(all_days)
         if len(sorted_days) < MIN_DAYS:
             logger.warning("Only %d trading days — need at least %d", len(sorted_days), MIN_DAYS)
-            return np.array([]), np.array([]), np.array([]), np.array([]), []
+            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
 
         split_idx = max(1, int(len(sorted_days) * (1 - TEST_FRACTION)))
         train_days = set(sorted_days[:split_idx])
@@ -605,7 +605,7 @@ def _symbol_to_rows(
     sym, df, spy_by_day, daily_df, train_days, test_days = args
 
     if df is None or len(df) == 0:
-        return [], [], [], [], []
+        return [], [], [], [], [], []
 
     # Pre-group 5-min bars by date once — avoids O(n_bars × n_days) repeated masking
     df_idx = pd.DatetimeIndex(df.index)

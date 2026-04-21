@@ -43,6 +43,8 @@ Feature groups (74 total):
   34. Short-term reversal: 3d, 5d, 5d vol-weighted reversal signals     — computed
   35. VRP, beta, opex, earnings drift: realized-vol spread, 252d beta,
       days-to-opex, earnings PEAD decay signal                          — computed
+  31. VIX regime features: absolute level, 1y percentile, regime bucket,
+      SPY trend (63d return), fear spike flag                           — yfinance / caller
 """
 
 import logging
@@ -209,6 +211,8 @@ class FeatureEngineer:
         fetch_fundamentals: bool = True,
         spy_returns: Optional[np.ndarray] = None,
         as_of_date: Optional["date"] = None,
+        vix_value: Optional[float] = None,
+        vix_history: Optional["pd.Series"] = None,
     ) -> Optional[Dict[str, float]]:
         """
         Compute features for a single stock.
@@ -424,6 +428,62 @@ class FeatureEngineer:
                 features["regime_score"] = float(det.get("composite_score", 0.5))
             except Exception:
                 features["regime_score"] = 0.5
+
+        # ── 21b. VIX regime features ──────────────────────────────────────────
+        # Resolve VIX level: caller may supply historical value (backtest) or
+        # live value; fall back to a yfinance fetch for live inference.
+        _vix = vix_value
+        if _vix is None and vix_history is not None and as_of_date is not None:
+            try:
+                _vix_ts = vix_history.index
+                _mask = _vix_ts <= pd.Timestamp(as_of_date)
+                if _mask.any():
+                    _vix = float(vix_history[_mask].iloc[-1])
+            except Exception:
+                pass
+        if _vix is None and as_of_date is None:
+            try:
+                import yfinance as yf
+                _vdf = yf.download("^VIX", period="2d", progress=False, auto_adjust=True)
+                if not _vdf.empty:
+                    _vix = float(_vdf["Close"].iloc[-1])
+            except Exception:
+                pass
+        if _vix is not None:
+            features["vix_level"] = float(np.clip(_vix, 5.0, 80.0))
+            # Regime bucket: 0=calm(<15), 0.5=normal(15-25), 1=stressed(>25)
+            features["vix_regime_bucket"] = 0.0 if _vix < 15 else (0.5 if _vix < 25 else 1.0)
+            # Fear spike: VIX > 30 = tail-risk environment
+            features["vix_fear_spike"] = 1.0 if _vix > 30 else 0.0
+            # 1-year percentile of VIX (requires vix_history for PIT accuracy)
+            if vix_history is not None and as_of_date is not None:
+                try:
+                    _end = pd.Timestamp(as_of_date)
+                    _start = _end - pd.Timedelta(days=365)
+                    _yr_hist = vix_history[(vix_history.index >= _start) & (vix_history.index <= _end)]
+                    if len(_yr_hist) > 10:
+                        features["vix_percentile_1y"] = float(
+                            np.mean(_yr_hist.values <= _vix)
+                        )
+                    else:
+                        features["vix_percentile_1y"] = 0.5
+                except Exception:
+                    features["vix_percentile_1y"] = 0.5
+            else:
+                features["vix_percentile_1y"] = 0.5
+        else:
+            features["vix_level"] = 18.0
+            features["vix_regime_bucket"] = 0.5
+            features["vix_fear_spike"] = 0.0
+            features["vix_percentile_1y"] = 0.5
+
+        # SPY market trend: 63-day return (bull/bear market context)
+        if spy_returns is not None and len(spy_returns) >= 63:
+            features["spy_trend_63d"] = float(np.sum(spy_returns[-63:]))
+        elif spy_returns is not None and len(spy_returns) > 0:
+            features["spy_trend_63d"] = float(np.sum(spy_returns))
+        else:
+            features["spy_trend_63d"] = 0.0
 
         # ── 22. Earnings history (yfinance — free) ────────────────────────────
         # PEAD (Post-Earnings Announcement Drift): stocks that beat estimates

@@ -295,33 +295,33 @@ class TestIntradayTrainingPipeline:
     def test_build_daily_matrix_produces_samples(self):
         trainer = self._trainer()
         data = self._make_symbols_data(5, 25)
-        X_train, y_train, X_test, y_test, names = trainer._build_daily_matrix(data, None)
+        X_train, y_train, X_test, y_test, names, *_ = trainer._build_daily_matrix(data, None)
         assert len(X_train) + len(X_test) > 0
 
     def test_feature_names_match_columns(self):
         trainer = self._trainer()
         data = self._make_symbols_data(5, 25)
-        X_train, y_train, X_test, y_test, names = trainer._build_daily_matrix(data, None)
+        X_train, y_train, X_test, y_test, names, *_ = trainer._build_daily_matrix(data, None)
         if len(X_train) > 0:
             assert X_train.shape[1] == len(names)
 
     def test_insufficient_data_returns_empty(self):
         trainer = self._trainer()
         tiny = {"AAPL": _make_5min_df(50)}  # not enough days
-        X_train, y_train, X_test, y_test, names = trainer._build_daily_matrix(tiny, None)
+        X_train, y_train, X_test, y_test, names, *_ = trainer._build_daily_matrix(tiny, None)
         assert len(X_train) == 0
 
     def test_labels_are_binary(self):
         trainer = self._trainer()
         data = self._make_symbols_data(5, 25)
-        X_train, y_train, X_test, y_test, names = trainer._build_daily_matrix(data, None)
+        X_train, y_train, X_test, y_test, names, *_ = trainer._build_daily_matrix(data, None)
         if len(y_train) > 0:
             assert set(y_train).issubset({0, 1})
 
     def test_train_test_shapes_consistent(self):
         trainer = self._trainer()
         data = self._make_symbols_data(5, 30)
-        X_train, y_train, X_test, y_test, names = trainer._build_daily_matrix(data, None)
+        X_train, y_train, X_test, y_test, names, *_ = trainer._build_daily_matrix(data, None)
         if len(X_train) > 0 and len(X_test) > 0:
             assert X_train.shape[1] == X_test.shape[1]
 
@@ -339,7 +339,7 @@ class TestIntradayTrainingPipeline:
         with patch.object(trainer, "_fetch_data", return_value=data):
             with patch.object(
                 trainer, "_build_daily_matrix",
-                return_value=(X, y, X[:10], y[:10], names)
+                return_value=(X, y, X[:10], y[:10], names, [])
             ):
                 with patch.object(trainer, "_record_version"):
                     with patch.object(trainer, "_next_version", return_value=1):

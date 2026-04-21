@@ -174,6 +174,7 @@ def score_window(
     stock_cap: float,
     sector_map: Dict[str, str],
     feature_store=None,  # Phase 3: FeatureStore for cached fundamentals
+    vix_history: Optional["pd.Series"] = None,
 ) -> Optional[dict]:
     """Score all stocks for one window. Returns meta dict or None.
 
@@ -206,6 +207,7 @@ def score_window(
                     fetch_fundamentals=False,
                     regime_score=0.5,
                     as_of_date=w_end_date,
+                    vix_history=vix_history,
                 )
             except Exception:
                 continue
@@ -254,7 +256,23 @@ def score_window(
 
     scores = {sym: float(s) for sym, s in zip(scored_syms, proba)}
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    selected = [sym for sym, _ in ranked[:top_n]]
+
+    # Regime-conditional position sizing: reduce holdings when VIX is elevated
+    effective_top_n = top_n
+    if vix_history is not None:
+        try:
+            _end_ts = pd.Timestamp(w_end_date)
+            _mask = vix_history.index <= _end_ts
+            if _mask.any():
+                _cur_vix = float(vix_history[_mask].iloc[-1])
+                if _cur_vix > 35:
+                    effective_top_n = max(3, top_n // 2)   # very stressed: hold 50%
+                elif _cur_vix > 25:
+                    effective_top_n = max(5, int(top_n * 0.7))  # stressed: hold 70%
+        except Exception:
+            pass
+
+    selected = [sym for sym, _ in ranked[:effective_top_n]]
 
     # Risk limits
     approved, rejected = apply_risk_limits(
@@ -294,6 +312,7 @@ def generate_ml_signals(
     window_starts_override: Optional[List[int]] = None,
     entry_at_open: bool = True,   # Phase 3B: enter at next-day open, not same-day close
     model_dir: str = "app/ml/models",
+    _vix_history_override: Optional[pd.Series] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, List[dict]]:
     """
     Generate entry/exit signals from ML ranking scores.
@@ -324,6 +343,19 @@ def generate_ml_signals(
             warn(f"Feature store unavailable: {e} — using price-only features")
     else:
         warn("No feature store found — using price-only features (fundamentals zeroed)")
+
+    # Fetch VIX history for the full backtest period (point-in-time regime features)
+    vix_history: Optional[pd.Series] = _vix_history_override
+    if vix_history is None:
+        try:
+            import yfinance as yf
+            _vix_df = yf.download("^VIX", period="10y", progress=False, auto_adjust=True)
+            if not _vix_df.empty:
+                _col = "Close" if "Close" in _vix_df.columns else _vix_df.columns[0]
+                vix_history = _vix_df[_col].squeeze()
+                ok(f"VIX history loaded: {len(vix_history)} days")
+        except Exception as _exc:
+            warn(f"VIX history unavailable ({_exc}) — vix features will use defaults")
 
     spy_df = symbols_data.get("SPY")
     if spy_df is not None:
@@ -376,6 +408,7 @@ def generate_ml_signals(
             w_start_date, w_end_date, fe,
             adv_cap, init_cash, top_n, sector_cap, stock_cap, SECTOR_MAP,
             feature_store=feature_store,
+            vix_history=vix_history,
         )
         if meta is None:
             continue
@@ -438,6 +471,17 @@ def run_walk_forward(
     all_dates = sorted(set(spy_df.index.date)) if spy_df is not None else []
     window_starts = list(range(0, len(all_dates) - WINDOW_DAYS - FORWARD_DAYS, STEP_DAYS))
 
+    # Fetch VIX history once for all folds
+    _vix_history: Optional[pd.Series] = None
+    try:
+        import yfinance as yf
+        _vdf = yf.download("^VIX", period="10y", progress=False, auto_adjust=True)
+        if not _vdf.empty:
+            _col = "Close" if "Close" in _vdf.columns else _vdf.columns[0]
+            _vix_history = _vdf[_col].squeeze()
+    except Exception:
+        pass
+
     if len(window_starts) < n_folds * 2:
         warn(f"Too few windows ({len(window_starts)}) for {n_folds} folds. Reduce --walk-forward.")
         return []
@@ -476,6 +520,7 @@ def run_walk_forward(
             X_tr, y_tr, meta_tr = trainer._windows_to_matrix(
                 symbols_data, all_dates, train_window_starts,
                 regime_score=0.5, fetch_fundamentals=False,
+                vix_history=_vix_history,
             )
             if len(X_tr) == 0:
                 warn(f"  Fold {fold+1}: no training samples")
@@ -504,6 +549,7 @@ def run_walk_forward(
             sector_cap=sector_cap, stock_cap=stock_cap,
             window_starts_override=test_window_starts,
             entry_at_open=True,
+            _vix_history_override=_vix_history,
         )
 
         # Compute fold return from window_meta

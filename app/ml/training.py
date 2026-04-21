@@ -473,6 +473,7 @@ class ModelTrainer:
         sector: str,
         regime_score: Optional[float],
         fetch_fundamentals: bool,
+        vix_history: Optional[Any] = None,
     ) -> Tuple[List[Any], List[Any], List[Any], List[Tuple], List[str]]:
         """Process all windows for a single symbol. Returns (X_rows, y_vals, meta_rows, to_cache, feature_names)."""
         X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
@@ -659,6 +660,7 @@ class ModelTrainer:
                     regime_score=regime_score,
                     fetch_fundamentals=fetch_fundamentals,
                     as_of_date=w_end_date,
+                    vix_history=vix_history,
                 )
                 if features is not None:
                     to_cache.append((symbol, w_end_date, features))
@@ -690,6 +692,7 @@ class ModelTrainer:
         regime_score: Optional[float],
         fetch_fundamentals: bool,
         total_windows: int = 1,
+        vix_history: Optional[Any] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
         X_rows, y_vals, meta_rows = [], [], []
         self._last_feature_names: List[str] = []
@@ -713,7 +716,7 @@ class ModelTrainer:
                     self._process_symbol_windows,
                     symbol, df, all_dates, window_starts, cs_thresholds,
                     SECTOR_MAP.get(symbol) or "Unknown",
-                    regime_score, fetch_fundamentals,
+                    regime_score, fetch_fundamentals, vix_history,
                 ): symbol
                 for symbol, df in trading_symbols.items()
             }
