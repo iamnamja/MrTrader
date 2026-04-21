@@ -226,12 +226,25 @@ def score_window(
     # Align to model's training feature set (handles post-training feature additions)
     if model_feature_names:
         feature_rows = [
-            [d.get(f, 0.0) for f in model_feature_names]
+            [float(d.get(f, 0.0)) for f in model_feature_names]
             for d in feats_dicts
         ]
     else:
-        feature_rows = [list(d.values()) for d in feats_dicts]
+        # Filter to consistent length before stacking
+        row_lists = [list(d.values()) for d in feats_dicts]
+        if row_lists:
+            expected_len = max(set(len(r) for r in row_lists), key=lambda l: sum(1 for r in row_lists if len(r) == l))
+            valid = [(i, r) for i, r in enumerate(row_lists) if len(r) == expected_len]
+            if len(valid) < len(row_lists):
+                keep_idx = [i for i, _ in valid]
+                feats_dicts = [feats_dicts[i] for i in keep_idx]
+                scored_syms = [scored_syms[i] for i in keep_idx]
+            feature_rows = [r for _, r in valid]
+        else:
+            feature_rows = []
 
+    if not feature_rows:
+        return None
     X = np.nan_to_num(np.array(feature_rows, dtype=float))
     try:
         _, proba = model.predict(X)
