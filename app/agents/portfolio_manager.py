@@ -71,6 +71,8 @@ class PortfolioManager(BaseAgent):
         self._selected_intraday_today: bool = False
         self._retrained_today: bool = False
         self._premarket_run_today: bool = False  # 09:00 premarket routine done
+        self._benchmark_recorded_today: bool = False
+        self._weekly_report_generated_today: bool = False
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
         self._last_review_minute: int = -1       # last minute a 30-min review ran
@@ -101,6 +103,8 @@ class PortfolioManager(BaseAgent):
                     self._selected_intraday_today = False
                     self._retrained_today = False
                     self._premarket_run_today = False
+                    self._benchmark_recorded_today = False
+                    self._weekly_report_generated_today = False
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
@@ -176,6 +180,27 @@ class PortfolioManager(BaseAgent):
                         await self._handle_reeval_requests()
                     except Exception as _rev_exc:
                         self.logger.warning("Reeval handler error: %s", _rev_exc)
+
+                # 16:05: record daily benchmark return (Phase 22)
+                if (
+                    is_weekday
+                    and now.hour == 16
+                    and now.minute == 5
+                    and not self._benchmark_recorded_today
+                ):
+                    await self._record_daily_benchmark()
+                    self._benchmark_recorded_today = True
+
+                # 16:10 Friday: generate weekly performance report (Phase 22)
+                if (
+                    is_weekday
+                    and now.weekday() == 4  # Friday
+                    and now.hour == 16
+                    and now.minute == 10
+                    and not self._weekly_report_generated_today
+                ):
+                    await self._generate_weekly_report()
+                    self._weekly_report_generated_today = True
 
                 # 17:00: retrain model
                 if (
@@ -274,6 +299,54 @@ class PortfolioManager(BaseAgent):
         )
         self.logger.info("Pre-market intelligence: %s", summary)
         await self.log_decision("PREMARKET_INTELLIGENCE", reasoning=summary)
+
+    async def _record_daily_benchmark(self) -> None:
+        """
+        16:05 ET: Record today's strategy P&L vs SPY for benchmark comparison (Phase 22).
+        """
+        try:
+            from app.agents.performance_monitor import performance_monitor
+            from app.database.session import get_session
+            from app.database.models import Trade
+            from datetime import datetime as _dt
+            today_start = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            db = get_session()
+            try:
+                trades = (
+                    db.query(Trade)
+                    .filter(Trade.status == "CLOSED", Trade.closed_at >= today_start)
+                    .all()
+                )
+                daily_pnl = sum(float(t.pnl) for t in trades if t.pnl is not None)
+            finally:
+                db.close()
+            from app.integrations import get_alpaca_client
+            alpaca = get_alpaca_client()
+            account = alpaca.get_account()
+            account_value = float(account.get("portfolio_value", 100_000))
+            await asyncio.to_thread(
+                performance_monitor.fetch_and_record_spy_return, daily_pnl, account_value
+            )
+            self.logger.info("Daily benchmark recorded: daily_pnl=%.2f", daily_pnl)
+        except Exception as exc:
+            self.logger.warning("Daily benchmark recording failed: %s", exc)
+
+    async def _generate_weekly_report(self) -> None:
+        """
+        16:10 ET every Friday: generate and log the weekly performance report (Phase 22).
+        """
+        try:
+            from app.agents.performance_monitor import performance_monitor
+            from app.database.session import get_session
+            db = get_session()
+            try:
+                report = await asyncio.to_thread(performance_monitor.generate_weekly_report, db)
+            finally:
+                db.close()
+            self.logger.info("Weekly performance report: %s", report)
+            await self.log_decision("WEEKLY_PERFORMANCE_REPORT", reasoning=report)
+        except Exception as exc:
+            self.logger.warning("Weekly report generation failed: %s", exc)
 
     async def _analyze_swing_premarket(self):
         """
@@ -619,6 +692,23 @@ class PortfolioManager(BaseAgent):
                 },
             },
         )
+
+        # Phase 22: record PM cycle telemetry
+        try:
+            from app.agents.performance_monitor import performance_monitor
+            held_scores = [info["score"] for info in scores.values()]
+            cycle_decisions: Dict[str, int] = {"EXIT": 0, "HOLD": 0, "EXTEND_TARGET": 0}
+            for sym, info in scores.items():
+                sc = info["score"]
+                if sc < exit_threshold:
+                    cycle_decisions["EXIT"] += 1
+                elif sc > MIN_CONFIDENCE + 0.10:
+                    cycle_decisions["EXTEND_TARGET"] += 1
+                else:
+                    cycle_decisions["HOLD"] += 1
+            performance_monitor.record_pm_cycle(held_scores, cycle_decisions)
+        except Exception:
+            pass
 
         # After reviewing existing positions, look for new opportunities
         await self._scan_new_opportunities()
