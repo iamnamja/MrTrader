@@ -273,6 +273,7 @@ class DataCache:
 
         payload = {**data, "_cached_at": time.time()}
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w") as f:
                 json.dump(payload, f)
             self._mem[f"json:{key}"] = payload
