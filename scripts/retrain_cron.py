@@ -21,7 +21,6 @@ Exit codes:
 """
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -69,21 +68,33 @@ def prune_old_model_files(model_dir: Path, keep: int = KEEP_MODEL_VERSIONS) -> N
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Weekly swing model retraining")
+    import os as _os
+    _cpus = _os.cpu_count() or 4
     parser.add_argument("--model-type", default="lambdarank",
                         choices=["lambdarank", "xgboost", "lightgbm"])
     parser.add_argument("--years", type=int, default=5)
     parser.add_argument("--model-dir", default="app/ml/models")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run feature engineering only, skip training + save")
+    parser.add_argument(
+        "--n-workers", type=int, default=max(1, _cpus - 2),
+        help=(
+            f"Parallel workers for feature engineering (default: {max(1, _cpus - 2)} "
+            f"= all {_cpus} logical CPUs minus 2 for OS headroom). "
+            "Use --n-workers 0 to auto-detect (uses all CPUs)."
+        ),
+    )
     args = parser.parse_args()
 
     from app.ml.training import ModelTrainer
     from app.utils.constants import SP_500_TICKERS
     from app.database.session import get_session
 
+    n_workers = args.n_workers if args.n_workers > 0 else (_os.cpu_count() or 4)
     logger.info(
-        "Weekly retrain starting — model_type=%s years=%d symbols=%d dry_run=%s",
-        args.model_type, args.years, len(SP_500_TICKERS), args.dry_run,
+        "Weekly retrain starting — model_type=%s years=%d symbols=%d "
+        "n_workers=%d dry_run=%s",
+        args.model_type, args.years, len(SP_500_TICKERS), n_workers, args.dry_run,
     )
 
     if args.dry_run:
@@ -96,6 +107,7 @@ def main() -> int:
             label_scheme="lambdarank",
             use_feature_store=True,
             model_dir=args.model_dir,
+            n_workers=n_workers,
         )
         version = trainer.train(symbols=SP_500_TICKERS, years=args.years)
         logger.info("Retrain complete — new model version: v%d", version)
