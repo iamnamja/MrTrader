@@ -85,3 +85,15 @@ earnings_filter = EarningsFilter()
 def is_earnings_blackout(symbol: str) -> bool:
     """Convenience wrapper used by generate_signal()."""
     return earnings_filter.is_blackout(symbol)
+
+
+def days_until_earnings(symbol: str) -> Optional[int]:
+    """
+    Return number of calendar days until next earnings, or None if unknown.
+    Used by PM position review to pro-actively exit before earnings.
+    """
+    from datetime import date as _date
+    next_date = earnings_filter.next_earnings_date(symbol)
+    if next_date is None:
+        return None
+    return (next_date - _date.today()).days

@@ -270,11 +270,16 @@ def check_exit(
     highest_price: float,
     bars_held: int,
     min_hold_bars: int = 3,
-    max_hold_bars: int = 10,
+    max_hold_bars: int = 20,
     db=None,
 ) -> tuple[bool, str, float]:
     """
     Check whether an open position should be exited.
+
+    Args:
+        max_hold_bars: Safety-net cap. Default raised to 20 days (was 10).
+                       PM re-scoring and technical signals drive exits before
+                       this triggers in normal operation.
 
     Returns:
         (should_exit, reason, updated_stop_price)
@@ -284,7 +289,7 @@ def check_exit(
     if bars_held < min_hold_bars:
         return False, "", stop_price
 
-    # Force-close at max hold horizon (aligns with ML training window)
+    # Safety-net cap: exit if held beyond max_hold_bars regardless of signals
     if bars_held >= max_hold_bars:
         pnl_pct = (current_price - entry_price) / entry_price
         return True, f"max_hold_{max_hold_bars}d (P&L={pnl_pct*100:+.1f}%)", stop_price
