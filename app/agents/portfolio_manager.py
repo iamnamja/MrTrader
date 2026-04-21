@@ -10,25 +10,24 @@ Cycle:
 
 import asyncio
 import logging
+import numpy as np
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
-
-ET = ZoneInfo("America/New_York")
-
-import numpy as np
 
 from app.agents.base import BaseAgent
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, SP_100_TICKERS
+from app.utils.constants import MARKET_OPEN_HOUR, SP_100_TICKERS
 
 logger = logging.getLogger(__name__)
 
+ET = ZoneInfo("America/New_York")
+
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
-EXIT_REQUESTS_QUEUE   = "trader_exit_requests"   # PM → Trader
-REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"      # Trader → PM
+EXIT_REQUESTS_QUEUE = "trader_exit_requests"     # PM → Trader
+REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"     # Trader → PM
 TOP_N_STOCKS = 10
 TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
@@ -42,12 +41,11 @@ REVIEW_INTERVAL_MINUTES = 30   # PM re-scores open positions every 30 minutes
 EARNINGS_EXIT_DAYS = 3         # exit swing positions this many days before earnings
 
 # ── Capital allocation ────────────────────────────────────────────────────────
-SWING_BUDGET_PCT    = 0.70     # 70% of account reserved for swing trades
+SWING_BUDGET_PCT = 0.70        # 70% of account reserved for swing trades
 INTRADAY_BUDGET_PCT = 0.30     # 30% of account reserved for intraday trades
-GROSS_EXPOSURE_CAP  = 0.80     # never deploy more than 80% of account at once
+GROSS_EXPOSURE_CAP = 0.80      # never deploy more than 80% of account at once
 
-# Confidence-to-size multiplier: prob → scalar applied to base position size.
-# Clipped to [0.5x, 2.0x] so a single high-confidence trade can't dominate.
+
 def _confidence_scalar(prob: float) -> float:
     """Linear scale: prob=MIN_CONFIDENCE → 0.5x, prob=1.0 → 2.0x."""
     lo, hi = MIN_CONFIDENCE, 1.0
@@ -501,8 +499,10 @@ class PortfolioManager(BaseAgent):
                         "trade_id": trade.id,
                         "entry_price": float(trade.entry_price or 0),
                         "target_price": float(trade.target_price or 0),
-                        "atr": float(trade.target_price or 0) - float(trade.entry_price or 0)
-                            if trade.target_price and trade.entry_price else 0.0,
+                        "atr": (
+                            float(trade.target_price or 0) - float(trade.entry_price or 0)
+                            if trade.target_price and trade.entry_price else 0.0
+                        ),
                     }
                 except Exception as exc:
                     self.logger.debug("Re-score failed for %s: %s", trade.symbol, exc)
@@ -868,7 +868,7 @@ class PortfolioManager(BaseAgent):
 
         # 2. How much of each budget and gross cap is already deployed
         deployed = self._get_deployed_by_type()
-        type_headroom  = max(0.0, strategy_budget - deployed.get(trade_type, 0.0))
+        type_headroom = max(0.0, strategy_budget - deployed.get(trade_type, 0.0))
         gross_headroom = max(0.0, account_value * GROSS_EXPOSURE_CAP - deployed["total"])
         available = min(type_headroom, gross_headroom)
 

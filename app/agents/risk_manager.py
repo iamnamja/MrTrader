@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
-MAX_INTRADAY_POSITIONS = 3   # hard cap on concurrent intraday trades
-GROSS_EXPOSURE_CAP    = 0.80  # never deploy > 80% of account across all strategies
-SWING_BUDGET_PCT      = 0.70  # swing strategy budget fraction
-INTRADAY_BUDGET_PCT   = 0.30  # intraday strategy budget fraction
+MAX_INTRADAY_POSITIONS = 3    # hard cap on concurrent intraday trades
+GROSS_EXPOSURE_CAP = 0.80     # never deploy > 80% of account across all strategies
+SWING_BUDGET_PCT = 0.70       # swing strategy budget fraction
+INTRADAY_BUDGET_PCT = 0.30    # intraday strategy budget fraction
 
 
 class RiskManager(BaseAgent):
@@ -218,7 +218,6 @@ class RiskManager(BaseAgent):
         # ── Rule 0c: Strategy budget cap ─────────────────────────────────────
         trade_type = proposal.get("trade_type", "swing")
         budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
-        strategy_budget = account_value * budget_pct
         type_deployed = sum(
             abs(float(p.get("market_value") or 0))
             for p in positions

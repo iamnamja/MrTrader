@@ -14,8 +14,8 @@ All functions return safe defaults on failure so the ML pipeline never breaks.
 import logging
 import time
 import threading
-from datetime import datetime, timedelta, date
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, Optional
 
 import numpy as np
 import requests
@@ -47,17 +47,17 @@ SECTOR_ETF_MAP: Dict[str, str] = {
 _fund_cache:    Dict[str, tuple] = {}   # symbol → (data_dict, fetched_at)
 _etf_cache:     Dict[str, tuple] = {}   # etf_ticker → (momentum, fetched_at)
 _earnh_cache:   Dict[str, tuple] = {}   # symbol → (data_dict, fetched_at)
-_si_cache:      Dict[str, tuple] = {}   # symbol → (value, fetched_at)
+_si_cache: Dict[str, tuple] = {}        # symbol → (value, fetched_at)
 _insider_cache: Dict[str, tuple] = {}   # symbol → (score, fetched_at)
-_av_cache:      Dict[str, tuple] = {}   # symbol → (surprise, fetched_at)
-_cik_cache:     Dict[str, Optional[int]] = {}  # ticker → CIK int or None
+_av_cache: Dict[str, tuple] = {}        # symbol → (surprise, fetched_at)
+_cik_cache: Dict[str, Optional[int]] = {}  # ticker → CIK int or None
 
-_FUND_TTL    = 86_400 * 7   # 7 days (quarterly data, no point refreshing daily)
-_ETF_TTL     = 3_600        # 1 h
-_EARNH_TTL   = 86_400 * 7   # 7 days
-_SI_TTL      = 86_400 * 14  # 14 days (FINRA data is bi-monthly)
-_INSIDER_TTL = 86_400       # 24 h
-_AV_TTL      = 86_400       # 24 h
+_FUND_TTL = 86_400 * 7     # 7 days (quarterly data, no point refreshing daily)
+_ETF_TTL = 3_600           # 1 h
+_EARNH_TTL = 86_400 * 7   # 7 days
+_SI_TTL = 86_400 * 14     # 14 days (FINRA data is bi-monthly)
+_INSIDER_TTL = 86_400     # 24 h
+_AV_TTL = 86_400          # 24 h
 
 
 # ── CIK lookup ────────────────────────────────────────────────────────────────
@@ -79,7 +79,6 @@ def _get_cik(symbol: str) -> Optional[int]:
             for hit in hits:
                 src = hit.get("_source", {})
                 if src.get("file_type") == "10-K":
-                    entity = src.get("entity_name", "")
                     cik_str = src.get("entity_id", "") or src.get("cik", "")
                     if cik_str:
                         cik = int(cik_str.lstrip("0") or "0")

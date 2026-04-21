@@ -236,7 +236,7 @@ class TestConstants:
     def test_sector_list_not_empty(self):
         assert len(SECTOR_LIST) > 0
 
-    def test_brk_b_hyphen_format(self):
-        # BRK-B (not BRK.B) required for yfinance compatibility
-        assert "BRK-B" in SP_100_TICKERS
+    def test_brk_b_excluded(self):
+        # BRK-B excluded from universe — invalid Alpaca symbol
+        assert "BRK-B" not in SP_100_TICKERS
         assert "BRK.B" not in SP_100_TICKERS
