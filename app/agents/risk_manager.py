@@ -170,6 +170,14 @@ class RiskManager(BaseAgent):
         entry_price = proposal.get("entry_price", 0.0)
         trade_cost = quantity * entry_price
 
+        # ── Rule 0: Symbol halt check ────────────────────────────────────────
+        from app.agents.compliance import compliance_tracker
+        halted, halt_reason = compliance_tracker.is_symbol_halted(symbol)
+        reasoning["checks"].append({"rule": "symbol_halt", "ok": not halted, "msg": halt_reason})
+        if halted:
+            reasoning["failed_rule"] = "symbol_halt"
+            return False, reasoning
+
         # ── Rule 0: Intraday position cap ────────────────────────────────────
         if proposal.get("trade_type") == "intraday":
             if self._open_intraday_count >= MAX_INTRADAY_POSITIONS:
@@ -193,8 +201,24 @@ class RiskManager(BaseAgent):
             return False, reasoning
 
         account_value = account["portfolio_value"]
-        buying_power = account["buying_power"]
         current_equity = account["equity"]
+
+        # ── Rule 0a: PDT check (intraday only, equity < $25k) ────────────────
+        if proposal.get("trade_type") == "intraday":
+            pdt_blocked, pdt_msg = compliance_tracker.is_pdt_blocked(current_equity)
+            reasoning["checks"].append({"rule": "pdt", "ok": not pdt_blocked, "msg": pdt_msg})
+            if pdt_blocked:
+                reasoning["failed_rule"] = "pdt"
+                return False, reasoning
+
+        # Use settled buying power only (Reg T: T+1 settlement)
+        raw_buying_power = account["buying_power"]
+        buying_power = compliance_tracker.settled_buying_power(raw_buying_power)
+        if buying_power < raw_buying_power:
+            self.logger.debug(
+                "Buying power adjusted for unsettled cash: $%.2f → $%.2f",
+                raw_buying_power, buying_power,
+            )
 
         if self._peak_equity is None or current_equity > self._peak_equity:
             self._peak_equity = current_equity
@@ -387,6 +411,13 @@ class RiskManager(BaseAgent):
         stop_msg = f"Stop loss set at ${stop_loss:.2f}"
         reasoning["checks"].append({"rule": "stop_loss", "ok": True, "msg": stop_msg})
         reasoning["stop_loss"] = stop_loss
+
+        # ── Wash sale warning (non-blocking) ─────────────────────────────────
+        is_wash, wash_msg = compliance_tracker.check_wash_sale(symbol)
+        reasoning["checks"].append({"rule": "wash_sale", "ok": True, "msg": wash_msg})
+        if is_wash:
+            self.logger.warning("WASH SALE: %s", wash_msg)
+            reasoning["wash_sale_warning"] = wash_msg
 
         return True, reasoning
 

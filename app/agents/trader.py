@@ -378,6 +378,7 @@ class Trader(BaseAgent):
                 "bars_held":     0,
                 "trade_id":      trade.id,
                 "trade_type":    trade_type,
+                "entry_date":    datetime.now(ET).date(),
             }
             self.approved_symbols.pop(symbol, None)
 
@@ -775,6 +776,26 @@ class Trader(BaseAgent):
 
             # Update circuit breaker with win/loss (strategy-level tracking)
             circuit_breaker.record_trade_result(won=(pnl > 0), strategy=trade_type)
+
+            # Compliance: record PDT round-trip (intraday) and settlement / wash sale
+            try:
+                from app.agents.compliance import compliance_tracker
+                entry_date = pos.get("entry_date")
+                today = datetime.now(ET).date()
+                # PDT: day trade = opened and closed same calendar day (intraday always qualifies)
+                if trade_type == "intraday" or (
+                    entry_date and entry_date == today
+                ):
+                    compliance_tracker.record_day_trade(symbol)
+                # Settlement: record proceeds as unsettled (T+1)
+                proceeds = current_price * qty
+                compliance_tracker.record_sale_proceeds(proceeds)
+                compliance_tracker.sweep_settled()
+                # Wash sale: flag if closed at a loss
+                if pnl < 0:
+                    compliance_tracker.record_loss_close(symbol)
+            except Exception as _ce:
+                self.logger.debug("Compliance post-trade update failed: %s", _ce)
 
             # Release intraday slot in risk manager
             if trade_type == "intraday":
