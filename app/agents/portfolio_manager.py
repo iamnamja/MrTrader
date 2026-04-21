@@ -12,6 +12,9 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
 
 import numpy as np
 
@@ -29,6 +32,9 @@ TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
 INTRADAY_SCAN_MINUTE = 45      # 09:45 ET for intraday scan
+SWING_PREMARKET_HOUR = 8       # 08:00 ET: run swing model analysis pre-market
+SWING_SEND_HOUR = 9            # 09:50 ET: send swing proposals after open volatility settles
+SWING_SEND_MINUTE = 50
 
 # ── Capital allocation ────────────────────────────────────────────────────────
 SWING_BUDGET_PCT    = 0.70     # 70% of account reserved for swing trades
@@ -57,10 +63,12 @@ class PortfolioManager(BaseAgent):
         self.model = PortfolioSelectorModel(model_type="xgboost")           # swing
         self.intraday_model = PortfolioSelectorModel(model_type="xgboost")  # intraday
         self.trainer = ModelTrainer()
-        self._selected_today: bool = False
+        self._analyzed_today: bool = False       # 08:00 pre-market analysis done
+        self._selected_today: bool = False       # 09:50 proposals sent
         self._selected_intraday_today: bool = False
         self._retrained_today: bool = False
         self._last_date: Optional[str] = None
+        self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
 
     # ─── Lazy connectors ─────────────────────────────────────────────────────
 
@@ -78,26 +86,38 @@ class PortfolioManager(BaseAgent):
 
         while self.status == "running":
             try:
-                now = datetime.now()
+                now = datetime.now(ET)
                 today = now.strftime("%Y-%m-%d")
 
                 # Reset daily flags at midnight
                 if today != self._last_date:
+                    self._analyzed_today = False
                     self._selected_today = False
                     self._selected_intraday_today = False
                     self._retrained_today = False
                     self._last_date = today
+                    self._swing_proposals = []
 
                 is_weekday = now.weekday() < 5
 
-                # 09:30: swing model selection
+                # 08:00: pre-market swing model analysis (score + rank, don't send yet)
                 if (
                     is_weekday
-                    and now.hour == MARKET_OPEN_HOUR
-                    and now.minute == MARKET_OPEN_MINUTE
+                    and now.hour == SWING_PREMARKET_HOUR
+                    and now.minute == 0
+                    and not self._analyzed_today
+                ):
+                    await self._analyze_swing_premarket()
+                    self._analyzed_today = True
+
+                # 09:50: send cached swing proposals after open volatility settles
+                if (
+                    is_weekday
+                    and now.hour == SWING_SEND_HOUR
+                    and now.minute == SWING_SEND_MINUTE
                     and not self._selected_today
                 ):
-                    await self.select_instruments()
+                    await self._send_swing_proposals()
                     self._selected_today = True
 
                 # 09:45: intraday model selection
@@ -107,7 +127,10 @@ class PortfolioManager(BaseAgent):
                     and now.minute == INTRADAY_SCAN_MINUTE
                     and not self._selected_intraday_today
                 ):
-                    await self.select_intraday_instruments()
+                    try:
+                        await self.select_intraday_instruments()
+                    except Exception as _e:
+                        self.logger.warning("Intraday scan skipped: %s", _e)
                     self._selected_intraday_today = True
 
                 # 17:00: retrain model
@@ -154,36 +177,54 @@ class PortfolioManager(BaseAgent):
 
     # ─── Instrument Selection ─────────────────────────────────────────────────
 
-    async def select_instruments(self):
-        """Run ML model over S&P 100, pick top stocks, send proposals."""
-        self.logger.info("Selecting instruments for today...")
+    def _fetch_swing_features(self) -> Dict[str, Dict[str, float]]:
+        """Fetch bars + engineer features concurrently. Run in a thread via asyncio.to_thread."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        if not self.model.is_trained:
-            self.logger.warning("No trained model available — skipping selection")
-            await self.log_decision(
-                "SELECTION_SKIPPED", reasoning={"reason": "model not trained"}
-            )
-            return
-
-        features_by_symbol: Dict[str, Dict[str, float]] = {}
-
-        for symbol in self._get_universe():
+        def _fetch_one(symbol: str):
             try:
                 bars = self._alpaca.get_bars(symbol, timeframe="1D", limit=300)
                 if bars.empty:
-                    continue
-                feats = self.feature_engineer.engineer_features(symbol, bars)
-                if feats is not None:
-                    features_by_symbol[symbol] = feats
+                    return symbol, None
+                feats = self.feature_engineer.engineer_features(symbol, bars, fetch_fundamentals=False)
+                return symbol, feats
             except Exception as e:
                 self.logger.debug("Skipping %s: %s", symbol, e)
+                return symbol, None
+
+        features_by_symbol: Dict[str, Dict[str, float]] = {}
+        symbols = self._get_universe()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_one, s): s for s in symbols}
+            for future in as_completed(futures):
+                symbol, feats = future.result()
+                if feats is not None:
+                    features_by_symbol[symbol] = feats
+        return features_by_symbol
+
+    async def _analyze_swing_premarket(self):
+        """
+        08:00 ET: Score all universe stocks using yesterday's daily bars.
+        Results cached in self._swing_proposals — not sent to Risk Manager yet.
+        Sending is deferred to 09:50 so we enter after the open volatility spike.
+        """
+        self.logger.info("Pre-market swing analysis starting (08:00)...")
+
+        if not self.model.is_trained:
+            self.logger.warning("No trained model — pre-market analysis skipped")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "model not trained"})
+            return
+
+        # Run blocking network calls in a thread so the event loop stays free
+        features_by_symbol = await asyncio.to_thread(self._fetch_swing_features)
+        self.logger.info("Swing feature fetch complete — %d symbols", len(features_by_symbol))
 
         if not features_by_symbol:
-            self.logger.warning("Could not build features for any symbol")
+            self.logger.warning("Could not build features for any symbol — skipping")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "no features computed"})
             return
 
         symbols = list(features_by_symbol.keys())
-        # Align features to model's training set (handles post-training feature additions)
         model_feature_names = getattr(self.model, "feature_names", None)
         if model_feature_names:
             X = np.array([
@@ -196,11 +237,13 @@ class PortfolioManager(BaseAgent):
 
         try:
             _, probabilities = self.model.predict(X)
+            self.logger.info("Model scored %d symbols — max prob=%.3f min prob=%.3f",
+                             len(probabilities), max(probabilities), min(probabilities))
         except Exception as e:
             self.logger.error("Model prediction failed: %s", e)
+            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": f"prediction error: {e}"})
             return
 
-        # Pick top N with confidence above threshold (read live config from DB)
         min_conf, top_n = MIN_CONFIDENCE, TOP_N_STOCKS
         try:
             from app.database.session import get_session
@@ -213,39 +256,71 @@ class PortfolioManager(BaseAgent):
                 _db.close()
         except Exception:
             pass
-        # Apply FMP price-target consensus boost.
-        # Stocks trading below analyst consensus get a small upward nudge to their
-        # model score — this signal is forward-looking at 10 days (mean reversion
-        # toward consensus) but can't be used in training (no historical timeseries).
-        # Cap boost at +0.05 so it never overrides a weak model score.
+
         target_upside = self._fetch_target_upside(symbols)
         boosted_probs = []
         for sym, prob in zip(symbols, probabilities):
             upside = target_upside.get(sym, 0.0)
-            # Only boost if upside > 10% (stock meaningfully below consensus)
             boost = min(0.05, max(0.0, upside * 0.15)) if upside > 0.10 else 0.0
             boosted_probs.append(float(prob) + boost)
 
         ranked = sorted(zip(symbols, boosted_probs), key=lambda x: x[1], reverse=True)
         selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:top_n]
 
-        self.logger.info("Selected %d instruments: %s", len(selected), [s for s, _ in selected])
+        self.logger.info(
+            "Pre-market analysis complete — %d candidates: %s (proposals held until 09:50)",
+            len(selected), [s for s, _ in selected],
+        )
 
-        proposals = await self._build_proposals(selected)
-        for proposal in proposals:
+        self._swing_proposals = await self._build_proposals(selected)
+
+        await self.log_decision(
+            "SWING_PREMARKET_ANALYSIS",
+            reasoning={
+                "candidates": [{"symbol": s, "confidence": round(float(p), 4)} for s, p in selected],
+                "total_evaluated": len(symbols),
+                "send_time": "09:50 ET",
+            },
+        )
+
+    async def _send_swing_proposals(self):
+        """
+        09:50 ET: Forward cached swing proposals to Risk Manager.
+        Open volatility has settled; entries here get cleaner fills.
+        Falls back to running a fresh analysis if 08:00 run was missed.
+        """
+        if not self._swing_proposals:
+            self.logger.warning("No pre-market analysis cached — running analysis now")
+            await self._analyze_swing_premarket()
+
+        if not self._swing_proposals:
+            self.logger.warning("Still no swing proposals after fallback analysis — skipping")
+            return
+
+        self.logger.info("Sending %d swing proposals to Risk Manager (09:50)...", len(self._swing_proposals))
+        for proposal in self._swing_proposals:
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
-            self.logger.info("Proposal sent: %s @ $%.2f (confidence=%.2f)",
-                             proposal["symbol"], proposal["entry_price"], proposal["confidence"])
+            self.logger.info(
+                "Proposal sent: %s @ $%.2f (confidence=%.2f)",
+                proposal["symbol"], proposal["entry_price"], proposal["confidence"],
+            )
 
         await self.log_decision(
             "INSTRUMENTS_SELECTED",
             reasoning={
-                "selected": [{"symbol": s, "confidence": round(float(p), 4)} for s, p in selected],
-                "total_evaluated": len(symbols),
-                "price_target_boost_applied": sum(1 for s in [sym for sym, _ in selected]
-                                                  if target_upside.get(s, 0.0) > 0.10),
+                "selected": [
+                    {"symbol": p["symbol"], "confidence": round(float(p["confidence"]), 4)}
+                    for p in self._swing_proposals
+                ],
+                "sent_at": "09:50 ET",
             },
         )
+        self._swing_proposals = []
+
+    async def select_instruments(self):
+        """Public entry point for manual/forced selection — runs full analysis + send immediately."""
+        await self._analyze_swing_premarket()
+        await self._send_swing_proposals()
 
     # ─── Intraday Selection ───────────────────────────────────────────────────
 
@@ -257,30 +332,32 @@ class PortfolioManager(BaseAgent):
             self.logger.warning("No intraday model available — skipping intraday scan")
             return
 
-        features_by_symbol: Dict[str, Dict[str, float]] = {}
+        def _fetch_intraday_features() -> Dict[str, Dict[str, float]]:
+            from app.ml.intraday_features import compute_intraday_features, MIN_BARS
+            result: Dict[str, Dict[str, float]] = {}
+            for symbol in self._get_universe()[:50]:
+                try:
+                    bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
+                    if bars is None or bars.empty or len(bars) < MIN_BARS:
+                        continue
+                    daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=2)
+                    prior_close = prior_high = prior_low = None
+                    if daily is not None and len(daily) >= 2:
+                        prev = daily.iloc[-2]
+                        prior_close = float(prev["close"])
+                        prior_high = float(prev["high"])
+                        prior_low = float(prev["low"])
+                    feats = compute_intraday_features(
+                        bars, prior_close=prior_close,
+                        prior_day_high=prior_high, prior_day_low=prior_low,
+                    )
+                    if feats is not None:
+                        result[symbol] = feats
+                except Exception as exc:
+                    self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
+            return result
 
-        for symbol in self._get_universe()[:50]:  # limit to 50 for speed
-            try:
-                from app.ml.intraday_features import compute_intraday_features, MIN_BARS
-                bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
-                if bars is None or bars.empty or len(bars) < MIN_BARS:
-                    continue
-                # Fetch prior-day daily bar for S/R and gap features
-                daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=2)
-                prior_close = prior_high = prior_low = None
-                if daily is not None and len(daily) >= 2:
-                    prev = daily.iloc[-2]
-                    prior_close = float(prev["close"])
-                    prior_high = float(prev["high"])
-                    prior_low = float(prev["low"])
-                feats = compute_intraday_features(
-                    bars, prior_close=prior_close,
-                    prior_day_high=prior_high, prior_day_low=prior_low,
-                )
-                if feats is not None:
-                    features_by_symbol[symbol] = feats
-            except Exception as exc:
-                self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
+        features_by_symbol = await asyncio.to_thread(_fetch_intraday_features)
 
         if not features_by_symbol:
             self.logger.warning("No intraday features computed")
@@ -514,7 +591,8 @@ class PortfolioManager(BaseAgent):
         self.logger.info("Starting scheduled model retraining...")
         try:
             loop = asyncio.get_event_loop()
-            version = await loop.run_in_executor(None, self.trainer.train_model)
+            import functools
+            version = await loop.run_in_executor(None, functools.partial(self.trainer.train_model, fetch_fundamentals=False))
             # Reload the freshly trained model
             self._try_load_model()
             self.logger.info("Model retrained → v%d now active", version)
@@ -545,9 +623,13 @@ class PortfolioManager(BaseAgent):
                 )
                 if latest and latest.model_path:
                     try:
-                        import pickle
-                        with open(latest.model_path, "rb") as f:
-                            loaded = pickle.load(f)
+                        from pathlib import Path
+                        model_path = Path(latest.model_path)
+                        model_dir = str(model_path.parent)
+                        version = latest.version
+                        wrapper = PortfolioSelectorModel(model_type="xgboost")
+                        wrapper.load(model_dir, version, model_name=model_name)
+                        loaded = wrapper
                         if model_name == "swing":
                             self.model = loaded
                             swing_loaded = True

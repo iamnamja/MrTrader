@@ -362,17 +362,21 @@ class FeatureEngineer:
         # ── 16. Sentiment ─────────────────────────────────────────────────────
         features["sentiment"] = float(sentiment) if sentiment is not None else 0.0
 
-        # ── 17. Fundamentals (yfinance) ───────────────────────────────────────
+        # ── 17. Fundamentals (SEC EDGAR XBRL) ────────────────────────────────
         if fetch_fundamentals:
             try:
                 from app.ml.fundamental_fetcher import get_fundamentals
                 fund = get_fundamentals(symbol)
-                features["pe_ratio"] = fund["pe_ratio"]
-                features["pb_ratio"] = fund["pb_ratio"]
                 features["profit_margin"] = fund["profit_margin"]
                 features["revenue_growth"] = fund["revenue_growth"]
                 features["debt_to_equity"] = fund["debt_to_equity"]
                 features["earnings_proximity_days"] = fund["earnings_proximity_days"]
+                # P/E and P/B: EDGAR gives us EPS and BVPS; combine with latest close price
+                latest_close = float(bars["close"].iloc[-1]) if len(bars) > 0 else 0.0
+                bvps = fund.get("_bvps", 0.0)
+                eps = fund.get("_eps", 0.0)
+                features["pe_ratio"] = float(min(latest_close / eps, 200)) if eps and eps > 0 and latest_close > 0 else 0.0
+                features["pb_ratio"] = float(min(latest_close / bvps, 50)) if bvps and bvps > 0 and latest_close > 0 else 0.0
             except Exception as exc:
                 logger.debug("Fundamental features skipped for %s: %s", symbol, exc)
                 features.update({
@@ -446,7 +450,7 @@ class FeatureEngineer:
                 import yfinance as yf
                 _vdf = yf.download("^VIX", period="2d", progress=False, auto_adjust=True)
                 if not _vdf.empty:
-                    _vix = float(_vdf["Close"].iloc[-1])
+                    _vix = float(_vdf["Close"].iloc[-1].item() if hasattr(_vdf["Close"].iloc[-1], 'item') else _vdf["Close"].iloc[-1])
             except Exception:
                 pass
         if _vix is not None:

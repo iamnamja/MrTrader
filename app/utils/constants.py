@@ -3,7 +3,7 @@ Static reference data: S&P 100/500 tickers, sector mappings, market hours.
 """
 
 # ─── S&P 500 Tickers ─────────────────────────────────────────────────────────
-# Approx 480 liquid S&P 500 members (as of early 2026); BRK.B/BRK-B for yfinance
+# Approx 480 liquid S&P 500 members (as of early 2026); BRK-B excluded (invalid on Alpaca)
 SP_500_TICKERS = [
     # Technology
     "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM", "ACN", "IBM", "INTC", "QCOM",
@@ -24,7 +24,7 @@ SP_500_TICKERS = [
     "EL", "CL", "CHD", "CLX", "SJM", "CAG", "GIS", "K", "CPB", "HRL",
     "TSN", "KHC", "MKC", "INGR", "SYY", "KR", "ACI", "BJ",
     # Financials
-    "BRK-B", "JPM", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP", "SPGI",
+    "JPM", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP", "SPGI",
     "MCO", "ICE", "CME", "CBOE", "NDAQ", "SCHW", "USB", "PNC", "TFC",
     "COF", "DFS", "SYF", "ALLY", "RF", "CFG", "HBAN", "KEY", "MTB", "CMA",
     "FRC", "SIVB", "ZION", "FHN", "FITB", "NTRS", "STT", "BK", "TROW",
@@ -141,7 +141,7 @@ RUSSELL_1000_EXTRA = [
 RUSSELL_1000_TICKERS = list(dict.fromkeys(SP_500_TICKERS + RUSSELL_1000_EXTRA))
 
 # ─── S&P 100 Tickers ─────────────────────────────────────────────────────────
-# Note: BRK.B → BRK-B for yfinance compatibility
+# Note: BRK-B excluded from universe (invalid Alpaca symbol)
 SP_100_TICKERS = [
     # Technology
     "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM", "ACN", "IBM", "INTC", "QCOM", "TXN", "AMD",
@@ -152,7 +152,7 @@ SP_100_TICKERS = [
     # Consumer Staples
     "WMT", "PG", "KO", "PEP", "COST", "PM", "MO", "MDLZ",
     # Financials
-    "BRK-B", "JPM", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP", "SPGI",
+    "JPM", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP", "SPGI",
     # Health Care
     "UNH", "JNJ", "LLY", "ABBV", "MRK", "TMO", "ABT", "DHR", "BMY", "AMGN", "GILD", "CVS",
     # Industrials
@@ -190,7 +190,7 @@ SECTOR_MAP = {
     "PEP": "Consumer Staples", "COST": "Consumer Staples", "PM": "Consumer Staples",
     "MO": "Consumer Staples", "MDLZ": "Consumer Staples",
     # Financials
-    "BRK-B": "Financial Services", "JPM": "Financial Services",
+    "JPM": "Financial Services",
     "BAC": "Financial Services", "WFC": "Financial Services",
     "GS": "Financial Services", "MS": "Financial Services",
     "BLK": "Financial Services", "C": "Financial Services",

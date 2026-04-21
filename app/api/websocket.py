@@ -80,3 +80,13 @@ async def broadcast_position_update(symbol: str, position: dict) -> None:
 
 async def broadcast_alert(alert_type: str, message: str) -> None:
     await manager.send_update("alert", {"type": alert_type, "message": message})
+
+
+async def broadcast_agent_decision(agent_name: str, decision_type: str, reasoning: dict) -> None:
+    await manager.send_update("agent_decision", {
+        "agent_name": agent_name,
+        "decision_type": decision_type,
+        "reasoning": reasoning,
+        "symbol": (reasoning or {}).get("symbol")
+            or ((reasoning or {}).get("proposal") or {}).get("symbol"),
+    })

@@ -45,6 +45,17 @@ class BaseAgent(ABC):
         finally:
             db.close()
 
+        # Broadcast to dashboard WebSocket (best-effort, non-blocking)
+        try:
+            import asyncio
+            from app.api.websocket import broadcast_agent_decision
+            coro = broadcast_agent_decision(self.agent_name, decision_type, reasoning or {})
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(coro)
+        except Exception:
+            pass
+
     def send_message(self, queue_name: str, message: Dict[str, Any]) -> bool:
         """Send a message to a Redis queue."""
         from app.integrations import get_redis_queue

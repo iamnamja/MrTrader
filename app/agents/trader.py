@@ -16,6 +16,9 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
 
 from app.agents.base import BaseAgent
 from app.database.models import Order, Trade
@@ -58,7 +61,7 @@ class Trader(BaseAgent):
 
         while self.status == "running":
             try:
-                now = datetime.now()
+                now = datetime.now(ET)
                 today = now.strftime("%Y-%m-%d")
                 if today != self._last_date:
                     self._force_closed_today = False
@@ -266,7 +269,24 @@ class Trader(BaseAgent):
         pos = self.active_positions[symbol]
         position = alpaca.get_position(symbol)
         if not position:
-            self.logger.warning("Cannot exit %s — Alpaca position not found", symbol)
+            self.logger.warning("Cannot exit %s — Alpaca position not found; marking DB trade closed", symbol)
+            # Still close the DB record so it doesn't stay ACTIVE forever
+            trade_id = pos.get("trade_id")
+            if trade_id:
+                db = get_session()
+                try:
+                    trade = db.query(Trade).filter_by(id=trade_id).first()
+                    if trade and trade.status == "ACTIVE":
+                        trade.exit_price = current_price or pos["entry_price"]
+                        trade.pnl = (trade.exit_price - pos["entry_price"]) * pos.get("quantity", 0)
+                        trade.status = "FORCE_CLOSED_NO_POSITION"
+                        trade.closed_at = datetime.now(ET)
+                        db.commit()
+                except Exception as e:
+                    db.rollback()
+                    self.logger.error("Failed to close orphaned trade %s: %s", trade_id, e)
+                finally:
+                    db.close()
             self.active_positions.pop(symbol, None)
             return
 
@@ -291,7 +311,7 @@ class Trader(BaseAgent):
                     trade.exit_price = current_price
                     trade.pnl = pnl
                     trade.status = "CLOSED"
-                    trade.closed_at = datetime.utcnow()
+                    trade.closed_at = datetime.now(ET)
                     trade.bars_held = pos["bars_held"]
 
             db_order = Order(

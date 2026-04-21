@@ -89,7 +89,6 @@ async def startup_event():
         from app.live_trading.kill_switch import kill_switch
         from app.live_trading.capital_manager import capital_manager
         kill_switch.load_state()
-        capital_manager.load_state()
         logger.info("State restored (kill_switch=%s, capital_stage=%s)",
                     kill_switch.is_active, capital_manager.current_stage.stage)
     except Exception as e:
@@ -114,6 +113,9 @@ async def startup_event():
         from app.agents.risk_manager import risk_manager
         from app.agents.trader import trader
         from app.orchestrator import orchestrator
+
+        from app.utils.constants import SECTOR_MAP
+        risk_manager.update_sector_map(SECTOR_MAP)
 
         orchestrator.register_agent("portfolio_manager", portfolio_manager)
         orchestrator.register_agent("risk_manager", risk_manager)

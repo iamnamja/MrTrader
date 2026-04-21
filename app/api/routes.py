@@ -106,7 +106,7 @@ def _system_status(alpaca_ok: bool = True) -> str:
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
-ALPACA_TIMEOUT = 4.0  # seconds before giving up and returning partial data
+ALPACA_TIMEOUT = 8.0  # seconds before giving up and returning partial data
 
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
@@ -124,8 +124,14 @@ async def get_dashboard_summary():
             except Exception:
                 return None, []
 
+        async def _fetch_alpaca_safe():
+            try:
+                return await asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT)
+            except (asyncio.TimeoutError, Exception):
+                return None, []
+
         (account, positions), (win_rate, max_dd), trades_count = await asyncio.gather(
-            asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT),
+            _fetch_alpaca_safe(),
             asyncio.to_thread(_win_rate_and_drawdown),
             asyncio.to_thread(_trades_today_count),
         )
@@ -150,8 +156,16 @@ async def get_dashboard_summary():
         if account_value is not None:
             previous_value = account_value - daily_pnl
             daily_pnl_pct = (daily_pnl / previous_value * 100) if previous_value > 0 else 0.0
-            initial_capital = 20_000.0
-            total_pnl = round(account_value - initial_capital, 2)
+            # Total P&L = sum of realized PnL from all closed trades
+            from app.database.models import Trade as _Trade
+            _db2 = get_session()
+            try:
+                total_pnl = round(
+                    sum(t.pnl or 0 for t in _db2.query(_Trade).filter_by(status="CLOSED").all()), 2
+                )
+            finally:
+                _db2.close()
+            initial_capital = max(account_value - total_pnl, 1.0)
             total_pnl_pct = round((total_pnl / initial_capital) * 100, 2)
         else:
             daily_pnl_pct = total_pnl = total_pnl_pct = None

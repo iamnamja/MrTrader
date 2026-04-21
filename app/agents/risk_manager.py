@@ -48,7 +48,8 @@ class RiskManager(BaseAgent):
     def __init__(self, limits: Optional[RiskLimits] = None):
         super().__init__("risk_manager")
         self.limits = limits or RiskLimits()
-        self._sector_map: Dict[str, str] = {}
+        from app.utils.constants import SECTOR_MAP
+        self._sector_map: Dict[str, str] = dict(SECTOR_MAP)
         self._peak_equity: Optional[float] = None
         # Count of open intraday positions (updated on approve/exit messages)
         self._open_intraday_count: int = 0

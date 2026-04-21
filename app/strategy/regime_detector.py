@@ -39,17 +39,24 @@ class RegimeDetector:
         now = time.monotonic()
         if now - self._cache_ts < CACHE_TTL_SECONDS and self._cached_vix is not None:
             return self._cached_vix
+        # Return stale immediately if we have it — refresh in background
+        if self._cached_vix is not None:
+            import threading
+            threading.Thread(target=self._refresh_vix, daemon=True).start()
+            return self._cached_vix
+        # First-ever fetch — do it synchronously but with a tight timeout
+        self._refresh_vix()
+        return self._cached_vix
+
+    def _refresh_vix(self) -> None:
         try:
             import yfinance as yf
-            df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=10)
+            df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=4)
             if not df.empty:
-                vix = float(df["Close"].values.flat[-1])
-                self._cached_vix = vix
-                self._cache_ts = now
-                return vix
+                self._cached_vix = float(df["Close"].values.flat[-1])
+                self._cache_ts = time.monotonic()
         except Exception as exc:
             logger.debug("Could not fetch VIX: %s", exc)
-        return self._cached_vix  # stale or None
 
     def _vix_score(self) -> float:
         """Normalize VIX to 0–1 (clamped)."""

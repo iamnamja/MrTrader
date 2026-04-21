@@ -53,9 +53,11 @@ function fmtPct(v: number | null | undefined) {
 }
 function fmtTs(iso: string | undefined) {
   if (!iso) return '—'
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+  // DB stores UTC without 'Z'; append it so JS parses as UTC, then display in ET
+  const normalized = iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z'
+  const d = new Date(normalized)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
+    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' })
 }
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
@@ -109,7 +111,11 @@ function MacroWidget() {
     api.regimeDetail().then(d => setRegime(d as RegimeDetail)).catch(() => {})
   }, [])
 
-  if (!regime) return null
+  if (!regime) return (
+    <div style={{ ...s.card, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted, fontSize: 12 }}>
+      Loading market regime…
+    </div>
+  )
 
   const regimeColor = regime.regime === 'LOW' ? C.green : regime.regime === 'HIGH' ? C.red : C.yellow
   const ind = regime.macro_indicators
@@ -795,10 +801,14 @@ function TopBar({ health, wsConnected }: { health: Health | null; wsConnected: b
   useEffect(() => {
     const tick = () => {
       const now = new Date()
-      setClock(
-        now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + '  ' +
-        now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) + ' UTC'
-      )
+      const etStr = now.toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        timeZone: 'America/New_York',
+      })
+      const dateStr = now.toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', timeZone: 'America/New_York',
+      })
+      setClock(`${dateStr}  ${etStr} ET`)
     }
     tick()
     const id = setInterval(tick, 1000)
@@ -1739,8 +1749,271 @@ function MonitorPanel() {
   )
 }
 
+// ── Agents Panel ──────────────────────────────────────────────────────────────
+
+interface AgentEvent {
+  id: number
+  agent_name: AgentName | string
+  time: string
+  decision_type: string
+  symbol?: string
+  reasoning?: Record<string, unknown>
+  expanded: boolean
+}
+
+const AGENT_NAMES = ['portfolio_manager', 'risk_manager', 'trader'] as const
+type AgentName = typeof AGENT_NAMES[number]
+
+const AGENT_LABELS: Record<AgentName, string> = {
+  portfolio_manager: 'Portfolio Manager',
+  risk_manager: 'Risk Manager',
+  trader: 'Trader',
+}
+
+const DECISION_COLOR = (dt: string): string => {
+  if (/APPROVED|ENTERED|SELECTED|ANALYSIS|WARMED/.test(dt)) return C.green
+  if (/REJECTED|ERROR|FAILED/.test(dt)) return C.red
+  if (/EXITED|CLOSED|SKIPPED|PAUSED/.test(dt)) return C.yellow
+  return C.accent
+}
+
+function ReasoningCard({ type, r }: { type: string; r: Record<string, unknown> }) {
+  const row = (label: string, val: unknown) => val == null ? null : (
+    <div key={label} style={{ display: 'flex', gap: 8, padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,.04)' }}>
+      <span style={{ fontSize: 11, color: C.muted, minWidth: 130, flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: 11, color: C.text, wordBreak: 'break-word' }}>{String(val)}</span>
+    </div>
+  )
+
+  // INSTRUMENTS_SELECTED — show ranked stock list
+  if (type === 'INSTRUMENTS_SELECTED') {
+    const selected = (r.selected as Array<{ symbol: string; confidence: number }>) || []
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Sent at', r.sent_at)}
+        <div style={{ fontSize: 11, color: C.muted, margin: '6px 0 4px' }}>Selected stocks (ranked by confidence):</div>
+        {selected.map((s, i) => (
+          <div key={s.symbol} style={{ display: 'flex', gap: 8, padding: '2px 0' }}>
+            <span style={{ fontSize: 11, color: C.muted, minWidth: 20 }}>#{i + 1}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.accent, minWidth: 60 }}>{s.symbol}</span>
+            <span style={{ fontSize: 11, color: C.green }}>{(s.confidence * 100).toFixed(1)}% confidence</span>
+          </div>
+        ))}
+        {selected.length === 0 && <div style={{ fontSize: 11, color: C.muted }}>No stocks met confidence threshold</div>}
+      </div>
+    )
+  }
+
+  // SWING_PREMARKET_ANALYSIS — candidates list
+  if (type === 'SWING_PREMARKET_ANALYSIS') {
+    const candidates = (r.candidates as Array<{ symbol: string; confidence: number }>) || []
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Analyzed', r.universe_size ? `${r.universe_size} stocks` : null)}
+        <div style={{ fontSize: 11, color: C.muted, margin: '6px 0 4px' }}>Top candidates:</div>
+        {candidates.slice(0, 10).map((s, i) => (
+          <div key={s.symbol} style={{ display: 'flex', gap: 8, padding: '2px 0' }}>
+            <span style={{ fontSize: 11, color: C.muted, minWidth: 20 }}>#{i + 1}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.accent, minWidth: 60 }}>{s.symbol}</span>
+            <span style={{ fontSize: 11, color: C.green }}>{(s.confidence * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  // TRADE_APPROVED / TRADE_REJECTED
+  if (type === 'TRADE_APPROVED' || type === 'TRADE_REJECTED') {
+    const p = (r.proposal as Record<string, unknown>) || r
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Symbol', p.symbol)}
+        {row('Direction', p.direction)}
+        {row('Entry price', p.entry_price != null ? `$${Number(p.entry_price).toFixed(2)}` : null)}
+        {row('Stop loss', p.stop_loss != null ? `$${Number(p.stop_loss).toFixed(2)}` : null)}
+        {row('Position size', p.position_size != null ? `$${Number(p.position_size).toFixed(0)}` : null)}
+        {row('Confidence', p.confidence != null ? `${(Number(p.confidence) * 100).toFixed(1)}%` : null)}
+        {row('Signal type', p.signal_type)}
+        {type === 'TRADE_REJECTED' && row('Reason', r.failed_rule ?? r.reason ?? r.message)}
+      </div>
+    )
+  }
+
+  // TRADE_ENTERED
+  if (type === 'TRADE_ENTERED') {
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Symbol', r.symbol)}
+        {row('Direction', r.direction)}
+        {row('Entry price', r.entry_price != null ? `$${Number(r.entry_price).toFixed(2)}` : null)}
+        {row('Quantity', r.quantity)}
+        {row('Stop loss', r.stop_loss != null ? `$${Number(r.stop_loss).toFixed(2)}` : null)}
+        {row('Signal type', r.signal_type)}
+        {row('Strategy', r.strategy)}
+      </div>
+    )
+  }
+
+  // TRADE_EXITED / INTRADAY_FORCE_CLOSED
+  if (/EXITED|CLOSED/.test(type)) {
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Symbol', r.symbol)}
+        {row('Exit price', r.exit_price != null ? `$${Number(r.exit_price).toFixed(2)}` : null)}
+        {row('P&L', r.pnl != null ? `$${Number(r.pnl).toFixed(2)}` : null)}
+        {row('Reason', r.reason ?? r.exit_reason)}
+        {row('Hold time', r.hold_time)}
+      </div>
+    )
+  }
+
+  // MODEL_RETRAINED
+  if (type === 'MODEL_RETRAINED') {
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {row('Version', r.version)}
+        {row('Sharpe', r.sharpe != null ? Number(r.sharpe).toFixed(2) : null)}
+        {row('Accuracy', r.accuracy != null ? `${(Number(r.accuracy) * 100).toFixed(1)}%` : null)}
+      </div>
+    )
+  }
+
+  // Fallback — clean key/value table
+  return (
+    <div style={{ paddingTop: 6 }}>
+      {Object.entries(r).map(([k, v]) =>
+        typeof v === 'object' ? null : row(k.replace(/_/g, ' '), v)
+      )}
+    </div>
+  )
+}
+
+function AgentFeed({ name, events, onToggle }: {
+  name: AgentName
+  events: AgentEvent[]
+  onToggle: (id: number) => void
+}) {
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      {/* Header */}
+      <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ width: 8, height: 8, borderRadius: '50%', background: C.green, flexShrink: 0 }} />
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{AGENT_LABELS[name]}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: C.muted }}>{events.length} events</span>
+      </div>
+
+      {/* Event list */}
+      <div style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', flex: 1 }}>
+        {events.length === 0 && (
+          <div style={{ padding: 16, color: C.muted, fontSize: 12, textAlign: 'center' }}>
+            Waiting for decisions…
+          </div>
+        )}
+        {events.map(ev => (
+          <div key={ev.id} style={{ borderBottom: `1px solid rgba(255,255,255,.04)` }}>
+            <div
+              onClick={() => onToggle(ev.id)}
+              style={{ padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 8 }}
+            >
+              <span style={{ fontSize: 10, color: C.muted, flexShrink: 0, paddingTop: 2 }}>{ev.time}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: DECISION_COLOR(ev.decision_type) }}>
+                    {ev.decision_type}
+                  </span>
+                  {ev.symbol && (
+                    <span style={{ fontSize: 11, background: C.surface2, padding: '1px 6px', borderRadius: 4, color: C.accent }}>
+                      {ev.symbol}
+                    </span>
+                  )}
+                </div>
+                {/* One-line summary from reasoning */}
+                {!ev.expanded && ev.reasoning && (
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {ev.reasoning.failed_rule
+                      ? `✗ ${ev.reasoning.failed_rule}: ${ev.reasoning.message ?? ''}`
+                      : ev.reasoning.stop_loss
+                      ? `stop=$${Number(ev.reasoning.stop_loss).toFixed(2)}`
+                      : ev.reasoning.candidates
+                      ? `${(ev.reasoning.candidates as unknown[]).length} candidates`
+                      : ev.reasoning.reason
+                      ? String(ev.reasoning.reason)
+                      : ev.reasoning.exit_price
+                      ? `exit=$${Number(ev.reasoning.exit_price).toFixed(2)}  PnL=$${Number(ev.reasoning.pnl ?? 0).toFixed(2)}`
+                      : ''}
+                  </div>
+                )}
+              </div>
+              <span style={{ fontSize: 10, color: C.muted, flexShrink: 0 }}>{ev.expanded ? '▲' : '▼'}</span>
+            </div>
+            {ev.expanded && ev.reasoning && (
+              <div style={{ padding: '0 14px 10px 36px', background: C.surface2 }}>
+                <ReasoningCard type={ev.decision_type} r={ev.reasoning} />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
+  const [historical, setHistorical] = useState<AgentEvent[]>([])
+  const [events, setEvents] = useState<AgentEvent[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // Load historical decisions on mount — set loading false immediately so panel renders
+  useEffect(() => {
+    setLoading(false)
+    api.decisions(100).then((data: unknown) => {
+      const rows = data as Array<{ id: number; agent_name: string; decision_type: string; symbol?: string; reasoning?: Record<string, unknown>; timestamp?: string }>
+      const mapped: AgentEvent[] = rows.map(r => ({
+        id: r.id,
+        agent_name: r.agent_name,
+        time: r.timestamp ? fmtTs(r.timestamp) : '—',
+        decision_type: r.decision_type,
+        symbol: r.symbol,
+        reasoning: r.reasoning,
+        expanded: false,
+      }))
+      setHistorical(mapped)
+    }).catch((e) => { console.error('Decisions fetch failed:', e) })
+  }, [])
+
+  // Merge live + historical, deduplicate by id, newest first
+  useEffect(() => {
+    const all = [...liveEvents, ...historical]
+    const seen = new Set<number>()
+    const deduped = all.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true })
+    setEvents(deduped)
+  }, [liveEvents, historical])
+
+  const toggle = useCallback((id: number) => {
+    setEvents(prev => prev.map(e => e.id === id ? { ...e, expanded: !e.expanded } : e))
+  }, [])
+
+  const forAgent = (name: AgentName) => events.filter(e => e.agent_name === name)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>Agent Decisions</h2>
+        <span style={{ fontSize: 12, color: C.muted }}>
+          {loading ? 'Loading…' : `${events.length} total events · live via WebSocket`}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        {AGENT_NAMES.map(name => (
+          <AgentFeed key={name} name={name} events={forAgent(name)} onToggle={toggle} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Session', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -1750,6 +2023,7 @@ export default function App() {
   const [pnlHistory, setPnlHistory] = useState<{ time: string; pnl: number }[]>([])
   const [decisions, setDecisions] = useState<Decision[]>([])
   const [signalFeed, setSignalFeed] = useState<SignalRow[]>([])
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([])
   const [wsConnected, setWsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const { toasts, add: toast } = useToasts()
@@ -1817,6 +2091,20 @@ export default function App() {
         const msgText = (data.action as string) ?? (data.decision_type as string) ?? (data.message as string) ?? ''
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
         setSignalFeed(f => [{ time: now, symbol: sym, kind, msg: msgText }, ...f].slice(0, 100))
+
+        const nowET = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/New_York' })
+        if (type === 'agent_decision') {
+          const ev: AgentEvent = {
+            id: Date.now() + Math.random(), // ephemeral id for live events
+            agent_name: (data.agent_name as string) ?? 'unknown',
+            time: nowET,
+            decision_type: (data.decision_type as string) ?? '',
+            symbol: data.symbol as string | undefined,
+            reasoning: data.reasoning as Record<string, unknown> | undefined,
+            expanded: false,
+          }
+          setAgentEvents(prev => [ev, ...prev].slice(0, 200))
+        }
       }
       if (type === 'alert') toast((data.message as string) ?? JSON.stringify(data), 'warning')
     }
@@ -1862,13 +2150,14 @@ export default function App() {
         {tab === 'Signal Monitor' && <SignalsPanel feed={signalFeed} decisions={decisions} />}
         {tab === 'Capital Ramp' && <RampPanel toast={toast} />}
         {tab === 'Kill Switch' && <KillPanel toast={toast} />}
-        {tab === 'Session' && <SessionPanel toast={toast} />}
+        {tab === 'Orchestrator' && <SessionPanel toast={toast} />}
         {tab === 'Readiness' && <ReadinessPanel />}
         {tab === 'Analytics' && <AnalyticsPanel />}
         {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
         {tab === 'Performance' && <PerformanceReviewPanel />}
         {tab === 'Config' && <ConfigPanel toast={toast} />}
         {tab === 'Monitor' && <MonitorPanel />}
+        {tab === 'Agents' && <AgentsPanel liveEvents={agentEvents} />}
       </div>
 
       <ToastContainer toasts={toasts} />
