@@ -12,7 +12,7 @@ MrTrader runs two independent ML models:
 |---|---|---|
 | **Horizon** | 10 trading days | ~2 hours |
 | **Bar resolution** | Daily OHLCV | 5-minute OHLCV |
-| **Universe** | SP-100 (~81 symbols) | Russell 1000 (~1000 symbols) |
+| **Universe** | S&P 500 (~500 symbols) — planned; currently SP-100 (~81) | Russell 1000 (~1000 symbols) |
 | **Training history** | 3–5 years | 2 years |
 | **Features** | ~83 (no fundamentals) → ~126 (with fundamentals) | 37 |
 | **Architecture** | XGBoost (XGBClassifier) | XGBoost + LightGBM soft-vote ensemble |
