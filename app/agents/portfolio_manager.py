@@ -27,8 +27,20 @@ TRADE_PROPOSALS_QUEUE = "trade_proposals"
 TOP_N_STOCKS = 10
 TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
-POSITION_RISK_PCT = 0.02       # risk 2% of account per trade for sizing
+POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
 INTRADAY_SCAN_MINUTE = 45      # 09:45 ET for intraday scan
+
+# ── Capital allocation ────────────────────────────────────────────────────────
+SWING_BUDGET_PCT    = 0.70     # 70% of account reserved for swing trades
+INTRADAY_BUDGET_PCT = 0.30     # 30% of account reserved for intraday trades
+GROSS_EXPOSURE_CAP  = 0.80     # never deploy more than 80% of account at once
+
+# Confidence-to-size multiplier: prob → scalar applied to base position size.
+# Clipped to [0.5x, 2.0x] so a single high-confidence trade can't dominate.
+def _confidence_scalar(prob: float) -> float:
+    """Linear scale: prob=MIN_CONFIDENCE → 0.5x, prob=1.0 → 2.0x."""
+    lo, hi = MIN_CONFIDENCE, 1.0
+    return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
 class PortfolioManager(BaseAgent):
@@ -303,15 +315,17 @@ class PortfolioManager(BaseAgent):
             price = self._alpaca.get_latest_price(symbol)
             if price is None or price <= 0:
                 continue
-            quantity = self._calculate_quantity(price, account_value)
+            quantity = self._calculate_quantity(
+                price, account_value, trade_type="intraday", confidence=float(confidence)
+            )
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
                 "quantity": quantity,
                 "entry_price": price,
                 "confidence": float(confidence),
-                "stop_loss": round(price * 0.995, 2),      # tight 0.5% stop
-                "profit_target": round(price * 1.01, 2),  # 1% target
+                "stop_loss": round(price * 0.995, 2),
+                "profit_target": round(price * 1.01, 2),
                 "source_agent": "portfolio_manager",
                 "trade_type": "intraday",
             }
@@ -343,7 +357,9 @@ class PortfolioManager(BaseAgent):
             if price is None or price <= 0:
                 continue
 
-            quantity = self._calculate_quantity(price, account_value)
+            quantity = self._calculate_quantity(
+                price, account_value, trade_type="swing", confidence=float(confidence)
+            )
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
@@ -423,8 +439,42 @@ class PortfolioManager(BaseAgent):
             self.logger.debug("Price target upside fetch failed: %s", exc)
         return result
 
-    def _calculate_quantity(self, price: float, account_value: float) -> int:
-        """Size position at pm.position_risk_pct of account value (DB-configurable)."""
+    def _get_deployed_by_type(self) -> Dict[str, float]:
+        """
+        Return {trade_type: deployed_dollars} for open positions.
+        Uses Alpaca positions tagged with trade_type in their client_order_id.
+        Falls back to 0 on any error so sizing degrades gracefully.
+        """
+        deployed = {"swing": 0.0, "intraday": 0.0, "total": 0.0}
+        try:
+            positions = self._alpaca.get_positions()  # list of position dicts
+            for pos in positions:
+                market_val = abs(float(pos.get("market_value") or 0))
+                deployed["total"] += market_val
+                # Trade type tagged in metadata; default to swing for legacy positions
+                tt = pos.get("trade_type") or "swing"
+                if tt in deployed:
+                    deployed[tt] += market_val
+        except Exception:
+            pass
+        return deployed
+
+    def _calculate_quantity(
+        self,
+        price: float,
+        account_value: float,
+        trade_type: str = "swing",
+        confidence: float = MIN_CONFIDENCE,
+    ) -> int:
+        """
+        Size a position using three layered constraints:
+          1. Strategy budget: swing uses 70%, intraday uses 30% of account
+          2. Gross exposure cap: total deployed never exceeds 80% of account
+          3. Confidence scalar: high-confidence signals get larger allocations
+
+        Base position = budget_for_type × POSITION_RISK_PCT × confidence_scalar
+        Then clamp to remaining headroom in both the strategy budget and gross cap.
+        """
         risk_pct = POSITION_RISK_PCT
         try:
             from app.database.session import get_session
@@ -436,8 +486,25 @@ class PortfolioManager(BaseAgent):
                 _db.close()
         except Exception:
             pass
-        risk_dollars = account_value * risk_pct
-        qty = int(risk_dollars / price)
+
+        # 1. Strategy budget for this trade type
+        budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
+        strategy_budget = account_value * budget_pct
+
+        # 2. How much of each budget and gross cap is already deployed
+        deployed = self._get_deployed_by_type()
+        type_headroom  = max(0.0, strategy_budget - deployed.get(trade_type, 0.0))
+        gross_headroom = max(0.0, account_value * GROSS_EXPOSURE_CAP - deployed["total"])
+        available = min(type_headroom, gross_headroom)
+
+        # 3. Base size = strategy_budget × risk_pct × confidence_scalar
+        scalar = _confidence_scalar(confidence)
+        base_dollars = strategy_budget * risk_pct * scalar
+
+        # Clamp to available headroom
+        position_dollars = min(base_dollars, available)
+
+        qty = int(position_dollars / price)
         return max(qty, 1)
 
     # ─── Retraining ───────────────────────────────────────────────────────────

@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
 MAX_INTRADAY_POSITIONS = 3   # hard cap on concurrent intraday trades
+GROSS_EXPOSURE_CAP    = 0.80  # never deploy > 80% of account across all strategies
+SWING_BUDGET_PCT      = 0.70  # swing strategy budget fraction
+INTRADAY_BUDGET_PCT   = 0.30  # intraday strategy budget fraction
 
 
 class RiskManager(BaseAgent):
@@ -194,6 +197,43 @@ class RiskManager(BaseAgent):
 
         if self._peak_equity is None or current_equity > self._peak_equity:
             self._peak_equity = current_equity
+
+        # ── Rule 0b: Gross exposure cap (80% of account) ─────────────────────
+        total_deployed = sum(
+            abs(float(p.get("market_value") or 0)) for p in positions
+        )
+        gross_pct = (total_deployed + trade_cost) / max(account_value, 1.0)
+        if gross_pct > GROSS_EXPOSURE_CAP:
+            msg = (f"Gross exposure cap: adding ${trade_cost:,.0f} would bring "
+                   f"total to {gross_pct:.1%} (limit {GROSS_EXPOSURE_CAP:.0%})")
+            reasoning["failed_rule"] = "gross_exposure_cap"
+            reasoning["checks"].append({"rule": "gross_exposure_cap", "ok": False, "msg": msg})
+            return False, reasoning
+        reasoning["checks"].append({
+            "rule": "gross_exposure_cap", "ok": True,
+            "msg": f"gross={gross_pct:.1%} (limit {GROSS_EXPOSURE_CAP:.0%})"
+        })
+
+        # ── Rule 0c: Strategy budget cap ─────────────────────────────────────
+        trade_type = proposal.get("trade_type", "swing")
+        budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
+        strategy_budget = account_value * budget_pct
+        type_deployed = sum(
+            abs(float(p.get("market_value") or 0))
+            for p in positions
+            if (p.get("trade_type") or "swing") == trade_type
+        )
+        type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
+        if type_pct > budget_pct:
+            msg = (f"{trade_type} budget cap: adding ${trade_cost:,.0f} would use "
+                   f"{type_pct:.1%} of account (limit {budget_pct:.0%})")
+            reasoning["failed_rule"] = "strategy_budget_cap"
+            reasoning["checks"].append({"rule": "strategy_budget_cap", "ok": False, "msg": msg})
+            return False, reasoning
+        reasoning["checks"].append({
+            "rule": "strategy_budget_cap", "ok": True,
+            "msg": f"{trade_type} deployed={type_pct:.1%} (limit {budget_pct:.0%})"
+        })
 
         # ── Rule 1: Buying Power ──────────────────────────────────────────────
         ok, msg = validate_buying_power(trade_cost, buying_power, self.limits)
