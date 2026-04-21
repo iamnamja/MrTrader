@@ -19,7 +19,7 @@ from app.agents.base import BaseAgent
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_OPEN_HOUR, SP_100_TICKERS
+from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,7 @@ class PortfolioManager(BaseAgent):
     # ─── Ticker Universe ──────────────────────────────────────────────────────
 
     def _get_universe(self) -> List[str]:
-        """Return active tickers from DB watchlist; fall back to SP_100_TICKERS."""
+        """Return active tickers from DB watchlist; fall back to SP_500_TICKERS."""
         try:
             from app.database.session import get_session
             from app.database.models import WatchlistTicker
@@ -241,8 +241,8 @@ class PortfolioManager(BaseAgent):
             finally:
                 db.close()
         except Exception as exc:
-            self.logger.debug("Watchlist DB unavailable, using SP_100: %s", exc)
-        return list(SP_100_TICKERS)
+            self.logger.debug("Watchlist DB unavailable, using SP_500: %s", exc)
+        return list(SP_500_TICKERS)
 
     # ─── Instrument Selection ─────────────────────────────────────────────────
 
