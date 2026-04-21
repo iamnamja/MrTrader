@@ -38,7 +38,7 @@ VIX_CHECK_INTERVAL_SECONDS = 300     # re-fetch VIX at most every 5 min
 
 # Strategy-level circuit breaker: pause a strategy when win rate drops
 STRATEGY_WIN_RATE_WINDOW = 20        # rolling N trades to evaluate win rate
-STRATEGY_WIN_RATE_FLOOR  = 0.40      # below this → pause the strategy
+STRATEGY_WIN_RATE_FLOOR = 0.40       # below this → pause the strategy
 
 
 class CircuitBreaker:

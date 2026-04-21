@@ -87,6 +87,8 @@ async def broadcast_agent_decision(agent_name: str, decision_type: str, reasonin
         "agent_name": agent_name,
         "decision_type": decision_type,
         "reasoning": reasoning,
-        "symbol": (reasoning or {}).get("symbol")
-            or ((reasoning or {}).get("proposal") or {}).get("symbol"),
+        "symbol": (
+            (reasoning or {}).get("symbol")
+            or ((reasoning or {}).get("proposal") or {}).get("symbol")
+        ),
     })

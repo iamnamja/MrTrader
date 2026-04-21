@@ -680,5 +680,3 @@ def _symbol_to_rows(
             test_raw.append([day_ord, best_return])
 
     return train_rows, train_raw, test_rows, test_raw, feature_names
-
-

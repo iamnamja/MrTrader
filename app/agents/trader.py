@@ -19,20 +19,20 @@ from datetime import datetime
 from typing import Any, Dict
 from zoneinfo import ZoneInfo
 
-ET = ZoneInfo("America/New_York")
-
 from app.agents.base import BaseAgent
+from app.agents.circuit_breaker import circuit_breaker
 from app.database.models import Order, Trade
 from app.database.session import get_session
-from app.strategy.signals import generate_signal, check_exit
 from app.strategy.position_sizer import size_position
-from app.agents.circuit_breaker import circuit_breaker
+from app.strategy.signals import check_exit, generate_signal
 
 logger = logging.getLogger(__name__)
 
+ET = ZoneInfo("America/New_York")
+
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
-EXIT_REQUESTS_QUEUE   = "trader_exit_requests"    # PM → Trader: EXIT/HOLD/EXTEND_TARGET
-REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"       # Trader → PM: request re-evaluation
+EXIT_REQUESTS_QUEUE = "trader_exit_requests"    # PM → Trader: EXIT/HOLD/EXTEND_TARGET
+REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"    # Trader → PM: request re-evaluation
 CHECK_INTERVAL = 300      # seconds between full scan cycles
 MIN_BARS = 220            # minimum daily bars required for EMA(200) + buffer
 INTRADAY_FORCE_CLOSE_HOUR = 15
@@ -321,8 +321,10 @@ class Trader(BaseAgent):
         filled_price = alpaca.get_latest_price(symbol) or intended_price
         slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2) if intended_price > 0 else 0.0
 
-        await self._record_entry(symbol, shares, filled_price, intended_price, slippage_bps,
-                                  order.get("order_id"), result, proposal)
+        await self._record_entry(
+            symbol, shares, filled_price, intended_price, slippage_bps,
+            order.get("order_id"), result, proposal,
+        )
 
     async def _record_entry(
         self,
