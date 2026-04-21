@@ -51,6 +51,7 @@ class Trader(BaseAgent):
         #   trade_type ("swing" | "intraday")
         self._force_closed_today: bool = False
         self._last_date: str = ""
+        self._last_regime: str = ""   # track regime changes for stop tightening
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -116,6 +117,9 @@ class Trader(BaseAgent):
         """One pass: check entries for pending symbols, exits for active positions."""
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
+
+        # Check for regime shift → tighten stops on all open swing positions
+        await self._apply_regime_stop_tightening(alpaca)
 
         # Check entry signals for approved-but-not-yet-entered symbols
         for symbol, proposal in list(self.approved_symbols.items()):
@@ -236,6 +240,76 @@ class Trader(BaseAgent):
         finally:
             db.close()
 
+    # ─── Regime-Aware Stop Tightening ────────────────────────────────────────
+
+    async def _apply_regime_stop_tightening(self, alpaca) -> None:
+        """
+        When regime shifts to HIGH, tighten open swing stops to 1×ATR from
+        current price so we protect capital during sudden volatility spikes.
+        Only fires on the transition (LOW/MEDIUM → HIGH), not every cycle.
+        """
+        try:
+            from app.strategy.regime_detector import regime_detector
+            regime = regime_detector.get_regime()
+        except Exception:
+            return
+
+        if regime == self._last_regime:
+            return  # no change — nothing to do
+
+        prev = self._last_regime
+        self._last_regime = regime
+
+        if regime != "HIGH":
+            self.logger.info("Regime changed: %s → %s", prev, regime)
+            return
+
+        # Regime just shifted to HIGH — tighten all open swing stops
+        swing_positions = [
+            (sym, pos) for sym, pos in self.active_positions.items()
+            if pos.get("trade_type", "swing") == "swing"
+        ]
+        if not swing_positions:
+            self.logger.info("Regime → HIGH: no open swing positions to tighten")
+            return
+
+        self.logger.warning(
+            "Regime shifted %s → HIGH — tightening stops on %d swing position(s)",
+            prev, len(swing_positions),
+        )
+
+        for symbol, pos in swing_positions:
+            try:
+                current_price = alpaca.get_latest_price(symbol)
+                if current_price is None:
+                    continue
+                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=20)
+                if bars is None or bars.empty:
+                    continue
+                from app.strategy.signals import _calc_atr
+                atr_val = _calc_atr(bars["high"], bars["low"], bars["close"], 14)
+                if not atr_val:
+                    continue
+                tight_stop = round(current_price - 1.0 * atr_val, 4)
+                if tight_stop > pos["stop_price"]:
+                    old_stop = pos["stop_price"]
+                    pos["stop_price"] = tight_stop
+                    self.logger.warning(
+                        "%s: stop tightened (regime=HIGH) $%.2f → $%.2f",
+                        symbol, old_stop, tight_stop,
+                    )
+            except Exception as exc:
+                self.logger.error("Stop tightening failed for %s: %s", symbol, exc)
+
+        await self.log_decision(
+            "REGIME_STOP_TIGHTENED",
+            reasoning={
+                "prev_regime": prev,
+                "new_regime": regime,
+                "symbols": [s for s, _ in swing_positions],
+            },
+        )
+
     # ─── Exit ─────────────────────────────────────────────────────────────────
 
     async def _check_exit(self, symbol: str, alpaca):
@@ -249,6 +323,27 @@ class Trader(BaseAgent):
         highest = max(pos["highest_price"], current_price)
         pos["highest_price"] = highest
         pos["bars_held"] += 1
+
+        # Adverse-move warning: if down >3% from entry, log and tighten stop to breakeven
+        pnl_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
+        if pnl_pct <= -0.03 and not pos.get("_adverse_warned"):
+            pos["_adverse_warned"] = True
+            breakeven_stop = round(pos["entry_price"] * 0.995, 4)  # near-breakeven
+            if breakeven_stop > pos["stop_price"]:
+                pos["stop_price"] = breakeven_stop
+            self.logger.warning(
+                "%s: adverse move %.1f%% — stop moved to $%.2f",
+                symbol, pnl_pct * 100, pos["stop_price"],
+            )
+            await self.log_decision(
+                "ADVERSE_MOVE_WARNING",
+                reasoning={
+                    "symbol": symbol,
+                    "pnl_pct": round(pnl_pct, 4),
+                    "stop_price": pos["stop_price"],
+                    "entry_price": pos["entry_price"],
+                },
+            )
 
         should_exit, reason, new_stop = check_exit(
             symbol=symbol,
