@@ -193,7 +193,8 @@ class TestEdgar8KThrottling:
 
     def test_polls_when_interval_elapsed(self):
         pm = _fresh_pm()
-        pm._last_8k_check = 0.0  # never checked
+        from app.agents.premarket import EDGAR_POLL_INTERVAL
+        pm._last_8k_check = -(EDGAR_POLL_INTERVAL + 1)  # guaranteed old
         with patch("requests.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
