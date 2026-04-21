@@ -70,6 +70,7 @@ class PortfolioManager(BaseAgent):
         self._selected_today: bool = False       # 09:50 proposals sent
         self._selected_intraday_today: bool = False
         self._retrained_today: bool = False
+        self._premarket_run_today: bool = False  # 09:00 premarket routine done
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
         self._last_review_minute: int = -1       # last minute a 30-min review ran
@@ -99,11 +100,22 @@ class PortfolioManager(BaseAgent):
                     self._selected_today = False
                     self._selected_intraday_today = False
                     self._retrained_today = False
+                    self._premarket_run_today = False
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
 
                 is_weekday = now.weekday() < 5
+
+                # 09:00: pre-market intelligence routine (before open)
+                if (
+                    is_weekday
+                    and now.hour == 9
+                    and now.minute == 0
+                    and not self._premarket_run_today
+                ):
+                    await self._run_premarket_intelligence()
+                    self._premarket_run_today = True
 
                 # 08:00: pre-market swing model analysis (score + rank, don't send yet)
                 if (
@@ -125,17 +137,24 @@ class PortfolioManager(BaseAgent):
                     await self._send_swing_proposals()
                     self._selected_today = True
 
-                # 09:45: intraday model selection
+                # 09:45: intraday model selection (skip if blocked by premarket intel)
                 if (
                     is_weekday
                     and now.hour == MARKET_OPEN_HOUR
                     and now.minute == INTRADAY_SCAN_MINUTE
                     and not self._selected_intraday_today
                 ):
-                    try:
-                        await self.select_intraday_instruments()
-                    except Exception as _e:
-                        self.logger.warning("Intraday scan skipped: %s", _e)
+                    from app.agents.premarket import premarket_intel
+                    if premarket_intel.is_intraday_blocked():
+                        self.logger.warning(
+                            "Intraday scan BLOCKED by pre-market intelligence "
+                            "(macro event or SPY gap)"
+                        )
+                    else:
+                        try:
+                            await self.select_intraday_instruments()
+                        except Exception as _e:
+                            self.logger.warning("Intraday scan skipped: %s", _e)
                     self._selected_intraday_today = True
 
                 # 09:30–16:00: 30-minute position review + reeval drain
@@ -226,6 +245,35 @@ class PortfolioManager(BaseAgent):
                 if feats is not None:
                     features_by_symbol[symbol] = feats
         return features_by_symbol
+
+    async def _run_premarket_intelligence(self):
+        """
+        09:00 ET: Run pre-market intelligence routine.
+        Fetches macro events, SPY context, checks overnight gaps on open positions,
+        polls 8-K filings. Results cached in premarket_intel singleton for the session.
+        """
+        from app.agents.premarket import premarket_intel
+        from app.database.session import get_session
+        from app.database.models import Trade
+
+        # Get currently open positions
+        open_symbols: List[str] = []
+        db = get_session()
+        try:
+            trades = db.query(Trade).filter_by(status="ACTIVE").all()
+            open_symbols = [t.symbol for t in trades]
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+        summary = await asyncio.to_thread(
+            premarket_intel.run_premarket_routine,
+            open_symbols,
+            self.send_message,
+        )
+        self.logger.info("Pre-market intelligence: %s", summary)
+        await self.log_decision("PREMARKET_INTELLIGENCE", reasoning=summary)
 
     async def _analyze_swing_premarket(self):
         """
