@@ -797,6 +797,21 @@ class Trader(BaseAgent):
             except Exception as _ce:
                 self.logger.debug("Compliance post-trade update failed: %s", _ce)
 
+            # Phase 22: record signal quality telemetry
+            try:
+                from app.agents.performance_monitor import performance_monitor
+                sig_type = "UNKNOWN"
+                if trade_id:
+                    _sig_db = get_session()
+                    try:
+                        _t = _sig_db.query(Trade).filter_by(id=trade_id).first()
+                        sig_type = (_t.signal_type or "UNKNOWN") if _t else "UNKNOWN"
+                    finally:
+                        _sig_db.close()
+                performance_monitor.record_trade_result(sig_type, pnl)
+            except Exception:
+                pass
+
             # Release intraday slot in risk manager
             if trade_type == "intraday":
                 try:
