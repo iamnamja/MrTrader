@@ -114,9 +114,9 @@ class TestPortfolioManagerUniverse:
 
         assert "TSLA" in universe
 
-    def test_falls_back_to_sp100_when_watchlist_empty(self):
+    def test_falls_back_to_sp500_when_watchlist_empty(self):
         pm = self._make_pm()
-        from app.utils.constants import SP_100_TICKERS
+        from app.utils.constants import SP_500_TICKERS
 
         mock_db = MagicMock()
         mock_query = MagicMock()
@@ -127,13 +127,13 @@ class TestPortfolioManagerUniverse:
         with patch("app.database.session.get_session", return_value=mock_db):
             universe = pm._get_universe()
 
-        assert universe == list(SP_100_TICKERS)
+        assert universe == list(SP_500_TICKERS)
 
-    def test_falls_back_to_sp100_on_db_error(self):
+    def test_falls_back_to_sp500_on_db_error(self):
         pm = self._make_pm()
-        from app.utils.constants import SP_100_TICKERS
+        from app.utils.constants import SP_500_TICKERS
 
         with patch("app.database.session.get_session", side_effect=Exception("db down")):
             universe = pm._get_universe()
 
-        assert universe == list(SP_100_TICKERS)
+        assert universe == list(SP_500_TICKERS)

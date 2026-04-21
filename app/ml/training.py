@@ -24,7 +24,7 @@ from app.database.models import ModelVersion
 from app.database.session import get_session
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
-from app.utils.constants import SP_100_TICKERS, SECTOR_MAP
+from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ class ModelTrainer:
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
         Returns version number of the saved model.
         """
-        symbols = symbols or SP_100_TICKERS
+        symbols = symbols or SP_500_TICKERS
         years = years or settings.historical_data_years
 
         logger.info(
