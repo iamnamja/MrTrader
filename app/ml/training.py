@@ -255,8 +255,10 @@ class ModelTrainer:
         metrics = self._evaluate(X_test, y_test, threshold=self.prediction_threshold)
         logger.info("Out-of-sample metrics: %s", metrics)
 
-        # SHAP feature importance (diagnostic — logs top-15 by mean |SHAP|)
-        self._log_shap_importance(X_test, feature_names)
+        # SHAP feature importance — logs top-15 and captures for DB persistence
+        shap_top = self._log_shap_importance(X_test, feature_names)
+        if shap_top:
+            metrics["shap_top_features"] = shap_top
 
         # Optional walk-forward CV
         if self.walk_forward_folds > 0:
@@ -893,20 +895,25 @@ class ModelTrainer:
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
-    def _log_shap_importance(self, X: np.ndarray, feature_names: List[str]) -> None:
-        """Compute SHAP values and log top-15 features by mean absolute contribution."""
+    def _log_shap_importance(
+        self, X: np.ndarray, feature_names: List[str]
+    ) -> Optional[Dict[str, float]]:
+        """
+        Compute SHAP values, log top-15 features by mean absolute contribution,
+        and return {feature: shap_value} dict for DB persistence (Phase B4).
+        Returns None if SHAP is unavailable or fails.
+        """
         if len(X) == 0:
-            return
+            return None
         try:
             import shap
-            # Get the underlying XGBoost/regressor model
             inner = None
             if hasattr(self.model, "stage1"):  # ThreeStageModel
-                inner = getattr(self.model.stage2, "model", None)  # catalyst stage
+                inner = getattr(self.model.stage2, "model", None)
             elif hasattr(self.model, "model"):
                 inner = self.model.model
             if inner is None or not hasattr(inner, "feature_importances_"):
-                return
+                return None
 
             X_sample = X[:min(500, len(X))]
             if hasattr(self.model, "scaler"):
@@ -926,10 +933,13 @@ class ModelTrainer:
             logger.info("SHAP top-15 features (mean |shap|):")
             for name, val in top:
                 logger.info("  %-35s %.4f", name, val)
+            return {name: round(float(val), 6) for name, val in top}
         except ImportError:
             logger.info("SHAP not installed — skipping (pip install shap)")
+            return None
         except Exception as exc:
             logger.debug("SHAP analysis failed: %s", exc)
+            return None
 
     @staticmethod
     def _to_binary(y: np.ndarray) -> np.ndarray:
@@ -1310,6 +1320,15 @@ class ModelTrainer:
             ))
             db.commit()
             logger.info("Swing model v%d saved to DB", version)
+
+            # Phase B4: AUC drift alert
+            auc = metrics.get("auc")
+            if auc is not None and auc < 0.65:
+                logger.warning(
+                    "MODEL DRIFT ALERT: v%d AUC=%.4f is below 0.65 threshold — "
+                    "recent OOS performance degraded, manual review recommended",
+                    version, auc,
+                )
         except Exception as exc:
             db.rollback()
             logger.error("Failed to save model version: %s", exc)
