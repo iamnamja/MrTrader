@@ -55,6 +55,8 @@ class Trader(BaseAgent):
         self._force_closed_today: bool = False
         self._last_date: str = ""
         self._last_regime: str = ""   # track regime changes for stop tightening
+        # Pending limit orders for swing entries (symbol → order metadata)
+        self._pending_limit_orders: Dict[str, Dict[str, Any]] = {}
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -206,6 +208,9 @@ class Trader(BaseAgent):
             except Exception as e:
                 self.logger.error("Entry check failed for %s: %s", symbol, e)
 
+        # Poll pending limit orders (check fills, cancel unfilled at EOD)
+        await self._poll_pending_limit_orders(alpaca)
+
         # Check exit signals for active positions
         for symbol in list(self.active_positions.keys()):
             try:
@@ -256,14 +261,82 @@ class Trader(BaseAgent):
         await self._execute_entry(symbol, shares, result, alpaca)
 
     async def _execute_entry(self, symbol: str, shares: int, result, alpaca):
-        """Place market order and record the trade."""
+        """
+        Place entry order:
+        - Swing: limit order at 0.3% below ask (cancel if unfilled by EOD)
+        - Intraday: market order for immediacy
+        Records intended_price for slippage tracking.
+        """
+        proposal = self.approved_symbols.get(symbol, {})
+        trade_type = proposal.get("trade_type", "swing")
+        intended_price = result.entry_price
+
+        if trade_type == "swing":
+            # Use limit order 0.3% below ask for better execution
+            limit_offset = 0.003
+            try:
+                from app.database.agent_config import get_agent_config
+                _db = get_session()
+                try:
+                    limit_offset = float(get_agent_config(_db, "strategy.limit_order_offset_pct") or 0.003)
+                finally:
+                    _db.close()
+            except Exception:
+                pass
+
+            quote = alpaca.get_quote(symbol)
+            if quote and quote["ask"] > 0:
+                limit_price = round(quote["ask"] * (1 - limit_offset), 4)
+                intended_price = quote["ask"]
+            else:
+                limit_price = round(intended_price * (1 - limit_offset), 4)
+
+            order = alpaca.place_limit_order(symbol, shares, "buy", limit_price)
+            if not order:
+                self.logger.error("Limit entry order failed for %s", symbol)
+                return
+
+            order_id = order.get("order_id")
+            self._pending_limit_orders[symbol] = {
+                "order_id": order_id,
+                "shares": shares,
+                "intended_price": intended_price,
+                "limit_price": limit_price,
+                "result": result,
+                "proposal": proposal,
+                "queued_at": datetime.now(ET),
+            }
+            self.logger.info(
+                "LIMIT ORDER placed %s x%d @ $%.4f (ask=%.4f offset=%.1f%%) — awaiting fill",
+                symbol, shares, limit_price, intended_price, limit_offset * 100,
+            )
+            return  # position is created once fill confirmed in _poll_pending_limit_orders
+
+        # Intraday: market order
         order = alpaca.place_market_order(symbol, shares, "buy")
         if not order:
             self.logger.error("Market order failed for %s", symbol)
             return
 
-        filled_price = alpaca.get_latest_price(symbol) or result.entry_price
+        filled_price = alpaca.get_latest_price(symbol) or intended_price
+        slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2) if intended_price > 0 else 0.0
 
+        await self._record_entry(symbol, shares, filled_price, intended_price, slippage_bps,
+                                  order.get("order_id"), result, proposal)
+
+    async def _record_entry(
+        self,
+        symbol: str,
+        shares: int,
+        filled_price: float,
+        intended_price: float,
+        slippage_bps: float,
+        order_id: str,
+        result,
+        proposal: Dict[str, Any],
+    ):
+        """Persist a confirmed entry to DB and update active_positions."""
+        trade_type = proposal.get("trade_type", "swing")
         db = get_session()
         try:
             trade = Trade(
@@ -284,15 +357,16 @@ class Trader(BaseAgent):
             db_order = Order(
                 trade_id=trade.id,
                 order_type="ENTRY",
-                order_id=order.get("order_id"),
+                order_id=order_id,
                 status="FILLED",
                 filled_price=filled_price,
                 filled_qty=shares,
+                intended_price=intended_price,
+                slippage_bps=slippage_bps,
             )
             db.add(db_order)
             db.commit()
 
-            proposal = self.approved_symbols.get(symbol, {})
             self.active_positions[symbol] = {
                 "entry_price":   filled_price,
                 "stop_price":    result.stop_price,
@@ -301,14 +375,14 @@ class Trader(BaseAgent):
                 "atr":           result.atr,
                 "bars_held":     0,
                 "trade_id":      trade.id,
-                "trade_type":    proposal.get("trade_type", "swing"),
+                "trade_type":    trade_type,
             }
             self.approved_symbols.pop(symbol, None)
 
             self.logger.info(
-                "ENTERED %s x%d @ $%.2f  signal=%s  stop=%.2f  target=%.2f",
-                symbol, shares, filled_price, result.signal_type,
-                result.stop_price, result.target_price,
+                "ENTERED %s x%d @ $%.2f (intended=$%.2f slip=%.1fbps) signal=%s stop=%.2f target=%.2f",
+                symbol, shares, filled_price, intended_price, slippage_bps,
+                result.signal_type, result.stop_price, result.target_price,
             )
             await self.log_decision(
                 "TRADE_ENTERED",
@@ -317,6 +391,8 @@ class Trader(BaseAgent):
                     **result.reasoning,
                     "shares": shares,
                     "filled_price": filled_price,
+                    "intended_price": intended_price,
+                    "slippage_bps": slippage_bps,
                 },
             )
         except Exception as e:
@@ -324,6 +400,64 @@ class Trader(BaseAgent):
             self.logger.error("Failed to record entry for %s: %s", symbol, e)
         finally:
             db.close()
+
+    async def _poll_pending_limit_orders(self, alpaca) -> None:
+        """
+        Check fill status of pending swing limit orders.
+        - Filled → record entry, move to active_positions
+        - EOD or market closed → cancel unfilled orders
+        """
+        if not self._pending_limit_orders:
+            return
+
+        now = datetime.now(ET)
+        cancel_unfilled = now.hour >= 15 and now.minute >= 45  # 3:45 PM ET cutoff
+
+        for symbol in list(self._pending_limit_orders.keys()):
+            pending = self._pending_limit_orders[symbol]
+            order_id = pending["order_id"]
+            try:
+                status = alpaca.get_order_status(order_id)
+                if status is None:
+                    continue
+
+                order_status = str(status.get("status", "")).lower()
+                filled_qty = int(status.get("filled_qty") or 0)
+                filled_price = status.get("filled_avg_price")
+
+                if order_status in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
+                    filled_price = float(filled_price)
+                    intended = pending["intended_price"]
+                    slippage_bps = round((filled_price - intended) / intended * 10000, 2) if intended > 0 else 0.0
+                    del self._pending_limit_orders[symbol]
+                    await self._record_entry(
+                        symbol=symbol,
+                        shares=filled_qty,
+                        filled_price=filled_price,
+                        intended_price=intended,
+                        slippage_bps=slippage_bps,
+                        order_id=order_id,
+                        result=pending["result"],
+                        proposal=pending["proposal"],
+                    )
+                    self.logger.info(
+                        "LIMIT FILLED %s x%d @ $%.4f (slip=%.1fbps)",
+                        symbol, filled_qty, filled_price, slippage_bps,
+                    )
+
+                elif order_status in ("canceled", "expired", "rejected"):
+                    del self._pending_limit_orders[symbol]
+                    self.logger.info("Limit order %s for %s cancelled/expired — removing", order_id, symbol)
+
+                elif cancel_unfilled:
+                    alpaca.cancel_order(order_id)
+                    del self._pending_limit_orders[symbol]
+                    self.logger.info(
+                        "EOD: cancelled unfilled limit order for %s (order=%s)", symbol, order_id
+                    )
+
+            except Exception as exc:
+                self.logger.error("Error polling limit order for %s: %s", symbol, exc)
 
     # ─── Regime-Aware Stop Tightening ────────────────────────────────────────
 

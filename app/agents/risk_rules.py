@@ -21,6 +21,8 @@ class RiskLimits:
     MAX_PORTFOLIO_HEAT_PCT: float = 0.06       # 6%  – total risk across all positions
     NORMAL_VOLATILITY_ATR_RATIO: float = 0.02  # base ATR/price ratio for stop-loss calc
     STOP_LOSS_BASE_PCT: float = 0.02           # 2% stop loss at normal volatility
+    max_spread_pct: float = 0.0015             # 0.15% max bid-ask spread
+    max_adtv_pct: float = 0.01                 # 1% max trade cost as fraction of 20d ADTV
 
     @classmethod
     def from_db(cls, db) -> "RiskLimits":
@@ -33,6 +35,8 @@ class RiskLimits:
                 MAX_DAILY_LOSS_PCT=get_agent_config(db, "risk.max_daily_loss_pct"),
                 MAX_ACCOUNT_DRAWDOWN_PCT=get_agent_config(db, "risk.max_account_drawdown_pct"),
                 MAX_OPEN_POSITIONS=get_agent_config(db, "risk.max_open_positions"),
+                max_spread_pct=get_agent_config(db, "risk.max_spread_pct"),
+                max_adtv_pct=get_agent_config(db, "risk.max_adtv_pct"),
             )
         except Exception:
             return cls()

@@ -294,6 +294,57 @@ class RiskManager(BaseAgent):
             reasoning["failed_rule"] = "portfolio_heat"
             return False, reasoning
 
+        # ── Rule 8a: Bid-Ask Spread (execution quality) ───────────────────────
+        if proposal.get("trade_type") == "swing":
+            try:
+                max_spread = self.limits.max_spread_pct
+                from app.integrations import get_alpaca_client
+                quote = get_alpaca_client().get_quote(symbol)
+                if quote is not None:
+                    spread_pct = quote["spread_pct"]
+                    if spread_pct > max_spread:
+                        msg = (f"Bid-ask spread too wide: {spread_pct*100:.3f}% "
+                               f"(limit {max_spread*100:.3f}%)")
+                        reasoning["failed_rule"] = "bid_ask_spread"
+                        reasoning["checks"].append({"rule": "bid_ask_spread", "ok": False, "msg": msg})
+                        return False, reasoning
+                    reasoning["checks"].append({
+                        "rule": "bid_ask_spread", "ok": True,
+                        "msg": f"spread={spread_pct*100:.3f}% (limit {max_spread*100:.3f}%)"
+                    })
+                else:
+                    reasoning["checks"].append({"rule": "bid_ask_spread", "ok": True, "msg": "quote unavailable — skipped"})
+            except Exception as exc:
+                self.logger.debug("Spread check error for %s: %s", symbol, exc)
+                reasoning["checks"].append({"rule": "bid_ask_spread", "ok": True, "msg": f"spread check skipped: {exc}"})
+
+        # ── Rule 8b: ADTV Liquidity Gate ─────────────────────────────────────
+        if proposal.get("trade_type") == "swing":
+            try:
+                max_adtv_pct = self.limits.max_adtv_pct
+                from app.integrations import get_alpaca_client
+                bars_df = get_alpaca_client().get_bars(symbol, timeframe="1D", limit=20)
+                if bars_df is not None and len(bars_df) >= 5:
+                    adtv = float((bars_df["close"] * bars_df["volume"]).mean())
+                    if adtv > 0:
+                        adtv_pct = trade_cost / adtv
+                        if adtv_pct > max_adtv_pct:
+                            msg = (f"Trade size too large vs ADTV: "
+                                   f"${trade_cost:,.0f} = {adtv_pct*100:.2f}% of ADTV "
+                                   f"(limit {max_adtv_pct*100:.1f}%)")
+                            reasoning["failed_rule"] = "adtv_liquidity"
+                            reasoning["checks"].append({"rule": "adtv_liquidity", "ok": False, "msg": msg})
+                            return False, reasoning
+                        reasoning["checks"].append({
+                            "rule": "adtv_liquidity", "ok": True,
+                            "msg": f"trade={adtv_pct*100:.2f}% of ADTV (limit {max_adtv_pct*100:.1f}%)"
+                        })
+                else:
+                    reasoning["checks"].append({"rule": "adtv_liquidity", "ok": True, "msg": "insufficient ADTV data — skipped"})
+            except Exception as exc:
+                self.logger.debug("ADTV check error for %s: %s", symbol, exc)
+                reasoning["checks"].append({"rule": "adtv_liquidity", "ok": True, "msg": f"ADTV check skipped: {exc}"})
+
         # ── Rule 8: Dynamic Stop Loss ─────────────────────────────────────────
         atr = proposal.get("atr")
         if proposal.get("trade_type") == "intraday":

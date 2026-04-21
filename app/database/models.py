@@ -45,6 +45,8 @@ class Order(Base):
     status = Column(String(20), default="PENDING")  # PENDING, FILLED, FAILED
     filled_price = Column(Float, nullable=True)
     filled_qty = Column(Integer, nullable=True)
+    intended_price = Column(Float, nullable=True)   # price at signal time (pre-execution)
+    slippage_bps = Column(Float, nullable=True)     # (filled - intended) / intended * 10000
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships

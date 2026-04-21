@@ -8,7 +8,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from app.config import settings
 
@@ -312,6 +312,31 @@ class AlpacaClient:
         except Exception as e:
             logger.error(f"Error fetching bars for {symbol}: {e}")
             raise
+
+    def get_quote(self, symbol: str) -> Optional[Dict[str, float]]:
+        """
+        Return latest NBBO quote for symbol.
+
+        Returns dict with keys: bid, ask, mid, spread_pct
+        or None if the quote cannot be fetched.
+        """
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            _rate_limiter.acquire()
+            quotes = self.data_client.get_stock_latest_quote(request)
+            quote = quotes.get(symbol)
+            if quote is None:
+                return None
+            bid = float(quote.bid_price)
+            ask = float(quote.ask_price)
+            if bid <= 0 or ask <= 0:
+                return None
+            mid = (bid + ask) / 2
+            spread_pct = (ask - bid) / mid if mid > 0 else 0.0
+            return {"bid": bid, "ask": ask, "mid": mid, "spread_pct": spread_pct}
+        except Exception as e:
+            logger.debug("get_quote(%s) failed: %s", symbol, e)
+            return None
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get the latest price for a symbol"""
