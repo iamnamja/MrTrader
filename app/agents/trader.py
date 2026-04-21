@@ -3,10 +3,11 @@ Trader Agent — execution engine for MrTrader.
 
 Flow:
   1. Listen to Redis queue `trader_approved_trades` (from Risk Manager)
-  2. Every CHECK_INTERVAL seconds, fetch daily bars and run generate_signal()
-  3. On BUY signal: size position with size_position(), place market order, record trade
-  4. Every tick, check open positions with check_exit() for stop/target/trail
-  5. On exit signal: place market order, close trade, log P&L
+  2. Listen to Redis queue `trader_exit_requests` (from Portfolio Manager)
+  3. Every CHECK_INTERVAL seconds, fetch daily bars and run generate_signal()
+  4. On BUY signal: size position with size_position(), place market order, record trade
+  5. Every tick, check open positions with check_exit() for stop/target/trail
+  6. On exit signal: place market order, close trade, log P&L
 
 Strategy is defined in app/strategy/signals.py — the single source of truth
 shared with the backtesting engine.
@@ -30,6 +31,8 @@ from app.agents.circuit_breaker import circuit_breaker
 logger = logging.getLogger(__name__)
 
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
+EXIT_REQUESTS_QUEUE   = "trader_exit_requests"    # PM → Trader: EXIT/HOLD/EXTEND_TARGET
+REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"       # Trader → PM: request re-evaluation
 CHECK_INTERVAL = 300      # seconds between full scan cycles
 MIN_BARS = 220            # minimum daily bars required for EMA(200) + buffer
 INTRADAY_FORCE_CLOSE_HOUR = 15
@@ -80,6 +83,9 @@ class Trader(BaseAgent):
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
 
+                # Drain PM exit/hold/extend requests (non-blocking)
+                await self._process_exit_requests()
+
                 # 3:45 PM ET: force-close all intraday positions
                 if (
                     now.weekday() < 5
@@ -111,6 +117,76 @@ class Trader(BaseAgent):
                 await self.log_decision("TRADER_ERROR", reasoning={"error": str(e)})
                 await asyncio.sleep(10)
 
+    # ─── PM Communication ────────────────────────────────────────────────────
+
+    async def _process_exit_requests(self) -> None:
+        """
+        Drain the trader_exit_requests queue (PM → Trader).
+        Each message has: symbol, action ("EXIT"|"HOLD"|"EXTEND_TARGET"),
+        reason, and optionally extend_atr (for EXTEND_TARGET).
+        """
+        from app.integrations import get_alpaca_client
+        while True:
+            msg = await asyncio.to_thread(self.get_message, EXIT_REQUESTS_QUEUE, 1)
+            if msg is None:
+                break
+            symbol = msg.get("symbol")
+            action = msg.get("action", "HOLD")
+            reason = msg.get("reason", "pm_request")
+
+            if symbol not in self.active_positions:
+                # PM may send requests for positions already closed — ignore
+                continue
+
+            if action == "EXIT":
+                self.logger.info("PM exit request for %s — reason: %s", symbol, reason)
+                try:
+                    alpaca = get_alpaca_client()
+                    price = alpaca.get_latest_price(symbol) or self.active_positions[symbol]["entry_price"]
+                    await self._execute_exit(symbol, price, f"PM_{reason.upper()}", alpaca)
+                except Exception as exc:
+                    self.logger.error("PM-requested exit failed for %s: %s", symbol, exc)
+
+            elif action == "EXTEND_TARGET":
+                extend_atr = float(msg.get("extend_atr", 0.0))
+                if extend_atr > 0 and symbol in self.active_positions:
+                    pos = self.active_positions[symbol]
+                    old_target = pos["target_price"]
+                    pos["target_price"] = round(old_target + extend_atr, 4)
+                    # Persist to DB so it survives a restart
+                    db = get_session()
+                    try:
+                        trade = db.query(Trade).filter_by(id=pos["trade_id"]).first()
+                        if trade:
+                            trade.target_price = pos["target_price"]
+                            db.commit()
+                    except Exception:
+                        db.rollback()
+                    finally:
+                        db.close()
+                    self.logger.info(
+                        "%s: target extended by %.4f ATR → $%.2f (was $%.2f)",
+                        symbol, extend_atr, pos["target_price"], old_target,
+                    )
+
+            # HOLD → no action needed, PM is confirming to stay in position
+
+    async def _send_reeval_request(self, symbol: str, reason: str, current_price: float = 0.0) -> None:
+        """Ask PM to re-evaluate a position. PM will respond via trader_exit_requests."""
+        pos = self.active_positions.get(symbol, {})
+        entry = pos.get("entry_price") or 0.0
+        pnl_pct = round((current_price - entry) / entry, 4) if entry > 0 and current_price > 0 else 0.0
+        self.send_message(REEVAL_REQUESTS_QUEUE, {
+            "symbol": symbol,
+            "reason": reason,
+            "entry_price": entry,
+            "current_price": current_price,
+            "current_pnl_pct": pnl_pct,
+            "bars_held": pos.get("bars_held", 0),
+            "trade_type": pos.get("trade_type", "swing"),
+        })
+        self.logger.info("Sent reeval request to PM: %s (%s)", symbol, reason)
+
     # ─── Scan Cycle ───────────────────────────────────────────────────────────
 
     async def _scan_cycle(self):
@@ -141,6 +217,13 @@ class Trader(BaseAgent):
 
     async def _check_entry(self, symbol: str, proposal: Dict[str, Any], alpaca):
         """Fetch daily bars, run generate_signal(), enter on BUY."""
+        trade_type = proposal.get("trade_type", "swing")
+        if circuit_breaker.is_strategy_paused(trade_type):
+            self.logger.debug(
+                "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
+            )
+            return
+
         bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
         if bars is None or bars.empty or len(bars) < MIN_BARS:
             self.logger.debug(
@@ -164,6 +247,7 @@ class Trader(BaseAgent):
             available_cash=cash,
             entry_price=result.entry_price,
             stop_price=result.stop_price,
+            ml_score=ml_score or 0.0,
         )
         if shares <= 0:
             self.logger.warning("%s: position sizer returned 0 shares — skipping", symbol)
@@ -214,6 +298,7 @@ class Trader(BaseAgent):
                 "stop_price":    result.stop_price,
                 "target_price":  result.target_price,
                 "highest_price": filled_price,
+                "atr":           result.atr,
                 "bars_held":     0,
                 "trade_id":      trade.id,
                 "trade_type":    proposal.get("trade_type", "swing"),
@@ -345,6 +430,52 @@ class Trader(BaseAgent):
                 },
             )
 
+        # Partial exit: when up 1×ATR, exit configurable % and move stop to breakeven
+        if not pos.get("_partial_exited") and pos.get("atr", 0) > 0:
+            atr_val = pos["atr"]
+            profit_1r = pos["entry_price"] + atr_val
+            if current_price >= profit_1r:
+                await self._execute_partial_exit(symbol, current_price, atr_val, alpaca)
+
+        # Technical weakness detection → request PM re-evaluation (swing only)
+        # These don't trigger immediate exit — PM decides EXIT/HOLD/EXTEND
+        if pos.get("trade_type", "swing") == "swing" and not pos.get("_reeval_sent"):
+            try:
+                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=30)
+                if bars is not None and len(bars) >= 15:
+                    from app.strategy.signals import _calc_rsi
+                    close = bars["close"]
+                    rsi_s = _calc_rsi(close, 14)
+                    rsi_now = float(rsi_s.iloc[-1])
+                    rsi_prev = float(rsi_s.iloc[-2])
+                    vol_now = float(bars["volume"].iloc[-1])
+                    vol_avg = float(bars["volume"].iloc[-20:].mean())
+
+                    weakness_reason = None
+                    if rsi_now < rsi_prev - 10 and rsi_now < 40:
+                        weakness_reason = "rsi_deteriorating"
+                    elif vol_now < vol_avg * 0.4 and pnl_pct > 0:
+                        weakness_reason = "volume_fading"
+                    elif current_price < pos["stop_price"] * 1.005:
+                        weakness_reason = "approaching_stop"
+
+                    if weakness_reason:
+                        pos["_reeval_sent"] = True
+                        await self._send_reeval_request(symbol, weakness_reason, current_price)
+            except Exception:
+                pass  # reeval is best-effort; don't let it block exit logic
+
+        max_hold = 20
+        try:
+            from app.database.agent_config import get_agent_config
+            _db = get_session()
+            try:
+                max_hold = int(get_agent_config(_db, "strategy.max_hold_bars") or 20)
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
         should_exit, reason, new_stop = check_exit(
             symbol=symbol,
             current_price=current_price,
@@ -353,11 +484,94 @@ class Trader(BaseAgent):
             target_price=pos["target_price"],
             highest_price=highest,
             bars_held=pos["bars_held"],
+            max_hold_bars=max_hold,
         )
         pos["stop_price"] = new_stop  # keep trailing stop current
 
         if should_exit:
             await self._execute_exit(symbol, current_price, reason, alpaca)
+
+    async def _execute_partial_exit(self, symbol: str, current_price: float, atr_val: float, alpaca) -> None:
+        """
+        Exit a configurable fraction of the position at 1×ATR profit.
+        Move remaining stop to breakeven. Fires at most once per position.
+        """
+        pos = self.active_positions[symbol]
+        pos["_partial_exited"] = True  # guard — set before any await
+
+        partial_pct = 0.50
+        try:
+            from app.database.session import get_session as _gs
+            from app.database.agent_config import get_agent_config
+            _db = _gs()
+            try:
+                partial_pct = float(get_agent_config(_db, "strategy.partial_exit_pct") or 0.50)
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+        position = alpaca.get_position(symbol)
+        if not position:
+            return
+        total_qty = int(position.get("qty", 0))
+        if total_qty <= 0:
+            return
+
+        partial_qty = max(1, int(total_qty * partial_pct))
+        if partial_qty >= total_qty:
+            # Would exit everything — let normal exit logic handle it
+            pos["_partial_exited"] = False
+            return
+
+        order = alpaca.place_market_order(symbol, partial_qty, "sell")
+        if not order:
+            self.logger.error("Partial exit order failed for %s", symbol)
+            pos["_partial_exited"] = False
+            return
+
+        pnl = (current_price - pos["entry_price"]) * partial_qty
+
+        # Move stop on remaining shares to near-breakeven
+        breakeven_stop = round(pos["entry_price"] * 1.001, 4)
+        pos["stop_price"] = max(pos["stop_price"], breakeven_stop)
+
+        db = get_session()
+        try:
+            if pos.get("trade_id"):
+                db_order = Order(
+                    trade_id=pos["trade_id"],
+                    order_type="PARTIAL_EXIT",
+                    order_id=order.get("order_id"),
+                    status="FILLED",
+                    filled_price=current_price,
+                    filled_qty=partial_qty,
+                )
+                db.add(db_order)
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Failed to record partial exit for %s: %s", symbol, exc)
+        finally:
+            db.close()
+
+        self.logger.info(
+            "PARTIAL EXIT %s: sold %d/%d shares @ $%.2f (%.0f%%) — stop → $%.2f | PnL=$%.2f",
+            symbol, partial_qty, total_qty, current_price,
+            partial_pct * 100, pos["stop_price"], pnl,
+        )
+        await self.log_decision(
+            "PARTIAL_EXIT",
+            trade_id=pos.get("trade_id"),
+            reasoning={
+                "symbol": symbol,
+                "partial_qty": partial_qty,
+                "total_qty": total_qty,
+                "exit_price": current_price,
+                "pnl": round(pnl, 2),
+                "new_stop": pos["stop_price"],
+            },
+        )
 
     async def _execute_exit(self, symbol: str, current_price: float, reason: str, alpaca):
         """Place market order for exit and close the DB trade record."""
@@ -423,8 +637,8 @@ class Trader(BaseAgent):
             trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
             self.active_positions.pop(symbol, None)
 
-            # Update circuit breaker with win/loss
-            circuit_breaker.record_trade_result(won=(pnl > 0))
+            # Update circuit breaker with win/loss (strategy-level tracking)
+            circuit_breaker.record_trade_result(won=(pnl > 0), strategy=trade_type)
 
             # Release intraday slot in risk manager
             if trade_type == "intraday":

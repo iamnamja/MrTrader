@@ -27,14 +27,19 @@ from app.utils.constants import MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, SP_100_TIC
 logger = logging.getLogger(__name__)
 
 TRADE_PROPOSALS_QUEUE = "trade_proposals"
+EXIT_REQUESTS_QUEUE   = "trader_exit_requests"   # PM → Trader
+REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"      # Trader → PM
 TOP_N_STOCKS = 10
 TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
+EXIT_THRESHOLD = 0.35          # re-score below this → exit signal
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
 INTRADAY_SCAN_MINUTE = 45      # 09:45 ET for intraday scan
 SWING_PREMARKET_HOUR = 8       # 08:00 ET: run swing model analysis pre-market
 SWING_SEND_HOUR = 9            # 09:50 ET: send swing proposals after open volatility settles
 SWING_SEND_MINUTE = 50
+REVIEW_INTERVAL_MINUTES = 30   # PM re-scores open positions every 30 minutes
+EARNINGS_EXIT_DAYS = 3         # exit swing positions this many days before earnings
 
 # ── Capital allocation ────────────────────────────────────────────────────────
 SWING_BUDGET_PCT    = 0.70     # 70% of account reserved for swing trades
@@ -69,6 +74,7 @@ class PortfolioManager(BaseAgent):
         self._retrained_today: bool = False
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
+        self._last_review_minute: int = -1       # last minute a 30-min review ran
 
     # ─── Lazy connectors ─────────────────────────────────────────────────────
 
@@ -97,6 +103,7 @@ class PortfolioManager(BaseAgent):
                     self._retrained_today = False
                     self._last_date = today
                     self._swing_proposals = []
+                    self._last_review_minute = -1
 
                 is_weekday = now.weekday() < 5
 
@@ -132,6 +139,26 @@ class PortfolioManager(BaseAgent):
                     except Exception as _e:
                         self.logger.warning("Intraday scan skipped: %s", _e)
                     self._selected_intraday_today = True
+
+                # 09:30–16:00: 30-minute position review + reeval drain
+                market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
+                market_close = now.hour < 16
+                review_slot = (now.hour * 60 + now.minute) // REVIEW_INTERVAL_MINUTES
+                if (
+                    is_weekday
+                    and market_open
+                    and market_close
+                    and review_slot != self._last_review_minute
+                ):
+                    self._last_review_minute = review_slot
+                    try:
+                        await self._review_open_positions()
+                    except Exception as _rev_exc:
+                        self.logger.warning("Position review error: %s", _rev_exc)
+                    try:
+                        await self._handle_reeval_requests()
+                    except Exception as _rev_exc:
+                        self.logger.warning("Reeval handler error: %s", _rev_exc)
 
                 # 17:00: retrain model
                 if (
@@ -417,6 +444,277 @@ class PortfolioManager(BaseAgent):
             reasoning={"selected": [{"symbol": s, "confidence": round(float(p), 4)}
                                     for s, p in selected]},
         )
+
+    # ─── 30-Minute Position Review ────────────────────────────────────────────
+
+    async def _review_open_positions(self) -> None:
+        """
+        Re-score all open swing positions using fresh bars + current model.
+        Sends EXIT to trader_exit_requests if:
+          - Score drops below EXIT_THRESHOLD
+          - Earnings within EARNINGS_EXIT_DAYS days
+          - Score has increased significantly → extend target
+        Also scans universe for new entry opportunities if budget allows.
+        """
+        from app.database.session import get_session
+        from app.database.models import Trade
+
+        db = get_session()
+        try:
+            active_trades = db.query(Trade).filter_by(status="ACTIVE", direction="BUY").all()
+        finally:
+            db.close()
+
+        swing_trades = [t for t in active_trades if getattr(t, "signal_type", "") != "intraday"]
+        if not swing_trades:
+            # Still scan for new opportunities even with no open positions
+            await self._scan_new_opportunities()
+            return
+
+        if not self.model.is_trained:
+            return
+
+        self.logger.info("30-min review: re-scoring %d open position(s)", len(swing_trades))
+
+        def _score_positions():
+            results = {}
+            for trade in swing_trades:
+                try:
+                    bars = self._alpaca.get_bars(trade.symbol, timeframe="1D", limit=300)
+                    if bars is None or bars.empty:
+                        continue
+                    feats = self.feature_engineer.engineer_features(
+                        trade.symbol, bars, fetch_fundamentals=False
+                    )
+                    if feats is None:
+                        continue
+                    model_feature_names = getattr(self.model, "feature_names", None)
+                    if model_feature_names:
+                        x = [[feats.get(f, 0.0) for f in model_feature_names]]
+                    else:
+                        x = [list(feats.values())]
+                    import numpy as np
+                    x = np.nan_to_num(x)
+                    _, probs = self.model.predict(x)
+                    results[trade.symbol] = {
+                        "score": float(probs[0]),
+                        "trade_id": trade.id,
+                        "entry_price": float(trade.entry_price or 0),
+                        "target_price": float(trade.target_price or 0),
+                        "atr": float(trade.target_price or 0) - float(trade.entry_price or 0)
+                            if trade.target_price and trade.entry_price else 0.0,
+                    }
+                except Exception as exc:
+                    self.logger.debug("Re-score failed for %s: %s", trade.symbol, exc)
+            return results
+
+        scores = await asyncio.to_thread(_score_positions)
+
+        exit_threshold = EXIT_THRESHOLD
+        try:
+            from app.database.session import get_session as _gs
+            from app.database.agent_config import get_agent_config
+            _db = _gs()
+            try:
+                exit_threshold = get_agent_config(_db, "pm.exit_threshold") or EXIT_THRESHOLD
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+        for symbol, info in scores.items():
+            score = info["score"]
+            action = None
+            reason = None
+
+            # Check earnings proximity first (overrides score)
+            try:
+                from app.strategy.earnings_filter import days_until_earnings
+                days = days_until_earnings(symbol)
+                if days is not None and 0 < days <= EARNINGS_EXIT_DAYS:
+                    action = "EXIT"
+                    reason = f"earnings_in_{days}d"
+            except Exception:
+                pass
+
+            if action is None:
+                if score < exit_threshold:
+                    action = "EXIT"
+                    reason = f"score_degraded_{score:.2f}"
+                elif score > MIN_CONFIDENCE + 0.10 and info.get("atr", 0) > 0:
+                    # Score improved — extend target by 0.5 ATR
+                    action = "EXTEND_TARGET"
+                    reason = f"score_improved_{score:.2f}"
+
+            if action:
+                msg = {
+                    "symbol": symbol,
+                    "action": action,
+                    "reason": reason,
+                    "score": score,
+                }
+                if action == "EXTEND_TARGET":
+                    msg["extend_atr"] = round(info["atr"] * 0.5, 4)
+                self.send_message(EXIT_REQUESTS_QUEUE, msg)
+                self.logger.info(
+                    "Review → %s %s (score=%.3f reason=%s)",
+                    action, symbol, score, reason,
+                )
+
+        await self.log_decision(
+            "POSITION_REVIEW",
+            reasoning={
+                "reviewed": list(scores.keys()),
+                "actions": {
+                    sym: {"score": round(info["score"], 3)}
+                    for sym, info in scores.items()
+                },
+            },
+        )
+
+        # After reviewing existing positions, look for new opportunities
+        await self._scan_new_opportunities()
+
+    async def _scan_new_opportunities(self) -> None:
+        """
+        Check if account has budget for new swing entries.
+        If so, re-score the universe and send top candidates through RM.
+        Called from _review_open_positions every 30 minutes.
+        """
+        if not self.model.is_trained:
+            return
+        try:
+            account = self._alpaca.get_account()
+            account_value = float(account.get("portfolio_value", 0))
+        except Exception:
+            return
+
+        deployed = self._get_deployed_by_type()
+        gross_pct = deployed["total"] / max(account_value, 1)
+        if gross_pct >= 0.75:  # stay below 80% hard cap — leave 5% buffer
+            return
+
+        self.logger.info("30-min review: budget available (%.0f%% deployed) — scanning for new entries", gross_pct * 100)
+
+        features_by_symbol = await asyncio.to_thread(self._fetch_swing_features)
+        if not features_by_symbol:
+            return
+
+        # Exclude already-held symbols
+        from app.database.session import get_session
+        from app.database.models import Trade
+        db = get_session()
+        try:
+            held = {t.symbol for t in db.query(Trade).filter_by(status="ACTIVE").all()}
+        finally:
+            db.close()
+
+        symbols = [s for s in features_by_symbol if s not in held]
+        if not symbols:
+            return
+
+        model_feature_names = getattr(self.model, "feature_names", None)
+        import numpy as np
+        if model_feature_names:
+            X = np.array([[features_by_symbol[s].get(f, 0.0) for f in model_feature_names] for s in symbols])
+        else:
+            X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        X = np.nan_to_num(X)
+
+        try:
+            _, probabilities = self.model.predict(X)
+        except Exception as exc:
+            self.logger.debug("New opportunity scan prediction failed: %s", exc)
+            return
+
+        ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+        candidates = [(s, p) for s, p in ranked if float(p) >= MIN_CONFIDENCE][:TOP_N_STOCKS]
+
+        if not candidates:
+            return
+
+        self.logger.info("30-min scan found %d new candidate(s): %s", len(candidates), [s for s, _ in candidates])
+        proposals = await self._build_proposals(candidates)
+        for proposal in proposals:
+            self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
+
+    # ─── Reeval Request Handler ───────────────────────────────────────────────
+
+    async def _handle_reeval_requests(self) -> None:
+        """
+        Drain pm_reeval_requests queue (Trader → PM).
+        Re-score each symbol and respond via trader_exit_requests with
+        EXIT, HOLD, or EXTEND_TARGET.
+        """
+        if not self.model.is_trained:
+            return
+
+        requests_processed = 0
+        while True:
+            msg = await asyncio.to_thread(self.get_message, REEVAL_REQUESTS_QUEUE, 1)
+            if msg is None:
+                break
+            symbol = msg.get("symbol")
+            reason = msg.get("reason", "trader_request")
+            trade_type = msg.get("trade_type", "swing")
+            if not symbol:
+                continue
+
+            # Intraday positions: don't re-score with swing model — just HOLD
+            if trade_type == "intraday":
+                self.send_message(EXIT_REQUESTS_QUEUE, {"symbol": symbol, "action": "HOLD", "reason": "intraday_not_rescored"})
+                continue
+
+            try:
+                def _rescore():
+                    bars = self._alpaca.get_bars(symbol, timeframe="1D", limit=300)
+                    if bars is None or bars.empty:
+                        return None
+                    feats = self.feature_engineer.engineer_features(symbol, bars, fetch_fundamentals=False)
+                    if feats is None:
+                        return None
+                    model_feature_names = getattr(self.model, "feature_names", None)
+                    if model_feature_names:
+                        x = [[feats.get(f, 0.0) for f in model_feature_names]]
+                    else:
+                        x = [list(feats.values())]
+                    import numpy as np
+                    x = np.nan_to_num(x)
+                    _, probs = self.model.predict(x)
+                    return float(probs[0])
+
+                score = await asyncio.to_thread(_rescore)
+
+                if score is None:
+                    action = "HOLD"
+                    resp_reason = "rescore_failed"
+                elif score < EXIT_THRESHOLD:
+                    action = "EXIT"
+                    resp_reason = f"rescore_{score:.2f}_below_threshold"
+                else:
+                    action = "HOLD"
+                    resp_reason = f"rescore_{score:.2f}_ok"
+
+                self.send_message(EXIT_REQUESTS_QUEUE, {
+                    "symbol": symbol,
+                    "action": action,
+                    "reason": resp_reason,
+                    "score": score,
+                    "original_reason": reason,
+                })
+                self.logger.info(
+                    "Reeval %s → %s (score=%.3f reason=%s)",
+                    symbol, action, score or 0.0, reason,
+                )
+                requests_processed += 1
+
+            except Exception as exc:
+                self.logger.error("Reeval failed for %s: %s", symbol, exc)
+                # Default to HOLD on error — don't exit just because we couldn't score
+                self.send_message(EXIT_REQUESTS_QUEUE, {"symbol": symbol, "action": "HOLD", "reason": "reeval_error"})
+
+        if requests_processed:
+            self.logger.info("Processed %d reeval request(s)", requests_processed)
 
     # ─── Proposal Building ────────────────────────────────────────────────────
 

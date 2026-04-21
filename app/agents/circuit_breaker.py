@@ -36,6 +36,10 @@ NETWORK_ERROR_LIMIT = 5
 NETWORK_ERROR_WINDOW_SECONDS = 600   # 10 minutes
 VIX_CHECK_INTERVAL_SECONDS = 300     # re-fetch VIX at most every 5 min
 
+# Strategy-level circuit breaker: pause a strategy when win rate drops
+STRATEGY_WIN_RATE_WINDOW = 20        # rolling N trades to evaluate win rate
+STRATEGY_WIN_RATE_FLOOR  = 0.40      # below this → pause the strategy
+
 
 class CircuitBreaker:
     def __init__(self):
@@ -44,7 +48,7 @@ class CircuitBreaker:
         self._open_reason: Optional[str] = None
         self._open_at: Optional[datetime] = None
 
-        # Consecutive loss tracking
+        # Consecutive loss tracking (global)
         self._consecutive_losses = 0
 
         # Network error tracking
@@ -53,6 +57,13 @@ class CircuitBreaker:
         # VIX cache
         self._last_vix_check: float = 0.0
         self._last_vix: Optional[float] = None
+
+        # Per-strategy win/loss history and pause state
+        # strategy → {"results": [bool, ...], "paused": bool, "paused_reason": str|None}
+        self._strategy_state: dict = {
+            "swing":    {"results": [], "paused": False, "paused_reason": None},
+            "intraday": {"results": [], "paused": False, "paused_reason": None},
+        }
 
     # ── State ──────────────────────────────────────────────────────────────────
 
@@ -65,27 +76,89 @@ class CircuitBreaker:
         return not self._is_open
 
     def status(self) -> dict:
-        return {
-            "is_open":           self._is_open,
-            "open_reason":       self._open_reason,
-            "open_at":           self._open_at.isoformat() if self._open_at else None,
-            "consecutive_losses": self._consecutive_losses,
-            "recent_errors":     self._count_recent_errors(),
-            "last_vix":          self._last_vix,
+        strategy_status = {
+            s: {
+                "paused": state["paused"],
+                "paused_reason": state["paused_reason"],
+                "recent_win_rate": self._strategy_win_rate(s),
+                "trades_tracked": len(state["results"]),
+            }
+            for s, state in self._strategy_state.items()
         }
+        return {
+            "is_open":            self._is_open,
+            "open_reason":        self._open_reason,
+            "open_at":            self._open_at.isoformat() if self._open_at else None,
+            "consecutive_losses": self._consecutive_losses,
+            "recent_errors":      self._count_recent_errors(),
+            "last_vix":           self._last_vix,
+            "strategies":         strategy_status,
+        }
+
+    def is_strategy_paused(self, strategy: str) -> bool:
+        """Return True if the given strategy (swing/intraday) is individually paused."""
+        return self._strategy_state.get(strategy, {}).get("paused", False)
+
+    def pause_strategy(self, strategy: str, reason: str = "manual") -> None:
+        """Manually pause a specific strategy without affecting others."""
+        with self._lock:
+            if strategy in self._strategy_state:
+                self._strategy_state[strategy]["paused"] = True
+                self._strategy_state[strategy]["paused_reason"] = reason
+                logger.warning("Strategy '%s' PAUSED — reason: %s", strategy, reason)
+
+    def resume_strategy(self, strategy: str) -> None:
+        """Resume a paused strategy."""
+        with self._lock:
+            if strategy in self._strategy_state:
+                self._strategy_state[strategy]["paused"] = False
+                self._strategy_state[strategy]["paused_reason"] = None
+                self._strategy_state[strategy]["results"].clear()
+                logger.info("Strategy '%s' RESUMED", strategy)
+
+    def _strategy_win_rate(self, strategy: str) -> Optional[float]:
+        results = self._strategy_state.get(strategy, {}).get("results", [])
+        if len(results) < 5:
+            return None  # not enough data
+        window = results[-STRATEGY_WIN_RATE_WINDOW:]
+        return round(sum(window) / len(window), 3)
 
     # ── Triggers ───────────────────────────────────────────────────────────────
 
-    def record_trade_result(self, won: bool):
-        """Call after every closed trade."""
+    def record_trade_result(self, won: bool, strategy: str = "swing"):
+        """
+        Call after every closed trade.
+        Tracks both the global consecutive-loss counter and per-strategy win rate.
+        """
         with self._lock:
+            # Global consecutive loss tracking
             if won:
                 self._consecutive_losses = 0
             else:
                 self._consecutive_losses += 1
                 if self._consecutive_losses >= CONSECUTIVE_LOSS_LIMIT:
-                    self._trip(
-                        f"consecutive_losses={self._consecutive_losses}"
+                    self._trip(f"consecutive_losses={self._consecutive_losses}")
+
+            # Per-strategy win rate tracking
+            if strategy in self._strategy_state:
+                results = self._strategy_state[strategy]["results"]
+                results.append(bool(won))
+                # Keep only last N results
+                if len(results) > STRATEGY_WIN_RATE_WINDOW * 2:
+                    self._strategy_state[strategy]["results"] = results[-STRATEGY_WIN_RATE_WINDOW:]
+
+                # Check if strategy should be paused
+                win_rate = self._strategy_win_rate(strategy)
+                if (
+                    win_rate is not None
+                    and win_rate < STRATEGY_WIN_RATE_FLOOR
+                    and not self._strategy_state[strategy]["paused"]
+                ):
+                    reason = f"win_rate={win_rate:.0%}<{STRATEGY_WIN_RATE_FLOOR:.0%}_over_{STRATEGY_WIN_RATE_WINDOW}_trades"
+                    self._strategy_state[strategy]["paused"] = True
+                    self._strategy_state[strategy]["paused_reason"] = reason
+                    logger.warning(
+                        "Strategy '%s' auto-paused — %s", strategy, reason
                     )
 
     def record_network_error(self):
