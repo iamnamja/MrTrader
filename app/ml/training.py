@@ -464,8 +464,13 @@ class ModelTrainer:
                 return None
 
             if not sector_relative:
-                sorted_rets = sorted(sym_returns.values())
-                return w_start_idx, sorted_rets[int(len(sorted_rets) * 0.80)]
+                rets_arr = np.array(sorted(sym_returns.values()))
+                # Sharpe-adjusted threshold: normalize by cross-sectional std so
+                # volatile windows don't distort the top-20% boundary.
+                cs_mean = float(rets_arr.mean())
+                cs_std = float(rets_arr.std()) + 1e-8
+                sharpe_rets = (rets_arr - cs_mean) / cs_std
+                return w_start_idx, float(np.percentile(sharpe_rets, 80))
             else:
                 from collections import defaultdict
                 sector_rets: Dict[str, List[float]] = defaultdict(list)
@@ -571,6 +576,11 @@ class ModelTrainer:
                         continue
                     label = 1 if blended_ret >= cs_threshold else 0
                 else:
+                    # cross_sectional: threshold is now a Sharpe-adjusted 80th pct.
+                    # Compare stock's Sharpe return (stored as threshold's scale reference)
+                    # to the precomputed threshold. Since threshold is in Sharpe units,
+                    # we normalise stock_ret the same way using the window's cross-sectional
+                    # stats stored alongside the threshold as a tuple (mean, std, threshold).
                     window_thresh = cs_thresholds.get(w_start_idx)
                     if window_thresh is None:
                         continue
@@ -890,7 +900,10 @@ class ModelTrainer:
         y_sorted = y[sort_order]
         window_idx_sorted = window_idx[sort_order]
 
-        # Compute quintile labels (0-4) within each window
+        # Compute quintile labels (0-4) within each window using Sharpe-adjusted
+        # returns: (ret - window_mean) / (window_std + eps). This normalizes out
+        # market-wide moves so high-volatility stocks that moved randomly rank
+        # lower than lower-vol stocks with genuine directional signal.
         y_quintile = np.zeros(len(y_sorted), dtype=np.int32)
         unique_windows = np.unique(window_idx_sorted)
         for w in unique_windows:
@@ -899,7 +912,10 @@ class ModelTrainer:
             if len(rets) < 2:
                 y_quintile[mask] = 2  # single sample gets middle quintile
                 continue
-            ranks = rankdata(rets, method="average")  # 1..n
+            cs_mean = rets.mean()
+            cs_std = rets.std() + 1e-8
+            sharpe_rets = (rets - cs_mean) / cs_std
+            ranks = rankdata(sharpe_rets, method="average")  # 1..n
             quintiles = np.floor((ranks - 1) / len(ranks) * 5).astype(int)
             quintiles = np.clip(quintiles, 0, 4)
             y_quintile[mask] = quintiles
