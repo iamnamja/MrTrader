@@ -653,14 +653,23 @@ def _symbol_to_rows(
             prior_high = float(prev["high"].max())
             prior_low = float(prev["low"].min())
 
-        # Compute Sharpe-adjusted intraday return for cross-sectional ranking.
-        # Dividing by intraday volatility prevents high-vol stocks from dominating
-        # the top-20% label just by moving more on noisy days.
+        # Path-based realized P&L: simulate stop/target exit bar by bar.
+        # Aligns training label with how IntradayAgentSimulator and IntradayBacktester
+        # actually exit trades (+TARGET_PCT or -STOP_PCT), replacing the previous
+        # "max HIGH over 24 bars" label that overstated achievable returns.
         entry = float(feat_bars["close"].iloc[-1])
-        best_return = float((future_bars["high"].max() - entry) / max(entry, 1e-6))
+        realized_return = (float(future_bars["close"].iloc[-1]) - entry) / max(entry, 1e-6)
+        for _, fbar in future_bars.iterrows():
+            if float(fbar["low"]) <= entry * (1 - STOP_PCT):
+                realized_return = -STOP_PCT
+                break
+            if float(fbar["high"]) >= entry * (1 + TARGET_PCT):
+                realized_return = TARGET_PCT
+                break
+        # Sharpe-adjust for cross-sectional ranking (same normalization as before)
         intraday_vol = float(feat_bars["close"].pct_change().std()) + 1e-8
-        horizon_vol = intraday_vol * (HOLD_BARS ** 0.5)  # scale to hold horizon
-        best_return = best_return / horizon_vol  # Sharpe-adjusted
+        horizon_vol = intraday_vol * (HOLD_BARS ** 0.5)
+        best_return = realized_return / horizon_vol
 
         # Daily bars up to this day (O(1) slice via precomputed date array)
         daily_as_of = None
