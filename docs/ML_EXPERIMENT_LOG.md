@@ -232,8 +232,8 @@ Phase 21 (Polygon 2yr data) needed before intraday Tier 3 is evaluable.
 
 | Phase | Change | Gate | Status |
 |---|---|---|---|
-| 18 | Fix label-exit mismatch (both models) | Swing Tier 3 win rate > 42% | **NEXT** |
-| 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | Pending |
+| 18 | Fix label-exit mismatch (both models) | Swing Tier 3 win rate > 42% | ✅ Merged |
+| 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | ✅ Merged |
 | 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | Pending |
 | 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | Pending |
 | 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | Pending |
@@ -279,6 +279,45 @@ Full spec: `docs/PHASES_18_23_SPEC.md`
 | Intraday Tier 3 win rate | 51.1% | TBD (retrain needed) | > 52% |
 
 > Results to be filled in after retrain + Tier 3 backtest.
+
+**Verdict:** 🔄 Pending retrain
+
+---
+
+## Iteration 6 — Phase 19: Pressure Index + ChoCh + Whale Candle
+
+**Branch:** `feature/phase-19-pressure-choch-features`
+**Models:** Swing + Intraday
+**Date completed:** 2026-04-22
+
+### What We Changed
+
+#### Swing — Pressure Index (3 features → `app/ml/features.py`)
+- `pressure_persistence`: bars in last 10 where close > EMA-20 + 0.5×ATR (how sustained is the extension)
+- `pressure_displacement`: (close − EMA-20) / ATR, clipped to [−3, 3] (how far extended)
+- `pressure_index`: persistence × displacement, clipped to [−30, 30] (combined score)
+- **Why**: Existing features don't distinguish brief overbought spikes from sustained extended regimes. 77% stop exits suggest we're entering extended stocks.
+
+#### Swing — ChoCh / Market Structure (3 features → `app/ml/features.py`)
+- `choch_detected`: 1 if close > rolling(20).max().shift(1) (fresh 20-bar breakout = structural break)
+- `bars_since_choch`: bars since last structural break (0–5, within last 5 bars)
+- `hh_hl_sequence`: count of higher-highs in last 6 pivot highs (0–5, trend confirmation)
+- **Why**: Entering mid-trend vs at a fresh ChoCh is the difference between good entry timing and a reverting entry.
+
+#### Intraday — Whale Candle (1 feature → `app/ml/intraday_features.py`)
+- `whale_candle`: 1 if candle body > 2×ATR (institutional activity signal)
+- **Why**: Large-body candles signal unusual institutional conviction — higher follow-through probability.
+
+### Feature Counts
+- Swing: ~126 → ~132 (+6)
+- Intraday: 40 → 41 (+1, whale_candle)
+
+### Results
+
+| Model | Gate | Status |
+|---|---|---|
+| Swing SHAP top 15 | pressure_index or choch_detected in top 15 | 🔄 Pending retrain |
+| Intraday SHAP | whale_candle visible | 🔄 Pending retrain |
 
 **Verdict:** 🔄 Pending retrain
 

@@ -1230,4 +1230,64 @@ class FeatureEngineer:
             features["earnings_drift_signal"] = 0.0
             features["earnings_pead_strength"] = 0.0
 
+        # ── Pressure Index ────────────────────────────────────────────────────
+        try:
+            _span = min(20, len(prices) - 1)
+            if _span >= 5:
+                _baseline = (
+                    pd.Series(prices).ewm(span=_span, adjust=False).mean().to_numpy()
+                )
+                _tr = np.maximum(
+                    highs[1:] - lows[1:],
+                    np.maximum(
+                        np.abs(highs[1:] - prices[:-1]),
+                        np.abs(lows[1:] - prices[:-1]),
+                    ),
+                )
+                _atr14 = float(np.mean(_tr[-14:])) if len(_tr) >= 14 else float(np.mean(_tr))
+                _above = (prices > _baseline + 0.5 * _atr14).astype(float)
+                _window = min(10, len(_above))
+                _persistence = float(np.sum(_above[-_window:]))
+                _displacement = float(
+                    np.clip((prices[-1] - _baseline[-1]) / max(_atr14, 1e-8), -3.0, 3.0)
+                )
+                features["pressure_persistence"] = _persistence
+                features["pressure_displacement"] = _displacement
+                features["pressure_index"] = float(
+                    np.clip(_persistence * _displacement, -30.0, 30.0)
+                )
+            else:
+                features["pressure_persistence"] = 5.0
+                features["pressure_displacement"] = 0.0
+                features["pressure_index"] = 0.0
+        except Exception as exc:
+            logger.debug("Pressure index failed for %s: %s", symbol, exc)
+            features["pressure_persistence"] = 5.0
+            features["pressure_displacement"] = 0.0
+            features["pressure_index"] = 0.0
+
+        # ── ChoCh / Market Structure ──────────────────────────────────────────
+        try:
+            if len(highs) >= 22:
+                _recent_high = pd.Series(highs).rolling(20).max().shift(1).to_numpy()
+                _choch = (prices > _recent_high).astype(float)
+                features["choch_detected"] = float(_choch[-1])
+                # bars since last structural break
+                _last5 = _choch[-5:]
+                _idx = np.where(_last5 == 1.0)[0]
+                features["bars_since_choch"] = float(5 - int(_idx[-1]) - 1) if len(_idx) else 5.0
+                # consecutive higher-highs in last 5 pivot highs
+                _pivots = highs[-6:]
+                _hh = int(np.sum(np.diff(_pivots) > 0))
+                features["hh_hl_sequence"] = float(_hh)
+            else:
+                features["choch_detected"] = 0.0
+                features["bars_since_choch"] = 5.0
+                features["hh_hl_sequence"] = 0.0
+        except Exception as exc:
+            logger.debug("ChoCh failed for %s: %s", symbol, exc)
+            features["choch_detected"] = 0.0
+            features["bars_since_choch"] = 5.0
+            features["hh_hl_sequence"] = 0.0
+
         return features
