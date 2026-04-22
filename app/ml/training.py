@@ -22,6 +22,7 @@ import pandas as pd
 from app.config import settings
 from app.database.models import ModelVersion
 from app.database.session import get_session
+from app.ml.cs_normalize import cs_normalize_by_group
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
 from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
@@ -36,6 +37,9 @@ FORWARD_DAYS = 10       # v25: 10-day forward (empirically better AUC than 21d/6
 # STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
 STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
+# Embargo: skip this many windows between train and test to prevent the training
+# label period (FORWARD_DAYS bars) from overlapping with test feature windows.
+EMBARGO_WINDOWS = max(1, round(FORWARD_DAYS / STEP_DAYS))
 
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
 LABEL_STOP_PCT = 0.02     # fallback fixed stop
@@ -348,10 +352,14 @@ class ModelTrainer:
         if not window_starts:
             return np.array([]), np.array([]), np.array([]), np.array([]), [], []
 
-        # Time-based split: last TEST_FRACTION windows -> test
+        # Time-based split: last TEST_FRACTION windows -> test, with embargo gap.
         split_idx = max(1, int(len(window_starts) * (1 - TEST_FRACTION)))
         train_window_starts = window_starts[:split_idx]
-        test_window_starts = window_starts[split_idx:]
+        # Embargo: skip EMBARGO_WINDOWS windows so the last training label period
+        # (ends at split_idx window + FORWARD_DAYS bars) does not overlap the
+        # first test feature window.
+        embargo_start = min(split_idx + EMBARGO_WINDOWS, len(window_starts))
+        test_window_starts = window_starts[embargo_start:]
 
         # Regime score once per run (same macro context)
         regime_score = self._get_regime_score()
@@ -380,10 +388,19 @@ class ModelTrainer:
             symbols_data, all_dates, train_window_starts,
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
-        X_test, y_test, _ = self._windows_to_matrix(
+        X_test, y_test, meta_test = self._windows_to_matrix(
             symbols_data, all_dates, test_window_starts,
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
+
+        # Cross-sectional normalization: z-score each feature within each window
+        # (across all symbols at the same point in time) to remove regime/sector bias.
+        if len(X_train) > 0 and len(meta_train) > 0:
+            train_window_ids = np.array([m["window_idx"] for m in meta_train])
+            X_train = cs_normalize_by_group(X_train, train_window_ids)
+        if len(X_test) > 0 and len(meta_test) > 0:
+            test_window_ids = np.array([m["window_idx"] for m in meta_test])
+            X_test = cs_normalize_by_group(X_test, test_window_ids)
 
         feature_names = self._last_feature_names
         return X_train, y_train, X_test, y_test, feature_names, meta_train

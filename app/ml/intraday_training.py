@@ -30,6 +30,7 @@ import pandas as pd
 from app.data import get_provider
 from app.database.models import ModelVersion
 from app.database.session import get_session
+from app.ml.cs_normalize import cs_normalize_by_group
 from app.ml.intraday_features import compute_intraday_features, MIN_BARS
 from app.ml.model import PortfolioSelectorModel
 
@@ -446,7 +447,10 @@ class IntradayModelTrainer:
 
         split_idx = max(1, int(len(sorted_days) * (1 - TEST_FRACTION)))
         train_days = set(sorted_days[:split_idx])
-        test_days = set(sorted_days[split_idx:])
+        # Embargo: skip 1 day so the last training day's 2h label period
+        # does not bleed into the first test day's features via daily bar history.
+        embargo_start = min(split_idx + 1, len(sorted_days))
+        test_days = set(sorted_days[embargo_start:])
 
         # Precompute SPY day-slices once to avoid per-symbol work
         spy_by_day = _index_by_day(spy_data) if spy_data is not None else {}
@@ -488,7 +492,8 @@ class IntradayModelTrainer:
         # We rank symbols within each day; top 20% → label 1.
         # Rebuild y from cross-sectional ranks rather than absolute ATR labels.
         def _cross_sectional_labels(X_parts, raw_parts):
-            """Re-label rows by ranking best_return within each trading day."""
+            """Re-label rows by ranking best_return within each trading day,
+            then z-score features within each day (cross-sectional normalization)."""
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
@@ -502,6 +507,8 @@ class IntradayModelTrainer:
                     continue
                 threshold = np.percentile(returns[mask], 80)  # top 20%
                 labels[mask] = (returns[mask] >= threshold).astype(np.int8)
+            # Cross-sectional normalization: z-score each feature within each day
+            X = cs_normalize_by_group(X, days_ord)
             return X, labels
 
         X_train, y_train = _cross_sectional_labels(X_train_parts, raw_train_parts)
