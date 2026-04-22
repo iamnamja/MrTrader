@@ -372,11 +372,14 @@ class AlpacaClient:
 
 # Global instance
 alpaca_client = None
+_alpaca_client_lock = threading.Lock()
 
 
 def get_alpaca_client() -> AlpacaClient:
-    """Get or create Alpaca client instance"""
+    """Get or create Alpaca client instance (thread-safe singleton)."""
     global alpaca_client
     if alpaca_client is None:
-        alpaca_client = AlpacaClient()
+        with _alpaca_client_lock:
+            if alpaca_client is None:
+                alpaca_client = AlpacaClient()
     return alpaca_client

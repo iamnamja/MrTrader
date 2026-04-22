@@ -51,6 +51,9 @@ Features (37 total):
 
   ── Session timing ────────────────────────────────────────────────────────
   time_of_day         Fraction of 6.5-hr session elapsed (0=open, 1=close)
+  minutes_since_open  Minutes elapsed since 09:30 open (0-390)
+  is_open_session     1 if within first 30 min (open auction / gap-fill window)
+  is_close_session    1 if within last 60 min (closing imbalance / MOC window)
 
   ── Daily vol context (from prior daily bars) ─────────────────────────────
   daily_vol_percentile  Realized vol percentile vs 52-week range [0,1]
@@ -252,8 +255,18 @@ def compute_intraday_features(
         feats["spy_rsi_14"] = 0.5
         feats["rel_vol_spy"] = 1.0
 
-    # ── Time of day ───────────────────────────────────────────────────────
-    feats["time_of_day"] = float(min(len(bars) / 78, 1.0))
+    # ── Session timing ────────────────────────────────────────────────────
+    # Use last bar's timestamp for actual time-of-day; fall back to bar count.
+    try:
+        last_ts = bars.index[-1]
+        minutes_elapsed = float((last_ts.hour - 9) * 60 + (last_ts.minute - 30))
+        minutes_elapsed = float(np.clip(minutes_elapsed, 0, 390))
+    except Exception:
+        minutes_elapsed = float(min(len(bars) * 5, 390))
+    feats["time_of_day"] = minutes_elapsed / 390.0
+    feats["minutes_since_open"] = minutes_elapsed
+    feats["is_open_session"] = float(minutes_elapsed <= 30)    # first 30 min: gap-fill / auction
+    feats["is_close_session"] = float(minutes_elapsed >= 330)  # last 60 min: MOC / closing imbalance
 
     # ── Daily vol context ─────────────────────────────────────────────────
     if daily_bars is not None and len(daily_bars) >= 22:
@@ -454,7 +467,7 @@ FEATURE_NAMES = [
     # Market context
     "spy_session_return", "spy_rsi_14", "rel_vol_spy",
     # Session timing
-    "time_of_day",
+    "time_of_day", "minutes_since_open", "is_open_session", "is_close_session",
     # Daily vol context
     "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
 ]

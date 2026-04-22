@@ -30,13 +30,13 @@ def _make_daily_bars(n=252):
 
 class TestComputeIntradayFeaturesWithDailyContext:
 
-    def test_returns_36_features(self):
-        from app.ml.intraday_features import compute_intraday_features
+    def test_returns_expected_features(self):
+        from app.ml.intraday_features import compute_intraday_features, FEATURE_NAMES
         bars = _make_bars()
         daily = _make_daily_bars()
         result = compute_intraday_features(bars, daily_bars=daily)
         assert result is not None
-        assert len(result) == 37
+        assert len(result) == len(FEATURE_NAMES)
 
     def test_daily_vol_features_present(self):
         from app.ml.intraday_features import compute_intraday_features
@@ -71,11 +71,11 @@ class TestComputeIntradayFeaturesWithDailyContext:
         assert result["daily_vol_percentile"] == 0.5
 
     def test_returns_33_features_without_daily(self):
-        """Legacy: 33 features minus daily context = still 36 (defaults filled)."""
-        from app.ml.intraday_features import compute_intraday_features
+        """Always returns full FEATURE_NAMES count; daily context defaults filled."""
+        from app.ml.intraday_features import compute_intraday_features, FEATURE_NAMES
         bars = _make_bars()
         result = compute_intraday_features(bars)
-        assert len(result) == 37  # always 36; daily context defaults to 0.5/1/0
+        assert len(result) == len(FEATURE_NAMES)
 
 
 class TestOutcomeBasedLabel:
