@@ -246,6 +246,20 @@ def run_intraday_backtest(symbols, days):
     sim_result = sim.run(raw_result, spy_prices=spy_daily,
                          start_date=start.date(), end_date=end.date())
     sim_result.print_report()
+
+    # Tier 3: Agent-driven intraday simulation
+    header("Tier 3 — Intraday Agent-Driven Simulation  (PM + RM + Trader)")
+    from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
+    agent_sim = IntradayAgentSimulator(model=model)
+    t0 = time.time()
+    agent_result = agent_sim.run(
+        symbols_data, spy_data=spy_data, spy_prices=spy_daily,
+        start_date=start.date(), end_date=end.date(),
+    )
+    elapsed = time.time() - t0
+    ok(f"Intraday agent simulation completed in {elapsed:.1f}s  ({agent_result.total_trades} trades)")
+    agent_result.print_report()
+
     return sim_result
 
 

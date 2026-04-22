@@ -176,10 +176,71 @@ Each 30-second scan checks open swing positions:
 
 ---
 
+## Backtesting Architecture (Three-Tier)
+
+**Files:** `app/backtesting/` — three complementary simulators
+
+| Tier | Class | What It Tests |
+|---|---|---|
+| Tier 1 | `SwingBacktester` / `IntradayBacktester` | Label-aligned raw signal quality; trade every signal the model produces |
+| Tier 2 | `StrategySimulator` | Portfolio-level replay; position sizing, capital allocation, Sharpe/drawdown stats |
+| Tier 3 | `AgentSimulator` / `IntradayAgentSimulator` | Runs actual PM + RM + Trader agent code on historical bars; honest end-to-end simulation |
+
+### Tier 3 — AgentSimulator (Swing)
+
+**File:** `app/backtesting/agent_simulator.py`
+
+Daily loop (per business day in [start_date, end_date]):
+1. **PM scoring**: batch `FeatureEngineer.engineer_features()` + `model.predict()` + CS-normalize → ranked proposals filtered by `MIN_CONFIDENCE=0.50`, top 10
+2. **Trader gate**: checks EMA-200 uptrend (`price > EMA-200`); blocks downtrend entries
+3. **RM validation**: `validate_buying_power`, `validate_position_size`, `validate_sector_concentration`, `validate_daily_loss`, `validate_open_positions`, `validate_account_drawdown`, `validate_portfolio_heat`
+4. **Exit scan**: `check_exit()` trailing-stop logic + intrabar H/L stop/target override; time exit at `MAX_HOLD_BARS=20`
+
+**Warm-up:** 420 calendar days (~300 business days) before trading start so EMA-200 has history.
+
+**Position sizing:** `size_position()` result capped to RM's `MAX_POSITION_SIZE_PCT` (5%) before RM validation.
+
+**Known gap:** Swing Tier 2 shows higher returns than Tier 3 because Tier 2 replays historical winners while Tier 3 runs real agent logic. Tier 3 is the honest number.
+
+### Tier 3 — IntradayAgentSimulator
+
+**File:** `app/backtesting/intraday_agent_simulator.py`
+
+Operates on 5-min bars. Per trading day:
+1. **PM scoring**: `compute_intraday_features()` per symbol → `model.predict()` → top-N filtered by `MIN_CONFIDENCE`
+2. **Trader gate**: ORB breakout check + session-time constraint (no entries after 14:30 ET)
+3. **RM validation**: same RM rules as swing, applied intraday
+4. **Exit scan**: target (+0.5%), stop (-0.3%), or HOLD_BARS=24 time exit
+
+**Script entry point:** `scripts/backtest_ml_models.py --model intraday` runs Tier 1 + Tier 2 + Tier 3 for intraday.
+
+---
+
+## Backtesting Results — Current Models
+
+### Swing v94 (run 2026-04-22)
+
+| Tier | Trades | Win Rate | Sharpe | Total PnL | Notes |
+|---|---|---|---|---|---|
+| Tier 2 (StrategySimulator) | 240 | 67.5% | 6.81 | +30.9% | Replays historical winners |
+| Tier 3 (AgentSimulator) | 289 | 36% | -0.14 | -0.9% | Honest agent logic — 77% stop exits |
+
+Tier 3 Tier 3 stop-exit rate of 77% signals the swing model's entry timing needs improvement.
+
+### Intraday v17 (run 2026-04-22)
+
+| Tier | Trades | Win Rate | Sharpe | Total PnL | Notes |
+|---|---|---|---|---|---|
+| Tier 2 (StrategySimulator) | 145 | 35% | -2.6 | -0.5% | — |
+| Tier 3 (IntradayAgentSimulator) | — | — | — | — | Pending (being built) |
+
+---
+
 ## Known Issues & Planned Fixes
 
 | Issue | Impact | Fix |
 |---|---|---|
+| Swing Tier 3 Sharpe -0.14, 77% stop exits | Model entry timing poor when run through real agent flow | Improve model or add momentum filter |
 | Intraday backtest mismatch | Backtester uses target/stop exits; model trained on 2h Sharpe rank | Option A: fix backtester to use 2h time exit; Option B: retrain with target/stop outcome labels |
 | AUC drift gate too tight | 0.65 gate fires on every retrain; realistic steady-state is 0.56–0.58 | Lower gate to 0.54 |
 | Swing model misses sector_momentum_5d | v94 trained before Iter 4 features were merged; 2 features missing from model | Retrain to get 128-feature model |

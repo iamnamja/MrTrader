@@ -363,9 +363,25 @@ performance   -- JSON: {auc, accuracy, precision, recall, threshold, n_test}
 
 ---
 
+## Backtesting Methodology
+
+Three-tier architecture — each tier adds more realism:
+
+| Tier | Class | Purpose |
+|---|---|---|
+| 1 | `SwingBacktester` / `IntradayBacktester` | Signal quality; trade every model signal |
+| 2 | `StrategySimulator` | Portfolio replay; position sizing, Sharpe, drawdown |
+| 3 | `AgentSimulator` / `IntradayAgentSimulator` | Full agent simulation; real PM/RM/Trader logic on historical bars |
+
+Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays winners). Tier 3 is what you'd actually get.
+
+**Warm-up (Tier 3 swing):** 420 calendar days before trading start (EMA-200 needs ~300 business days of history).
+
+---
+
 ## Current Model Versions
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | v67 | 126 | 2026-04-21 | Clean retrain with EDGAR + Alpaca sources |
-| Intraday | v15 | 37 | 2026-04-07 | Unaffected by Yahoo change (pure OHLCV) |
+| Swing | v94 | 126 | 2026-04-21 | LambdaRank, CS-norm, Sharpe labels, EDGAR sources |
+| Intraday | v17 | 40 | 2026-04-21 | Ensemble, session-time features, Sharpe labels |
