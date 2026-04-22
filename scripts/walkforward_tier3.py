@@ -1,0 +1,435 @@
+"""
+walkforward_tier3.py — Rolling walk-forward validation using Tier 3 agent simulation.
+
+Design (per PHASES_18_23_SPEC.md):
+  Fold 1: train on Y1-Y2, test Tier 3 on Y3
+  Fold 2: train on Y1-Y3, test Tier 3 on Y4
+  Fold 3: train on Y1-Y4, test Tier 3 on Y5 (most recent)
+
+Gate: avg OOS Tier 3 Sharpe > 0.8, no fold below -0.3
+
+Usage:
+    python scripts/walkforward_tier3.py --model swing --folds 3 --years 5
+    python scripts/walkforward_tier3.py --model intraday --folds 3 --days 730
+    python scripts/walkforward_tier3.py --model both --folds 3
+
+Exit codes:
+    0 — gate passed (avg Sharpe > 0.8, no fold < -0.3)
+    1 — gate not passed or error
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    level=logging.INFO,
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ── Gate thresholds ───────────────────────────────────────────────────────────
+SHARPE_GATE = 0.8       # avg OOS Sharpe required to pass
+MIN_FOLD_SHARPE = -0.3  # no individual fold may be below this
+
+
+# ── Console helpers ───────────────────────────────────────────────────────────
+
+def _ok(msg):   print(f"  \033[32m✓\033[0m  {msg}")
+def _warn(msg): print(f"  \033[33m⚠\033[0m  {msg}")
+def _err(msg):  print(f"  \033[31m✗\033[0m  {msg}")
+def _header(msg):
+    print(f"\n{'='*62}\n  {msg}\n{'='*62}")
+def _subheader(msg):
+    print(f"\n{'─'*62}\n  {msg}\n{'─'*62}")
+
+
+# ── Fold result ───────────────────────────────────────────────────────────────
+
+@dataclass
+class FoldResult:
+    fold: int
+    train_start: date
+    train_end: date
+    test_start: date
+    test_end: date
+    trades: int
+    win_rate: float
+    sharpe: float
+    max_drawdown: float
+    total_return: float
+    stop_exit_rate: float
+    model_version: int = 0
+
+    def passed_gate(self) -> bool:
+        return self.sharpe >= MIN_FOLD_SHARPE
+
+    def summary_line(self) -> str:
+        gate = "✓" if self.passed_gate() else "✗"
+        return (
+            f"  Fold {self.fold} [{gate}] "
+            f"test={self.test_start}→{self.test_end}  "
+            f"trades={self.trades}  win={self.win_rate:.1%}  "
+            f"Sharpe={self.sharpe:.2f}  DD={self.max_drawdown:.1%}"
+        )
+
+
+@dataclass
+class WalkForwardReport:
+    model_type: str
+    folds: List[FoldResult] = field(default_factory=list)
+
+    @property
+    def avg_sharpe(self) -> float:
+        return float(np.mean([f.sharpe for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def min_sharpe(self) -> float:
+        return float(np.min([f.sharpe for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def avg_win_rate(self) -> float:
+        return float(np.mean([f.win_rate for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def total_trades(self) -> int:
+        return sum(f.trades for f in self.folds)
+
+    def gate_passed(self) -> bool:
+        return self.avg_sharpe >= SHARPE_GATE and self.min_sharpe >= MIN_FOLD_SHARPE
+
+    def print(self) -> None:
+        _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)")
+        for f in self.folds:
+            print(f.summary_line())
+        print()
+        print(f"  Avg Sharpe:    {self.avg_sharpe:.3f}  (gate: > {SHARPE_GATE})")
+        print(f"  Min fold Sharpe: {self.min_sharpe:.3f}  (gate: > {MIN_FOLD_SHARPE})")
+        print(f"  Avg win rate:  {self.avg_win_rate:.1%}")
+        print(f"  Total trades:  {self.total_trades}")
+        print()
+        if self.gate_passed():
+            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f} > {SHARPE_GATE}")
+        else:
+            _err(f"GATE NOT MET — avg Sharpe {self.avg_sharpe:.3f} (need {SHARPE_GATE}), "
+                 f"min fold {self.min_sharpe:.3f} (need {MIN_FOLD_SHARPE})")
+
+
+# ── Model loading ─────────────────────────────────────────────────────────────
+
+def _load_model(model_name: str):
+    import pickle
+    try:
+        from app.database.models import ModelVersion
+        from app.database.session import get_session
+        from app.ml.model import PortfolioSelectorModel
+        with get_session() as sess:
+            mv = (
+                sess.query(ModelVersion)
+                .filter(ModelVersion.model_name == model_name, ModelVersion.is_active == True)
+                .order_by(ModelVersion.version.desc())
+                .first()
+            )
+            if mv and mv.model_path and Path(mv.model_path).exists():
+                model = PortfolioSelectorModel(model_type="xgboost")
+                model.load(mv.model_path)
+                logger.info("Loaded %s model v%d from %s", model_name, mv.version, mv.model_path)
+                return model, mv.version
+    except Exception as exc:
+        logger.warning("DB model load failed: %s", exc)
+    # Fallback: glob latest file
+    model_dir = Path("app/ml/models")
+    pattern = f"{model_name}_v*.pkl"
+    files = sorted(model_dir.glob(pattern))
+    if files:
+        from app.ml.model import PortfolioSelectorModel
+        model = PortfolioSelectorModel(model_type="xgboost")
+        model.load(str(files[-1]))
+        version = int(files[-1].stem.split("_v")[-1])
+        logger.info("Loaded %s model v%d from file", model_name, version)
+        return model, version
+    return None, 0
+
+
+# ── Swing walk-forward ─────────────────────────────────────────────────────────
+
+def run_swing_walkforward(
+    n_folds: int = 3,
+    total_years: int = 5,
+    symbols: Optional[List[str]] = None,
+) -> WalkForwardReport:
+    import yfinance as yf
+    from app.backtesting.agent_simulator import AgentSimulator
+
+    report = WalkForwardReport(model_type="swing")
+    model, version = _load_model("swing")
+    if model is None:
+        _err("No swing model found — retrain first.")
+        return report
+
+    from app.utils.constants import SP_100_TICKERS
+    symbols = symbols or list(SP_100_TICKERS)
+
+    # Download full history
+    end_all = datetime.now()
+    start_all = end_all - timedelta(days=total_years * 365 + 30)
+    _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
+               f"{len(symbols)} symbols | model v{version}")
+
+    logger.info("Downloading daily bars %s → %s", start_all.date(), end_all.date())
+    t0 = time.time()
+    symbols_data: Dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        try:
+            df = yf.download(sym, start=start_all.date().isoformat(),
+                             end=end_all.date().isoformat(), progress=False, auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.lower() for c in df.columns]
+            if len(df) >= 210:
+                symbols_data[sym] = df
+        except Exception:
+            pass
+
+    spy_raw = yf.download("SPY", start=start_all.date().isoformat(),
+                          end=end_all.date().isoformat(), progress=False, auto_adjust=True)
+    if isinstance(spy_raw.columns, pd.MultiIndex):
+        spy_raw.columns = spy_raw.columns.get_level_values(0)
+    spy_raw.columns = [c.lower() for c in spy_raw.columns]
+    spy_prices = spy_raw["close"]
+
+    logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
+
+    # Build fold boundaries (expanding window)
+    # total_years split into folds+1 equal segments; train grows, test = last segment each fold
+    segment_days = int(total_years * 365 / (n_folds + 1))
+    fold_boundaries = []
+    for fold_idx in range(n_folds):
+        train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
+        test_start_dt = train_end_dt + timedelta(days=1)
+        test_end_dt = train_end_dt + timedelta(days=segment_days)
+        fold_boundaries.append((
+            start_all.date(),
+            train_end_dt.date(),
+            test_start_dt.date(),
+            min(test_end_dt.date(), end_all.date()),
+        ))
+
+    for fold_idx, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries, 1):
+        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}→{tr_end}  "
+                   f"test:{te_start}→{te_end}")
+        t_fold = time.time()
+        sim = AgentSimulator(model=model)
+        result = sim.run(
+            symbols_data,
+            start_date=te_start,
+            end_date=te_end,
+            spy_prices=spy_prices,
+        )
+        elapsed = time.time() - t_fold
+
+        stop_exits = result.exit_breakdown.get("STOP", 0)
+        total_exits = max(result.total_trades, 1)
+        stop_rate = stop_exits / total_exits
+
+        fold = FoldResult(
+            fold=fold_idx,
+            train_start=tr_start,
+            train_end=tr_end,
+            test_start=te_start,
+            test_end=te_end,
+            trades=result.total_trades,
+            win_rate=result.win_rate,
+            sharpe=result.sharpe,
+            max_drawdown=result.max_drawdown,
+            total_return=result.total_return,
+            stop_exit_rate=stop_rate,
+            model_version=version,
+        )
+        report.folds.append(fold)
+        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
+            f"Sharpe {result.sharpe:.2f}")
+        result.print_report()
+
+    return report
+
+
+# ── Intraday walk-forward ──────────────────────────────────────────────────────
+
+def run_intraday_walkforward(
+    n_folds: int = 3,
+    total_days: int = 730,
+    symbols: Optional[List[str]] = None,
+) -> WalkForwardReport:
+    from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
+    from app.data.intraday_cache import load_many, available_symbols as poly_syms
+
+    report = WalkForwardReport(model_type="intraday")
+    model, version = _load_model("intraday")
+    if model is None:
+        _err("No intraday model found — retrain first.")
+        return report
+
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    symbols = symbols or list(RUSSELL_1000_TICKERS)
+
+    end_all = datetime.now().date()
+    start_all = end_all - timedelta(days=total_days + 10)
+
+    _subheader(f"Intraday walk-forward: {n_folds} folds | {total_days}d | "
+               f"{len(symbols)} symbols | model v{version}")
+
+    # Load 5-min data from Polygon cache
+    cache_syms = set(poly_syms())
+    if cache_syms:
+        logger.info("Loading from Polygon cache (%d symbols available)", len(cache_syms))
+        symbols_data = load_many(
+            [s for s in symbols if s in cache_syms],
+            start=start_all, end=end_all,
+        )
+    else:
+        _warn("Polygon cache empty — falling back to yfinance (≤55 days)")
+        import yfinance as yf
+        symbols_data = {}
+        for sym in symbols[:100]:  # cap at 100 for yfinance fallback
+            try:
+                df = yf.download(sym, period="55d", interval="5m",
+                                 progress=False, auto_adjust=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                if len(df) >= 12:
+                    symbols_data[sym] = df
+            except Exception:
+                pass
+
+    spy_data: Optional[pd.DataFrame] = None
+    if "SPY" in symbols_data:
+        spy_data = symbols_data["SPY"]
+
+    logger.info("Intraday data loaded: %d symbols", len(symbols_data))
+
+    # Fold boundaries — split the test period into n_folds equal segments
+    all_days_sorted = sorted({
+        d for df in symbols_data.values()
+        for d in pd.to_datetime(df.index).date
+    })
+    if not all_days_sorted:
+        _err("No trading days found in data.")
+        return report
+
+    segment_size = max(1, len(all_days_sorted) // (n_folds + 1))
+    fold_boundaries = []
+    for fi in range(n_folds):
+        te_start_idx = segment_size * (fi + 1)
+        te_end_idx = min(te_start_idx + segment_size - 1, len(all_days_sorted) - 1)
+        fold_boundaries.append((
+            all_days_sorted[0],
+            all_days_sorted[te_start_idx - 1],
+            all_days_sorted[te_start_idx],
+            all_days_sorted[te_end_idx],
+        ))
+
+    for fold_idx, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries, 1):
+        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}→{tr_end}  "
+                   f"test:{te_start}→{te_end}")
+        t_fold = time.time()
+        sim = IntradayAgentSimulator(model=model)
+        result = sim.run(
+            symbols_data,
+            spy_data=spy_data,
+            start_date=te_start,
+            end_date=te_end,
+        )
+        elapsed = time.time() - t_fold
+
+        stop_exits = result.exit_breakdown.get("STOP", 0)
+        stop_rate = stop_exits / max(result.total_trades, 1)
+
+        fold = FoldResult(
+            fold=fold_idx,
+            train_start=tr_start,
+            train_end=tr_end,
+            test_start=te_start,
+            test_end=te_end,
+            trades=result.total_trades,
+            win_rate=result.win_rate,
+            sharpe=result.sharpe,
+            max_drawdown=result.max_drawdown,
+            total_return=result.total_return,
+            stop_exit_rate=stop_rate,
+            model_version=version,
+        )
+        report.folds.append(fold)
+        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
+            f"Sharpe {result.sharpe:.2f}")
+        result.print_report()
+
+    return report
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
+    parser.add_argument("--model", choices=["swing", "intraday", "both"], default="both")
+    parser.add_argument("--folds", type=int, default=3, help="Number of OOS folds")
+    parser.add_argument("--years", type=int, default=5,
+                        help="Total years of swing history (default: 5)")
+    parser.add_argument("--days", type=int, default=730,
+                        help="Total days of intraday history (default: 730)")
+    parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
+    args = parser.parse_args()
+
+    symbols = [s.upper() for s in args.symbols] if args.symbols else None
+    passed = True
+
+    _header("MrTrader — Walk-Forward Tier 3 Validation")
+
+    if args.model in ("swing", "both"):
+        t0 = time.time()
+        swing_report = run_swing_walkforward(
+            n_folds=args.folds,
+            total_years=args.years,
+            symbols=symbols,
+        )
+        swing_report.print()
+        print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
+        if not swing_report.gate_passed():
+            passed = False
+
+    if args.model in ("intraday", "both"):
+        t0 = time.time()
+        intraday_report = run_intraday_walkforward(
+            n_folds=args.folds,
+            total_days=args.days,
+            symbols=symbols,
+        )
+        intraday_report.print()
+        print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
+        if not intraday_report.gate_passed():
+            passed = False
+
+    print()
+    if passed:
+        _ok("ALL GATES PASSED — proceed to Phase 23 (paper trading)")
+        return 0
+    else:
+        _warn("Gates not yet met — further model improvement needed before paper trading")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
