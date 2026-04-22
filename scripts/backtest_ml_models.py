@@ -163,13 +163,16 @@ def run_swing_backtest(symbols, years):
     sim_result.print_report()
 
     # Tier 3: Agent-driven simulation (PM + RM + Trader on historical bars)
-    header("Tier 3 — Agent-Driven Simulation  (PM + RM + Trader)")
+    # Start 300 days into the data so EMA-200 and features have warm-up bars.
+    from datetime import timedelta as _td
+    agent_start = start.date() + _td(days=420)  # ~300 business days warm-up for EMA-200
+    header(f"Tier 3 — Agent-Driven Simulation  (PM + RM + Trader)  [{agent_start} -> {end.date()}]")
     from app.backtesting.agent_simulator import AgentSimulator
     agent_sim = AgentSimulator(model=model)
     t0 = time.time()
     agent_result = agent_sim.run(
         symbols_data, spy_prices=spy_prices,
-        start_date=start.date(), end_date=end.date(),
+        start_date=agent_start, end_date=end.date(),
     )
     elapsed = time.time() - t0
     ok(f"Agent simulation completed in {elapsed:.1f}s  ({agent_result.total_trades} trades)")

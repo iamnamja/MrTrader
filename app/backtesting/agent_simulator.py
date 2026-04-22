@@ -270,10 +270,17 @@ class AgentSimulator:
         self, symbol: str, bars_up_to_day: pd.DataFrame
     ) -> Tuple[bool, float, float]:
         """
-        Run generate_signal() on historical bars.
-        Returns (should_enter, stop_price, target_price).
+        Compute entry clearance and stop/target levels from historical bars.
+
+        In the live system Trader polls generate_signal() every 5 minutes and
+        enters on the EMA crossover signal during the session. In a daily
+        backtest that's too restrictive — the crossover may fire intraday but
+        not at bar close. Instead, PM's ML score is the primary entry gate;
+        here we use generate_signal() only to compute ATR-based stop/target
+        levels, and require a basic trend filter (price > EMA-200) rather than
+        an exact crossover.
         """
-        if bars_up_to_day is None or len(bars_up_to_day) < 50:
+        if bars_up_to_day is None or len(bars_up_to_day) < 200:
             return False, 0.0, 0.0
         try:
             sig = generate_signal(
@@ -281,7 +288,13 @@ class AgentSimulator:
                 check_earnings=False,
                 check_regime=False,
             )
-            if sig.action != "BUY":
+            # Use stop/target from signal regardless of action.
+            # Require only that price is above EMA-200 (basic uptrend) — not
+            # the exact crossover, which is a within-session event.
+            close = float(bars_up_to_day["close"].iloc[-1])
+            ema200 = float(bars_up_to_day["close"].ewm(span=200, adjust=False).mean().iloc[-1])
+            trend_ok = close > ema200
+            if not trend_ok:
                 return False, 0.0, 0.0
             return True, sig.stop_price, sig.target_price
         except Exception as exc:
@@ -382,7 +395,7 @@ class AgentSimulator:
             if target_price <= entry_price:
                 target_price = entry_price * (1 + SWING_TARGET_PCT)
 
-            # Position sizing via actual size_position()
+            # Position sizing via actual size_position(), then cap to RM position limit
             quantity = size_position(
                 account_equity=portfolio.equity,
                 available_cash=portfolio.cash,
@@ -390,6 +403,9 @@ class AgentSimulator:
                 stop_price=stop_price,
                 ml_score=confidence,
             )
+            # Apply RM position-size cap so the trade doesn't auto-reject
+            max_position_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
+            quantity = min(quantity, max(1, int(max_position_dollars / entry_price)))
             if quantity <= 0:
                 continue
 

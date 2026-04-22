@@ -132,23 +132,21 @@ class TestPMScoring:
 # ── Tests: Trader Signal Gate ──────────────────────────────────────────────────
 
 class TestTraderSignalGate:
-    def test_hold_signal_blocks_entry(self):
-        """If generate_signal returns HOLD, the trade should not be entered."""
+    def test_downtrend_blocks_entry(self):
+        """If price is below EMA-200 (downtrend), entry should be blocked."""
         from app.backtesting.agent_simulator import AgentSimulator
+        from app.agents.risk_rules import RiskLimits
         model = _mock_model(0.9)
-        sim = AgentSimulator(model=model, min_confidence=0.5)
+        sim = AgentSimulator(model=model, min_confidence=0.5,
+                             limits=RiskLimits(MAX_POSITION_SIZE_PCT=0.20))
 
+        # Build bars with strong downtrend so price < EMA-200
         n = 350
-        bars = {"AAPL": _daily_bars(n, "2022-01-03")}
+        # drift=-0.003 = -0.3%/day → deep downtrend, price << EMA-200
+        bars = {"AAPL": _daily_bars(n, "2022-01-03", drift=-0.003)}
 
-        with patch("app.backtesting.agent_simulator.generate_signal") as mock_gs:
-            from app.strategy.signals import SignalResult
-            mock_gs.return_value = SignalResult(
-                action="HOLD", signal_type="NONE",
-                entry_price=100.0, stop_price=0.0, target_price=0.0, atr=0.0,
-            )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run(bars, start_date=date(2023, 1, 2), end_date=date(2023, 3, 1))
+        with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+            res = sim.run(bars, start_date=date(2023, 1, 2), end_date=date(2023, 3, 1))
         assert res.total_trades == 0
 
     def test_buy_signal_allows_entry(self):
