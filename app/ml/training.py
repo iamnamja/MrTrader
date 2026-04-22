@@ -547,8 +547,28 @@ class ModelTrainer:
                 outcome_return = stock_ret
 
                 if self.label_scheme == "lambdarank":
-                    # Store raw return as float label; converted to quintile ranks post-collection
-                    label = stock_ret
+                    # Path-based realized P&L: simulate stop/target exit bar by bar.
+                    # Aligns training label with how Tier 3 actually exits trades.
+                    # Label = +target_pct if target hit first,
+                    #         -stop_pct   if stop hit first,
+                    #         actual 10-day return if neither (time exit).
+                    target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+                    realized = stock_ret  # fallback: 10-day endpoint (time exit)
+                    for bar_offset in range(1, FORWARD_DAYS + 1):
+                        fi = w_end_idx + bar_offset
+                        if fi >= len(all_dates):
+                            break
+                        fbar = df.loc[idx == all_dates[fi]]
+                        if len(fbar) == 0:
+                            continue
+                        if float(fbar["low"].iloc[0]) <= entry_price * (1 - stop_pct):
+                            realized = -stop_pct
+                            break
+                        if float(fbar["high"].iloc[0]) >= entry_price * (1 + target_pct):
+                            realized = target_pct
+                            break
+                    label = realized
+                    outcome_return = realized
                 elif self.label_scheme == "return_regression":
                     # Continuous float label — XGBRegressor path
                     label = stock_ret

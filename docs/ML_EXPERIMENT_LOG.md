@@ -243,6 +243,47 @@ Full spec: `docs/PHASES_18_23_SPEC.md`
 
 ---
 
+## Iteration 5 — Phase 18: Label-Exit Alignment (Swing + Intraday)
+
+**Branch:** `feature/phase-18-label-exit-fix`
+**Models:** Swing + Intraday
+**Date completed:** 2026-04-22
+
+### What We Changed
+
+#### Swing — LambdaRank Label Fix
+
+- **Old:** `label = stock_ret` (raw 10-day endpoint return). Model learned to rank stocks by where price ended up at day 10, regardless of path.
+- **New:** `label = realized_ret` — simulates ATR-based stop/target exit bar by bar. If stop hit: `-stop_pct`. If target hit: `+target_pct`. If neither: actual 10-day return (time exit).
+- **Why:** Tier 3 backtester exits on stop/target, not endpoint. A stock can rank top 20% at day 10 but stop out on day 2 before recovering. Label must match exit behavior.
+- **File:** `app/ml/training.py` — lambdarank label branch
+
+#### Intraday — Path-Based Label Fix
+
+- **Old:** `best_return = max(HIGH over 24 bars) / entry` — the best price the stock ever touched, not the price it would have been exited at.
+- **New:** Simulates +0.5%/−0.3% stop/target exit bar by bar. If target hit: `+TARGET_PCT`. If stop hit: `-STOP_PCT`. If neither: actual 24-bar return (time exit). Still Sharpe-adjusted for CS ranking.
+- **Why:** IntradayBacktester and IntradayAgentSimulator both exit on +0.5%/−0.3%. Model must learn to rank stocks that will hit the target before the stop, not ones with the highest possible peak.
+- **File:** `app/ml/intraday_training.py` — `_label_symbol_days()` function
+
+### Expected Impact
+
+- Swing win rate should move from 35% toward 45%+ (model stops picking stocks that reverse through stop)
+- Intraday win rate should stay near 50%+ (already at 51% in Tier 3, now model directly learns what the backtester measures)
+- Some loss of training samples where neither stop nor target is hit within 10 bars (time exits)
+
+### Results
+
+| Model | Before | After | Gate |
+|---|---|---|---|
+| Swing Tier 3 win rate | 35.3% | TBD (retrain needed) | > 42% |
+| Intraday Tier 3 win rate | 51.1% | TBD (retrain needed) | > 52% |
+
+> Results to be filled in after retrain + Tier 3 backtest.
+
+**Verdict:** 🔄 Pending retrain
+
+---
+
 ## Techniques Evaluated and Ruled Out
 
 | Technique | Reason Not Pursued |
