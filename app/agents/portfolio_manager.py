@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app.agents.base import BaseAgent
 from app.ml.features import FeatureEngineer
+from app.ml.cs_normalize import cs_normalize
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
 from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS
@@ -380,6 +381,7 @@ class PortfolioManager(BaseAgent):
         else:
             X = np.array([list(features_by_symbol[s].values()) for s in symbols])
         X = np.nan_to_num(X)
+        X = cs_normalize(X)
 
         try:
             _, probabilities = self.model.predict(X)
@@ -511,6 +513,7 @@ class PortfolioManager(BaseAgent):
 
         symbols = list(features_by_symbol.keys())
         X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        X = cs_normalize(X)
 
         try:
             _, probabilities = self.intraday_model.predict(X)
@@ -758,6 +761,7 @@ class PortfolioManager(BaseAgent):
         else:
             X = np.array([list(features_by_symbol[s].values()) for s in symbols])
         X = np.nan_to_num(X)
+        X = cs_normalize(X)
 
         try:
             _, probabilities = self.model.predict(X)
