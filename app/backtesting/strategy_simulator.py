@@ -78,7 +78,7 @@ class SimResult:
         print(f"\n{B}{C}{'='*62}{RESET}")
         print(f"{B}{C}  Strategy Simulation — {self.model_type.upper()}{RESET}")
         print(f"{DIM}{'-'*62}{RESET}")
-        print(f"  Capital:       ${self.starting_capital:,.0f}  →  ${self.ending_capital:,.0f}")
+        print(f"  Capital:       ${self.starting_capital:,.0f}  ->  ${self.ending_capital:,.0f}")
         print(f"  Total return:  {_c(self.total_return_pct)}"
               f"   (ann. {_c(self.annualized_return_pct)})")
         print(f"  SPY benchmark: {_c(self.benchmark_return_pct)}"
