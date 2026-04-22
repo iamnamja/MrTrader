@@ -38,13 +38,13 @@ from app.ml.cs_normalize import cs_normalize
 logger = logging.getLogger(__name__)
 
 # ── Simulation defaults ────────────────────────────────────────────────────────
-HOLD_BARS       = 24     # 2h of 5-min bars — matches training label horizon
-FEATURE_BARS    = 12     # 1h of bars used to build features before entry
-TARGET_PCT      = 0.005  # 0.5% profit target
-STOP_PCT        = 0.003  # 0.3% stop loss
-MIN_CONFIDENCE  = 0.50   # minimum model score to propose a trade
-TOP_N           = 5      # max proposals per day
-MAX_ENTRY_BAR   = 60     # no new entries after bar 60 (~14:30 ET, 60×5=300 min from open)
+HOLD_BARS = 24  # 2h of 5-min bars — matches training label horizon
+FEATURE_BARS = 12  # 1h of bars used to build features before entry
+TARGET_PCT = 0.005  # 0.5% profit target
+STOP_PCT = 0.003  # 0.3% stop loss
+MIN_CONFIDENCE = 0.50  # minimum model score to propose a trade
+TOP_N = 5  # max proposals per day
+MAX_ENTRY_BAR = 60  # no new entries after bar 60 (~14:30 ET, 60×5=300 min from open)
 INTRADAY_BUDGET_PCT = 0.03  # 3% of equity per intraday position
 
 
@@ -389,8 +389,8 @@ class IntradayAgentSimulator:
         hold_bars = len(future_bars)
 
         for bar_offset, (_, bar) in enumerate(future_bars.iterrows()):
-            high  = float(bar["high"])
-            low   = float(bar["low"])
+            high = float(bar["high"])
+            low = float(bar["low"])
             close = float(bar["close"])
             hold_bars = bar_offset + 1
 
@@ -428,18 +428,18 @@ class IntradayAgentSimulator:
         ret_series = daily_rets if len(daily_rets) >= 2 else [t.pnl_pct for t in accepted_trades]
 
         from app.backtesting.strategy_simulator import StrategySimulator
-        sharpe  = StrategySimulator._sharpe(ret_series, 252)
+        sharpe = StrategySimulator._sharpe(ret_series, 252)
         sortino = StrategySimulator._sortino(ret_series, 252)
-        max_dd  = StrategySimulator._max_drawdown(eq_vals)
-        calmar  = ann_return / max(max_dd, 1e-9)
+        max_dd = StrategySimulator._max_drawdown(eq_vals)
+        calmar = ann_return / max(max_dd, 1e-9)
 
         winners = [t for t in accepted_trades if t.pnl_pct > 0]
-        losers  = [t for t in accepted_trades if t.pnl_pct <= 0]
-        win_rate     = len(winners) / max(len(accepted_trades), 1)
-        avg_pnl      = sum(t.pnl_pct for t in accepted_trades) / max(len(accepted_trades), 1)
-        avg_hold     = sum(t.hold_bars for t in accepted_trades) / max(len(accepted_trades), 1)
-        gross_win    = sum(t.pnl_pct for t in winners) if winners else 0.0
-        gross_loss   = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
+        losers = [t for t in accepted_trades if t.pnl_pct <= 0]
+        win_rate = len(winners) / max(len(accepted_trades), 1)
+        avg_pnl = sum(t.pnl_pct for t in accepted_trades) / max(len(accepted_trades), 1)
+        avg_hold = sum(t.hold_bars for t in accepted_trades) / max(len(accepted_trades), 1)
+        gross_win = sum(t.pnl_pct for t in winners) if winners else 0.0
+        gross_loss = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
         profit_factor = gross_win / gross_loss
 
         exit_breakdown = defaultdict(int)
