@@ -155,13 +155,27 @@ def run_swing_backtest(symbols, years):
     elapsed = time.time() - t0
     ok(f"Raw backtest completed in {elapsed:.1f}s  ({raw_result.total_trades} trades)")
 
-    # Portfolio-level simulation
+    # Tier 2: Portfolio-level simulation
     from app.backtesting.strategy_simulator import StrategySimulator
     sim = StrategySimulator()
     sim_result = sim.run(raw_result, spy_prices=spy_prices,
                          start_date=start.date(), end_date=end.date())
     sim_result.print_report()
-    return sim_result
+
+    # Tier 3: Agent-driven simulation (PM + RM + Trader on historical bars)
+    header("Tier 3 — Agent-Driven Simulation  (PM + RM + Trader)")
+    from app.backtesting.agent_simulator import AgentSimulator
+    agent_sim = AgentSimulator(model=model)
+    t0 = time.time()
+    agent_result = agent_sim.run(
+        symbols_data, spy_prices=spy_prices,
+        start_date=start.date(), end_date=end.date(),
+    )
+    elapsed = time.time() - t0
+    ok(f"Agent simulation completed in {elapsed:.1f}s  ({agent_result.total_trades} trades)")
+    agent_result.print_report()
+
+    return agent_result
 
 
 def run_intraday_backtest(symbols, days):
