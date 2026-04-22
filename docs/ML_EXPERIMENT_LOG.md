@@ -201,6 +201,32 @@ Tracks every model improvement iteration: what was changed, which model, baselin
 
 ---
 
+## Backtesting Results (2026-04-22)
+
+Three-tier backtester run on SP-100 sample, 2-year history.
+
+### Swing v94
+
+| Tier | Trades | Win Rate | Sharpe | PnL |
+|---|---|---|---|---|
+| Tier 2 — StrategySimulator | 240 | 67.5% | 6.81 | +30.9% |
+| Tier 3 — AgentSimulator | 289 | 36% | -0.14 | -0.9% |
+
+Tier 3 stop-exit rate: **77%**. Large Tier 2 vs Tier 3 gap is expected (Tier 2 replays winners, Tier 3 runs real PM/RM/Trader code). Tier 3 is the honest performance estimate.
+
+**Diagnosis:** 77% stop exits + 36% win rate → model picks entries that reverse quickly. Next iteration: add stronger uptrend filter or momentum confirmation.
+
+### Intraday v17
+
+| Tier | Trades | Win Rate | Sharpe | PnL |
+|---|---|---|---|---|
+| Tier 2 — StrategySimulator | 145 | 35% | -2.6 | -0.5% |
+| Tier 3 — IntradayAgentSimulator | TBD | TBD | TBD | TBD |
+
+Intraday Tier 3 simulator (`IntradayAgentSimulator`) is being built in Phase 17.
+
+---
+
 ## Techniques Evaluated and Ruled Out
 
 | Technique | Reason Not Pursued |
