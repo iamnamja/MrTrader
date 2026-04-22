@@ -312,6 +312,21 @@ Full spec: `docs/PHASES_18_23_SPEC.md`
 - Swing: ~126 → ~132 (+6)
 - Intraday: 40 → 41 (+1, whale_candle)
 
+### Intraday v17 Baseline on 2-Year Polygon Data (pre-retrain)
+
+Before retraining with Phase 18-21 changes, measured v17 performance on full 2yr Polygon cache:
+
+| Metric | Value |
+|---|---|
+| Trades | 266 |
+| Win rate | 40.2% |
+| Sharpe | -2.57 |
+| Stop-exit rate | 58% |
+| Target-exit rate | 36% |
+| Total return | -0.7% |
+
+This is the honest v17 baseline on real 2yr data (vs prior 47-trade yfinance estimate). The 58% stop rate and 40% win rate confirm the label-exit mismatch (Phase 18) is the root cause — model trained on max-HIGH is picking stocks that peak then reverse through stop.
+
 ### Results
 
 | Model | Gate | Status |
