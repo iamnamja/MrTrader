@@ -653,9 +653,14 @@ def _symbol_to_rows(
             prior_high = float(prev["high"].max())
             prior_low = float(prev["low"].min())
 
-        # Compute best intraday return over HOLD_BARS (used for cross-sectional ranking)
+        # Compute Sharpe-adjusted intraday return for cross-sectional ranking.
+        # Dividing by intraday volatility prevents high-vol stocks from dominating
+        # the top-20% label just by moving more on noisy days.
         entry = float(feat_bars["close"].iloc[-1])
         best_return = float((future_bars["high"].max() - entry) / max(entry, 1e-6))
+        intraday_vol = float(feat_bars["close"].pct_change().std()) + 1e-8
+        horizon_vol = intraday_vol * (HOLD_BARS ** 0.5)  # scale to hold horizon
+        best_return = best_return / horizon_vol  # Sharpe-adjusted
 
         # Daily bars up to this day (O(1) slice via precomputed date array)
         daily_as_of = None
