@@ -732,6 +732,16 @@ class FeatureEngineer:
         features["momentum_20d_sector_neutral"] = features["momentum_20d"] - features["sector_momentum"]
         features["momentum_60d_sector_neutral"] = features["momentum_60d"] - features["sector_momentum"]
 
+        # 5-day sector-relative momentum — captures short-term stock-specific alpha
+        # vs sector ETF, which the 20d and 60d windows miss.
+        try:
+            from app.ml.fundamental_fetcher import get_sector_momentum_5d
+            sector_mom_5d = get_sector_momentum_5d(sector) if sector else 0.0
+        except Exception:
+            sector_mom_5d = 0.0
+        features["sector_momentum_5d"] = sector_mom_5d
+        features["momentum_5d_sector_neutral"] = features.get("momentum_5d", 0.0) - sector_mom_5d
+
         # Mean-reversion z-score: std devs above 60d rolling mean of 20d returns
         if len(prices) >= 63:
             _rolling = np.array([
