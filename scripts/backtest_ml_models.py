@@ -185,43 +185,75 @@ def run_intraday_backtest(symbols, days):
     import yfinance as yf
     from datetime import datetime, timedelta
     from app.backtesting.intraday_backtest import IntradayBacktester
+    from app.data.intraday_cache import load_many, available_symbols, cache_stats
 
     header("Intraday Model Backtest  (5-min bars)")
-    info(f"Symbols: {len(symbols)}  |  History: {days} day(s)")
+    info(f"Symbols: {len(symbols)}  |  History requested: {days} day(s)")
 
-    days = min(days, 55)  # yfinance 5-min data limited to last 60 days
     end = datetime.now()
     start = end - timedelta(days=days + 5)
-    info(f"Downloading 5-min bars {start.date()} -> {end.date()}...")
 
-    period_str = f"{days}d"
+    # ── Prefer Polygon Parquet cache (2yr) over yfinance (55d max) ────────────
+    polygon_syms = set(available_symbols())
     symbols_data = {}
-    for sym in symbols:
+
+    if polygon_syms:
+        stats = cache_stats()
+        info(f"Polygon cache: {stats['symbols']} symbols, {stats['total_bars']:,} bars, "
+             f"oldest={stats['oldest_date']}")
+        polygon_hit = load_many(
+            [s for s in symbols if s in polygon_syms],
+            start=start.date(), end=end.date(),
+        )
+        symbols_data.update(polygon_hit)
+        missing = [s for s in symbols if s not in symbols_data]
+        if missing:
+            info(f"Falling back to yfinance for {len(missing)} symbols not in Polygon cache")
+    else:
+        missing = list(symbols)
+        info("Polygon cache empty — using yfinance (≤55 days)")
+
+    # yfinance fallback for symbols not in Polygon cache
+    if missing:
+        yf_days = min(days, 55)
+        period_str = f"{yf_days}d"
+        yf_start = end - timedelta(days=yf_days + 5)
+        start = yf_start  # adjust effective start for reporting
+        for sym in missing:
+            try:
+                df = yf.download(sym, period=period_str, interval="5m",
+                                 progress=False, auto_adjust=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                if len(df) >= 12:
+                    symbols_data[sym] = df
+            except Exception:
+                pass
+
+    ok(f"Data loaded: {len(symbols_data)} symbols  |  window {start.date()} → {end.date()}")
+
+    # SPY 5-min for intraday features
+    spy_data = None
+    spy_sym_in_polygon = "SPY" in polygon_syms
+    if spy_sym_in_polygon:
+        spy_data = load_many(["SPY"], start=start.date(), end=end.date()).get("SPY")
+    if spy_data is None:
         try:
-            df = yf.download(sym, period=period_str, interval="5m", progress=False, auto_adjust=True)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.lower() for c in df.columns]
-            if len(df) >= 12:
-                symbols_data[sym] = df
+            spy_raw = yf.download("SPY", period=f"{min(days,55)}d", interval="5m",
+                                  progress=False, auto_adjust=True)
+            if isinstance(spy_raw.columns, pd.MultiIndex):
+                spy_raw.columns = spy_raw.columns.get_level_values(0)
+            spy_raw.columns = [c.lower() for c in spy_raw.columns]
+            spy_data = spy_raw if not spy_raw.empty else None
         except Exception:
             pass
 
-    ok(f"Downloaded data for {len(symbols_data)} symbols")
-
-    spy_data = None
-    try:
-        spy_data = yf.download("SPY", period=period_str, interval="5m", progress=False, auto_adjust=True)
-        if isinstance(spy_data.columns, pd.MultiIndex):
-            spy_data.columns = spy_data.columns.get_level_values(0)
-        spy_data.columns = [c.lower() for c in spy_data.columns]
-    except Exception:
-        pass
-
-    # Also get daily SPY for benchmark
+    # Daily SPY for benchmark
     spy_daily = None
     try:
-        spy_d = yf.download("SPY", period=period_str, interval="1d", progress=False, auto_adjust=True)
+        spy_d = yf.download("SPY", period=f"{min(days,365)}d", interval="1d",
+                            progress=False, auto_adjust=True)
         if isinstance(spy_d.columns, pd.MultiIndex):
             spy_d.columns = spy_d.columns.get_level_values(0)
         spy_d.columns = [c.lower() for c in spy_d.columns]
@@ -315,8 +347,9 @@ def main():
     )
     parser.add_argument("--years", type=int, default=2,
                         help="Years of daily history for swing (default: 2)")
-    parser.add_argument("--days", type=int, default=55,
-                        help="Days of 5-min history for intraday (default: 55, max 55 — yfinance limit)")
+    parser.add_argument("--days", type=int, default=730,
+                        help="Days of 5-min history for intraday (default: 730 via Polygon cache; "
+                             "falls back to 55 days via yfinance if Polygon cache is empty)")
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
     args = parser.parse_args()
 

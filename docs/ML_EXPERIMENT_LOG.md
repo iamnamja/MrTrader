@@ -235,7 +235,7 @@ Phase 21 (Polygon 2yr data) needed before intraday Tier 3 is evaluable.
 | 18 | Fix label-exit mismatch (both models) | Swing Tier 3 win rate > 42% | ✅ Merged |
 | 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | ✅ Merged |
 | 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | ✅ Merged |
-| 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | Pending |
+| 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | ✅ Merged |
 | 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | Pending |
 | 23 | Paper trading | 60d Sharpe > 0.5, DD < 10% | Pending |
 
@@ -345,6 +345,38 @@ Full spec: `docs/PHASES_18_23_SPEC.md`
 
 ### Results
 🔄 Pending Tier 3 backtest after retrain.
+
+---
+
+## Phase 21 — Polygon Intraday Data Infrastructure
+
+**Branch:** `feature/phase-21-polygon-intraday-data`
+**Models:** Intraday (data infrastructure — no model change)
+**Date completed:** 2026-04-22
+
+### What We Changed
+
+- **`scripts/fetch_intraday_history.py`**: Standalone script to pull 2-year 5-min bars from Polygon.io REST API → `data/intraday/{SYMBOL}.parquet`. Supports `--symbols`, `--days`, `--workers`, `--force-refresh`. Parallel chunked fetch with 24h TTL check.
+- **`app/data/intraday_cache.py`**: Shared Parquet cache module. Functions: `load()`, `load_many()`, `save()`, `cache_is_fresh()`, `available_symbols()`, `cache_stats()`. Used by trainer, backtesters.
+- **`app/ml/intraday_training.py`**: `_fetch_data()` now prefers Polygon cache when symbols are available, falls back to Alpaca for missing symbols.
+- **`scripts/backtest_ml_models.py`**: `run_intraday_backtest()` now loads from Polygon cache first (2yr history), falls back to yfinance for symbols not in cache. Default `--days` raised from 55 → 730.
+
+### Expected Impact
+
+- Intraday Tier 3: 47 trades (55d yfinance) → 500+ trades (2yr Polygon) — statistically evaluable
+- Gate: 500+ Tier 3 intraday trades from stored data (requires running `fetch_intraday_history.py` with valid Polygon API key)
+
+### Usage
+
+```bash
+# Populate cache (one-time, ~2 hours for full Russell 1000)
+python scripts/fetch_intraday_history.py --days 730
+
+# Run backtest using cached data
+python scripts/backtest_ml_models.py --model intraday --days 730
+```
+
+**Verdict:** ✅ Infrastructure merged. Gate measured after fetch + retrain.
 
 ---
 

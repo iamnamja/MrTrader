@@ -5,7 +5,11 @@ Label: outcome-based — price hits +TARGET_PCT before -STOP_PCT within HOLD_BAR
 Window: each trading day is one window per stock.
 Train/test split: last TEST_FRACTION of days = test (time-based, no leakage).
 
-Data source: Alpaca 5-min bars with Parquet disk cache (incremental refresh).
+Data sources (in priority order):
+  1. Polygon.io Parquet cache at data/intraday/ (populated by fetch_intraday_history.py)
+     — 2 years of history, recommended for training
+  2. Alpaca 5-min bars with Parquet disk cache at data/cache/5min/ (≈60 days max)
+     — fallback when Polygon cache is missing
 
 Speed optimizations:
   - Parquet cache per symbol; only re-fetches stale/missing symbols on rerun
@@ -404,6 +408,27 @@ class IntradayModelTrainer:
 
     # Public-facing names used by tests and train_model
     def _fetch_data(self, symbols, start, end):
+        # Prefer Polygon Parquet cache when available (2yr history)
+        from app.data.intraday_cache import load_many, available_symbols
+        polygon_syms = set(available_symbols())
+        if polygon_syms:
+            start_date = start.date() if hasattr(start, "date") else start
+            end_date = end.date() if hasattr(end, "date") else end
+            polygon_hit = load_many(
+                [s for s in symbols if s in polygon_syms],
+                start=start_date, end=end_date,
+            )
+            missing = [s for s in symbols if s not in polygon_hit]
+            if missing:
+                alpaca_hit = self._fetch_all(missing, start, end,
+                                             force_refresh=self._force_refresh)
+                polygon_hit.update(alpaca_hit)
+            logger.info(
+                "Data load: %d from Polygon cache, %d from Alpaca",
+                len([s for s in symbols if s in polygon_syms and s in polygon_hit]),
+                len([s for s in symbols if s not in polygon_syms]),
+            )
+            return polygon_hit
         return self._fetch_all(symbols, start, end, force_refresh=self._force_refresh)
 
     def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None):
