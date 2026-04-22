@@ -14,7 +14,6 @@ Exit priority per trade:
 """
 
 import logging
-from collections import defaultdict
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
@@ -28,11 +27,11 @@ from app.ml.model import PortfolioSelectorModel
 logger = logging.getLogger(__name__)
 
 # ── Constants — must match app/ml/intraday_training.py ───────────────────────
-HOLD_BARS    = 24      # 2h of 5-min bars — outer time exit (matches training)
-FEATURE_BARS = 12      # 1h of bars used to build features before entry
-TARGET_PCT   = 0.005   # 0.5% profit target (matches intraday_training.STOP_PCT/TARGET_PCT)
-STOP_PCT     = 0.003   # 0.3% stop loss
-TOP_N        = 5       # pick top-N per day by model score (matches PM TOP_N_INTRADAY)
+HOLD_BARS = 24  # 2h of 5-min bars — outer time exit (matches training)
+FEATURE_BARS = 12  # 1h of bars used to build features before entry
+TARGET_PCT = 0.005  # 0.5% profit target (matches intraday_training.STOP_PCT/TARGET_PCT)
+STOP_PCT = 0.003  # 0.3% stop loss
+TOP_N = 5  # pick top-N per day by model score (matches PM TOP_N_INTRADAY)
 POSITION_SIZE = 1_000  # fixed $1,000 per trade for P&L reporting
 
 
@@ -155,7 +154,7 @@ class IntradayBacktester:
         for sym, score in selected:
             entry = sym_entry[sym]
             target = entry * (1 + TARGET_PCT)
-            stop   = entry * (1 - STOP_PCT)
+            stop = entry * (1 - STOP_PCT)
             trade = self._simulate_trade(sym, day, entry, target, stop,
                                          sym_future[sym], float(score))
             if trade:
@@ -179,8 +178,8 @@ class IntradayBacktester:
         hold_bars = len(future_bars)
 
         for bar_offset, (_, bar) in enumerate(future_bars.iterrows()):
-            high  = float(bar["high"])
-            low   = float(bar["low"])
+            high = float(bar["high"])
+            low = float(bar["low"])
             close = float(bar["close"])
             hold_bars = bar_offset + 1
 
@@ -194,7 +193,7 @@ class IntradayBacktester:
                 break
             exit_price = close  # update running exit to close of each bar
 
-        pnl     = (exit_price - entry_price) * quantity
+        pnl = (exit_price - entry_price) * quantity
         pnl_pct = (exit_price - entry_price) / entry_price
 
         return Trade(

@@ -16,16 +16,15 @@ This is one step above Tier 2 (StrategySimulator) because:
 """
 
 import logging
-import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from app.backtesting.metrics import BacktestResult, Trade
+from app.backtesting.metrics import Trade
 from app.backtesting.strategy_simulator import SimResult, STARTING_CAPITAL, TRANSACTION_COST
 from app.agents.risk_rules import (
     RiskLimits,
@@ -36,7 +35,6 @@ from app.agents.risk_rules import (
     validate_open_positions,
     validate_account_drawdown,
     validate_portfolio_heat,
-    get_sector_exposure,
 )
 from app.ml.cs_normalize import cs_normalize
 from app.strategy.signals import generate_signal, check_exit
@@ -45,12 +43,12 @@ from app.strategy.position_sizer import size_position
 logger = logging.getLogger(__name__)
 
 # ── Simulation defaults ────────────────────────────────────────────────────────
-MIN_CONFIDENCE   = 0.50   # minimum model score to propose a trade
-TOP_N_STOCKS     = 10     # PM proposal count per day
-MIN_BARS_SIGNAL  = 210    # minimum bars for generate_signal (needs EMA-200)
-SWING_STOP_PCT   = 0.02   # 2% stop loss when ATR-based stop unavailable
-SWING_TARGET_PCT = 0.06   # 6% profit target when signal doesn't provide one
-TX_COST_PCT      = TRANSACTION_COST  # 5bps per side
+MIN_CONFIDENCE = 0.50  # minimum model score to propose a trade
+TOP_N_STOCKS = 10  # PM proposal count per day
+MIN_BARS_SIGNAL = 210  # minimum bars for generate_signal (needs EMA-200)
+SWING_STOP_PCT = 0.02  # 2% stop loss when ATR-based stop unavailable
+SWING_TARGET_PCT = 0.06  # 6% profit target when signal doesn't provide one
+TX_COST_PCT = TRANSACTION_COST  # 5bps per side
 
 
 @dataclass
@@ -457,8 +455,8 @@ class AgentSimulator:
             if today_bar is None:
                 continue
 
-            today_high  = float(today_bar["high"])
-            today_low   = float(today_bar["low"])
+            today_high = float(today_bar["high"])
+            today_low = float(today_bar["low"])
             today_close = float(today_bar["close"])
 
             pos.highest_price = max(pos.highest_price, today_high)
@@ -543,8 +541,6 @@ class AgentSimulator:
         end_date: date,
         spy_prices: Optional[pd.Series],
     ) -> SimResult:
-        import math
-
         # Rebuild equity from trades since portfolio.cash tracking can drift
         # (simpler: use equity_by_date as-is)
         equity_curve = sorted(equity_by_date.items())
@@ -562,18 +558,18 @@ class AgentSimulator:
         ret_series = daily_rets if len(daily_rets) >= 2 else [t.pnl_pct for t in accepted_trades]
 
         from app.backtesting.strategy_simulator import StrategySimulator
-        sharpe  = StrategySimulator._sharpe(ret_series, 252)
+        sharpe = StrategySimulator._sharpe(ret_series, 252)
         sortino = StrategySimulator._sortino(ret_series, 252)
-        max_dd  = StrategySimulator._max_drawdown(eq_vals)
-        calmar  = ann_return / max(max_dd, 1e-9)
+        max_dd = StrategySimulator._max_drawdown(eq_vals)
+        calmar = ann_return / max(max_dd, 1e-9)
 
         winners = [t for t in accepted_trades if t.pnl_pct > 0]
-        losers  = [t for t in accepted_trades if t.pnl_pct <= 0]
-        win_rate    = len(winners) / max(len(accepted_trades), 1)
-        avg_pnl     = sum(t.pnl_pct for t in accepted_trades) / max(len(accepted_trades), 1)
-        avg_hold    = sum(t.hold_bars for t in accepted_trades) / max(len(accepted_trades), 1)
-        gross_win   = sum(t.pnl_pct for t in winners) if winners else 0.0
-        gross_loss  = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
+        losers = [t for t in accepted_trades if t.pnl_pct <= 0]
+        win_rate = len(winners) / max(len(accepted_trades), 1)
+        avg_pnl = sum(t.pnl_pct for t in accepted_trades) / max(len(accepted_trades), 1)
+        avg_hold = sum(t.hold_bars for t in accepted_trades) / max(len(accepted_trades), 1)
+        gross_win = sum(t.pnl_pct for t in winners) if winners else 0.0
+        gross_loss = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
         profit_factor = gross_win / gross_loss
 
         exit_breakdown = defaultdict(int)

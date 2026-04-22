@@ -25,11 +25,11 @@ from app.backtesting.metrics import BacktestResult, Trade
 logger = logging.getLogger(__name__)
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-STARTING_CAPITAL   = 100_000.0   # $100K paper account
-POSITION_BUDGET    = 0.05        # 5% of capital per swing trade (matches RM max_position_size_pct)
-MAX_POSITIONS      = 5           # concurrent position cap (matches RM default)
-TRANSACTION_COST   = 0.0005      # 0.05% per trade (5bps — realistic for retail + spread)
-INTRADAY_BUDGET    = 0.03        # 3% of capital per intraday trade
+STARTING_CAPITAL = 100_000.0  # $100K paper account
+POSITION_BUDGET = 0.05  # 5% of capital per swing trade (matches RM max_position_size_pct)
+MAX_POSITIONS = 5  # concurrent position cap (matches RM default)
+TRANSACTION_COST = 0.0005  # 0.05% per trade (5bps — realistic for retail + spread)
+INTRADAY_BUDGET = 0.03  # 3% of capital per intraday trade
 
 
 @dataclass
@@ -68,8 +68,12 @@ class SimResult:
 
     def print_report(self) -> None:
         """Pretty-print the simulation report."""
-        W = "\033[32m"; R = "\033[31m"; Y = "\033[33m"
-        B = "\033[1m"; C = "\033[36m"; DIM = "\033[2m"; RESET = "\033[0m"
+        W = "\033[32m"
+        R = "\033[31m"
+        B = "\033[1m"
+        C = "\033[36m"
+        DIM = "\033[2m"
+        RESET = "\033[0m"
 
         def _c(val: float, fmt: str = ".1%") -> str:
             col = W if val >= 0 else R
@@ -102,11 +106,11 @@ class SimResult:
             for reason, count in sorted(self.exit_breakdown.items(),
                                         key=lambda x: -x[1]):
                 bar = "#" * int(20 * count / max(total_ex, 1))
-                print(f"  {reason:<12} {bar:<20} {count} ({count/max(total_ex,1):.0%})")
+                print(f"  {reason:<12} {bar:<20} {count} ({count / max(total_ex, 1):.0%})")
 
         if self.monthly_pnl:
             print(f"{DIM}{'-'*62}{RESET}")
-            print(f"  Monthly P&L:")
+            print("  Monthly P&L:")
             for month, pnl in sorted(self.monthly_pnl.items()):
                 bar_len = int(abs(pnl) / max(abs(v) for v in self.monthly_pnl.values()) * 20)
                 bar = ("#" * bar_len) if pnl >= 0 else ("-" * bar_len)
@@ -164,7 +168,7 @@ class StrategySimulator:
         # Sort by entry date
         trades = sorted(trades, key=lambda t: t.entry_date)
         start_date = start_date or trades[0].entry_date
-        end_date   = end_date   or trades[-1].exit_date
+        end_date = end_date or trades[-1].exit_date
 
         # ── Simulate portfolio with position cap ──────────────────────────────
         capital = self.starting_capital
@@ -219,25 +223,24 @@ class StrategySimulator:
         equity_curve = sorted(equity_by_date.items())
 
         # Daily returns from equity curve
-        dates_sorted = [d for d, _ in equity_curve]
         eq_vals = [v for _, v in equity_curve]
         daily_rets = [(eq_vals[i] - eq_vals[i-1]) / eq_vals[i-1]
                       for i in range(1, len(eq_vals))]
 
         # Fall back to per-trade returns if equity curve is too short for daily stats
         ret_series = daily_rets if len(daily_rets) >= 2 else [t.pnl_pct for t in accepted_trades]
-        sharpe  = self._sharpe(ret_series, periods=252)
+        sharpe = self._sharpe(ret_series, periods=252)
         sortino = self._sortino(ret_series, periods=252)
-        max_dd  = self._max_drawdown(eq_vals)
-        calmar  = ann_return / max(max_dd, 1e-9)
+        max_dd = self._max_drawdown(eq_vals)
+        calmar = ann_return / max(max_dd, 1e-9)
 
         # Per-trade stats
         winners = [t for t in accepted_trades if t.pnl_pct > 0]
-        losers  = [t for t in accepted_trades if t.pnl_pct <= 0]
+        losers = [t for t in accepted_trades if t.pnl_pct <= 0]
         win_rate = len(winners) / len(accepted_trades)
-        avg_pnl  = sum(t.pnl_pct for t in accepted_trades) / len(accepted_trades)
+        avg_pnl = sum(t.pnl_pct for t in accepted_trades) / len(accepted_trades)
         avg_hold = sum(t.hold_bars for t in accepted_trades) / len(accepted_trades)
-        gross_win  = sum(t.pnl_pct for t in winners) if winners else 0.0
+        gross_win = sum(t.pnl_pct for t in winners) if winners else 0.0
         gross_loss = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
         profit_factor = gross_win / gross_loss
 
@@ -260,7 +263,7 @@ class StrategySimulator:
         if spy_prices is not None and len(spy_prices) > 0:
             spy = spy_prices
             spy_start = spy.asof(pd.Timestamp(start_date)) if hasattr(spy.index, 'asof') else None
-            spy_end   = spy.asof(pd.Timestamp(end_date)) if hasattr(spy.index, 'asof') else None
+            spy_end = spy.asof(pd.Timestamp(end_date)) if hasattr(spy.index, 'asof') else None
             if spy_start and spy_end and spy_start > 0:
                 benchmark_return = (spy_end - spy_start) / spy_start
                 alpha = total_return - benchmark_return
