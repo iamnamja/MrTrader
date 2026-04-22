@@ -235,10 +235,15 @@ class IntradayAgentSimulator:
             stop_price = entry_price * (1 - STOP_PCT)
             target_price = entry_price * (1 + TARGET_PCT)
 
-            # Trader gate: ORB breakout check
+            # Trader gate: ORB breakout + volume surge confirmation
             feats = sym_feats[sym]
             orb_breakout = feats.get("orb_breakout", 0.0)
             if orb_breakout <= 0:
+                continue
+            volume_surge = feats.get("volume_surge", 0.0)
+            whale = feats.get("whale_candle", 0.0)
+            # Require volume surge > 1.2 OR institutional whale candle
+            if volume_surge < 1.2 and whale == 0.0:
                 continue
 
             # Position sizing: fixed % of equity per intraday slot

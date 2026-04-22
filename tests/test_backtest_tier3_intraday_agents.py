@@ -178,7 +178,7 @@ class TestORBGate:
         bars = _5min_bars(n_days=3)
         syms = {"AAPL": bars}
 
-        mock_feats = {"orb_breakout": 1.0, "feat1": 0.5}
+        mock_feats = {"orb_breakout": 1.0, "volume_surge": 1.5, "feat1": 0.5}
         with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
             with patch("app.backtesting.intraday_agent_simulator.compute_intraday_features",
                        return_value=mock_feats):
@@ -217,7 +217,7 @@ class TestIntradayRMRules:
         bars = _5min_bars(n_days=3)
         syms = {f"S{i}": bars.copy() for i in range(5)}
 
-        mock_feats = {"orb_breakout": 1.0, "feat1": 0.5}
+        mock_feats = {"orb_breakout": 1.0, "volume_surge": 1.5, "feat1": 0.5}
         proposals = [(f"S{i}", 0.9) for i in range(5)]
         with patch.object(sim, "_pm_score", return_value=proposals):
             with patch("app.backtesting.intraday_agent_simulator.compute_intraday_features",
@@ -307,7 +307,7 @@ class TestIntradayPortfolioAccounting:
         sim = IntradayAgentSimulator(model=model, min_confidence=0.5,
                                      limits=RiskLimits(MAX_POSITION_SIZE_PCT=0.20))
         bars = _5min_bars(n_days=3)
-        mock_feats = {"orb_breakout": 1.0, "feat1": 0.5}
+        mock_feats = {"orb_breakout": 1.0, "volume_surge": 1.5, "feat1": 0.5}
         with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
             with patch("app.backtesting.intraday_agent_simulator.compute_intraday_features",
                        return_value=mock_feats):
