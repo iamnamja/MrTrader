@@ -286,14 +286,38 @@ class AgentSimulator:
                 check_earnings=False,
                 check_regime=False,
             )
-            # Use stop/target from signal regardless of action.
-            # Require only that price is above EMA-200 (basic uptrend) — not
-            # the exact crossover, which is a within-session event.
-            close = float(bars_up_to_day["close"].iloc[-1])
-            ema200 = float(bars_up_to_day["close"].ewm(span=200, adjust=False).mean().iloc[-1])
-            trend_ok = close > ema200
-            if not trend_ok:
+            closes = bars_up_to_day["close"]
+            close = float(closes.iloc[-1])
+
+            # Long-term trend: price above EMA-200
+            ema200 = float(closes.ewm(span=200, adjust=False).mean().iloc[-1])
+            if close <= ema200:
                 return False, 0.0, 0.0
+
+            # Near-term trend: price above EMA-20 and EMA-50
+            ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+            ema50 = float(closes.ewm(span=50, adjust=False).mean().iloc[-1])
+            if close <= ema20 or close <= ema50:
+                return False, 0.0, 0.0
+
+            # RSI zone: not overbought, not in freefall (40–70)
+            prices_arr = closes.to_numpy(dtype=float)
+            deltas = np.diff(prices_arr[-16:])
+            gains = np.where(deltas > 0, deltas, 0.0)
+            losses = np.where(deltas < 0, -deltas, 0.0)
+            avg_gain = float(np.mean(gains[-14:])) if len(gains) >= 14 else float(np.mean(gains))
+            avg_loss = float(np.mean(losses[-14:])) if len(losses) >= 14 else float(np.mean(losses))
+            rsi = 100.0 - (100.0 / (1.0 + avg_gain / max(avg_loss, 1e-8)))
+            if not (40.0 <= rsi <= 70.0):
+                return False, 0.0, 0.0
+
+            # Volume confirmation: today's volume >= 80% of 20-day avg
+            if "volume" in bars_up_to_day.columns:
+                vol_today = float(bars_up_to_day["volume"].iloc[-1])
+                vol_avg20 = float(bars_up_to_day["volume"].iloc[-20:].mean())
+                if vol_avg20 > 0 and vol_today < 0.8 * vol_avg20:
+                    return False, 0.0, 0.0
+
             return True, sig.stop_price, sig.target_price
         except Exception as exc:
             logger.debug("generate_signal failed %s: %s", symbol, exc)

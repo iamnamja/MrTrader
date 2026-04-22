@@ -234,7 +234,7 @@ Phase 21 (Polygon 2yr data) needed before intraday Tier 3 is evaluable.
 |---|---|---|---|
 | 18 | Fix label-exit mismatch (both models) | Swing Tier 3 win rate > 42% | ✅ Merged |
 | 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | ✅ Merged |
-| 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | Pending |
+| 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | ✅ Merged |
 | 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | Pending |
 | 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | Pending |
 | 23 | Paper trading | 60d Sharpe > 0.5, DD < 10% | Pending |
@@ -320,6 +320,31 @@ Full spec: `docs/PHASES_18_23_SPEC.md`
 | Intraday SHAP | whale_candle visible | 🔄 Pending retrain |
 
 **Verdict:** 🔄 Pending retrain
+
+---
+
+## Phase 20 — Tighter Entry Quality Filter
+
+**Branch:** `feature/phase-20-entry-quality-filter`
+**Models:** Swing + Intraday (Tier 3 gate logic only — no retrain needed)
+**Date completed:** 2026-04-22
+
+### What We Changed
+
+#### Swing — `AgentSimulator._trader_signal()` (additional gates)
+- **EMA-20 + EMA-50**: price must be above both near-term EMAs (not just EMA-200). Blocks entries in short-term downtrends within a long-term uptrend.
+- **RSI 40–70 zone**: RSI must be between 40 (not in freefall) and 70 (not overbought). Replaces free entry at any RSI level.
+- **Volume confirmation**: today's volume must be ≥ 80% of 20-day average. Filters thin-volume entries.
+
+#### Intraday — `IntradayAgentSimulator._process_day()` (ORB gate extended)
+- **Volume surge or whale candle**: after ORB breakout, require `volume_surge >= 1.2` OR `whale_candle = 1.0`. Pure ORB without volume/institutional confirmation is no longer sufficient.
+
+### Expected Impact
+- Swing: fewer entries but higher quality. Target: stop-exit rate drops below 55%.
+- Intraday: ORB entries filtered to those with volume confirmation. Target: win rate stays > 50%.
+
+### Results
+🔄 Pending Tier 3 backtest after retrain.
 
 ---
 

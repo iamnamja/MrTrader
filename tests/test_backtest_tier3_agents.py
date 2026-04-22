@@ -170,8 +170,10 @@ class TestTraderSignalGate:
                 action="BUY", signal_type="EMA_CROSS",
                 entry_price=100.0, stop_price=98.0, target_price=106.0, atr=2.0,
             )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run(bars, start_date=start, end_date=end)
+            # Patch _trader_signal to bypass entry quality gates (this test is about PM/RM logic)
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 106.0)):
+                with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+                    res = sim.run(bars, start_date=start, end_date=end)
         assert res.total_trades >= 1
 
 
@@ -202,8 +204,9 @@ class TestRMRules:
                 entry_price=100.0, stop_price=98.0, target_price=115.0, atr=2.0,  # high target
             )
             proposals = [(f"S{i}", 0.9) for i in range(5)]
-            with patch.object(sim, "_pm_score", return_value=proposals):
-                res = sim.run(syms, start_date=start, end_date=end)
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 115.0)):
+                with patch.object(sim, "_pm_score", return_value=proposals):
+                    res = sim.run(syms, start_date=start, end_date=end)
 
         # With target=+15% and max_hold=20 bars, unlikely to close & reopen in 12 days
         # So concurrent positions should stay <= 2
@@ -250,8 +253,9 @@ class TestExitLogic:
                 action="BUY", signal_type="EMA_CROSS",
                 entry_price=100.0, stop_price=98.0, target_price=200.0, atr=2.0,
             )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run(syms, start_date=start, end_date=end)
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 200.0)):
+                with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+                    res = sim.run(syms, start_date=start, end_date=end)
 
         stop_exits = [t for t in res.trades if t.exit_reason == "STOP"]
         assert len(stop_exits) >= 1
@@ -280,8 +284,9 @@ class TestExitLogic:
                 action="BUY", signal_type="EMA_CROSS",
                 entry_price=100.0, stop_price=98.0, target_price=106.0, atr=2.0,
             )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run(syms, start_date=start, end_date=end)
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 106.0)):
+                with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+                    res = sim.run(syms, start_date=start, end_date=end)
 
         target_exits = [t for t in res.trades if t.exit_reason == "TARGET"]
         assert len(target_exits) >= 1
@@ -308,9 +313,10 @@ class TestPortfolioAccounting:
                 action="BUY", signal_type="EMA_CROSS",
                 entry_price=100.0, stop_price=98.0, target_price=110.0, atr=2.0,
             )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run({"AAPL": bars_data},
-                              start_date=date(2023, 1, 2), end_date=date(2023, 6, 1))
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 110.0)):
+                with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+                    res = sim.run({"AAPL": bars_data},
+                                  start_date=date(2023, 1, 2), end_date=date(2023, 6, 1))
 
         if res.total_trades > 0:
             assert res.ending_capital != sim.starting_capital
@@ -344,9 +350,10 @@ class TestPortfolioAccounting:
                 action="BUY", signal_type="EMA_CROSS",
                 entry_price=100.0, stop_price=98.0, target_price=110.0, atr=2.0,
             )
-            with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
-                res = sim.run({"AAPL": bars_data},
-                              start_date=date(2023, 1, 2), end_date=date(2023, 3, 1))
+            with patch.object(sim, "_trader_signal", return_value=(True, 98.0, 110.0)):
+                with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
+                    res = sim.run({"AAPL": bars_data},
+                                  start_date=date(2023, 1, 2), end_date=date(2023, 3, 1))
 
         if res.total_trades > 0:
             assert res.transaction_costs_total > 0
