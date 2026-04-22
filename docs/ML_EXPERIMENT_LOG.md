@@ -220,10 +220,26 @@ Tier 3 stop-exit rate: **77%**. Large Tier 2 vs Tier 3 gap is expected (Tier 2 r
 
 | Tier | Trades | Win Rate | Sharpe | PnL |
 |---|---|---|---|---|
-| Tier 2 — StrategySimulator | 145 | 35% | -2.6 | -0.5% |
-| Tier 3 — IntradayAgentSimulator | TBD | TBD | TBD | TBD |
+| Tier 2 — StrategySimulator | 270 | 38.9% | -3.17 | -0.8% |
+| Tier 3 — IntradayAgentSimulator | 47 | 51.1% | -0.06 | -0.02% |
 
-Intraday Tier 3 simulator (`IntradayAgentSimulator`) is being built in Phase 17.
+**Status:** Statistically meaningless — 47 trades from a 55-day yfinance window. Cannot draw conclusions.
+Phase 21 (Polygon 2yr data) needed before intraday Tier 3 is evaluable.
+
+---
+
+## Phase 18-23 Roadmap (Next)
+
+| Phase | Change | Gate | Status |
+|---|---|---|---|
+| 18 | Fix label-exit mismatch (both models) | Swing Tier 3 win rate > 42% | **NEXT** |
+| 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | Pending |
+| 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | Pending |
+| 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | Pending |
+| 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | Pending |
+| 23 | Paper trading | 60d Sharpe > 0.5, DD < 10% | Pending |
+
+Full spec: `docs/PHASES_18_23_SPEC.md`
 
 ---
 
