@@ -90,8 +90,8 @@ class SwingBacktester:
             w_end_idx = w_start_idx + WINDOW_DAYS
             w_end_date = all_dates[w_end_idx]
 
-            # Score all symbols at this window
-            scores: Dict[str, float] = {}
+            # Score all symbols at this window — batch predict for LambdaRank
+            symbol_feats: Dict[str, list] = {}
             for symbol, df in symbols_data.items():
                 idx = df.index.date
                 window_df = df.loc[(idx >= all_dates[w_start_idx]) & (idx <= w_end_date)]
@@ -105,12 +105,24 @@ class SwingBacktester:
                     )
                 except Exception:
                     continue
-                if feats is None:
-                    continue
-                X = np.array([list(feats.values())])
+                if feats is not None:
+                    symbol_feats[symbol] = feats  # keep as dict for named alignment
+
+            scores: Dict[str, float] = {}
+            if symbol_feats:
+                sym_list = list(symbol_feats.keys())
+                model_feat_names = getattr(self.model, "feature_names", None)
                 try:
-                    _, proba = self.model.predict(X)
-                    scores[symbol] = float(proba[0])
+                    if model_feat_names:
+                        X_batch = np.array([
+                            [symbol_feats[s].get(f, 0.0) for f in model_feat_names]
+                            for s in sym_list
+                        ])
+                    else:
+                        X_batch = np.array([list(symbol_feats[s].values()) for s in sym_list])
+                    _, probas = self.model.predict(X_batch)
+                    for sym, proba in zip(sym_list, probas):
+                        scores[sym] = float(proba)
                 except Exception:
                     pass
 

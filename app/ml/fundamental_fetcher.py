@@ -377,6 +377,39 @@ def get_sector_momentum(sector: str) -> float:
     return momentum
 
 
+# Cache for 5-day ETF momentum (keyed by etf ticker)
+_etf_5d_cache: Dict[str, tuple] = {}
+
+
+def get_sector_momentum_5d(sector: str) -> float:
+    """
+    Return the 5-day price return of the sector ETF.
+    Complements get_sector_momentum (20-day) for short-term relative signal.
+    """
+    etf = SECTOR_ETF_MAP.get(sector)
+    if not etf:
+        return 0.0
+
+    now = time.time()
+    cached = _etf_5d_cache.get(etf)
+    if cached and now - cached[1] < _ETF_TTL:
+        return cached[0]
+
+    momentum_5d = 0.0
+    try:
+        from app.integrations import get_alpaca_client
+        client = get_alpaca_client()
+        df = client.get_bars(etf, timeframe="1Day", limit=10)
+        if df is not None and not df.empty and len(df) >= 6:
+            close = df["close"].tolist()
+            momentum_5d = float((close[-1] - close[-6]) / close[-6]) if close[-6] else 0.0
+    except Exception as exc:
+        logger.debug("Alpaca ETF 5d momentum fetch failed for %s: %s", etf, exc)
+
+    _etf_5d_cache[etf] = (momentum_5d, now)
+    return momentum_5d
+
+
 # ── SEC EDGAR insider activity (Form 4) ───────────────────────────────────────
 
 _EDGAR_SEARCH = (

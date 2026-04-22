@@ -241,7 +241,7 @@ class TestIntradayBacktester:
         bt = IntradayBacktester(model=model, min_confidence=0.0)
         result = bt.run(self._data())
 
-        valid = {"TARGET", "STOP", "FORCE_CLOSE"}
+        valid = {"TARGET", "STOP", "FORCE_CLOSE", "TIME_EXIT"}
         for t in result.trades:
             assert t.exit_reason in valid
 

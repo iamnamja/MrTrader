@@ -129,6 +129,19 @@ def run_swing_backtest(symbols, years):
         fail(f"Download failed: {exc}")
         return None
 
+    # Fetch SPY for benchmark
+    spy_prices = None
+    try:
+        spy_raw = yf.download("SPY", start=start.date().isoformat(),
+                              end=end.date().isoformat(), interval="1d",
+                              progress=False, auto_adjust=True)
+        if isinstance(spy_raw.columns, pd.MultiIndex):
+            spy_raw.columns = spy_raw.columns.get_level_values(0)
+        spy_raw.columns = [c.lower() for c in spy_raw.columns]
+        spy_prices = spy_raw["close"]
+    except Exception:
+        pass
+
     ok(f"Downloaded data for {len(symbols_data)} symbols")
 
     model = _load_model("swing")
@@ -138,12 +151,31 @@ def run_swing_backtest(symbols, years):
 
     t0 = time.time()
     bt = SwingBacktester(model=model)
-    result = bt.run(symbols_data, fetch_fundamentals=False)
+    raw_result = bt.run(symbols_data, fetch_fundamentals=False)
     elapsed = time.time() - t0
+    ok(f"Raw backtest completed in {elapsed:.1f}s  ({raw_result.total_trades} trades)")
 
-    ok(f"Backtest completed in {elapsed:.1f}s")
-    _print_result(result)
-    return result
+    # Tier 2: Portfolio-level simulation
+    from app.backtesting.strategy_simulator import StrategySimulator
+    sim = StrategySimulator()
+    sim_result = sim.run(raw_result, spy_prices=spy_prices,
+                         start_date=start.date(), end_date=end.date())
+    sim_result.print_report()
+
+    # Tier 3: Agent-driven simulation (PM + RM + Trader on historical bars)
+    header("Tier 3 — Agent-Driven Simulation  (PM + RM + Trader)")
+    from app.backtesting.agent_simulator import AgentSimulator
+    agent_sim = AgentSimulator(model=model)
+    t0 = time.time()
+    agent_result = agent_sim.run(
+        symbols_data, spy_prices=spy_prices,
+        start_date=start.date(), end_date=end.date(),
+    )
+    elapsed = time.time() - t0
+    ok(f"Agent simulation completed in {elapsed:.1f}s  ({agent_result.total_trades} trades)")
+    agent_result.print_report()
+
+    return agent_result
 
 
 def run_intraday_backtest(symbols, days):
@@ -154,17 +186,16 @@ def run_intraday_backtest(symbols, days):
     header("Intraday Model Backtest  (5-min bars)")
     info(f"Symbols: {len(symbols)}  |  History: {days} day(s)")
 
+    days = min(days, 55)  # yfinance 5-min data limited to last 60 days
     end = datetime.now()
     start = end - timedelta(days=days + 5)
     info(f"Downloading 5-min bars {start.date()} -> {end.date()}...")
 
+    period_str = f"{days}d"
     symbols_data = {}
     for sym in symbols:
         try:
-            df = yf.download(
-                sym, start=start.isoformat(), end=end.isoformat(),
-                interval="5m", progress=False, auto_adjust=True,
-            )
+            df = yf.download(sym, period=period_str, interval="5m", progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.columns = [c.lower() for c in df.columns]
@@ -177,13 +208,21 @@ def run_intraday_backtest(symbols, days):
 
     spy_data = None
     try:
-        spy_data = yf.download(
-            "SPY", start=start.isoformat(), end=end.isoformat(),
-            interval="5m", progress=False, auto_adjust=True,
-        )
+        spy_data = yf.download("SPY", period=period_str, interval="5m", progress=False, auto_adjust=True)
         if isinstance(spy_data.columns, pd.MultiIndex):
             spy_data.columns = spy_data.columns.get_level_values(0)
         spy_data.columns = [c.lower() for c in spy_data.columns]
+    except Exception:
+        pass
+
+    # Also get daily SPY for benchmark
+    spy_daily = None
+    try:
+        spy_d = yf.download("SPY", period=period_str, interval="1d", progress=False, auto_adjust=True)
+        if isinstance(spy_d.columns, pd.MultiIndex):
+            spy_d.columns = spy_d.columns.get_level_values(0)
+        spy_d.columns = [c.lower() for c in spy_d.columns]
+        spy_daily = spy_d["close"]
     except Exception:
         pass
 
@@ -194,20 +233,25 @@ def run_intraday_backtest(symbols, days):
 
     t0 = time.time()
     bt = IntradayBacktester(model=model)
-    result = bt.run(symbols_data, spy_data)
+    raw_result = bt.run(symbols_data, spy_data)
     elapsed = time.time() - t0
+    ok(f"Raw backtest completed in {elapsed:.1f}s  ({raw_result.total_trades} trades)")
 
-    ok(f"Backtest completed in {elapsed:.1f}s")
-    _print_result(result)
-    return result
+    from app.backtesting.strategy_simulator import StrategySimulator
+    from datetime import timedelta
+    sim = StrategySimulator(position_budget_pct=0.03)
+    sim_result = sim.run(raw_result, spy_prices=spy_daily,
+                         start_date=start.date(), end_date=end.date())
+    sim_result.print_report()
+    return sim_result
 
 
 def _load_model(model_name):
-    import os
+    import pickle
+    from pathlib import Path
     try:
         from app.database.models import ModelVersion
         from app.database.session import get_session
-        from app.ml.model import PortfolioSelectorModel
 
         db = get_session()
         try:
@@ -217,11 +261,24 @@ def _load_model(model_name):
                 .order_by(ModelVersion.version.desc())
                 .first()
             )
-            if latest and latest.model_path:
-                m = PortfolioSelectorModel()
-                directory = os.path.dirname(latest.model_path)
-                m.load(directory, latest.version, model_name=model_name)
-                return m
+            if not latest or not latest.model_path:
+                return None
+            path = Path(latest.model_path)
+            directory = str(path.parent)
+            version = latest.version
+
+            # Try loading as LambdaRankModel / ThreeStageModel (self-contained pickle)
+            if path.exists():
+                with open(path, "rb") as f:
+                    obj = pickle.load(f)
+                if hasattr(obj, "is_trained"):
+                    return obj
+
+            # PortfolioSelectorModel: pkl contains raw XGBoost, needs wrapper load
+            from app.ml.model import PortfolioSelectorModel
+            m = PortfolioSelectorModel(model_type="xgboost")
+            m.load(directory, version, model_name=model_name)
+            return m
         finally:
             db.close()
     except Exception as exc:
@@ -242,7 +299,7 @@ def main():
     parser.add_argument("--years", type=int, default=2,
                         help="Years of daily history for swing (default: 2)")
     parser.add_argument("--days", type=int, default=55,
-                        help="Days of 5-min history for intraday (default: 55)")
+                        help="Days of 5-min history for intraday (default: 55, max 55 — yfinance limit)")
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
     args = parser.parse_args()
 
