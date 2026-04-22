@@ -129,6 +129,19 @@ def run_swing_backtest(symbols, years):
         fail(f"Download failed: {exc}")
         return None
 
+    # Fetch SPY for benchmark
+    spy_prices = None
+    try:
+        spy_raw = yf.download("SPY", start=start.date().isoformat(),
+                              end=end.date().isoformat(), interval="1d",
+                              progress=False, auto_adjust=True)
+        if isinstance(spy_raw.columns, pd.MultiIndex):
+            spy_raw.columns = spy_raw.columns.get_level_values(0)
+        spy_raw.columns = [c.lower() for c in spy_raw.columns]
+        spy_prices = spy_raw["close"]
+    except Exception:
+        pass
+
     ok(f"Downloaded data for {len(symbols_data)} symbols")
 
     model = _load_model("swing")
@@ -138,12 +151,17 @@ def run_swing_backtest(symbols, years):
 
     t0 = time.time()
     bt = SwingBacktester(model=model)
-    result = bt.run(symbols_data, fetch_fundamentals=False)
+    raw_result = bt.run(symbols_data, fetch_fundamentals=False)
     elapsed = time.time() - t0
+    ok(f"Raw backtest completed in {elapsed:.1f}s  ({raw_result.total_trades} trades)")
 
-    ok(f"Backtest completed in {elapsed:.1f}s")
-    _print_result(result)
-    return result
+    # Portfolio-level simulation
+    from app.backtesting.strategy_simulator import StrategySimulator
+    sim = StrategySimulator()
+    sim_result = sim.run(raw_result, spy_prices=spy_prices,
+                         start_date=start.date(), end_date=end.date())
+    sim_result.print_report()
+    return sim_result
 
 
 def run_intraday_backtest(symbols, days):
@@ -183,6 +201,17 @@ def run_intraday_backtest(symbols, days):
     except Exception:
         pass
 
+    # Also get daily SPY for benchmark
+    spy_daily = None
+    try:
+        spy_d = yf.download("SPY", period=period_str, interval="1d", progress=False, auto_adjust=True)
+        if isinstance(spy_d.columns, pd.MultiIndex):
+            spy_d.columns = spy_d.columns.get_level_values(0)
+        spy_d.columns = [c.lower() for c in spy_d.columns]
+        spy_daily = spy_d["close"]
+    except Exception:
+        pass
+
     model = _load_model("intraday")
     if model is None:
         warn("No intraday model -- train first (IntradayModelTrainer)")
@@ -190,12 +219,17 @@ def run_intraday_backtest(symbols, days):
 
     t0 = time.time()
     bt = IntradayBacktester(model=model)
-    result = bt.run(symbols_data, spy_data)
+    raw_result = bt.run(symbols_data, spy_data)
     elapsed = time.time() - t0
+    ok(f"Raw backtest completed in {elapsed:.1f}s  ({raw_result.total_trades} trades)")
 
-    ok(f"Backtest completed in {elapsed:.1f}s")
-    _print_result(result)
-    return result
+    from app.backtesting.strategy_simulator import StrategySimulator
+    from datetime import timedelta
+    sim = StrategySimulator(position_budget_pct=0.03)
+    sim_result = sim.run(raw_result, spy_prices=spy_daily,
+                         start_date=start.date(), end_date=end.date())
+    sim_result.print_report()
+    return sim_result
 
 
 def _load_model(model_name):
