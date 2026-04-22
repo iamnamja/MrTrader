@@ -154,17 +154,16 @@ def run_intraday_backtest(symbols, days):
     header("Intraday Model Backtest  (5-min bars)")
     info(f"Symbols: {len(symbols)}  |  History: {days} day(s)")
 
+    days = min(days, 55)  # yfinance 5-min data limited to last 60 days
     end = datetime.now()
     start = end - timedelta(days=days + 5)
     info(f"Downloading 5-min bars {start.date()} -> {end.date()}...")
 
+    period_str = f"{days}d"
     symbols_data = {}
     for sym in symbols:
         try:
-            df = yf.download(
-                sym, start=start.isoformat(), end=end.isoformat(),
-                interval="5m", progress=False, auto_adjust=True,
-            )
+            df = yf.download(sym, period=period_str, interval="5m", progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.columns = [c.lower() for c in df.columns]
@@ -177,10 +176,7 @@ def run_intraday_backtest(symbols, days):
 
     spy_data = None
     try:
-        spy_data = yf.download(
-            "SPY", start=start.isoformat(), end=end.isoformat(),
-            interval="5m", progress=False, auto_adjust=True,
-        )
+        spy_data = yf.download("SPY", period=period_str, interval="5m", progress=False, auto_adjust=True)
         if isinstance(spy_data.columns, pd.MultiIndex):
             spy_data.columns = spy_data.columns.get_level_values(0)
         spy_data.columns = [c.lower() for c in spy_data.columns]
@@ -203,11 +199,11 @@ def run_intraday_backtest(symbols, days):
 
 
 def _load_model(model_name):
-    import os
+    import pickle
+    from pathlib import Path
     try:
         from app.database.models import ModelVersion
         from app.database.session import get_session
-        from app.ml.model import PortfolioSelectorModel
 
         db = get_session()
         try:
@@ -217,11 +213,24 @@ def _load_model(model_name):
                 .order_by(ModelVersion.version.desc())
                 .first()
             )
-            if latest and latest.model_path:
-                m = PortfolioSelectorModel()
-                directory = os.path.dirname(latest.model_path)
-                m.load(directory, latest.version, model_name=model_name)
-                return m
+            if not latest or not latest.model_path:
+                return None
+            path = Path(latest.model_path)
+            directory = str(path.parent)
+            version = latest.version
+
+            # Try loading as LambdaRankModel / ThreeStageModel (self-contained pickle)
+            if path.exists():
+                with open(path, "rb") as f:
+                    obj = pickle.load(f)
+                if hasattr(obj, "is_trained"):
+                    return obj
+
+            # PortfolioSelectorModel: pkl contains raw XGBoost, needs wrapper load
+            from app.ml.model import PortfolioSelectorModel
+            m = PortfolioSelectorModel(model_type="xgboost")
+            m.load(directory, version, model_name=model_name)
+            return m
         finally:
             db.close()
     except Exception as exc:
@@ -242,7 +251,7 @@ def main():
     parser.add_argument("--years", type=int, default=2,
                         help="Years of daily history for swing (default: 2)")
     parser.add_argument("--days", type=int, default=55,
-                        help="Days of 5-min history for intraday (default: 55)")
+                        help="Days of 5-min history for intraday (default: 55, max 55 — yfinance limit)")
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
     args = parser.parse_args()
 

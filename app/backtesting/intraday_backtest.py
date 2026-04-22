@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 TARGET_PCT = 0.01      # 1% profit target (realistic for intraday)
 STOP_PCT = 0.005       # 0.5% stop loss
-FEATURE_BARS = 6       # bars available at 09:45 (3 bars = 15 min + entry bar)
+FEATURE_BARS = 12      # 1 hour of 5-min bars (matches MIN_BARS in intraday_features)
 FORCE_CLOSE_BAR = 72   # 6 hours × 12 bars/hr = ~3:45 PM equivalent
 MIN_CONFIDENCE = 0.55
 POSITION_SIZE = 1_000  # fixed $1,000 per trade
