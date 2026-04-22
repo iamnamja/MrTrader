@@ -236,7 +236,7 @@ Phase 21 (Polygon 2yr data) needed before intraday Tier 3 is evaluable.
 | 19 | Pressure Index + ChoCh features (swing) | New features in SHAP top 15 | ✅ Merged |
 | 20 | Tighter Tier 3 entry gates | Swing Tier 3 Sharpe > 0.0 | ✅ Merged |
 | 21 | Polygon 2yr intraday data + retrain | 500+ Tier 3 trades | ✅ Merged |
-| 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | Pending |
+| 22 | Walk-forward on Tier 3 | Avg OOS Sharpe > 0.8 | ✅ Merged |
 | 23 | Paper trading | 60d Sharpe > 0.5, DD < 10% | Pending |
 
 Full spec: `docs/PHASES_18_23_SPEC.md`
@@ -392,6 +392,44 @@ python scripts/backtest_ml_models.py --model intraday --days 730
 ```
 
 **Verdict:** ✅ Infrastructure merged. Gate measured after fetch + retrain.
+
+---
+
+## Phase 22 — Walk-Forward Tier 3 Validation
+
+**Branch:** `feature/phase-22-walkforward-tier3`
+**Models:** Swing + Intraday
+**Date completed:** 2026-04-22
+
+### What We Built
+
+- **`scripts/walkforward_tier3.py`**: Rolling expanding-window walk-forward runner.
+  - 3 folds by default: train Y1-Y2→test Y3, train Y1-Y3→test Y4, train Y1-Y4→test Y5
+  - Swing: downloads daily bars via yfinance, runs `AgentSimulator` on each test fold
+  - Intraday: loads from Polygon cache, runs `IntradayAgentSimulator` on each test fold
+  - Per-fold report: trades, win rate, Sharpe, max drawdown, stop-exit rate
+  - Aggregate report: avg Sharpe, min fold Sharpe, gate pass/fail
+
+### Gate Definition
+
+| Metric | Required |
+|---|---|
+| Avg OOS Tier 3 Sharpe | > 0.8 |
+| Minimum fold Sharpe | > -0.3 |
+
+### Usage
+
+```bash
+python scripts/walkforward_tier3.py --model swing --folds 3 --years 5
+python scripts/walkforward_tier3.py --model intraday --folds 3 --days 730
+python scripts/walkforward_tier3.py --model both
+```
+
+### Results
+
+🔄 Pending — run after retraining both models with Phase 18-20 changes.
+
+**Verdict:** ✅ Script merged. Gate to be measured post-retrain.
 
 ---
 
