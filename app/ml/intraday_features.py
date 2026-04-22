@@ -283,6 +283,15 @@ def compute_intraday_features(
         feats["daily_vol_regime"] = 1.0
         feats["daily_parkinson_vol"] = 0.0
 
+    # ── Whale candle ──────────────────────────────────────────────────────────
+    try:
+        _opens = bars["open"].values.astype(float)
+        _body = float(abs(closes[-1] - _opens[-1]))
+        _atr_val = _atr(highs, lows, closes, 14)
+        feats["whale_candle"] = 1.0 if (_atr_val > 0 and _body > 2.0 * _atr_val) else 0.0
+    except Exception:
+        feats["whale_candle"] = 0.0
+
     return feats
 
 
@@ -470,4 +479,6 @@ FEATURE_NAMES = [
     "time_of_day", "minutes_since_open", "is_open_session", "is_close_session",
     # Daily vol context
     "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
+    # Institutional activity
+    "whale_candle",
 ]
