@@ -383,5 +383,5 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | v110 | 140 | 2026-04-23 | XGBoost, cross_sectional labels (5-day window), no-fundamentals, regime interactions. AUC 0.638. Tier 3 Sharpe +0.34, win rate 40.3%, profit factor 1.11 |
+| Swing | **v110** | 140 | 2026-04-23 | **Best model.** XGBoost, cross_sectional labels (5-day window), no-fundamentals, regime interactions. AUC 0.638. Tier 3 Sharpe +0.34, win rate 40.3%, profit factor 1.11. v111 (Phase 26a VIX weights) was a regression — v110 is active. |
 | Intraday | v18 | 41 | 2026-04-23 | XGBoost, ATR labels (1.2×/0.6×), phases 18-21 active, 2yr Polygon cache (720 syms). Tier 3 Sharpe -1.16, win rate 49% |

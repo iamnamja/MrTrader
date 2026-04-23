@@ -566,12 +566,42 @@ Post-retrain Tier 3 backtest results (after fixing ATR stop/target alignment —
 
 ---
 
+## Phase 26a — VIX Regime Sample Weights (2026-04-23)
+
+**Hypothesis:** Upweighting training samples from low-VIX (calm market) periods makes the model learn cleaner signals, improving Tier 3 Sharpe.
+
+**What changed (v111 vs v110):**
+- Added 6th sample weight factor: `vix_regime_bucket` multiplier (1.5× for low-VIX windows, 1.0× for high-VIX)
+- `vix_regime_bucket` stored in training meta per sample via `vix_history` passed to worker
+- `regime_score = 0.5` kept constant in training to prevent look-ahead (unchanged from prior phases)
+
+**Model trained:** v111 — same architecture as v110, 140 features, 5yr 5-day window
+
+**Results: v111**
+| Metric | v110 (Phase 25, baseline) | v111 (Phase 26a) |
+|---|---|---|
+| OOS AUC | 0.638 | ~0.636 |
+| Tier 3 Sharpe | **+0.34** | **-0.43** |
+| Tier 3 Win Rate | 40.3% | 40.4% |
+| Profit Factor | 1.11 | 0.96 |
+| Trades | 290 | 255 |
+| Stop Exit Rate | 70% | **76%** |
+| Avg Hold | — | 2.1 bars |
+| Total Return | +1.9% | -2.4% |
+
+**Verdict:** ❌ Regression. VIX regime weighting hurt performance: stop exit rate increased from 70% → 76%, profit factor dropped below 1.0, Sharpe went from +0.34 → -0.43. **v110 remains the best model.** The likely cause: upweighting calm-market samples biases the model toward low-volatility setups that stop out when volatility spikes (which is exactly when we trade, since we enter on scoring days regardless of regime). The model learned patterns that only work in calm markets but the stop logic uses fixed ATR multiples that are calibrated to average vol.
+
+**Added to ruled-out list:** VIX regime sample weights in current form (1.5× low-VIX upweight). Possible alternative: use VIX regime as a *feature* (already in feature set via `vix_level`, `vix_regime_bucket`) rather than a training weight.
+
+---
+
 ## Techniques Evaluated and Ruled Out
 
 | Technique | Reason Not Pursued |
 |---|---|
 | v37 model (AUC 0.757) | Degenerate: precision=0.0006, recall=1.0, threshold=0.2 — predicted everything as buy |
 | Lowering AUC gate to 0.60 | Masks real problem; fixing labels/embargo is better than accepting lower bar |
+| VIX regime sample weights (1.5× low-VIX upweight, Phase 26a) | Regression: Sharpe +0.34 → -0.43, stop exits 70% → 76%. Biases model toward calm-market setups that stop out in volatile periods. VIX is already a feature — no need to weight by it. |
 
 ---
 
