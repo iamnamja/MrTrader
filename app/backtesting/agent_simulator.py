@@ -43,11 +43,15 @@ from app.strategy.position_sizer import size_position
 logger = logging.getLogger(__name__)
 
 # ── Simulation defaults ────────────────────────────────────────────────────────
-MIN_CONFIDENCE = 0.50  # minimum model score to propose a trade
+MIN_CONFIDENCE = 0.50  # model AUC ~0.52; probabilities cluster below 0.55, keep at 0.50
 TOP_N_STOCKS = 10  # PM proposal count per day
 MIN_BARS_SIGNAL = 210  # minimum bars for generate_signal (needs EMA-200)
-SWING_STOP_PCT = 0.02  # 2% stop loss when ATR-based stop unavailable
-SWING_TARGET_PCT = 0.06  # 6% profit target when signal doesn't provide one
+# ATR multipliers must match training label thresholds (training.py ATR_MULT_TARGET/STOP)
+# so the model's learned signal aligns with backtest exit behavior.
+ATR_STOP_MULT = 0.5    # 0.5× ATR — matches training label stop
+ATR_TARGET_MULT = 1.5  # 1.5× ATR — matches training label target
+SWING_STOP_PCT = 0.02  # fallback only when ATR unavailable
+SWING_TARGET_PCT = 0.06
 TX_COST_PCT = TRANSACTION_COST  # 5bps per side
 
 
@@ -110,6 +114,9 @@ class AgentSimulator:
         min_confidence: float = MIN_CONFIDENCE,
         top_n: int = TOP_N_STOCKS,
         transaction_cost_pct: float = TX_COST_PCT,
+        atr_stop_mult: float = ATR_STOP_MULT,
+        atr_target_mult: float = ATR_TARGET_MULT,
+        max_vol_pct: Optional[float] = None,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -117,6 +124,9 @@ class AgentSimulator:
         self.min_confidence = min_confidence
         self.top_n = top_n
         self.transaction_cost_pct = transaction_cost_pct
+        self.atr_stop_mult = atr_stop_mult
+        self.atr_target_mult = atr_target_mult
+        self.max_vol_pct = max_vol_pct  # Phase 26d: block entries above this vol_percentile_52w
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -232,7 +242,10 @@ class AgentSimulator:
             if bars_to_yesterday is None or len(bars_to_yesterday) < 60:
                 continue
             try:
-                feats = fe.engineer_features(sym, bars_to_yesterday, fetch_fundamentals=False)
+                feats = fe.engineer_features(
+                    sym, bars_to_yesterday, fetch_fundamentals=False,
+                    as_of_date=day, regime_score=0.5,
+                )
                 if feats is not None:
                     features_by_symbol[sym] = feats
             except Exception:
@@ -259,8 +272,19 @@ class AgentSimulator:
             return []
 
         ranked = sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
-        return [(sym, float(prob)) for sym, prob in ranked
-                if float(prob) >= self.min_confidence][:self.top_n]
+        proposals = []
+        for sym, prob in ranked:
+            if float(prob) < self.min_confidence:
+                continue
+            # Phase 26d: vol filter — skip stocks in top vol_percentile_52w bucket
+            if self.max_vol_pct is not None:
+                vol_pct = features_by_symbol[sym].get("vol_percentile_52w", 0.0)
+                if vol_pct > self.max_vol_pct / 100.0:
+                    continue
+            proposals.append((sym, float(prob)))
+            if len(proposals) >= self.top_n:
+                break
+        return proposals
 
     # ─── Trader: technical signal gate ────────────────────────────────────────
 
@@ -318,7 +342,24 @@ class AgentSimulator:
                 if vol_avg20 > 0 and vol_today < 0.8 * vol_avg20:
                     return False, 0.0, 0.0
 
-            return True, sig.stop_price, sig.target_price
+            # Compute ATR-matched stops (must match training label multipliers)
+            close = float(bars_up_to_day["close"].iloc[-1])
+            try:
+                high = bars_up_to_day["high"].to_numpy(dtype=float)
+                low  = bars_up_to_day["low"].to_numpy(dtype=float)
+                cl   = bars_up_to_day["close"].to_numpy(dtype=float)
+                tr = np.maximum(high[1:] - low[1:],
+                     np.maximum(abs(high[1:] - cl[:-1]), abs(low[1:] - cl[:-1])))
+                atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
+                atr_pct = atr / close
+                stop_pct   = float(np.clip(self.atr_stop_mult   * atr_pct, 0.005, 0.08))
+                target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01,  0.16))
+                stop_price   = close * (1 - stop_pct)
+                target_price = close * (1 + target_pct)
+            except Exception:
+                stop_price   = close * (1 - SWING_STOP_PCT)
+                target_price = close * (1 + SWING_TARGET_PCT)
+            return True, stop_price, target_price
         except Exception as exc:
             logger.debug("generate_signal failed %s: %s", symbol, exc)
             return False, 0.0, 0.0
