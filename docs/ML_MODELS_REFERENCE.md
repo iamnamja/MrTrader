@@ -1,6 +1,6 @@
 # MrTrader — ML Models Reference
 
-Last updated: 2026-04-23
+Last updated: 2026-04-23 (post Phases 23-26, infrastructure Phases 27-28)
 
 ---
 

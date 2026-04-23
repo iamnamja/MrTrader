@@ -32,28 +32,30 @@ All agents communicate via an in-process async message queue. No HTTP between ag
 | Weekly | Walk-forward backtest + model retrain if drift detected |
 
 ### Swing Selection (09:25)
-1. Fetch last `WINDOW_DAYS` of daily bars for all SP-500 symbols
-2. Run `FeatureEngineer.engineer_features()` → 126-feature vector per symbol
+1. Fetch last `WINDOW_DAYS` (63) of daily bars for all SP-500 symbols
+2. Run `FeatureEngineer.engineer_features()` → 140-feature vector per symbol
 3. CS-normalize features across batch (removes sector/regime bias)
-4. Run `LambdaRankModel.predict()` on full batch → ranking score [0, 1] per symbol
+4. Run `XGBClassifier.predict_proba()` → probability score per symbol
 5. Filter: `score >= MIN_CONFIDENCE (0.55)`, take top 10
 6. Size position using `_calculate_quantity()`: confidence scalar × base allocation
 7. Send proposals to Risk Manager
 
-**Model:** v94 — XGBoost LambdaRank, 126 features, trained on SP-500 5-year history
-**Label:** Top 20% cross-sectional Sharpe-adjusted 10-day forward return
-**Top SHAP signals:** revenue_growth (0.235), sector_momentum (0.178), operating_leverage (0.139)
+**Model:** v111 — XGBoost, 140 features, trained on SP-500 5-year history
+**Label:** Top 20% cross-sectional Sharpe-adjusted 5-day forward return
+**Top SHAP signals:** atr_norm (0.114), volatility (0.064), realized_vol_20d (0.062)
+**Note:** Tier 3 Sharpe +0.34 (as of v110). Paper trading gate requires > 0.8.
 
 ### Intraday Selection (09:45)
-1. Fetch 5-min bars for Russell 1000 symbols (cache-first, Alpaca fallback)
-2. Run `compute_intraday_features()` → 40-feature vector per symbol
+1. Fetch 5-min bars for Russell 1000 symbols (Polygon Parquet cache-first, Alpaca fallback)
+2. Run `compute_intraday_features()` → 41-feature vector per symbol
 3. Run `PortfolioSelectorModel.predict()` → probability per symbol
 4. Filter: `score >= MIN_CONFIDENCE (0.55)`, take top 5
 5. Tagged `trade_type="intraday"` → PM will force-close by 15:45
 
-**Model:** v17 — XGBoost + LightGBM ensemble, 40 features, 766 symbols
-**Label:** Cross-sectional Sharpe-adjusted 24-bar (2h) best return (top 20%)
+**Model:** v18 — XGBoost + LightGBM soft-vote ensemble, 41 features, 766 symbols
+**Label:** ATR-adaptive: target = 1.2× ATR14, stop = 0.6× ATR14 (2:1 R:R)
 **Top SHAP signals:** atr_norm, orb_position, bb_position, rel_vol_spy, session_hl_position
+**Note:** Tier 3 Sharpe -1.16. Paper trading gate requires > 1.5. Not yet production-ready.
 
 ### Position Review (every 30 min)
 - Rescore all open swing positions using same model
@@ -150,29 +152,31 @@ Each 30-second scan checks open swing positions:
 
 ## ML Models — Current State
 
-### Swing Model (v94)
+### Swing Model (v111) — Updated 2026-04-23
 | Field | Value |
 |---|---|
-| Architecture | LightGBM LambdaRank |
-| Universe | SP-500 (~446 symbols) |
-| Feature count | 126 |
+| Architecture | XGBoost (400 trees, depth 4, lr=0.03) |
+| Universe | SP-500 (~753 symbols used in training) |
+| Feature count | 140 (no fundamentals — faster iteration) |
+| Forward window | 5 days (Phase 25: was 10 — halved to double training samples) |
+| Train samples | ~129k |
 | Train period | 5 years rolling |
-| Retrain schedule | Weekly (Sunday) |
-| OOS AUC | 0.5682 |
-| Backtest Sharpe | 1.87 (2yr, SP-100 sample) |
-| Key improvement | CS normalization dethroned sector_momentum (0.90→0.18 SHAP) |
+| Retrain schedule | 17:00 ET daily |
+| OOS AUC | 0.640 |
+| Tier 3 Sharpe | +0.34 (v110 — gate requires > 0.8) |
+| Key phase history | Phase 24a: label bug fix. Phase 24b: regime interactions. Phase 25: 5-day window. Phase 26a: VIX sample weights. |
 
-### Intraday Model (v17)
+### Intraday Model (v18) — Updated 2026-04-23
 | Field | Value |
 |---|---|
-| Architecture | XGBoost + LightGBM ensemble |
+| Architecture | XGBoost + LightGBM soft-vote ensemble (50/50) |
 | Universe | Russell 1000 (~766 symbols) |
-| Feature count | 40 |
-| Train period | 730 days rolling |
-| Retrain schedule | Daily (after market) |
-| OOS AUC | 0.5646 |
-| Backtest status | Backtest label mismatch — see Known Issues |
-| Key improvement | Session-time features (minutes_since_open, is_open/close_session) |
+| Feature count | 41 |
+| Train period | 2 years of 5-min bars (Polygon cache) |
+| Retrain schedule | 17:00 ET daily |
+| OOS AUC | ~0.56 |
+| Tier 3 Sharpe | -1.16 (gate requires > 1.5) |
+| Status | Not production-ready. Improvement work queued after swing gate is met. |
 
 ---
 
@@ -218,33 +222,30 @@ Operates on 5-min bars. Per trading day:
 
 ## Backtesting Results — Current Models
 
-### Swing v94 (run 2026-04-22)
+### Swing v110 (run 2026-04-23) — Best Result to Date
 
-| Tier | Trades | Win Rate | Sharpe | Total PnL | Notes |
+| Tier | Trades | Win Rate | Sharpe | Return | Notes |
 |---|---|---|---|---|---|
-| Tier 2 (StrategySimulator) | 240 | 67.5% | 6.81 | +30.9% | Replays historical winners |
-| Tier 3 (AgentSimulator) | 289 | 36% | -0.14 | -0.9% | Honest agent logic — 77% stop exits |
+| Tier 3 (AgentSimulator) | 290 | 40.3% | **+0.34** | +1.9% | First positive Sharpe. 70% stop exits. |
 
-Tier 3 Tier 3 stop-exit rate of 77% signals the swing model's entry timing needs improvement.
+Gate requires Tier 3 Sharpe > 0.8. Currently at +0.34. Need +0.46 more.
 
-### Intraday v17 (run 2026-04-22)
+### Intraday v18 (run 2026-04-23)
 
-| Tier | Trades | Win Rate | Sharpe | Total PnL | Notes |
-|---|---|---|---|---|---|
-| Tier 2 (StrategySimulator) | 145 | 35% | -2.6 | -0.5% | — |
-| Tier 3 (IntradayAgentSimulator) | — | — | — | — | Pending (being built) |
+| Tier | Trades | Win Rate | Sharpe | Notes |
+|---|---|---|---|---|
+| Tier 3 (IntradayAgentSimulator) | 266 | 49% | -1.16 | 58% stop exits. Gate requires > 1.5. |
 
 ---
 
-## Known Issues & Planned Fixes
+## Known Issues & Status
 
-| Issue | Impact | Fix |
-|---|---|---|
-| Swing Tier 3 Sharpe -0.14, 77% stop exits | Model entry timing poor when run through real agent flow | Improve model or add momentum filter |
-| Intraday backtest mismatch | Backtester uses target/stop exits; model trained on 2h Sharpe rank | Option A: fix backtester to use 2h time exit; Option B: retrain with target/stop outcome labels |
-| AUC drift gate too tight | 0.65 gate fires on every retrain; realistic steady-state is 0.56–0.58 | Lower gate to 0.54 |
-| Swing model misses sector_momentum_5d | v94 trained before Iter 4 features were merged; 2 features missing from model | Retrain to get 128-feature model |
-| Intraday min_confidence (0.55) too high | Almost no signals pass in backtest | Tune threshold post-retrain or lower to 0.50 |
+| Issue | Status |
+|---|---|
+| Swing 70% stop exit rate | Ongoing. Volatility features dominate SHAP. Model picks volatile stocks that noise-stop. |
+| Intraday Sharpe -1.16 | Not yet addressed. Phases 23-26 focused on swing only. |
+| AUC drift gate (0.65) fires constantly | Steady-state AUC is 0.63-0.64. Gate is informational only — don't use to block trading decisions. |
+| Fundamentals disabled | `--no-fundamentals` used for faster iteration. Re-enable when swing gate is met for potential gain. |
 
 ---
 
