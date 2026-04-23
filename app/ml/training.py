@@ -33,9 +33,9 @@ MODEL_DIR = "app/ml/models"
 
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
-FORWARD_DAYS = 10       # v25: 10-day forward (empirically better AUC than 21d/63d)
+FORWARD_DAYS = 5        # Phase 25: 5-day forward (aligns with observed 2-3 bar avg hold)
 # STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
-STEP_DAYS = 10          # non-overlapping forward windows → cleaner labels
+STEP_DAYS = 5           # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
 # Embargo: skip this many windows between train and test to prevent the training
 # label period (FORWARD_DAYS bars) from overlapping with test feature windows.

@@ -539,6 +539,33 @@ Post-retrain Tier 3 backtest results (after fixing ATR stop/target alignment —
 
 ---
 
+## Phase 25 — 5-Day Forward Window (2026-04-23)
+
+**Hypothesis:** Halving the forward window from 10 → 5 trading days doubles training samples and aligns labels with actual execution (avg hold observed was ~2 bars).
+
+**Baseline:** v109, AUC 0.644, Tier 3 Sharpe -0.52
+
+**Changes:**
+- `app/ml/training.py`: `FORWARD_DAYS = 5`, `STEP_DAYS = 5` (was 10/10)
+- Training samples: 64,000 → 129,000 (2× increase)
+- Label scheme: `cross_sectional` (top 20% of 5-day returns within each window)
+
+**Results: v110** (`--label-scheme cross_sectional --no-fundamentals --years 5 --forward-days 5`)
+| Metric | v109 (Phase 24b) | v110 (Phase 25) |
+|---|---|---|
+| AUC | 0.644 | **0.638** |
+| Train samples | ~64k | **~129k** |
+| Tier 3 Sharpe | -0.52 | **+0.34** ✅ |
+| Win rate | 41.7% | **40.3%** |
+| Profit factor | 0.97 | **1.11** ✅ |
+| Trades | 259 | **290** |
+| Stop exits | 70% | 70% |
+| Total return | — | 1.9% ($100k → $101,942) |
+
+**Verdict:** ✅ First positive Sharpe (+0.34) and profit factor > 1.0. AUC slightly lower (0.638 vs 0.644) but trading quality improved significantly. The 5-day window aligns better with actual hold duration (~2 bars) and the larger dataset helps generalization. **v110 is new baseline.** Gate requires Sharpe > 0.8; currently at +0.34, need another +0.46.
+
+---
+
 ## Techniques Evaluated and Ruled Out
 
 | Technique | Reason Not Pursued |
