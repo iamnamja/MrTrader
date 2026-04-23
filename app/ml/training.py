@@ -361,8 +361,13 @@ class ModelTrainer:
         embargo_start = min(split_idx + EMBARGO_WINDOWS, len(window_starts))
         test_window_starts = window_starts[embargo_start:]
 
-        # Regime score once per run (same macro context)
-        regime_score = self._get_regime_score()
+        # Use neutral regime_score for all historical training windows.
+        # The live regime_score is computed once and would be identical for all
+        # windows (2021 through 2026), creating look-ahead bias. Since
+        # spy_trend_63d, vix_level, and vix_regime_bucket already capture regime
+        # per-window from historical data, passing 0.5 here prevents leakage
+        # while keeping regime_score available for live inference.
+        regime_score = 0.5
 
         # Pre-fetch fundamentals once per symbol to warm the cache.
         # The rolling loop calls engineer_features ~20x per symbol; without this
@@ -427,6 +432,7 @@ class ModelTrainer:
         thresholds: Dict[int, Any] = {}
         sector_relative = self.label_scheme in ("sector_relative", "atr_and_sector", "return_blend")
         use_blend = self.label_scheme == "return_blend"
+        use_percentile_rank = self.label_scheme == "percentile_rank"
 
         def _compute_one_window(w_start_idx: int):
             """Compute threshold(s) for one window. Returns (w_start_idx, result) or None."""
@@ -463,14 +469,23 @@ class ModelTrainer:
             if not sym_returns:
                 return None
 
-            if not sector_relative:
+            if use_percentile_rank:
+                rets_arr = np.array(list(sym_returns.values()))
+                p25 = float(np.percentile(rets_arr, 25))
+                p75 = float(np.percentile(rets_arr, 75))
+                return w_start_idx, (p25, p75)
+            elif not sector_relative:
                 rets_arr = np.array(sorted(sym_returns.values()))
-                # Sharpe-adjusted threshold: normalize by cross-sectional std so
-                # volatile windows don't distort the top-20% boundary.
+                # Store (mean, std, sharpe_threshold) tuple so the label assignment
+                # can normalize stock_ret to Sharpe units before comparing.
+                # Previously this stored only the threshold scalar, causing the label
+                # to compare raw return against a z-score (~0.84) — only extreme
+                # outliers (84%+ gains) were labeled 1.
                 cs_mean = float(rets_arr.mean())
                 cs_std = float(rets_arr.std()) + 1e-8
                 sharpe_rets = (rets_arr - cs_mean) / cs_std
-                return w_start_idx, float(np.percentile(sharpe_rets, 80))
+                cs_threshold = float(np.percentile(sharpe_rets, 80))
+                return w_start_idx, (cs_mean, cs_std, cs_threshold)
             else:
                 from collections import defaultdict
                 sector_rets: Dict[str, List[float]] = defaultdict(list)
@@ -535,7 +550,7 @@ class ModelTrainer:
             label = None
             outcome_return = 0.0
 
-            if self.label_scheme in ("cross_sectional", "sector_relative", "return_regression", "return_blend", "lambdarank"):
+            if self.label_scheme in ("cross_sectional", "sector_relative", "return_regression", "return_blend", "lambdarank", "percentile_rank"):
                 future_idx = w_end_idx + FORWARD_DAYS
                 if future_idx >= len(all_dates):
                     continue
@@ -595,22 +610,38 @@ class ModelTrainer:
                     if cs_threshold is None:
                         continue
                     label = 1 if blended_ret >= cs_threshold else 0
+                elif self.label_scheme == "percentile_rank":
+                    # Top quartile = 1, bottom quartile = 0, middle 50% = skip.
+                    # Cleaner labels: removes ambiguous zone where small noise determines outcome.
+                    thresholds_pair = cs_thresholds.get(w_start_idx)
+                    if thresholds_pair is None:
+                        continue
+                    p25, p75 = thresholds_pair
+                    if stock_ret >= p75:
+                        label = 1
+                    elif stock_ret <= p25:
+                        label = 0
+                    else:
+                        continue  # skip ambiguous middle 50%
                 else:
-                    # cross_sectional: threshold is now a Sharpe-adjusted 80th pct.
-                    # Compare stock's Sharpe return (stored as threshold's scale reference)
-                    # to the precomputed threshold. Since threshold is in Sharpe units,
-                    # we normalise stock_ret the same way using the window's cross-sectional
-                    # stats stored alongside the threshold as a tuple (mean, std, threshold).
+                    # cross_sectional: threshold stored as (mean, std, sharpe_80th_pct).
+                    # Normalize stock_ret to Sharpe units before comparing so the
+                    # threshold represents the top 20% of the window, not an absolute value.
                     window_thresh = cs_thresholds.get(w_start_idx)
                     if window_thresh is None:
                         continue
                     if isinstance(window_thresh, dict):
                         cs_threshold = window_thresh.get(sector) or window_thresh.get("__global__")
+                        if cs_threshold is None:
+                            continue
+                        label = 1 if stock_ret >= cs_threshold else 0
+                    elif isinstance(window_thresh, tuple) and len(window_thresh) == 3:
+                        w_mean, w_std, w_thr = window_thresh
+                        sharpe_ret = (stock_ret - w_mean) / (w_std + 1e-8)
+                        label = 1 if sharpe_ret >= w_thr else 0
                     else:
-                        cs_threshold = window_thresh
-                    if cs_threshold is None:
-                        continue
-                    label = 1 if stock_ret >= cs_threshold else 0
+                        # Legacy scalar threshold — raw comparison (pre-fix)
+                        label = 1 if stock_ret >= window_thresh else 0
 
             elif self.label_scheme == "atr_and_sector":
                 # Stricter: must BOTH hit ATR target AND be sector top-20%.
@@ -754,7 +785,7 @@ class ModelTrainer:
 
         # Pre-compute cross-sectional thresholds (serial — needs all symbols per window)
         cs_thresholds: Dict[int, Any] = {}
-        if self.label_scheme in ("cross_sectional", "sector_relative", "atr_and_sector", "return_blend"):
+        if self.label_scheme in ("cross_sectional", "sector_relative", "atr_and_sector", "return_blend", "percentile_rank"):
             logger.info("Pre-computing %s thresholds for %d windows...", self.label_scheme, len(window_starts))
             cs_thresholds = self._compute_cs_thresholds(symbols_data, all_dates, window_starts)
             logger.info("%s thresholds ready (%d windows)", self.label_scheme, len(cs_thresholds))
@@ -1347,23 +1378,31 @@ class ModelTrainer:
     # ── DB helpers ────────────────────────────────────────────────────────────
 
     def _next_version(self, model_name: str = "swing") -> int:
-        db = get_session()
         try:
+            db = get_session()
             latest = (
                 db.query(ModelVersion)
                 .filter_by(model_name=model_name)
                 .order_by(ModelVersion.version.desc())
                 .first()
             )
-            return (latest.version + 1) if latest else 1
-        finally:
             db.close()
+            return (latest.version + 1) if latest else 1
+        except Exception:
+            # DB not available — derive version from existing pkl files
+            from pathlib import Path as _P
+            files = sorted(_P(self.model_dir).glob(f"{model_name}_v*.pkl"))
+            return (int(files[-1].stem.split("_v")[-1]) + 1) if files else 1
 
     def _record_version(
         self, version: int, n_train: int, n_test: int,
         model_path: str, years: int, metrics: Dict
     ) -> None:
-        db = get_session()
+        try:
+            db = get_session()
+        except Exception as exc:
+            logger.warning("DB not available, skipping version record: %s", exc)
+            return
         try:
             end_dt = datetime.now()
             start_dt = end_dt - timedelta(days=365 * years)

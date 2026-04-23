@@ -467,7 +467,7 @@ def main():
     )
     parser.add_argument(
         "--label-scheme", default="atr",
-        choices=["atr", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank"],
+        choices=["atr", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank", "percentile_rank"],
         help="Labeling scheme (default: atr)",
     )
     parser.add_argument(

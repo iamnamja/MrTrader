@@ -1,6 +1,6 @@
 # MrTrader — ML Models Reference
 
-Last updated: 2026-04-21
+Last updated: 2026-04-23
 
 ---
 
@@ -383,5 +383,5 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | v94 | 126 | 2026-04-21 | LambdaRank, CS-norm, Sharpe labels, EDGAR sources |
-| Intraday | v17 | 40 | 2026-04-21 | Ensemble, session-time features, Sharpe labels |
+| Swing | v109 | 140 | 2026-04-23 | XGBoost, cross_sectional Sharpe labels (fixed), no-fundamentals, regime interactions, regime leakage fixed. AUC 0.644. Tier 3 Sharpe -0.52, win rate 41.7% |
+| Intraday | v18 | 41 | 2026-04-23 | XGBoost, ATR labels (1.2×/0.6×), phases 18-21 active, 2yr Polygon cache (720 syms). Tier 3 Sharpe -1.16, win rate 49% |

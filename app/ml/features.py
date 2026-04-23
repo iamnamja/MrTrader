@@ -1290,4 +1290,26 @@ class FeatureEngineer:
             features["bars_since_choch"] = 5.0
             features["hh_hl_sequence"] = 0.0
 
+        # ── Regime interaction features (Phase 24b) ──────────────────────────
+        # Cross-terms let the model learn regime-conditional signal strength.
+        # e.g. RSI=65 in low-VIX is normal; RSI=65 in high-VIX = crash risk.
+        # Note: use ri_* prefix to avoid shadowing the module-level _adx() function.
+        try:
+            ri_vix_bucket = features.get("vix_regime_bucket", 0.5)
+            ri_spy63 = features.get("spy_trend_63d", 0.0)
+            ri_adx_val = features.get("adx_14", 0.5)
+            ri_rsi = features.get("rsi_14", 50.0) / 100.0
+            ri_mom20 = features.get("momentum_20d", 0.0)
+            ri_vol_pct = features.get("vol_percentile_52w", 0.5)
+            features["rsi_x_vix_regime"] = ri_rsi * ri_vix_bucket
+            features["momentum20_x_vix_bucket"] = ri_mom20 * ri_vix_bucket
+            features["adx_x_spy_trend"] = ri_adx_val * float(np.sign(ri_spy63) if ri_spy63 != 0 else 0.0)
+            features["rsi_x_spy_trend"] = ri_rsi * float(np.sign(ri_spy63) if ri_spy63 != 0 else 0.0)
+            features["vol_pct_x_vix_bucket"] = ri_vol_pct * ri_vix_bucket
+            features["adx_x_vix_bucket"] = ri_adx_val * ri_vix_bucket
+        except Exception:
+            for ri_k in ("rsi_x_vix_regime", "momentum20_x_vix_bucket", "adx_x_spy_trend",
+                         "rsi_x_spy_trend", "vol_pct_x_vix_bucket", "adx_x_vix_bucket"):
+                features.setdefault(ri_k, 0.0)
+
         return features

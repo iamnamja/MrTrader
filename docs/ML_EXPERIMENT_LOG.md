@@ -427,9 +427,115 @@ python scripts/walkforward_tier3.py --model both
 
 ### Results
 
-🔄 Pending — run after retraining both models with Phase 18-20 changes.
+**Results (2026-04-23, swing v100 + intraday v18):**
 
-**Verdict:** ✅ Script merged. Gate to be measured post-retrain.
+Walk-forward folds showed fold 3 (most recent period) collapse (swing Sharpe -1.80, 31 trades) confirming models had never been retrained with phases 18-21 code. Full retrain completed overnight.
+
+Post-retrain Tier 3 backtest results (after fixing ATR stop/target alignment — backtest now uses same 0.5×/1.5× ATR multipliers as training labels):
+
+| Metric | Swing | Intraday |
+|---|---|---|
+| Tier 3 Sharpe | -0.76 | -1.16 |
+| Win rate | 36% | 49% |
+| Trades | 172 | 150 |
+| Stop exit rate | ~80% | ~65% |
+
+**Key finding:** Tier 1 swing Sharpe was 6.97 vs Tier 3 -0.76. Gap was caused by backtest using `generate_signal()` stops (2.5×ATR) which are 5× wider than training labels (0.5×ATR). Fixed in `agent_simulator.py` and `intraday_agent_simulator.py`. Intraday win rate jumped 33%→49% from ATR fix alone.
+
+**Root issue:** AUC 0.523 is near-random. Model lacks predictive signal. Gate not met.
+
+**Verdict:** ❌ Gates not met (swing > 0.8, intraday > 1.5). Proceeding to Phase 23 model signal improvement.
+
+---
+
+## Phase 23 — Percentile Rank Labels (2026-04-23)
+
+**Hypothesis:** Binary ATR-hit labels are noisy at the edges. Using top/bottom quartile of 10-day return, skipping the middle 50% ambiguous zone, gives cleaner training signal.
+
+**Changes:**
+- `app/ml/training.py`: Added `label_scheme="percentile_rank"` — top quartile = 1, bottom quartile = 0, middle 50% skipped
+- `scripts/train_model.py`: Added `percentile_rank` to `--label-scheme` choices
+- Retrained swing: v102 (`--label-scheme percentile_rank --no-fundamentals --years 5`)
+
+**Results:**
+| Metric | v100 Baseline | v102 (Phase 23) |
+|---|---|---|
+| AUC | 0.523 | 0.516 |
+| Threshold | 0.35 | 0.20 |
+| Precision | — | 50.0% |
+| Recall | — | 100.0% |
+| Train samples | ~65k | 32,293 (50% removed) |
+| Tier 3 Sharpe | -0.76 | **-1.40** |
+| Win rate | 36% | 33.2% |
+| Stop exits | 80% | 70% |
+
+**Root cause analysis:** The model collapsed to outputting near-constant probabilities that all exceed the 0.20 threshold (recall=100%). This happens because:
+1. With top/bottom quartile labels, ~50% of samples are positive → `scale_pos_weight=1.0` → no class imbalance correction
+2. The model can't learn to distinguish within the positive class without negative gradients
+3. Dataset halved (32k vs 65k samples) — less signal overall
+4. The cross_sectional label scheme already uses a 10-day return threshold which is inherently clean; removing the middle 50% removed valid discriminative signal
+
+**Verdict:** ❌ Percentile rank labels hurt AUC (0.516 < 0.523 baseline) and Tier 3 Sharpe (-1.40 vs -0.76). v102 archived. v100 restored as ACTIVE baseline.
+
+**Learning:** The cross-sectional top-20% label scheme is already well-calibrated. The "ambiguous middle" is actually load-bearing training signal. Removing it hurts more than helps.
+
+---
+
+## Phase 24a — Cross-Sectional Label Fix + No-Fundamentals Baseline (2026-04-23)
+
+**Hypothesis:** A leaner technical model with properly calibrated cross-sectional labels may outperform ATR-hit labels.
+
+**Critical bugs discovered and fixed:**
+1. **Cross-sectional label bug:** `_compute_cs_thresholds()` returned a Sharpe-normalized threshold (~0.84) but the label assignment compared raw stock_ret to this value. Only stocks with 84%+ 10-day gain got label=1 (extreme outliers, 1-in-596). Fixed to store (mean, std, threshold) tuple and normalize stock_ret before comparison.
+2. **regime_score leakage:** `regime_score` was computed once from live market data and applied to ALL historical training windows (2021-2026). Every window got today's value (~0.297), creating a near-constant feature with look-ahead bias. Fixed to always use `regime_score = 0.5` (neutral) for training — live value only used at inference time.
+
+**Attempted models (v106, v107 — archived):**
+- v106: AUC 0.591, cross_sectional, but still had regime leakage → archived
+- v107: AUC 0.836, fixed label bug, still had regime leakage → artificially high AUC → archived
+
+**Clean model: v108** (`--label-scheme cross_sectional --no-fundamentals --years 5`, both bugs fixed)
+
+**Results:**
+| Metric | v100 Baseline | v108 (Phase 24a) |
+|---|---|---|
+| AUC | 0.523 (atr labels) | **0.643** (cross_sectional, fixed) |
+| scale_pos_weight | ~4.0 | 4.0 ✓ |
+| Threshold | 0.40 | 0.50 |
+| Precision | — | 29.4% |
+| Recall | — | 58.6% |
+| Train samples | ~65k | 64,492 |
+| Top features | — | atr_norm, volatility, parkinson_vol |
+| Tier 3 Sharpe | -0.76 | **-1.26** |
+| Win rate | 36% | 34.8% |
+
+**Verdict:** ✅ Label bug fixed (now properly selects top 20%). AUC improved 0.523 → 0.643. But Tier 3 Sharpe degraded (-1.26 vs -0.76). Root cause: volatility features dominate (atr_norm 0.083 SHAP) — model picks volatile stocks that get stopped out. Keep the label fix + regime fix (always improvements), but need Phase 24b to address feature quality.
+
+---
+
+## Phase 24b — Regime Interaction Features (2026-04-23)
+
+**Hypothesis:** 6 cross-product features (rsi × vix_bucket, momentum × vix_bucket, etc.) let the model learn regime-conditional signal strength.
+
+**Baseline:** v108, AUC 0.643, Tier 3 Sharpe -1.26
+
+**Changes:**
+- `app/ml/features.py`: Added 6 regime interaction features at end of `engineer_features()`:
+  - `rsi_x_vix_regime`, `momentum20_x_vix_bucket`, `adx_x_spy_trend`
+  - `rsi_x_spy_trend`, `vol_pct_x_vix_bucket`, `adx_x_vix_bucket`
+- `app/ml/feature_store.py`: Bumped SCHEMA_VERSION to "v3" (triggers cache clear)
+- Bug fix: renamed loop vars from `_adx`/`_rsi` to `ri_adx_val`/`ri_rsi` to avoid shadowing the module-level `_adx()` function
+
+**Results: v109** (`--label-scheme cross_sectional --no-fundamentals --years 5`)
+| Metric | v108 (Phase 24a) | v109 (Phase 24b) |
+|---|---|---|
+| AUC | 0.643 | **0.644** |
+| Features | 134 | 140 |
+| Tier 3 Sharpe | -1.26 | **-0.52** |
+| Win rate | 34.8% | **41.7%** |
+| Profit factor | 0.76 | 0.97 |
+| Trades | 112 | 259 |
+
+**Verdict:** ✅ Keep regime interaction features. Tier 3 Sharpe improved significantly (-1.26 → -0.52), win rate +7pp. AUC barely moved (+0.001) but trading quality improved. **v109 is the new baseline.** Archiving v108.
 
 ---
 
