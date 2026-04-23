@@ -305,7 +305,7 @@ class AgentSimulator:
         if bars_up_to_day is None or len(bars_up_to_day) < 200:
             return False, 0.0, 0.0
         try:
-            sig = generate_signal(
+            generate_signal(
                 symbol, bars_up_to_day,
                 check_earnings=False,
                 check_regime=False,
@@ -346,18 +346,19 @@ class AgentSimulator:
             close = float(bars_up_to_day["close"].iloc[-1])
             try:
                 high = bars_up_to_day["high"].to_numpy(dtype=float)
-                low  = bars_up_to_day["low"].to_numpy(dtype=float)
-                cl   = bars_up_to_day["close"].to_numpy(dtype=float)
-                tr = np.maximum(high[1:] - low[1:],
-                     np.maximum(abs(high[1:] - cl[:-1]), abs(low[1:] - cl[:-1])))
+                low = bars_up_to_day["low"].to_numpy(dtype=float)
+                cl = bars_up_to_day["close"].to_numpy(dtype=float)
+                tr = np.maximum(
+                    high[1:] - low[1:],
+                    np.maximum(abs(high[1:] - cl[:-1]), abs(low[1:] - cl[:-1])))
                 atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
                 atr_pct = atr / close
-                stop_pct   = float(np.clip(self.atr_stop_mult   * atr_pct, 0.005, 0.08))
-                target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01,  0.16))
-                stop_price   = close * (1 - stop_pct)
+                stop_pct = float(np.clip(self.atr_stop_mult * atr_pct, 0.005, 0.08))
+                target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01, 0.16))
+                stop_price = close * (1 - stop_pct)
                 target_price = close * (1 + target_pct)
             except Exception:
-                stop_price   = close * (1 - SWING_STOP_PCT)
+                stop_price = close * (1 - SWING_STOP_PCT)
                 target_price = close * (1 + SWING_TARGET_PCT)
             return True, stop_price, target_price
         except Exception as exc:
