@@ -40,9 +40,12 @@ logger = logging.getLogger(__name__)
 # ── Simulation defaults ────────────────────────────────────────────────────────
 HOLD_BARS = 24  # 2h of 5-min bars — matches training label horizon
 FEATURE_BARS = 12  # 1h of bars used to build features before entry
-TARGET_PCT = 0.005  # 0.5% profit target
-STOP_PCT = 0.003  # 0.3% stop loss
-MIN_CONFIDENCE = 0.50  # minimum model score to propose a trade
+# ATR multipliers must match intraday_training.py ATR_MULT_TARGET/STOP (1.2/0.6)
+ATR_TARGET_MULT = 1.2  # target = 1.2× prior-day range
+ATR_STOP_MULT = 0.6    # stop   = 0.6× prior-day range → 2:1 R:R
+TARGET_PCT = 0.005     # fallback only when prior-day range unavailable
+STOP_PCT = 0.003
+MIN_CONFIDENCE = 0.50  # model probabilities cluster below 0.55; keep at 0.50
 TOP_N = 5  # max proposals per day
 MAX_ENTRY_BAR = 60  # no new entries after bar 60 (~14:30 ET, 60×5=300 min from open)
 INTRADAY_BUDGET_PCT = 0.03  # 3% of equity per intraday position
@@ -232,8 +235,17 @@ class IntradayAgentSimulator:
                 continue
 
             entry_price = sym_entry_price[sym]
-            stop_price = entry_price * (1 - STOP_PCT)
-            target_price = entry_price * (1 + TARGET_PCT)
+            # Use prior-day range as ATR proxy (matches intraday training labels)
+            prior_close, prior_high, prior_low = sym_prior.get(sym, (entry_price, entry_price, entry_price))
+            prior_high = prior_high or entry_price
+            prior_low = prior_low or entry_price
+            prior_close = prior_close or entry_price
+            prior_range = max(prior_high - prior_low, entry_price * 0.002)
+            range_pct = prior_range / prior_close if prior_close > 0 else 0.002
+            stop_pct_atr = float(np.clip(ATR_STOP_MULT * range_pct, 0.002, 0.02))
+            target_pct_atr = float(np.clip(ATR_TARGET_MULT * range_pct, 0.003, 0.04))
+            stop_price = entry_price * (1 - stop_pct_atr)
+            target_price = entry_price * (1 + target_pct_atr)
 
             # Trader gate: ORB breakout + volume surge confirmation
             feats = sym_feats[sym]

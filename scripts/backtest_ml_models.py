@@ -155,7 +155,7 @@ def _print_result(result):
             print(f"     {reason:<15} {'#' * bar_w} {cnt} ({pct:.0%})")
 
 
-def run_swing_backtest(symbols, years):
+def run_swing_backtest(symbols, years, ablation_kwargs=None):
     import yfinance as yf
     from app.backtesting.swing_backtest import SwingBacktester
 
@@ -233,7 +233,7 @@ def run_swing_backtest(symbols, years):
     agent_start = start.date() + _td(days=420)  # ~300 business days warm-up for EMA-200
     header(f"Tier 3 — Agent-Driven Simulation  (PM + RM + Trader)  [{agent_start} -> {end.date()}]")
     from app.backtesting.agent_simulator import AgentSimulator
-    agent_sim = AgentSimulator(model=model)
+    agent_sim = AgentSimulator(model=model, **(ablation_kwargs or {}))
     t0 = time.time()
     agent_result = agent_sim.run(
         symbols_data, spy_prices=spy_prices,
@@ -471,6 +471,15 @@ def main():
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
     parser.add_argument("--sample", type=int, default=None,
                         help="Randomly sample N symbols from universe (for quick runs)")
+    # Ablation experiment flags (all default to baseline v110 values)
+    parser.add_argument("--stop-mult", type=float, default=0.5,
+                        help="ATR stop multiplier (default: 0.5 = baseline). Ablation 26b: try 0.75")
+    parser.add_argument("--target-mult", type=float, default=1.5,
+                        help="ATR target multiplier (default: 1.5 = baseline). Ablation 26b: try 2.25")
+    parser.add_argument("--min-confidence", type=float, default=0.50,
+                        help="Min model confidence to enter (default: 0.50). Ablation 26c: try 0.60")
+    parser.add_argument("--max-vol-pct", type=float, default=None,
+                        help="Block entries where vol_percentile_52w > this (0-100). Ablation 26d: try 75")
     args = parser.parse_args()
 
     import random
@@ -487,12 +496,21 @@ def main():
     print(f"{BOLD}{'=' * 60}{RESET}")
     print(f"  Model   : {args.model}")
     print(f"  Symbols : {len(symbols)}  (universe: {'custom' if args.symbols else f'SP500={len(universe)}' + (f', sampled {args.sample}' if args.sample else '')})")
+    print(f"  Ablation: stop_mult={args.stop_mult}  target_mult={args.target_mult}  "
+          f"min_conf={args.min_confidence}  max_vol_pct={args.max_vol_pct}")
     print(f"{BOLD}{'=' * 60}{RESET}")
 
     t_start = time.time()
 
+    ablation_kwargs = dict(
+        atr_stop_mult=args.stop_mult,
+        atr_target_mult=args.target_mult,
+        min_confidence=args.min_confidence,
+        max_vol_pct=args.max_vol_pct,
+    )
+
     if args.model in ("swing", "both"):
-        swing_result = run_swing_backtest(symbols, args.years)
+        swing_result = run_swing_backtest(symbols, args.years, ablation_kwargs=ablation_kwargs)
         if swing_result is not None:
             _save_backtest_json("swing", swing_result, time.time() - t_start)
 
