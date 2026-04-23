@@ -571,23 +571,32 @@ class IntradayModelTrainer:
     # ── DB helpers ────────────────────────────────────────────────────────────
 
     def _next_version(self, model_name: str = "intraday") -> int:
-        db = get_session()
         try:
-            latest = (
-                db.query(ModelVersion)
-                .filter_by(model_name=model_name)
-                .order_by(ModelVersion.version.desc())
-                .first()
-            )
-            return (latest.version + 1) if latest else 1
-        finally:
-            db.close()
+            db = get_session()
+            try:
+                latest = (
+                    db.query(ModelVersion)
+                    .filter_by(model_name=model_name)
+                    .order_by(ModelVersion.version.desc())
+                    .first()
+                )
+                return (latest.version + 1) if latest else 1
+            finally:
+                db.close()
+        except Exception:
+            from pathlib import Path as _P
+            files = sorted(_P(self.model_dir).glob(f"{model_name}_v*.pkl"))
+            return (int(files[-1].stem.split("_v")[-1]) + 1) if files else 1
 
     def _record_version(
         self, version: int, n_train: int, n_test: int,
         model_path: str, days: int, metrics: Dict,
     ) -> None:
-        db = get_session()
+        try:
+            db = get_session()
+        except Exception as exc:
+            logger.warning("DB not available, skipping version record: %s", exc)
+            return
         try:
             end_dt = datetime.utcnow()
             start_dt = end_dt - timedelta(days=days)

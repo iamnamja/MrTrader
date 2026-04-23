@@ -57,7 +57,7 @@ def _trades_today_count() -> int:
         db.close()
 
 
-def _win_rate_and_drawdown():
+def _win_rate_and_drawdown(initial_capital: float = 100_000.0):
     """Compute win rate and max drawdown from all closed trades in the DB."""
     db = get_session()
     try:
@@ -69,15 +69,16 @@ def _win_rate_and_drawdown():
             return None, None
         wins = sum(1 for p in pnls if p > 0)
         win_rate = round(wins / len(pnls) * 100, 1)
-        # Peak-to-trough drawdown on cumulative P&L curve
+        # Peak-to-trough drawdown as % of initial capital (avoids divide-by-zero when peak P&L = 0)
         cum = 0.0
-        peak = 0.0
+        peak_equity = initial_capital
         max_dd = 0.0
         for p in pnls:
             cum += p
-            if cum > peak:
-                peak = cum
-            dd = (peak - cum) / max(abs(peak), 1e-6) * 100
+            equity = initial_capital + cum
+            if equity > peak_equity:
+                peak_equity = equity
+            dd = (peak_equity - equity) / peak_equity * 100
             if dd > max_dd:
                 max_dd = dd
         return win_rate, round(max_dd, 2)
@@ -156,15 +157,16 @@ async def get_dashboard_summary():
         if account_value is not None:
             previous_value = account_value - daily_pnl
             daily_pnl_pct = (daily_pnl / previous_value * 100) if previous_value > 0 else 0.0
-            # Total P&L = sum of realized PnL from all closed trades
-            from app.database.models import Trade as _Trade
-            _db2 = get_session()
+            # Total P&L = cumulative from Alpaca portfolio history (matches equity curve source)
             try:
-                total_pnl = round(
-                    sum(t.pnl or 0 for t in _db2.query(_Trade).filter_by(status="CLOSED").all()), 2
+                from alpaca.trading.requests import GetPortfolioHistoryRequest
+                _hist = _alpaca().trading_client.get_portfolio_history(
+                    GetPortfolioHistoryRequest(period="1M", timeframe="1D")
                 )
-            finally:
-                _db2.close()
+                _pl_series = [v for v in (_hist.profit_loss or []) if v is not None]
+                total_pnl = round(sum(_pl_series), 2) if _pl_series else 0.0
+            except Exception:
+                total_pnl = 0.0
             initial_capital = max(account_value - total_pnl, 1.0)
             total_pnl_pct = round((total_pnl / initial_capital) * 100, 2)
         else:

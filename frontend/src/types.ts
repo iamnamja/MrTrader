@@ -64,6 +64,7 @@ export interface Trade {
   pnl?: number
   status: string
   created_at?: string
+  closed_at?: string
 }
 
 export interface Decision {

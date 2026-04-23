@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 # ── Shared headers for SEC EDGAR (required by their ToS) ─────────────────────
 _EDGAR_HEADERS = {"User-Agent": "MrTrader research@example.com", "Accept-Encoding": "gzip, deflate"}
 
-# ── EDGAR rate limiter: max 8 req/s (limit is 10, stay conservative) ─────────
-_EDGAR_SEMAPHORE = threading.Semaphore(8)
+# ── EDGAR rate limiter: 3 concurrent max to avoid throttling on large JSON ────
+_EDGAR_SEMAPHORE = threading.Semaphore(3)
+_EDGAR_LAST_REQ = {"t": 0.0}
+_EDGAR_MIN_GAP = 0.12  # ~8 req/s across all threads
 
 # ── Sector ETF map ────────────────────────────────────────────────────────────
 SECTOR_ETF_MAP: Dict[str, str] = {
@@ -112,12 +114,18 @@ def _get_company_facts(cik: int) -> Optional[dict]:
     """Fetch EDGAR XBRL company facts for a CIK. Returns raw JSON or None."""
     try:
         with _EDGAR_SEMAPHORE:
+            gap = _EDGAR_MIN_GAP - (time.time() - _EDGAR_LAST_REQ["t"])
+            if gap > 0:
+                time.sleep(gap)
             resp = requests.get(
                 f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json",
                 headers=_EDGAR_HEADERS, timeout=15,
             )
+            _EDGAR_LAST_REQ["t"] = time.time()
         if resp.status_code == 200:
             return resp.json()
+        if resp.status_code == 429:
+            time.sleep(2.0)
     except Exception as exc:
         logger.debug("EDGAR company facts fetch failed CIK=%d: %s", cik, exc)
     return None

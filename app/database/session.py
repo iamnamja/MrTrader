@@ -7,14 +7,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Create engine with connection pooling
 engine = create_engine(
     settings.database_url,
     poolclass=QueuePool,
     pool_size=5,
     max_overflow=10,
-    pool_recycle=3600,  # Recycle connections every hour
+    pool_recycle=3600,
     echo=settings.debug,
+    connect_args={"connect_timeout": 5},
 )
 
 # Create session factory
