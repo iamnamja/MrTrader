@@ -595,6 +595,55 @@ Post-retrain Tier 3 backtest results (after fixing ATR stop/target alignment —
 
 ---
 
+## Phases 26b/c/d — Independent Ablations Against v110 (2026-04-23)
+
+**Approach:** Test each change independently against frozen v110 baseline (Sharpe +0.34, 70% stop exits, PF 1.11). No retraining — parameter-only changes at inference time.
+
+**Root cause being targeted:** 70% stop exit rate — model picks volatile stocks that noise-stop before reaching target.
+
+### Phase 26b — Wider Stops (stop_mult=0.75, target_mult=2.25)
+
+| Metric | v110 baseline | 26b result |
+|---|---|---|
+| Tier 3 Sharpe | +0.34 | **-1.74** ❌ |
+| Trades | 290 | 59 |
+| Win rate | 40.3% | 42.4% |
+| Profit factor | 1.11 | 0.55 |
+| Stop exits | 70% | **95%** |
+| Return | +1.9% | -5.1% |
+
+**Analysis:** Training/inference stop mismatch is severe. Model was trained with 0.5× ATR labels — it learned to rank stocks that hit 0.5×-ATR-distance targets. At inference time with 0.75× ATR stops and 2.25× ATR targets, entries that would have been near-misses now hold longer into deeper losses before stopping. Stop exits went 70% → 95%. **Verdict: ❌ Regression.**
+
+### Phase 26c — Higher Confidence Threshold (min_confidence=0.60)
+
+| Metric | v110 baseline | 26c result |
+|---|---|---|
+| Tier 3 Sharpe | +0.34 | **0.00** ❌ |
+| Trades | 290 | 0 |
+
+**Analysis:** Model never reaches 60% confidence during the backtest window. The XGBoost output probabilities for this architecture rarely exceed 0.55 — threshold too aggressive. Zero trades = undefined Sharpe. **Verdict: ❌ Unusable.**
+
+### Phase 26d — Volatility Entry Filter (max_vol_pct=75)
+
+| Metric | v110 baseline | 26d result |
+|---|---|---|
+| Tier 3 Sharpe | +0.34 | **-1.95** ❌ |
+| Trades | 290 | 93 |
+| Win rate | 40.3% | 43.0% |
+| Profit factor | 1.11 | 0.61 |
+| Stop exits | 70% | 82% |
+| Return | +1.9% | -6.0% |
+
+**Analysis:** Filtering to ≤75th vol percentile reduced trade count from 290 → 93 but the remaining trades performed worse, not better. Stop exits went 70% → 82%. The model doesn't identify cleaner setups in low-vol stocks — it just trades fewer stocks, losing diversification benefit, while the individual selections are no better. **Verdict: ❌ Regression.**
+
+### Summary
+
+All three ablations are regressions. The core problem (70% stop exits) is **a training label issue, not an inference-time filtering issue**. The model was trained with 0.5× ATR stop labels — any inference-time parameter change that doesn't match training creates a mismatch. The fix must come from retraining with different labels or a fundamentally different feature set.
+
+**v110 remains the best model (Sharpe +0.34).**
+
+---
+
 ## Techniques Evaluated and Ruled Out
 
 | Technique | Reason Not Pursued |
@@ -602,6 +651,9 @@ Post-retrain Tier 3 backtest results (after fixing ATR stop/target alignment —
 | v37 model (AUC 0.757) | Degenerate: precision=0.0006, recall=1.0, threshold=0.2 — predicted everything as buy |
 | Lowering AUC gate to 0.60 | Masks real problem; fixing labels/embargo is better than accepting lower bar |
 | VIX regime sample weights (1.5× low-VIX upweight, Phase 26a) | Regression: Sharpe +0.34 → -0.43, stop exits 70% → 76%. Biases model toward calm-market setups that stop out in volatile periods. VIX is already a feature — no need to weight by it. |
+| Wider stops inference-only (0.75×/2.25×, Phase 26b) | Regression: Sharpe +0.34 → -1.74, stop exits 70% → 95%. Training/inference stop mismatch — model learned 0.5× ATR labels. |
+| Min confidence 0.60 (Phase 26c) | 0 trades — model never reaches 60% confidence. XGBoost probabilities rarely exceed 0.55. |
+| Vol filter ≤75th pct inference-only (Phase 26d) | Regression: Sharpe +0.34 → -1.95, stop exits 70% → 82%. Filtering reduces trades but doesn't improve quality; diversification lost. |
 
 ---
 
