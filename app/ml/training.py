@@ -9,11 +9,14 @@ Key improvements over v1:
     by passing provider="polygon" etc.
 """
 
+import json
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -80,6 +83,174 @@ def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
         return target_pct, stop_pct
     except Exception:
         return LABEL_TARGET_PCT, LABEL_STOP_PCT
+
+
+def _process_symbol_windows_worker(
+    symbol: str,
+    df_records: list,          # DataFrame serialised as records list (picklable)
+    df_index: list,            # index dates as isoformat strings
+    all_dates: list,           # list of date objects
+    window_starts: list,
+    cs_thresholds: dict,
+    sector: str,
+    regime_score: Optional[float],
+    fetch_fundamentals: bool,
+    vix_history,               # pre-loaded VIX series or None
+    label_scheme: str,
+    symbol_cache: dict,        # {date_isoformat: features_dict} — pre-loaded from FeatureStore
+) -> Tuple[List, List, List, List, List]:
+    """
+    Module-level worker for ProcessPoolExecutor.
+    Mirrors _process_symbol_windows but avoids instance-method pickling and
+    SQLite access in subprocess — cache reads come from the pre-loaded dict,
+    new entries are returned to the main process for batch writing.
+    """
+    import pandas as pd
+    from app.ml.features import FeatureEngineer
+
+    fe = FeatureEngineer()
+    df = pd.DataFrame.from_records(df_records, columns=["open", "high", "low", "close", "volume"])
+    df.index = pd.to_datetime(df_index)
+
+    X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
+    idx = df.index.date
+
+    for w_start_idx in window_starts:
+        w_end_idx = w_start_idx + WINDOW_DAYS
+        if w_end_idx + FORWARD_DAYS >= len(all_dates):
+            continue
+
+        w_start_date = all_dates[w_start_idx]
+        w_end_date = all_dates[w_end_idx]
+
+        try:
+            window_df = df.loc[(idx >= w_start_date) & (idx <= w_end_date)]
+        except Exception:
+            continue
+
+        if len(window_df) < FeatureEngineer.MIN_BARS:
+            continue
+
+        entry_rows = df.loc[idx == w_end_date, "close"]
+        if len(entry_rows) == 0:
+            continue
+        entry_price = float(entry_rows.iloc[0])
+        if entry_price <= 0:
+            continue
+
+        label = None
+        outcome_return = 0.0
+
+        if label_scheme in ("cross_sectional", "sector_relative", "return_regression",
+                            "return_blend", "lambdarank", "percentile_rank"):
+            future_idx = w_end_idx + FORWARD_DAYS
+            if future_idx >= len(all_dates):
+                continue
+            future_date = all_dates[future_idx]
+            future_bar = df.loc[idx == future_date, "close"]
+            if len(future_bar) == 0:
+                continue
+            stock_ret = (float(future_bar.iloc[0]) - entry_price) / entry_price
+            outcome_return = stock_ret
+
+            if label_scheme == "return_regression":
+                label = stock_ret
+            elif label_scheme == "cross_sectional":
+                window_thresh = cs_thresholds.get(w_start_idx)
+                if window_thresh is None:
+                    continue
+                if isinstance(window_thresh, tuple) and len(window_thresh) == 3:
+                    w_mean, w_std, w_thr = window_thresh
+                    sharpe_ret = (stock_ret - w_mean) / (w_std + 1e-8)
+                    label = 1 if sharpe_ret >= w_thr else 0
+                else:
+                    label = 1 if stock_ret >= window_thresh else 0
+            elif label_scheme == "percentile_rank":
+                thresholds_pair = cs_thresholds.get(w_start_idx)
+                if thresholds_pair is None:
+                    continue
+                p25, p75 = thresholds_pair
+                if stock_ret >= p75:
+                    label = 1
+                elif stock_ret <= p25:
+                    label = 0
+                else:
+                    continue
+            elif label_scheme == "sector_relative":
+                sector_thresh_map = cs_thresholds.get(w_start_idx)
+                if sector_thresh_map is None:
+                    continue
+                thresh = sector_thresh_map.get(sector, sector_thresh_map.get("__global__"))
+                if thresh is None:
+                    continue
+                label = 1 if stock_ret >= thresh else 0
+            else:
+                label = 1 if stock_ret >= (cs_thresholds.get(w_start_idx) or 0.0) else 0
+        else:
+            # ATR label scheme
+            target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+            target_price = entry_price * (1 + target_pct)
+            stop_price = entry_price * (1 - stop_pct)
+            label = 0
+            for bar_offset in range(1, FORWARD_DAYS + 1):
+                fi = w_end_idx + bar_offset
+                if fi >= len(all_dates):
+                    break
+                bar = df.loc[idx == all_dates[fi]]
+                if len(bar) == 0:
+                    continue
+                high = float(bar["high"].iloc[0])
+                low = float(bar["low"].iloc[0])
+                if low <= stop_price:
+                    label = 0
+                    outcome_return = (low - entry_price) / entry_price
+                    break
+                if high >= target_price:
+                    label = 1
+                    outcome_return = (high - entry_price) / entry_price
+                    break
+
+        if label is None:
+            continue
+
+        # Cache read from pre-loaded dict (no SQLite in subprocess)
+        features = symbol_cache.get(str(w_end_date))
+        if features is not None and feature_names and len(features) != len(feature_names):
+            features = None
+
+        if features is None:
+            try:
+                features = fe.engineer_features(
+                    symbol, window_df,
+                    sector=sector,
+                    regime_score=regime_score,
+                    fetch_fundamentals=fetch_fundamentals,
+                    as_of_date=w_end_date,
+                    vix_history=vix_history,
+                )
+            except Exception:
+                continue
+            if features:
+                to_cache.append((symbol, w_end_date, features))
+
+        if not features:
+            continue
+        if not feature_names:
+            feature_names = list(features.keys())
+
+        avg_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else 1e6
+        X_rows.append(list(features.values()))
+        y_vals.append(label)
+        meta_rows.append({
+            "window_idx": w_start_idx,
+            "outcome_return": outcome_return,
+            "vol_percentile": features.get("vol_percentile_52w", 0.5),
+            "avg_volume": avg_vol,
+            "sector": sector,
+            "vix_regime_bucket": features.get("vix_regime_bucket", 0.5),
+        })
+
+    return X_rows, y_vals, meta_rows, to_cache, feature_names
 
 
 class ModelTrainer:
@@ -198,10 +369,10 @@ class ModelTrainer:
             try:
                 if self.label_scheme in ("return_regression",):
                     from sklearn.feature_selection import mutual_info_regression
-                    mi_scores = mutual_info_regression(X_train, y_train, random_state=42)
+                    mi_scores = mutual_info_regression(X_train, y_train, random_state=42, n_jobs=self.n_workers)
                 else:
                     from sklearn.feature_selection import mutual_info_classif
-                    mi_scores = mutual_info_classif(X_train, y_train, random_state=42)
+                    mi_scores = mutual_info_classif(X_train, y_train, random_state=42, n_jobs=self.n_workers)
             except Exception:
                 mi_scores = None
 
@@ -766,6 +937,7 @@ class ModelTrainer:
                 "vol_percentile": features.get("vol_percentile_52w", 0.5),
                 "avg_volume": avg_vol,
                 "sector": sector,
+                "vix_regime_bucket": features.get("vix_regime_bucket", 0.5),
             })
 
         return X_rows, y_vals, meta_rows, to_cache, feature_names
@@ -796,14 +968,47 @@ class ModelTrainer:
 
         pending_cache: List[Tuple] = []
 
-        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+        # Pre-load feature store cache into memory (single bulk SQL query) so
+        # subprocess workers don't need SQLite access.
+        all_dates_needed = [all_dates[i + WINDOW_DAYS]
+                            for i in window_starts if i + WINDOW_DAYS < len(all_dates)]
+        preloaded_cache: Dict[str, Dict[str, dict]] = {}
+        if self._feature_store is not None:
+            t_preload = time.time()
+            bulk = self._feature_store.get_all_for_dates(all_dates_needed)
+            # Re-key dates as isoformat strings for worker consumption
+            for sym, date_map in bulk.items():
+                preloaded_cache[sym] = {str(d): v for d, v in date_map.items()}
+            total_hits = sum(len(v) for v in preloaded_cache.values())
+            total_slots = len(trading_symbols) * len(all_dates_needed)
+            logger.info("Cache pre-load: %d / %d slots warm (%.0f%%) in %.1fs",
+                        total_hits, total_slots,
+                        100 * total_hits / max(total_slots, 1),
+                        time.time() - t_preload)
+
+        # Serialize DataFrames to records for pickling into subprocesses
+        def _sym_args(symbol, df):
+            cols = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+            records = df[cols].values.tolist()
+            index = [str(d) for d in df.index]
+            return (
+                symbol,
+                records,
+                index,
+                all_dates,
+                window_starts,
+                cs_thresholds,
+                SECTOR_MAP.get(symbol) or "Unknown",
+                regime_score,
+                fetch_fundamentals,
+                vix_history,
+                self.label_scheme,
+                preloaded_cache.get(symbol, {}),
+            )
+
+        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
             futures = {
-                executor.submit(
-                    self._process_symbol_windows,
-                    symbol, df, all_dates, window_starts, cs_thresholds,
-                    SECTOR_MAP.get(symbol) or "Unknown",
-                    regime_score, fetch_fundamentals, vix_history,
-                ): symbol
+                executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
                 for symbol, df in trading_symbols.items()
             }
             done = 0
@@ -822,14 +1027,13 @@ class ModelTrainer:
                 except Exception as exc:
                     logger.warning("Symbol %s failed: %s", futures[future], exc)
 
-        # Write new features to cache serially (avoid SQLite write contention)
+        # Batch-write new feature rows from all workers in one go (main process only)
         if self._feature_store is not None and pending_cache:
             logger.info("Writing %d new feature rows to cache...", len(pending_cache))
-            for symbol, w_end_date, features in pending_cache:
-                try:
-                    self._feature_store.put(symbol, w_end_date, features)
-                except Exception as exc:
-                    logger.debug("Feature store write failed for %s: %s", symbol, exc)
+            try:
+                self._feature_store.put_batch(pending_cache)
+            except Exception as exc:
+                logger.warning("Feature store batch write failed: %s", exc)
 
         # Filter to consistent feature length (stale cache entries may have
         # different lengths if features were added/removed between runs)
@@ -865,10 +1069,10 @@ class ModelTrainer:
         try:
             if self.label_scheme in ("return_regression",):
                 from sklearn.feature_selection import mutual_info_regression
-                scores = mutual_info_regression(X_train, y_train, random_state=42)
+                scores = mutual_info_regression(X_train, y_train, random_state=42, n_jobs=self.n_workers)
             else:
                 from sklearn.feature_selection import mutual_info_classif
-                scores = mutual_info_classif(X_train, y_train, random_state=42)
+                scores = mutual_info_classif(X_train, y_train, random_state=42, n_jobs=self.n_workers)
             top_idx = np.argsort(scores)[::-1][:top_n]
             top_idx_sorted = sorted(top_idx)
             selected_names = [feature_names[i] for i in top_idx_sorted]
@@ -900,6 +1104,7 @@ class ModelTrainer:
                 vol_percentiles=[m["vol_percentile"] for m in meta],
                 avg_volumes=[m["avg_volume"] for m in meta],
                 sector_labels=[m["sector"] for m in meta],
+                vix_regime_buckets=[m.get("vix_regime_bucket", 0.5) for m in meta],
                 target_pct=LABEL_TARGET_PCT,
                 current_vol_percentile=current_vol,
             )
@@ -910,7 +1115,16 @@ class ModelTrainer:
             return None
 
     def _get_current_vol_percentile(self) -> float:
-        """Estimate current market vol percentile using SPY realized vol."""
+        """Estimate current market vol percentile using SPY realized vol. Cached 6h."""
+        import json
+        cache_path = Path(MODEL_DIR) / "price_cache" / "spy_vol_percentile.json"
+        try:
+            if cache_path.exists():
+                age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
+                if age_hours < 6:
+                    return float(json.loads(cache_path.read_text()).get("vol_pct", 0.5))
+        except Exception:
+            pass
         try:
             import yfinance as yf
             spy = yf.download("SPY", period="1y", progress=False, auto_adjust=True)
@@ -925,8 +1139,20 @@ class ModelTrainer:
             ]
             if not rv_series or max(rv_series) == min(rv_series):
                 return 0.5
-            return float(np.clip((rv10 - min(rv_series)) / (max(rv_series) - min(rv_series)), 0, 1))
+            result = float(np.clip((rv10 - min(rv_series)) / (max(rv_series) - min(rv_series)), 0, 1))
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps({"vol_pct": result}))
+            except Exception:
+                pass
+            return result
         except Exception:
+            # Fall back to stale cache rather than neutral 0.5
+            try:
+                if cache_path.exists():
+                    return float(json.loads(cache_path.read_text()).get("vol_pct", 0.5))
+            except Exception:
+                pass
             return 0.5
 
     def _build_lambdarank_groups(
@@ -1112,6 +1338,7 @@ class ModelTrainer:
                     y_bin = self._to_binary(y_train[val_idx])
                 else:
                     params["eval_metric"] = "auc"
+                    params.setdefault("nthread", -1)
                     clf = XGBClassifier(**params)
                     clf.fit(X_train[train_idx], y_train[train_idx], verbose=False)
                     proba = clf.predict_proba(X_train[val_idx])[:, 1]
@@ -1123,7 +1350,10 @@ class ModelTrainer:
             return float(np.mean(fold_aucs))
 
         study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+        # n_jobs=-1: Optuna runs trials in parallel threads; each trial spawns its own XGBoost
+        # which also uses all cores (nthread in params), so cap Optuna parallelism at 4 to
+        # avoid over-subscription (4 parallel trials × nthread cores each ≈ full utilisation).
+        study.optimize(objective, n_trials=n_trials, n_jobs=4, show_progress_bar=False)
 
         best = study.best_params
         logger.info(
@@ -1157,21 +1387,21 @@ class ModelTrainer:
             return {}
 
         is_regression = self.label_scheme in ("return_regression",)
-        aucs = []
-        for k in range(1, n_folds + 1):
+
+        def _run_fold(k: int):
             train_end = k * fold_size
             test_end = min(train_end + fold_size, n)
             X_tr, y_tr = X[:train_end], y[:train_end]
             X_te, y_te = X[train_end:test_end], y[train_end:test_end]
             y_te_bin = self._to_binary(y_te)
             if len(np.unique(y_te_bin)) < 2:
-                continue
+                return None
             if is_regression:
                 from xgboost import XGBRegressor as _XGBReg
                 clf = _XGBReg(
                     n_estimators=300, max_depth=4, learning_rate=0.05,
                     subsample=0.7, colsample_bytree=0.6, min_child_weight=10,
-                    random_state=42, verbosity=0,
+                    random_state=42, nthread=-1, verbosity=0,
                 )
                 clf.fit(X_tr, y_tr, verbose=False)
                 raw = clf.predict(X_te).astype(float)
@@ -1181,14 +1411,18 @@ class ModelTrainer:
                 clf = XGBClassifier(
                     n_estimators=300, max_depth=4, learning_rate=0.05,
                     subsample=0.7, colsample_bytree=0.6, min_child_weight=10,
-                    random_state=42, eval_metric="auc", verbosity=0,
+                    random_state=42, eval_metric="auc", nthread=-1, verbosity=0,
                 )
                 clf.fit(X_tr, y_tr, verbose=False)
                 proba = clf.predict_proba(X_te)[:, 1]
             try:
-                aucs.append(roc_auc_score(y_te_bin, proba))
+                return roc_auc_score(y_te_bin, proba)
             except Exception:
-                pass
+                return None
+
+        with ThreadPoolExecutor(max_workers=min(n_folds, self.n_workers)) as pool:
+            fold_results = list(pool.map(_run_fold, range(1, n_folds + 1)))
+        aucs = [r for r in fold_results if r is not None]
 
         if not aucs:
             return {}
@@ -1264,7 +1498,7 @@ class ModelTrainer:
                 )
             else:
                 from sklearn.feature_selection import mutual_info_classif
-                mi_scores = mutual_info_classif(X_tr, y_tr, random_state=42)
+                mi_scores = mutual_info_classif(X_tr, y_tr, random_state=42, n_jobs=sub.n_workers)
 
             n_neg = int((y_tr == 0).sum())
             n_pos = int((y_tr == 1).sum())

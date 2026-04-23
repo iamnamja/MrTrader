@@ -58,6 +58,7 @@ class PortfolioSelectorModel:
                 reg_lambda=1.5,
                 random_state=42,
                 eval_metric="auc",
+                nthread=-1,
                 verbosity=0,
             )
             self._lgbm_model = LGBMClassifier(

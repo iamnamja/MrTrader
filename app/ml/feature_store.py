@@ -165,6 +165,33 @@ class FeatureStore:
             )
         logger.debug("FeatureStore: inserted %d rows", len(data))
 
+    def get_all_for_dates(self, dates: List[date]) -> Dict[str, Dict[date, Dict[str, float]]]:
+        """
+        Bulk-load all cached entries for the given dates across ALL symbols.
+        Returns {symbol: {date: features_dict}}.
+        Single SQL query — much faster than one get_batch() call per symbol.
+        """
+        if not dates:
+            return {}
+        date_strs = [str(d) for d in dates]
+        placeholders = ",".join("?" * len(date_strs))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT symbol, as_of_date, features_json FROM features "
+                f"WHERE as_of_date IN ({placeholders})",
+                date_strs,
+            ).fetchall()
+        result: Dict[str, Dict[date, Dict[str, float]]] = {}
+        for row in rows:
+            try:
+                sym = row["symbol"]
+                d = date.fromisoformat(row["as_of_date"])
+                feats = json.loads(row["features_json"])
+                result.setdefault(sym, {})[d] = feats
+            except Exception:
+                pass
+        return result
+
     # ── Maintenance ───────────────────────────────────────────────────────────
 
     def count(self) -> int:

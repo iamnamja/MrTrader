@@ -26,7 +26,7 @@ don't inflate or deflate the effective sample count:
 
 import logging
 from collections import Counter
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -40,10 +40,12 @@ def compute_sample_weights(
     vol_percentiles: List[float],    # vol_percentile_52w at feature time
     avg_volumes: List[float],        # mean daily volume over feature window
     sector_labels: List[str],        # sector string per sample (e.g. "Technology")
+    vix_regime_buckets: Optional[List[float]] = None,  # vix_regime_bucket [0,1] per sample
     target_pct: float = 0.03,        # label target threshold (for outcome margin calc)
     current_vol_percentile: float = 0.5,  # today's vol percentile (for regime match)
     recency_max_multiplier: float = 2.5,  # oldest window gets weight 1, newest gets this
     vol_match_bandwidth: float = 0.20,    # Gaussian bandwidth for vol regime matching
+    low_vix_multiplier: float = 1.5,     # max upweight for low-VIX windows (bucket≈0)
 ) -> np.ndarray:
     """
     Compute per-sample importance weights combining 5 factors.
@@ -90,8 +92,20 @@ def compute_sample_weights(
     sector_counts = Counter(sector_labels)
     sector_w = np.array([1.0 / max(sector_counts[s], 1) for s in sector_labels])
 
+    # ── 6. VIX regime (Phase 26a) ─────────────────────────────────────────────
+    # Low-VIX windows (bucket≈0 = calm market) get up to low_vix_multiplier weight.
+    # High-VIX windows (bucket≈1 = fear spike) get weight=1.0 (no upweight).
+    # Rationale: in high-VIX regimes, 70% of trades stop out regardless of signal
+    # quality; downweighting them focuses gradient on learnable patterns.
+    if vix_regime_buckets is not None and len(vix_regime_buckets) == n:
+        vix_arr = np.array(vix_regime_buckets, dtype=float)
+        # bucket=0 → weight=low_vix_multiplier, bucket=1 → weight=1.0
+        vix_regime_w = 1.0 + (1.0 - np.clip(vix_arr, 0.0, 1.0)) * (low_vix_multiplier - 1.0)
+    else:
+        vix_regime_w = np.ones(n)
+
     # ── Combine multiplicatively ──────────────────────────────────────────────
-    combined = recency * margin * vol_match * liquidity * sector_w
+    combined = recency * margin * vol_match * liquidity * sector_w * vix_regime_w
 
     # Normalise to mean=1 so total effective sample count stays ~n
     mean_w = combined.mean()
@@ -106,12 +120,13 @@ def compute_sample_weights(
 
     logger.debug(
         "Sample weights: recency=[%.2f,%.2f] margin=[%.2f,%.2f] "
-        "vol=[%.2f,%.2f] liq=[%.2f,%.2f] sector=[%.2f,%.2f] combined=[%.2f,%.2f]",
+        "vol=[%.2f,%.2f] liq=[%.2f,%.2f] sector=[%.2f,%.2f] vix=[%.2f,%.2f] combined=[%.2f,%.2f]",
         recency.min(), recency.max(),
         margin.min(), margin.max(),
         vol_match.min(), vol_match.max(),
         liquidity.min(), liquidity.max(),
         sector_w.min(), sector_w.max(),
+        vix_regime_w.min(), vix_regime_w.max(),
         combined.min(), combined.max(),
     )
 

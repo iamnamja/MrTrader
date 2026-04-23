@@ -9,14 +9,73 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Parquet price cache for swing backtest (avoids re-downloading on every run)
+_PRICE_CACHE_DIR = ROOT / "app" / "ml" / "models" / "price_cache" / "swing"
+_PRICE_CACHE_TTL_HOURS = 23  # refresh after market close
+
+
+def _price_cache_path(symbols: list, years: int) -> Path:
+    """Stable cache key: sorted symbols + years → short hash."""
+    key = f"{years}yr_{'_'.join(sorted(symbols)[:20])}"
+    h = hashlib.md5((",".join(sorted(symbols)) + str(years)).encode()).hexdigest()[:10]
+    return _PRICE_CACHE_DIR / f"swing_{years}yr_{h}.parquet"
+
+
+def _load_price_cache(symbols: list, years: int):
+    """Return (symbols_data, spy_prices) from Parquet cache if fresh, else None."""
+    path = _price_cache_path(symbols, years)
+    if not path.exists():
+        return None
+    age_hours = (time.time() - path.stat().st_mtime) / 3600
+    if age_hours > _PRICE_CACHE_TTL_HOURS:
+        return None
+    try:
+        combined = pd.read_parquet(path)
+        symbols_data = {}
+        spy_prices = None
+        for sym in combined["_symbol"].unique():
+            sub = combined[combined["_symbol"] == sym].drop(columns=["_symbol"])
+            sub.index = pd.to_datetime(sub.index)
+            if sym == "__SPY__":
+                spy_prices = sub["close"]
+            else:
+                symbols_data[sym] = sub
+        return symbols_data, spy_prices
+    except Exception:
+        return None
+
+
+def _save_price_cache(symbols_data: dict, spy_prices, symbols: list, years: int):
+    """Save symbols_data + SPY to Parquet cache."""
+    try:
+        _PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for sym, df in symbols_data.items():
+            tmp = df.copy()
+            tmp["_symbol"] = sym
+            frames.append(tmp)
+        if spy_prices is not None:
+            spy_df = pd.DataFrame({"close": spy_prices})
+            spy_df["_symbol"] = "__SPY__"
+            frames.append(spy_df)
+        if frames:
+            combined = pd.concat(frames)
+            path = _price_cache_path(symbols, years)
+            combined.to_parquet(path)
+    except Exception:
+        pass  # cache write failure is non-fatal
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -98,7 +157,6 @@ def _print_result(result):
 
 def run_swing_backtest(symbols, years):
     import yfinance as yf
-    from datetime import datetime, timedelta
     from app.backtesting.swing_backtest import SwingBacktester
 
     header("Swing Model Backtest  (daily bars)")
@@ -106,43 +164,50 @@ def run_swing_backtest(symbols, years):
 
     end = datetime.now()
     start = end - timedelta(days=365 * years + 100)
-    info(f"Downloading {start.date()} -> {end.date()}...")
 
-    symbols_data = {}
-    try:
-        raw = yf.download(
-            symbols, start=start.date().isoformat(), end=end.date().isoformat(),
-            interval="1d", progress=False, auto_adjust=True, group_by="ticker",
-        )
-        for sym in symbols:
-            try:
-                df = raw[sym].copy() if len(symbols) > 1 else raw.copy()
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.columns = [c.lower() for c in df.columns]
-                df = df.dropna(subset=["close"])
-                if len(df) >= 50:
-                    symbols_data[sym] = df
-            except Exception:
-                pass
-    except Exception as exc:
-        fail(f"Download failed: {exc}")
-        return None
+    # Try Parquet cache first (avoids re-downloading on repeat runs)
+    cached = _load_price_cache(symbols, years)
+    if cached is not None:
+        symbols_data, spy_prices = cached
+        ok(f"Loaded {len(symbols_data)} symbols from Parquet cache (skipped download)")
+    else:
+        info(f"Downloading {start.date()} -> {end.date()}...")
+        symbols_data = {}
+        try:
+            raw = yf.download(
+                symbols, start=start.date().isoformat(), end=end.date().isoformat(),
+                interval="1d", progress=False, auto_adjust=True, group_by="ticker",
+            )
+            for sym in symbols:
+                try:
+                    df = raw[sym].copy() if len(symbols) > 1 else raw.copy()
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    df.columns = [c.lower() for c in df.columns]
+                    df = df.dropna(subset=["close"])
+                    if len(df) >= 50:
+                        symbols_data[sym] = df
+                except Exception:
+                    pass
+        except Exception as exc:
+            fail(f"Download failed: {exc}")
+            return None
 
-    # Fetch SPY for benchmark
-    spy_prices = None
-    try:
-        spy_raw = yf.download("SPY", start=start.date().isoformat(),
-                              end=end.date().isoformat(), interval="1d",
-                              progress=False, auto_adjust=True)
-        if isinstance(spy_raw.columns, pd.MultiIndex):
-            spy_raw.columns = spy_raw.columns.get_level_values(0)
-        spy_raw.columns = [c.lower() for c in spy_raw.columns]
-        spy_prices = spy_raw["close"]
-    except Exception:
-        pass
+        # Fetch SPY for benchmark
+        spy_prices = None
+        try:
+            spy_raw = yf.download("SPY", start=start.date().isoformat(),
+                                  end=end.date().isoformat(), interval="1d",
+                                  progress=False, auto_adjust=True)
+            if isinstance(spy_raw.columns, pd.MultiIndex):
+                spy_raw.columns = spy_raw.columns.get_level_values(0)
+            spy_raw.columns = [c.lower() for c in spy_raw.columns]
+            spy_prices = spy_raw["close"]
+        except Exception:
+            pass
 
-    ok(f"Downloaded data for {len(symbols_data)} symbols")
+        ok(f"Downloaded data for {len(symbols_data)} symbols")
+        _save_price_cache(symbols_data, spy_prices, symbols, years)
 
     model = _load_model("swing")
     if model is None:
@@ -231,7 +296,7 @@ def run_intraday_backtest(symbols, days):
             except Exception:
                 pass
 
-    ok(f"Data loaded: {len(symbols_data)} symbols  |  window {start.date()} → {end.date()}")
+    ok(f"Data loaded: {len(symbols_data)} symbols  |  window {start.date()} -> {end.date()}")
 
     # SPY 5-min for intraday features
     spy_data = None
@@ -331,12 +396,65 @@ def _load_model(model_name):
         finally:
             db.close()
     except Exception as exc:
-        warn(f"Could not load {model_name} model: {exc}")
-    return None
+        warn(f"DB unavailable ({exc.__class__.__name__}), falling back to file glob")
+    # Fallback: load latest pkl from disk
+    import pickle
+    from pathlib import Path
+    model_dir = Path("app/ml/models")
+    files = sorted(model_dir.glob(f"{model_name}_v*.pkl"))
+    if not files:
+        warn(f"No {model_name} model pkl found — train first")
+        return None
+    with open(files[-1], "rb") as f:
+        obj = pickle.load(f)
+    if hasattr(obj, "is_trained"):
+        return obj
+    from app.ml.model import PortfolioSelectorModel
+    m = PortfolioSelectorModel(model_type="xgboost")
+    version = int(files[-1].stem.split("_v")[-1])
+    m.load(str(files[-1].parent), version, model_name=model_name)
+    return m
+
+
+def _save_backtest_json(model_name: str, agent_result, t_elapsed: float) -> None:
+    """Save Tier 3 backtest results to results/ as JSON for programmatic comparison."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import ModelVersion
+        db = get_session()
+        row = db.query(ModelVersion).filter_by(model_name=model_name, status="ACTIVE") \
+                .order_by(ModelVersion.version.desc()).first()
+        version = row.version if row else 0
+        db.close()
+    except Exception:
+        version = 0
+
+    r = agent_result
+    result = {
+        "model": model_name,
+        "version": version,
+        "run_date": datetime.now().strftime("%Y-%m-%d"),
+        "tier3": {
+            "sharpe": round(getattr(r, "sharpe", 0) or 0, 4),
+            "win_rate": round(getattr(r, "win_rate", 0) or 0, 4),
+            "profit_factor": round(getattr(r, "profit_factor", 0) or 0, 4),
+            "trades": getattr(r, "total_trades", 0),
+            "total_return": round(getattr(r, "total_return", 0) or 0, 4),
+            "max_drawdown": round(getattr(r, "max_drawdown", 0) or 0, 4),
+            "annualized_return": round(getattr(r, "annualized_return", 0) or 0, 4),
+        },
+        "duration_seconds": round(t_elapsed, 1),
+    }
+    out_dir = ROOT / "results"
+    out_dir.mkdir(exist_ok=True)
+    fname = f"backtest_{model_name}_v{version}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+    path = out_dir / fname
+    path.write_text(json.dumps(result, indent=2))
+    ok(f"Results saved -> {path}")
 
 
 def main():
-    from app.utils.constants import SP_100_TICKERS
+    from app.utils.constants import SP_500_TICKERS
 
     parser = argparse.ArgumentParser(
         description="MrTrader ML model backtest runner",
@@ -351,24 +469,37 @@ def main():
                         help="Days of 5-min history for intraday (default: 730 via Polygon cache; "
                              "falls back to 55 days via yfinance if Polygon cache is empty)")
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="Randomly sample N symbols from universe (for quick runs)")
     args = parser.parse_args()
 
-    symbols = args.symbols or SP_100_TICKERS[:30]
+    import random
+    universe = SP_500_TICKERS  # matches live PM universe
+    if args.symbols:
+        symbols = args.symbols
+    elif args.sample:
+        symbols = random.sample(universe, min(args.sample, len(universe)))
+    else:
+        symbols = universe
 
     print(f"\n{BOLD}{'=' * 60}{RESET}")
     print(f"{BOLD}  MrTrader -- ML Model Backtest{RESET}")
     print(f"{BOLD}{'=' * 60}{RESET}")
     print(f"  Model   : {args.model}")
-    print(f"  Symbols : {len(symbols)}")
+    print(f"  Symbols : {len(symbols)}  (universe: {'custom' if args.symbols else f'SP500={len(universe)}' + (f', sampled {args.sample}' if args.sample else '')})")
     print(f"{BOLD}{'=' * 60}{RESET}")
 
     t_start = time.time()
 
     if args.model in ("swing", "both"):
-        run_swing_backtest(symbols, args.years)
+        swing_result = run_swing_backtest(symbols, args.years)
+        if swing_result is not None:
+            _save_backtest_json("swing", swing_result, time.time() - t_start)
 
     if args.model in ("intraday", "both"):
-        run_intraday_backtest(symbols, args.days)
+        intra_result = run_intraday_backtest(symbols, args.days)
+        if intra_result is not None:
+            _save_backtest_json("intraday", intra_result, time.time() - t_start)
 
     elapsed = time.time() - t_start
     print(f"\n{BOLD}{'=' * 60}{RESET}")

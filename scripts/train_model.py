@@ -17,6 +17,7 @@ Output sections:
 """
 
 import argparse
+import hashlib
 import sys
 import time
 from datetime import datetime, timedelta
@@ -107,6 +108,52 @@ def check_environment() -> bool:
     return all_ok
 
 
+# -- Training price cache (Parquet, 23h TTL) -----------------------------------
+
+_TRAIN_CACHE_DIR = ROOT / "app" / "ml" / "models" / "price_cache" / "training"
+_TRAIN_CACHE_TTL_HOURS = 23
+
+
+def _train_cache_path(symbols: list, years: int, provider: str) -> Path:
+    h = hashlib.md5((",".join(sorted(symbols)) + str(years) + provider).encode()).hexdigest()[:10]
+    return _TRAIN_CACHE_DIR / f"train_{years}yr_{provider}_{h}.parquet"
+
+
+def _load_train_cache(symbols: list, years: int, provider: str):
+    path = _train_cache_path(symbols, years, provider)
+    if not path.exists():
+        return None
+    age_hours = (time.time() - path.stat().st_mtime) / 3600
+    if age_hours > _TRAIN_CACHE_TTL_HOURS:
+        return None
+    try:
+        import pandas as pd
+        combined = pd.read_parquet(path)
+        result = {}
+        for sym in combined["_symbol"].unique():
+            sub = combined[combined["_symbol"] == sym].drop(columns=["_symbol"])
+            sub.index = pd.to_datetime(sub.index)
+            result[sym] = sub
+        return result
+    except Exception:
+        return None
+
+
+def _save_train_cache(data: dict, symbols: list, years: int, provider: str) -> None:
+    try:
+        import pandas as pd
+        _TRAIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for sym, df in data.items():
+            tmp = df.copy()
+            tmp["_symbol"] = sym
+            frames.append(tmp)
+        if frames:
+            pd.concat(frames).to_parquet(_train_cache_path(symbols, years, provider))
+    except Exception:
+        pass
+
+
 # -- Step 2: Download historical data -----------------------------------------
 
 def download_data(
@@ -121,6 +168,12 @@ def download_data(
     info(f"Period: {start_dt} -> {end_dt}")
     print()
 
+    # Parquet cache check — skip network entirely if data is fresh
+    cached = _load_train_cache(symbols, years, provider)
+    if cached is not None:
+        ok(f"Loaded {len(cached)} symbols from Parquet cache  (skipped download)")
+        return cached
+
     # Try bulk provider first (Polygon S3 flat files — much faster than yfinance per-symbol)
     if provider == "polygon":
         try:
@@ -134,6 +187,7 @@ def download_data(
             if skipped:
                 warn(f"Skipped ({len(skipped)} symbols with insufficient data): "
                      f"{', '.join(skipped[:10])}{'...' if len(skipped) > 10 else ''}")
+            _save_train_cache(valid, symbols, years, provider)
             return valid
         except Exception as exc:
             warn(f"Polygon bulk download failed ({exc}), falling back to yfinance...")
@@ -169,6 +223,7 @@ def download_data(
     if errors:
         warn(f"Skipped ({len(errors)} symbols with insufficient data): "
              f"{', '.join(errors[:10])}{'...' if len(errors) > 10 else ''}")
+    _save_train_cache(data, symbols, years, provider)
     return data
 
 
@@ -228,17 +283,22 @@ def run_rolling_pipeline(
 
     print()
     t0 = time.time()
+    t_step = time.time()
     X_train, y_train, X_test, y_test, feature_names, meta_train = trainer._build_rolling_matrix(
         symbols_data, fetch_fundamentals=fetch_fundamentals
     )
+    t_matrix = time.time() - t_step
 
     if len(X_train) == 0:
         fail("No samples after rolling window labelling")
         return None
 
+    from app.ml.feature_store import FeatureStore
+    _fs = FeatureStore()
     ok(f"Train samples : {len(X_train)}")
     ok(f"Test samples  : {len(X_test)}  (most recent {int(TEST_FRACTION*100)}% of windows)")
     ok(f"Features      : {len(feature_names)}")
+    ok(f"Feature matrix built in {t_matrix:.0f}s  (feature store: {_fs.count():,} entries cached)")
     info(f"  {', '.join(feature_names)}")
 
     # Apply feature selection if requested
@@ -252,6 +312,7 @@ def run_rolling_pipeline(
     # Step 4
     _stage_tag = " [three-stage]" if three_stage else (" [two-stage]" if two_stage else "")
     header(4, 6, f"Training {model_type.upper()} model{_stage_tag}" + (" [multi-window]" if multi_window else ""))
+    t_step = time.time()
 
     if multi_window:
         print("  Training multi-window ensemble (63d + 126d)...", flush=True)
@@ -288,6 +349,8 @@ def run_rolling_pipeline(
             elapsed = time.time() - t0
             print("\r", end="")
             ok(f"Training complete in {elapsed:.1f}s  (scale_pos_weight={spw:.1f})")
+
+    t_train = time.time() - t_step
 
     # Step 5
     header(5, 6, "Out-of-sample evaluation  (time-based held-out set)")
@@ -388,7 +451,8 @@ def run_rolling_pipeline(
         except Exception:
             pass
 
-        metrics = {"accuracy": acc, "precision": prec, "recall": rec, "auc": auc, "threshold": tuned_t}
+        metrics = {"accuracy": acc, "precision": prec, "recall": rec, "auc": auc, "threshold": tuned_t,
+                   "t_matrix_s": round(t_matrix, 1), "t_train_s": round(t_train, 1)}
 
     # Step 6
     header(6, 6, "Saving model")
@@ -540,18 +604,24 @@ def main():
     print(f"{BOLD}{'=' * 60}{RESET}")
 
     t_start = time.time()
+    phase_times: Dict[str, float] = {}
 
     # Step 1
+    _t = time.time()
     if not check_environment():
         sys.exit(1)
+    phase_times["env_check"] = time.time() - _t
 
     # Step 2
+    _t = time.time()
     symbols_data = download_data(symbols, args.years, provider=args.provider)
+    phase_times["download"] = time.time() - _t
     if len(symbols_data) < 3:
         fail("Too few symbols downloaded -- check network connection")
         sys.exit(1)
 
     # Steps 3-6 (rolling windows + train + evaluate + save)
+    _t = time.time()
     version = run_rolling_pipeline(
         symbols_data, fetch_fundamentals, args.years, args.dry_run,
         model_type=args.model_type,
@@ -565,6 +635,7 @@ def main():
         three_stage=args.three_stage,
         multi_window=args.multi_window,
     )
+    phase_times["train_pipeline"] = time.time() - _t
 
     elapsed = time.time() - t_start
     print(f"\n{BOLD}{'=' * 60}{RESET}")
@@ -572,6 +643,8 @@ def main():
         print(f"{GREEN}{BOLD}  Done!  Model v{version} ready.  ({elapsed:.0f}s total){RESET}")
     else:
         print(f"{YELLOW}{BOLD}  Done!  ({elapsed:.0f}s total)  -- model not saved{RESET}")
+    print(f"{DIM}  Phase timings: download={phase_times['download']:.0f}s  "
+          f"train={phase_times['train_pipeline']:.0f}s  total={elapsed:.0f}s{RESET}")
     print(f"{BOLD}{'=' * 60}{RESET}\n")
 
 
