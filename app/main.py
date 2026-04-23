@@ -304,9 +304,10 @@ _REACT_DIST = "frontend/dist"
 _REACT_INDEX = os.path.join(_REACT_DIST, "index.html")
 _LEGACY_HTML = "frontend/dashboard.html"
 
-# Mount React build assets if the dist folder exists
-if os.path.isdir(_REACT_DIST):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_REACT_DIST, "assets")), name="assets")
+# Mount React build assets if the dist folder exists (skipped in CI where dist is not built)
+_REACT_ASSETS = os.path.join(_REACT_DIST, "assets")
+if os.path.isdir(_REACT_ASSETS):
+    app.mount("/assets", StaticFiles(directory=_REACT_ASSETS), name="assets")
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)

@@ -14,7 +14,7 @@ File format: data/intraday/{SYMBOL}.parquet
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
