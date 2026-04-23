@@ -110,7 +110,10 @@ class TestSwingCsThresholdSharpe:
         window_starts = [0]
         thresholds = trainer._compute_cs_thresholds(symbols_data, all_dates, window_starts)
         assert 0 in thresholds
-        assert isinstance(thresholds[0], float)
+        # Phase 24a: thresholds now store (cs_mean, cs_std, sharpe_threshold) tuple
+        result = thresholds[0]
+        assert isinstance(result, tuple) and len(result) == 3
+        assert all(isinstance(v, float) for v in result)
 
 
 # ── Intraday — Sharpe-adjusted best_return ────────────────────────────────────
