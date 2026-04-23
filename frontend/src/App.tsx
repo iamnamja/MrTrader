@@ -259,7 +259,7 @@ function OverviewPanel({ summary, health, decisions }: {
         <KpiCard label="Total P&L" value={fmt$(summary.total_pnl)}
           sub={summary.total_pnl_pct != null ? fmtPct(summary.total_pnl_pct) : undefined}
           color={clr(summary.total_pnl)} />
-        <KpiCard label="Buying Power" value={fmt$(summary.cash ?? (summary.buying_power != null ? summary.buying_power / 4 : undefined))} sub={summary.buying_power != null ? `Margin ${fmt$(summary.buying_power)}` : 'Available cash'} />
+        <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub={summary.cash != null ? `Cash ${fmt$(summary.cash)}` : '4x margin'} />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
         <KpiCard label="Trades Today" value={summary.trades_today_count?.toString() ?? '0'} sub="Orders executed" />
         <KpiCard label="Capital Deployed"
