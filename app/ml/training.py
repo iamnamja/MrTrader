@@ -9,7 +9,6 @@ Key improvements over v1:
     by passing provider="polygon" etc.
 """
 
-import json
 import logging
 import os
 import threading
