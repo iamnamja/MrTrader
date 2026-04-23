@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, Component } from 'react'
+import type { ReactNode } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -57,7 +58,7 @@ function fmtTs(iso: string | undefined) {
   const normalized = iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z'
   const d = new Date(normalized)
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
-    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' })
+    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' })
 }
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
@@ -258,7 +259,7 @@ function OverviewPanel({ summary, health, decisions }: {
         <KpiCard label="Total P&L" value={fmt$(summary.total_pnl)}
           sub={summary.total_pnl_pct != null ? fmtPct(summary.total_pnl_pct) : undefined}
           color={clr(summary.total_pnl)} />
-        <KpiCard label="Buying Power" value={fmt$(summary.buying_power)} sub="Available cash" />
+        <KpiCard label="Buying Power" value={fmt$(summary.cash ?? (summary.buying_power != null ? summary.buying_power / 4 : undefined))} sub={summary.buying_power != null ? `Margin ${fmt$(summary.buying_power)}` : 'Available cash'} />
         <KpiCard label="Open Positions" value={(summary.open_positions_count ?? summary.open_positions)?.toString() ?? '—'} sub="Active trades" />
         <KpiCard label="Trades Today" value={summary.trades_today_count?.toString() ?? '0'} sub="Orders executed" />
         <KpiCard label="Capital Deployed"
@@ -475,13 +476,13 @@ function TradesPanel() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened'].map(h => (
+              {['Symbol', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened', 'Closed'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {rows.length === 0
-                ? <tr><td colSpan={9} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
+                ? <tr><td colSpan={10} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
                 : rows.map((t, i) => (
                   <tr key={i}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
@@ -495,6 +496,7 @@ function TradesPanel() {
                       <StatusPill status={t.status} />
                     </td>
                     <td style={{ ...s.td, color: C.muted }}>{fmtTs(t.created_at)}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{t.closed_at ? fmtTs(t.closed_at) : <span style={{ color: C.muted }}>—</span>}</td>
                   </tr>
                 ))}
             </tbody>
@@ -802,7 +804,7 @@ function TopBar({ health, wsConnected }: { health: Health | null; wsConnected: b
     const tick = () => {
       const now = new Date()
       const etStr = now.toLocaleTimeString('en-US', {
-        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
         timeZone: 'America/New_York',
       })
       const dateStr = now.toLocaleDateString('en-US', {
@@ -996,7 +998,7 @@ function SessionPanel({ toast }: { toast: (msg: string, type?: 'success' | 'erro
                 {jobs.map(j => (
                   <tr key={j.id}>
                     <td style={{ ...s.td, color: C.accent }}>{j.id}</td>
-                    <td style={{ ...s.td, color: C.muted }}>{j.next_run_time ? j.next_run_time.slice(0, 19) : '—'}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{j.next_run_time ? fmtTs(j.next_run_time) : '—'}</td>
                     <td style={s.td}>
                       <span style={{
                         fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 8,
@@ -1154,6 +1156,29 @@ function ReadinessPanel() {
       )}
     </div>
   )
+}
+
+// ── Error Boundary ─────────────────────────────────────────────────────────────
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { error: null }
+  }
+  static getDerivedStateFromError(e: unknown) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 32, color: C.red, textAlign: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Panel failed to render</div>
+          <div style={{ fontSize: 12, color: C.muted }}>{this.state.error}</div>
+          <button onClick={() => this.setState({ error: null })} style={{ ...btnStyle, marginTop: 16 }}>Retry</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 // ── Analytics Panel ────────────────────────────────────────────────────────────
@@ -1715,7 +1740,7 @@ function MonitorPanel() {
       {history.length > 0 && (
         <div>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Session History (7 days)</div>
-          <div style={{ overflowX: 'auto' }}>
+          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 300 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: C.muted, borderBottom: `1px solid ${C.border}` }}>
@@ -1906,7 +1931,8 @@ function AgentFeed({ name, events, onToggle }: {
       <div style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', flex: 1 }}>
         {events.length === 0 && (
           <div style={{ padding: 16, color: C.muted, fontSize: 12, textAlign: 'center' }}>
-            Waiting for decisions…
+            No decisions recorded yet.<br />
+            <span style={{ fontSize: 11 }}>Events appear here once the agent pipeline runs.</span>
           </div>
         )}
         {events.map(ev => (
@@ -2036,7 +2062,7 @@ export default function App() {
       setSummary(s)
       const pnlVal = s.daily_pnl ?? s.pnl_today
       if (pnlVal != null) {
-        const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+        const now = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
         setPnlHistory(h => {
           const next = [...h, { time: now, pnl: pnlVal }]
           return next.length > 60 ? next.slice(-60) : next
@@ -2089,10 +2115,10 @@ export default function App() {
         const kind: SignalRow['kind'] = type === 'trade_executed' ? 'buy' : type === 'trade_closed' ? 'sell' : 'signal'
         const sym = (data.symbol as string) ?? (data.reasoning as { symbol?: string } | undefined)?.symbol ?? '?'
         const msgText = (data.action as string) ?? (data.decision_type as string) ?? (data.message as string) ?? ''
-        const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+        const now = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })
         setSignalFeed(f => [{ time: now, symbol: sym, kind, msg: msgText }, ...f].slice(0, 100))
 
-        const nowET = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/New_York' })
+        const nowET = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'America/New_York' })
         if (type === 'agent_decision') {
           const ev: AgentEvent = {
             id: Date.now() + Math.random(), // ephemeral id for live events
@@ -2152,7 +2178,7 @@ export default function App() {
         {tab === 'Kill Switch' && <KillPanel toast={toast} />}
         {tab === 'Orchestrator' && <SessionPanel toast={toast} />}
         {tab === 'Readiness' && <ReadinessPanel />}
-        {tab === 'Analytics' && <AnalyticsPanel />}
+        {tab === 'Analytics' && <ErrorBoundary><AnalyticsPanel /></ErrorBoundary>}
         {tab === 'Watchlist' && <WatchlistPanel toast={toast} />}
         {tab === 'Performance' && <PerformanceReviewPanel />}
         {tab === 'Config' && <ConfigPanel toast={toast} />}
