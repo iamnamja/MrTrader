@@ -47,13 +47,13 @@ MIN_FOLD_SHARPE = -0.3  # no individual fold may be below this
 
 # ── Console helpers ───────────────────────────────────────────────────────────
 
-def _ok(msg):   print(f"  \033[32m✓\033[0m  {msg}")
-def _warn(msg): print(f"  \033[33m⚠\033[0m  {msg}")
-def _err(msg):  print(f"  \033[31m✗\033[0m  {msg}")
+def _ok(msg):   print(f"  \033[32mOK\033[0m  {msg}")
+def _warn(msg): print(f"  \033[33mWARN\033[0m  {msg}")
+def _err(msg):  print(f"  \033[31mFAIL\033[0m  {msg}")
 def _header(msg):
     print(f"\n{'='*62}\n  {msg}\n{'='*62}")
 def _subheader(msg):
-    print(f"\n{'─'*62}\n  {msg}\n{'─'*62}")
+    print(f"\n{'-'*62}\n  {msg}\n{'-'*62}")
 
 
 # ── Fold result ───────────────────────────────────────────────────────────────
@@ -77,10 +77,10 @@ class FoldResult:
         return self.sharpe >= MIN_FOLD_SHARPE
 
     def summary_line(self) -> str:
-        gate = "✓" if self.passed_gate() else "✗"
+        gate = "OK" if self.passed_gate() else "FAIL"
         return (
             f"  Fold {self.fold} [{gate}] "
-            f"test={self.test_start}→{self.test_end}  "
+            f"test={self.test_start}->{self.test_end}  "
             f"trades={self.trades}  win={self.win_rate:.1%}  "
             f"Sharpe={self.sharpe:.2f}  DD={self.max_drawdown:.1%}"
         )
@@ -134,32 +134,46 @@ def _load_model(model_name: str):
     try:
         from app.database.models import ModelVersion
         from app.database.session import get_session
-        from app.ml.model import PortfolioSelectorModel
-        with get_session() as sess:
+        db = get_session()
+        try:
             mv = (
-                sess.query(ModelVersion)
-                .filter(ModelVersion.model_name == model_name, ModelVersion.is_active == True)
+                db.query(ModelVersion)
+                .filter_by(model_name=model_name, status="ACTIVE")
                 .order_by(ModelVersion.version.desc())
                 .first()
             )
-            if mv and mv.model_path and Path(mv.model_path).exists():
-                model = PortfolioSelectorModel(model_type="xgboost")
-                model.load(mv.model_path)
-                logger.info("Loaded %s model v%d from %s", model_name, mv.version, mv.model_path)
-                return model, mv.version
+            if mv and mv.model_path:
+                path = Path(mv.model_path)
+                if path.exists():
+                    with open(path, "rb") as f:
+                        obj = pickle.load(f)
+                    if hasattr(obj, "is_trained"):
+                        logger.info("Loaded %s model v%d", model_name, mv.version)
+                        return obj, mv.version
+                from app.ml.model import PortfolioSelectorModel
+                m = PortfolioSelectorModel(model_type="xgboost")
+                m.load(str(path.parent), mv.version, model_name=model_name)
+                logger.info("Loaded %s model v%d", model_name, mv.version)
+                return m, mv.version
+        finally:
+            db.close()
     except Exception as exc:
         logger.warning("DB model load failed: %s", exc)
-    # Fallback: glob latest file
+    # Fallback: glob latest pkl
     model_dir = Path("app/ml/models")
-    pattern = f"{model_name}_v*.pkl"
-    files = sorted(model_dir.glob(pattern))
+    files = sorted(model_dir.glob(f"{model_name}_v*.pkl"))
     if files:
-        from app.ml.model import PortfolioSelectorModel
-        model = PortfolioSelectorModel(model_type="xgboost")
-        model.load(str(files[-1]))
+        with open(files[-1], "rb") as f:
+            obj = pickle.load(f)
         version = int(files[-1].stem.split("_v")[-1])
+        if hasattr(obj, "is_trained"):
+            logger.info("Loaded %s model v%d from file", model_name, version)
+            return obj, version
+        from app.ml.model import PortfolioSelectorModel
+        m = PortfolioSelectorModel(model_type="xgboost")
+        m.load(str(files[-1].parent), version, model_name=model_name)
         logger.info("Loaded %s model v%d from file", model_name, version)
-        return model, version
+        return m, version
     return None, 0
 
 
@@ -188,7 +202,7 @@ def run_swing_walkforward(
     _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
                f"{len(symbols)} symbols | model v{version}")
 
-    logger.info("Downloading daily bars %s → %s", start_all.date(), end_all.date())
+    logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
     symbols_data: Dict[str, pd.DataFrame] = {}
     for sym in symbols:
@@ -227,9 +241,10 @@ def run_swing_walkforward(
             min(test_end_dt.date(), end_all.date()),
         ))
 
-    for fold_idx, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries, 1):
-        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}→{tr_end}  "
-                   f"test:{te_start}→{te_end}")
+    def _run_swing_fold(args):
+        fold_idx, tr_start, tr_end, te_start, te_end = args
+        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
+                   f"test:{te_start}->{te_end}")
         t_fold = time.time()
         sim = AgentSimulator(model=model)
         result = sim.run(
@@ -239,29 +254,31 @@ def run_swing_walkforward(
             spy_prices=spy_prices,
         )
         elapsed = time.time() - t_fold
-
         stop_exits = result.exit_breakdown.get("STOP", 0)
-        total_exits = max(result.total_trades, 1)
-        stop_rate = stop_exits / total_exits
-
-        fold = FoldResult(
+        stop_rate = stop_exits / max(result.total_trades, 1)
+        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
+            f"Sharpe {result.sharpe_ratio:.2f}")
+        return FoldResult(
             fold=fold_idx,
-            train_start=tr_start,
-            train_end=tr_end,
-            test_start=te_start,
-            test_end=te_end,
+            train_start=tr_start, train_end=tr_end,
+            test_start=te_start, test_end=te_end,
             trades=result.total_trades,
             win_rate=result.win_rate,
-            sharpe=result.sharpe,
-            max_drawdown=result.max_drawdown,
-            total_return=result.total_return,
+            sharpe=result.sharpe_ratio,
+            max_drawdown=result.max_drawdown_pct,
+            total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=version,
         )
-        report.folds.append(fold)
-        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
-            f"Sharpe {result.sharpe:.2f}")
-        result.print_report()
+
+    from concurrent.futures import ThreadPoolExecutor
+    fold_args = [
+        (i + 1, tr_start, tr_end, te_start, te_end)
+        for i, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries)
+    ]
+    with ThreadPoolExecutor(max_workers=n_folds) as pool:
+        results = list(pool.map(_run_swing_fold, fold_args))
+    report.folds = sorted(results, key=lambda f: f.fold)
 
     return report
 
@@ -342,9 +359,10 @@ def run_intraday_walkforward(
             all_days_sorted[te_end_idx],
         ))
 
-    for fold_idx, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries, 1):
-        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}→{tr_end}  "
-                   f"test:{te_start}→{te_end}")
+    def _run_intraday_fold(args):
+        fold_idx, tr_start, tr_end, te_start, te_end = args
+        _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
+                   f"test:{te_start}->{te_end}")
         t_fold = time.time()
         sim = IntradayAgentSimulator(model=model)
         result = sim.run(
@@ -354,28 +372,28 @@ def run_intraday_walkforward(
             end_date=te_end,
         )
         elapsed = time.time() - t_fold
-
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
-
-        fold = FoldResult(
+        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
+            f"Sharpe {result.sharpe_ratio:.2f}")
+        return FoldResult(
             fold=fold_idx,
-            train_start=tr_start,
-            train_end=tr_end,
-            test_start=te_start,
-            test_end=te_end,
+            train_start=tr_start, train_end=tr_end,
+            test_start=te_start, test_end=te_end,
             trades=result.total_trades,
             win_rate=result.win_rate,
-            sharpe=result.sharpe,
-            max_drawdown=result.max_drawdown,
-            total_return=result.total_return,
+            sharpe=result.sharpe_ratio,
+            max_drawdown=result.max_drawdown_pct,
+            total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=version,
         )
-        report.folds.append(fold)
-        _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
-            f"Sharpe {result.sharpe:.2f}")
-        result.print_report()
+
+    fold_args = [
+        (i + 1, tr_start, tr_end, te_start, te_end)
+        for i, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries)
+    ]
+    report.folds = [_run_intraday_fold(args) for args in fold_args]
 
     return report
 

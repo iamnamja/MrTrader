@@ -723,8 +723,10 @@ class Trader(BaseAgent):
                 try:
                     trade = db.query(Trade).filter_by(id=trade_id).first()
                     if trade and trade.status == "ACTIVE":
-                        trade.exit_price = current_price or pos["entry_price"]
-                        trade.pnl = (trade.exit_price - pos["entry_price"]) * pos.get("quantity", 0)
+                        # Try to get a real price; only fall back to entry_price if nothing available
+                        actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
+                        trade.exit_price = actual_price
+                        trade.pnl = (actual_price - pos["entry_price"]) * pos.get("quantity", trade.quantity or 0)
                         trade.status = "FORCE_CLOSED_NO_POSITION"
                         trade.closed_at = datetime.now(ET)
                         db.commit()
