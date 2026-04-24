@@ -32,7 +32,6 @@ from app.agents.risk_rules import (
     validate_position_size,
     validate_sector_concentration,
     validate_daily_loss,
-    validate_open_positions,
     validate_account_drawdown,
     validate_portfolio_heat,
 )
@@ -43,7 +42,7 @@ from app.strategy.position_sizer import size_position
 logger = logging.getLogger(__name__)
 
 # ── Simulation defaults ────────────────────────────────────────────────────────
-MIN_CONFIDENCE = 0.50  # model AUC ~0.52; probabilities cluster below 0.55, keep at 0.50
+MIN_CONFIDENCE = 0.40  # LambdaRank scores cluster near 0.5; floor is a sanity check only
 TOP_N_STOCKS = 10  # PM proposal count per day
 MIN_BARS_SIGNAL = 210  # minimum bars for generate_signal (needs EMA-200)
 # ATR multipliers must match training label thresholds (training.py ATR_MULT_TARGET/STOP)
@@ -117,6 +116,8 @@ class AgentSimulator:
         atr_stop_mult: float = ATR_STOP_MULT,
         atr_target_mult: float = ATR_TARGET_MULT,
         max_vol_pct: Optional[float] = None,
+        regime_bear_max_positions: int = 3,   # Phase 35: cut exposure in bear regime
+        vix_fear_threshold: float = 30.0,      # Phase 35: skip new longs when VIX > this
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -127,6 +128,8 @@ class AgentSimulator:
         self.atr_stop_mult = atr_stop_mult
         self.atr_target_mult = atr_target_mult
         self.max_vol_pct = max_vol_pct  # Phase 26d: block entries above this vol_percentile_52w
+        self.regime_bear_max_positions = regime_bear_max_positions
+        self.vix_fear_threshold = vix_fear_threshold
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -180,6 +183,19 @@ class AgentSimulator:
         equity_by_date: Dict[date, float] = {}
         tx_costs_total = 0.0
 
+        # Phase 35: Build SPY close series and VIX series for regime gate
+        spy_df = symbols_data.get("SPY")
+        _spy_closes: Optional[pd.Series] = None
+        if spy_df is not None and "close" in spy_df.columns:
+            _spy_closes = spy_df["close"]
+        elif spy_prices is not None:
+            _spy_closes = spy_prices
+
+        _vix_closes: Optional[pd.Series] = None
+        _vix_df = symbols_data.get("^VIX") or symbols_data.get("VIX")
+        if _vix_df is not None and "close" in _vix_df.columns:
+            _vix_closes = _vix_df["close"]
+
         for day in trading_days:
             # 1. Advance bars_held for all open positions, mark equity
             for pos in portfolio.positions.values():
@@ -196,10 +212,42 @@ class AgentSimulator:
             # 3. PM: score all symbols using bars up to yesterday
             proposals = self._pm_score(day, symbols_data)
 
-            # 4. Trader signal + RM rules + entry
-            if proposals:
+            # 4. Phase 35: Market regime gate — cut exposure in bear/fear regimes
+            _skip_entries = False
+            _max_pos_today = self.limits.MAX_OPEN_POSITIONS
+            if _spy_closes is not None:
+                try:
+                    spy_idx = _spy_closes.index
+                    spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                    spy_hist = _spy_closes.loc[spy_dates <= day]
+                    if len(spy_hist) >= 200:
+                        spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
+                        spy_close = float(spy_hist.iloc[-1])
+                        if spy_close < spy_ema200:
+                            _max_pos_today = self.regime_bear_max_positions
+                            logger.debug("Bear regime on %s: SPY %.2f < EMA200 %.2f — max_pos=%d",
+                                         day, spy_close, spy_ema200, _max_pos_today)
+                except Exception:
+                    pass
+            if _vix_closes is not None:
+                try:
+                    vix_idx = _vix_closes.index
+                    vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
+                    vix_today = _vix_closes.loc[vix_dates <= day]
+                    if len(vix_today) > 0:
+                        vix_val = float(vix_today.iloc[-1])
+                        if vix_val > self.vix_fear_threshold:
+                            _skip_entries = True
+                            logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
+                                         day, vix_val, self.vix_fear_threshold)
+                except Exception:
+                    pass
+
+            # 5. Trader signal + RM rules + entry
+            if proposals and not _skip_entries:
                 new_trades, new_tx = self._process_entries(
-                    day, proposals, symbols_data, portfolio, sector_map
+                    day, proposals, symbols_data, portfolio, sector_map,
+                    max_positions=_max_pos_today,
                 )
                 accepted_trades.extend(new_trades)
                 tx_costs_total += new_tx
@@ -397,10 +445,7 @@ class AgentSimulator:
         if not ok:
             return False, msg
 
-        ok, msg = validate_open_positions(len(portfolio.positions), self.limits)
-        if not ok:
-            return False, msg
-
+        # open-position cap is enforced in _process_entries (regime-adjusted)
         ok, msg = validate_account_drawdown(equity, portfolio.peak_equity, self.limits)
         if not ok:
             return False, msg
@@ -426,12 +471,17 @@ class AgentSimulator:
         symbols_data: Dict[str, pd.DataFrame],
         portfolio: _PortfolioState,
         sector_map: Dict[str, str],
+        max_positions: Optional[int] = None,
     ) -> Tuple[List[Trade], float]:
         entered_trades: List[Trade] = []
         tx_costs_total = 0.0
+        _max_pos = max_positions if max_positions is not None else self.limits.MAX_OPEN_POSITIONS
 
         # Entry price: today's open (PM runs premarket; Trader executes post-open)
         for sym, confidence in proposals:
+            if len(portfolio.positions) >= _max_pos:
+                break  # Phase 35: respect regime-adjusted position cap
+
             if sym in portfolio.positions:
                 continue  # already holding
 
@@ -447,6 +497,24 @@ class AgentSimulator:
             entry_price = float(today_bar["open"])
             if entry_price <= 0:
                 continue
+
+            # Phase 34: No-chase filter — skip large overnight gaps and extended entries
+            if bars_yesterday is not None and len(bars_yesterday) >= 14:
+                try:
+                    prior_close = float(bars_yesterday["close"].iloc[-1])
+                    hi = bars_yesterday["high"].to_numpy(dtype=float)[-15:]
+                    lo = bars_yesterday["low"].to_numpy(dtype=float)[-15:]
+                    cl = bars_yesterday["close"].to_numpy(dtype=float)[-15:]
+                    tr = np.maximum(hi[1:] - lo[1:],
+                                    np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])))
+                    atr_pct = float(np.mean(tr[-14:])) / max(prior_close, 1e-6)
+                    if entry_price > prior_close * (1 + 0.75 * atr_pct):
+                        continue  # skip overnight chase
+                    ema20 = float(bars_yesterday["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                    if entry_price > ema20 * (1 + 1.5 * atr_pct):
+                        continue  # skip too-extended entry
+                except Exception:
+                    pass
 
             # Trader: technical signal gate
             should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
