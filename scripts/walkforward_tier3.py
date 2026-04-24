@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import pandas as pd

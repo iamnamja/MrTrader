@@ -118,6 +118,8 @@ class AgentSimulator:
         max_vol_pct: Optional[float] = None,
         regime_bear_max_positions: int = 3,   # Phase 35: cut exposure in bear regime
         vix_fear_threshold: float = 30.0,      # Phase 35: skip new longs when VIX > this
+        meta_model=None,                        # Phase 37: Expected-R gate (MetaLabelModel)
+        min_expected_r: float = 0.002,          # Phase 37: skip entries where E[R] < this
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -130,6 +132,8 @@ class AgentSimulator:
         self.max_vol_pct = max_vol_pct  # Phase 26d: block entries above this vol_percentile_52w
         self.regime_bear_max_positions = regime_bear_max_positions
         self.vix_fear_threshold = vix_fear_threshold
+        self.meta_model = meta_model
+        self.min_expected_r = min_expected_r
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -390,7 +394,9 @@ class AgentSimulator:
                 if vol_avg20 > 0 and vol_today < 0.8 * vol_avg20:
                     return False, 0.0, 0.0
 
-            # Compute ATR-matched stops (must match training label multipliers)
+            # Phase 39: Setup-aware stops — anchor to structure, not just ATR%
+            # Momentum (EMA crossover): stop below recent pivot low (10-bar)
+            # Pullback (RSI dip): stop below EMA20 (natural support)
             close = float(bars_up_to_day["close"].iloc[-1])
             try:
                 high = bars_up_to_day["high"].to_numpy(dtype=float)
@@ -401,9 +407,23 @@ class AgentSimulator:
                     np.maximum(abs(high[1:] - cl[:-1]), abs(low[1:] - cl[:-1])))
                 atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
                 atr_pct = atr / close
-                stop_pct = float(np.clip(self.atr_stop_mult * atr_pct, 0.005, 0.08))
+
+                ema_fast_v = float(bars_up_to_day["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                ema_fast_p = float(bars_up_to_day["close"].ewm(span=20, adjust=False).mean().iloc[-2])
+                ema_slow_v = float(bars_up_to_day["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+                ema_slow_p = float(bars_up_to_day["close"].ewm(span=50, adjust=False).mean().iloc[-2])
+                is_ema_crossover = ema_fast_v > ema_slow_v and ema_fast_p <= ema_slow_p
+
+                if is_ema_crossover:
+                    # Momentum: stop below 10-bar pivot low (breakout level)
+                    pivot_low = float(np.min(low[-11:-1])) if len(low) >= 11 else close * 0.97
+                    stop_price = max(pivot_low * 0.995, close * (1 - 0.08))
+                else:
+                    # Pullback/RSI-dip: stop below EMA20 with small buffer
+                    stop_price = max(ema20 * 0.995, close * (1 - 0.06))
+
+                # Target: 1.5× ATR above entry (fixed — matches training labels)
                 target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01, 0.16))
-                stop_price = close * (1 - stop_pct)
                 target_price = close * (1 + target_pct)
             except Exception:
                 stop_price = close * (1 - SWING_STOP_PCT)
@@ -513,6 +533,17 @@ class AgentSimulator:
                     ema20 = float(bars_yesterday["close"].ewm(span=20, adjust=False).mean().iloc[-1])
                     if entry_price > ema20 * (1 + 1.5 * atr_pct):
                         continue  # skip too-extended entry
+                except Exception:
+                    pass
+
+            # Phase 37: Meta-label Expected-R gate
+            if self.meta_model is not None:
+                try:
+                    fe = self._get_feature_engineer()
+                    feats = fe.engineer_features(sym, bars_yesterday,
+                                                 fetch_fundamentals=False, as_of_date=day)
+                    if feats is not None and not self.meta_model.should_enter(feats):
+                        continue
                 except Exception:
                     pass
 

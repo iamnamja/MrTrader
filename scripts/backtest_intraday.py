@@ -16,7 +16,10 @@ Usage:
 """
 
 import argparse
+import os
 import sys
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
