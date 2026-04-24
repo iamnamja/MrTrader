@@ -174,7 +174,7 @@ def collect_trade_features(
             continue
 
         try:
-            feats = fe.engineer_features(sym, window, fetch_fundamentals=False, as_of_date=entry_dt)
+            feats = fe.engineer_features(sym, window, fetch_fundamentals=False, as_of_date=entry_dt, regime_score=0.5)
             if feats is None:
                 continue
             row = [feats.get(f, 0.0) for f in model_feature_names]
