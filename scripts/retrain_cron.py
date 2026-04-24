@@ -21,6 +21,7 @@ Exit codes:
 """
 import argparse
 import logging
+import os
 import sys
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
