@@ -35,7 +35,7 @@ _DEFAULT_DB = "app/ml/models/feature_store.db"
 
 # Bump this whenever engineer_features() gains or loses columns.
 # Mismatch → cache auto-cleared on startup.
-SCHEMA_VERSION = "v3"  # v1=66 features, v2=74 features, v3=140 features (Phase 24b: regime interactions)
+SCHEMA_VERSION = "v4"  # v4=84 features (Phase 43: pruned 56 zero-importance features from v110)
 
 
 class FeatureStore:

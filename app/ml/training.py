@@ -47,13 +47,32 @@ EMBARGO_WINDOWS = max(1, round(FORWARD_DAYS / STEP_DAYS))
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
 LABEL_STOP_PCT = 0.02     # fallback fixed stop
 
-# ATR-adaptive labeling — v116: SYMMETRIC 1.5x target / 1.5x stop
-# Symmetric R:R produces ~35-40% positive labels (vs ~15% with 0.5x stop).
-# Prior asymmetric 1.5x/0.5x caused label collapse: model predicted all-positive.
+# ATR-adaptive labeling — v110 baseline: asymmetric 1.5x target / 0.5x stop
 ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
-ATR_MULT_STOP = 1.5       # stop  = 1.5x the stock's 14-day ATR (symmetric R:R)
+ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR
 ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
 ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
+
+# Phase 43 — features with zero importance in v110 (55 features never used in any split).
+# Removing them reduces overfitting surface without changing the signal.
+PRUNED_FEATURES: frozenset = frozenset([
+    "price_above_ema200", "dist_from_ema200", "rs_vs_spy", "sentiment",
+    "pe_ratio", "pb_ratio", "profit_margin", "revenue_growth", "debt_to_equity",
+    "earnings_proximity_days", "sector_momentum", "insider_score", "earnings_surprise",
+    "regime_score", "vix_level", "vix_regime_bucket", "vix_fear_spike",
+    "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
+    "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
+    "rs_vs_spy_5d", "rs_vs_spy_10d", "rs_vs_spy_60d", "fmp_surprise_1q",
+    "fmp_surprise_2q_avg", "fmp_days_since_earnings", "fmp_analyst_upgrades_30d",
+    "fmp_analyst_downgrades_30d", "fmp_analyst_momentum_30d", "fmp_inst_ownership_pct",
+    "fmp_inst_change_pct", "atr_trend", "options_put_call_ratio", "options_iv_atm",
+    "options_iv_premium", "news_sentiment_3d", "news_sentiment_7d",
+    "news_article_count_7d", "news_sentiment_momentum", "fmp_consecutive_beats",
+    "fmp_revenue_surprise_1q", "fcf_margin", "operating_leverage", "rd_intensity",
+    "vol_expansion", "days_to_opex", "near_opex", "beta_252d", "beta_deviation",
+    "earnings_drift_signal", "earnings_pead_strength", "adx_x_spy_trend",
+    "rsi_x_spy_trend",
+])
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
@@ -237,6 +256,7 @@ def _process_symbol_windows_worker(
 
         if not features:
             continue
+        features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
         if not feature_names:
             feature_names = list(features.keys())
 
@@ -932,6 +952,7 @@ class ModelTrainer:
             if features is None:
                 continue
 
+            features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
             if not feature_names:
                 feature_names = list(features.keys())
 
@@ -1683,6 +1704,7 @@ class ModelTrainer:
             )
             if features is None:
                 continue
+            features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
             if feature_names is None:
                 feature_names = list(features.keys())
             X_rows.append(list(features.values()))
