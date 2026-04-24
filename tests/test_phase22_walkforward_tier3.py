@@ -39,9 +39,9 @@ def _mock_sim_result(trades=60, win_rate=0.52, sharpe=0.9, drawdown=0.04):
     r = MagicMock()
     r.total_trades = trades
     r.win_rate = win_rate
-    r.sharpe = sharpe
-    r.max_drawdown = drawdown
-    r.total_return = 0.05
+    r.sharpe_ratio = sharpe
+    r.max_drawdown_pct = drawdown
+    r.total_return_pct = 0.05
     r.exit_breakdown = {"STOP": int(trades * 0.45), "TARGET": int(trades * 0.45), "TIME_EXIT": 6}
     r.print_report = MagicMock()
     return r
