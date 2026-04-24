@@ -447,6 +447,18 @@ class FeatureEngineer:
                 pass
         if _vix is None and as_of_date is None:
             try:
+                from app.macro.fred_client import FredClient
+                _fred_data = FredClient()._fetch("VIXCLS")
+                if _fred_data:
+                    for obs in reversed(_fred_data):
+                        val = obs.get("value", ".")
+                        if val not in (".", "", None):
+                            _vix = float(val)
+                            break
+            except Exception:
+                pass
+        if _vix is None and as_of_date is None:
+            try:
                 import yfinance as yf
                 _vdf = yf.download("^VIX", period="2d", progress=False, auto_adjust=True)
                 if not _vdf.empty:
