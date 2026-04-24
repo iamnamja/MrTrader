@@ -57,7 +57,7 @@ class TestSwingLabelPathSimulation:
         target, stop = _atr_label_thresholds(bars, 100.0)
         assert target > 0
         assert stop > 0
-        assert target > stop  # 1.5x target vs 0.5x stop → target always larger
+        assert target == stop  # v116: symmetric 1.5x/1.5x ATR labels
 
     def test_atr_fallback_when_insufficient_bars(self):
         """With fewer than 2 bars (exception path), should use fallback constants."""
