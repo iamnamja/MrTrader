@@ -39,7 +39,7 @@ class TestAtrLabelThresholds:
         from app.ml.training import _atr_label_thresholds
         df = self._make_df(atr_pct=0.02)
         target, stop = _atr_label_thresholds(df, 100.0)
-        assert stop < target  # v19: asymmetric ATR: target=1.5x, stop=0.5x
+        assert stop == target  # v116: symmetric 1.5x/1.5x ATR labels
 
     def test_fallback_on_insufficient_data(self):
         from app.ml.training import _atr_label_thresholds, LABEL_TARGET_PCT, LABEL_STOP_PCT

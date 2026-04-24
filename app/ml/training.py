@@ -47,12 +47,11 @@ EMBARGO_WINDOWS = max(1, round(FORWARD_DAYS / STEP_DAYS))
 LABEL_TARGET_PCT = 0.03   # fallback fixed target
 LABEL_STOP_PCT = 0.02     # fallback fixed stop
 
-# ATR-adaptive labeling — v19: ASYMMETRIC 1.5x target / 0.5x stop
-# Restores R:R > 1 (3:1) — only labels a winner when move > stop distance by 3x.
-# Tighter stop (0.5x vs old 0.75x) = cleaner, more decisive labels.
-# v17/v18 used symmetric 1.0x/1.0x which produced ~50/50 labels but random AUC.
+# ATR-adaptive labeling — v116: SYMMETRIC 1.5x target / 1.5x stop
+# Symmetric R:R produces ~35-40% positive labels (vs ~15% with 0.5x stop).
+# Prior asymmetric 1.5x/0.5x caused label collapse: model predicted all-positive.
 ATR_MULT_TARGET = 1.5     # target = 1.5x the stock's 14-day ATR
-ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR (tight = decisive labels)
+ATR_MULT_STOP = 1.5       # stop  = 1.5x the stock's 14-day ATR (symmetric R:R)
 ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
 ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 
