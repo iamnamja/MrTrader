@@ -188,7 +188,10 @@ def _process_symbol_windows_worker(
             else:
                 label = 1 if stock_ret >= (cs_thresholds.get(w_start_idx) or 0.0) else 0
         else:
-            # ATR label scheme
+            # ATR / triple_barrier label scheme:
+            # Simulate bar-by-bar: label=1 if 1.5xATR target hit before 0.5xATR stop,
+            # label=0 if stop hit first or neither in FORWARD_DAYS (time exit = loss).
+            # "triple_barrier" is the explicit Phase 33 name; "atr" is the legacy alias.
             target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
             target_price = entry_price * (1 + target_pct)
             stop_price = entry_price * (1 - stop_pct)

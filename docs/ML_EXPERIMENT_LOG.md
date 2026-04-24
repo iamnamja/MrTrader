@@ -665,3 +665,34 @@ All three ablations are regressions. The core problem (70% stop exits) is **a tr
 | 2026-04-21 | Set AUC drift threshold at 0.65 | Based on v37 which was later found to be degenerate |
 | 2026-04-21 | AUC drift threshold needs revisiting | True SP-500 steady-state is ~0.56–0.58; recommend lowering gate to 0.54 |
 | 2026-04-21 | Applied all 4 iterations in one retrain cycle | User approved batch approach; inter-iteration AUC not captured individually |
+
+---
+
+## Phase 33 — Triple-Barrier Labels (2026-04-23)
+
+### Motivation
+All Phase 26b/c/d inference-time ablations were regressions. Root cause confirmed: the current `cross_sectional` label (5-day Sharpe return) does not match what the trade needs (path-dependent: hit 1.5×ATR target before touching 0.5×ATR stop). Any inference-time parameter change cannot fix a training label mismatch.
+
+### What Changed
+**Label scheme**: `cross_sectional` → `triple_barrier` (also available as `atr`)
+
+The new label simulates bar-by-bar over the 5-day forward window:
+```
+for each bar in forward window:
+  if bar.high >= entry * (1 + 1.5 × ATR_pct): label = 1 (target hit first)
+  if bar.low  <= entry * (1 - 0.5 × ATR_pct): label = 0 (stop hit first)
+if neither: label = 0 (time exit treated as loss)
+```
+- `ATR_MULT_TARGET = 1.5`, `ATR_MULT_STOP = 0.5` — same as Tier 3 agent simulator
+- Training label now directly aligns with Tier 3 exit logic
+- This path existed in the codebase as the `"atr"` scheme; `"triple_barrier"` is an explicit alias with clearer semantics
+
+**Retrain command**:
+```
+python scripts/train_model.py --label-scheme triple_barrier --model-type lambdarank --years 5
+```
+
+### Gate
+Tier 3 walk-forward Sharpe > +0.34 (beats v110) AND stop exits < 65%.
+
+### Status: 🔄 Pending retrain
