@@ -9,7 +9,9 @@ Key improvements over v1:
     by passing provider="polygon" etc.
 """
 
+import io
 import logging
+import multiprocessing
 import os
 import threading
 import time
@@ -86,8 +88,7 @@ def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
 
 def _process_symbol_windows_worker(
     symbol: str,
-    df_records: list,          # DataFrame serialised as records list (picklable)
-    df_index: list,            # index dates as isoformat strings
+    df_bytes: bytes,           # DataFrame serialised as Parquet bytes (Arrow columnar)
     all_dates: list,           # list of date objects
     window_starts: list,
     cs_thresholds: dict,
@@ -97,6 +98,7 @@ def _process_symbol_windows_worker(
     vix_history,               # pre-loaded VIX series or None
     label_scheme: str,
     symbol_cache: dict,        # {date_isoformat: features_dict} — pre-loaded from FeatureStore
+    progress_queue=None,       # multiprocessing.Queue for progress reporting
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -104,12 +106,12 @@ def _process_symbol_windows_worker(
     SQLite access in subprocess — cache reads come from the pre-loaded dict,
     new entries are returned to the main process for batch writing.
     """
+    import io as _io
     import pandas as pd
     from app.ml.features import FeatureEngineer
 
     fe = FeatureEngineer()
-    df = pd.DataFrame.from_records(df_records, columns=["open", "high", "low", "close", "volume"])
-    df.index = pd.to_datetime(df_index)
+    df = pd.read_parquet(_io.BytesIO(df_bytes))
 
     X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
     idx = df.index.date
@@ -249,6 +251,11 @@ def _process_symbol_windows_worker(
             "vix_regime_bucket": features.get("vix_regime_bucket", 0.5),
         })
 
+    if progress_queue is not None:
+        try:
+            progress_queue.put((symbol, len(X_rows)))
+        except Exception:
+            pass
     return X_rows, y_vals, meta_rows, to_cache, feature_names
 
 
@@ -985,15 +992,16 @@ class ModelTrainer:
                         100 * total_hits / max(total_slots, 1),
                         time.time() - t_preload)
 
-        # Serialize DataFrames to records for pickling into subprocesses
+        # Serialize DataFrames as Arrow/Parquet bytes for subprocess pickling (29a)
+        # ~3-5x faster than records lists for 753 symbols x 1200 rows x 5 columns
         def _sym_args(symbol, df):
+            import io as _io
             cols = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
-            records = df[cols].values.tolist()
-            index = [str(d) for d in df.index]
+            buf = _io.BytesIO()
+            df[cols].to_parquet(buf, index=True)
             return (
                 symbol,
-                records,
-                index,
+                buf.getvalue(),
                 all_dates,
                 window_starts,
                 cs_thresholds,
@@ -1003,28 +1011,41 @@ class ModelTrainer:
                 vix_history,
                 self.label_scheme,
                 preloaded_cache.get(symbol, {}),
+                _progress_q,
             )
 
-        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-            futures = {
-                executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
-                for symbol, df in trading_symbols.items()
-            }
-            done = 0
-            for future in as_completed(futures):
-                done += 1
-                if done % 50 == 0 or done == len(futures):
-                    logger.info("  %d / %d symbols complete", done, len(futures))
-                try:
-                    sym_X, sym_y, sym_meta, sym_cache, sym_names = future.result()
-                    X_rows.extend(sym_X)
-                    y_vals.extend(sym_y)
-                    meta_rows.extend(sym_meta)
-                    pending_cache.extend(sym_cache)
-                    if not self._last_feature_names and sym_names:
-                        self._last_feature_names = sym_names
-                except Exception as exc:
-                    logger.warning("Symbol %s failed: %s", futures[future], exc)
+        # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
+        with multiprocessing.Manager() as _mgr:
+            _progress_q = _mgr.Queue()
+
+            with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+                futures = {
+                    executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
+                    for symbol, df in trading_symbols.items()
+                }
+                done = 0
+                total_rows = 0
+                for future in as_completed(futures):
+                    done += 1
+                    # Drain progress queue for logging every 50 completions
+                    while not _progress_q.empty():
+                        try:
+                            _, n_rows = _progress_q.get_nowait()
+                            total_rows += n_rows
+                        except Exception:
+                            break
+                    if done % 50 == 0 or done == len(futures):
+                        logger.info("  OK  %d / %d symbols  |  ~%dk rows", done, len(futures), total_rows // 1000)
+                    try:
+                        sym_X, sym_y, sym_meta, sym_cache, sym_names = future.result()
+                        X_rows.extend(sym_X)
+                        y_vals.extend(sym_y)
+                        meta_rows.extend(sym_meta)
+                        pending_cache.extend(sym_cache)
+                        if not self._last_feature_names and sym_names:
+                            self._last_feature_names = sym_names
+                    except Exception as exc:
+                        logger.warning("Symbol %s failed: %s", futures[future], exc)
 
         # Batch-write new feature rows from all workers in one go (main process only)
         if self._feature_store is not None and pending_cache:
