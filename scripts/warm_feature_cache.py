@@ -20,9 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.ml.feature_store import FeatureStore
-from app.ml.features import FeatureEngineer
-from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
+from app.ml.feature_store import FeatureStore  # noqa: E402
+from app.ml.features import FeatureEngineer  # noqa: E402
+from app.utils.constants import SP_500_TICKERS, SECTOR_MAP  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -44,7 +44,6 @@ def _fetch_bars(symbols: list, start: date, end: date):
 
     try:
         import yfinance as yf
-        import pandas as pd
         raw = yf.download(
             symbols, start=start.isoformat(), end=end.isoformat(),
             progress=False, auto_adjust=True, group_by="ticker",
@@ -84,7 +83,6 @@ def warm(symbols: list, years: int) -> None:
 
     # Build date spine from today back to start (business days only)
     # Use the union of all bar dates as the spine
-    import pandas as pd
     all_bar_dates = sorted(set(
         d for df in bars.values() for d in df.index.date
     ))
@@ -96,8 +94,6 @@ def warm(symbols: list, years: int) -> None:
     new_entries = 0
     skip_entries = 0
     errors = 0
-
-    from app.ml.training import WINDOW_DAYS
 
     for sym, df in bars.items():
         sector = SECTOR_MAP.get(sym, "Unknown")
