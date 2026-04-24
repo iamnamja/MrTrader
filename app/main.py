@@ -314,9 +314,9 @@ if os.path.isdir(_REACT_ASSETS):
 async def dashboard():
     if os.path.isfile(_REACT_INDEX):
         with open(_REACT_INDEX) as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store"})
     with open(_LEGACY_HTML) as f:
-        return HTMLResponse(content=f.read())
+        return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
