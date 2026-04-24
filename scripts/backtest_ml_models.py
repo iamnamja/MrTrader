@@ -480,6 +480,9 @@ def main():
                         help="Min model confidence to enter (default: 0.50). Ablation 26c: try 0.60")
     parser.add_argument("--max-vol-pct", type=float, default=None,
                         help="Block entries where vol_percentile_52w > this (0-100). Ablation 26d: try 75")
+    parser.add_argument("--download-only", action="store_true",
+                        help="Pre-warm the Parquet price cache then exit (no backtesting). "
+                             "Use before overnight runs so the cache is ready.")
     args = parser.parse_args()
 
     import random
@@ -499,6 +502,43 @@ def main():
     print(f"  Ablation: stop_mult={args.stop_mult}  target_mult={args.target_mult}  "
           f"min_conf={args.min_confidence}  max_vol_pct={args.max_vol_pct}")
     print(f"{BOLD}{'=' * 60}{RESET}")
+
+    if args.download_only:
+        header("Download-only mode — pre-warming Parquet price cache")
+        if args.model in ("swing", "both"):
+            import yfinance as yf
+            from datetime import datetime, timedelta
+            end = datetime.now()
+            start = end - timedelta(days=365 * args.years + 35)
+            cached = _load_price_cache(symbols, args.years)
+            if cached is not None:
+                ok(f"Swing cache already fresh ({len(symbols)} symbols, {args.years}yr)")
+            else:
+                info(f"Downloading {len(symbols)} symbols ({args.years}yr) ...")
+                try:
+                    raw = yf.download(
+                        symbols, start=start.date().isoformat(), end=end.date().isoformat(),
+                        progress=False, auto_adjust=True, group_by="ticker",
+                    )
+                    symbols_data = {}
+                    for sym in symbols:
+                        try:
+                            df = raw[sym].dropna()
+                            df.columns = [c.lower() for c in df.columns]
+                            if not df.empty:
+                                symbols_data[sym] = df
+                        except Exception:
+                            pass
+                    spy_raw = yf.download("SPY", start=start.date().isoformat(),
+                                          end=end.date().isoformat(), progress=False, auto_adjust=True)
+                    spy_raw.columns = [c.lower() for c in spy_raw.columns]
+                    spy_prices = spy_raw["close"] if not spy_raw.empty else None
+                    _save_price_cache(symbols_data, spy_prices, symbols, args.years)
+                    ok(f"Swing cache warmed: {len(symbols_data)} symbols")
+                except Exception as exc:
+                    fail(f"Download failed: {exc}")
+        ok("Done — cache is ready for backtesting")
+        return
 
     t_start = time.time()
 
