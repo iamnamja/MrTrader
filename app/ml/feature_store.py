@@ -206,6 +206,15 @@ class FeatureStore:
             )
             return cursor.rowcount
 
+    def trim_to_years(self, n: int) -> int:
+        """Delete entries older than n years. Keeps store bounded. Returns rows deleted."""
+        from datetime import date as _date, timedelta as _td
+        cutoff = _date.today() - _td(days=365 * n)
+        deleted = self.evict_before(cutoff)
+        if deleted:
+            logger.info("FeatureStore: trimmed %d entries older than %dy", deleted, n)
+        return deleted
+
     def clear(self) -> None:
         """Delete all cached feature rows (preserves schema version record)."""
         with self._conn() as conn:
