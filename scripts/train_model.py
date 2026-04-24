@@ -18,11 +18,15 @@ Output sections:
 
 import argparse
 import hashlib
+import os
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List
+
+# Prevent OpenMP deadlock on Windows when xgboost + numpy both load libiomp5
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # -- Make sure project root is on the path -------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
