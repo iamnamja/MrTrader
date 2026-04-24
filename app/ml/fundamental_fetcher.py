@@ -62,6 +62,27 @@ _INSIDER_TTL = 86_400     # 24 h
 _AV_TTL = 86_400          # 24 h
 
 
+# ── Retry helper ─────────────────────────────────────────────────────────────
+
+def _get_with_retry(url: str, headers: dict, timeout: int, max_attempts: int = 3) -> Optional[requests.Response]:
+    """GET with exponential backoff on 429/5xx. Returns Response or None."""
+    for attempt in range(max_attempts):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                wait = 2.0 * (2 ** attempt)
+                logger.debug("HTTP %d from %s — retrying in %.1fs", resp.status_code, url, wait)
+                time.sleep(wait)
+                continue
+            return resp
+        except Exception as exc:
+            if attempt < max_attempts - 1:
+                time.sleep(2.0 * (2 ** attempt))
+            else:
+                logger.debug("Request failed after %d attempts: %s", max_attempts, exc)
+    return None
+
+
 # ── CIK lookup ────────────────────────────────────────────────────────────────
 
 def _get_cik(symbol: str) -> Optional[int]:
@@ -72,11 +93,11 @@ def _get_cik(symbol: str) -> Optional[int]:
     cik = None
     try:
         with _EDGAR_SEMAPHORE:
-            resp = requests.get(
+            resp = _get_with_retry(
                 "https://efts.sec.gov/LATEST/search-index?q=%22" + symbol + "%22&forms=10-K",
                 headers=_EDGAR_HEADERS, timeout=8,
             )
-        if resp.status_code == 200:
+        if resp is not None and resp.status_code == 200:
             hits = resp.json().get("hits", {}).get("hits", [])
             for hit in hits:
                 src = hit.get("_source", {})
@@ -92,11 +113,11 @@ def _get_cik(symbol: str) -> Optional[int]:
     if cik is None:
         try:
             with _EDGAR_SEMAPHORE:
-                resp = requests.get(
+                resp = _get_with_retry(
                     "https://www.sec.gov/files/company_tickers.json",
                     headers=_EDGAR_HEADERS, timeout=10,
                 )
-            if resp.status_code == 200:
+            if resp is not None and resp.status_code == 200:
                 tickers = resp.json()
                 sym_upper = symbol.upper()
                 for entry in tickers.values():
@@ -117,15 +138,13 @@ def _get_company_facts(cik: int) -> Optional[dict]:
             gap = _EDGAR_MIN_GAP - (time.time() - _EDGAR_LAST_REQ["t"])
             if gap > 0:
                 time.sleep(gap)
-            resp = requests.get(
+            resp = _get_with_retry(
                 f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json",
                 headers=_EDGAR_HEADERS, timeout=15,
             )
             _EDGAR_LAST_REQ["t"] = time.time()
-        if resp.status_code == 200:
+        if resp is not None and resp.status_code == 200:
             return resp.json()
-        if resp.status_code == 429:
-            time.sleep(2.0)
     except Exception as exc:
         logger.debug("EDGAR company facts fetch failed CIK=%d: %s", cik, exc)
     return None

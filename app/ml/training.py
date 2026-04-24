@@ -974,6 +974,41 @@ class ModelTrainer:
 
         pending_cache: List[Tuple] = []
 
+        # 30a: Checkpoint — resume from saved progress if < 24h old and same config
+        import pickle as _pickle
+        import hashlib as _hashlib
+        _ckpt_dir = Path(MODEL_DIR) / "checkpoints"
+        _ckpt_dir.mkdir(parents=True, exist_ok=True)
+        _cfg_key = _hashlib.md5(f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}".encode()).hexdigest()[:8]
+        _ckpt_path = _ckpt_dir / f"swing_checkpoint_{_cfg_key}.pkl"
+        _completed_symbols: set = set()
+
+        if _ckpt_path.exists():
+            _age = time.time() - _ckpt_path.stat().st_mtime
+            if _age < 86400:  # < 24h
+                try:
+                    with open(_ckpt_path, "rb") as _f:
+                        _ckpt = _pickle.load(_f)
+                    X_rows.extend(_ckpt["X_rows"])
+                    y_vals.extend(_ckpt["y_vals"])
+                    meta_rows.extend(_ckpt["meta_rows"])
+                    pending_cache.extend(_ckpt["pending_cache"])
+                    _completed_symbols = _ckpt["completed_symbols"]
+                    if not self._last_feature_names and _ckpt.get("feature_names"):
+                        self._last_feature_names = _ckpt["feature_names"]
+                    logger.info("Resumed from checkpoint: %d symbols done, %d rows loaded",
+                                len(_completed_symbols), len(X_rows))
+                except Exception as _exc:
+                    logger.warning("Checkpoint load failed, starting fresh: %s", _exc)
+                    _completed_symbols = set()
+                    X_rows.clear(); y_vals.clear(); meta_rows.clear(); pending_cache.clear()
+
+        # Filter to symbols not yet completed
+        trading_symbols = {s: df for s, df in trading_symbols.items() if s not in _completed_symbols}
+        if _completed_symbols:
+            logger.info("Skipping %d already-checkpointed symbols, processing %d remaining",
+                        len(_completed_symbols), len(trading_symbols))
+
         # Pre-load feature store cache into memory (single bulk SQL query) so
         # subprocess workers don't need SQLite access.
         all_dates_needed = [all_dates[i + WINDOW_DAYS]
@@ -1046,6 +1081,27 @@ class ModelTrainer:
                             self._last_feature_names = sym_names
                     except Exception as exc:
                         logger.warning("Symbol %s failed: %s", futures[future], exc)
+                    else:
+                        _completed_symbols.add(futures[future])
+
+                    # Save checkpoint every 50 completions
+                    if done % 50 == 0:
+                        try:
+                            with open(_ckpt_path, "wb") as _f:
+                                _pickle.dump({
+                                    "X_rows": X_rows, "y_vals": y_vals, "meta_rows": meta_rows,
+                                    "pending_cache": pending_cache,
+                                    "completed_symbols": _completed_symbols,
+                                    "feature_names": self._last_feature_names,
+                                }, _f)
+                        except Exception as _exc:
+                            logger.debug("Checkpoint save failed: %s", _exc)
+
+        # Delete checkpoint on successful completion
+        try:
+            _ckpt_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         # Batch-write new feature rows from all workers in one go (main process only)
         if self._feature_store is not None and pending_cache:
