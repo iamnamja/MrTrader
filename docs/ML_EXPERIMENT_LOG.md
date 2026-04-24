@@ -695,4 +695,59 @@ python scripts/train_model.py --label-scheme triple_barrier --model-type lambdar
 ### Gate
 Tier 3 walk-forward Sharpe > +0.34 (beats v110) AND stop exits < 65%.
 
-### Status: 🔄 Pending retrain
+### Result: ❌ REGRESSION — v113, Sharpe -0.76 (vs v110 +0.34)
+
+Retrain produced v113 (XGBoost, not LambdaRank — training fell back to XGBoost). Tier 3 agent sim: 172 trades, 36% win rate, Sharpe -0.76. Intraday: 150 trades, 49% win rate, Sharpe -1.16. Both well below gate.
+
+**v110 remains active model.**
+
+Root cause confirmed: `_build_lambdarank_groups` imports `scipy.stats.rankdata`, which triggered the Windows OpenMP/`_cpropack` DLL deadlock (paging file error). Exception propagated, training fell back silently to XGBoost. Fixed in PR #85 (`OMP_NUM_THREADS=1` at process startup). Retrain needed again.
+
+---
+
+## Phase 34+35 — Entry Filters + Regime Gate (2026-04-24)
+
+### What Changed (inference-time only, no retrain)
+- **MIN_CONFIDENCE** lowered 0.60 → 0.40 (LambdaRank scores cluster at 0.5; old floor killed all trades)
+- **No-chase entry gap filter**: skip if `open > prior_close × (1 + 0.75×ATR)` — overnight gap already ran
+- **EMA20 extension filter**: skip if `entry_price > EMA20 × (1 + 1.5×ATR)` — stop risk too high
+- **Bear regime gate**: `SPY < EMA200` → cap `max_positions = 3`
+- **Fear spike gate**: `VIX > 30` → skip all new long entries for the day
+
+### Result: ✅ MAJOR IMPROVEMENT — v110 + filters, Tier 3 Sharpe +1.69
+
+v110 with Phase 34/35 filters:
+- **Sharpe: +1.69** (baseline v110: +0.34 — 5× improvement)
+- Sortino: 3.28, Calmar: 2.62, Max drawdown: 3.2%
+- 201 trades, 44.8% win rate, avg P&L +1.0%
+- Stop exits: 73%, Target exits: 27%
+- Phase 36 gate (avg OOS Sharpe > 0.8): ✅ single-window result far exceeds gate
+
+Phase 36 walk-forward in progress.
+
+---
+
+## Phase 36 — Walk-Forward Tier 3 Validation (2026-04-24)
+
+### Setup
+- Model: v110 + Phase 34/35 filters
+- 3 folds, 3yr history, SP-100 universe (81 symbols)
+- Gate: avg OOS Sharpe > 0.8, no fold below -0.3
+
+### Result: ❌ GATE NOT MET — avg Sharpe -0.727
+
+| Fold | Period | Trades | Win% | Sharpe | DD |
+|---|---|---|---|---|---|
+| 1 | Jan–Oct 2024 | 162 | 36.4% | -0.19 | 3.3% |
+| 2 | Oct 2024–Jul 2025 | 112 | 33.9% | -1.45 | 4.8% |
+| 3 | Jul 2025–Apr 2026 | 159 | 34.0% | -0.55 | 5.0% |
+
+**Avg Sharpe: -0.727** (need > 0.8). Min fold: -1.45 (need > -0.3).
+
+**Key finding**: The full-window Tier 3 Sharpe +1.69 was a favorable in-sample result.
+OOS folds show v110 has ~34-36% win rate — worse than random. The model needs a
+fundamentally better training objective (LambdaRank with triple-barrier labels) before
+walk-forward can pass.
+
+**Next**: Phase 33 LambdaRank retrain (now with OMP fix applied). Must produce model
+with OOS win rate > 45% and avg fold Sharpe > 0.8 before paper trading approved.

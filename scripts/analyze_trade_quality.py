@@ -12,7 +12,10 @@ Output: Console table + CSV dump to results/trade_quality_YYYYMMDD.csv
 """
 import argparse
 import logging
+import os
 import sys
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 from datetime import date, timedelta
 from pathlib import Path
 

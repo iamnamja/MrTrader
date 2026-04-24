@@ -22,6 +22,8 @@ Exit codes:
 import argparse
 import logging
 import sys
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
