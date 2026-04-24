@@ -214,7 +214,7 @@ class AgentSimulator:
                 portfolio.peak_equity = portfolio.equity
 
             # 3. PM: score all symbols using bars up to yesterday
-            proposals = self._pm_score(day, symbols_data)
+            proposals = self._pm_score(day, symbols_data, vix_history=_vix_closes)
 
             # 4. Phase 35: Market regime gate — cut exposure in bear/fear regimes
             _skip_entries = False
@@ -251,7 +251,7 @@ class AgentSimulator:
             if proposals and not _skip_entries:
                 new_trades, new_tx = self._process_entries(
                     day, proposals, symbols_data, portfolio, sector_map,
-                    max_positions=_max_pos_today,
+                    max_positions=_max_pos_today, vix_history=_vix_closes,
                 )
                 accepted_trades.extend(new_trades)
                 tx_costs_total += new_tx
@@ -280,7 +280,8 @@ class AgentSimulator:
     # ─── PM: score all symbols ─────────────────────────────────────────────────
 
     def _pm_score(
-        self, day: date, symbols_data: Dict[str, pd.DataFrame]
+        self, day: date, symbols_data: Dict[str, pd.DataFrame],
+        vix_history: Optional["pd.Series"] = None,
     ) -> List[Tuple[str, float]]:
         """Return list of (symbol, confidence) sorted by confidence desc."""
         if self.model is None or not getattr(self.model, "is_trained", False):
@@ -297,6 +298,7 @@ class AgentSimulator:
                 feats = fe.engineer_features(
                     sym, bars_to_yesterday, fetch_fundamentals=False,
                     as_of_date=day, regime_score=0.5,
+                    vix_history=vix_history,
                 )
                 if feats is not None:
                     features_by_symbol[sym] = feats
@@ -492,6 +494,7 @@ class AgentSimulator:
         portfolio: _PortfolioState,
         sector_map: Dict[str, str],
         max_positions: Optional[int] = None,
+        vix_history: Optional["pd.Series"] = None,
     ) -> Tuple[List[Trade], float]:
         entered_trades: List[Trade] = []
         tx_costs_total = 0.0
@@ -541,7 +544,8 @@ class AgentSimulator:
                 try:
                     fe = self._get_feature_engineer()
                     feats = fe.engineer_features(sym, bars_yesterday,
-                                                 fetch_fundamentals=False, as_of_date=day)
+                                                 fetch_fundamentals=False, as_of_date=day,
+                                                 vix_history=vix_history)
                     if feats is not None and not self.meta_model.should_enter(feats):
                         continue
                 except Exception:

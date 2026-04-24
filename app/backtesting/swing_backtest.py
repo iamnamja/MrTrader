@@ -102,6 +102,7 @@ class SwingBacktester:
                     feats = self.feature_engineer.engineer_features(
                         symbol, window_df, sector=sector,
                         fetch_fundamentals=fetch_fundamentals,
+                        as_of_date=w_end_date, regime_score=0.5,
                     )
                 except Exception:
                     continue
