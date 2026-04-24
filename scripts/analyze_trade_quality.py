@@ -13,8 +13,7 @@ Output: Console table + CSV dump to results/trade_quality_YYYYMMDD.csv
 import argparse
 import logging
 import sys
-from collections import defaultdict
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +22,8 @@ sys.path.insert(0, str(ROOT))
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-import numpy as np
-import pandas as pd
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -33,7 +32,7 @@ def _atr(df: pd.DataFrame, window: int = 14) -> float:
     """14-day ATR as a pct of last close."""
     try:
         highs = df["high"].values[-window-1:].astype(float)
-        lows  = df["low"].values[-window-1:].astype(float)
+        lows = df["low"].values[-window-1:].astype(float)
         closes = df["close"].values[-window-1:].astype(float)
         if len(closes) < 2:
             return 0.02
@@ -103,7 +102,6 @@ def analyze(trades, symbols_data: dict, vix_data: pd.Series | None) -> pd.DataFr
         entry_price = t.entry_price
         atr_pct = _atr(window)
         ema20 = _ema(closes, 20)
-        ema50 = _ema(closes, 50)
 
         # Entry gap: how far open is from prior close (in ATR units)
         prev_mask = idx < entry_dt
@@ -231,12 +229,14 @@ def print_report(df: pd.DataFrame) -> None:
 
     # 7. Day-1 vs day-2 vs day-3+ stops
     df2 = df[df["is_stop"] == 1].copy()
-    df2["stop_day"] = pd.cut(df2["hold_bars"], bins=[0, 1, 2, 3, 999], labels=["Day1", "Day2", "Day3", "Day4+"])
-    print(f"\n  Stop Exit Timing (when do stops hit?)")
-    print(f"  {'Day':<10} {'Count':>7} {'% of stops':>11}")
-    print(f"  {'-'*30}")
+    df2["stop_day"] = pd.cut(
+        df2["hold_bars"], bins=[0, 1, 2, 3, 999],
+        labels=["Day1", "Day2", "Day3", "Day4+"])
+    print("\n  Stop Exit Timing (when do stops hit?)")
+    print("  {:<10} {:>7} {:>11}".format("Day", "Count", "% of stops"))
+    print("  " + "-" * 30)
     for lbl, grp in df2.groupby("stop_day", observed=True):
-        print(f"  {str(lbl):<10} {len(grp):>7} {len(grp)/max(len(df2),1):>10.1%}")
+        print(f"  {str(lbl):<10} {len(grp):>7} {len(grp) / max(len(df2), 1):>10.1%}")
 
     print("\n" + "=" * 65)
     print("  TOP FINDINGS:")
@@ -272,8 +272,8 @@ def main():
     print("(This will take a few minutes)")
 
     import time
-    import yfinance as yf
     from datetime import datetime
+    import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
 
     # Load model
@@ -321,8 +321,9 @@ def main():
     vix_data = None
     if not args.no_vix:
         try:
-            vix_raw = yf.download("^VIX", start=start.date().isoformat(),
-                                   end=end.date().isoformat(), progress=False, auto_adjust=True)
+            vix_raw = yf.download(
+                "^VIX", start=start.date().isoformat(),
+                end=end.date().isoformat(), progress=False, auto_adjust=True)
             if isinstance(vix_raw.columns, pd.MultiIndex):
                 vix_raw.columns = vix_raw.columns.get_level_values(0)
             vix_raw.columns = [c.lower() for c in vix_raw.columns]

@@ -9,7 +9,6 @@ Key improvements over v1:
     by passing provider="polygon" etc.
 """
 
-import io
 import logging
 import multiprocessing
 import os
@@ -1004,7 +1003,10 @@ class ModelTrainer:
                 except Exception as _exc:
                     logger.warning("Checkpoint load failed, starting fresh: %s", _exc)
                     _completed_symbols = set()
-                    X_rows.clear(); y_vals.clear(); meta_rows.clear(); pending_cache.clear()
+                    X_rows.clear()
+                    y_vals.clear()
+                    meta_rows.clear()
+                    pending_cache.clear()
 
         # Filter to symbols not yet completed
         trading_symbols = {s: df for s, df in trading_symbols.items() if s not in _completed_symbols}

@@ -28,7 +28,6 @@ _PRICE_CACHE_TTL_HOURS = 23  # refresh after market close
 
 def _price_cache_path(symbols: list, years: int) -> Path:
     """Stable cache key: sorted symbols + years → short hash."""
-    key = f"{years}yr_{'_'.join(sorted(symbols)[:20])}"
     h = hashlib.md5((",".join(sorted(symbols)) + str(years)).encode()).hexdigest()[:10]
     return _PRICE_CACHE_DIR / f"swing_{years}yr_{h}.parquet"
 
@@ -76,6 +75,7 @@ def _save_price_cache(symbols_data: dict, spy_prices, symbols: list, years: int)
             combined.to_parquet(path)
     except Exception:
         pass  # cache write failure is non-fatal
+
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -305,7 +305,7 @@ def run_intraday_backtest(symbols, days):
         spy_data = load_many(["SPY"], start=start.date(), end=end.date()).get("SPY")
     if spy_data is None:
         try:
-            spy_raw = yf.download("SPY", period=f"{min(days,55)}d", interval="5m",
+            spy_raw = yf.download("SPY", period=f"{min(days, 55)}d", interval="5m",
                                   progress=False, auto_adjust=True)
             if isinstance(spy_raw.columns, pd.MultiIndex):
                 spy_raw.columns = spy_raw.columns.get_level_values(0)
@@ -317,7 +317,7 @@ def run_intraday_backtest(symbols, days):
     # Daily SPY for benchmark
     spy_daily = None
     try:
-        spy_d = yf.download("SPY", period=f"{min(days,365)}d", interval="1d",
+        spy_d = yf.download("SPY", period=f"{min(days, 365)}d", interval="1d",
                             progress=False, auto_adjust=True)
         if isinstance(spy_d.columns, pd.MultiIndex):
             spy_d.columns = spy_d.columns.get_level_values(0)
