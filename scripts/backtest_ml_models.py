@@ -11,10 +11,14 @@ Usage:
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Prevent OpenMP deadlock on Windows when xgboost + numpy both load libiomp5
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import pandas as pd
 
