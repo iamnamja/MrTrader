@@ -535,7 +535,7 @@ def main():
     )
     parser.add_argument(
         "--label-scheme", default="atr",
-        choices=["atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank", "percentile_rank"],
+        choices=["atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank", "percentile_rank", "path_quality"],
         help="Labeling scheme (default: atr). triple_barrier = bar-by-bar 1.5x ATR target / 0.5x ATR stop simulation (Phase 33).",
     )
     parser.add_argument(
