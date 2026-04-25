@@ -968,9 +968,28 @@ with its non-linear decision boundaries is a better fit for this feature space.
 
 ---
 
+### Phase 45 Phase 3: MetaLabelModel v1 Gate (v119 + meta)
+
+**MetaLabelModel:** XGBRegressor trained on 515 in-sample v119 trades (pnl_pct target).
+R2=0.059, MAE=0.0306, corr=0.286 — weak absolute prediction but useful threshold filter.
+Min expected R threshold = 0.0 (only enter if E[pnl] > 0).
+
+| Fold | OOS Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2022-07-28 -> 2023-10-26 | 138 | 50.0% | +0.33 |
+| 2 | 2023-10-27 -> 2025-01-24 | 162 | 61.7% | +1.85 |
+| 3 | 2025-01-25 -> 2026-04-25 | 177 | 54.2% | -0.14 |
+| **Avg** | | **477** | **55.3%** | **+0.682** |
+
+**Gate: NOT MET** — avg +0.682 (need 0.80), min fold -0.137 (PASSES -0.30 gate!).
+
+**Verdict:** Major improvement. Fold 3 recovered from -0.81 to -0.14. Min fold now within gate. Avg Sharpe +0.682 vs +0.476 without meta (+43%). Only +0.12 Sharpe short of passing. Phase 3-Parallel (PM abstention gate) next.
+
+---
+
 ## Planned Next Steps (as of 2026-04-25)
 
-Phase 45 active — Phase 1 done, Phase 2 done (v119 gate not met but improvement confirmed), Phase 3 (meta-model) next.
+Phase 45: P1 done, P2 done (v119), P3 done (meta v1, avg +0.682), Phase 3-Parallel (PM abstention gate) next — may push avg Sharpe above +0.80.
 
 **Ruled out for swing model (do not retry without new evidence):**
 - Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon
