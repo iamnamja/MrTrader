@@ -948,17 +948,29 @@ with its non-linear decision boundaries is a better fit for this feature space.
 
 ---
 
-### Phase 45 Phase 2: Path Quality Regression Label (v120) — IN PROGRESS
+### Phase 45 Phase 2: Path Quality Regression Label (v119) — DONE
 
 **Label:** `score = 1.0*upside_capture - 1.25*stop_pressure + 0.25*close_strength`
+(Config B: stop=0.5x ATR, target=1.0x ATR. XGBRegressor, float labels.)
 
-Uses Config B multipliers. XGBRegressor (float labels). Results pending.
+**OOS AUC:** 0.513 (binarized at 80th pct — near random, but regression ranking still useful)
+
+| Fold | OOS Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2022-07-28 -> 2023-10-26 | 188 | 50.0% | +0.46 |
+| 2 | 2023-10-27 -> 2025-01-24 | 223 | 57.4% | +1.77 |
+| 3 | 2025-01-25 -> 2026-04-25 | 271 | 52.0% | -0.81 |
+| **Avg** | | **682** | **53.1%** | **+0.476** |
+
+**Gate: NOT MET** — avg +0.476 (need 0.80), min fold -0.806 (need -0.30).
+
+**Verdict:** Meaningful improvement over v110 (+0.476 vs +0.34 avg Sharpe, win rate 53% vs 40%). Fold 2 exceptional (+1.77). But same fold-3 collapse — regime drift in 2025-2026 period. Path quality label is better aligned with actual outcomes; the problem is market regime, not label quality. Phase 3 (meta-labeling) targets this.
 
 ---
 
 ## Planned Next Steps (as of 2026-04-25)
 
-Phase 45 active — Phase 1 done, Phase 2 training in progress, Phase 3 (meta-model) and Phase 3-Parallel (PM abstention gate) pending.
+Phase 45 active — Phase 1 done, Phase 2 done (v119 gate not met but improvement confirmed), Phase 3 (meta-model) next.
 
 **Ruled out for swing model (do not retry without new evidence):**
 - Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon
