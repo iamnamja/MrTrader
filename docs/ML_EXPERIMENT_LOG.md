@@ -987,9 +987,33 @@ Min expected R threshold = 0.0 (only enter if E[pnl] > 0).
 
 ---
 
+### Phase 45 Phase 3-Parallel: PM Abstention Gate (v119 + meta + abstention) — DONE
+
+**Gate:** Skip all new swing entries on days where VIX >= 25 OR SPY close < 20-day SMA.
+Applied in both live PM (`_market_regime_allows_entries()`) and backtesting (`AgentSimulator` params).
+
+**Walk-forward results (v119 + meta v1 + PM abstention gate):**
+
+| Fold | Trades | Win% | Sharpe |
+|---|---|---|---|
+| 1 (2022-07-28 -> 2023-10-26) | 94 | 53.2% | +0.880 |
+| 2 (2023-10-27 -> 2025-01-24) | 113 | 65.5% | +2.690 |
+| 3 (2025-01-25 -> 2026-04-25) | 134 | 55.2% | -0.030 |
+| **Avg** | **341** | **58.0%** | **+1.181** |
+
+**Gate: PASSED** — avg +1.181 (gate 0.80 PASS), min fold -0.031 (gate -0.30 PASS).
+
+**Verdict:** Gate cleared. PM abstention added ~+0.50 Sharpe over meta-only. Fold 3 (hardest 2025-2026 regime) recovered from -0.81 (no gates) to -0.14 (meta only) to -0.03 (meta + abstention). Trade count reduced ~28% further vs meta-only (341 vs 477). Final system: v119 + MetaLabelModel v1 + PM abstention (VIX>=25 OR SPY<MA20).
+
+---
+
 ## Planned Next Steps (as of 2026-04-25)
 
-Phase 45: P1 done, P2 done (v119), P3 done (meta v1, avg +0.682), Phase 3-Parallel (PM abstention gate) next — may push avg Sharpe above +0.80.
+Phase 45 COMPLETE. All gates passed. Final system ready for paper trading:
+- swing_v119.pkl (path_quality regression, 84 features)
+- swing_meta_label_v1.pkl (E[R] > 0 filter, trained on 515 in-sample trades)
+- PM abstention gate (VIX >= 25 OR SPY < 20-day SMA)
+- Stop 0.5x ATR, Target 1.0x ATR
 
 **Ruled out for swing model (do not retry without new evidence):**
 - Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon

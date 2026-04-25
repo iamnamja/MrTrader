@@ -120,6 +120,8 @@ class AgentSimulator:
         vix_fear_threshold: float = 30.0,      # Phase 35: skip new longs when VIX > this
         meta_model=None,                        # Phase 37: Expected-R gate (MetaLabelModel)
         min_expected_r: float = 0.002,          # Phase 37: skip entries where E[R] < this
+        pm_abstention_vix: float = 0.0,         # Phase 45 P3-Parallel: abstain if VIX >= this (0=off)
+        pm_abstention_spy_ma_days: int = 0,     # Phase 45 P3-Parallel: abstain if SPY < N-day SMA (0=off)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -134,6 +136,8 @@ class AgentSimulator:
         self.vix_fear_threshold = vix_fear_threshold
         self.meta_model = meta_model
         self.min_expected_r = min_expected_r
+        self.pm_abstention_vix = pm_abstention_vix
+        self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -244,6 +248,31 @@ class AgentSimulator:
                             _skip_entries = True
                             logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
                                          day, vix_val, self.vix_fear_threshold)
+                except Exception:
+                    pass
+
+            # Phase 45 P3-Parallel: PM abstention gate (VIX >= threshold OR SPY < N-day SMA)
+            if not _skip_entries and (self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0):
+                try:
+                    if self.pm_abstention_vix > 0 and _vix_closes is not None:
+                        vix_idx = _vix_closes.index
+                        vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
+                        vix_today = _vix_closes.loc[vix_dates <= day]
+                        if len(vix_today) > 0 and float(vix_today.iloc[-1]) >= self.pm_abstention_vix:
+                            _skip_entries = True
+                            logger.debug("PM abstention (VIX) on %s: %.1f >= %.1f",
+                                         day, float(vix_today.iloc[-1]), self.pm_abstention_vix)
+                    if not _skip_entries and self.pm_abstention_spy_ma_days > 0 and _spy_closes is not None:
+                        spy_idx = _spy_closes.index
+                        spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        if len(spy_hist) >= self.pm_abstention_spy_ma_days:
+                            spy_ma = float(spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
+                            if float(spy_hist.iloc[-1]) < spy_ma:
+                                _skip_entries = True
+                                logger.debug("PM abstention (SPY MA%d) on %s: %.2f < %.2f",
+                                             self.pm_abstention_spy_ma_days, day,
+                                             float(spy_hist.iloc[-1]), spy_ma)
                 except Exception:
                     pass
 

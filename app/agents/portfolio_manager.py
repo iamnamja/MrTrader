@@ -431,6 +431,49 @@ class PortfolioManager(BaseAgent):
             },
         )
 
+    def _market_regime_allows_entries(self) -> bool:
+        """
+        Phase 3-Parallel PM abstention gate.
+        Returns False on days with unfavorable broad-market conditions:
+          - VIX >= 25 (elevated fear)
+          - SPY below its 20-day MA (short-term downtrend)
+        Either condition alone is enough to abstain. Fails open if data unavailable.
+        """
+        try:
+            import yfinance as yf
+            import pandas as pd
+            spy = yf.download("SPY", period="30d", progress=False, auto_adjust=True)
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy.columns = spy.columns.get_level_values(0)
+            spy.columns = [c.lower() for c in spy.columns]
+            if len(spy) < 20:
+                return True
+            spy_close = float(spy["close"].iloc[-1])
+            spy_ma20 = float(spy["close"].tail(20).mean())
+            spy_below_ma = spy_close < spy_ma20
+
+            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.get_level_values(0)
+            vix.columns = [c.lower() for c in vix.columns]
+            vix_level = float(vix["close"].iloc[-1]) if len(vix) > 0 else 0.0
+            vix_high = vix_level >= 25.0
+
+            if spy_below_ma or vix_high:
+                self.logger.info(
+                    "PM abstention gate ACTIVE — SPY=%.2f MA20=%.2f (below=%s) VIX=%.1f (>=25=%s)",
+                    spy_close, spy_ma20, spy_below_ma, vix_level, vix_high,
+                )
+                return False
+            self.logger.info(
+                "PM abstention gate clear — SPY=%.2f MA20=%.2f VIX=%.1f",
+                spy_close, spy_ma20, vix_level,
+            )
+            return True
+        except Exception as exc:
+            self.logger.warning("PM abstention gate check failed (%s) — failing open", exc)
+            return True
+
     async def _send_swing_proposals(self):
         """
         09:50 ET: Forward cached swing proposals to Risk Manager.
@@ -443,6 +486,18 @@ class PortfolioManager(BaseAgent):
 
         if not self._swing_proposals:
             self.logger.warning("Still no swing proposals after fallback analysis — skipping")
+            return
+
+        # Phase 3-Parallel: PM abstention gate — suppress entries on bad regime days
+        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
+        if not regime_ok:
+            self.logger.info("PM abstention gate: suppressing %d swing proposals today",
+                             len(self._swing_proposals))
+            await self.log_decision(
+                "SWING_ABSTAINED",
+                reasoning={"reason": "PM abstention gate: VIX>=25 or SPY below 20-day MA"},
+            )
+            self._swing_proposals = []
             return
 
         self.logger.info("Sending %d swing proposals to Risk Manager (09:50)...", len(self._swing_proposals))
