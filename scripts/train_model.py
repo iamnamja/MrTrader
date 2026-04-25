@@ -394,7 +394,7 @@ def run_rolling_pipeline(
 
         # For regression/rank label schemes, binarize y_test before classification metrics
         import numpy as _np
-        _is_reg = label_scheme in ("return_regression", "return_blend")
+        _is_reg = label_scheme in ("return_regression", "return_blend", "path_quality")
         _is_rank = label_scheme == "lambdarank" or model_type == "double_ensemble"
         if _is_rank:
             # Quintile labels 0-4; treat 4 (top quintile) as positive
