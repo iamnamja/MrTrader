@@ -687,9 +687,15 @@ def _symbol_to_rows(
             prior_high = float(prev["high"].max())
             prior_low = float(prev["low"].min())
 
-        # ATR-adaptive stop/target — matches IntradayAgentSimulator (1.2x/0.6x prior-day range).
-        # Prior training used fixed 0.5%/0.3% which was 4-5x smaller than inference levels,
-        # causing severe training/inference mismatch (model learned 0.5% targets, traded 2%+ targets).
+        # Intraday path_quality label — same design as swing path_quality (Phase 45).
+        # Computes a continuous score [-2.5, 1.5] measuring trade quality:
+        #   upside_capture: how far price moved toward target (ATR-adaptive)
+        #   stop_pressure:  how close price came to stop (ATR-adaptive)
+        #   close_strength: where final close sits relative to target
+        # Using ATR-adaptive levels (matches IntradayAgentSimulator 1.2x/0.6x),
+        # but as a REGRESSION score rather than binary hit/miss to avoid
+        # the sparse positive label problem from v19 (binary ATR labels were
+        # too hard at 2h horizon → 0 positive examples → model never fires).
         if prior_high is not None and prior_low is not None and prior_close is not None:
             range_pct = (prior_high - prior_low) / max(prior_close, 1e-6)
             stop_pct_use = float(np.clip(ATR_MULT_STOP * range_pct, 0.002, 0.02))
@@ -699,18 +705,29 @@ def _symbol_to_rows(
             target_pct_use = TARGET_PCT
 
         entry = float(feat_bars["close"].iloc[-1])
-        realized_return = (float(future_bars["close"].iloc[-1]) - entry) / max(entry, 1e-6)
+        max_high = entry
+        min_low = entry
+        final_close = entry
         for _, fbar in future_bars.iterrows():
-            if float(fbar["low"]) <= entry * (1 - stop_pct_use):
-                realized_return = -stop_pct_use
-                break
-            if float(fbar["high"]) >= entry * (1 + target_pct_use):
-                realized_return = target_pct_use
-                break
-        # Sharpe-adjust for cross-sectional ranking (same normalization as before)
-        intraday_vol = float(feat_bars["close"].pct_change().std()) + 1e-8
-        horizon_vol = intraday_vol * (HOLD_BARS ** 0.5)
-        best_return = realized_return / horizon_vol
+            h = float(fbar["high"])
+            l = float(fbar["low"])
+            c = float(fbar["close"])
+            max_high = max(max_high, h)
+            min_low = min(min_low, l)
+            final_close = c
+
+        target_dist = entry * target_pct_use
+        stop_dist = entry * stop_pct_use
+
+        upside_capture = min((max_high - entry) / max(target_dist, 1e-8), 1.0)
+        stop_pressure = min((entry - min_low) / max(stop_dist, 1e-8), 1.0)
+        close_strength = float(np.clip(
+            (final_close - entry) / max(target_dist, 1e-8), -1.0, 1.0
+        ))
+        path_quality_score = 1.0 * upside_capture - 1.25 * stop_pressure + 0.25 * close_strength
+
+        # Use path_quality score directly as the ranking signal (replaces Sharpe-adj return)
+        best_return = path_quality_score
 
         # Daily bars up to this day (O(1) slice via precomputed date array)
         daily_as_of = None
