@@ -930,15 +930,35 @@ with its non-linear decision boundaries is a better fit for this feature space.
 
 ---
 
+---
+
+## Phase 45 — Stop/Target Structure Grid + Path Quality Label (2026-04-25)
+
+### Phase 45 Phase 1: Stop/Target Structure Grid (v119 — v110 inference only)
+
+**Hypothesis:** Baseline (stop=0.5x ATR, target=1.5x ATR, 3:1 R:R) may not be optimal. Tighter target = more achievable exits = higher win rate.
+
+| Config | stop_mult | target_mult | R:R | Avg Sharpe | Min Fold | Stop% |
+|---|---|---|---|---|---|---|
+| Baseline | 0.5 | 1.5 | 3.0:1 | +0.096 | -0.45 | 68.7% |
+| Config A | 0.75 | 1.25 | 1.67:1 | +0.512 | +0.33 | 61.4% |
+| **Config B** | **0.5** | **1.0** | **2.0:1** | **+0.567** | **+0.03** | **55.3%** |
+
+**Verdict:** Gate PASSED. Config B wins. STOP_MULT=0.5, TARGET_MULT=1.0 locked for Phase 2.
+
+---
+
+### Phase 45 Phase 2: Path Quality Regression Label (v120) — IN PROGRESS
+
+**Label:** `score = 1.0*upside_capture - 1.25*stop_pressure + 0.25*close_strength`
+
+Uses Config B multipliers. XGBRegressor (float labels). Results pending.
+
+---
+
 ## Planned Next Steps (as of 2026-04-25)
 
-Priority order after Phase 44:
-
-| Step | What | Why |
-|---|---|---|
-| 1 | Recency bias | Upweight last 1-2 years more aggressively to reduce OOS regime drift |
-| 2 | 15-day forward window | 5-day may be too noisy; avg hold is ~1.4 bars so signals may not play out |
-| 3 | ATR-adaptive labels | Scale target/stop by ATR percentile to fix mislabeling across vol spectrum |
+Phase 45 active — Phase 1 done, Phase 2 training in progress, Phase 3 (meta-model) and Phase 3-Parallel (PM abstention gate) pending.
 
 **Ruled out for swing model (do not retry without new evidence):**
 - Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon
@@ -948,3 +968,4 @@ Priority order after Phase 44:
 - Min confidence 0.60 — 0 trades
 - Vol filter ≤75th pct (inference-only) — reduces trades without improving quality
 - Tighter universe (SP100) — no improvement per earlier testing
+- XGBoost + LR ensemble blend — LR suppresses signals, trade count collapses (v118)

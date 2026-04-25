@@ -204,10 +204,58 @@ def _process_symbol_windows_worker(
                 label = 1 if stock_ret >= thresh else 0
             else:
                 label = 1 if stock_ret >= (cs_thresholds.get(w_start_idx) or 0.0) else 0
+        elif label_scheme == "path_quality":
+            # Path quality regression label (Phase 45 Phase 2).
+            # Scores each entry on how cleanly it moved toward target without touching stop.
+            # Uses Config B multipliers: stop=0.5x ATR, target=1.0x ATR.
+            # score = 1.0*upside_capture - 1.25*stop_pressure + 0.25*close_strength
+            # Range approximately [-1.25, 1.25]; higher = better path.
+            _PATH_STOP_MULT = 0.5
+            _PATH_TARGET_MULT = 1.0
+            _raw_target, _raw_stop = _atr_label_thresholds(window_df, entry_price)
+            # Recompute with Config B multipliers (override ATR_MULT constants)
+            try:
+                highs_w = window_df["high"].values[-15:].astype(float)
+                lows_w = window_df["low"].values[-15:].astype(float)
+                closes_w = window_df["close"].values[-15:].astype(float)
+                tr_w = np.maximum(
+                    highs_w[1:] - lows_w[1:],
+                    np.maximum(np.abs(highs_w[1:] - closes_w[:-1]), np.abs(lows_w[1:] - closes_w[:-1]))
+                )
+                atr_w = float(np.mean(tr_w[-14:])) if len(tr_w) >= 14 else float(np.mean(tr_w))
+                atr_pct_w = atr_w / max(entry_price, 1e-6)
+                target_pct = float(np.clip(_PATH_TARGET_MULT * atr_pct_w, ATR_MIN_TARGET, ATR_MAX_TARGET))
+                stop_pct = float(np.clip(_PATH_STOP_MULT * atr_pct_w, ATR_MIN_TARGET / 2, ATR_MAX_TARGET / 2))
+            except Exception:
+                target_pct, stop_pct = _raw_target, _raw_stop
+            target_price = entry_price * (1 + target_pct)
+            stop_price = entry_price * (1 - stop_pct)
+            max_high = entry_price
+            min_low = entry_price
+            final_close = entry_price
+            for bar_offset in range(1, FORWARD_DAYS + 1):
+                fi = w_end_idx + bar_offset
+                if fi >= len(all_dates):
+                    break
+                bar = df.loc[idx == all_dates[fi]]
+                if len(bar) == 0:
+                    continue
+                h = float(bar["high"].iloc[0])
+                l = float(bar["low"].iloc[0])
+                c = float(bar["close"].iloc[0])
+                max_high = max(max_high, h)
+                min_low = min(min_low, l)
+                final_close = c
+            upside_capture = min((max_high - entry_price) / (entry_price * target_pct + 1e-8), 1.0)
+            stop_pressure = min((entry_price - min_low) / (entry_price * stop_pct + 1e-8), 1.0)
+            close_strength = float(np.clip(
+                (final_close - entry_price) / (entry_price * target_pct + 1e-8), -1.0, 1.0
+            ))
+            label = 1.0 * upside_capture - 1.25 * stop_pressure + 0.25 * close_strength
+            outcome_return = (final_close - entry_price) / entry_price
         else:
             # ATR / triple_barrier label scheme:
-            # Simulate bar-by-bar: label=1 if 1.5xATR target hit before 0.5xATR stop,
-            # label=0 if stop hit first or neither in FORWARD_DAYS (time exit = loss).
+            # Simulate bar-by-bar: label=1 if target hit before stop, label=0 if stop hit first.
             # "triple_barrier" is the explicit Phase 33 name; "atr" is the legacy alias.
             target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
             target_price = entry_price * (1 + target_pct)
@@ -394,7 +442,7 @@ class ModelTrainer:
         else:
             # Compute MI scores even when keeping all features (used for weighting)
             try:
-                if self.label_scheme in ("return_regression",):
+                if self.label_scheme in ("return_regression", "path_quality"):
                     from sklearn.feature_selection import mutual_info_regression
                     mi_scores = mutual_info_regression(X_train, y_train, random_state=42, n_jobs=self.n_workers)
                 else:
@@ -420,7 +468,7 @@ class ModelTrainer:
             logger.info("LambdaRank/DoubleEnsemble: %d train groups, %d samples", len(train_groups), len(X_train))
         else:
             # Correct for class imbalance (not applicable to regression labels)
-            if self.label_scheme in ("return_regression",):
+            if self.label_scheme in ("return_regression", "path_quality"):
                 spw = None
                 logger.info("Return regression mode — skipping class imbalance correction")
             else:
@@ -904,6 +952,51 @@ class ModelTrainer:
                 elif stock_ret < 0.0:
                     label = 0
 
+            elif self.label_scheme == "path_quality":
+                # Path quality regression label (Phase 45 Phase 2).
+                # Scores each entry on how cleanly it moved toward target without touching stop.
+                # Uses Config B multipliers: stop=0.5x ATR, target=1.0x ATR.
+                # score = 1.0*upside_capture - 1.25*stop_pressure + 0.25*close_strength
+                _PATH_STOP_MULT = 0.5
+                _PATH_TARGET_MULT = 1.0
+                try:
+                    highs_w = window_df["high"].values[-15:].astype(float)
+                    lows_w = window_df["low"].values[-15:].astype(float)
+                    closes_w = window_df["close"].values[-15:].astype(float)
+                    tr_w = np.maximum(
+                        highs_w[1:] - lows_w[1:],
+                        np.maximum(np.abs(highs_w[1:] - closes_w[:-1]), np.abs(lows_w[1:] - closes_w[:-1]))
+                    )
+                    atr_w = float(np.mean(tr_w[-14:])) if len(tr_w) >= 14 else float(np.mean(tr_w))
+                    atr_pct_w = atr_w / max(entry_price, 1e-6)
+                    target_pct = float(np.clip(_PATH_TARGET_MULT * atr_pct_w, ATR_MIN_TARGET, ATR_MAX_TARGET))
+                    stop_pct = float(np.clip(_PATH_STOP_MULT * atr_pct_w, ATR_MIN_TARGET / 2, ATR_MAX_TARGET / 2))
+                except Exception:
+                    target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
+                max_high = entry_price
+                min_low = entry_price
+                final_close = entry_price
+                for bar_offset in range(1, FORWARD_DAYS + 1):
+                    fi = w_end_idx + bar_offset
+                    if fi >= len(all_dates):
+                        break
+                    bar = df.loc[idx == all_dates[fi]]
+                    if len(bar) == 0:
+                        continue
+                    h = float(bar["high"].iloc[0])
+                    l = float(bar["low"].iloc[0])
+                    c = float(bar["close"].iloc[0])
+                    max_high = max(max_high, h)
+                    min_low = min(min_low, l)
+                    final_close = c
+                upside_capture = min((max_high - entry_price) / (entry_price * target_pct + 1e-8), 1.0)
+                stop_pressure = min((entry_price - min_low) / (entry_price * stop_pct + 1e-8), 1.0)
+                close_strength = float(np.clip(
+                    (final_close - entry_price) / (entry_price * target_pct + 1e-8), -1.0, 1.0
+                ))
+                label = 1.0 * upside_capture - 1.25 * stop_pressure + 0.25 * close_strength
+                outcome_return = (final_close - entry_price) / entry_price
+
             else:  # ATR-hit labeling
                 target_pct, stop_pct = _atr_label_thresholds(window_df, entry_price)
                 target_price = entry_price * (1 + target_pct)
@@ -1168,7 +1261,7 @@ class ModelTrainer:
         MI scores are returned so callers can use them as feature weights.
         """
         try:
-            if self.label_scheme in ("return_regression",):
+            if self.label_scheme in ("return_regression", "path_quality"):
                 from sklearn.feature_selection import mutual_info_regression
                 scores = mutual_info_regression(X_train, y_train, random_state=42, n_jobs=self.n_workers)
             else:
@@ -1411,7 +1504,7 @@ class ModelTrainer:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         cv = TimeSeriesSplit(n_splits=3)
 
-        is_regression = self.label_scheme in ("return_regression",)
+        is_regression = self.label_scheme in ("return_regression", "path_quality")
 
         def objective(trial: optuna.Trial) -> float:
             params = {
@@ -1487,7 +1580,7 @@ class ModelTrainer:
             logger.warning("Walk-forward CV skipped — too few samples per fold (%d)", fold_size)
             return {}
 
-        is_regression = self.label_scheme in ("return_regression",)
+        is_regression = self.label_scheme in ("return_regression", "path_quality")
 
         def _run_fold(k: int):
             train_end = k * fold_size

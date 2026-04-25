@@ -162,9 +162,10 @@ def _load_model(model_name: str):
             db.close()
     except Exception as exc:
         logger.warning("DB model load failed: %s", exc)
-    # Fallback: glob latest pkl
+    # Fallback: glob latest pkl (numeric sort to handle v9x vs v1xx correctly)
     model_dir = Path("app/ml/models")
-    files = sorted(model_dir.glob(f"{model_name}_v*.pkl"))
+    files = sorted(model_dir.glob(f"{model_name}_v*.pkl"),
+                   key=lambda p: int(p.stem.split("_v")[-1]))
     if files:
         with open(files[-1], "rb") as f:
             obj = pickle.load(f)
@@ -186,6 +187,8 @@ def run_swing_walkforward(
     n_folds: int = 3,
     total_years: int = 5,
     symbols: Optional[List[str]] = None,
+    atr_stop_mult: float = 0.5,
+    atr_target_mult: float = 1.5,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -249,7 +252,11 @@ def run_swing_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}")
         t_fold = time.time()
-        sim = AgentSimulator(model=model)
+        sim = AgentSimulator(
+            model=model,
+            atr_stop_mult=atr_stop_mult,
+            atr_target_mult=atr_target_mult,
+        )
         result = sim.run(
             symbols_data,
             start_date=te_start,
@@ -412,6 +419,10 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=730,
                         help="Total days of intraday history (default: 730)")
     parser.add_argument("--symbols", nargs="+", default=None, metavar="TICKER")
+    parser.add_argument("--stop-mult", type=float, default=0.5,
+                        help="ATR stop multiplier (default: 0.5)")
+    parser.add_argument("--target-mult", type=float, default=1.5,
+                        help="ATR target multiplier (default: 1.5)")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -425,6 +436,8 @@ def main() -> int:
             n_folds=args.folds,
             total_years=args.years,
             symbols=symbols,
+            atr_stop_mult=args.stop_mult,
+            atr_target_mult=args.target_mult,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
