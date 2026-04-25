@@ -1,10 +1,14 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (37 total):
+Features (38 total):
   ── Price / structure ──────────────────────────────────────────────────────
   orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
+  orb_direction_strength  Signed distance from nearest ORB boundary / ORB range.
+                          +1 = one full range above ORB high (strong breakout up),
+                          -1 = one full range below ORB low (strong breakdown),
+                          0 = at ORB midpoint. Captures breakout velocity.
   vwap_distance       (close - VWAP) / VWAP — signed distance from fair value
   vwap_cross_count    Number of times price crossed VWAP today
   gap_pct             Overnight gap: (open - prior_close) / prior_close
@@ -115,6 +119,12 @@ def compute_intraday_features(
     feats["orb_position"] = float((last_close - orb_low) / orb_range)
     feats["orb_breakout"] = float(
         1 if last_close > orb_high else (-1 if last_close < orb_low else 0)
+    )
+    # Signed distance from nearest ORB boundary, normalised by ORB range.
+    # Distinguishes a weak poke above ORB from a sustained trend breakout.
+    orb_mid = (orb_high + orb_low) / 2.0
+    feats["orb_direction_strength"] = float(
+        np.clip((last_close - orb_mid) / orb_range, -2.0, 2.0)
     )
 
     # ── VWAP ──────────────────────────────────────────────────────────────
@@ -460,7 +470,7 @@ def _consecutive_bars(closes: np.ndarray) -> float:
 
 FEATURE_NAMES = [
     # Price / structure
-    "orb_position", "orb_breakout", "vwap_distance", "vwap_cross_count",
+    "orb_position", "orb_breakout", "orb_direction_strength", "vwap_distance", "vwap_cross_count",
     "gap_pct", "gap_fill_pct", "session_hl_position",
     "prev_day_high_dist", "prev_day_low_dist",
     # Trend / moving averages

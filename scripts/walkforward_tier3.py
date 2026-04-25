@@ -305,6 +305,9 @@ def run_intraday_walkforward(
     n_folds: int = 3,
     total_days: int = 730,
     symbols: Optional[List[str]] = None,
+    meta_model=None,
+    pm_abstention_vix: float = 0.0,
+    pm_abstention_spy_ma_days: int = 0,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -380,7 +383,12 @@ def run_intraday_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}")
         t_fold = time.time()
-        sim = IntradayAgentSimulator(model=model)
+        sim = IntradayAgentSimulator(
+            model=model,
+            meta_model=meta_model,
+            pm_abstention_vix=pm_abstention_vix,
+            pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
+        )
         result = sim.run(
             symbols_data,
             spy_data=spy_data,
@@ -430,7 +438,9 @@ def main() -> int:
     parser.add_argument("--target-mult", type=float, default=1.5,
                         help="ATR target multiplier (default: 1.5)")
     parser.add_argument("--meta-model-version", type=int, default=0,
-                        help="MetaLabelModel version to load (0 = none)")
+                        help="Swing MetaLabelModel version to load (0 = none)")
+    parser.add_argument("--intraday-meta-model-version", type=int, default=0,
+                        help="Intraday MetaLabelModel version to load (0 = none)")
     parser.add_argument("--pm-abstention-vix", type=float, default=0.0,
                         help="PM abstention gate: skip entries when VIX >= this level (0 = off)")
     parser.add_argument("--pm-abstention-spy-ma-days", type=int, default=0,
@@ -444,10 +454,21 @@ def main() -> int:
     if args.meta_model_version > 0:
         from app.ml.meta_model import MetaLabelModel
         try:
-            meta_model = MetaLabelModel.load("app/ml/models", args.meta_model_version)
-            _ok(f"MetaLabelModel v{args.meta_model_version} loaded")
+            meta_model = MetaLabelModel.load("app/ml/models", args.meta_model_version, model_type="swing")
+            _ok(f"Swing MetaLabelModel v{args.meta_model_version} loaded")
         except Exception as e:
-            _warn(f"Could not load MetaLabelModel v{args.meta_model_version}: {e}")
+            _warn(f"Could not load swing MetaLabelModel v{args.meta_model_version}: {e}")
+
+    intraday_meta_model = None
+    if args.intraday_meta_model_version > 0:
+        from app.ml.meta_model import MetaLabelModel
+        try:
+            intraday_meta_model = MetaLabelModel.load(
+                "app/ml/models", args.intraday_meta_model_version, model_type="intraday"
+            )
+            _ok(f"Intraday MetaLabelModel v{args.intraday_meta_model_version} loaded")
+        except Exception as e:
+            _warn(f"Could not load intraday MetaLabelModel v{args.intraday_meta_model_version}: {e}")
 
     _header("MrTrader — Walk-Forward Tier 3 Validation")
 
@@ -474,6 +495,9 @@ def main() -> int:
             n_folds=args.folds,
             total_days=args.days,
             symbols=symbols,
+            meta_model=intraday_meta_model,
+            pm_abstention_vix=args.pm_abstention_vix,
+            pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")

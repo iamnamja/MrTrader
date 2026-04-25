@@ -687,18 +687,25 @@ def _symbol_to_rows(
             prior_high = float(prev["high"].max())
             prior_low = float(prev["low"].min())
 
-        # Path-based realized P&L: simulate stop/target exit bar by bar.
-        # Aligns training label with how IntradayAgentSimulator and IntradayBacktester
-        # actually exit trades (+TARGET_PCT or -STOP_PCT), replacing the previous
-        # "max HIGH over 24 bars" label that overstated achievable returns.
+        # ATR-adaptive stop/target — matches IntradayAgentSimulator (1.2x/0.6x prior-day range).
+        # Prior training used fixed 0.5%/0.3% which was 4-5x smaller than inference levels,
+        # causing severe training/inference mismatch (model learned 0.5% targets, traded 2%+ targets).
+        if prior_high is not None and prior_low is not None and prior_close is not None:
+            range_pct = (prior_high - prior_low) / max(prior_close, 1e-6)
+            stop_pct_use = float(np.clip(ATR_MULT_STOP * range_pct, 0.002, 0.02))
+            target_pct_use = float(np.clip(ATR_MULT_TARGET * range_pct, 0.003, 0.04))
+        else:
+            stop_pct_use = STOP_PCT
+            target_pct_use = TARGET_PCT
+
         entry = float(feat_bars["close"].iloc[-1])
         realized_return = (float(future_bars["close"].iloc[-1]) - entry) / max(entry, 1e-6)
         for _, fbar in future_bars.iterrows():
-            if float(fbar["low"]) <= entry * (1 - STOP_PCT):
-                realized_return = -STOP_PCT
+            if float(fbar["low"]) <= entry * (1 - stop_pct_use):
+                realized_return = -stop_pct_use
                 break
-            if float(fbar["high"]) >= entry * (1 + TARGET_PCT):
-                realized_return = TARGET_PCT
+            if float(fbar["high"]) >= entry * (1 + target_pct_use):
+                realized_return = target_pct_use
                 break
         # Sharpe-adjust for cross-sectional ranking (same normalization as before)
         intraday_vol = float(feat_bars["close"].pct_change().std()) + 1e-8

@@ -104,6 +104,9 @@ class IntradayAgentSimulator:
         min_confidence: float = MIN_CONFIDENCE,
         top_n: int = TOP_N,
         transaction_cost_pct: float = TRANSACTION_COST,
+        meta_model=None,
+        pm_abstention_vix: float = 0.0,
+        pm_abstention_spy_ma_days: int = 0,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -111,6 +114,9 @@ class IntradayAgentSimulator:
         self.min_confidence = min_confidence
         self.top_n = top_n
         self.transaction_cost_pct = transaction_cost_pct
+        self.meta_model = meta_model
+        self.pm_abstention_vix = pm_abstention_vix
+        self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
 
     def run(
         self,
@@ -158,9 +164,60 @@ class IntradayAgentSimulator:
         equity_by_date: Dict[date, float] = {}
         tx_costs_total = 0.0
 
+        # Precompute VIX and SPY daily closes for abstention gate
+        _vix_closes: Optional[pd.Series] = None
+        _spy_daily_closes: Optional[pd.Series] = None
+        if self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0:
+            try:
+                import yfinance as yf
+                _start_str = min(trading_days).strftime("%Y-%m-%d")
+                _end_str = max(trading_days).strftime("%Y-%m-%d")
+                if self.pm_abstention_vix > 0:
+                    _vix = yf.download("^VIX", start=_start_str, end=_end_str,
+                                       progress=False, auto_adjust=True)
+                    if isinstance(_vix.columns, pd.MultiIndex):
+                        _vix.columns = _vix.columns.get_level_values(0)
+                    _vix.columns = [c.lower() for c in _vix.columns]
+                    _vix_closes = _vix["close"]
+                if self.pm_abstention_spy_ma_days > 0 and spy_prices is not None:
+                    _spy_daily_closes = spy_prices
+                elif self.pm_abstention_spy_ma_days > 0:
+                    _spy = yf.download("SPY", start=_start_str, end=_end_str,
+                                       progress=False, auto_adjust=True)
+                    if isinstance(_spy.columns, pd.MultiIndex):
+                        _spy.columns = _spy.columns.get_level_values(0)
+                    _spy.columns = [c.lower() for c in _spy.columns]
+                    _spy_daily_closes = _spy["close"]
+            except Exception as exc:
+                logger.debug("Abstention gate data fetch failed: %s", exc)
+
         for day in trading_days:
+            # Phase 46-C: PM abstention gate — skip all entries on bad macro days
+            skip_entries = False
+            if self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0:
+                try:
+                    if self.pm_abstention_vix > 0 and _vix_closes is not None:
+                        _vix_idx = pd.DatetimeIndex(_vix_closes.index)
+                        _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else np.array([d.date() for d in _vix_idx])
+                        _vix_hist = _vix_closes.iloc[_vix_dates <= day]
+                        if len(_vix_hist) > 0 and float(_vix_hist.iloc[-1]) >= self.pm_abstention_vix:
+                            skip_entries = True
+                    if not skip_entries and self.pm_abstention_spy_ma_days > 0 and _spy_daily_closes is not None:
+                        _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
+                        _spy_dates = _spy_idx.date if hasattr(_spy_idx, "date") else np.array([d.date() for d in _spy_idx])
+                        _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
+                        if len(_spy_hist) >= self.pm_abstention_spy_ma_days:
+                            _spy_ma = float(_spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
+                            if float(_spy_hist.iloc[-1]) < _spy_ma:
+                                skip_entries = True
+                except Exception:
+                    pass
+
             spy_day = self._get_day_bars(spy_data, day) if spy_data is not None else None
-            day_trades, day_tx = self._process_day(day, symbols_data, spy_day, portfolio, sector_map)
+            day_trades, day_tx = self._process_day(
+                day, symbols_data, spy_day, portfolio, sector_map,
+                skip_entries=skip_entries,
+            )
             accepted_trades.extend(day_trades)
             tx_costs_total += day_tx
             if portfolio.equity > portfolio.peak_equity:
@@ -185,9 +242,13 @@ class IntradayAgentSimulator:
         spy_day: Optional[pd.DataFrame],
         portfolio: _PortfolioState,
         sector_map: Dict[str, str],
+        skip_entries: bool = False,
     ) -> Tuple[List[Trade], float]:
         trades: List[Trade] = []
         tx_costs = 0.0
+
+        if skip_entries:
+            return trades, tx_costs
 
         # Build per-symbol day bars and feature vectors
         sym_feats: Dict[str, dict] = {}
@@ -228,11 +289,19 @@ class IntradayAgentSimulator:
         # PM: batch predict
         proposals = self._pm_score(sym_feats)
 
-        # Process each proposal through Trader gate → RM → entry/exit
+        # Process each proposal through meta gate → Trader gate → RM → entry/exit
         entered: Dict[str, _IntradayPosition] = {}
         for sym, confidence in proposals:
             if sym in entered:
                 continue
+
+            # Phase 46-B: meta-label gate — skip if E[R] <= 0
+            if self.meta_model is not None:
+                try:
+                    if not self.meta_model.should_enter(sym_feats[sym]):
+                        continue
+                except Exception:
+                    pass
 
             entry_price = sym_entry_price[sym]
             # Use prior-day range as ATR proxy (matches intraday training labels)

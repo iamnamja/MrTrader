@@ -24,6 +24,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _MODEL_FNAME = "swing_meta_label_v{version}.pkl"
+_INTRADAY_MODEL_FNAME = "intraday_meta_label_v{version}.pkl"
 _DEFAULT_VERSION = 1
 
 
@@ -113,8 +114,9 @@ class MetaLabelModel:
         """Return True if predicted E[R] >= min_expected_r."""
         return self.predict_expected_r(features) >= self.min_expected_r
 
-    def save(self, model_dir: str, version: int) -> str:
-        path = Path(model_dir) / _MODEL_FNAME.format(version=version)
+    def save(self, model_dir: str, version: int, model_type: str = "swing") -> str:
+        fname = _INTRADAY_MODEL_FNAME if model_type == "intraday" else _MODEL_FNAME
+        path = Path(model_dir) / fname.format(version=version)
         with open(path, "wb") as f:
             pickle.dump(self, f)
         self.version = version
@@ -122,17 +124,20 @@ class MetaLabelModel:
         return str(path)
 
     @staticmethod
-    def load(model_dir: str, version: int) -> "MetaLabelModel":
-        path = Path(model_dir) / _MODEL_FNAME.format(version=version)
+    def load(model_dir: str, version: int, model_type: str = "swing") -> "MetaLabelModel":
+        fname = _INTRADAY_MODEL_FNAME if model_type == "intraday" else _MODEL_FNAME
+        path = Path(model_dir) / fname.format(version=version)
         with open(path, "rb") as f:
             obj = pickle.load(f)
         logger.info("MetaLabelModel loaded v%d from %s", version, path)
         return obj
 
     @staticmethod
-    def load_latest(model_dir: str) -> Optional["MetaLabelModel"]:
+    def load_latest(model_dir: str, model_type: str = "swing") -> Optional["MetaLabelModel"]:
         """Load the highest-version MetaLabelModel pkl in model_dir, or None."""
-        files = sorted(Path(model_dir).glob("swing_meta_label_v*.pkl"))
+        pattern = "intraday_meta_label_v*.pkl" if model_type == "intraday" else "swing_meta_label_v*.pkl"
+        files = sorted(Path(model_dir).glob(pattern),
+                       key=lambda p: int(p.stem.split("_v")[-1]))
         if not files:
             return None
         with open(files[-1], "rb") as f:
