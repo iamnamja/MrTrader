@@ -751,3 +751,200 @@ walk-forward can pass.
 
 **Next**: Phase 33 LambdaRank retrain (now with OMP fix applied). Must produce model
 with OOS win rate > 45% and avg fold Sharpe > 0.8 before paper trading approved.
+
+---
+
+## Phase 37 — Meta-Label Model (Expected R gate) (2026-04-24)
+
+### What was built
+`app/ml/meta_model.py` — `MetaLabelModel` XGBoost regressor predicts E[R] per proposed entry.
+Trained on historical Tier 3 outcomes: (feature_vector_at_entry → actual_pnl_pct).
+Entry skipped if `predicted_E[R] < min_expected_r` (default 0.002).
+Also added `regime_score=0.5` to `engineer_features()` call in `collect_trade_features()`.
+
+### Status
+✅ Code shipped (PR #83, merged 2026-04-24). Not yet used in production — gate model pending
+training data collection from enough Tier 3 simulation runs.
+
+---
+
+## Phase 33 (Retry) — LambdaRank Triple-Barrier (2026-04-24)
+
+### Context
+First attempt at Phase 33 (see above) failed due to Windows OMP deadlock. OMP fix shipped (PR #85).
+Now retriable.
+
+**Result: ❌ REGRESSION — v114 LambdaRank, Tier 3 Sharpe -0.47**
+
+Same triple_barrier label scheme. LambdaRank objective (LightGBM). After OMP fix, training
+completed. AUC ~0.50, Tier 3 Sharpe -0.47 (vs v110 +0.34).
+
+**Root cause:** LambdaRank ranking objective with AUC metric is not meaningful for classification —
+the model never converged to useful predictions. AUC stayed ~0.50 (random).
+
+**v110 remains active model.**
+
+---
+
+## Phase 33 (Retry 2) — XGBoost Triple-Barrier, Asymmetric (2026-04-24)
+
+**Model: v115**
+
+Triple-barrier labels with asymmetric thresholds (1.5× ATR target / 0.5× ATR stop).
+XGBoost classifier (no LambdaRank). `scale_pos_weight` auto-computed from class ratio.
+
+**Result: ❌ COLLAPSE — AUC 0.504, Recall 100%**
+
+Class distribution: ~15% positives (stocks that hit 1.5× ATR target before 0.5× ATR stop in 5 days).
+Model collapsed to predicting everything as positive (recall=100%, precision=15%).
+Same failure mode as Phase 23 percentile rank labels.
+
+**Root cause:** 1.5×/0.5× asymmetric barrier → 85% of stocks stop out → extreme class imbalance
+(85:15) → model predicts all-positive. `scale_pos_weight` correction insufficient.
+
+**v110 remains active model.**
+
+---
+
+## Phase 33 (Retry 3) — XGBoost Triple-Barrier, Symmetric (2026-04-24)
+
+**Model: v116**
+
+Symmetric triple-barrier: 1.5× ATR target / **1.5× ATR stop** (equal barriers).
+Hypothesis: symmetric barriers should give ~50/50 class split → no collapse.
+
+**Result: ❌ STILL COLLAPSE — AUC 0.508, Recall ~100%**
+
+Even with symmetric barriers, model collapsed to predicting all-positive.
+Class distribution ~50/50 as expected, but model still found it easier to predict all-positive.
+
+**Root cause:** Features have insufficient predictive power to determine which direction
+a stock will move 1.5× ATR within 5 days. The 5-day window is too short for directional
+feature signal to overcome noise.
+
+**Learning:** Triple-barrier labels are fundamentally incompatible with this feature set
+at a 5-day horizon. The cross-sectional label (rank-based) is more appropriate because
+it doesn't require the model to predict absolute direction — only relative ranking.
+
+**v110 remains active model. Triple-barrier approach ruled out for now.**
+
+---
+
+## Phase 26b (Retry) — Wider Stops Experiment (2026-04-24)
+
+**Hypothesis:** v110's 70% stop exits might be due to stop distance being too tight (0.5× ATR).
+Wider stops (1.0× ATR) might let trades breathe and reduce stop-out rate.
+
+**Test:** v110 model + `stop_mult=1.0` (was 0.5) at inference time.
+
+**Result: ❌ REGRESSION — Sharpe +0.30 vs v110 +0.34**
+
+Stop exits increased: 70% → 78%. Sharpe slightly worse. Wider stops did not help.
+
+**Learning:** Stop width is not the root cause of the stop exit problem. The model is
+picking stocks that move against the position immediately, regardless of stop distance.
+The problem is in the quality of entries, not the exit rules.
+
+**Ruled out:** Wider stops as a solution to high stop-exit rate.
+
+---
+
+## Phase 43 — Feature Pruning (2026-04-24)
+
+**Hypothesis:** 56 of 140 features in v110 had exactly zero XGBoost importance. These
+dead features add noise, slow training, and may hurt OOS generalization.
+
+**What changed:**
+- Added `PRUNED_FEATURES` frozenset (56 features) to `app/ml/training.py`
+- Applied filter at 3 locations in feature matrix assembly: training, OOS eval, inference
+- Bumped `SCHEMA_VERSION` to "v4" in `app/ml/feature_store.py` to auto-clear stale cache
+- Feature count: 140 → 84
+
+**Pruned features include:** VIX/regime features (regime_score, vix_level, vix_regime_bucket,
+vix_fear_spike, vix_percentile_1y), fundamentals (pe_ratio, pb_ratio, profit_margin,
+revenue_growth, debt_to_equity, earnings_proximity_days), news sentiment, options data,
+FMP data, and several technical interaction features.
+
+**Model: v117 — results (2026-04-24)**
+
+| Metric | v110 (baseline) | v117 (Phase 43) | Delta |
+|---|---|---|---|
+| OOS AUC | 0.638 | 0.641 | +0.003 |
+| Tier 3 Sharpe | **+0.34** | **-0.15** | ❌ -0.49 |
+| Win rate | 40.3% | 43.2% | +2.9pp |
+| Stop exits | 70% | **79%** | ❌ +9pp |
+| Profit factor | 1.11 | 1.00 | ❌ -0.11 |
+| Trades | 290 | 183 | -107 |
+
+**Verdict:** ❌ Regression. AUC barely improved (+0.003) but Tier 3 Sharpe dropped significantly.
+Stop exits worsened 70%→79%. Model trades less (183 vs 290) with lower quality.
+
+**Root cause:** Pruned features, despite zero XGBoost split importance, were contributing
+something useful — possibly through interaction with RM rules or position sizing. Removing
+them reduced trade count and worsened stop behavior.
+
+**v110 remains active model. v117 SUPERSEDED.**
+
+**Learning:** Zero XGBoost feature importance ≠ useless for trading performance. The features
+may have been redundant for the XGBoost split decisions but still influenced which candidates
+reached the RM and at what scores. Feature pruning alone is not the path forward.
+
+---
+
+## Phase 44 — Ensemble Model (XGBoost + LR blend) (2026-04-25)
+
+**Hypothesis:** Blending XGBoost predictions with LogisticRegression (70/30 weight) reduces
+overfitting. LR acts as a regularizer by enforcing a linear decision boundary in feature space,
+constraining the XGBoost from memorizing training patterns.
+
+**Root cause investigation:** Previous runs failed at [3/6] with no traceback. Diagnosed as
+`prefetch_fundamentals` (fetching yfinance/AV/EDGAR for 753 symbols) hanging or OOMing — not
+a ProcessPool crash. Fix: run with `--no-fundamentals --workers 8`. Feature set is price-only
+(all 84 features are OHLCV-derived) so fundamentals were irrelevant.
+
+**What changed:** Model type = `ensemble` (XGBoost + LR soft-vote blend). Same 84 features,
+same cross-sectional labels as v110. Workers reduced to 8, fundamentals disabled.
+
+**Model: v118 — results (2026-04-25)**
+
+| Metric | v110 (baseline) | v118 (Phase 44) | Delta |
+|---|---|---|---|
+| OOS AUC | 0.638 | 0.641 | +0.003 |
+| Tier 3 Sharpe | **+0.34** | **-0.08** | ❌ -0.42 |
+| Win rate | 40.3% | 45.5% | +5.2pp |
+| Profit factor | 1.11 | 1.015 | ❌ -0.10 |
+| Trades | 290 | 167 | -123 |
+| Max drawdown | — | 5.3% | — |
+| Total return | +1.9% | -0.6% | ❌ -2.5pp |
+
+**Verdict:** ❌ Regression. AUC matched but Tier 3 Sharpe dropped to -0.08 from +0.34.
+Win rate improved (+5pp) but trade count collapsed (-123 trades) and profit factor barely
+above 1. The LR regularizer appears to be suppressing valid signals, producing a more
+conservative model that misses more opportunities than it protects against.
+
+**v110 remains active model. v118 SUPERSEDED.**
+
+**Learning:** XGBoost + LR blend doesn't generalize better for this signal. The LR component
+likely has too much weight (30%) relative to its actual predictive quality. Pure XGBoost (v110)
+with its non-linear decision boundaries is a better fit for this feature space.
+
+---
+
+## Planned Next Steps (as of 2026-04-25)
+
+Priority order after Phase 44:
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Recency bias | Upweight last 1-2 years more aggressively to reduce OOS regime drift |
+| 2 | 15-day forward window | 5-day may be too noisy; avg hold is ~1.4 bars so signals may not play out |
+| 3 | ATR-adaptive labels | Scale target/stop by ATR percentile to fix mislabeling across vol spectrum |
+
+**Ruled out for swing model (do not retry without new evidence):**
+- Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon
+- Wider stops (inference-only) — training/inference mismatch
+- LambdaRank objective — AUC stays ~0.50
+- VIX regime sample weights — biases toward calm-market setups
+- Min confidence 0.60 — 0 trades
+- Vol filter ≤75th pct (inference-only) — reduces trades without improving quality
+- Tighter universe (SP100) — no improvement per earlier testing
