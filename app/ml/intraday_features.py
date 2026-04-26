@@ -285,7 +285,6 @@ def compute_intraday_features(
         minutes_elapsed = float(min(len(bars) * 5, 390))
     feats["time_of_day"] = minutes_elapsed / 390.0
     feats["minutes_since_open"] = minutes_elapsed
-    feats["is_open_session"] = float(minutes_elapsed <= 30)    # first 30 min: gap-fill / auction
     feats["is_close_session"] = float(minutes_elapsed >= 330)  # last 60 min: MOC / closing imbalance
 
     # ── Daily vol context ─────────────────────────────────────────────────
