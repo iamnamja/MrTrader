@@ -47,15 +47,20 @@ All agents communicate via an in-process async message queue. No HTTP between ag
 
 ### Intraday Selection (09:45)
 1. Fetch 5-min bars for Russell 1000 symbols (Polygon Parquet cache-first, Alpaca fallback)
-2. Run `compute_intraday_features()` → 41-feature vector per symbol
-3. Run `PortfolioSelectorModel.predict()` → probability per symbol
-4. Filter: `score >= MIN_CONFIDENCE (0.55)`, take top 5
-5. Tagged `trade_type="intraday"` → PM will force-close by 15:45
+2. Run `compute_intraday_features()` → 42-feature vector per symbol
+3. Cross-sectional normalize features across today's candidate universe
+4. Run `PortfolioSelectorModel.predict()` → probability per symbol
+5. Filter: `score >= MIN_CONFIDENCE (0.50)`, take top 5
+6. Meta-model gate: skip if intraday_meta_label_v1 predicts E[pnl] ≤ 0
+7. PM abstention gate: skip all entries if VIX ≥ 25 OR SPY < 20-day SMA
+8. Tagged `trade_type="intraday"` → PM will force-close by 15:45
 
-**Model:** v18 — XGBoost + LightGBM soft-vote ensemble, 41 features, 766 symbols
-**Label:** ATR-adaptive: target = 1.2× ATR14, stop = 0.6× ATR14 (2:1 R:R)
-**Top SHAP signals:** atr_norm, orb_position, bb_position, rel_vol_spy, session_hl_position
-**Note:** Tier 3 Sharpe -1.16. Paper trading gate requires > 1.5. Not yet production-ready.
+**Model:** v22 — XGBClassifier, 42 features, Russell 1000 (~720 symbols with Polygon cache)
+**Label:** path_quality regression → cross-sectional top-20% per day = label 1
+  - path_quality = 1.0×upside_capture − 1.25×stop_pressure + 0.25×close_strength
+  - Stop = 0.6× prior-day range, target = 1.2× prior-day range (2:1 R:R)
+**Top features:** spy_session_return, is_close_session, spy_rsi_14, atr_norm, whale_candle
+**Note:** Tier 3 Sharpe +0.301 (v22 + meta + abstention). Gate = +0.80. Phase 47 in progress.
 
 ### Position Review (every 30 min)
 - Rescore all open swing positions using same model
@@ -166,17 +171,17 @@ Each 30-second scan checks open swing positions:
 | Tier 3 Sharpe | +0.34 (v110 — gate requires > 0.8) |
 | Key phase history | Phase 24a: label bug fix. Phase 24b: regime interactions. Phase 25: 5-day window. Phase 26a: VIX sample weights. |
 
-### Intraday Model (v18) — Updated 2026-04-23
+### Intraday Model (v22) — Updated 2026-04-26
 | Field | Value |
 |---|---|
-| Architecture | XGBoost + LightGBM soft-vote ensemble (50/50) |
-| Universe | Russell 1000 (~766 symbols) |
-| Feature count | 41 |
+| Architecture | XGBClassifier + MetaLabelModel v1 + PM abstention gate |
+| Universe | Russell 1000 (~720 symbols with Polygon 5-min cache) |
+| Feature count | 42 |
 | Train period | 2 years of 5-min bars (Polygon cache) |
-| Retrain schedule | 17:00 ET daily |
-| OOS AUC | ~0.56 |
-| Tier 3 Sharpe | -1.16 (gate requires > 1.5) |
-| Status | Not production-ready. Improvement work queued after swing gate is met. |
+| Retrain schedule | 17:00 ET daily (`scripts/retrain_intraday.py`) |
+| OOS AUC | 0.5438 |
+| Tier 3 Sharpe | +0.301 avg (gate requires > 0.80) — all 3 folds positive |
+| Status | Not production-ready. Phase 47 improvement in progress (XGBRanker, label adjustments). |
 
 ---
 
@@ -211,10 +216,13 @@ Daily loop (per business day in [start_date, end_date]):
 **File:** `app/backtesting/intraday_agent_simulator.py`
 
 Operates on 5-min bars. Per trading day:
-1. **PM scoring**: `compute_intraday_features()` per symbol → `model.predict()` → top-N filtered by `MIN_CONFIDENCE`
-2. **Trader gate**: ORB breakout check + session-time constraint (no entries after 14:30 ET)
-3. **RM validation**: same RM rules as swing, applied intraday
-4. **Exit scan**: target (+0.5%), stop (-0.3%), or HOLD_BARS=24 time exit
+1. **PM abstention gate**: skip all entries if VIX ≥ 25 OR SPY < 20-day SMA
+2. **PM scoring**: `compute_intraday_features()` per symbol → CS-normalize → `model.predict()` → top-N filtered by `MIN_CONFIDENCE=0.50`
+3. **Meta-model gate**: skip if MetaLabelModel predicts E[pnl] ≤ 0 (currently weak — R2=0.001)
+4. **RM validation**: same RM rules as swing, applied intraday
+5. **Exit scan**: ATR-adaptive stop (0.6× prior-day range), target (1.2× prior-day range), or HOLD_BARS=24 time exit
+
+**Note:** Hard ORB breakout gate was removed in Phase 46 (was starving trades in range-bound markets). ORB features remain as model inputs.
 
 **Script entry point:** `scripts/backtest_ml_models.py --model intraday` runs Tier 1 + Tier 2 + Tier 3 for intraday.
 
@@ -230,11 +238,16 @@ Operates on 5-min bars. Per trading day:
 
 Gate requires Tier 3 Sharpe > 0.8. Currently at +0.34. Need +0.46 more.
 
-### Intraday v18 (run 2026-04-23)
+### Intraday v22 (run 2026-04-26) — Current Best
 
-| Tier | Trades | Win Rate | Sharpe | Notes |
+| Fold | Trades | Win Rate | Sharpe | Notes |
 |---|---|---|---|---|
-| Tier 3 (IntradayAgentSimulator) | 266 | 49% | -1.16 | 58% stop exits. Gate requires > 1.5. |
+| Fold 1 (Oct '24–Apr '25) | 152 | 51.3% | +0.24 | Trending market |
+| Fold 2 (Apr '25–Oct '25) | 222 | 49.5% | +0.43 | Sideways market |
+| Fold 3 (Oct '25–Apr '26) | 152 | 52.6% | +0.23 | Trending market |
+| **Avg** | **175** | **51.1%** | **+0.301** | Gate requires > 0.80 |
+
+v22 stack: XGBClassifier + MetaLabelModel v1 + PM abstention gate (VIX≥25 OR SPY<MA20). All folds positive for first time. Phase 47 targeting +0.80.
 
 ---
 

@@ -1066,3 +1066,25 @@ Phase 45 COMPLETE. All gates passed. Final system ready for paper trading:
 **Ruled out for intraday model:**
 - Binary ATR labels — too sparse for 2-hour window
 - Hard ORB breakout gate — starves trades in range-bound markets (5 trades per 3 folds)
+
+---
+
+## Phase 47: Intraday Model Improvement — Plan (2026-04-26)
+
+Quant consultation (ChatGPT + Claude independent reviews) converged on the same highest-leverage insight: **the PM is a daily top-N ranker but the model is trained as a binary classifier on the full dataset** — an objective mismatch. Phase 47 plan:
+
+| Phase | Change | Expected Sharpe lift |
+|---|---|---|
+| 0 (diagnostic) | 7 diagnostic cuts on v22 trade logs — no retrain | Free; reshapes priorities |
+| 1 (v23) | Drop MetaLabelModel (R2=0.001), replace with isotonic calibration | Simplification; Sharpe-neutral |
+| 2 (v24) | XGBRanker with ndcg@5 objective — aligns loss to PM top-5 selection | +0.20 to +0.40 |
+| 3 (v25) | Stop/target compression to 0.4x/0.8x prior-day range (preserve 2:1 R:R, increase target-hit rate) | +0.15 to +0.35 |
+| 4 (v26) | Top-300 by liquidity universe (dynamic dollar-volume filter) | +0.10 to +0.25 |
+| 5 (v27) | Move-quality + relative-strength feature pack (10 new features) | +0.10 to +0.25 |
+
+**Key hypotheses from diagnostic:**
+1. `-1.25 × stop_pressure` in path_quality may create reversion bias — penalizes trending winners that pull back before recovering
+2. True realized R:R likely < 2:1 (time exits at bar 24 average ~0.3-0.5x ATR, not 1.2x)
+3. Meta-model marginal contribution likely near-zero (Phase 5 cut will confirm)
+
+**Gate:** avg Sharpe ≥ +0.80. Currently +0.301. If ceiling is +0.60 on OHLCV-only, will document and lower gate with rationale.

@@ -1,6 +1,6 @@
 # MrTrader — ML Models Reference
 
-Last updated: 2026-04-25 (post Phase 45 — swing gate passed)
+Last updated: 2026-04-26 (post Phase 46 — intraday v22, all folds positive)
 
 ---
 
@@ -14,11 +14,11 @@ MrTrader runs two independent ML models:
 | **Bar resolution** | Daily OHLCV | 5-minute OHLCV |
 | **Universe** | SP-100 (~81 symbols with >= 210 bars) | Russell 1000 (~766 symbols) |
 | **Training history** | 5 years | 2 years |
-| **Features** | 84 (OHLCV only, no fundamentals) | 41 |
-| **Architecture** | XGBRegressor (path_quality label) + MetaLabelModel filter + PM abstention gate | XGBoost + LightGBM soft-vote ensemble |
-| **Label scheme** | path_quality regression (continuous score) | Cross-sectional: top-20% intraday return = 1 |
+| **Features** | 84 (OHLCV only, no fundamentals) | 42 |
+| **Architecture** | XGBRegressor (path_quality label) + MetaLabelModel filter + PM abstention gate | XGBClassifier + MetaLabelModel filter + PM abstention gate |
+| **Label scheme** | path_quality regression (continuous score) | path_quality regression → cross-sectional top-20% = label 1 |
 | **Retrain schedule** | 17:00 ET daily | 17:00 ET daily |
-| **Walk-forward gate** | PASSED (avg Sharpe +1.181, min fold -0.031) | NOT MET (avg Sharpe -1.16, gate > 1.5) |
+| **Walk-forward gate** | PASSED (avg Sharpe +1.181, min fold -0.031) | NOT MET (avg Sharpe +0.301, gate > 0.80) |
 
 ---
 
@@ -159,44 +159,97 @@ Each trading day, for each symbol in the SP-100 universe:
 
 ---
 
-## Intraday Model
+## Intraday Model (v22 — ACTIVE, Phase 46, gate not yet met)
 
-### Architecture
+The intraday model is a three-layer stack mirroring the swing model structure:
+a primary signal model, a meta-filter, and a PM-level macro gate.
+
+**Current best result:** avg Sharpe +0.301, all 3 folds positive (first time). Gate requires +0.80.
+**Active improvement phase:** Phase 47 (diagnostic dive in progress, XGBRanker next).
+
+### Layer 1 — Primary Signal Model (v22)
 
 - **Model file:** `app/ml/model.py` — `PortfolioSelectorModel` (xgboost)
 - **Trainer:** `app/ml/intraday_training.py` — `IntradayModelTrainer`
-- **Underlying estimator:** XGBoost + LightGBM soft-vote ensemble (50/50)
-- **Preprocessing:** StandardScaler
+- **Underlying estimator:** XGBClassifier (binary classification)
+- **OOS AUC:** 0.5438
+- **Retrain command:** `python scripts/retrain_intraday.py --days 730`
 
-### Label Construction
+### Layer 2 — MetaLabelModel v1 (intraday)
 
-For each trading day, across all symbols with sufficient bars:
-1. Take the first ~1 hour of 5-min bars as the feature window
-2. Compute best intraday return = (max high over next 24 bars − entry close) / entry close
-3. Within that day, rank all symbols by best return
-4. Top 20% → label = 1, rest → label = 0
+- **Model file:** `app/ml/models/intraday_meta_label_v1.pkl`
+- **Architecture:** XGBRegressor trained on 810 in-sample trade outcomes (pnl_pct target)
+- **R2:** 0.001, corr: 0.044 — **very weak signal** (base model AUC too low to train meta effectively)
+- **Gate:** Enter only if predicted E[pnl] > 0
+- **Status:** Likely contributing near-zero Sharpe. Phase 47 Phase 1 will confirm and likely drop it.
+
+### Layer 3 — PM Abstention Gate
+
+Same as swing: skip all new intraday entries when VIX ≥ 25 OR SPY < 20-day SMA.
+
+### Label Construction (path_quality — Phase 46)
+
+For each (symbol, date) in the training set:
+1. Take first 12 bars (60 min) as feature window; entry = close of bar 12
+2. Compute prior-day range → stop_dist = 0.6× range, target_dist = 1.2× range
+3. Simulate next 24 bars (2 hours) bar-by-bar:
+   - `upside_capture = min((max_high - entry) / target_dist, 1.0)`
+   - `stop_pressure = min((entry - min_low) / stop_dist, 1.0)`
+   - `close_strength = clip((final_close - entry) / target_dist, -1, 1)`
+4. `path_quality = 1.0 × upside_capture − 1.25 × stop_pressure + 0.25 × close_strength`
+5. Within each day, rank all symbols by path_quality; top 20% → label = 1
+
+**Note:** The `-1.25 × stop_pressure` coefficient is under investigation in Phase 47 —
+it may create a reversion bias by penalizing trades that touched the stop zone even if they
+recovered and hit target (common in trending markets).
 
 ### Training Pipeline
 
 ```
-Fetch 5-min OHLCV from Alpaca (Russell 1000, 2 years)
-    ↓ (cached as Parquet per symbol, 24h TTL)
-Fetch SPY 5-min + daily OHLCV for market context
+Fetch 5-min OHLCV from Polygon cache (Russell 1000, 2 years)
+    ↓ (cached as Parquet per symbol)
+Fetch SPY 5-min + prior-day OHLC for ATR proxy
     ↓
-Per symbol × per day: compute_intraday_features() → 37 features
-    ↓ (parallel: min(24, cpu_count()) threads)
-Cross-sectional daily labeling (top 20% per day)
+Per symbol × per day: compute_intraday_features() → 42 features
+    ↓ (parallel workers)
+path_quality label computation (bar-by-bar, 0.6x/1.2x prior-day range)
+    ↓
+Cross-sectional daily labeling (top-20% path_quality per day = label 1)
     ↓
 Recency sample weights (exp decay, 180-day half-life)
     ↓
-Optuna HPO (n_trials configurable, 3-fold StratifiedKFold)
+Optuna HPO (20 trials, 3-fold StratifiedKFold)
     ↓
-XGBoost.fit() + LightGBM.fit() in parallel
+XGBClassifier.fit() with best params
     ↓
-Soft-vote ensemble evaluation on X_test
-    ↓
-Save + register (same as swing)
+Save as intraday_v{N}.pkl + register in ModelVersion DB
 ```
+
+### Walk-Forward Results (v22 full stack, 2026-04-26)
+
+| Fold | Period | Trades | Win% | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-14 → 2025-04-15 | 152 | 51.3% | +0.24 | 0.5% |
+| 2 | 2025-04-16 → 2025-10-15 | 222 | 49.5% | +0.43 | 0.6% |
+| 3 | 2025-10-16 → 2026-04-17 | 152 | 52.6% | +0.23 | 0.5% |
+| **Avg** | | **175** | **51.1%** | **+0.301** | **0.5%** |
+
+Gate: **FAIL** (needs +0.80). Min fold +0.227 (passes -0.30 floor). All folds positive for first time.
+
+### Intraday Version History
+
+| Version | Phase | Change | Avg Sharpe | Trades/fold | Status |
+|---|---|---|---|---|---|
+| v18 | Baseline | XGB+LGBM ensemble, fixed binary labels | -1.16 | ~50 | Superseded |
+| v19 | 46-A | Binary ATR labels (1.2x/0.6x range) | -0.875 | 2 | Superseded — too sparse |
+| v20 | 46-A | path_quality regression label | -0.138 | 2 | Superseded — ORB gate blocked |
+| v22 | 46 full | Soft ORB gate + path_quality + meta + abstention | +0.301 | 175 | **Active** |
+
+### What Was Ruled Out (Intraday)
+
+- **Binary ATR labels** — 1.2× prior-day range target (~2.4% in 2h) produces near-zero positive training examples
+- **Hard ORB breakout gate** — starves trades in range-bound markets (5 total trades across 3 folds in v19/v20)
+- **XGBoost+LightGBM ensemble** — no improvement over single XGBClassifier, added complexity
 
 ---
 
@@ -330,9 +383,83 @@ POLYGON FINANCIALS (requires key)
 
 ## Features: Intraday Model
 
-### Full Feature List (37 features)
+### Full Feature List (42 features — as of v22 / Phase 46)
 
 All computed purely from 5-min OHLCV + SPY 5-min bars. **No external API calls at inference time.**
+Feature window: first 12 bars (60 minutes) of the trading day.
+
+```
+OPENING RANGE BREAKOUT (ORB)
+  orb_high, orb_low          — high/low of first bar (first 5 min)
+  orb_range                  — (orb_high - orb_low) / orb_low, normalized width
+  orb_position               — position in ORB range [0=at low, 1=at high]
+  orb_breakout               — +1 above ORB high / -1 below ORB low / 0 inside
+  orb_direction_strength     — (close - orb_mid) / orb_range  [Phase 46-D]
+
+PRICE ACTION (60-min window)
+  price_momentum             — 60-min return from open to current
+  high_low_range             — normalized 60-min high-low range
+  close_position             — current close relative to 60-min range
+  price_velocity             — last 12-bar price change rate
+  gap_pct                    — overnight gap vs prior close
+
+VOLUME
+  volume_surge               — 60-min vol vs 20-day avg same window
+  whale_candle               — any 5-min bar with vol > 3× rolling 20-bar avg
+  volume_trend               — slope of volume over 60 min
+  volume_acceleration        — second derivative of volume
+
+TECHNICAL INDICATORS
+  rsi_6, rsi_14              — RSI at 6 and 14 periods
+  macd_signal                — MACD signal line
+  bb_position                — Bollinger Band %B
+  atr_norm                   — ATR normalized by price
+  vwap_distance              — (price - VWAP) / price
+  vwap_cross_count           — times price crossed VWAP in 60 min
+
+SESSION TIMING
+  is_open_session            — binary session marker
+  is_close_session           — binary session marker
+  bars_since_open            — bars elapsed since market open
+
+SPY CONTEXT
+  spy_session_return         — SPY return from open to current bar
+  spy_rsi_14                 — SPY RSI over 60-min window
+  spy_volume_surge           — SPY volume vs 20-day avg
+
+PRIOR DAY CONTEXT
+  prior_day_range_pct        — prior day (high - low) / prior close
+  prior_day_return           — prior day close-to-close return
+  prior_day_volume_ratio     — prior day volume / 20-day avg
+
+CROSS-SECTIONAL (computed at scoring time, over daily candidate universe)
+  cs_rank_momentum           — rank of price_momentum among all symbols today
+  cs_rank_volume             — rank of volume_surge
+  cs_rank_atr                — rank of atr_norm
+```
+
+### Feature Engineering Code
+
+`app/ml/intraday_features.py` — `compute_intraday_features(feat_bars, spy_day, prior_close, ...)`
+
+Returns a dict of 42 features. Called per (symbol, day) at both training time and inference time.
+Cross-sectional ranks are applied in `app/ml/cs_normalize.py` at scoring time, not in the feature function.
+
+### Removed Features (v22 vs v18)
+
+The v18 feature set included several features that were restructured in Phase 46:
+- `gap_fill_pct`, `session_hl_position` — replaced by `orb_position` and `close_position`
+- `prev_day_high_dist`, `prev_day_low_dist` — replaced by `prior_day_range_pct`
+- `ema9_dist`, `ema20_dist`, `ema_cross` — dropped (low importance in intraday context)
+- `stoch_k`, `williams_r`, `cum_delta`, `obv_slope` — dropped
+- Added: `orb_high`, `orb_low`, `orb_range`, `orb_direction_strength`, `whale_candle`,
+  `volume_acceleration`, `spy_volume_surge`, `prior_day_return`, `prior_day_volume_ratio`
+
+---
+
+## Features: Intraday Model (legacy — v18, kept for reference)
+
+### v18 Feature List (37 features)
 
 ```
 PRICE STRUCTURE
@@ -464,7 +591,8 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 |---|---|---|---|---|
 | Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20). Avg Sharpe +1.181, min fold -0.031. |
 | Swing meta | **v1** | 84 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor trained on 515 in-sample trade outcomes. R2=0.059, corr=0.286. Threshold E[R]>0. |
-| Intraday | v18 | 41 | 2026-04-23 | XGBoost+LightGBM ensemble. Tier 3 Sharpe -1.16, win rate 49%. Gate not met (need > 1.5). Under active improvement. |
+| Intraday | **v22** | 42 | 2026-04-25 | **Active — gate not yet met.** XGBClassifier, path_quality labels (0.6x/1.2x prior-day range). + MetaLabelModel v1 (weak, R2=0.001) + PM abstention gate. Avg Sharpe +0.301, all folds positive. Phase 47 in progress. |
+| Intraday meta | **v1** | 42 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor on 810 in-sample trades. R2=0.001 (very weak). Likely to be dropped in Phase 47. |
 
 ### Swing Model Version History
 
