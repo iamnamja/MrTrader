@@ -1142,3 +1142,41 @@ AUC: 0.5438 → 0.5995 (+0.056). Win rate dropped 51%→46% but Sharpe nearly qu
 
 **Verdict: ✅ KEEP — gate passed, v23 is intraday paper trading candidate.**
 
+---
+
+### Phase 47-5: Quality / Structure Feature Pack (Code Added — 2026-04-26)
+
+**Change**: Added 8 new features to `compute_intraday_features()` and `FEATURE_NAMES`:
+- `trend_efficiency` — directional efficiency of price path (0=choppy, 1=trending)
+- `green_bar_ratio` — fraction of up-bars in 60-min window
+- `above_vwap_ratio` — fraction of bars where close > rolling VWAP
+- `pullback_from_high` — (session_high - close) / session_high
+- `range_vs_20d_avg` — today's H-L range vs 20-day avg (requires `daily_bars` param)
+- `rel_strength_vs_spy` — session_return - spy_session_return
+- `vol_x_momentum` — volume_surge × session_return interaction
+- `gap_followthrough` — gap direction × momentum direction alignment
+
+**Status**: Features added to inference pipeline. v23 model has 42 features (trained before this change);
+PM computes 50 at inference, model selects its own 42 by name. Next retrain (v25+) will use all 50.
+
+**Verdict**: 🔄 PENDING walk-forward on 50-feature retrain.
+
+---
+
+### Phase 2: XGBRanker — rank:pairwise objective (Retrain In Progress — 2026-04-26)
+
+**Hypothesis**: XGBRanker with `objective="rank:pairwise"` aligns training objective with PM's
+actual use case (pick top-N stocks per day). Standard XGBClassifier optimizes logloss (binary),
+which penalizes all misclassifications equally regardless of ranking position.
+
+**Change**: `--ranker` flag → `PortfolioSelectorModel(model_type="xgboost_ranker")`, trained on
+raw `path_quality` scores grouped by day (qid). Sample weights are per-group (mean recency weight per day).
+
+**Bug fixed**: First attempt failed with `Size of weight must equal to the number of query groups`.
+XGBRanker with qid= expects per-sample weights; fixed by expanding per-group weights via
+`np.repeat(group_w, groups)` in `model.py` before calling `.fit()`.
+
+**Status**: 🔄 Retrain in progress → will produce v25.
+
+**Next step**: Walk-forward v25, compare avg Sharpe to v23 baseline (+1.275). Retain if ≥ +0.80.
+
