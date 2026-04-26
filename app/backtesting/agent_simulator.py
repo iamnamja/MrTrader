@@ -122,6 +122,7 @@ class AgentSimulator:
         min_expected_r: float = 0.002,          # Phase 37: skip entries where E[R] < this
         pm_abstention_vix: float = 0.0,         # Phase 45 P3-Parallel: abstain if VIX >= this (0=off)
         pm_abstention_spy_ma_days: int = 0,     # Phase 45 P3-Parallel: abstain if SPY < N-day SMA (0=off)
+        pm_abstention_spy_5d: bool = False,     # Phase 55: abstain if SPY 5d return <= 0 (negative momentum)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -138,6 +139,7 @@ class AgentSimulator:
         self.min_expected_r = min_expected_r
         self.pm_abstention_vix = pm_abstention_vix
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
+        self.pm_abstention_spy_5d = pm_abstention_spy_5d
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -252,7 +254,8 @@ class AgentSimulator:
                     pass
 
             # Phase 45 P3-Parallel: PM abstention gate (VIX >= threshold OR SPY < N-day SMA)
-            if not _skip_entries and (self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0):
+            if not _skip_entries and (self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0
+                                       or self.pm_abstention_spy_5d):
                 try:
                     if self.pm_abstention_vix > 0 and _vix_closes is not None:
                         vix_idx = _vix_closes.index
@@ -273,6 +276,16 @@ class AgentSimulator:
                                 logger.debug("PM abstention (SPY MA%d) on %s: %.2f < %.2f",
                                              self.pm_abstention_spy_ma_days, day,
                                              float(spy_hist.iloc[-1]), spy_ma)
+                    if not _skip_entries and self.pm_abstention_spy_5d and _spy_closes is not None:
+                        spy_idx = _spy_closes.index
+                        spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        if len(spy_hist) >= 6:
+                            spy_5d_ret = float(spy_hist.iloc[-1]) / float(spy_hist.iloc[-6]) - 1.0
+                            if spy_5d_ret <= 0:
+                                _skip_entries = True
+                                logger.debug("PM abstention (SPY 5d) on %s: 5d ret=%.3f",
+                                             day, spy_5d_ret)
                 except Exception:
                     pass
 

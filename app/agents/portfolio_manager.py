@@ -433,11 +433,11 @@ class PortfolioManager(BaseAgent):
 
     def _market_regime_allows_entries(self) -> bool:
         """
-        Phase 3-Parallel PM abstention gate.
-        Returns False on days with unfavorable broad-market conditions:
+        PM abstention gate. Returns False on unfavorable broad-market conditions:
           - VIX >= 25 (elevated fear)
           - SPY below its 20-day MA (short-term downtrend)
-        Either condition alone is enough to abstain. Fails open if data unavailable.
+          - SPY 5-day return <= 0 (negative momentum, Phase 55)
+        Any condition alone is enough to abstain. Fails open if data unavailable.
         """
         try:
             import yfinance as yf
@@ -451,6 +451,8 @@ class PortfolioManager(BaseAgent):
             spy_close = float(spy["close"].iloc[-1])
             spy_ma20 = float(spy["close"].tail(20).mean())
             spy_below_ma = spy_close < spy_ma20
+            spy_5d_ret = (spy_close / float(spy["close"].iloc[-6]) - 1.0) if len(spy) >= 6 else 0.0
+            spy_momentum_weak = spy_5d_ret <= 0.0
 
             vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
             if isinstance(vix.columns, pd.MultiIndex):
@@ -459,15 +461,17 @@ class PortfolioManager(BaseAgent):
             vix_level = float(vix["close"].iloc[-1]) if len(vix) > 0 else 0.0
             vix_high = vix_level >= 25.0
 
-            if spy_below_ma or vix_high:
+            if spy_below_ma or vix_high or spy_momentum_weak:
                 self.logger.info(
-                    "PM abstention gate ACTIVE — SPY=%.2f MA20=%.2f (below=%s) VIX=%.1f (>=25=%s)",
+                    "PM abstention gate ACTIVE — SPY=%.2f MA20=%.2f (below=%s) "
+                    "VIX=%.1f (>=25=%s) SPY5d=%.2f%% (weak=%s)",
                     spy_close, spy_ma20, spy_below_ma, vix_level, vix_high,
+                    spy_5d_ret * 100, spy_momentum_weak,
                 )
                 return False
             self.logger.info(
-                "PM abstention gate clear — SPY=%.2f MA20=%.2f VIX=%.1f",
-                spy_close, spy_ma20, vix_level,
+                "PM abstention gate clear — SPY=%.2f MA20=%.2f VIX=%.1f SPY5d=%.2f%%",
+                spy_close, spy_ma20, vix_level, spy_5d_ret * 100,
             )
             return True
         except Exception as exc:
