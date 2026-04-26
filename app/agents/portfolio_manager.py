@@ -20,7 +20,7 @@ from app.ml.features import FeatureEngineer
 from app.ml.cs_normalize import cs_normalize
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS
+from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS, RUSSELL_1000_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -535,29 +535,44 @@ class PortfolioManager(BaseAgent):
             self.logger.warning("No intraday model available — skipping intraday scan")
             return
 
-        def _fetch_intraday_features() -> Dict[str, Dict[str, float]]:
+        # PM abstention gate: skip all intraday entries on bad regime days (VIX>=25 or SPY<MA20)
+        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
+        if not regime_ok:
+            self.logger.info("PM abstention gate: suppressing all intraday entries today")
+            return
+
+        def _fetch_one_intraday(symbol: str) -> Optional[Dict[str, float]]:
             from app.ml.intraday_features import compute_intraday_features, MIN_BARS
+            try:
+                bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
+                if bars is None or bars.empty or len(bars) < MIN_BARS:
+                    return None
+                daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=25)
+                prior_close = prior_high = prior_low = None
+                if daily is not None and len(daily) >= 2:
+                    prev = daily.iloc[-2]
+                    prior_close = float(prev["close"])
+                    prior_high = float(prev["high"])
+                    prior_low = float(prev["low"])
+                return compute_intraday_features(
+                    bars, prior_close=prior_close,
+                    prior_day_high=prior_high, prior_day_low=prior_low,
+                    daily_bars=daily,
+                )
+            except Exception as exc:
+                self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
+                return None
+
+        def _fetch_intraday_features() -> Dict[str, Dict[str, float]]:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             result: Dict[str, Dict[str, float]] = {}
-            for symbol in self._get_universe()[:50]:
-                try:
-                    bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
-                    if bars is None or bars.empty or len(bars) < MIN_BARS:
-                        continue
-                    daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=2)
-                    prior_close = prior_high = prior_low = None
-                    if daily is not None and len(daily) >= 2:
-                        prev = daily.iloc[-2]
-                        prior_close = float(prev["close"])
-                        prior_high = float(prev["high"])
-                        prior_low = float(prev["low"])
-                    feats = compute_intraday_features(
-                        bars, prior_close=prior_close,
-                        prior_day_high=prior_high, prior_day_low=prior_low,
-                    )
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                futures = {pool.submit(_fetch_one_intraday, s): s for s in RUSSELL_1000_TICKERS}
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    feats = future.result()
                     if feats is not None:
-                        result[symbol] = feats
-                except Exception as exc:
-                    self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
+                        result[sym] = feats
             return result
 
         features_by_symbol = await asyncio.to_thread(_fetch_intraday_features)
@@ -567,7 +582,17 @@ class PortfolioManager(BaseAgent):
             return
 
         symbols = list(features_by_symbol.keys())
-        X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        # Use model's stored feature_names to guarantee correct column order and count.
+        # Falls back to dict-value order if model has no feature_names (old pkl).
+        model_feat_names = getattr(self.intraday_model, "feature_names", None)
+        if model_feat_names:
+            X = np.array([
+                [features_by_symbol[s].get(f, 0.0) for f in model_feat_names]
+                for s in symbols
+            ])
+        else:
+            X = np.array([list(features_by_symbol[s].values()) for s in symbols])
+        X = np.nan_to_num(X, nan=0.0)
         X = cs_normalize(X)
 
         try:
