@@ -1172,11 +1172,70 @@ which penalizes all misclassifications equally regardless of ranking position.
 **Change**: `--ranker` flag → `PortfolioSelectorModel(model_type="xgboost_ranker")`, trained on
 raw `path_quality` scores grouped by day (qid). Sample weights are per-group (mean recency weight per day).
 
-**Bug fixed**: First attempt failed with `Size of weight must equal to the number of query groups`.
-XGBRanker with qid= expects per-sample weights; fixed by expanding per-group weights via
-`np.repeat(group_w, groups)` in `model.py` before calling `.fit()`.
+**Bug fixed**: XGBRanker with qid= expects per-GROUP weights (one per query group/day), NOT per-sample.
+Required 2 fix iterations: (1) `intraday_training.py` computes per-day mean weights (406 elements),
+(2) `model.py` passes them directly without expansion. Verified via minimal XGBRanker unit test.
 
-**Status**: 🔄 Retrain in progress → will produce v25.
+**v25 trained (2026-04-26)**: OOS AUC = 0.5766 (vs v23 0.5995; expected drop — ranker optimizes
+relative ranking, not binary classification accuracy). Top features: ema9_dist, ema20_dist,
+orb_position, orb_direction_strength, atr_norm. Training on all 50 features (first model with
+Phase 47-5 quality features).
 
-**Next step**: Walk-forward v25, compare avg Sharpe to v23 baseline (+1.275). Retain if ≥ +0.80.
+**Walk-forward results (2026-04-26)**:
+| Fold | Test Period | Trades | Win Rate | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | 39.3% | -0.12 | 1.1% |
+| 2 | 2025-04-17 → 2025-10-16 | 252 | 40.5% | 0.69 | 1.8% |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | 40.5% | -0.01 | 0.8% |
+| **Avg** | | **756** | **40.1%** | **0.184** | |
 
+**Gate**: FAIL — avg Sharpe 0.184 (need > 0.80); min fold -0.124 (passes > -0.30 floor).
+
+**Verdict**: ❌ XGBRanker does not improve walk-forward performance vs v23 classifier (Sharpe +1.275).
+The pairwise ranking objective optimizes relative ordering within a day but the backtester's absolute
+P&L is more sensitive to win rate and R:R than intra-day ranking precision. Revert to v23-class
+XGBClassifier. v25 archived; v23 remains the active intraday model.
+
+**Insight**: Objective mismatch (ranking vs. classification) is real but the ranker does not close the
+performance gap in practice. The key signal (prev_day_high_dist, prev_day_low_dist from v23) was
+replaced by ema9_dist/ema20_dist in v25 — likely a degradation in actionable features, not just
+the objective change. Future ranker experiments should hold features constant and only change objective.
+
+
+### Phase 4: Top-300 Liquidity Filter (Retrain v26 — 2026-04-26)
+
+**Hypothesis**: Training on the top-300 symbols by 20-day median dollar volume improves signal quality
+by excluding micro/small-caps with noisy intraday patterns and sparse data.
+
+**Change**: `--top-n-liquidity 300` → liquidity filter applied after data fetch; training universe
+reduced from 722 → 300 symbols. No ranker (reverts to XGBClassifier to isolate liquidity effect).
+
+**v26 trained (2026-04-26)**:
+- OOS AUC: 0.6030 (HPO best: 0.6132 on validation)
+- Train rows: 121,075 / Test rows: 29,172 / Features: 50
+- Class balance: pos=24,321 neg=96,754 (scale_pos_weight=3.98)
+- Top features: prev_day_high_dist (0.047), prev_day_low_dist (0.044), atr_norm (0.027), range_compression (0.023), minutes_since_open (0.023)
+- Note: Same top features as v23 — prev_day_high/low_dist dominate, consistent signal
+
+**HPO best params**: n_estimators=583, max_depth=6, lr=0.0109, subsample=0.723, colsample_bytree=0.791
+
+**Walk-forward results (2026-04-26)**:
+| Fold | Test Period | Trades | Win Rate | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | 40.1% | -2.20 | 1.6% |
+| 2 | 2025-04-17 → 2025-10-16 | 250 | 35.6% | -1.90 | 1.6% |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | — | -0.14 | — |
+| **Avg** | | **754** | | **-1.414** | |
+
+**Gate**: FAIL — avg Sharpe -1.414 (need > 0.80); min fold -2.199 (far below -0.30 floor).
+
+**Verdict**: ❌ Top-300 liquidity filter dramatically hurts performance. Reverted to v23 (Russell 1000 full universe).
+
+**Insight**: Restricting to the 300 most liquid names (large-caps with high dollar volume) collapses win rate
+to 35-40% and produces deeply negative Sharpe. Hypothesis: the intraday edge lives in mid-cap names with
+higher intraday range variability — large-cap mega-stocks move less intraday and have tighter bid/ask
+patterns that are harder to capture with a 2h hold window. The top features (prev_day_high/low_dist,
+atr_norm) rely on meaningful prior-day range variation which is systematically lower in large-caps.
+
+**Net conclusion**: v23 (full Russell 1000 universe, XGBClassifier, 0.4x/0.8x stops) remains the best
+intraday model. Both Phase 47 experiments (ranker + liquidity filter) failed to beat it.

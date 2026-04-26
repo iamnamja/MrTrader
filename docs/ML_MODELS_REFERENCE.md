@@ -237,6 +237,8 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 | v20 | 46-A | path_quality regression label | -0.138 | 2 | Superseded — ORB gate blocked |
 | v22 | 46 full | Soft ORB gate + path_quality + meta + abstention | +0.301 | 175 | Superseded |
 | **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50** | **+1.275** | **177** | **Active ✅** |
+| v25 | 47 Phase 2 | XGBRanker rank:pairwise objective, all 50 features | +0.184 | 252 | ❌ Gate FAIL — reverted to v23 |
+| v26 | 47 Phase 4 | Top-300 liquidity filter, XGBClassifier, all 50 features | -1.414 | 252 | ❌ Gate FAIL — reverted to v23 |
 
 ### What Was Ruled Out (Intraday)
 
@@ -244,6 +246,8 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 - **Hard ORB breakout gate** — starves trades in range-bound markets (5 total trades across 3 folds in v19/v20)
 - **MetaLabelModel v1** — R2=0.001, confirmed +0.000 Sharpe contribution in Phase 47 diagnostic
 - **XGBoost+LightGBM ensemble** — no improvement over single XGBClassifier, added complexity
+- **XGBRanker rank:pairwise** — avg Sharpe +0.184 vs v23 +1.275; ranking objective hurt win rate and feature selection (ema_dist displaced prev_day_high/low_dist)
+- **Top-300 liquidity filter** — avg Sharpe -1.414; edge lives in mid-caps with higher intraday range variability, not large-cap mega-stocks
 
 ---
 
