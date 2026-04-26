@@ -1,0 +1,177 @@
+{
+  "date": "2026-04-25",
+  "model_version": 110,
+  "folds": 3,
+  "years": 5,
+  "winning_config": {
+    "name": "Config B",
+    "stop_mult": 0.5,
+    "target_mult": 1.0,
+    "ruin_prob": 67.0,
+    "rr": "2.0:1"
+  },
+  "results": [
+    {
+      "config": {
+        "name": "Baseline",
+        "stop_mult": 0.5,
+        "target_mult": 1.5,
+        "ruin_prob": 75.0,
+        "rr": "3.0:1"
+      },
+      "folds": [
+        {
+          "test_start": "2022-07-07",
+          "test_end": "2023-10-12",
+          "trades": 167,
+          "sharpe": 0.46,
+          "win_rate": 0.437,
+          "profit_factor": 2.038,
+          "total_return": 0.019,
+          "max_drawdown": 0.034,
+          "stop_exits_pct": 0.653,
+          "target_exits_pct": 0.317,
+          "time_exits_pct": 0.03,
+          "avg_hold": 3.0
+        },
+        {
+          "test_start": "2023-10-13",
+          "test_end": "2025-01-17",
+          "trades": 243,
+          "sharpe": 0.279,
+          "win_rate": 0.416,
+          "profit_factor": 1.112,
+          "total_return": 0.012,
+          "max_drawdown": 0.033,
+          "stop_exits_pct": 0.687,
+          "target_exits_pct": 0.3,
+          "time_exits_pct": 0.012,
+          "avg_hold": 2.9
+        },
+        {
+          "test_start": "2025-01-18",
+          "test_end": "2026-04-25",
+          "trades": 187,
+          "sharpe": -0.452,
+          "win_rate": 0.406,
+          "profit_factor": 0.943,
+          "total_return": -0.022,
+          "max_drawdown": 0.05,
+          "stop_exits_pct": 0.722,
+          "target_exits_pct": 0.273,
+          "time_exits_pct": 0.005,
+          "avg_hold": 2.8
+        }
+      ],
+      "avg_sharpe": 0.09566666666666668
+    },
+    {
+      "config": {
+        "name": "Config A",
+        "stop_mult": 0.75,
+        "target_mult": 1.25,
+        "ruin_prob": 62.5,
+        "rr": "1.67:1"
+      },
+      "folds": [
+        {
+          "test_start": "2022-07-07",
+          "test_end": "2023-10-12",
+          "trades": 178,
+          "sharpe": 0.802,
+          "win_rate": 0.466,
+          "profit_factor": 2.143,
+          "total_return": 0.033,
+          "max_drawdown": 0.024,
+          "stop_exits_pct": 0.579,
+          "target_exits_pct": 0.393,
+          "time_exits_pct": 0.028,
+          "avg_hold": 2.7
+        },
+        {
+          "test_start": "2023-10-13",
+          "test_end": "2025-01-17",
+          "trades": 250,
+          "sharpe": 0.407,
+          "win_rate": 0.44,
+          "profit_factor": 1.139,
+          "total_return": 0.018,
+          "max_drawdown": 0.036,
+          "stop_exits_pct": 0.632,
+          "target_exits_pct": 0.36,
+          "time_exits_pct": 0.008,
+          "avg_hold": 2.7
+        },
+        {
+          "test_start": "2025-01-18",
+          "test_end": "2026-04-25",
+          "trades": 208,
+          "sharpe": 0.326,
+          "win_rate": 0.452,
+          "profit_factor": 1.109,
+          "total_return": 0.015,
+          "max_drawdown": 0.049,
+          "stop_exits_pct": 0.63,
+          "target_exits_pct": 0.365,
+          "time_exits_pct": 0.005,
+          "avg_hold": 2.6
+        }
+      ],
+      "avg_sharpe": 0.5116666666666667
+    },
+    {
+      "config": {
+        "name": "Config B",
+        "stop_mult": 0.5,
+        "target_mult": 1.0,
+        "ruin_prob": 67.0,
+        "rr": "2.0:1"
+      },
+      "folds": [
+        {
+          "test_start": "2022-07-07",
+          "test_end": "2023-10-12",
+          "trades": 194,
+          "sharpe": 0.764,
+          "win_rate": 0.49,
+          "profit_factor": 1.407,
+          "total_return": 0.032,
+          "max_drawdown": 0.028,
+          "stop_exits_pct": 0.531,
+          "target_exits_pct": 0.448,
+          "time_exits_pct": 0.021,
+          "avg_hold": 2.3
+        },
+        {
+          "test_start": "2023-10-13",
+          "test_end": "2025-01-17",
+          "trades": 264,
+          "sharpe": 0.909,
+          "win_rate": 0.485,
+          "profit_factor": 1.251,
+          "total_return": 0.041,
+          "max_drawdown": 0.033,
+          "stop_exits_pct": 0.557,
+          "target_exits_pct": 0.436,
+          "time_exits_pct": 0.008,
+          "avg_hold": 2.2
+        },
+        {
+          "test_start": "2025-01-18",
+          "test_end": "2026-04-25",
+          "trades": 223,
+          "sharpe": 0.029,
+          "win_rate": 0.475,
+          "profit_factor": 1.049,
+          "total_return": 0.0,
+          "max_drawdown": 0.044,
+          "stop_exits_pct": 0.57,
+          "target_exits_pct": 0.43,
+          "time_exits_pct": 0.0,
+          "avg_hold": 2.3
+        }
+      ],
+      "avg_sharpe": 0.5673333333333334
+    }
+  ]
+}

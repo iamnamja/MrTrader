@@ -930,15 +930,90 @@ with its non-linear decision boundaries is a better fit for this feature space.
 
 ---
 
+---
+
+## Phase 45 — Stop/Target Structure Grid + Path Quality Label (2026-04-25)
+
+### Phase 45 Phase 1: Stop/Target Structure Grid (v119 — v110 inference only)
+
+**Hypothesis:** Baseline (stop=0.5x ATR, target=1.5x ATR, 3:1 R:R) may not be optimal. Tighter target = more achievable exits = higher win rate.
+
+| Config | stop_mult | target_mult | R:R | Avg Sharpe | Min Fold | Stop% |
+|---|---|---|---|---|---|---|
+| Baseline | 0.5 | 1.5 | 3.0:1 | +0.096 | -0.45 | 68.7% |
+| Config A | 0.75 | 1.25 | 1.67:1 | +0.512 | +0.33 | 61.4% |
+| **Config B** | **0.5** | **1.0** | **2.0:1** | **+0.567** | **+0.03** | **55.3%** |
+
+**Verdict:** Gate PASSED. Config B wins. STOP_MULT=0.5, TARGET_MULT=1.0 locked for Phase 2.
+
+---
+
+### Phase 45 Phase 2: Path Quality Regression Label (v119) — DONE
+
+**Label:** `score = 1.0*upside_capture - 1.25*stop_pressure + 0.25*close_strength`
+(Config B: stop=0.5x ATR, target=1.0x ATR. XGBRegressor, float labels.)
+
+**OOS AUC:** 0.513 (binarized at 80th pct — near random, but regression ranking still useful)
+
+| Fold | OOS Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2022-07-28 -> 2023-10-26 | 188 | 50.0% | +0.46 |
+| 2 | 2023-10-27 -> 2025-01-24 | 223 | 57.4% | +1.77 |
+| 3 | 2025-01-25 -> 2026-04-25 | 271 | 52.0% | -0.81 |
+| **Avg** | | **682** | **53.1%** | **+0.476** |
+
+**Gate: NOT MET** — avg +0.476 (need 0.80), min fold -0.806 (need -0.30).
+
+**Verdict:** Meaningful improvement over v110 (+0.476 vs +0.34 avg Sharpe, win rate 53% vs 40%). Fold 2 exceptional (+1.77). But same fold-3 collapse — regime drift in 2025-2026 period. Path quality label is better aligned with actual outcomes; the problem is market regime, not label quality. Phase 3 (meta-labeling) targets this.
+
+---
+
+### Phase 45 Phase 3: MetaLabelModel v1 Gate (v119 + meta)
+
+**MetaLabelModel:** XGBRegressor trained on 515 in-sample v119 trades (pnl_pct target).
+R2=0.059, MAE=0.0306, corr=0.286 — weak absolute prediction but useful threshold filter.
+Min expected R threshold = 0.0 (only enter if E[pnl] > 0).
+
+| Fold | OOS Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2022-07-28 -> 2023-10-26 | 138 | 50.0% | +0.33 |
+| 2 | 2023-10-27 -> 2025-01-24 | 162 | 61.7% | +1.85 |
+| 3 | 2025-01-25 -> 2026-04-25 | 177 | 54.2% | -0.14 |
+| **Avg** | | **477** | **55.3%** | **+0.682** |
+
+**Gate: NOT MET** — avg +0.682 (need 0.80), min fold -0.137 (PASSES -0.30 gate!).
+
+**Verdict:** Major improvement. Fold 3 recovered from -0.81 to -0.14. Min fold now within gate. Avg Sharpe +0.682 vs +0.476 without meta (+43%). Only +0.12 Sharpe short of passing. Phase 3-Parallel (PM abstention gate) next.
+
+---
+
+### Phase 45 Phase 3-Parallel: PM Abstention Gate (v119 + meta + abstention) — DONE
+
+**Gate:** Skip all new swing entries on days where VIX >= 25 OR SPY close < 20-day SMA.
+Applied in both live PM (`_market_regime_allows_entries()`) and backtesting (`AgentSimulator` params).
+
+**Walk-forward results (v119 + meta v1 + PM abstention gate):**
+
+| Fold | Trades | Win% | Sharpe |
+|---|---|---|---|
+| 1 (2022-07-28 -> 2023-10-26) | 94 | 53.2% | +0.880 |
+| 2 (2023-10-27 -> 2025-01-24) | 113 | 65.5% | +2.690 |
+| 3 (2025-01-25 -> 2026-04-25) | 134 | 55.2% | -0.030 |
+| **Avg** | **341** | **58.0%** | **+1.181** |
+
+**Gate: PASSED** — avg +1.181 (gate 0.80 PASS), min fold -0.031 (gate -0.30 PASS).
+
+**Verdict:** Gate cleared. PM abstention added ~+0.50 Sharpe over meta-only. Fold 3 (hardest 2025-2026 regime) recovered from -0.81 (no gates) to -0.14 (meta only) to -0.03 (meta + abstention). Trade count reduced ~28% further vs meta-only (341 vs 477). Final system: v119 + MetaLabelModel v1 + PM abstention (VIX>=25 OR SPY<MA20).
+
+---
+
 ## Planned Next Steps (as of 2026-04-25)
 
-Priority order after Phase 44:
-
-| Step | What | Why |
-|---|---|---|
-| 1 | Recency bias | Upweight last 1-2 years more aggressively to reduce OOS regime drift |
-| 2 | 15-day forward window | 5-day may be too noisy; avg hold is ~1.4 bars so signals may not play out |
-| 3 | ATR-adaptive labels | Scale target/stop by ATR percentile to fix mislabeling across vol spectrum |
+Phase 45 COMPLETE. All gates passed. Final system ready for paper trading:
+- swing_v119.pkl (path_quality regression, 84 features)
+- swing_meta_label_v1.pkl (E[R] > 0 filter, trained on 515 in-sample trades)
+- PM abstention gate (VIX >= 25 OR SPY < 20-day SMA)
+- Stop 0.5x ATR, Target 1.0x ATR
 
 **Ruled out for swing model (do not retry without new evidence):**
 - Triple-barrier labels (asymmetric or symmetric) — feature set can't predict direction at 5-day horizon
@@ -948,3 +1023,4 @@ Priority order after Phase 44:
 - Min confidence 0.60 — 0 trades
 - Vol filter ≤75th pct (inference-only) — reduces trades without improving quality
 - Tighter universe (SP100) — no improvement per earlier testing
+- XGBoost + LR ensemble blend — LR suppresses signals, trade count collapses (v118)

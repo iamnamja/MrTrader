@@ -1,0 +1,50 @@
+
+[1m[36m============================================================[0m
+[1m[36m  Phase 45 — P1: Stop/Target Structure Grid (v119, inference-only)[0m
+[1m[36m============================================================[0m
+  Configs: 3  |  Folds: 3  |  Years: 5
+  Total backtests: 9
+  [32mOK[0m  Model: swing v110
+  Downloading 81 symbols (2021-03-27 -> 2026-04-25)...
+  [32mOK[0m  Loaded 81 symbols
+  [32mOK[0m  Folds: 3 | Test periods:
+    Fold 1: 2022-07-07 -> 2023-10-12
+    Fold 2: 2023-10-13 -> 2025-01-17
+    Fold 3: 2025-01-18 -> 2026-04-25
+
+[1m  Baseline -- stop=0.5x, target=1.5x (P(stop)~75%)[0m
+[2m  --------------------------------------------------------[0m
+    Running fold 1/3...C:\Projects\MrTrader\venv\Lib\site-packages\pydantic\_internal\_fields.py:149: UserWarning: Field "model_retraining_hour" has conflict with protected namespace "model_".
+
+You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ('settings_',)`.
+  warnings.warn(
+    Fold 1: 2022-07-07->2023-10-12  trades=167  Sharpe=[32m+0.46[0m  stop=65%  (438s)
+    Running fold 2/3...    Fold 2: 2023-10-13->2025-01-17  trades=243  Sharpe=[32m+0.28[0m  stop=69%  (487s)
+    Running fold 3/3...    Fold 3: 2025-01-18->2026-04-25  trades=187  Sharpe=[31m-0.45[0m  stop=72%  (531s)
+  [1m-> Avg Sharpe: [32m+0.096[0m
+
+[1m  Config A -- stop=0.75x, target=1.25x (P(stop)~62%)[0m
+[2m  --------------------------------------------------------[0m
+    Running fold 1/3...    Fold 1: 2022-07-07->2023-10-12  trades=178  Sharpe=[32m+0.80[0m  stop=58%  (425s)
+    Running fold 2/3...    Fold 2: 2023-10-13->2025-01-17  trades=250  Sharpe=[32m+0.41[0m  stop=63%  (472s)
+    Running fold 3/3...    Fold 3: 2025-01-18->2026-04-25  trades=208  Sharpe=[32m+0.33[0m  stop=63%  (527s)
+  [1m-> Avg Sharpe: [32m+0.512[0m
+
+[1m  Config B -- stop=0.5x, target=1.0x (P(stop)~67%)[0m
+[2m  --------------------------------------------------------[0m
+    Running fold 1/3...    Fold 1: 2022-07-07->2023-10-12  trades=194  Sharpe=[32m+0.76[0m  stop=53%  (422s)
+    Running fold 2/3...    Fold 2: 2023-10-13->2025-01-17  trades=264  Sharpe=[32m+0.91[0m  stop=56%  (464s)
+    Running fold 3/3...    Fold 3: 2025-01-18->2026-04-25  trades=223  Sharpe=[32m+0.03[0m  stop=57%  (563s)
+  [1m-> Avg Sharpe: [32m+0.567[0m
+
+[1m  RESULTS SUMMARY[0m
+[2m  --------------------------------------------------------[0m
+  Config         Avg Sharpe   Min Fold   Avg Trades  Avg Stop%
+  ----------------------------------------------------------
+  [0mBaseline           +0.096     -0.452          199      68.7%[0m
+  [32mConfig A           +0.512     +0.326          212      61.4%[0m
+  [32mConfig B           +0.567     +0.029          227      55.3%[0m << WINNER
+  [32mOK[0m  Winning config: Config B (stop=0.5×, target=1.0×)
+  [32mOK[0m  JSON saved to results\phase45\p1_grid_2026-04-25.json
+
+  Results written to docs\phase45\v119_results.md

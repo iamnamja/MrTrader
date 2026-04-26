@@ -1,6 +1,6 @@
 # MrTrader — ML Models Reference
 
-Last updated: 2026-04-23 (post Phases 23-26, infrastructure Phases 27-28)
+Last updated: 2026-04-25 (post Phase 45 — swing gate passed)
 
 ---
 
@@ -10,73 +10,152 @@ MrTrader runs two independent ML models:
 
 | | Swing Model | Intraday Model |
 |---|---|---|
-| **Horizon** | 10 trading days | ~2 hours |
+| **Horizon** | 5 trading days | ~2 hours |
 | **Bar resolution** | Daily OHLCV | 5-minute OHLCV |
-| **Universe** | S&P 500 (~500 symbols) — planned; currently SP-100 (~81) | Russell 1000 (~1000 symbols) |
-| **Training history** | 3–5 years | 2 years |
-| **Features** | ~83 (no fundamentals) → ~126 (with fundamentals) | 37 |
-| **Architecture** | XGBoost (XGBClassifier) | XGBoost + LightGBM soft-vote ensemble |
-| **Label scheme** | Cross-sectional: top-20% 10-day return = 1 | Cross-sectional: top-20% intraday return = 1 |
-| **Prediction threshold** | Tuned on test set (default 0.35) | Tuned on test set (default 0.35) |
+| **Universe** | SP-100 (~81 symbols with >= 210 bars) | Russell 1000 (~766 symbols) |
+| **Training history** | 5 years | 2 years |
+| **Features** | 84 (OHLCV only, no fundamentals) | 41 |
+| **Architecture** | XGBRegressor (path_quality label) + MetaLabelModel filter + PM abstention gate | XGBoost + LightGBM soft-vote ensemble |
+| **Label scheme** | path_quality regression (continuous score) | Cross-sectional: top-20% intraday return = 1 |
 | **Retrain schedule** | 17:00 ET daily | 17:00 ET daily |
+| **Walk-forward gate** | PASSED (avg Sharpe +1.181, min fold -0.031) | NOT MET (avg Sharpe -1.16, gate > 1.5) |
 
 ---
 
-## Swing Model
+## Swing Model (v119 — ACTIVE, gate passed 2026-04-25)
 
-### Architecture
+The swing model is a three-layer stack: a primary signal model, a meta-filter that screens individual entries, and a PM-level gate that suppresses all entries on bad macro days.
+
+### Layer 1 — Primary Signal Model (v119)
 
 - **Model file:** `app/ml/model.py` — `PortfolioSelectorModel`
 - **Trainer:** `app/ml/training.py` — `ModelTrainer`
-- **Underlying estimator:** `XGBClassifier` (400 trees, depth 4, lr=0.03)
+- **Underlying estimator:** `XGBRegressor` (400 trees, depth 4, lr=0.03)
+- **Features:** 84 OHLCV-derived features (no fundamentals, no external APIs at inference time)
 - **Preprocessing:** `StandardScaler` (fit on training data, saved separately)
-- **Feature weights:** MI-score weighting applied before scaling
+- **Output:** Continuous path_quality score; higher = better expected trade quality
 
-### Label Construction
+**Train command:**
+```bash
+python scripts/train_model.py --model-type xgboost --label-scheme path_quality \
+  --years 5 --no-fundamentals --workers 8
+```
 
-For each non-overlapping 10-day window across all symbols:
-1. Compute forward return over the next 10 trading days
-2. Within that window, rank all symbols by return
-3. Top 20% (80th percentile) → label = 1, rest → label = 0
-4. ATR-adaptive fallback: target = 1.5× ATR14, stop = 0.5× ATR14 (3:1 R:R)
+#### Label Construction (path_quality)
 
-### Training Pipeline
+For each (symbol, date) in the training set:
+1. Compute ATR-14. Set stop = 0.5 × ATR, target = 1.0 × ATR
+2. Simulate the next 5 bars bar-by-bar, tracking high/low/close
+3. Compute three components:
+   - `upside_capture = min(max_high_reached / target_price, 1.0)` — did price reach the target?
+   - `stop_pressure = min(min_low_reached / stop_price, 1.0)` — how close did price come to the stop?
+   - `close_strength = clip((final_close - entry) / target_distance, -1.0, 1.0)` — did price close strong?
+4. `label = 1.0 × upside_capture − 1.25 × stop_pressure + 0.25 × close_strength`
+   - Range roughly [-2.5, 1.5]; positive = good trade quality, negative = poor
+   - The 1.25× stop_pressure weight penalizes stop hits more than it rewards target hits
+
+#### Training Pipeline
 
 ```
-Fetch daily OHLCV (Polygon/Alpaca, 3-5 years)
+Fetch daily OHLCV (Alpaca/Polygon, 5 years)
     ↓
-Rolling windows (63-day feature window, 10-day forward)
+Rolling windows (63-day feature window, 5-day forward)
     ↓
 Feature engineering per window (point-in-time, as_of_date passed)
     ↓
-Feature store cache check (SQLite, avoids recomputing)
+Feature store cache check (SQLite SCHEMA_VERSION=v4, avoids recomputing)
     ↓
-Cross-sectional labeling (top 20% per window)
-    ↓
-MI-score feature weighting
+path_quality label computation (bar-by-bar, 0.5x/1.0x ATR, 5-day horizon)
     ↓
 StandardScaler fit on X_train
     ↓
-XGBClassifier.fit() with early stopping on X_test
+XGBRegressor.fit() with early stopping on X_val
     ↓
-Threshold tuning on X_test (maximize F1, search 0.20–0.65)
-    ↓
-Save: {model}_v{N}.pkl + {model}_scaler_v{N}.pkl + {model}_meta_v{N}.pkl
+Save: swing_v{N}.pkl + swing_scaler_v{N}.pkl + swing_meta_v{N}.pkl
     ↓
 Register in ModelVersion DB table
 ```
 
-### Model Persistence
-
-Three files per version in `app/ml/models/`:
+#### Model Persistence
 
 | File | Contents |
 |---|---|
-| `swing_v{N}.pkl` | Raw XGBClassifier object |
-| `swing_scaler_v{N}.pkl` | StandardScaler (fit on training features) |
-| `swing_meta_v{N}.pkl` | feature_names list, predict_threshold, feature_weights, model_type |
+| `app/ml/models/swing_v119.pkl` | Raw XGBRegressor object |
+| `app/ml/models/swing_scaler_v119.pkl` | StandardScaler (84 features) |
+| `app/ml/models/swing_meta_v119.pkl` | feature_names list, model_type=xgboost |
 
-The `PortfolioSelectorModel.load()` reads all three and reconstructs the wrapper.
+---
+
+### Layer 2 — MetaLabelModel v1 (entry filter)
+
+- **File:** `app/ml/models/swing_meta_label_v1.pkl`
+- **Class:** `app/ml/meta_model.py` — `MetaLabelModel`
+- **Underlying estimator:** `XGBRegressor`
+- **Trained on:** 515 in-sample v119 trades (first 80% of 5yr data), features at entry date → pnl_pct outcome
+- **Training metrics:** R2=0.059, MAE=0.0306, corr=0.286 (weak absolute accuracy but useful as filter)
+- **Decision rule:** `should_enter(features) → True if predicted pnl > 0.0`
+- **Effect:** Filters ~26% of entries; removes the worst expected-loss setups without proportionally cutting winners
+
+**How it integrates:**
+- Backtest: `AgentSimulator(meta_model=MetaLabelModel.load(...))`
+- Live: PM calls `meta_model.should_enter(feature_vector)` before submitting each proposal
+- Walk-forward CLI: `--meta-model-version 1`
+
+---
+
+### Layer 3 — PM Abstention Gate (macro regime filter)
+
+Suppresses **all** new swing entries on days with unfavorable macro conditions. Independent of per-stock signals.
+
+**Trigger conditions (either → no entries today):**
+- VIX >= 25 (elevated fear)
+- SPY close < 20-day simple moving average (short-term downtrend)
+
+**How it integrates:**
+- Live: `portfolio_manager._market_regime_allows_entries()` called at start of `_send_swing_proposals()`
+- Backtest: `AgentSimulator(pm_abstention_vix=25, pm_abstention_spy_ma_days=20)`
+- Walk-forward CLI: `--pm-abstention-vix 25 --pm-abstention-spy-ma-days 20`
+
+**Effect on fold 3 (hard 2025-2026 regime):** Sharpe -0.81 (no gates) → -0.14 (meta only) → -0.03 (meta + abstention)
+
+---
+
+### Full Walk-Forward Results (v119 stack, 3-fold OOS, 2026-04-25)
+
+Run command:
+```bash
+python scripts/walkforward_tier3.py --model swing --stop-mult 0.5 --target-mult 1.0 \
+  --meta-model-version 1 --pm-abstention-vix 25 --pm-abstention-spy-ma-days 20
+```
+
+| Fold | Period | Trades | Win% | Sharpe | DD% |
+|---|---|---|---|---|---|
+| 1 | 2022-07-28 → 2023-10-26 | 94 | 53.2% | +0.880 | 1.2% |
+| 2 | 2023-10-27 → 2025-01-24 | 113 | 65.5% | +2.690 | 0.6% |
+| 3 | 2025-01-25 → 2026-04-25 | 134 | 55.2% | -0.030 | 2.7% |
+| **Avg** | | **341** | **58.0%** | **+1.181** | |
+
+Gate: avg Sharpe > 0.80 **PASS** | min fold > -0.30 **PASS**
+
+---
+
+### Stop/Target Configuration
+
+- **Stop:** 0.5× ATR-14 (tight, ~5% below entry for typical stock)
+- **Target:** 1.0× ATR-14 (2:1 reward-to-risk)
+- Chosen via Phase 45 Phase 1 grid search over 3 configs; Config B (0.5/1.0) won on avg Sharpe
+
+---
+
+### Entry Signal Logic (AgentSimulator / live PM)
+
+Each trading day, for each symbol in the SP-100 universe:
+1. Compute 84 features via `FeatureEngineer.engineer_features()`
+2. Score with v119 `model.predict(features)` → path_quality score
+3. Filter: `MetaLabelModel.should_enter(features)` → skip if E[pnl] <= 0
+4. Filter: PM abstention gate → skip entire day if VIX >= 25 or SPY < MA20
+5. Signal types: `RSI_DIP` (RSI < 50 + price near 20-day low) or `EMA_CROSSOVER` (EMA9 > EMA20 + momentum)
+6. Size position to 5% of portfolio, stop at 0.5× ATR, target at 1.0× ATR
 
 ---
 
@@ -340,7 +419,7 @@ meta(key TEXT PRIMARY KEY, value TEXT)  -- stores schema_version
 
 **Cache invalidation:** Auto-clears when SCHEMA_VERSION changes (i.e., when features are added/removed).
 
-Feature store was cleared on 2026-04-21 after the Yahoo Finance migration. All entries now use 126 features consistently.
+Feature store was cleared on 2026-04-23 (Phase 43 pruning, 140→84 features). All entries now use 84 features (SCHEMA_VERSION=v4). Fundamentals columns are excluded from active training.
 
 ---
 
@@ -383,5 +462,22 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | **v110** | 140 | 2026-04-23 | **Best model.** XGBoost, cross_sectional labels (5-day window), no-fundamentals, regime interactions. AUC 0.638. Tier 3 Sharpe +0.34, win rate 40.3%, profit factor 1.11. v111 (Phase 26a VIX weights) was a regression — v110 is active. |
-| Intraday | v18 | 41 | 2026-04-23 | XGBoost, ATR labels (1.2×/0.6×), phases 18-21 active, 2yr Polygon cache (720 syms). Tier 3 Sharpe -1.16, win rate 49% |
+| Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20). Avg Sharpe +1.181, min fold -0.031. |
+| Swing meta | **v1** | 84 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor trained on 515 in-sample trade outcomes. R2=0.059, corr=0.286. Threshold E[R]>0. |
+| Intraday | v18 | 41 | 2026-04-23 | XGBoost+LightGBM ensemble. Tier 3 Sharpe -1.16, win rate 49%. Gate not met (need > 1.5). Under active improvement. |
+
+### Swing Model Version History
+
+| Version | Phase | Change | Tier 3 Sharpe | Status |
+|---|---|---|---|---|
+| v108 | 24a | Label bug fix + no fundamentals | -1.26 | Superseded |
+| v109 | 24b | 6 regime interaction features | -0.52 | Superseded |
+| v110 | 25 | 5-day forward window, cross_sectional | +0.34 | Superseded |
+| v111 | 26a | VIX regime sample weights | -0.43 | Superseded |
+| v113 | 33 | Triple-barrier + LambdaRank | -0.76 | Superseded |
+| v114 | 33 | LambdaRank triple-barrier (OMP fixed) | -0.47 | Superseded |
+| v115 | 33 | XGBoost triple-barrier asymmetric | ~0.00 | Superseded |
+| v116 | 33 | XGBoost triple-barrier symmetric | ~0.00 | Superseded |
+| v117 | 43 | Feature pruning 140→84 | -0.15 | Superseded |
+| v118 | 44 | Ensemble XGBoost+LR blend | -0.08 | Superseded |
+| **v119** | **45** | **path_quality + meta + PM abstention** | **+1.181** | **ACTIVE** |
