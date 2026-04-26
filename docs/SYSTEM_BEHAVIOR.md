@@ -171,17 +171,19 @@ Each 30-second scan checks open swing positions:
 | Tier 3 Sharpe | +0.34 (v110 — gate requires > 0.8) |
 | Key phase history | Phase 24a: label bug fix. Phase 24b: regime interactions. Phase 25: 5-day window. Phase 26a: VIX sample weights. |
 
-### Intraday Model (v22) — Updated 2026-04-26
+### Intraday Model (v23) — Updated 2026-04-26 ✅ GATE PASSED
 | Field | Value |
 |---|---|
-| Architecture | XGBClassifier + MetaLabelModel v1 + PM abstention gate |
+| Architecture | XGBClassifier + PM abstention gate (MetaLabelModel dropped — +0.000 contribution) |
 | Universe | Russell 1000 (~720 symbols with Polygon 5-min cache) |
-| Feature count | 42 |
+| Feature count | 50 (42 base + 8 Phase 47-5 quality features) |
 | Train period | 2 years of 5-min bars (Polygon cache) |
 | Retrain schedule | 17:00 ET daily (`scripts/retrain_intraday.py`) |
-| OOS AUC | 0.5438 |
-| Tier 3 Sharpe | +0.301 avg (gate requires > 0.80) — all 3 folds positive |
-| Status | Not production-ready. Phase 47 improvement in progress (XGBRanker, label adjustments). |
+| OOS AUC | 0.5995 |
+| Tier 3 Sharpe | **+1.275 avg** (gate > 0.80 ✅, min fold +0.79 > −0.30 ✅) |
+| Label | path_quality = 1.0×upside_capture − **0.50**×stop_pressure + 0.25×close_strength |
+| Exit config | Stop = **0.4**× prior-day range, Target = **0.8**× prior-day range (~2:1 R:R) |
+| Status | **Gate passed. Paper trading candidate.** |
 
 ---
 
@@ -238,14 +240,16 @@ Operates on 5-min bars. Per trading day:
 
 Gate requires Tier 3 Sharpe > 0.8. Currently at +0.34. Need +0.46 more.
 
-### Intraday v22 (run 2026-04-26) — Current Best
+### Intraday v23 (run 2026-04-26) — ✅ GATE PASSED
 
 | Fold | Trades | Win Rate | Sharpe | Notes |
 |---|---|---|---|---|
-| Fold 1 (Oct '24–Apr '25) | 152 | 51.3% | +0.24 | Trending market |
-| Fold 2 (Apr '25–Oct '25) | 222 | 49.5% | +0.43 | Sideways market |
-| Fold 3 (Oct '25–Apr '26) | 152 | 52.6% | +0.23 | Trending market |
-| **Avg** | **175** | **51.1%** | **+0.301** | Gate requires > 0.80 |
+| Fold 1 (Oct '24–Apr '25) | 150 | 44.0% | +0.79 | |
+| Fold 2 (Apr '25–Oct '25) | 226 | 43.8% | +1.30 | |
+| Fold 3 (Oct '25–Apr '26) | 154 | 50.6% | +1.73 | |
+| **Avg** | **530** | **46.2%** | **+1.275** | **Gate > 0.80 ✅** |
+
+Phase 47-3 changes: target 1.2x→0.8x, stop 0.6x→0.4x prior-day range; stop_pressure coeff −1.25→−0.50. Meta-model dropped (+0.000 contribution).
 
 v22 stack: XGBClassifier + MetaLabelModel v1 + PM abstention gate (VIX≥25 OR SPY<MA20). All folds positive for first time. Phase 47 targeting +0.80.
 

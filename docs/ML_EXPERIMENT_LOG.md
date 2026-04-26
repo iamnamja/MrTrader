@@ -1126,3 +1126,19 @@ Ran 7 diagnostic cuts on 526 v22 walk-forward trades. Key findings:
 
 **Status**: 🔄 Retrain in progress → v23
 
+
+**Result — v23 Walk-Forward (2026-04-26):**
+
+| Fold | Test Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | Oct '24–Apr '25 | 150 | 44.0% | +0.79 |
+| 2 | Apr '25–Oct '25 | 226 | 43.8% | +1.30 |
+| 3 | Oct '25–Apr '26 | 154 | 50.6% | +1.73 |
+| **Avg** | | **530** | **46.2%** | **+1.275** |
+
+**✅ GATE PASSED** — avg Sharpe +1.275 > 0.80, min fold +0.79 > −0.30.
+
+AUC: 0.5438 → 0.5995 (+0.056). Win rate dropped 51%→46% but Sharpe nearly quadrupled — confirms the label fix drove improved exit quality (more target hits, better R:R), not just better classification.
+
+**Verdict: ✅ KEEP — gate passed, v23 is intraday paper trading candidate.**
+
