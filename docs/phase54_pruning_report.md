@@ -69,3 +69,12 @@ Pruning threshold: 0.005
 
 ## Walk-Forward Gate
 Gate: avg Sharpe >= +1.275 (v23 baseline). Must not regress.
+## Implementation Note
+
+`is_open_session` was removed from both:
+1. `FEATURE_NAMES` list (line 546 in `intraday_features.py`)
+2. The feature computation itself (line 288) — `feats["is_open_session"] = ...` line deleted
+
+Removing only from FEATURE_NAMES would still include the feature at training time
+(the training pipeline builds feature names from the feats dict keys, not FEATURE_NAMES).
+Both locations must be updated to truly prune a feature.
