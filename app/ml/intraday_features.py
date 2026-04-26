@@ -285,6 +285,7 @@ def compute_intraday_features(
         minutes_elapsed = float(min(len(bars) * 5, 390))
     feats["time_of_day"] = minutes_elapsed / 390.0
     feats["minutes_since_open"] = minutes_elapsed
+    feats["is_open_session"] = float(minutes_elapsed <= 30)    # first 30 min: gap-fill / auction
     feats["is_close_session"] = float(minutes_elapsed >= 330)  # last 60 min: MOC / closing imbalance
 
     # ── Daily vol context ─────────────────────────────────────────────────
@@ -542,7 +543,7 @@ FEATURE_NAMES = [
     # Market context
     "spy_session_return", "spy_rsi_14", "rel_vol_spy",
     # Session timing
-    "time_of_day", "minutes_since_open", "is_close_session",
+    "time_of_day", "minutes_since_open", "is_open_session", "is_close_session",
     # Daily vol context
     "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
     # Institutional activity

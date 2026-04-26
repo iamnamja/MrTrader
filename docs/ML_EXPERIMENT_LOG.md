@@ -1296,9 +1296,28 @@ Extracted feature importances from v26 (XGBClassifier, 50 features).
 **Result:** Only `is_open_session` has zero importance. All other 49 features have meaningful signal.
 This validates the Phase 47-5 quality feature pack — every added feature contributes.
 
-**Change:** Removed `is_open_session` from `FEATURE_NAMES` in `app/ml/intraday_features.py`.
+**Walk-forward results (v28, 49 features, 2026-04-27)**:
+| Fold | Test Period | Trades | Sharpe | vs v23 baseline |
+|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | +0.47 | +0.79 → -0.32 |
+| 2 | 2025-04-17 → 2025-10-16 | 252 | +1.68 | +1.30 → +0.38 |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | -0.25 | +1.73 → **-1.98** |
+| **Avg** | | **756** | **0.634** | **+1.275 → -0.641** |
 
-**Retrain:** v27 in progress (49 features). Walk-forward gate: avg Sharpe >= +1.275.
+**Gate**: FAIL — avg Sharpe 0.634 (need > 0.80), Fold 3 -0.25 (near -0.30 floor).
+
+**Verdict**: ❌ Removing `is_open_session` caused a severe regression in Fold 3 (-1.98 Sharpe drop).
+Despite having zero XGBoost importance in v26 (liquidity-filtered model), it carries meaningful
+predictive signal in the full-universe model. The feature captures whether an entry happens in the
+first 30 minutes — a high-noise period where the model should be more conservative.
+
+**Critical lesson**: Zero XGBoost importance in one model variant does not imply zero importance
+in all model variants. v26's zero importance was specific to its top-300 liquidity universe (large-
+cap stocks with more stable open sessions). The full Russell 1000 universe relies on `is_open_session`
+to identify early-session high-variance entries that are correctly deprioritized.
+
+**Action**: Reverted `is_open_session` to FEATURE_NAMES and computation. Retraining v29 (50 features)
+to restore active model. Phase 54 is a negative result — the 50-feature set was correct as-is.
 
 **Report:** `docs/phase54_pruning_report.md`
 
