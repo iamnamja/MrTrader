@@ -755,10 +755,10 @@ def _symbol_to_rows(
         final_close = entry
         for _, fbar in future_bars.iterrows():
             h = float(fbar["high"])
-            l = float(fbar["low"])
+            lo = float(fbar["low"])
             c = float(fbar["close"])
             max_high = max(max_high, h)
-            min_low = min(min_low, l)
+            min_low = min(min_low, lo)
             final_close = c
 
         target_dist = entry * target_pct_use

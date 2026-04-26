@@ -241,10 +241,10 @@ def _process_symbol_windows_worker(
                 if len(bar) == 0:
                     continue
                 h = float(bar["high"].iloc[0])
-                l = float(bar["low"].iloc[0])
+                lo = float(bar["low"].iloc[0])
                 c = float(bar["close"].iloc[0])
                 max_high = max(max_high, h)
-                min_low = min(min_low, l)
+                min_low = min(min_low, lo)
                 final_close = c
             upside_capture = min((max_high - entry_price) / (entry_price * target_pct + 1e-8), 1.0)
             stop_pressure = min((entry_price - min_low) / (entry_price * stop_pct + 1e-8), 1.0)
@@ -984,10 +984,10 @@ class ModelTrainer:
                     if len(bar) == 0:
                         continue
                     h = float(bar["high"].iloc[0])
-                    l = float(bar["low"].iloc[0])
+                    lo = float(bar["low"].iloc[0])
                     c = float(bar["close"].iloc[0])
                     max_high = max(max_high, h)
-                    min_low = min(min_low, l)
+                    min_low = min(min_low, lo)
                     final_close = c
                 upside_capture = min((max_high - entry_price) / (entry_price * target_pct + 1e-8), 1.0)
                 stop_pressure = min((entry_price - min_low) / (entry_price * stop_pct + 1e-8), 1.0)

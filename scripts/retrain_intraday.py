@@ -37,7 +37,6 @@ def prune_old_model_files(model_dir: Path, keep: int = KEEP_MODEL_VERSIONS) -> N
 
 
 def main() -> int:
-    import os as _os
     parser = argparse.ArgumentParser(description="Intraday model retraining")
     parser.add_argument("--days", type=int, default=730)
     parser.add_argument("--model-dir", default="app/ml/models")
