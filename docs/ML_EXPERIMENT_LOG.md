@@ -1088,3 +1088,41 @@ Quant consultation (ChatGPT + Claude independent reviews) converged on the same 
 3. Meta-model marginal contribution likely near-zero (Phase 5 cut will confirm)
 
 **Gate:** avg Sharpe ≥ +0.80. Currently +0.301. If ceiling is +0.60 on OHLCV-only, will document and lower gate with rationale.
+
+---
+
+## Phase 47: Experiments (2026-04-26)
+
+### Phase 0: Diagnostic (Complete — 2026-04-26)
+
+Ran 7 diagnostic cuts on 526 v22 walk-forward trades. Key findings:
+1. **Reversion bias**: Inside-ORB win 56.6% vs ORB-breakout 33.3%
+2. **True R:R 1.20:1**: 58% time exits, only 10.6% target hits — target too far for 2h window
+3. **Meta-model: +0.000 Sharpe** exactly — confirmed dead weight
+4. **Stop-pressure label bias**: Stop-zone-touched trades win 3.1% vs 66.8% for clean trades
+
+**Revised experiment ordering**: Phase 3 elevated to execute before Phase 2 (fix labels before training ranker).
+
+---
+
+### Phase 1: Meta-Model Drop (No Retrain — 2026-04-26)
+
+**Change**: Drop MetaLabelModel v1 from intraday stack.
+**Evidence**: Diagnostic Cut 5 showed exactly +0.000 Sharpe contribution across all 3 folds (R2=0.001).
+**Result**: No Sharpe change (expected). Stack going forward: v22 XGBClassifier + PM abstention gate only.
+
+---
+
+### Phase 3: Stop/Target Compression + Stop_Pressure Fix → v23 (2026-04-26)
+
+**Baseline**: v22 avg Sharpe +0.301, 58% time exits, 10.6% target hit rate, true R:R 1.20:1
+
+**Changes**:
+1. `ATR_MULT_STOP`: 0.6 → 0.4 (tighter stop)
+2. `ATR_MULT_TARGET`: 1.2 → 0.8 (closer target — reachable within 2h window)
+3. `stop_pressure` coefficient in `path_quality`: −1.25 → −0.50 (reduce reversion bias)
+
+**Hypothesis**: More target hits → higher win rate → better Sharpe. Reduced stop_pressure penalty → model no longer exclusively selects low-volatility inside-ORB setups.
+
+**Status**: 🔄 Retrain in progress → v23
+
