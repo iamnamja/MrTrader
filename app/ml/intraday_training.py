@@ -191,14 +191,22 @@ class IntradayModelTrainer:
             sort_idx = np.argsort(raw_train[:, 0], kind="stable")
             X_train_r = X_train[sort_idx]
             y_ranker = raw_scores[sort_idx]
-            sample_weight_r = sample_weight[sort_idx] if sample_weight is not None else None
             # Compute groups: count of samples per unique day (in sorted order)
             sorted_day_ords = raw_train[sort_idx, 0]
-            _, group_counts = np.unique(sorted_day_ords, return_counts=True)
+            unique_days, group_counts = np.unique(sorted_day_ords, return_counts=True)
+            # XGBRanker expects one weight per *group* (day), not per sample.
+            # Use mean recency weight for each day.
+            if sample_weight is not None:
+                sw_sorted = sample_weight[sort_idx]
+                day_weights = np.array([
+                    float(sw_sorted[sorted_day_ords == d].mean()) for d in unique_days
+                ], dtype=np.float32)
+            else:
+                day_weights = None
             logger.info("XGBRanker: %d groups (days), score range [%.3f, %.3f]",
                         len(group_counts), float(y_ranker.min()), float(y_ranker.max()))
             self.model.train(X_train_r, y_ranker, feature_names,
-                             sample_weight=sample_weight_r,
+                             sample_weight=day_weights,
                              groups=group_counts.astype(np.int32))
         else:
             # HPO: tune XGBoost hyperparameters with Optuna (50 trials, CV on train)

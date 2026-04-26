@@ -14,7 +14,7 @@ MrTrader runs two independent ML models:
 | **Bar resolution** | Daily OHLCV | 5-minute OHLCV |
 | **Universe** | SP-100 (~81 symbols with >= 210 bars) | Russell 1000 (~766 symbols) |
 | **Training history** | 5 years | 2 years |
-| **Features** | 84 (OHLCV only, no fundamentals) | 50 |
+| **Features** | 84 (OHLCV only, no fundamentals) | 42 (v23); 50 after Phase 47-5 retrain |
 | **Architecture** | XGBRegressor (path_quality label) + MetaLabelModel filter + PM abstention gate | XGBClassifier + PM abstention gate (MetaLabelModel dropped — +0.000 contribution) |
 | **Label scheme** | path_quality regression (continuous score) | path_quality regression → cross-sectional top-20% = label 1 |
 | **Retrain schedule** | 17:00 ET daily | 17:00 ET daily |
@@ -173,7 +173,7 @@ The meta-label model (v1) was dropped in Phase 47 — confirmed +0.000 Sharpe co
 - **Trainer:** `app/ml/intraday_training.py` — `IntradayModelTrainer`
 - **Underlying estimator:** XGBClassifier (binary classification)
 - **OOS AUC:** 0.5995
-- **Features:** 50 (42 base + 8 Phase 47-5 quality/structure features)
+- **Features:** 42 (trained before Phase 47-5 additions; inference computes 50, model selects its 42 by name)
 - **Retrain command:** `python scripts/retrain_intraday.py --days 730`
 
 ### PM Abstention Gate
@@ -236,7 +236,7 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 | v19 | 46-A | Binary ATR labels (1.2x/0.6x range) | -0.875 | 2 | Superseded — too sparse |
 | v20 | 46-A | path_quality regression label | -0.138 | 2 | Superseded — ORB gate blocked |
 | v22 | 46 full | Soft ORB gate + path_quality + meta + abstention | +0.301 | 175 | Superseded |
-| **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50 + 50 features** | **+1.275** | **177** | **Active ✅** |
+| **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50** | **+1.275** | **177** | **Active ✅** |
 
 ### What Was Ruled Out (Intraday)
 

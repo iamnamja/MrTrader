@@ -223,6 +223,11 @@ class PortfolioSelectorModel:
             else:
                 qid = np.zeros(len(X_scaled), dtype=np.int32)
                 logger.warning("XGBRanker: no groups supplied — treating all samples as one group")
+            # Expand per-group sample_weight to per-sample (XGBRanker takes per-sample weights)
+            if "sample_weight" in fit_kwargs and fit_kwargs["sample_weight"] is not None:
+                group_w = fit_kwargs["sample_weight"]
+                if len(group_w) == len(groups):
+                    fit_kwargs["sample_weight"] = np.repeat(group_w, groups).astype(np.float32)
             self.model.fit(X_scaled, y, qid=qid, **fit_kwargs)
             logger.info("XGBRanker trained")
         elif self.model_type == "lgbm" and X_val is not None and y_val is not None:
