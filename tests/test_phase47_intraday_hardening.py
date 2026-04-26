@@ -77,6 +77,13 @@ class TestPMAbstentionGatePresence:
             "daily_bars must be passed to compute_intraday_features() for vol context"
         )
 
+    def test_atr_based_stop_target_in_proposals(self):
+        """Intraday proposals must use 0.4x/0.8x prior-day-range stops (not fixed pct)."""
+        from app.agents.portfolio_manager import PortfolioManager
+        src = inspect.getsource(PortfolioManager.select_intraday_instruments)
+        assert "0.4 * prior_range" in src, "Stop must be 0.4× prior-day range"
+        assert "0.8 * prior_range" in src, "Target must be 0.8× prior-day range"
+
 
 # ── Feature alignment ─────────────────────────────────────────────────────────
 
