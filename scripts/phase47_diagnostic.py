@@ -43,6 +43,17 @@ def _warn(msg): print(f"  \033[33mWARN\033[0m  {msg}")
 def _info(msg): print(f"  {msg}")
 
 
+def _safe_qcut(series, q, label_prefix="Q"):
+    """qcut that handles duplicate edges by dropping them and auto-labels."""
+    try:
+        _, bins = pd.qcut(series, q=q, retbins=True, duplicates="drop")
+        n_bins = len(bins) - 1
+        labels = [f"{label_prefix}{i+1}" for i in range(n_bins)]
+        return pd.qcut(series, bins=bins, labels=labels, duplicates="drop")
+    except Exception:
+        return pd.Series(["All"] * len(series), index=series.index)
+
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_model():
@@ -231,7 +242,7 @@ def cut1_momentum_vs_reversion(df):
     # Also check: within breakout trades, does momentum (price_momentum > 0) help?
     lines.append("\n**Win rate by price_momentum quintile (across all trades):**\n")
     df2 = df.copy()
-    df2["mom_quintile"] = pd.qcut(df2["price_momentum"], q=5, labels=["Q1(low)", "Q2", "Q3", "Q4", "Q5(high)"], duplicates="drop")
+    df2["mom_quintile"] = _safe_qcut(df2["price_momentum"], q=5, label_prefix="Q")
     grp2 = df2.groupby("mom_quintile", observed=True).agg(
         n=("winner", "count"), win_rate=("winner", "mean"), avg_pnl=("pnl_pct", "mean")
     ).round(4)
@@ -316,7 +327,7 @@ def cut3_regime_gates(df):
 
     # Proxy VIX from atr_norm quintiles (we don't store VIX per trade without yfinance)
     df2 = df.copy()
-    df2["atr_quintile"] = pd.qcut(df2["atr_norm"], q=5, labels=["Low vol", "Q2", "Q3", "Q4", "High vol"], duplicates="drop")
+    df2["atr_quintile"] = _safe_qcut(df2["atr_norm"], q=5, label_prefix="ATR_Q")
     grp = df2.groupby("atr_quintile", observed=True).agg(
         n=("winner", "count"), win_rate=("winner", "mean"), avg_pnl=("pnl_pct", "mean")
     ).round(4)
@@ -349,19 +360,15 @@ def cut4_feature_stratification(df):
     lines = ["### Cut 4 — Feature Stratification (Which Features Carry the Edge)\n"]
 
     df2 = df.copy()
-    df2["mom_quintile"] = pd.qcut(df2["cs_rank_momentum"], q=5,
-                                   labels=["Q1(weakest)", "Q2", "Q3", "Q4", "Q5(strongest)"],
-                                   duplicates="drop")
+    df2["mom_quintile"] = _safe_qcut(df2["cs_rank_momentum"], q=5, label_prefix="MomQ")
     grp = df2.groupby("mom_quintile", observed=True).agg(
         n=("winner", "count"), win_rate=("winner", "mean"), avg_pnl=("pnl_pct", "mean")
     ).round(4)
     lines.append("**Win rate by cross-sectional momentum rank quintile:**\n")
     lines.append(grp.to_markdown())
 
-    # orb_position decile
-    df2["orb_pos_decile"] = pd.qcut(df2["orb_position"], q=5,
-                                     labels=["D1(low)", "D2", "D3", "D4", "D5(high)"],
-                                     duplicates="drop")
+    # orb_position quintile
+    df2["orb_pos_decile"] = _safe_qcut(df2["orb_position"], q=5, label_prefix="OrbQ")
     grp2 = df2.groupby("orb_pos_decile", observed=True).agg(
         n=("winner", "count"), win_rate=("winner", "mean"), avg_pnl=("pnl_pct", "mean")
     ).round(4)
@@ -369,9 +376,7 @@ def cut4_feature_stratification(df):
     lines.append(grp2.to_markdown())
 
     # Volume surge
-    df2["vol_quintile"] = pd.qcut(df2["volume_surge"], q=5,
-                                   labels=["Q1(low vol)", "Q2", "Q3", "Q4", "Q5(high vol)"],
-                                   duplicates="drop")
+    df2["vol_quintile"] = _safe_qcut(df2["volume_surge"], q=5, label_prefix="VolQ")
     grp3 = df2.groupby("vol_quintile", observed=True).agg(
         n=("winner", "count"), win_rate=("winner", "mean"), avg_pnl=("pnl_pct", "mean")
     ).round(4)
@@ -592,25 +597,45 @@ def main():
     print("  Phase 47 — Diagnostic Dive (Phase 0)")
     print("="*62 + "\n")
 
-    model, version = load_model()
-    meta_model = load_meta_model()
-    symbols_data, spy_data = load_data()
+    CACHE_DIR = ROOT / "results" / "phase47"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    sim_cache = CACHE_DIR / "diagnostic_sim_cache.pkl"
 
-    print("\n[Step 1] Running 3 folds WITH meta-model + abstention gate...")
-    all_fold_trades_with_meta = []
-    sharpes_with_meta = []
-    for start, end, fold_id in FOLDS:
-        trades, sharpe = run_fold(model, symbols_data, spy_data, start, end, fold_id,
-                                   meta_model=meta_model, pm_vix=25.0, pm_spy_ma=20)
-        all_fold_trades_with_meta.append((fold_id, trades))
-        sharpes_with_meta.append(sharpe)
+    if sim_cache.exists():
+        _ok(f"Loading cached simulation results from {sim_cache.name}")
+        import pickle as _pkl
+        with open(sim_cache, "rb") as _f:
+            _cache = _pkl.load(_f)
+        all_fold_trades_with_meta = _cache["trades_with_meta"]
+        sharpes_with_meta = _cache["sharpes_with_meta"]
+        sharpes_no_meta = _cache["sharpes_no_meta"]
+    else:
+        model, version = load_model()
+        meta_model = load_meta_model()
+        symbols_data, spy_data = load_data()
 
-    print("\n[Step 2] Running 3 folds WITHOUT meta-model (abstention gate kept)...")
-    sharpes_no_meta = []
-    for start, end, fold_id in FOLDS:
-        trades_nm, sharpe_nm = run_fold(model, symbols_data, spy_data, start, end, fold_id,
-                                         meta_model=None, pm_vix=25.0, pm_spy_ma=20)
-        sharpes_no_meta.append(sharpe_nm)
+        print("\n[Step 1] Running 3 folds WITH meta-model + abstention gate...")
+        all_fold_trades_with_meta = []
+        sharpes_with_meta = []
+        for start, end, fold_id in FOLDS:
+            trades, sharpe = run_fold(model, symbols_data, spy_data, start, end, fold_id,
+                                       meta_model=meta_model, pm_vix=25.0, pm_spy_ma=20)
+            all_fold_trades_with_meta.append((fold_id, trades))
+            sharpes_with_meta.append(sharpe)
+
+        print("\n[Step 2] Running 3 folds WITHOUT meta-model (abstention gate kept)...")
+        sharpes_no_meta = []
+        for start, end, fold_id in FOLDS:
+            trades_nm, sharpe_nm = run_fold(model, symbols_data, spy_data, start, end, fold_id,
+                                             meta_model=None, pm_vix=25.0, pm_spy_ma=20)
+            sharpes_no_meta.append(sharpe_nm)
+
+        import pickle as _pkl
+        with open(sim_cache, "wb") as _f:
+            _pkl.dump({"trades_with_meta": all_fold_trades_with_meta,
+                       "sharpes_with_meta": sharpes_with_meta,
+                       "sharpes_no_meta": sharpes_no_meta}, _f)
+        _ok(f"Simulation results cached → {sim_cache.name}")
 
     print("\n[Step 3] Building trade DataFrame for feature analysis...")
     df = build_trade_df(all_fold_trades_with_meta)
