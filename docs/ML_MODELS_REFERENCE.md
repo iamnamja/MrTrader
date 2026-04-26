@@ -153,7 +153,7 @@ Each trading day, for each symbol in the SP-100 universe:
 1. Compute 84 features via `FeatureEngineer.engineer_features()`
 2. Score with v119 `model.predict(features)` → path_quality score
 3. Filter: `MetaLabelModel.should_enter(features)` → skip if E[pnl] <= 0
-4. Filter: PM abstention gate → skip entire day if VIX >= 25 or SPY < MA20
+4. Filter: PM abstention gate → skip entire day if VIX >= 25, SPY < MA20, or SPY 5d return <= 0 (Phase 55)
 5. Signal types: `RSI_DIP` (RSI < 50 + price near 20-day low) or `EMA_CROSSOVER` (EMA9 > EMA20 + momentum)
 6. Size position to 5% of portfolio, stop at 0.5× ATR, target at 1.0× ATR
 
@@ -602,7 +602,7 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20). Avg Sharpe +1.181, min fold -0.031. |
+| Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20 or SPY 5d<=0). Avg Sharpe +1.092 (Phase 55 gate), Fold 3 improved -0.03→+0.08. |
 | Swing meta | **v1** | 84 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor trained on 515 in-sample trade outcomes. R2=0.059, corr=0.286. Threshold E[R]>0. |
 | Intraday | **v23** | 50 | 2026-04-26 | **Active — ✅ GATE PASSED.** XGBClassifier, path_quality (0.4x/0.8x prior-day range, stop_pressure coeff −0.50) + PM abstention gate. MetaLabelModel dropped (+0.000 contribution). Avg Sharpe +1.275 (min +0.79). Paper trading candidate. |
 | Intraday meta | **v1** | 42 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor on 810 in-sample trades. R2=0.001 (very weak). Likely to be dropped in Phase 47. |
