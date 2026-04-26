@@ -1,7 +1,7 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (38 total):
+Features (50 total — Phase 47-5 added 8 new features):
   ── Price / structure ──────────────────────────────────────────────────────
   orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
@@ -63,6 +63,16 @@ Features (38 total):
   daily_vol_percentile  Realized vol percentile vs 52-week range [0,1]
   daily_vol_regime      Short/long vol ratio — expanding vs contracting
   daily_parkinson_vol   Parkinson high-low vol estimator (annualised)
+
+  ── Phase 47-5: Quality / structure features ──────────────────────────────
+  trend_efficiency      Net displacement / total path in bars so far (1=perfectly linear)
+  green_bar_ratio       Fraction of bars that closed up (buy pressure proxy)
+  above_vwap_ratio      Fraction of bars where close > rolling VWAP (persistence above fair value)
+  pullback_from_high    (session_high - close) / session_high — distance from peak
+  range_vs_20d_avg      Today's 5-min range vs 20-day avg range (volatility expansion)
+  rel_strength_vs_spy   Stock session_return - spy_session_return (alpha vs benchmark)
+  vol_x_momentum        volume_surge × session_return interaction (volume-confirmed momentum)
+  gap_followthrough     gap_pct × session_return — measures if gap direction continued
 """
 
 import logging
@@ -301,6 +311,53 @@ def compute_intraday_features(
         feats["whale_candle"] = 1.0 if (_atr_val > 0 and _body > 2.0 * _atr_val) else 0.0
     except Exception:
         feats["whale_candle"] = 0.0
+
+    # ── Phase 47-5: Quality / structure features ─────────────────────────────
+    # trend_efficiency: net displacement / total path (1=perfectly linear, 0=choppy)
+    try:
+        net = abs(closes[-1] - closes[0])
+        total_path = float(np.sum(np.abs(np.diff(closes))))
+        feats["trend_efficiency"] = float(net / (total_path + 1e-8))
+    except Exception:
+        feats["trend_efficiency"] = 0.5
+
+    # green_bar_ratio: fraction of up-closes (cum_delta already counts up-closes vs open)
+    feats["green_bar_ratio"] = float(np.mean(closes > opens))
+
+    # above_vwap_ratio: fraction of bars where each close > running VWAP
+    try:
+        bar_vwaps = cum_tp_vol / np.maximum(cum_vol, 1e-8)
+        feats["above_vwap_ratio"] = float(np.mean(closes > bar_vwaps))
+    except Exception:
+        feats["above_vwap_ratio"] = 0.5
+
+    # pullback_from_high: (session_high - close) / session_high
+    feats["pullback_from_high"] = float(
+        (session_high - last_close) / session_high if session_high > 0 else 0.0
+    )
+
+    # range_vs_20d_avg: today's total H-L range vs 20-day avg
+    try:
+        if daily_bars is not None and len(daily_bars) >= 5:
+            d_ranges = (daily_bars["high"].values[-20:] - daily_bars["low"].values[-20:]).astype(float)
+            avg_daily_range = float(d_ranges.mean()) if len(d_ranges) > 0 else last_close * 0.01
+            today_range = session_high - session_low
+            feats["range_vs_20d_avg"] = float(today_range / (avg_daily_range + 1e-8))
+        else:
+            feats["range_vs_20d_avg"] = 1.0
+    except Exception:
+        feats["range_vs_20d_avg"] = 1.0
+
+    # rel_strength_vs_spy: alpha vs SPY over session so far
+    stock_session_ret = feats.get("session_return", 0.0)
+    spy_session_ret = feats.get("spy_session_return", 0.0)
+    feats["rel_strength_vs_spy"] = float(stock_session_ret - spy_session_ret)
+
+    # vol_x_momentum: volume_surge × session_return interaction
+    feats["vol_x_momentum"] = float(feats.get("volume_surge", 1.0) * stock_session_ret)
+
+    # gap_followthrough: gap_pct × session_return — positive = gap direction held
+    feats["gap_followthrough"] = float(feats.get("gap_pct", 0.0) * stock_session_ret)
 
     return feats
 

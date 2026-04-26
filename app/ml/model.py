@@ -15,7 +15,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier, XGBRegressor
+from xgboost import XGBClassifier, XGBRanker, XGBRegressor
 
 try:
     from lightgbm import LGBMClassifier, LGBMRanker
@@ -42,8 +42,25 @@ class PortfolioSelectorModel:
         self._lr_model: Optional[LogisticRegression] = None  # second estimator for ensemble
         self._lgbm_model = None  # second estimator for lgbm_ensemble
         self._is_regression = False  # set True when training on float return labels
+        self._is_ranker = False      # set True for XGBRanker (uses predict not predict_proba)
 
-        if model_type == "lgbm_ensemble":
+        if model_type == "xgboost_ranker":
+            self.model = XGBRanker(
+                objective="rank:pairwise",
+                n_estimators=400,
+                max_depth=4,
+                learning_rate=0.03,
+                subsample=0.7,
+                colsample_bytree=0.6,
+                min_child_weight=10,
+                gamma=0.1,
+                reg_alpha=0.1,
+                reg_lambda=1.5,
+                random_state=42,
+                nthread=-1,
+                verbosity=0,
+            )
+        elif model_type == "lgbm_ensemble":
             if not _LGBM_AVAILABLE:
                 raise ImportError("lightgbm not installed — pip install lightgbm")
             self.model = XGBClassifier(
@@ -149,12 +166,18 @@ class PortfolioSelectorModel:
             self.model_type, X.shape[0], X.shape[1],
         )
 
+        # Ranker mode: XGBRanker uses predict() not predict_proba(); route same as regression
+        if self.model_type == "xgboost_ranker":
+            self._is_ranker = True
+            self._is_regression = True  # predict() uses regression path (score normalization)
+            scale_pos_weight = None
+
         # Regression mode: float labels (raw returns) → swap to XGBRegressor
-        self._is_regression = (
+        elif (
             np.issubdtype(y.dtype, np.floating)
             and not np.all(np.isin(y, [0.0, 1.0]))
-        )
-        if self._is_regression:
+        ):
+            self._is_regression = True
             logger.info("Regression mode detected (float labels) — using XGBRegressor")
             self.model = XGBRegressor(
                 n_estimators=400, max_depth=4, learning_rate=0.03,
@@ -192,7 +215,17 @@ class PortfolioSelectorModel:
         if sample_weight is not None:
             fit_kwargs["sample_weight"] = sample_weight
 
-        if self.model_type == "lgbm" and X_val is not None and y_val is not None:
+        if self._is_ranker:
+            # XGBRanker requires qid (query id) array — one int per sample identifying its group
+            if groups is not None:
+                qid = np.repeat(np.arange(len(groups), dtype=np.int32), groups)
+                logger.info("XGBRanker: %d groups, %d samples", len(groups), len(qid))
+            else:
+                qid = np.zeros(len(X_scaled), dtype=np.int32)
+                logger.warning("XGBRanker: no groups supplied — treating all samples as one group")
+            self.model.fit(X_scaled, y, qid=qid, **fit_kwargs)
+            logger.info("XGBRanker trained")
+        elif self.model_type == "lgbm" and X_val is not None and y_val is not None:
             X_val_scaled = self.scaler.transform(X_val)
             from lightgbm import early_stopping, log_evaluation
             self.model.fit(

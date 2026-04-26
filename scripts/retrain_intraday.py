@@ -42,18 +42,27 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=730)
     parser.add_argument("--model-dir", default="app/ml/models")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ranker", action="store_true",
+                        help="Use XGBRanker (rank:pairwise) instead of XGBClassifier")
+    parser.add_argument("--top-n-liquidity", type=int, default=None,
+                        help="Filter universe to top-N symbols by 20-day median dollar volume")
     args = parser.parse_args()
 
     if args.dry_run:
         logger.info("DRY RUN — skipping training")
         return 0
 
-    logger.info("Intraday retrain starting — days=%d", args.days)
+    logger.info("Intraday retrain starting — days=%d  ranker=%s  top_n_liquidity=%s",
+                args.days, args.ranker, args.top_n_liquidity)
 
     try:
         from app.ml.intraday_training import IntradayModelTrainer
         trainer = IntradayModelTrainer(model_dir=args.model_dir)
-        version = trainer.train_model(days=args.days)
+        version = trainer.train_model(
+            days=args.days,
+            use_ranker=args.ranker,
+            top_n_by_liquidity=args.top_n_liquidity,
+        )
         logger.info("Retrain complete — new intraday model version: v%d", version)
     except Exception as exc:
         logger.error("Retrain failed: %s", exc, exc_info=True)

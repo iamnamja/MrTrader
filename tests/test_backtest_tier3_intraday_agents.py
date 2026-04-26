@@ -144,11 +144,13 @@ class TestIntradayPMScoring:
         assert X.shape[0] == 6
 
 
-# ── Tests: ORB Gate ───────────────────────────────────────────────────────────
+# ── Tests: ORB features (no gate — Phase 46 removed hard ORB gate) ───────────
+# The hard ORB breakout gate was removed in Phase 46 because it starved trades
+# in range-bound markets. orb_breakout is now a model input feature only.
 
 class TestORBGate:
-    def test_no_orb_breakout_blocks_entry(self):
-        """If orb_breakout <= 0, entry should be blocked."""
+    def test_inside_orb_does_not_block_entry(self):
+        """Phase 46: hard ORB gate removed — inside-ORB entries are allowed."""
         from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
         from app.agents.risk_rules import RiskLimits
 
@@ -159,15 +161,16 @@ class TestORBGate:
         bars = _5min_bars(n_days=3)
         syms = {"AAPL": bars}
 
+        # orb_breakout=0 (inside ORB) — should NOT block entry anymore
         mock_feats = {"orb_breakout": 0.0, "feat1": 0.5}
         with patch.object(sim, "_pm_score", return_value=[("AAPL", 0.9)]):
             with patch("app.backtesting.intraday_agent_simulator.compute_intraday_features",
                        return_value=mock_feats):
                 res = sim.run(syms)
-        assert res.total_trades == 0
+        assert res.total_trades >= 1, "Inside-ORB entries should be allowed (soft ORB gate)"
 
-    def test_positive_orb_breakout_allows_entry(self):
-        """If orb_breakout > 0 and RM approves, trade should be entered."""
+    def test_high_confidence_score_allows_entry(self):
+        """High model confidence (above min_confidence) should allow entry."""
         from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
         from app.agents.risk_rules import RiskLimits
 

@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 # ── Simulation defaults ────────────────────────────────────────────────────────
 HOLD_BARS = 24  # 2h of 5-min bars — matches training label horizon
 FEATURE_BARS = 12  # 1h of bars used to build features before entry
-# ATR multipliers must match intraday_training.py ATR_MULT_TARGET/STOP (1.2/0.6)
-ATR_TARGET_MULT = 1.2  # target = 1.2× prior-day range
-ATR_STOP_MULT = 0.6    # stop   = 0.6× prior-day range → 2:1 R:R
+# ATR multipliers must match intraday_training.py ATR_MULT_TARGET/STOP (0.8/0.4)
+ATR_TARGET_MULT = 0.8  # Phase 47-3: compressed from 1.2 → closer target for 2h window
+ATR_STOP_MULT = 0.4    # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 TARGET_PCT = 0.005     # fallback only when prior-day range unavailable
 STOP_PCT = 0.003
 MIN_CONFIDENCE = 0.50  # model probabilities cluster below 0.55; keep at 0.50

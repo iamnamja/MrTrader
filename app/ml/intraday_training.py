@@ -52,8 +52,8 @@ TEST_FRACTION = 0.20     # most recent 20% of days = test
 MIN_DAYS = 20            # minimum trading days needed per symbol
 
 # ATR-adaptive labeling (iter 1)
-ATR_MULT_TARGET = 1.2    # target = 1.2x prior-day range (as ATR proxy)
-ATR_MULT_STOP = 0.6      # stop   = 0.6x prior-day range  → 2:1 R:R
+ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for 2h window
+ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
 
@@ -92,6 +92,8 @@ class IntradayModelTrainer:
         days: int = 730,
         fetch_spy: bool = True,
         force_refresh: bool = False,
+        use_ranker: bool = False,
+        top_n_by_liquidity: Optional[int] = None,
     ) -> int:
         """
         Full pipeline: fetch/cache 5-min bars → label → features → train → save.
@@ -101,6 +103,12 @@ class IntradayModelTrainer:
             days:          Calendar days of history (730 ≈ 2 years).
             fetch_spy:     Include SPY relative-strength features.
             force_refresh: Ignore Parquet cache and re-fetch everything.
+            use_ranker:    If True, use XGBRanker (rank:pairwise) with path_quality scores
+                           as targets, grouped by trading day. Aligns training objective with
+                           PM's top-N daily selection task.
+            top_n_by_liquidity: If set, filter symbol universe to top-N by 20-day median
+                           dollar volume before training. Improves signal quality by removing
+                           illiquid/delisted names.
 
         Returns:
             Version number of the saved model.
@@ -127,6 +135,25 @@ class IntradayModelTrainer:
 
         if not symbols_data:
             raise RuntimeError("No 5-min data fetched.")
+
+        # ── 1b. Liquidity filter: keep top-N symbols by 20-day median dollar volume ──
+        if top_n_by_liquidity is not None and daily_data:
+            dv_scores: Dict[str, float] = {}
+            for sym, df in daily_data.items():
+                if df is None or len(df) < 5:
+                    continue
+                df_tail = df.tail(20)
+                dv = (df_tail["close"] * df_tail["volume"]).median()
+                dv_scores[sym] = float(dv) if pd.notna(dv) else 0.0
+            ranked = sorted(dv_scores, key=lambda s: dv_scores[s], reverse=True)
+            keep_set = set(ranked[:top_n_by_liquidity])
+            before = len(symbols_data)
+            symbols_data = {s: v for s, v in symbols_data.items() if s in keep_set}
+            daily_data = {s: v for s, v in daily_data.items() if s in keep_set}
+            logger.info(
+                "Liquidity filter: kept %d/%d symbols (top-%d by 20d median dollar volume)",
+                len(symbols_data), before, top_n_by_liquidity,
+            )
 
         # ── 2. Build feature matrix (parallel per symbol) ─────────────────────
         t1 = datetime.now()
@@ -156,50 +183,68 @@ class IntradayModelTrainer:
             sample_weight /= sample_weight.mean()  # normalise to mean=1
             logger.info("Sample weights: min=%.3f  max=%.3f", sample_weight.min(), sample_weight.max())
 
-        # HPO: tune XGBoost hyperparameters with Optuna (50 trials, CV on train)
-        try:
-            import optuna
-            optuna.logging.set_verbosity(optuna.logging.WARNING)
-            from sklearn.model_selection import StratifiedKFold
-            from xgboost import XGBClassifier
+        if use_ranker:
+            # XGBRanker path: use raw path_quality scores as targets, grouped by day.
+            # Sort rows by day_ordinal so XGBRanker sees contiguous groups.
+            self.model = PortfolioSelectorModel(model_type="xgboost_ranker")
+            raw_scores = raw_train[:, 1].astype(np.float32)  # path_quality scores
+            sort_idx = np.argsort(raw_train[:, 0], kind="stable")
+            X_train_r = X_train[sort_idx]
+            y_ranker = raw_scores[sort_idx]
+            sample_weight_r = sample_weight[sort_idx] if sample_weight is not None else None
+            # Compute groups: count of samples per unique day (in sorted order)
+            sorted_day_ords = raw_train[sort_idx, 0]
+            _, group_counts = np.unique(sorted_day_ords, return_counts=True)
+            logger.info("XGBRanker: %d groups (days), score range [%.3f, %.3f]",
+                        len(group_counts), float(y_ranker.min()), float(y_ranker.max()))
+            self.model.train(X_train_r, y_ranker, feature_names,
+                             sample_weight=sample_weight_r,
+                             groups=group_counts.astype(np.int32))
+        else:
+            # HPO: tune XGBoost hyperparameters with Optuna (50 trials, CV on train)
+            try:
+                import optuna
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
+                from sklearn.model_selection import StratifiedKFold
+                from xgboost import XGBClassifier
 
-            def _objective(trial):
-                params = {
-                    "n_estimators": trial.suggest_int("n_estimators", 200, 600),
-                    "max_depth": trial.suggest_int("max_depth", 3, 6),
-                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-                    "subsample": trial.suggest_float("subsample", 0.5, 0.9),
-                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 0.8),
-                    "min_child_weight": trial.suggest_int("min_child_weight", 5, 30),
-                    "gamma": trial.suggest_float("gamma", 0.0, 0.5),
-                    "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 0.5),
-                    "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
-                    "scale_pos_weight": spw,
-                    "nthread": -1, "verbosity": 0, "eval_metric": "auc",
-                    "random_state": 42,
-                }
-                cv = StratifiedKFold(n_splits=3, shuffle=False)
-                aucs = []
-                for tr_idx, va_idx in cv.split(X_train, y_train):
-                    Xtr, Xva = X_train[tr_idx], X_train[va_idx]
-                    ytr, yva = y_train[tr_idx], y_train[va_idx]
-                    sw_tr = sample_weight[tr_idx] if sample_weight is not None else None
-                    clf = XGBClassifier(**params)
-                    clf.fit(Xtr, ytr, sample_weight=sw_tr)
-                    from sklearn.metrics import roc_auc_score
-                    aucs.append(roc_auc_score(yva, clf.predict_proba(Xva)[:, 1]))
-                return float(np.mean(aucs))
+                def _objective(trial):
+                    params = {
+                        "n_estimators": trial.suggest_int("n_estimators", 200, 600),
+                        "max_depth": trial.suggest_int("max_depth", 3, 6),
+                        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
+                        "subsample": trial.suggest_float("subsample", 0.5, 0.9),
+                        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 0.8),
+                        "min_child_weight": trial.suggest_int("min_child_weight", 5, 30),
+                        "gamma": trial.suggest_float("gamma", 0.0, 0.5),
+                        "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 0.5),
+                        "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
+                        "scale_pos_weight": spw,
+                        "nthread": -1, "verbosity": 0, "eval_metric": "auc",
+                        "random_state": 42,
+                    }
+                    cv = StratifiedKFold(n_splits=3, shuffle=False)
+                    aucs = []
+                    for tr_idx, va_idx in cv.split(X_train, y_train):
+                        Xtr, Xva = X_train[tr_idx], X_train[va_idx]
+                        ytr, yva = y_train[tr_idx], y_train[va_idx]
+                        sw_tr = sample_weight[tr_idx] if sample_weight is not None else None
+                        clf = XGBClassifier(**params)
+                        clf.fit(Xtr, ytr, sample_weight=sw_tr)
+                        from sklearn.metrics import roc_auc_score
+                        aucs.append(roc_auc_score(yva, clf.predict_proba(Xva)[:, 1]))
+                    return float(np.mean(aucs))
 
-            study = optuna.create_study(direction="maximize")
-            study.optimize(_objective, n_trials=50, show_progress_bar=False)
-            best = study.best_params
-            logger.info("HPO best params: %s  AUC=%.4f", best, study.best_value)
-            self.model.model.set_params(**best)
-        except Exception as exc:
-            logger.warning("HPO failed, using defaults: %s", exc)
+                study = optuna.create_study(direction="maximize")
+                study.optimize(_objective, n_trials=50, show_progress_bar=False)
+                best = study.best_params
+                logger.info("HPO best params: %s  AUC=%.4f", best, study.best_value)
+                self.model.model.set_params(**best)
+            except Exception as exc:
+                logger.warning("HPO failed, using defaults: %s", exc)
 
-        self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw,
-                         sample_weight=sample_weight)
+            self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw,
+                             sample_weight=sample_weight)
 
         # LightGBM ensemble: train LGBM alongside XGBoost, soft-vote probabilities
         lgbm_proba_test = None
@@ -724,7 +769,7 @@ def _symbol_to_rows(
         close_strength = float(np.clip(
             (final_close - entry) / max(target_dist, 1e-8), -1.0, 1.0
         ))
-        path_quality_score = 1.0 * upside_capture - 1.25 * stop_pressure + 0.25 * close_strength
+        path_quality_score = 1.0 * upside_capture - 0.50 * stop_pressure + 0.25 * close_strength  # Phase 47-3: stop_pressure coeff reduced -1.25→-0.50
 
         # Use path_quality score directly as the ranking signal (replaces Sharpe-adj return)
         best_return = path_quality_score
