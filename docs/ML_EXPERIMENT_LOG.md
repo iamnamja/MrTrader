@@ -1024,3 +1024,45 @@ Phase 45 COMPLETE. All gates passed. Final system ready for paper trading:
 - Vol filter ≤75th pct (inference-only) — reduces trades without improving quality
 - Tighter universe (SP100) — no improvement per earlier testing
 - XGBoost + LR ensemble blend — LR suppresses signals, trade count collapses (v118)
+
+---
+
+## Phase 46: Intraday Model Improvement (2026-04-25)
+
+### Intraday v19 — Binary ATR Labels (46-A attempt 1)
+**Change:** Replace fixed stop/target labels with ATR-adaptive binary labels (1.2x/0.6x prior-day range).
+**Why:** Training used fixed 0.5%/0.3% but simulator used ATR-adaptive exits → label mismatch.
+**Result:** Near-zero positive training examples (2.4% target in 2h is too hard). 5 total trades across 3 folds. Avg Sharpe -0.875.
+**Verdict:** FAIL. Binary ATR not viable for 2-hour intraday window.
+
+### Intraday v20 — path_quality Regression Labels (46-A attempt 2)
+**Change:** path_quality continuous score label (upside_capture - 1.25×stop_pressure + 0.25×close_strength), cross-sectional top-20% → label 1.
+**Result:** AUC improved 0.5106 → 0.5427. But still only 5 trades across 3 folds.
+**Root cause:** Hard ORB breakout gate in simulator (orb_breakout > 0) + volume/whale gate filtering out ~99% of stocks in choppy markets.
+**Verdict:** Labels are correct. Gate is the problem.
+
+### Intraday v22 — Soft ORB Gate + Full Stack (46-A/B/C/D combined)
+**Changes:**
+- Remove hard ORB breakout + volume/whale gate from IntradayAgentSimulator (features remain for model)
+- Add orb_direction_strength feature (42 features total)
+- MetaLabelModel v1 (XGBRegressor, pnl_pct target, trained on 810 in-sample trades)
+- PM abstention gate (VIX >= 25 OR SPY < MA20)
+- path_quality regression labels retained from v20
+
+**Walk-forward (no meta):** Avg Sharpe -0.292, 252 trades/fold, Fold 2 +0.57.
+**Walk-forward (v22 + meta + abstention):**
+
+| Fold | Trades | Win% | Sharpe |
+|---|---|---|---|
+| 1 (2024-10-14 -> 2025-04-15) | 152 | 51.3% | +0.24 |
+| 2 (2025-04-16 -> 2025-10-15) | 222 | 49.5% | +0.43 |
+| 3 (2025-10-16 -> 2026-04-17) | 152 | 52.6% | +0.23 |
+| **Avg** | **175** | **51.1%** | **+0.301** |
+
+**Gate: FAIL** — avg +0.301 (gate 0.80), min fold +0.227 (gate -0.30 PASS).
+**Progress:** First time all folds are positive. Baseline was -1.16. Meta model R2=0.001 (weak, base model signal too low).
+**Verdict:** Meaningful progress but base model needs stronger signal. Next: feature engineering for intraday entry quality, raise confidence threshold, or improve R:R ratio.
+
+**Ruled out for intraday model:**
+- Binary ATR labels — too sparse for 2-hour window
+- Hard ORB breakout gate — starves trades in range-bound markets (5 trades per 3 folds)
