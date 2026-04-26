@@ -543,7 +543,7 @@ FEATURE_NAMES = [
     # Market context
     "spy_session_return", "spy_rsi_14", "rel_vol_spy",
     # Session timing
-    "time_of_day", "minutes_since_open", "is_open_session", "is_close_session",
+    "time_of_day", "minutes_since_open", "is_close_session",
     # Daily vol context
     "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
     # Institutional activity
