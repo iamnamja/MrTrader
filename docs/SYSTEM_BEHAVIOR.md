@@ -47,20 +47,21 @@ All agents communicate via an in-process async message queue. No HTTP between ag
 
 ### Intraday Selection (09:45)
 1. Fetch 5-min bars for Russell 1000 symbols (Polygon Parquet cache-first, Alpaca fallback)
-2. Run `compute_intraday_features()` → 42-feature vector per symbol
-3. Cross-sectional normalize features across today's candidate universe
+2. Run `compute_intraday_features()` → 50-feature vector per symbol (model selects its 42 by name)
+3. Cross-sectional normalize features across today's candidate universe (Russell 1000, ~720 symbols)
 4. Run `PortfolioSelectorModel.predict()` → probability per symbol
 5. Filter: `score >= MIN_CONFIDENCE (0.50)`, take top 5
-6. Meta-model gate: skip if intraday_meta_label_v1 predicts E[pnl] ≤ 0 *(currently inactive — R2=0.001, +0.000 Sharpe contribution per Phase 47 diagnostic)*
-7. PM abstention gate: skip all entries if VIX ≥ 25 OR SPY < 20-day SMA
-8. Tagged `trade_type="intraday"` → PM will force-close by 15:45
+6. PM abstention gate: skip all entries if VIX ≥ 25 OR SPY < 20-day SMA
+7. Tagged `trade_type="intraday"` → PM will force-close by 15:45
+
+*(MetaLabelModel dropped in Phase 47 — confirmed +0.000 Sharpe contribution, R2=0.001)*
 
 **Model:** v23 — XGBClassifier, 42 features, Russell 1000 (~720 symbols with Polygon cache)
 **Label:** path_quality regression → cross-sectional top-20% per day = label 1
   - path_quality = 1.0×upside_capture − 0.50×stop_pressure + 0.25×close_strength  *(Phase 47-3: coeff reduced from −1.25)*
   - Stop = 0.4× prior-day range, target = 0.8× prior-day range *(Phase 47-3: compressed from 0.6/1.2)*
 **Top features:** spy_session_return, is_close_session, spy_rsi_14, atr_norm, whale_candle
-**Note:** Tier 3 Sharpe +0.301 (v22 + meta + abstention). Gate = +0.80. Phase 47 in progress.
+**Tier 3 Sharpe:** +1.275 avg (3-fold walk-forward, gate > 0.80 ✅). Paper trading candidate.
 
 ### Position Review (every 30 min)
 - Rescore all open swing positions using same model
