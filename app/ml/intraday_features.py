@@ -548,4 +548,7 @@ FEATURE_NAMES = [
     "daily_vol_percentile", "daily_vol_regime", "daily_parkinson_vol",
     # Institutional activity
     "whale_candle",
+    # Phase 47-5: Quality / structure features
+    "trend_efficiency", "green_bar_ratio", "above_vwap_ratio", "pullback_from_high",
+    "range_vs_20d_avg", "rel_strength_vs_spy", "vol_x_momentum", "gap_followthrough",
 ]
