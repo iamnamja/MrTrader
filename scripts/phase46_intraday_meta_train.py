@@ -55,6 +55,11 @@ def load_intraday_model():
     version = int(path.stem.split("_v")[-1])
     with open(path, "rb") as f:
         obj = pickle.load(f)
+    if not hasattr(obj, "is_trained"):
+        from app.ml.model import PortfolioSelectorModel
+        m = PortfolioSelectorModel(model_type="xgboost")
+        m.load(str(path.parent), version, model_name="intraday")
+        obj = m
     _ok(f"Loaded intraday model v{version} from {path.name}")
     return obj, version
 
@@ -82,7 +87,8 @@ def collect_training_trades(model, symbols_data: Dict, spy_data, all_days):
 def build_meta_dataset(trades, symbols_data: Dict, spy_data):
     """Build (X, y) from completed trades using features at entry."""
     from app.ml.intraday_features import compute_intraday_features
-    from app.backtesting.intraday_agent_simulator import _index_by_day, FEATURE_BARS
+    from app.ml.intraday_training import _index_by_day
+    from app.backtesting.intraday_agent_simulator import FEATURE_BARS
 
     spy_by_day = _index_by_day(spy_data) if spy_data is not None else {}
 

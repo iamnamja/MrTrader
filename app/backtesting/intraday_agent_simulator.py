@@ -3,7 +3,7 @@ Tier 3 Intraday Agent Simulator — agent-driven historical backtest on 5-min ba
 
 Runs actual PM / RM / Trader decision logic day by day:
   - PM:     compute_intraday_features() + model.predict() → top-N proposals
-  - Trader: ORB breakout gate + session-time constraint (no entries after bar 60 ~14:30 ET)
+  - Trader: model confidence gate + session-time constraint (no entries after bar 60 ~14:30 ET)
   - RM:     validate_* rule functions from risk_rules.py against live portfolio state
   - Exit:   target (+0.5%), stop (-0.3%), HOLD_BARS=24 time exit, or EOD force-close
 
@@ -315,17 +315,6 @@ class IntradayAgentSimulator:
             target_pct_atr = float(np.clip(ATR_TARGET_MULT * range_pct, 0.003, 0.04))
             stop_price = entry_price * (1 - stop_pct_atr)
             target_price = entry_price * (1 + target_pct_atr)
-
-            # Trader gate: ORB breakout + volume surge confirmation
-            feats = sym_feats[sym]
-            orb_breakout = feats.get("orb_breakout", 0.0)
-            if orb_breakout <= 0:
-                continue
-            volume_surge = feats.get("volume_surge", 0.0)
-            whale = feats.get("whale_candle", 0.0)
-            # Require volume surge > 1.2 OR institutional whale candle
-            if volume_surge < 1.2 and whale == 0.0:
-                continue
 
             # Position sizing: fixed % of equity per intraday slot
             position_dollars = portfolio.equity * INTRADAY_BUDGET_PCT
