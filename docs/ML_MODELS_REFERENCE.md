@@ -239,6 +239,8 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 | **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50** | **+1.275** | **177** | **Active ✅** |
 | v25 | 47 Phase 2 | XGBRanker rank:pairwise objective, all 50 features | +0.184 | 252 | ❌ Gate FAIL — reverted to v23 |
 | v26 | 47 Phase 4 | Top-300 liquidity filter, XGBClassifier, all 50 features | -1.414 | 252 | ❌ Gate FAIL — reverted to v23 |
+| v28 | 54 | Feature pruning (49 features, is_open_session removed) | +0.634 | 252 | ❌ Gate FAIL — severe Fold 3 regression (-0.25). Reverted. |
+| v29 | 54 revert | Restore 50 features (is_open_session back). Active candidate. | 🔄 pending | — | Retrain in progress |
 
 ### What Was Ruled Out (Intraday)
 
@@ -248,6 +250,7 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 - **XGBoost+LightGBM ensemble** — no improvement over single XGBClassifier, added complexity
 - **XGBRanker rank:pairwise** — avg Sharpe +0.184 vs v23 +1.275; ranking objective hurt win rate and feature selection (ema_dist displaced prev_day_high/low_dist)
 - **Top-300 liquidity filter** — avg Sharpe -1.414; edge lives in mid-caps with higher intraday range variability, not large-cap mega-stocks
+- **is_open_session removal (Phase 54)** — v28 avg Sharpe +0.634, Fold 3 -0.25; zero importance in v26 (large-cap universe) but critical in full Russell 1000 universe (open session = high-noise period signal)
 
 ---
 
