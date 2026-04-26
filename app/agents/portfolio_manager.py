@@ -541,7 +541,8 @@ class PortfolioManager(BaseAgent):
             self.logger.info("PM abstention gate: suppressing all intraday entries today")
             return
 
-        def _fetch_one_intraday(symbol: str) -> Optional[Dict[str, float]]:
+        def _fetch_one_intraday(symbol: str) -> Optional[tuple]:
+            """Return (features_dict, prior_day_range) or None."""
             from app.ml.intraday_features import compute_intraday_features, MIN_BARS
             try:
                 bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
@@ -549,33 +550,41 @@ class PortfolioManager(BaseAgent):
                     return None
                 daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=25)
                 prior_close = prior_high = prior_low = None
+                prior_day_range = None
                 if daily is not None and len(daily) >= 2:
                     prev = daily.iloc[-2]
                     prior_close = float(prev["close"])
                     prior_high = float(prev["high"])
                     prior_low = float(prev["low"])
-                return compute_intraday_features(
+                    prior_day_range = prior_high - prior_low
+                feats = compute_intraday_features(
                     bars, prior_close=prior_close,
                     prior_day_high=prior_high, prior_day_low=prior_low,
                     daily_bars=daily,
                 )
+                if feats is None:
+                    return None
+                return feats, prior_day_range
             except Exception as exc:
                 self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
                 return None
 
-        def _fetch_intraday_features() -> Dict[str, Dict[str, float]]:
+        def _fetch_intraday_features() -> tuple:
+            """Return (features_by_symbol, prior_ranges_by_symbol)."""
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            result: Dict[str, Dict[str, float]] = {}
+            feat_result: Dict[str, Dict[str, float]] = {}
+            range_result: Dict[str, Optional[float]] = {}
             with ThreadPoolExecutor(max_workers=16) as pool:
                 futures = {pool.submit(_fetch_one_intraday, s): s for s in RUSSELL_1000_TICKERS}
                 for future in as_completed(futures):
                     sym = futures[future]
-                    feats = future.result()
-                    if feats is not None:
-                        result[sym] = feats
-            return result
+                    out = future.result()
+                    if out is not None:
+                        feat_result[sym] = out[0]
+                        range_result[sym] = out[1]
+            return feat_result, range_result
 
-        features_by_symbol = await asyncio.to_thread(_fetch_intraday_features)
+        features_by_symbol, prior_ranges_by_symbol = await asyncio.to_thread(_fetch_intraday_features)
 
         if not features_by_symbol:
             self.logger.warning("No intraday features computed")
@@ -624,14 +633,25 @@ class PortfolioManager(BaseAgent):
             quantity = self._calculate_quantity(
                 price, account_value, trade_type="intraday", confidence=float(confidence)
             )
+            # Use ATR-based stops matching the backtester: 0.4x / 0.8x prior-day range.
+            # Fall back to fixed pct if prior range unavailable.
+            prior_range = prior_ranges_by_symbol.get(symbol)
+            if prior_range and prior_range > 0:
+                stop_dist = 0.4 * prior_range
+                target_dist = 0.8 * prior_range
+                stop_price = round(price - stop_dist, 2)
+                target_price = round(price + target_dist, 2)
+            else:
+                stop_price = round(price * 0.997, 2)   # ~0.3% fallback
+                target_price = round(price * 1.006, 2)  # ~0.6% fallback (~2:1)
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
                 "quantity": quantity,
                 "entry_price": price,
                 "confidence": float(confidence),
-                "stop_loss": round(price * 0.995, 2),
-                "profit_target": round(price * 1.01, 2),
+                "stop_loss": stop_price,
+                "profit_target": target_price,
                 "source_agent": "portfolio_manager",
                 "trade_type": "intraday",
             }
