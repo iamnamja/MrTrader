@@ -254,8 +254,9 @@ class AgentSimulator:
                     pass
 
             # Phase 45 P3-Parallel: PM abstention gate (VIX >= threshold OR SPY < N-day SMA)
-            if not _skip_entries and (self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0
-                                       or self.pm_abstention_spy_5d):
+            if not _skip_entries and (self.pm_abstention_vix > 0
+                                      or self.pm_abstention_spy_ma_days > 0
+                                      or self.pm_abstention_spy_5d):
                 try:
                     if self.pm_abstention_vix > 0 and _vix_closes is not None:
                         vix_idx = _vix_closes.index

@@ -21,7 +21,7 @@ from app.ml.features import FeatureEngineer
 from app.ml.cs_normalize import cs_normalize
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS, RUSSELL_1000_TICKERS
+from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
 
 logger = logging.getLogger(__name__)
 
