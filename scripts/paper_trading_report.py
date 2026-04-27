@@ -18,13 +18,13 @@ from typing import Dict, List, Optional
 
 warnings.filterwarnings("ignore")
 
-# ── DB bootstrap ─────────────────────────────────────────────────────────────
+# -- DB bootstrap -------------------------------------------------------------
 
 def _get_db():
     from app.database.session import get_session
     return get_session()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 
 def _since(days: int) -> datetime:
     return datetime.now(tz=timezone.utc) - timedelta(days=days)
@@ -49,7 +49,7 @@ def _sharpe(returns: List[float]) -> Optional[float]:
     return (mu / sd) * (252 ** 0.5)
 
 
-# ── Section builders ──────────────────────────────────────────────────────────
+# -- Section builders ----------------------------------------------------------
 
 def section_pnl(db, days: int) -> None:
     from app.database.models import Trade
@@ -79,9 +79,9 @@ def section_pnl(db, days: int) -> None:
 
     all_dates = sorted(set(list(swing_pnl) + list(intra_pnl)))
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  P&L BY STRATEGY  (last {days} days)")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     if not all_dates:
         print("  No closed trades in this period.")
         return
@@ -108,9 +108,9 @@ def section_slippage(db, days: int) -> None:
         .all()
     )
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  FILL QUALITY / SLIPPAGE  (last {days} days)")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     if not orders:
         print("  No filled entry orders with slippage data.")
         return
@@ -151,9 +151,9 @@ def section_veto_breakdown(db, days: int) -> None:
     total = approved + rejected
     veto_rate = 100.0 * rejected / total if total else 0.0
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  RM VETO BREAKDOWN  (last {days} days)")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     print(f"  Total proposals : {total}")
     print(f"  Approved        : {approved}")
     print(f"  Rejected        : {rejected}  ({veto_rate:.1f}% veto rate)")
@@ -189,9 +189,9 @@ def section_abstention(db, days: int) -> None:
     total_opportunities = swing_analyses + abstentions
     abstention_rate = 100.0 * abstentions / total_opportunities if total_opportunities else 0.0
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  ABSTENTION GATE ACTIVITY  (last {days} days)")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     print(f"  Swing analyses run    : {swing_analyses}")
     print(f"  Swing abstentions     : {abstentions}  ({abstention_rate:.1f}% of opportunities)")
     print(f"  Selection skipped     : {gate_blocks}")
@@ -232,20 +232,20 @@ def section_rolling_sharpe(db, days: int) -> None:
     returns = list(daily_pnl.values())
     sharpe = _sharpe(returns)
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  ROLLING SHARPE  (last {days} days)")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     if sharpe is None:
         print(f"  Insufficient data ({len(returns)} trading days with closed trades).")
         return
 
-    flag = "  ⚠ WARNING: Sharpe below 0.5 threshold!" if sharpe < 0.5 else "  ✓ Above threshold"
+    flag = "  !! WARNING: Sharpe below 0.5 threshold!" if sharpe < 0.5 else "  OK Above threshold"
     print(f"  Trading days    : {len(returns)}")
     print(f"  Rolling Sharpe  : {sharpe:+.3f}")
     print(flag)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# -- Entry point ---------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="MrTrader paper trading report")
