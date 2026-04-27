@@ -21,7 +21,7 @@ from app.ml.features import FeatureEngineer
 from app.ml.cs_normalize import cs_normalize
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import MARKET_OPEN_HOUR, SP_500_TICKERS, RUSSELL_1000_TICKERS
+from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -835,6 +835,13 @@ class PortfolioManager(BaseAgent):
             price = self._alpaca.get_latest_price(symbol)
             if price is None or price <= 0:
                 continue
+
+            # Phase 52: intraday entry quality gates
+            intra_gate_fail = self._check_intraday_entry_gates(symbol, features_by_symbol.get(symbol, {}))
+            if intra_gate_fail:
+                self.logger.info("INTRADAY_ENTRY_GATE_BLOCKED %s: %s", symbol, intra_gate_fail)
+                continue
+
             quantity = self._calculate_quantity(
                 price, account_value, trade_type="intraday", confidence=float(confidence)
             )
@@ -1165,6 +1172,58 @@ class PortfolioManager(BaseAgent):
 
     # ─── Proposal Building ────────────────────────────────────────────────────
 
+    def _check_swing_entry_gates(self, symbol: str, price: float) -> Optional[str]:
+        """
+        Phase 52 swing entry gates (applied at 09:50 send time).
+        Returns a rejection reason string, or None if gates pass.
+        """
+        # Gap-chase filter: skip if price is >2% above prior-day close
+        try:
+            daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=2)
+            if daily is not None and len(daily) >= 2:
+                prior_close = float(daily.iloc[-2]["close"])
+                gap_pct = (price - prior_close) / prior_close
+                if gap_pct > 0.02:
+                    return f"gap_chase: price {gap_pct:.1%} above prior close (limit 2%)"
+        except Exception:
+            pass  # data unavailable — fail open
+
+        # Illiquidity guard: skip if bid/ask spread > 0.1% of mid
+        try:
+            quote = self._alpaca.get_quote(symbol)
+            if quote is not None and quote["spread_pct"] > 0.001:
+                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.1%)"
+        except Exception:
+            pass
+
+        return None
+
+    def _check_intraday_entry_gates(self, symbol: str, feats: Dict[str, float]) -> Optional[str]:
+        """
+        Phase 52 intraday entry gates (applied at proposal send time).
+        Uses pre-computed features where possible; falls back to a live quote for spread.
+        Returns a rejection reason string, or None if gates pass.
+        """
+        # Momentum confirmation: last bar must be a green (up) bar — consecutive_bars > 0
+        consec = feats.get("consecutive_bars", None)
+        if consec is not None and consec <= 0:
+            return f"no_momentum: consecutive_bars={consec:.0f} (need >0)"
+
+        # Volume confirmation: last bar volume must exceed 20-bar average — volume_surge >= 1.0
+        vol_surge = feats.get("volume_surge", None)
+        if vol_surge is not None and vol_surge < 1.0:
+            return f"low_volume: volume_surge={vol_surge:.2f} (need >=1.0)"
+
+        # Spread guard: skip if bid/ask spread > 0.05% of mid
+        try:
+            quote = self._alpaca.get_quote(symbol)
+            if quote is not None and quote["spread_pct"] > 0.0005:
+                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.05%)"
+        except Exception:
+            pass
+
+        return None
+
     async def _build_proposals(self, selected: List[tuple]) -> List[Dict[str, Any]]:
         """Build trade proposal dicts for the Risk Manager."""
         try:
@@ -1177,6 +1236,12 @@ class PortfolioManager(BaseAgent):
         for symbol, confidence in selected:
             price = self._alpaca.get_latest_price(symbol)
             if price is None or price <= 0:
+                continue
+
+            # Phase 52: swing entry quality gates
+            gate_fail = self._check_swing_entry_gates(symbol, price)
+            if gate_fail:
+                self.logger.info("SWING_ENTRY_GATE_BLOCKED %s: %s", symbol, gate_fail)
                 continue
 
             quantity = self._calculate_quantity(
