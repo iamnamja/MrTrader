@@ -10,9 +10,10 @@ Cycle:
 
 import asyncio
 import logging
+import time as _time
 import numpy as np
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.agents.base import BaseAgent
@@ -77,6 +78,73 @@ class PortfolioManager(BaseAgent):
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
         self._last_review_minute: int = -1       # last minute a 30-min review ran
+        self._last_heartbeat_hour: int = -1      # last hour a loop-alive log was emitted
+        # Per-task stats: attempts, failures, last duration (ms), last run timestamp
+        self._task_stats: Dict[str, Dict[str, Any]] = {}
+
+    # ─── Scheduling helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _in_window(now: datetime, start_h: int, start_m: int, end_h: int, end_m: int) -> bool:
+        """Return True if now falls in [start_h:start_m, end_h:end_m)."""
+        t = now.hour * 60 + now.minute
+        return (start_h * 60 + start_m) <= t < (end_h * 60 + end_m)
+
+    async def _run_task(
+        self,
+        name: str,
+        nominal_h: int,
+        nominal_m: int,
+        coro: Coroutine,
+    ) -> None:
+        """
+        Run a scheduled task and record timing + outcome to agent_decisions.
+
+        Logs a TASK_COMPLETED or TASK_FAILED decision so the dashboard always
+        shows whether each named task ran, how long it took, and whether it was
+        late starting.
+        """
+        now = datetime.now(ET)
+        late_by = (now.hour * 60 + now.minute) - (nominal_h * 60 + nominal_m)
+        stats = self._task_stats.setdefault(
+            name, {"attempts": 0, "failures": 0, "last_run_ms": None, "last_run_at": None}
+        )
+        stats["attempts"] += 1
+
+        if late_by > 1:
+            self.logger.warning(
+                "Task %s starting %d min late (nominal %02d:%02d, actual %02d:%02d)",
+                name, late_by, nominal_h, nominal_m, now.hour, now.minute,
+            )
+        else:
+            self.logger.info("Task %s starting (nominal %02d:%02d)", name, nominal_h, nominal_m)
+
+        t0 = _time.monotonic()
+        try:
+            await coro
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            stats["last_run_ms"] = elapsed_ms
+            stats["last_run_at"] = datetime.now(ET).isoformat()
+            self.logger.info("Task %s completed in %.1fs", name, elapsed_ms / 1000)
+            await self.log_decision("TASK_COMPLETED", reasoning={
+                "task": name,
+                "nominal": f"{nominal_h:02d}:{nominal_m:02d}",
+                "late_by_min": max(0, late_by),
+                "duration_ms": elapsed_ms,
+            })
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            stats["failures"] += 1
+            self.logger.error(
+                "Task %s failed after %.1fs: %s", name, elapsed_ms / 1000, exc, exc_info=True
+            )
+            await self.log_decision("TASK_FAILED", reasoning={
+                "task": name,
+                "nominal": f"{nominal_h:02d}:{nominal_m:02d}",
+                "duration_ms": elapsed_ms,
+                "error": str(exc),
+            })
+            raise
 
     # ─── Lazy connectors ─────────────────────────────────────────────────────
 
@@ -97,8 +165,10 @@ class PortfolioManager(BaseAgent):
                 now = datetime.now(ET)
                 today = now.strftime("%Y-%m-%d")
 
-                # Reset daily flags at midnight
+                # ── Daily reset at midnight ───────────────────────────────────
                 if today != self._last_date:
+                    if self._last_date is not None:
+                        await self._warn_missed_tasks()
                     self._analyzed_today = False
                     self._selected_today = False
                     self._selected_intraday_today = False
@@ -109,60 +179,84 @@ class PortfolioManager(BaseAgent):
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
+                    self.logger.info("Daily reset complete for %s", today)
 
                 is_weekday = now.weekday() < 5
 
-                # 09:00: pre-market intelligence routine (before open)
-                if (
-                    is_weekday
-                    and now.hour == 9
-                    and now.minute == 0
-                    and not self._premarket_run_today
-                ):
-                    await self._run_premarket_intelligence()
-                    self._premarket_run_today = True
+                # ── Hourly loop-alive heartbeat (INFO only, not to DB) ────────
+                if now.hour != self._last_heartbeat_hour:
+                    self._last_heartbeat_hour = now.hour
+                    self.logger.info(
+                        "PM heartbeat %02d:00 — flags: analyzed=%s selected=%s "
+                        "intraday=%s retrained=%s model_trained=%s",
+                        now.hour,
+                        self._analyzed_today, self._selected_today,
+                        self._selected_intraday_today, self._retrained_today,
+                        self.model.is_trained,
+                    )
 
-                # 08:00: pre-market swing model analysis (score + rank, don't send yet)
+                # ── 08:00–09:39: pre-market swing analysis ───────────────────
+                # Window closes at 09:40 to guarantee analysis finishes before
+                # the 09:50 send step (7-min timeout + margin).
                 if (
                     is_weekday
-                    and now.hour == SWING_PREMARKET_HOUR
-                    and now.minute == 0
+                    and self._in_window(now, 8, 0, 9, 40)
                     and not self._analyzed_today
                 ):
-                    await self._analyze_swing_premarket()
                     self._analyzed_today = True
+                    await self._run_task(
+                        "swing_premarket_analysis", 8, 0,
+                        self._analyze_swing_premarket(),
+                    )
 
-                # 09:50: send cached swing proposals after open volatility settles
+                # ── 09:00–09:29: pre-market intelligence ─────────────────────
                 if (
                     is_weekday
-                    and now.hour == SWING_SEND_HOUR
-                    and now.minute == SWING_SEND_MINUTE
+                    and self._in_window(now, 9, 0, 9, 30)
+                    and not self._premarket_run_today
+                ):
+                    self._premarket_run_today = True
+                    await self._run_task(
+                        "premarket_intelligence", 9, 0,
+                        self._run_premarket_intelligence(),
+                    )
+
+                # ── 09:50–10:59: send cached swing proposals ──────────────────
+                if (
+                    is_weekday
+                    and self._in_window(now, 9, 50, 11, 0)
                     and not self._selected_today
                 ):
-                    await self._send_swing_proposals()
                     self._selected_today = True
+                    await self._run_task(
+                        "swing_proposals_send", 9, 50,
+                        self._send_swing_proposals(),
+                    )
 
-                # 09:45: intraday model selection (skip if blocked by premarket intel)
+                # ── 09:45–10:30: intraday model selection ─────────────────────
                 if (
                     is_weekday
-                    and now.hour == MARKET_OPEN_HOUR
-                    and now.minute == INTRADAY_SCAN_MINUTE
+                    and self._in_window(now, 9, 45, 10, 30)
                     and not self._selected_intraday_today
                 ):
+                    self._selected_intraday_today = True
                     from app.agents.premarket import premarket_intel
                     if premarket_intel.is_intraday_blocked():
                         self.logger.warning(
                             "Intraday scan BLOCKED by pre-market intelligence "
                             "(macro event or SPY gap)"
                         )
+                        await self.log_decision("SELECTION_SKIPPED", reasoning={
+                            "reason": "premarket_blocked",
+                            "strategy": "intraday",
+                        })
                     else:
-                        try:
-                            await self.select_intraday_instruments()
-                        except Exception as _e:
-                            self.logger.warning("Intraday scan skipped: %s", _e)
-                    self._selected_intraday_today = True
+                        await self._run_task(
+                            "intraday_selection", 9, 45,
+                            self.select_intraday_instruments(),
+                        )
 
-                # 09:30–16:00: 30-minute position review + reeval drain
+                # ── 09:30–16:00: 30-minute position review + reeval drain ─────
                 market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
                 market_close = now.hour < 16
                 review_slot = (now.hour * 60 + now.minute) // REVIEW_INTERVAL_MINUTES
@@ -182,36 +276,42 @@ class PortfolioManager(BaseAgent):
                     except Exception as _rev_exc:
                         self.logger.warning("Reeval handler error: %s", _rev_exc)
 
-                # 16:05: record daily benchmark return (Phase 22)
+                # ── 16:05–16:59: record daily benchmark ───────────────────────
                 if (
                     is_weekday
-                    and now.hour == 16
-                    and now.minute == 5
+                    and self._in_window(now, 16, 5, 17, 0)
                     and not self._benchmark_recorded_today
                 ):
-                    await self._record_daily_benchmark()
                     self._benchmark_recorded_today = True
+                    await self._run_task(
+                        "daily_benchmark", 16, 5,
+                        self._record_daily_benchmark(),
+                    )
 
-                # 16:10 Friday: generate weekly performance report (Phase 22)
+                # ── 16:10–16:59 Friday: weekly performance report ─────────────
                 if (
                     is_weekday
-                    and now.weekday() == 4  # Friday
-                    and now.hour == 16
-                    and now.minute == 10
+                    and now.weekday() == 4
+                    and self._in_window(now, 16, 10, 17, 0)
                     and not self._weekly_report_generated_today
                 ):
-                    await self._generate_weekly_report()
                     self._weekly_report_generated_today = True
+                    await self._run_task(
+                        "weekly_report", 16, 10,
+                        self._generate_weekly_report(),
+                    )
 
-                # 17:00: retrain model
+                # ── 17:00–23:59: retrain model ────────────────────────────────
                 if (
                     is_weekday
-                    and now.hour == 17
-                    and now.minute == 0
+                    and now.hour >= 17
                     and not self._retrained_today
                 ):
-                    await self._retrain()
                     self._retrained_today = True
+                    await self._run_task(
+                        "model_retrain", 17, 0,
+                        self._retrain(),
+                    )
 
                 await asyncio.sleep(60)
 
@@ -223,6 +323,49 @@ class PortfolioManager(BaseAgent):
                 self.logger.error("Error in portfolio manager loop: %s", e, exc_info=True)
                 await self.log_decision("PORTFOLIO_MANAGER_ERROR", reasoning={"error": str(e)})
                 await asyncio.sleep(10)
+
+    # ─── Missed-task diagnostics ──────────────────────────────────────────────
+
+    async def _warn_missed_tasks(self) -> None:
+        """
+        Called at daily reset.  Logs a WINDOW_MISSED decision for every critical
+        task that should have run yesterday but didn't.  Visible on the dashboard
+        so you can see at a glance which days had gaps.
+        """
+        missed = []
+        # Only report on trading days (weekdays); _last_date is yesterday's date.
+        try:
+            from datetime import date
+            d = date.fromisoformat(self._last_date)
+            if d.weekday() >= 5:   # Saturday / Sunday — nothing scheduled
+                return
+        except Exception:
+            return
+
+        if not self._analyzed_today:
+            missed.append("swing_premarket_analysis")
+        if not self._selected_today:
+            missed.append("swing_proposals_send")
+        if not self._selected_intraday_today:
+            missed.append("intraday_selection")
+        if not self._retrained_today:
+            missed.append("model_retrain")
+
+        if missed:
+            self.logger.warning(
+                "⚠ Tasks that did NOT run on %s: %s",
+                self._last_date, ", ".join(missed),
+            )
+            await self.log_decision("WINDOW_MISSED", reasoning={
+                "date": self._last_date,
+                "missed_tasks": missed,
+                "task_stats": {
+                    k: {kk: v for kk, v in vv.items()}
+                    for k, vv in self._task_stats.items()
+                },
+            })
+        else:
+            self.logger.info("All scheduled tasks ran on %s ✓", self._last_date)
 
     # ─── Ticker Universe ──────────────────────────────────────────────────────
 
@@ -266,8 +409,12 @@ class PortfolioManager(BaseAgent):
         symbols = self._get_universe()
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {pool.submit(_fetch_one, s): s for s in symbols}
-            for future in as_completed(futures):
-                symbol, feats = future.result()
+            for future in as_completed(futures, timeout=300):
+                try:
+                    symbol, feats = future.result(timeout=30)
+                except Exception as e:
+                    self.logger.debug("Feature fetch timed out or failed: %s", e)
+                    continue
                 if feats is not None:
                     features_by_symbol[symbol] = feats
         return features_by_symbol
@@ -355,20 +502,50 @@ class PortfolioManager(BaseAgent):
         Results cached in self._swing_proposals — not sent to Risk Manager yet.
         Sending is deferred to 09:50 so we enter after the open volatility spike.
         """
-        self.logger.info("Pre-market swing analysis starting (08:00)...")
+        model_ver = getattr(self.model, "version", None)
+        self.logger.info("Pre-market swing analysis starting — model v%s", model_ver)
 
         if not self.model.is_trained:
             self.logger.warning("No trained model — pre-market analysis skipped")
-            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "model not trained"})
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "model not trained",
+                "strategy": "swing",
+                "model_version": model_ver,
+            })
             return
 
+        universe = self._get_universe()
+        self.logger.info("Fetching features for %d symbols...", len(universe))
+        t0 = _time.monotonic()
+
         # Run blocking network calls in a thread so the event loop stays free
-        features_by_symbol = await asyncio.to_thread(self._fetch_swing_features)
-        self.logger.info("Swing feature fetch complete — %d symbols", len(features_by_symbol))
+        try:
+            features_by_symbol = await asyncio.wait_for(
+                asyncio.to_thread(self._fetch_swing_features), timeout=420
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("Swing feature fetch timed out after 7 minutes — skipping")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "feature fetch timeout",
+                "strategy": "swing",
+                "model_version": model_ver,
+                "universe_size": len(universe),
+            })
+            return
+        fetch_ms = int((_time.monotonic() - t0) * 1000)
+        self.logger.info(
+            "Swing feature fetch complete — %d/%d symbols in %.1fs",
+            len(features_by_symbol), len(universe), fetch_ms / 1000,
+        )
 
         if not features_by_symbol:
             self.logger.warning("Could not build features for any symbol — skipping")
-            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "no features computed"})
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "no features computed",
+                "strategy": "swing",
+                "model_version": model_ver,
+                "universe_size": len(universe),
+            })
             return
 
         symbols = list(features_by_symbol.keys())
@@ -385,11 +562,19 @@ class PortfolioManager(BaseAgent):
 
         try:
             _, probabilities = self.model.predict(X)
-            self.logger.info("Model scored %d symbols — max prob=%.3f min prob=%.3f",
-                             len(probabilities), max(probabilities), min(probabilities))
+            self.logger.info(
+                "Model v%s scored %d symbols — max=%.3f median=%.3f min=%.3f",
+                model_ver, len(probabilities),
+                max(probabilities), float(np.median(probabilities)), min(probabilities),
+            )
         except Exception as e:
-            self.logger.error("Model prediction failed: %s", e)
-            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": f"prediction error: {e}"})
+            self.logger.error("Model prediction failed: %s", e, exc_info=True)
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "prediction error",
+                "strategy": "swing",
+                "model_version": model_ver,
+                "error": str(e),
+            })
             return
 
         min_conf, top_n = MIN_CONFIDENCE, TOP_N_STOCKS
@@ -533,10 +718,16 @@ class PortfolioManager(BaseAgent):
 
     async def select_intraday_instruments(self):
         """Run intraday model on 5-min bars, send intraday proposals."""
-        self.logger.info("Selecting intraday instruments (09:45 scan)...")
+        intraday_ver = getattr(self.intraday_model, "version", None)
+        self.logger.info("Selecting intraday instruments (09:45 scan) — model v%s", intraday_ver)
 
         if not self.intraday_model.is_trained:
             self.logger.warning("No intraday model available — skipping intraday scan")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "model not trained",
+                "strategy": "intraday",
+                "model_version": intraday_ver,
+            })
             return
 
         # PM abstention gate: skip all intraday entries on bad regime days (VIX>=25 or SPY<MA20)
@@ -580,15 +771,24 @@ class PortfolioManager(BaseAgent):
             range_result: Dict[str, Optional[float]] = {}
             with ThreadPoolExecutor(max_workers=16) as pool:
                 futures = {pool.submit(_fetch_one_intraday, s): s for s in RUSSELL_1000_TICKERS}
-                for future in as_completed(futures):
+                for future in as_completed(futures, timeout=300):
                     sym = futures[future]
-                    out = future.result()
+                    try:
+                        out = future.result(timeout=30)
+                    except Exception:
+                        continue
                     if out is not None:
                         feat_result[sym] = out[0]
                         range_result[sym] = out[1]
             return feat_result, range_result
 
-        features_by_symbol, prior_ranges_by_symbol = await asyncio.to_thread(_fetch_intraday_features)
+        try:
+            features_by_symbol, prior_ranges_by_symbol = await asyncio.wait_for(
+                asyncio.to_thread(_fetch_intraday_features), timeout=420
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("Intraday feature fetch timed out after 7 minutes — skipping")
+            return
 
         if not features_by_symbol:
             self.logger.warning("No intraday features computed")
