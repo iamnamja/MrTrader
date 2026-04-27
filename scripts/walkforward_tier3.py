@@ -192,6 +192,7 @@ def run_swing_walkforward(
     meta_model=None,
     pm_abstention_vix: float = 0.0,
     pm_abstention_spy_ma_days: int = 0,
+    pm_abstention_spy_5d: bool = False,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -262,6 +263,7 @@ def run_swing_walkforward(
             meta_model=meta_model,
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
+            pm_abstention_spy_5d=pm_abstention_spy_5d,
         )
         result = sim.run(
             symbols_data,
@@ -445,6 +447,8 @@ def main() -> int:
                         help="PM abstention gate: skip entries when VIX >= this level (0 = off)")
     parser.add_argument("--pm-abstention-spy-ma-days", type=int, default=0,
                         help="PM abstention gate: skip entries when SPY < N-day SMA (0 = off)")
+    parser.add_argument("--pm-abstention-spy-5d", action="store_true", default=False,
+                        help="PM abstention gate: skip entries when SPY 5-day return <= 0 (Phase 55)")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -483,6 +487,7 @@ def main() -> int:
             meta_model=meta_model,
             pm_abstention_vix=args.pm_abstention_vix,
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+            pm_abstention_spy_5d=args.pm_abstention_spy_5d,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")

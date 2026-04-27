@@ -153,27 +153,27 @@ Each trading day, for each symbol in the SP-100 universe:
 1. Compute 84 features via `FeatureEngineer.engineer_features()`
 2. Score with v119 `model.predict(features)` → path_quality score
 3. Filter: `MetaLabelModel.should_enter(features)` → skip if E[pnl] <= 0
-4. Filter: PM abstention gate → skip entire day if VIX >= 25 or SPY < MA20
+4. Filter: PM abstention gate → skip entire day if VIX >= 25, SPY < MA20, or SPY 5d return <= 0 (Phase 55)
 5. Signal types: `RSI_DIP` (RSI < 50 + price near 20-day low) or `EMA_CROSSOVER` (EMA9 > EMA20 + momentum)
 6. Size position to 5% of portfolio, stop at 0.5× ATR, target at 1.0× ATR
 
 ---
 
-## Intraday Model (v23 — ACTIVE, Phase 47 ✅ GATE PASSED)
+## Intraday Model (v29 — ACTIVE, Phase 54 ✅ GATE PASSED)
 
 The intraday model uses a primary signal model gated by a PM-level macro abstention gate.
 The meta-label model (v1) was dropped in Phase 47 — confirmed +0.000 Sharpe contribution.
 
-**Gate result:** avg Sharpe **+1.275** across 3 folds (gate > 0.80 ✅, min fold +0.79 > −0.30 ✅).
+**Gate result:** avg Sharpe **+1.776** across 3 folds (gate > 0.80 ✅, min fold +0.68 > −0.30 ✅).
 **Status: paper trading candidate.**
 
-### Primary Signal Model (v23)
+### Primary Signal Model (v29)
 
 - **Model file:** `app/ml/model.py` — `PortfolioSelectorModel` (xgboost)
 - **Trainer:** `app/ml/intraday_training.py` — `IntradayModelTrainer`
 - **Underlying estimator:** XGBClassifier (binary classification)
-- **OOS AUC:** 0.5995
-- **Features:** 42 (trained before Phase 47-5 additions; inference computes 50, model selects its 42 by name)
+- **OOS AUC:** 0.5970 (HPO best: 0.6172)
+- **Features:** 50 (full feature set including is_open_session)
 - **Retrain command:** `python scripts/retrain_intraday.py --days 730`
 
 ### PM Abstention Gate
@@ -217,7 +217,18 @@ XGBClassifier.fit() with best params
 Save as intraday_v{N}.pkl + register in ModelVersion DB
 ```
 
-### Walk-Forward Results (v23, 2026-04-26) ✅ GATE PASSED
+### Walk-Forward Results (v29, 2026-04-27) ✅ GATE PASSED
+
+| Fold | Period | Trades | Win% | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | 47.2% | +2.90 | 0.3% |
+| 2 | 2025-04-17 → 2025-10-16 | 252 | 39.3% | +0.68 | 1.5% |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | 47.6% | +1.75 | 1.0% |
+| **Avg** | | **756** | **44.7%** | **+1.776** | **0.9%** |
+
+Gate: **PASS** ✅ (avg +1.776 > 0.80, min fold +0.68 > −0.30).
+
+### Walk-Forward Results (v23, 2026-04-26) — Superseded by v29
 
 | Fold | Period | Trades | Win% | Sharpe | Max DD |
 |---|---|---|---|---|---|
@@ -225,8 +236,6 @@ Save as intraday_v{N}.pkl + register in ModelVersion DB
 | 2 | 2025-04-17 → 2025-10-16 | 226 | 43.8% | +1.30 | 0.6% |
 | 3 | 2025-10-17 → 2026-04-20 | 154 | 50.6% | +1.73 | 0.4% |
 | **Avg** | | **530** | **46.2%** | **+1.275** | **0.5%** |
-
-Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 
 ### Intraday Version History
 
@@ -236,9 +245,11 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 | v19 | 46-A | Binary ATR labels (1.2x/0.6x range) | -0.875 | 2 | Superseded — too sparse |
 | v20 | 46-A | path_quality regression label | -0.138 | 2 | Superseded — ORB gate blocked |
 | v22 | 46 full | Soft ORB gate + path_quality + meta + abstention | +0.301 | 175 | Superseded |
-| **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50** | **+1.275** | **177** | **Active ✅** |
+| v23 | 47 | Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50 | +1.275 | 177 | Superseded by v29 |
 | v25 | 47 Phase 2 | XGBRanker rank:pairwise objective, all 50 features | +0.184 | 252 | ❌ Gate FAIL — reverted to v23 |
 | v26 | 47 Phase 4 | Top-300 liquidity filter, XGBClassifier, all 50 features | -1.414 | 252 | ❌ Gate FAIL — reverted to v23 |
+| v28 | 54 | Feature pruning (49 features, is_open_session removed) | +0.634 | 252 | ❌ Gate FAIL — severe Fold 3 regression (-0.25). Reverted. |
+| **v29** | **54 restore** | **Restore 50 features (is_open_session back). Retrained with HPO.** | **+1.776** | **252** | **Active ✅** |
 
 ### What Was Ruled Out (Intraday)
 
@@ -248,6 +259,7 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 - **XGBoost+LightGBM ensemble** — no improvement over single XGBClassifier, added complexity
 - **XGBRanker rank:pairwise** — avg Sharpe +0.184 vs v23 +1.275; ranking objective hurt win rate and feature selection (ema_dist displaced prev_day_high/low_dist)
 - **Top-300 liquidity filter** — avg Sharpe -1.414; edge lives in mid-caps with higher intraday range variability, not large-cap mega-stocks
+- **is_open_session removal (Phase 54)** — v28 avg Sharpe +0.634, Fold 3 -0.25; zero importance in v26 (large-cap universe) but critical in full Russell 1000 universe (open session = high-noise period signal)
 
 ---
 
@@ -602,7 +614,7 @@ Tier 3 is the benchmark for go/no-go decisions. Tier 2 is optimistic (replays wi
 
 | Model | Version | Features | Trained | Notes |
 |---|---|---|---|---|
-| Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20). Avg Sharpe +1.181, min fold -0.031. |
+| Swing | **v119** | 84 | 2026-04-25 | **Active — gate passed.** XGBRegressor, path_quality regression label (0.5x/1.0x ATR, 5-day horizon). + MetaLabelModel v1 (E[R]>0 filter) + PM abstention gate (VIX>=25 or SPY<MA20 or SPY 5d<=0). Avg Sharpe +1.092 (Phase 55 gate), Fold 3 improved -0.03→+0.08. |
 | Swing meta | **v1** | 84 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor trained on 515 in-sample trade outcomes. R2=0.059, corr=0.286. Threshold E[R]>0. |
 | Intraday | **v23** | 50 | 2026-04-26 | **Active — ✅ GATE PASSED.** XGBClassifier, path_quality (0.4x/0.8x prior-day range, stop_pressure coeff −0.50) + PM abstention gate. MetaLabelModel dropped (+0.000 contribution). Avg Sharpe +1.275 (min +0.79). Paper trading candidate. |
 | Intraday meta | **v1** | 42 (entry features) | 2026-04-25 | MetaLabelModel. XGBRegressor on 810 in-sample trades. R2=0.001 (very weak). Likely to be dropped in Phase 47. |
