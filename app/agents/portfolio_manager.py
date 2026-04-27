@@ -616,6 +616,7 @@ class PortfolioManager(BaseAgent):
 
         min_conf = MIN_CONFIDENCE
         ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+        # Phase 51: per-symbol cooldown — skip symbols entered within last INTRADAY_COOLDOWN_HOURS
         selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:TOP_N_INTRADAY]
 
         if not selected:
