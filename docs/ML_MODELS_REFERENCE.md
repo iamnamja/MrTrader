@@ -159,21 +159,21 @@ Each trading day, for each symbol in the SP-100 universe:
 
 ---
 
-## Intraday Model (v23 — ACTIVE, Phase 47 ✅ GATE PASSED)
+## Intraday Model (v29 — ACTIVE, Phase 54 ✅ GATE PASSED)
 
 The intraday model uses a primary signal model gated by a PM-level macro abstention gate.
 The meta-label model (v1) was dropped in Phase 47 — confirmed +0.000 Sharpe contribution.
 
-**Gate result:** avg Sharpe **+1.275** across 3 folds (gate > 0.80 ✅, min fold +0.79 > −0.30 ✅).
+**Gate result:** avg Sharpe **+1.776** across 3 folds (gate > 0.80 ✅, min fold +0.68 > −0.30 ✅).
 **Status: paper trading candidate.**
 
-### Primary Signal Model (v23)
+### Primary Signal Model (v29)
 
 - **Model file:** `app/ml/model.py` — `PortfolioSelectorModel` (xgboost)
 - **Trainer:** `app/ml/intraday_training.py` — `IntradayModelTrainer`
 - **Underlying estimator:** XGBClassifier (binary classification)
-- **OOS AUC:** 0.5995
-- **Features:** 42 (trained before Phase 47-5 additions; inference computes 50, model selects its 42 by name)
+- **OOS AUC:** 0.5970 (HPO best: 0.6172)
+- **Features:** 50 (full feature set including is_open_session)
 - **Retrain command:** `python scripts/retrain_intraday.py --days 730`
 
 ### PM Abstention Gate
@@ -217,7 +217,18 @@ XGBClassifier.fit() with best params
 Save as intraday_v{N}.pkl + register in ModelVersion DB
 ```
 
-### Walk-Forward Results (v23, 2026-04-26) ✅ GATE PASSED
+### Walk-Forward Results (v29, 2026-04-27) ✅ GATE PASSED
+
+| Fold | Period | Trades | Win% | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | 47.2% | +2.90 | 0.3% |
+| 2 | 2025-04-17 → 2025-10-16 | 252 | 39.3% | +0.68 | 1.5% |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | 47.6% | +1.75 | 1.0% |
+| **Avg** | | **756** | **44.7%** | **+1.776** | **0.9%** |
+
+Gate: **PASS** ✅ (avg +1.776 > 0.80, min fold +0.68 > −0.30).
+
+### Walk-Forward Results (v23, 2026-04-26) — Superseded by v29
 
 | Fold | Period | Trades | Win% | Sharpe | Max DD |
 |---|---|---|---|---|---|
@@ -225,8 +236,6 @@ Save as intraday_v{N}.pkl + register in ModelVersion DB
 | 2 | 2025-04-17 → 2025-10-16 | 226 | 43.8% | +1.30 | 0.6% |
 | 3 | 2025-10-17 → 2026-04-20 | 154 | 50.6% | +1.73 | 0.4% |
 | **Avg** | | **530** | **46.2%** | **+1.275** | **0.5%** |
-
-Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 
 ### Intraday Version History
 
@@ -236,11 +245,11 @@ Gate: **PASS** ✅ (avg +1.275 > 0.80, min fold +0.79 > −0.30).
 | v19 | 46-A | Binary ATR labels (1.2x/0.6x range) | -0.875 | 2 | Superseded — too sparse |
 | v20 | 46-A | path_quality regression label | -0.138 | 2 | Superseded — ORB gate blocked |
 | v22 | 46 full | Soft ORB gate + path_quality + meta + abstention | +0.301 | 175 | Superseded |
-| **v23** | **47** | **Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50** | **+1.275** | **177** | **Active ✅** |
+| v23 | 47 | Stop/target compression (0.4x/0.8x) + stop_pressure coeff -1.25→-0.50 | +1.275 | 177 | Superseded by v29 |
 | v25 | 47 Phase 2 | XGBRanker rank:pairwise objective, all 50 features | +0.184 | 252 | ❌ Gate FAIL — reverted to v23 |
 | v26 | 47 Phase 4 | Top-300 liquidity filter, XGBClassifier, all 50 features | -1.414 | 252 | ❌ Gate FAIL — reverted to v23 |
 | v28 | 54 | Feature pruning (49 features, is_open_session removed) | +0.634 | 252 | ❌ Gate FAIL — severe Fold 3 regression (-0.25). Reverted. |
-| v29 | 54 revert | Restore 50 features (is_open_session back). Active candidate. | 🔄 pending | — | Retrain in progress |
+| **v29** | **54 restore** | **Restore 50 features (is_open_session back). Retrained with HPO.** | **+1.776** | **252** | **Active ✅** |
 
 ### What Was Ruled Out (Intraday)
 

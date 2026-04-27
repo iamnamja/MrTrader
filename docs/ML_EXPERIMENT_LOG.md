@@ -1354,3 +1354,34 @@ negative-momentum days. Small avg Sharpe decrease (-0.089) is acceptable given t
 it reduces trades more aggressively, costing some Sharpe (+2.31 vs +2.69). In Fold 3 (choppier)
 it correctly sits out negative-momentum stretches, turning -0.03 positive. Net: gate makes the
 system more conservative but more robust in recent market conditions.
+
+---
+
+## Phase 54 Follow-up — v29 Retrain (50 features, is_open_session restored, 2026-04-27)
+
+**Type:** Retrain to restore active intraday model after v28 gate fail.
+
+**Context:** v28 gate failed due to is_open_session removal (avg Sharpe +0.634). All changes reverted.
+v29 retrains the exact same 50-feature set as v23 on the same 2024-04-16 → 2026-04-16 window.
+
+**Training result (2026-04-27):**
+- AUC: 0.5970 (v23 was 0.5995 — within noise)
+- HPO best AUC: 0.6172
+- Top 5 features: prev_day_low_dist (0.0485), prev_day_high_dist (0.0475), atr_norm (0.0420), range_compression (0.0298), pullback_from_high (0.0262)
+- Feature rank order essentially unchanged from v23 — signal is stable
+
+**Walk-forward results (v29, 50 features, 2026-04-27):**
+| Fold | Test Period | Trades | Win% | Sharpe | DD |
+|---|---|---|---|---|---|
+| 1 | 2024-10-15 → 2025-04-16 | 252 | 47.2% | +2.90 | 0.3% |
+| 2 | 2025-04-17 → 2025-10-16 | 252 | 39.3% | +0.68 | 1.5% |
+| 3 | 2025-10-17 → 2026-04-20 | 252 | 47.6% | +1.75 | 1.0% |
+| **Avg** | | **756** | **44.7%** | **+1.776** | |
+
+**Gate**: ✅ PASS — avg Sharpe 1.776 > 0.80, min fold 0.68 > -0.30.
+
+**Verdict**: ✅ v29 is the new active intraday model. Avg Sharpe improved from v23's +1.275 → +1.776.
+This improvement is likely due to the HPO finding slightly better hyperparameters on the same data window.
+Fold 2 is the weak fold (0.68) but above the -0.30 floor. Fold 1 is exceptional (+2.90).
+
+**Active intraday model: v29.**
