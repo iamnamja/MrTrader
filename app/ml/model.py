@@ -223,12 +223,11 @@ class PortfolioSelectorModel:
             else:
                 qid = np.zeros(len(X_scaled), dtype=np.int32)
                 logger.warning("XGBRanker: no groups supplied — treating all samples as one group")
-            # Expand per-group sample_weight to per-sample (XGBRanker takes per-sample weights)
-            if "sample_weight" in fit_kwargs and fit_kwargs["sample_weight"] is not None:
-                group_w = fit_kwargs["sample_weight"]
-                if len(group_w) == len(groups):
-                    fit_kwargs["sample_weight"] = np.repeat(group_w, groups).astype(np.float32)
-            self.model.fit(X_scaled, y, qid=qid, **fit_kwargs)
+            # XGBRanker with qid= expects per-GROUP weights (one per query group), not per-sample.
+            # intraday_training.py already computes per-group mean weights; pass them directly.
+            # Remove sample_weight from fit_kwargs entirely — pass as separate arg to avoid confusion.
+            sw = fit_kwargs.pop("sample_weight", None)
+            self.model.fit(X_scaled, y, qid=qid, sample_weight=sw, **fit_kwargs)
             logger.info("XGBRanker trained")
         elif self.model_type == "lgbm" and X_val is not None and y_val is not None:
             X_val_scaled = self.scaler.transform(X_val)
