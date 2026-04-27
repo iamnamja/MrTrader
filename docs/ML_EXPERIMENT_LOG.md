@@ -1385,3 +1385,41 @@ This improvement is likely due to the HPO finding slightly better hyperparameter
 Fold 2 is the weak fold (0.68) but above the -0.30 floor. Fold 1 is exceptional (+2.90).
 
 **Active intraday model: v29.**
+
+---
+
+## Phase 51 — Multi-Scan Intraday (2026-04-27)
+
+**Type:** Architecture change + walk-forward. No model retrain.
+
+**Hypothesis:** Adding intraday scans at 11:45 and 13:45 ET (in addition to 09:45) would surface
+afternoon setups and increase profitable trade count, improving Sharpe.
+
+**Changes:** Simulator scanned at bars 12, 36, 60 (09:45, 11:45, 13:45). Per-symbol same-day
+cooldown prevented re-entry. Live PM wired to fire at all 3 scan times.
+
+**Walk-forward results (v29 + multi-scan, 2026-04-27):**
+| Fold | Trades | Win% | Sharpe | vs v29 baseline |
+|---|---|---|---|---|
+| 1 | 1877 | 44.9% | +0.03 | +2.90 → -2.87 |
+| 2 | 1884 | 43.4% | -1.92 | +0.68 → -2.60 |
+| 3 | 1878 | 48.5% | +1.33 | +1.75 → -0.42 |
+| **Avg** | **5639** | **45.6%** | **-0.186** | |
+
+**Gate**: ❌ FAIL — avg Sharpe -0.186, Fold 2 -1.92.
+
+**Verdict**: ❌ Reverted. Multi-scan with the current model is severely out-of-distribution.
+
+**Root cause**: The model was trained exclusively on bar 0-11 features (09:30–09:45 window).
+Features like `is_open_session`, `orb_position`, `orb_direction_strength` are only meaningful
+relative to the open. Feeding bar 12-23 or 24-35 as if they were the open produces garbage
+predictions. Trade count went 7.5x (252 → ~1880/fold) with win rate barely unchanged (44.7% → 45.6%),
+meaning the extra trades are noise at scale, amplified by 7x transaction costs.
+
+**Key lesson**: The current intraday model is an **opening range breakout detector**, not a
+general intraday setup detector. Multi-scan requires either:
+1. Retraining with time-of-day-normalized features valid at any hour
+2. A separate model trained on mid-day setups with different feature engineering
+3. Event-driven triggers (volume spike, VWAP reclaim) rather than fixed clock scans
+
+**Action**: Reverted simulator and live PM to single 09:45 scan. v29 remains active model.
