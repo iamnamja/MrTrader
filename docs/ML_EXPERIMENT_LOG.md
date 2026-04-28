@@ -1472,8 +1472,35 @@ This is expected and not a flaw — v30 was designed for multi-scan (Phase 51), 
 The next step is to run Phase 51 walk-forward (bars 12, 18, 24 multi-scan) to test v30 in its
 intended deployment context.
 
-**Next step:** Run Phase 51 walk-forward with `--intraday-multi-scan` (scan_offsets=[12,18,24]).
-Gate: avg Sharpe >= +1.275. If passes, merge `feat/phase50-time-of-day` and update active model
-to v30. If fails, retrain v30 with single-offset (bars 12 only) to get single-scan gate back.
+**Multi-scan Phase 51 gate results (v30, bars 12/18/24, 2026-04-28):**
+| Fold | Trades | Win% | Sharpe | DD |
+|---|---|---|---|---|
+| 1 (2024-10-17 → 2025-04-21) | 438 | 42.9% | -0.09 | 1.4% |
+| 2 (2025-04-22 → 2025-10-20) | 672 | 49.9% | +1.67 | 0.8% |
+| 3 (2025-10-21 → 2026-04-22) | 474 | 43.0% | -0.62 | 1.5% |
+| **Avg** | **1584** | **45.3%** | **+0.322** | — |
 
-**Action**: Reverted simulator and live PM to single 09:45 scan. v29 remains active model.
+**Gate**: ❌ FAIL — avg Sharpe +0.322 (need >= +1.275), min fold -0.619 (need > -0.30).
+
+**Verdict**: ❌ v30 fails Phase 51 multi-scan gate. Time-of-day segmentation does not improve
+performance even in multi-scan mode. Despite 3× more trades (1584 vs 528), win rates are similar
+and Sharpe is worse. Folds 1 and 3 are negative, suggesting the 3-segment training dilutes the
+opening-session edge that v29 captures cleanly.
+
+**v30 RETIRED.** DB status = RETIRED, tier3_gate_passed=False.
+
+**v29 confirmed active.** Re-validated on 2026-04-28 through refactored simulator:
+| Fold | Trades | Win% | Sharpe | DD |
+|---|---|---|---|---|
+| 1 (2024-10-17 → 2025-04-21) | 146 | 48.6% | +1.73 | 0.2% |
+| 2 (2025-04-22 → 2025-10-20) | 224 | 39.7% | +0.72 | 1.3% |
+| 3 (2025-10-21 → 2026-04-22) | 158 | 53.8% | +2.97 | 0.4% |
+| **Avg** | **528** | **47.4%** | **+1.807** | — |
+
+Gate: ✅ PASS (+1.807 > 0.80, min +0.72 > -0.30). Confirms v29's gate holds through current code.
+DB: tier3_gate_passed=True, pkl protected from pruning.
+
+**Conclusion on Phase 50/51 time-of-day segmentation:**
+The opening session (bars 0-12) contains most of the intraday edge. Afternoon entries (bars 18, 24)
+appear to add noise, not signal. The path forward for intraday improvement should focus on
+better morning features rather than extending the scan window.
