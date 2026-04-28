@@ -620,6 +620,46 @@ class PortfolioManager(BaseAgent):
             },
         )
 
+    def _fetch_vix_level(self) -> float:
+        """Fetch current VIX level. Tries yfinance first, falls back to FRED (1-day lag).
+        Returns 30.0 (conservative) if both sources fail."""
+        import os
+        # Primary: yfinance (real-time)
+        try:
+            import yfinance as yf
+            import pandas as pd
+            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.get_level_values(0)
+            vix.columns = [c.lower() for c in vix.columns]
+            if len(vix) > 0:
+                return float(vix["close"].iloc[-1])
+        except Exception:
+            pass
+
+        # Fallback: FRED VIXCLS (previous close, 1-day lag)
+        try:
+            import requests
+            fred_key = os.getenv("FRED_API_KEY")
+            if fred_key:
+                r = requests.get(
+                    "https://api.stlouisfed.org/fred/series/observations",
+                    params={"series_id": "VIXCLS", "sort_order": "desc", "limit": 3,
+                            "api_key": fred_key, "file_type": "json"},
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    obs = [o for o in r.json().get("observations", []) if o["value"] != "."]
+                    if obs:
+                        vix_level = float(obs[0]["value"])
+                        self.logger.info("VIX from FRED fallback (1d lag): %.1f", vix_level)
+                        return vix_level
+        except Exception:
+            pass
+
+        self.logger.warning("VIX unavailable from all sources — assuming VIX=30 (conservative)")
+        return 30.0
+
     def _market_regime_allows_entries(self) -> bool:
         """
         PM abstention gate. Returns False on unfavorable broad-market conditions:
@@ -643,11 +683,7 @@ class PortfolioManager(BaseAgent):
             spy_5d_ret = (spy_close / float(spy["close"].iloc[-6]) - 1.0) if len(spy) >= 6 else 0.0
             spy_momentum_weak = spy_5d_ret <= 0.0
 
-            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
-            if isinstance(vix.columns, pd.MultiIndex):
-                vix.columns = vix.columns.get_level_values(0)
-            vix.columns = [c.lower() for c in vix.columns]
-            vix_level = float(vix["close"].iloc[-1]) if len(vix) > 0 else 0.0
+            vix_level = self._fetch_vix_level()
             vix_high = vix_level >= 25.0
 
             if spy_below_ma or vix_high or spy_momentum_weak:

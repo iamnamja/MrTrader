@@ -430,6 +430,7 @@ class PortfolioSelectorModel:
                 self._is_regression = meta.get("is_regression", False)
 
         self.is_trained = True
+        self.version = version
         logger.info("Model v%d loaded from %s", version, directory)
 
     def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
