@@ -364,6 +364,12 @@ class Trader(BaseAgent):
         """
         from app.strategy.signals import ML_SCORE_THRESHOLD
         trade_type = proposal.get("trade_type", "swing")
+
+        if symbol in self.active_positions:
+            self.logger.debug("%s: already in active_positions — skipping duplicate entry", symbol)
+            self.approved_symbols.pop(symbol, None)
+            return
+
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
                 "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
