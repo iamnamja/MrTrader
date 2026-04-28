@@ -256,8 +256,22 @@ class Trader(BaseAgent):
 
         # Size the position
         account = alpaca.get_account()
+        # Use portfolio_value (not buying_power) to avoid margin inflation.
+        # buying_power on a $100k paper account = $200k (2× margin) — that would
+        # produce 2× more shares than intended.
         equity = float(account.get("equity", 0)) if account else 0
         cash = float(account.get("cash", 0)) if account else 0
+
+        # In live mode, cap sizing to the capital ramp stage to limit real-money risk.
+        # In paper mode, use actual account equity (matches walk-forward assumptions).
+        from app.config import settings
+        if settings.trading_mode == "live":
+            from app.live_trading.capital_manager import capital_manager
+            stage_cap = capital_manager.get_current_capital()
+            cash = min(cash, stage_cap)
+            equity = min(equity, stage_cap)
+        # Also cap cash to actual cash (not buying_power) to avoid margin inflation
+        cash = min(cash, float(account.get("cash", cash)))
 
         shares = size_position(
             account_equity=equity,
