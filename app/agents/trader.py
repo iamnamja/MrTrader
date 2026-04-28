@@ -323,6 +323,13 @@ class Trader(BaseAgent):
             action = msg.get("action", "HOLD")
             reason = msg.get("reason", "pm_request")
 
+            # WITHDRAW: PM wants to cancel a pending approval before entry
+            if action == "WITHDRAW":
+                if symbol in self.approved_symbols:
+                    self.approved_symbols.pop(symbol)
+                    self.logger.info("PM withdrew pending approval for %s — reason: %s", symbol, reason)
+                continue
+
             if symbol not in self.active_positions:
                 # PM may send requests for positions already closed — ignore
                 continue

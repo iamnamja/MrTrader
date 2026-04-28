@@ -78,6 +78,7 @@ class PortfolioManager(BaseAgent):
         self._weekly_report_generated_today: bool = False
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
+        self._pending_approvals: Dict[str, float] = {}   # symbol → monotonic time of proposal send (Phase 70)
         self._last_review_minute: int = -1       # last minute a 30-min review ran
         self._last_heartbeat_hour: int = -1      # last hour a loop-alive log was emitted
         # Per-task stats: attempts, failures, last duration (ms), last run timestamp
@@ -279,6 +280,10 @@ class PortfolioManager(BaseAgent):
                         await self._handle_reeval_requests()
                     except Exception as _rev_exc:
                         self.logger.warning("Reeval handler error: %s", _rev_exc)
+                    try:
+                        await self._rescore_pending_approvals()
+                    except Exception as _rev_exc:
+                        self.logger.warning("Pending approval rescore error: %s", _rev_exc)
 
                 # ── 16:05–16:59: record daily benchmark ───────────────────────
                 if (
@@ -751,8 +756,10 @@ class PortfolioManager(BaseAgent):
             self.logger.debug("Macro calendar check failed: %s", exc)
 
         self.logger.info("Sending %d swing proposals to Risk Manager (09:50)...", len(self._swing_proposals))
+        import time as _time
         for proposal in self._swing_proposals:
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
+            self._pending_approvals[proposal["symbol"]] = _time.monotonic()
             self.logger.info(
                 "Proposal sent: %s @ $%.2f (confidence=%.2f)",
                 proposal["symbol"], proposal["entry_price"], proposal["confidence"],
@@ -964,6 +971,8 @@ class PortfolioManager(BaseAgent):
                 "trade_type": "intraday",
             }
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
+            import time as _time
+            self._pending_approvals[proposal["symbol"]] = _time.monotonic()
             news_monitor.watch(symbol)  # Phase 53: start monitoring for news exits
             self.logger.info(
                 "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
@@ -1277,6 +1286,83 @@ class PortfolioManager(BaseAgent):
 
         if requests_processed:
             self.logger.info("Processed %d reeval request(s)", requests_processed)
+
+    # ─── Phase 70: Re-score pending approvals ────────────────────────────────
+
+    async def _rescore_pending_approvals(self) -> None:
+        """
+        Every 30 minutes, re-score symbols that were approved by RM but not yet
+        entered by Trader. If fresh ML score has dropped significantly, send a
+        WITHDRAW message to cancel the pending entry.
+
+        Thresholds:
+          - Swing: withdraw if score < MIN_CONFIDENCE * 0.85 (15% grace on original threshold)
+          - All: withdraw if proposal is > 90 minutes old (Trader's 60-min TTL + buffer)
+        """
+        import time as _time
+        if not self._pending_approvals:
+            return
+        if not self.model.is_trained:
+            return
+
+        now_mono = _time.monotonic()
+        MIN_SCORE = 0.45  # fallback if can't read config
+
+        try:
+            from app.database.session import get_session as _gs
+            from app.database.agent_config import get_agent_config
+            _db = _gs()
+            try:
+                cfg_min = get_agent_config(_db, "strategy.min_confidence")
+                if cfg_min:
+                    MIN_SCORE = float(cfg_min) * 0.85
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+        to_withdraw = []
+        for symbol, sent_at in list(self._pending_approvals.items()):
+            age_min = (now_mono - sent_at) / 60.0
+
+            # Stale: over 90 min — Trader's TTL is 60 min, give extra buffer
+            if age_min > 90:
+                to_withdraw.append((symbol, f"stale_{age_min:.0f}min"))
+                continue
+
+            # Re-score with fresh daily bars
+            try:
+                def _rescore_sym(sym=symbol):
+                    bars = self._alpaca.get_bars(sym, timeframe="1D", limit=300)
+                    if bars is None or bars.empty:
+                        return None
+                    feats = self.feature_engineer.engineer_features(sym, bars, fetch_fundamentals=False)
+                    if feats is None:
+                        return None
+                    fn = getattr(self.model, "feature_names", None)
+                    import numpy as np
+                    x = [[feats.get(f, 0.0) for f in fn]] if fn else [list(feats.values())]
+                    x = np.nan_to_num(x)
+                    _, probs = self.model.predict(x)
+                    return float(probs[0])
+
+                score = await asyncio.to_thread(_rescore_sym)
+                if score is not None and score < MIN_SCORE:
+                    to_withdraw.append((symbol, f"rescore_{score:.3f}_below_{MIN_SCORE:.3f}"))
+                else:
+                    self.logger.debug("Phase 70: %s still valid (score=%.3f age=%.0fmin)", symbol, score or 0.0, age_min)
+            except Exception as exc:
+                self.logger.debug("Phase 70 rescore failed for %s: %s", symbol, exc)
+
+        for symbol, reason in to_withdraw:
+            self._pending_approvals.pop(symbol, None)
+            self.send_message(EXIT_REQUESTS_QUEUE, {
+                "symbol": symbol,
+                "action": "WITHDRAW",
+                "reason": reason,
+            })
+            self.logger.info("Phase 70: withdrawing pending approval for %s — %s", symbol, reason)
+            await self.log_decision("PROPOSAL_WITHDRAWN", reasoning={"symbol": symbol, "reason": reason})
 
     # ─── Proposal Building ────────────────────────────────────────────────────
 
