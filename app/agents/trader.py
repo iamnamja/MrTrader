@@ -29,6 +29,7 @@ from app.strategy.signals import check_exit, generate_signal
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
+UTC_TZ = ZoneInfo("UTC")
 
 APPROVED_TRADES_QUEUE = "trader_approved_trades"
 EXIT_REQUESTS_QUEUE = "trader_exit_requests"    # PM → Trader: EXIT/HOLD/EXTEND_TARGET
@@ -113,6 +114,49 @@ class Trader(BaseAgent):
             # No DB record — create a synthetic ACTIVE trade using generate_signal for stop/target
             if symbol in self.active_positions:
                 continue  # already loaded
+
+            # Before creating a new record, check if a same-day CLOSED trade exists for this symbol.
+            # If so, this is a restart mid-session after a partial exit — the remaining shares are
+            # a remnant of that position. Reuse the most recent closed trade's metadata rather than
+            # creating a duplicate that would double-count P&L.
+            today_start = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_utc = today_start.astimezone(UTC_TZ).replace(tzinfo=None)
+            existing_today = (
+                db.query(Trade)
+                .filter(
+                    Trade.symbol == symbol,
+                    Trade.created_at >= today_start_utc,
+                )
+                .order_by(Trade.id.desc())
+                .first()
+            )
+            if existing_today:
+                # Remnant of a previously-closed or partial position — load in-memory using its
+                # original entry price/stop/target so exit P&L is calculated correctly.
+                self.logger.warning(
+                    "Reconciliation: %s has existing trade id=%d today — treating as remnant, not creating new record",
+                    symbol, existing_today.id,
+                )
+                self.active_positions[symbol] = {
+                    "entry_price":   float(existing_today.entry_price or avg),
+                    "stop_price":    float(existing_today.stop_price or avg * 0.98),
+                    "target_price":  float(existing_today.target_price or avg * 1.06),
+                    "highest_price": avg,
+                    "atr":           0.0,
+                    "bars_held":     existing_today.bars_held or 0,
+                    "trade_id":      existing_today.id,
+                    "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
+                    "entry_date":    existing_today.created_at.date() if existing_today.created_at else datetime.now(ET).date(),
+                    "_partial_exited": True,  # already had a partial — don't fire again
+                }
+                # Reopen the trade record so exit logic can close it properly
+                existing_today.status = "ACTIVE"
+                existing_today.quantity = qty
+                existing_today.exit_price = None
+                existing_today.pnl = None
+                existing_today.closed_at = None
+                db.commit()
+                continue
 
             self.logger.warning("Reconciliation: %s in Alpaca but no DB trade — creating synthetic record", symbol)
             try:

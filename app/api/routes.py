@@ -154,37 +154,34 @@ async def get_dashboard_summary():
         buying_power = float(account["buying_power"]) if account else None
         cash = float(account["cash"]) if account else None
 
-        # Realized P&L from DB (today and all-time)
-        def _pnl_from_db():
-            from datetime import date as _date
-            db = get_session()
+        # P&L from Alpaca portfolio history — ground truth, unaffected by DB duplicates
+        def _pnl_from_alpaca():
             try:
-                today_str = _date.today().isoformat()
-                closed = db.query(Trade).filter(Trade.status == "CLOSED").all()
-                today_realized = sum(
-                    float(t.pnl or 0) for t in closed
-                    if t.closed_at and t.closed_at.date().isoformat() == today_str
-                )
-                total_realized = sum(float(t.pnl or 0) for t in closed)
-                return today_realized, total_realized
+                from alpaca.trading.requests import GetPortfolioHistoryRequest
+                # 1D range gives today's cumulative profit_loss series
+                req = GetPortfolioHistoryRequest(period="1D", timeframe="5Min")
+                hist = _alpaca().trading_client.get_portfolio_history(req)
+                pnl_series = hist.profit_loss or []
+                # Last non-None value is today's realized+unrealized P&L per Alpaca
+                today_alpaca = next((float(v) for v in reversed(pnl_series) if v is not None), None)
+                return today_alpaca
             except Exception:
-                return 0.0, 0.0
-            finally:
-                db.close()
+                return None
 
-        today_realized, total_realized = await asyncio.to_thread(_pnl_from_db)
+        today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
 
         if account_value is not None:
-            # Daily P&L = today's realized (closed trades) + current unrealized (open positions)
-            daily_pnl = round(today_realized + unrealized_pnl, 2)
-            previous_value = account_value - daily_pnl
-            daily_pnl_pct = round(daily_pnl / previous_value * 100, 2) if previous_value > 0 else 0.0
-            # Total P&L = all closed trades + current unrealized
-            total_pnl = round(total_realized + unrealized_pnl, 2)
-            initial_capital = max(account_value - total_pnl, 1.0)
-            total_pnl_pct = round(total_pnl / initial_capital * 100, 2)
+            # Daily P&L: use Alpaca's own series — immune to DB duplicate records
+            daily_pnl = round(today_alpaca_pnl, 2) if today_alpaca_pnl is not None else round(unrealized_pnl, 2)
+            prev_close = account_value - daily_pnl
+            daily_pnl_pct = round(daily_pnl / prev_close * 100, 2) if prev_close > 0 else 0.0
+            # Total P&L = account value vs paper trading starting capital ($100k)
+            # settings.initial_capital is $20k (live target), paper account started at $100k
+            paper_start = 100_000.0
+            total_pnl = round(account_value - paper_start, 2)
+            total_pnl_pct = round(total_pnl / paper_start * 100, 2)
         else:
-            daily_pnl = unrealized_pnl
+            daily_pnl = round(unrealized_pnl, 2)
             daily_pnl_pct = total_pnl = total_pnl_pct = None
 
         # Capital deployed = sum of market_value across open positions
@@ -198,17 +195,40 @@ async def get_dashboard_summary():
         def _last_signal():
             db = get_session()
             try:
+                now = datetime.utcnow()
+                # Primary: AgentDecision log
                 d = (
                     db.query(AgentDecision)
                     .filter(AgentDecision.decision_type == "TRADE_ENTERED")
                     .order_by(desc(AgentDecision.timestamp))
                     .first()
                 )
-                if not d:
+                decision_ts = d.timestamp if d else None
+                decision_sig = (d.reasoning or {}).get("signal_type", "TRADE") if d else None
+
+                # Fallback: most recent Trade entry (catches sessions where decisions weren't logged)
+                t = (
+                    db.query(Trade)
+                    .order_by(desc(Trade.created_at))
+                    .first()
+                )
+                trade_ts = t.created_at if t else None
+                trade_sig = t.signal_type if t else None
+
+                # Pick whichever is more recent
+                if decision_ts and trade_ts:
+                    if trade_ts > decision_ts:
+                        ts, sig = trade_ts, trade_sig or "TRADE"
+                    else:
+                        ts, sig = decision_ts, decision_sig or "TRADE"
+                elif decision_ts:
+                    ts, sig = decision_ts, decision_sig or "TRADE"
+                elif trade_ts:
+                    ts, sig = trade_ts, trade_sig or "TRADE"
+                else:
                     return None, None
-                r = d.reasoning or {}
-                sig = r.get("signal_type", "TRADE")
-                age_hours = round((datetime.utcnow() - d.timestamp).total_seconds() / 3600, 1)
+
+                age_hours = round((now - ts).total_seconds() / 3600, 1)
                 return sig, age_hours
             except Exception:
                 return None, None
@@ -410,6 +430,7 @@ async def get_equity_history(range: str = "1d"):
     range: '1d' (5-min bars today), '1w' (daily, 7 days), '1m' (daily, 30 days)
     """
     def _fetch():
+        import zoneinfo
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         period_map = {"1d": "1D", "1w": "1W", "1m": "1M"}
         tf_map = {"1d": "5Min", "1w": "1D", "1m": "1D"}
@@ -420,13 +441,21 @@ async def get_equity_history(range: str = "1d"):
 
         timestamps = hist.timestamp or []
         pnl_series = hist.profit_loss or []
+        et = zoneinfo.ZoneInfo("America/New_York")
 
         points = []
         for ts, pnl in zip(timestamps, pnl_series):
             if pnl is None:
                 continue
-            dt = datetime.utcfromtimestamp(ts)
-            label = dt.strftime("%H:%M") if range == "1d" else dt.strftime("%b %d")
+            dt_et = datetime.fromtimestamp(ts, tz=et)
+            if range == "1d":
+                # Only show regular market hours: 9:30 AM – 4:00 PM ET
+                h, m = dt_et.hour, dt_et.minute
+                if (h, m) < (9, 30) or (h, m) > (16, 0):
+                    continue
+                label = dt_et.strftime("%I:%M %p").lstrip("0")
+            else:
+                label = dt_et.strftime("%b %d")
             points.append({"time": label, "pnl": round(float(pnl), 2)})
         return points
 
