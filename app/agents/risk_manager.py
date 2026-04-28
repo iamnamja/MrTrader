@@ -325,7 +325,8 @@ class RiskManager(BaseAgent):
                 quote = get_alpaca_client().get_quote(symbol)
                 if quote is not None:
                     spread_pct = quote["spread_pct"]
-                    if spread_pct > max_spread:
+                    # Spreads > 2% are stale IEX quotes, not real market spreads — ignore
+                    if spread_pct <= 0.02 and spread_pct > max_spread:
                         msg = (f"Bid-ask spread too wide: {spread_pct*100:.3f}% "
                                f"(limit {max_spread*100:.3f}%)")
                         reasoning["failed_rule"] = "bid_ask_spread"

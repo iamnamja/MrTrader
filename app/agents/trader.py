@@ -298,10 +298,10 @@ class Trader(BaseAgent):
 
             quote = alpaca.get_quote(symbol)
             if quote and quote["ask"] > 0:
-                limit_price = round(quote["ask"] * (1 - limit_offset), 4)
+                limit_price = round(quote["ask"] * (1 - limit_offset), 2)
                 intended_price = quote["ask"]
             else:
-                limit_price = round(intended_price * (1 - limit_offset), 4)
+                limit_price = round(intended_price * (1 - limit_offset), 2)
 
             order = alpaca.place_limit_order(symbol, shares, "buy", limit_price)
             if not order:

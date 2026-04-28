@@ -160,10 +160,10 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
     # Execution quality
     {
         "key": "risk.max_spread_pct",
-        "default": 0.0015,
+        "default": 0.005,
         "type": "float",
         "min": 0.0005,
-        "max": 0.01,
+        "max": 0.02,
         "description": "Max bid-ask spread as fraction of mid-price before rejecting entry",
         "group": "Risk Manager",
     },

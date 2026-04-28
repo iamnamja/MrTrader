@@ -1240,11 +1240,14 @@ class PortfolioManager(BaseAgent):
         except Exception:
             pass  # data unavailable — fail open
 
-        # Illiquidity guard: skip if bid/ask spread > 0.1% of mid
+        # Illiquidity guard: skip if bid/ask spread > 0.5% of mid.
+        # Spreads > 2% are treated as stale IEX quotes (not real spreads) and ignored.
         try:
             quote = self._alpaca.get_quote(symbol)
-            if quote is not None and quote["spread_pct"] > 0.001:
-                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.1%)"
+            if quote is not None:
+                sp = quote["spread_pct"]
+                if sp <= 0.02 and sp > 0.005:
+                    return f"spread_too_wide: {sp:.3%} (limit 0.5%)"
         except Exception:
             pass
 
@@ -1266,11 +1269,14 @@ class PortfolioManager(BaseAgent):
         if vol_surge is not None and vol_surge < 1.0:
             return f"low_volume: volume_surge={vol_surge:.2f} (need >=1.0)"
 
-        # Spread guard: skip if bid/ask spread > 0.05% of mid
+        # Spread guard: skip if bid/ask spread > 0.3% of mid.
+        # Spreads > 2% are treated as stale IEX quotes and ignored.
         try:
             quote = self._alpaca.get_quote(symbol)
-            if quote is not None and quote["spread_pct"] > 0.0005:
-                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.05%)"
+            if quote is not None:
+                sp = quote["spread_pct"]
+                if sp <= 0.02 and sp > 0.003:
+                    return f"spread_too_wide: {sp:.3%} (limit 0.3%)"
         except Exception:
             pass
 
