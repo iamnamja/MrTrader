@@ -750,9 +750,33 @@ class PortfolioManager(BaseAgent):
         self._swing_proposals = []
 
     async def select_instruments(self):
-        """Public entry point for manual/forced selection — runs full analysis + send immediately."""
-        await self._analyze_swing_premarket()
-        await self._send_swing_proposals()
+        """Public entry point for manual/forced selection.
+
+        Routes to the correct strategy based on time of day so that a restart
+        or manual trigger mid-session doesn't fire swing proposals at 2 PM.
+        - Before 09:45 ET → swing (pre-market / open)
+        - 09:45–15:45 ET  → intraday (market hours)
+        - After 15:45 ET  → no-op (too close to close)
+        """
+        now = datetime.now(ET)
+        minutes = now.hour * 60 + now.minute
+
+        if minutes < 9 * 60 + 45:
+            # Pre-market / just after open — run swing
+            await self._analyze_swing_premarket()
+            await self._send_swing_proposals()
+        elif minutes < 15 * 60 + 45:
+            # Market hours — run intraday
+            self.logger.info(
+                "select_instruments called at %02d:%02d ET — routing to intraday scan",
+                now.hour, now.minute,
+            )
+            await self.select_intraday_instruments()
+        else:
+            self.logger.info(
+                "select_instruments called at %02d:%02d ET — too late in day, skipping",
+                now.hour, now.minute,
+            )
 
     # ─── Intraday Selection ───────────────────────────────────────────────────
 
