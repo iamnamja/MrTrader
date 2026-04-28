@@ -1422,4 +1422,58 @@ general intraday setup detector. Multi-scan requires either:
 2. A separate model trained on mid-day setups with different feature engineering
 3. Event-driven triggers (volume spike, VWAP reclaim) rather than fixed clock scans
 
+---
+
+## Phase 50 — Time-of-Day Segmentation (2026-04-27)
+
+**Type:** Model improvement — retrain + walk-forward.
+
+**Hypothesis:** Directly address the Phase 51 root cause: retrain with samples drawn from
+all 3 session windows (bars 12, 18, 24 = 60, 90, 120 min post-open) and add `session_segment`
+(0/1/2) plus interaction features (`seg_x_atr_norm`, `seg_x_high_dist`) so the model understands
+which time-of-day window it operates in.
+
+**Changes:**
+- `app/ml/intraday_training.py`: `ENTRY_OFFSETS = [12, 18, 24]` — train on 3 entry windows per day
+- `app/ml/intraday_features.py`: Added `session_segment`, `seg_x_high_dist`, `seg_x_atr_norm`
+- Feature count: 50 → 53
+- Training samples: ~815k (3× larger than v29 due to 3 entry windows)
+
+**Model v30 training results (2026-04-27):**
+| Metric | Value |
+|---|---|
+| Architecture | XGBoost + LightGBM ensemble |
+| Features | 53 |
+| OOS AUC | 0.6237 (baseline v29: 0.5970) |
+| HPO best AUC | 0.6553 |
+| Top features | williams_r, prev_day_low_dist, prev_day_high_dist, seg_x_atr_norm, atr_norm |
+| Train samples | 815,061 |
+| Test samples | 186,990 |
+
+**Walk-forward results (v30 single-scan at bar 12, 2026-04-28):**
+| Fold | Trades | Win% | Sharpe | vs v29 baseline |
+|---|---|---|---|---|
+| 1 | 148 | 42.6% | +0.30 | +2.90 → -2.60 |
+| 2 | 224 | 41.5% | -1.24 | +0.68 → -1.92 |
+| 3 | 156 | 44.2% | +0.74 | +1.75 → -1.01 |
+| **Avg** | **528** | **42.8%** | **-0.068** | |
+
+**Gate**: ❌ FAIL — avg Sharpe -0.068 (gate: >= +1.275), Fold 2 -1.24 (gate: > -0.30).
+
+**Verdict**: ❌ v30 fails single-scan gate. **v29 remains active intraday model.**
+
+**Root cause (distribution mismatch):** v30 was trained on samples from all 3 session windows
+(bars 12, 18, 24). The model learned `session_segment` as an important feature (ranked #4 by
+importance). At inference in single-scan mode, ALL entries are at bar 12 (60 min post-open,
+session_segment=0), but the training data had 1/3 of samples at segment=1 and segment=2. The
+model's internal calibration is wrong for a segment-0-only deployment.
+
+This is expected and not a flaw — v30 was designed for multi-scan (Phase 51), not single-scan.
+The next step is to run Phase 51 walk-forward (bars 12, 18, 24 multi-scan) to test v30 in its
+intended deployment context.
+
+**Next step:** Run Phase 51 walk-forward with `--intraday-multi-scan` (scan_offsets=[12,18,24]).
+Gate: avg Sharpe >= +1.275. If passes, merge `feat/phase50-time-of-day` and update active model
+to v30. If fails, retrain v30 with single-offset (bars 12 only) to get single-scan gate back.
+
 **Action**: Reverted simulator and live PM to single 09:45 scan. v29 remains active model.

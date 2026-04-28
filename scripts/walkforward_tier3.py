@@ -310,6 +310,7 @@ def run_intraday_walkforward(
     meta_model=None,
     pm_abstention_vix: float = 0.0,
     pm_abstention_spy_ma_days: int = 0,
+    scan_offsets: Optional[List[int]] = None,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -390,6 +391,7 @@ def run_intraday_walkforward(
             meta_model=meta_model,
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
+            scan_offsets=scan_offsets,
         )
         result = sim.run(
             symbols_data,
@@ -449,6 +451,8 @@ def main() -> int:
                         help="PM abstention gate: skip entries when SPY < N-day SMA (0 = off)")
     parser.add_argument("--pm-abstention-spy-5d", action="store_true", default=False,
                         help="PM abstention gate: skip entries when SPY 5-day return <= 0 (Phase 55)")
+    parser.add_argument("--intraday-multi-scan", action="store_true", default=False,
+                        help="Phase 51: scan at offsets [12, 18, 24] instead of single scan at 12")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -496,6 +500,7 @@ def main() -> int:
 
     if args.model in ("intraday", "both"):
         t0 = time.time()
+        intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
         intraday_report = run_intraday_walkforward(
             n_folds=args.folds,
             total_days=args.days,
@@ -503,6 +508,7 @@ def main() -> int:
             meta_model=intraday_meta_model,
             pm_abstention_vix=args.pm_abstention_vix,
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+            scan_offsets=intraday_scan_offsets,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")

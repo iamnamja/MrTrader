@@ -154,8 +154,8 @@ class TestFeatureNamesConstant:
     def test_feature_names_count(self):
         """FEATURE_NAMES must have the expected count (50 with Phase 47-5 features)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 50, (
-            f"Expected 50 features (42 base + 8 Phase 47-5), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 53, (
+            f"Expected 53 features (50 Phase 47-5 + 3 Phase 50 session features), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):

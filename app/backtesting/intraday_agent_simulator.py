@@ -107,6 +107,7 @@ class IntradayAgentSimulator:
         meta_model=None,
         pm_abstention_vix: float = 0.0,
         pm_abstention_spy_ma_days: int = 0,
+        scan_offsets: Optional[List[int]] = None,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -117,6 +118,9 @@ class IntradayAgentSimulator:
         self.meta_model = meta_model
         self.pm_abstention_vix = pm_abstention_vix
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
+        # Phase 51: scan_offsets controls how many entry windows per day.
+        # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
+        self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
 
     def run(
         self,
@@ -250,135 +254,148 @@ class IntradayAgentSimulator:
         if skip_entries:
             return trades, tx_costs
 
-        # Build per-symbol day bars and feature vectors
-        sym_feats: Dict[str, dict] = {}
-        sym_entry_price: Dict[str, float] = {}
-        sym_future_bars: Dict[str, pd.DataFrame] = {}
+        # Pre-load all day bars per symbol once (used across all scan windows)
+        sym_day_bars: Dict[str, pd.DataFrame] = {}
         sym_prior: Dict[str, Tuple] = {}
-
         for sym, df in symbols_data.items():
             df_idx = pd.DatetimeIndex(df.index)
             day_mask = df_idx.normalize().date == day
             day_bars = df.loc[day_mask]
-
-            if len(day_bars) < FEATURE_BARS + 1:
+            max_offset = max(self.scan_offsets)
+            if len(day_bars) < max_offset + 1:
                 continue
+            sym_day_bars[sym] = day_bars
+            sym_prior[sym] = self._prior_day_ohlc(df, df_idx, day)
 
-            feat_bars = day_bars.iloc[:FEATURE_BARS]
-            prior_close, prior_high, prior_low = self._prior_day_ohlc(df, df_idx, day)
-
-            try:
-                feats = compute_intraday_features(
-                    feat_bars, spy_day, prior_close,
-                    prior_day_high=prior_high,
-                    prior_day_low=prior_low,
-                )
-            except Exception:
-                feats = None
-            if feats is None:
-                continue
-
-            sym_feats[sym] = feats
-            sym_entry_price[sym] = float(feat_bars["close"].iloc[-1])
-            sym_future_bars[sym] = day_bars.iloc[FEATURE_BARS: FEATURE_BARS + HOLD_BARS]
-            sym_prior[sym] = (prior_close, prior_high, prior_low)
-
-        if not sym_feats:
+        if not sym_day_bars:
             return trades, tx_costs
 
-        # PM: batch predict
-        proposals = self._pm_score(sym_feats)
+        # Phase 51: multi-scan — iterate over each entry window in order.
+        # Symbols already entered earlier in the day are skipped (per-symbol daily cooldown).
+        entered_today: set = set()
 
-        # Process each proposal through meta gate → Trader gate → RM → entry/exit
-        entered: Dict[str, _IntradayPosition] = {}
-        for sym, confidence in proposals:
-            if sym in entered:
-                continue
+        for entry_offset in self.scan_offsets:
+            # Build features and proposals for this scan window
+            sym_feats: Dict[str, dict] = {}
+            sym_entry_price: Dict[str, float] = {}
+            sym_future_bars: Dict[str, pd.DataFrame] = {}
 
-            # Phase 46-B: meta-label gate — skip if E[R] <= 0
-            if self.meta_model is not None:
+            for sym, day_bars in sym_day_bars.items():
+                if sym in entered_today:
+                    continue
+                if len(day_bars) < entry_offset + 1:
+                    continue
+
+                feat_bars = day_bars.iloc[:entry_offset]
+                prior_close, prior_high, prior_low = sym_prior[sym]
                 try:
-                    if not self.meta_model.should_enter(sym_feats[sym]):
-                        continue
+                    feats = compute_intraday_features(
+                        feat_bars, spy_day, prior_close,
+                        prior_day_high=prior_high,
+                        prior_day_low=prior_low,
+                    )
                 except Exception:
-                    pass
+                    feats = None
+                if feats is None:
+                    continue
 
-            entry_price = sym_entry_price[sym]
-            # Use prior-day range as ATR proxy (matches intraday training labels)
-            prior_close, prior_high, prior_low = sym_prior.get(sym, (entry_price, entry_price, entry_price))
-            prior_high = prior_high or entry_price
-            prior_low = prior_low or entry_price
-            prior_close = prior_close or entry_price
-            prior_range = max(prior_high - prior_low, entry_price * 0.002)
-            range_pct = prior_range / prior_close if prior_close > 0 else 0.002
-            stop_pct_atr = float(np.clip(ATR_STOP_MULT * range_pct, 0.002, 0.02))
-            target_pct_atr = float(np.clip(ATR_TARGET_MULT * range_pct, 0.003, 0.04))
-            stop_price = entry_price * (1 - stop_pct_atr)
-            target_price = entry_price * (1 + target_pct_atr)
+                sym_feats[sym] = feats
+                sym_entry_price[sym] = float(feat_bars["close"].iloc[-1])
+                sym_future_bars[sym] = day_bars.iloc[entry_offset: entry_offset + HOLD_BARS]
 
-            # Position sizing: fixed % of equity per intraday slot
-            position_dollars = portfolio.equity * INTRADAY_BUDGET_PCT
-            quantity = max(1, int(position_dollars / entry_price))
-
-            # Apply RM position size cap
-            max_pos_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
-            quantity = min(quantity, max(1, int(max_pos_dollars / entry_price)))
-            if quantity <= 0:
+            if not sym_feats:
                 continue
 
-            sector = sector_map.get(sym, "UNKNOWN")
-            ok, _ = self._rm_validate(sym, entry_price, stop_price, quantity, portfolio, sector)
-            if not ok:
-                continue
+            proposals = self._pm_score(sym_feats)
 
-            trade_cost = entry_price * quantity
-            tx_cost_entry = trade_cost * self.transaction_cost_pct
-            portfolio.cash -= trade_cost + tx_cost_entry
-            tx_costs += tx_cost_entry
+            # Pass 1: enter all approved proposals for this scan window.
+            # Entries are processed first (cash deducted) so that concurrent
+            # drawdown / buying-power checks are accurate across the batch.
+            window_entered: Dict[str, _IntradayPosition] = {}
+            for sym, confidence in proposals:
+                if sym in entered_today:
+                    continue
 
-            pos = _IntradayPosition(
-                symbol=sym,
-                entry_date=day,
-                entry_bar_idx=FEATURE_BARS,
-                entry_price=entry_price,
-                stop_price=stop_price,
-                target_price=target_price,
-                quantity=quantity,
-                sector=sector,
-            )
-            entered[sym] = pos
-            portfolio.sector_values[sector] = (
-                portfolio.sector_values.get(sector, 0.0) + trade_cost
-            )
+                if self.meta_model is not None:
+                    try:
+                        if not self.meta_model.should_enter(sym_feats[sym]):
+                            continue
+                    except Exception:
+                        pass
 
-        # Simulate each entered position through future bars
-        for sym, pos in entered.items():
-            future_bars = sym_future_bars.get(sym, pd.DataFrame())
-            exit_price, exit_reason, hold_bars = self._simulate_exit(pos, future_bars)
+                entry_price = sym_entry_price[sym]
+                prior_close, prior_high, prior_low = sym_prior.get(sym, (entry_price, entry_price, entry_price))
+                prior_high = prior_high or entry_price
+                prior_low = prior_low or entry_price
+                prior_close = prior_close or entry_price
+                prior_range = max(prior_high - prior_low, entry_price * 0.002)
+                range_pct = prior_range / prior_close if prior_close > 0 else 0.002
+                stop_pct_atr = float(np.clip(ATR_STOP_MULT * range_pct, 0.002, 0.02))
+                target_pct_atr = float(np.clip(ATR_TARGET_MULT * range_pct, 0.003, 0.04))
+                stop_price = entry_price * (1 - stop_pct_atr)
+                target_price = entry_price * (1 + target_pct_atr)
 
-            tx_cost_exit = exit_price * pos.quantity * self.transaction_cost_pct
-            portfolio.cash += exit_price * pos.quantity - tx_cost_exit
-            tx_costs += tx_cost_exit
+                position_dollars = portfolio.equity * INTRADAY_BUDGET_PCT
+                quantity = max(1, int(position_dollars / entry_price))
+                max_pos_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
+                quantity = min(quantity, max(1, int(max_pos_dollars / entry_price)))
+                if quantity <= 0:
+                    continue
 
-            net_pnl = (exit_price - pos.entry_price) * pos.quantity - tx_cost_exit
-            portfolio.daily_pnl += net_pnl
-            portfolio.sector_values[pos.sector] = max(
-                0.0, portfolio.sector_values.get(pos.sector, 0.0) - pos.entry_price * pos.quantity
-            )
+                sector = sector_map.get(sym, "UNKNOWN")
+                ok, _ = self._rm_validate(sym, entry_price, stop_price, quantity, portfolio, sector)
+                if not ok:
+                    continue
 
-            trades.append(Trade(
-                symbol=sym,
-                entry_date=day,
-                exit_date=day,
-                entry_price=round(pos.entry_price, 4),
-                exit_price=round(exit_price, 4),
-                quantity=pos.quantity,
-                pnl=round(net_pnl, 2),
-                pnl_pct=round((exit_price - pos.entry_price) / pos.entry_price, 6),
-                hold_bars=hold_bars,
-                exit_reason=exit_reason,
-                trade_type="intraday",
-            ))
+                trade_cost = entry_price * quantity
+                tx_cost_entry = trade_cost * self.transaction_cost_pct
+                portfolio.cash -= trade_cost + tx_cost_entry
+                tx_costs += tx_cost_entry
+
+                pos = _IntradayPosition(
+                    symbol=sym,
+                    entry_date=day,
+                    entry_bar_idx=entry_offset,
+                    entry_price=entry_price,
+                    stop_price=stop_price,
+                    target_price=target_price,
+                    quantity=quantity,
+                    sector=sector,
+                )
+                portfolio.sector_values[sector] = (
+                    portfolio.sector_values.get(sector, 0.0) + trade_cost
+                )
+                entered_today.add(sym)
+                window_entered[sym] = pos
+
+            # Pass 2: simulate exits for all positions entered this window.
+            for sym, pos in window_entered.items():
+                future_bars = sym_future_bars.get(sym, pd.DataFrame())
+                exit_price, exit_reason, hold_bars = self._simulate_exit(pos, future_bars)
+
+                tx_cost_exit = exit_price * pos.quantity * self.transaction_cost_pct
+                portfolio.cash += exit_price * pos.quantity - tx_cost_exit
+                tx_costs += tx_cost_exit
+
+                net_pnl = (exit_price - pos.entry_price) * pos.quantity - tx_cost_exit
+                portfolio.daily_pnl += net_pnl
+                portfolio.sector_values[pos.sector] = max(
+                    0.0, portfolio.sector_values.get(pos.sector, 0.0) - pos.entry_price * pos.quantity
+                )
+
+                trades.append(Trade(
+                    symbol=sym,
+                    entry_date=day,
+                    exit_date=day,
+                    entry_price=round(pos.entry_price, 4),
+                    exit_price=round(exit_price, 4),
+                    quantity=pos.quantity,
+                    pnl=round(net_pnl, 2),
+                    pnl_pct=round((exit_price - pos.entry_price) / pos.entry_price, 6),
+                    hold_bars=hold_bars,
+                    exit_reason=exit_reason,
+                    trade_type="intraday",
+                ))
 
         return trades, tx_costs
 

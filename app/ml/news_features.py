@@ -17,7 +17,7 @@ only see articles that existed on that date.
 
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import requests
@@ -96,6 +96,74 @@ def fetch_news(symbol: str, days_back: int = 14) -> List[Dict]:
         logger.debug("Polygon news fetch failed for %s: %s", symbol, exc)
 
     _news_cache[symbol] = (articles, now)
+    return articles
+
+
+_live_cache: dict = {}   # symbol → (articles, fetched_at); short TTL for intraday use
+_LIVE_CACHE_TTL = 290    # ~5 min, just under NewsMonitor poll interval
+
+
+def fetch_news_live(symbol: str, hours_back: int = 2) -> List[Dict]:
+    """
+    Fetch recent articles with full UTC datetime objects (not date-only).
+    Used by NewsMonitor for live negative-news detection.
+
+    Returns list of dicts with:
+      published_utc  — tz-aware datetime
+      sentiment      — 'positive', 'neutral', or 'negative'
+      score          — float
+      title          — str
+    """
+    now = time.time()
+    cached = _live_cache.get(symbol)
+    if cached and now - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+
+    articles = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params = {
+            "ticker": symbol,
+            "published_utc.gte": cutoff,
+            "limit": 20,
+            "order": "desc",
+            "sort": "published_utc",
+            "apiKey": _api_key(),
+        }
+        resp = requests.get(f"{_BASE}/v2/reference/news", params=params, timeout=10)
+        if resp.status_code != 200:
+            logger.debug("Polygon live news %s for %s", resp.status_code, symbol)
+            _live_cache[symbol] = (articles, now)
+            return articles
+
+        for item in resp.json().get("results", []):
+            pub_str = item.get("published_utc", "")
+            try:
+                pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                if pub_dt.tzinfo is None:
+                    pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                continue
+
+            insights = item.get("insights", [])
+            ticker_sentiment = None
+            for ins in insights:
+                if ins.get("ticker", "").upper() == symbol.upper():
+                    ticker_sentiment = ins.get("sentiment", "neutral")
+                    break
+            if ticker_sentiment is None and insights:
+                ticker_sentiment = insights[0].get("sentiment", "neutral")
+
+            articles.append({
+                "published_utc": pub_dt,
+                "sentiment": ticker_sentiment or "neutral",
+                "score": _SENTIMENT_SCORE.get(ticker_sentiment or "neutral", 0.0),
+                "title": item.get("title", ""),
+            })
+    except Exception as exc:
+        logger.debug("Polygon live news fetch failed for %s: %s", symbol, exc)
+
+    _live_cache[symbol] = (articles, now)
     return articles
 
 
