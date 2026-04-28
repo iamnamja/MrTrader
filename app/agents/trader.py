@@ -370,6 +370,16 @@ class Trader(BaseAgent):
             self.approved_symbols.pop(symbol, None)
             return
 
+        # No new entries after 3:00 PM ET — not enough time left in the day
+        now_et = datetime.now(ET)
+        if now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
+            self.logger.info(
+                "%s: no new entries after 3:00 PM ET (%02d:%02d) — skipping",
+                symbol, now_et.hour, now_et.minute,
+            )
+            self.approved_symbols.pop(symbol, None)
+            return
+
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
                 "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
