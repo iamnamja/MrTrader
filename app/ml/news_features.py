@@ -99,6 +99,79 @@ def fetch_news(symbol: str, days_back: int = 14) -> List[Dict]:
     return articles
 
 
+# short TTL cache for live intraday polling — refreshed every 5 min
+_live_cache: dict = {}   # symbol → (articles_with_ts, fetched_at)
+_LIVE_CACHE_TTL = 290    # just under 5 min so poller always gets fresh data
+
+
+def fetch_news_live(symbol: str, hours_back: int = 2) -> List[Dict]:
+    """
+    Fetch very recent news for *symbol* with full UTC timestamps.
+    Used by the intraday news monitor (Phase 53).
+
+    Returns list of dicts with:
+      published_utc  — datetime (UTC, tz-aware)
+      sentiment      — 'positive', 'neutral', or 'negative'
+      score          — float: 1.0 / 0.0 / -1.0
+      title          — article title (for logging)
+    """
+    now = time.time()
+    cached = _live_cache.get(symbol)
+    if cached and now - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+
+    articles = []
+    try:
+        from datetime import timezone
+        cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=hours_back)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        params = {
+            "ticker": symbol,
+            "published_utc.gte": cutoff,
+            "limit": 20,
+            "order": "desc",
+            "sort": "published_utc",
+            "apiKey": _api_key(),
+        }
+        resp = requests.get(f"{_BASE}/v2/reference/news", params=params, timeout=10)
+        if resp.status_code != 200:
+            logger.debug("Polygon live news %s for %s", resp.status_code, symbol)
+            _live_cache[symbol] = (articles, now)
+            return articles
+
+        from datetime import timezone
+        for item in resp.json().get("results", []):
+            pub_str = item.get("published_utc", "")
+            try:
+                pub_dt = datetime.strptime(pub_str[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                continue
+
+            insights = item.get("insights", [])
+            ticker_sentiment = None
+            for ins in insights:
+                if ins.get("ticker", "").upper() == symbol.upper():
+                    ticker_sentiment = ins.get("sentiment", "neutral")
+                    break
+            if ticker_sentiment is None and insights:
+                ticker_sentiment = insights[0].get("sentiment", "neutral")
+
+            articles.append({
+                "published_utc": pub_dt,
+                "sentiment": ticker_sentiment or "neutral",
+                "score": _SENTIMENT_SCORE.get(ticker_sentiment or "neutral", 0.0),
+                "title": item.get("title", ""),
+            })
+    except Exception as exc:
+        logger.debug("Polygon live news fetch failed for %s: %s", symbol, exc)
+
+    _live_cache[symbol] = (articles, now)
+    return articles
+
+
 def fetch_news_historical(symbol: str, as_of: date, days_back: int = 14) -> List[Dict]:
     """
     Fetch news articles published on or before *as_of* (point-in-time safe).
