@@ -142,12 +142,13 @@ class Trader(BaseAgent):
                     result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
                     stop = result.stop_price if result.stop_price and result.stop_price > 0 else round(avg * 0.98, 2)
                     target = result.target_price if result.target_price and result.target_price > 0 else round(avg * 1.06, 2)
-                    signal = result.signal_type
+                    # NONE means no rule-based pattern fired, but entry was ML-driven
+                    signal = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
                     atr = result.atr
                 else:
                     stop = round(avg * 0.98, 2)
                     target = round(avg * 1.06, 2)
-                    signal = "RECONCILED"
+                    signal = "ML_RANK"
                     atr = 0.0
 
                 trade = Trade(
@@ -501,13 +502,15 @@ class Trader(BaseAgent):
         trade_type = proposal.get("trade_type", "swing")
         db = get_session()
         try:
+            # NONE means no rule-based pattern fired but entry was ML-driven — label it clearly
+            signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
             trade = Trade(
                 symbol=symbol,
                 direction="BUY",
                 entry_price=filled_price,
                 quantity=shares,
                 status="ACTIVE",
-                signal_type=result.signal_type,
+                signal_type=signal_type,
                 trade_type=trade_type,
                 stop_price=result.stop_price,
                 target_price=result.target_price,

@@ -312,7 +312,7 @@ function OverviewPanel({ summary, health, decisions }: {
             : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead><tr>
-                  {['Symbol', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -327,17 +327,20 @@ function OverviewPanel({ summary, health, decisions }: {
                     const stop = p.stop_price ?? null
                     const target = p.target_price ?? null
                     const sig = p.signal_type ?? null
+                    const tradeType = p.trade_type ?? null
+                    const typeColor = tradeType === 'intraday' ? C.yellow : tradeType === 'swing' ? C.blue : C.muted
                     return (
                       <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                         <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
+                        <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{tradeType ?? '—'}</td>
                         <td style={s.td}>{qty}</td>
                         <td style={s.td}>{fmt$(marketValue)}</td>
                         <td style={s.td}>{fmt$(entry)}</td>
                         <td style={s.td}>{fmt$(cur)}</td>
                         <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
                         <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
-                        <td style={{ ...s.td, color: C.muted }}>{stop != null ? fmt$(stop) : '—'}</td>
-                        <td style={{ ...s.td, color: C.muted }}>{target != null ? fmt$(target) : '—'}</td>
+                        <td style={{ ...s.td, color: C.red }}>{stop != null ? fmt$(stop) : '—'}</td>
+                        <td style={{ ...s.td, color: C.green }}>{target != null ? fmt$(target) : '—'}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
                       </tr>
                     )
