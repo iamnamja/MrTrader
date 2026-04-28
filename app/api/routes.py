@@ -156,14 +156,18 @@ async def get_dashboard_summary():
 
         # Realized P&L from DB (today and all-time)
         def _pnl_from_db():
-            from datetime import date as _date
+            import zoneinfo
             db = get_session()
             try:
-                today_str = _date.today().isoformat()
+                et = zoneinfo.ZoneInfo("America/New_York")
+                now_et = datetime.now(tz=et)
+                today_start_et = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Convert to UTC naive for comparison with DB timestamps stored as UTC naive
+                today_start_utc = today_start_et.astimezone(zoneinfo.ZoneInfo("UTC")).replace(tzinfo=None)
                 closed = db.query(Trade).filter(Trade.status == "CLOSED").all()
                 today_realized = sum(
                     float(t.pnl or 0) for t in closed
-                    if t.closed_at and t.closed_at.date().isoformat() == today_str
+                    if t.closed_at and t.closed_at >= today_start_utc
                 )
                 total_realized = sum(float(t.pnl or 0) for t in closed)
                 return today_realized, total_realized
@@ -410,6 +414,7 @@ async def get_equity_history(range: str = "1d"):
     range: '1d' (5-min bars today), '1w' (daily, 7 days), '1m' (daily, 30 days)
     """
     def _fetch():
+        import zoneinfo
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         period_map = {"1d": "1D", "1w": "1W", "1m": "1M"}
         tf_map = {"1d": "5Min", "1w": "1D", "1m": "1D"}
@@ -420,13 +425,21 @@ async def get_equity_history(range: str = "1d"):
 
         timestamps = hist.timestamp or []
         pnl_series = hist.profit_loss or []
+        et = zoneinfo.ZoneInfo("America/New_York")
 
         points = []
         for ts, pnl in zip(timestamps, pnl_series):
             if pnl is None:
                 continue
-            dt = datetime.utcfromtimestamp(ts)
-            label = dt.strftime("%H:%M") if range == "1d" else dt.strftime("%b %d")
+            dt_et = datetime.fromtimestamp(ts, tz=et)
+            if range == "1d":
+                # Only show regular market hours: 9:30 AM – 4:00 PM ET
+                h, m = dt_et.hour, dt_et.minute
+                if (h, m) < (9, 30) or (h, m) > (16, 0):
+                    continue
+                label = dt_et.strftime("%I:%M %p").lstrip("0")
+            else:
+                label = dt_et.strftime("%b %d")
             points.append({"time": label, "pnl": round(float(pnl), 2)})
         return points
 

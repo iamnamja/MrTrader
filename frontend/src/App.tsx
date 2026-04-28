@@ -177,10 +177,12 @@ function MacroWidget() {
         </tbody>
       </table>
       <div style={{ marginTop: 8, display: 'flex', gap: 8, fontSize: 10, color: C.muted }}>
-        <span style={{ color: regime.trend_following_active ? C.green : C.red }}>
+        <span style={{ color: regime.trend_following_active ? C.green : C.red }}
+          title="Trend Following: active when VIX is moderate and SPY is above its 20-day SMA">
           ● Trend {regime.trend_following_active ? 'ON' : 'OFF'}
         </span>
-        <span style={{ color: regime.mean_reversion_active ? C.green : C.red }}>
+        <span style={{ color: regime.mean_reversion_active ? C.green : C.red }}
+          title="Mean Reversion: active when VIX is elevated (>20) or SPY is in a range. OFF = skipping counter-trend entries in current regime.">
           ● MeanRev {regime.mean_reversion_active ? 'ON' : 'OFF'}
         </span>
         <span>Size ×{regime.position_size_multiplier}</span>
@@ -448,16 +450,32 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
 }
 
 // ── Trades Panel ───────────────────────────────────────────────────────────────
+type TradesDateFilter = 'today' | '7d' | '30d' | 'all'
+
 function TradesPanel() {
-  const [rows, setRows] = useState<Trade[]>([])
-  const [filter, setFilter] = useState('')
-  const load = useCallback(async (f = filter) => {
+  const [allRows, setAllRows] = useState<Trade[]>([])
+  const [statusFilter, setStatusFilter] = useState('')
+  const [dateFilter, setDateFilter] = useState<TradesDateFilter>('all')
+
+  const load = useCallback(async (f = statusFilter) => {
     try {
       const j = await api.trades(f || undefined) as { data?: Trade[] } | Trade[]
-      setRows((j as { data?: Trade[] }).data ?? (j as Trade[]) ?? [])
+      setAllRows((j as { data?: Trade[] }).data ?? (j as Trade[]) ?? [])
     } catch { /* ignore */ }
-  }, [filter])
+  }, [statusFilter])
   useEffect(() => { load() }, [load])
+
+  const rows = (() => {
+    if (dateFilter === 'all') return allRows
+    const now = Date.now()
+    const cutoff = dateFilter === 'today'
+      ? new Date(new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })).getTime()
+      : now - (dateFilter === '7d' ? 7 : 30) * 86400_000
+    return allRows.filter(t => {
+      const ts = t.created_at ? new Date(t.created_at.endsWith('Z') ? t.created_at : t.created_at + 'Z').getTime() : 0
+      return ts >= cutoff
+    })
+  })()
 
   const closed = rows.filter(t => t.status === 'CLOSED')
   const wins = closed.filter(t => (t.pnl ?? 0) > 0)
@@ -475,31 +493,43 @@ function TradesPanel() {
         <KpiCard label="Total P&L" value={fmt$(totalPnl)} color={clr(totalPnl)} />
       </div>
       <div style={s.card}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <div style={s.cardTitle}>Trade History</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <select value={filter}
-              onChange={e => { setFilter(e.target.value); load(e.target.value) }}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {/* Date filter */}
+            {(['today', '7d', '30d', 'all'] as TradesDateFilter[]).map(d => (
+              <button key={d} onClick={() => setDateFilter(d)} style={{
+                ...btnStyle,
+                color: dateFilter === d ? C.accent : C.muted,
+                borderColor: dateFilter === d ? C.accent : C.border,
+              }}>{d === 'today' ? 'Today' : d === 'all' ? 'All time' : d}</button>
+            ))}
+            {/* Status filter */}
+            <select value={statusFilter}
+              onChange={e => { setStatusFilter(e.target.value); load(e.target.value) }}
               style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, padding: '3px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'inherit' }}>
-              <option value="">All</option>
+              <option value="">All status</option>
               <option value="ACTIVE">Active</option>
               <option value="CLOSED">Closed</option>
             </select>
             <button onClick={() => load()} style={btnStyle}>Refresh</button>
           </div>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened', 'Closed'].map(h => (
-                <th key={h} style={s.th}>{h}</th>
+              {['Symbol', 'Type', 'Dir', 'Signal', 'Entry', 'Exit', '% Chg', 'Qty', 'P&L', 'Status', 'Opened', 'Closed'].map(h => (
+                <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 1 }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {rows.length === 0
-                ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
+                ? <tr><td colSpan={12} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
                 : rows.map((t, i) => {
                   const typeColor = t.trade_type === 'intraday' ? C.yellow : t.trade_type === 'swing' ? C.blue : C.muted
+                  const pnlPct = t.exit_price && t.entry_price && t.entry_price > 0
+                    ? ((t.exit_price - t.entry_price) / t.entry_price * 100)
+                    : null
                   return (
                   <tr key={i}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
@@ -508,6 +538,7 @@ function TradesPanel() {
                     <td style={{ ...s.td, color: C.blue }}>{t.signal_type ?? '—'}</td>
                     <td style={s.td}>{fmt$(t.entry_price)}</td>
                     <td style={s.td}>{t.exit_price ? fmt$(t.exit_price) : <span style={{ color: C.muted }}>open</span>}</td>
+                    <td style={{ ...s.td, color: clr(pnlPct) }}>{pnlPct != null ? fmtPct(pnlPct) : '—'}</td>
                     <td style={s.td}>{t.quantity}</td>
                     <td style={{ ...s.td, color: clr(t.pnl) }}>{t.pnl != null ? fmt$(t.pnl) : '—'}</td>
                     <td style={s.td}>
@@ -1207,8 +1238,19 @@ function AnalyticsPanel() {
 
   const load = useCallback(async (d = days) => {
     try {
-      const j = await api.signalAttribution(d) as { attribution?: AttributionItem[] } | AttributionItem[]
-      setAttribution((j as { attribution?: AttributionItem[] }).attribution ?? (j as AttributionItem[]) ?? [])
+      const j = await api.signalAttribution(d) as { attribution?: unknown } | AttributionItem[]
+      const raw = (j as { attribution?: unknown }).attribution ?? j
+      // API returns a dict keyed by signal type; normalise to array
+      const arr: AttributionItem[] = Array.isArray(raw)
+        ? raw
+        : Object.entries(raw as Record<string, Record<string, number>>).map(([k, v]) => ({
+            signal_type: k,
+            count: v.trades ?? v.count ?? 0,
+            win_rate: (v.win_rate ?? 0) / 100,
+            avg_pnl: v.avg_pnl ?? 0,
+            total_pnl: v.total_pnl ?? 0,
+          }))
+      setAttribution(arr)
     } catch { /* ignore */ }
   }, [days])
 
