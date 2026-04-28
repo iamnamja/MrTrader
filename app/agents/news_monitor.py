@@ -1,215 +1,172 @@
 """
-Phase 53: Live news monitor — dual source (Polygon + Alpaca News).
+Phase 53: Live News Monitor — intraday news signal.
 
-Runs as a background async task during market hours. Polls both Polygon and
-Alpaca News APIs every 5 minutes for watched symbols. Caches the most recent
-negative article per symbol; PM/RM query `has_negative_news()` to gate entries
-and flag exits.
+Polls Polygon news every 5 minutes during market hours for:
+  - All currently held intraday symbols (exit flag)
+  - Candidate symbols about to be entered (entry block)
 
-Alpaca News has no pre-labeled sentiment, so we apply a lightweight keyword
-classifier on the headline + summary.  Polygon provides its own AI sentiment
-label which we trust directly.
+Public API (thread-safe, async-safe):
+  news_monitor.has_negative_news(symbol, window_minutes=30) -> bool
+  news_monitor.get_latest_article(symbol) -> Optional[dict]
 
-Fails open: `has_negative_news()` returns False on any error so it never
-blocks trading due to a news API outage.
+Start/stop is handled by the orchestrator (background asyncio task).
 """
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Set
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── Negative-keyword classifier for Alpaca News (no sentiment labels) ─────────
+POLL_INTERVAL_SECONDS = 300   # 5 minutes
+NEGATIVE_WINDOW_MINUTES = 30  # entry block / exit flag window
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 30
+MARKET_CLOSE_HOUR = 16
 
-_NEG_KEYWORDS = {
-    "downgrade", "cut", "miss", "misses", "missed", "below", "disappointed",
-    "disappoints", "disappointing", "loss", "losses", "loses", "lower",
-    "drop", "drops", "dropped", "fell", "fall", "tumble", "tumbles", "tumbled",
-    "plunge", "plunges", "plunged", "decline", "declines", "declined",
-    "warning", "warns", "warned", "recall", "layoff", "layoffs", "bankrupt",
-    "bankruptcy", "lawsuit", "probe", "investigation", "fraud", "default",
-    "guidance", "cut guidance", "misses estimates", "beats estimates" # "beats" is NOT negative
-}
-_POS_OVERRIDES = {"beats", "beat", "exceeds", "exceeded", "surpasses", "raised guidance"}
-
-
-def _classify_negative(headline: str, summary: str = "") -> bool:
-    """Return True if the text looks negative based on keyword matching."""
-    text = (headline + " " + (summary or "")).lower()
-    words = set(text.split())
-    # A "beats estimates" headline is positive despite containing some neg words
-    if words & _POS_OVERRIDES:
-        return False
-    return bool(words & _NEG_KEYWORDS)
-
-
-# ── Cache entry ────────────────────────────────────────────────────────────────
-
-class _CacheEntry:
-    __slots__ = ("article", "fetched_at")
-
-    def __init__(self, article: Optional[Dict], fetched_at: datetime):
-        self.article = article        # None → no negative news found
-        self.fetched_at = fetched_at
-
-
-# ── NewsMonitor ────────────────────────────────────────────────────────────────
-
-_POLL_INTERVAL = 300          # seconds between full sweeps
-_NEG_WINDOW_MINUTES = 30      # how far back to look for negative articles
-_MARKET_OPEN_UTC = 13         # 09:00 ET = 13:00 UTC (DST approx)
-_MARKET_CLOSE_UTC = 21        # 17:00 ET = 21:00 UTC
+# symbol → (most_recent_negative_utc, latest_article_dict)
+_cache: Dict[str, Tuple[Optional[datetime], Optional[dict]]] = {}
+_watched: set = set()   # symbols currently being polled
 
 
 class NewsMonitor:
+    """
+    Background async poller for intraday news signals.
+
+    Usage:
+        # In orchestrator / main.py:
+        asyncio.create_task(news_monitor.run())
+
+        # In PM entry gate:
+        if news_monitor.has_negative_news(symbol):
+            skip entry
+    """
+
     def __init__(self):
-        self._cache: Dict[str, _CacheEntry] = {}
-        self._watched: Set[str] = set()
+        self.status = "idle"
         self._lock = asyncio.Lock()
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def watch(self, symbol: str) -> None:
-        self._watched.add(symbol.upper())
+        """Add a symbol to the polling watchlist."""
+        _watched.add(symbol.upper())
 
     def unwatch(self, symbol: str) -> None:
-        self._watched.discard(symbol.upper())
+        """Remove a symbol from the watchlist (e.g. after position closes)."""
+        _watched.discard(symbol.upper())
 
-    def has_negative_news(self, symbol: str, window_minutes: int = _NEG_WINDOW_MINUTES) -> bool:
-        """Return True iff a negative article was published within *window_minutes*."""
-        try:
-            entry = self._cache.get(symbol.upper())
-            if entry is None or entry.article is None:
-                return False
-            pub = entry.article.get("published_utc")
-            if pub is None:
-                return False
-            now = datetime.now(timezone.utc)
-            cutoff = now - timedelta(minutes=window_minutes)
-            return pub >= cutoff
-        except Exception:
-            return False  # fail open
+    def has_negative_news(self, symbol: str, window_minutes: int = NEGATIVE_WINDOW_MINUTES) -> bool:
+        """
+        Return True if a negative-sentiment article was published for *symbol*
+        within the last *window_minutes* minutes.
 
-    def get_latest_article(self, symbol: str) -> Optional[Dict]:
-        entry = self._cache.get(symbol.upper())
-        return entry.article if entry else None
+        Fails open (returns False) if no data is available — never blocks entries
+        due to a missing Polygon key or network error.
+        """
+        entry = _cache.get(symbol.upper())
+        if entry is None:
+            return False
+        neg_ts, _ = entry
+        if neg_ts is None:
+            return False
+        age = datetime.now(tz=timezone.utc) - neg_ts
+        return age <= timedelta(minutes=window_minutes)
 
-    # ── Background loop ────────────────────────────────────────────────────────
+    def get_latest_article(self, symbol: str) -> Optional[dict]:
+        """Return the most recent negative article dict, or None."""
+        entry = _cache.get(symbol.upper())
+        if entry is None:
+            return None
+        _, article = entry
+        return article
+
+    # ── Background loop ───────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        logger.info("NewsMonitor started")
-        while True:
+        """Main polling loop — runs as a background asyncio task."""
+        logger.info("NewsMonitor started — polling every %ds", POLL_INTERVAL_SECONDS)
+        self.status = "running"
+
+        while self.status == "running":
             try:
-                await self._sweep()
+                now = datetime.now(tz=timezone.utc)
+                # Only poll during market hours (ET = UTC-4 or UTC-5)
+                # Use a simple UTC window: 13:30–21:00 UTC covers 9:30–17:00 ET
+                market_open = now.hour >= 13 and not (now.hour == 13 and now.minute < 30)
+                market_close = now.hour < 21
+                is_weekday = now.weekday() < 5
+
+                if is_weekday and market_open and market_close and _watched:
+                    await self._poll_all()
+                else:
+                    logger.debug(
+                        "NewsMonitor idle — market_open=%s weekday=%s watching=%d",
+                        market_open and market_close, is_weekday, len(_watched),
+                    )
+
+            except asyncio.CancelledError:
+                logger.info("NewsMonitor cancelled — shutting down")
+                self.status = "stopped"
+                break
             except Exception as exc:
-                logger.debug("NewsMonitor sweep error: %s", exc)
-            await asyncio.sleep(_POLL_INTERVAL)
+                logger.error("NewsMonitor poll error: %s", exc, exc_info=True)
 
-    async def _sweep(self) -> None:
-        now_utc = datetime.now(timezone.utc)
-        # Only poll during market hours (Mon–Fri, roughly 09:00–17:00 ET)
-        if now_utc.weekday() >= 5:
-            return
-        if not (_MARKET_OPEN_UTC <= now_utc.hour < _MARKET_CLOSE_UTC):
-            return
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-        symbols = list(self._watched)
+    async def _poll_all(self) -> None:
+        """Poll all watched symbols concurrently (via threadpool — Polygon is sync)."""
+        symbols = list(_watched)
         if not symbols:
             return
 
-        logger.debug("NewsMonitor polling %d symbols", len(symbols))
-        for sym in symbols:
-            try:
-                article = await asyncio.to_thread(self._poll_one, sym)
-                async with self._lock:
-                    self._cache[sym] = _CacheEntry(article, now_utc)
-            except Exception as exc:
-                logger.debug("NewsMonitor poll failed for %s: %s", sym, exc)
+        logger.debug("NewsMonitor polling %d symbol(s): %s", len(symbols), symbols)
 
-    # ── Per-symbol poll (runs in thread) ──────────────────────────────────────
+        results = await asyncio.gather(
+            *[asyncio.to_thread(self._poll_one, sym) for sym in symbols],
+            return_exceptions=True,
+        )
 
-    @staticmethod
-    def _poll_one(symbol: str) -> Optional[Dict]:
-        """
-        Fetch recent articles from both Polygon and Alpaca News.
-        Returns the most recent negative article dict, or None.
-        """
-        candidates: List[Dict] = []
-        candidates.extend(NewsMonitor._poll_polygon(symbol))
-        candidates.extend(NewsMonitor._poll_alpaca(symbol))
+        neg_count = 0
+        for sym, result in zip(symbols, results):
+            if isinstance(result, Exception):
+                logger.debug("NewsMonitor poll failed for %s: %s", sym, result)
+                continue
+            neg_ts, article = result
+            async with self._lock:
+                _cache[sym] = (neg_ts, article)
+            if neg_ts is not None:
+                neg_count += 1
+                logger.info(
+                    "NEWS NEGATIVE %s: '%s' published at %s",
+                    sym, (article or {}).get("title", "?")[:60], neg_ts.strftime("%H:%M UTC"),
+                )
 
-        if not candidates:
-            return None
-
-        # Sort descending by publish time, return most recent negative
-        candidates.sort(key=lambda a: a["published_utc"], reverse=True)
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=_NEG_WINDOW_MINUTES)
-        for article in candidates:
-            if article["published_utc"] >= cutoff:
-                return article
-        return None
-
-    @staticmethod
-    def _poll_polygon(symbol: str) -> List[Dict]:
-        """Fetch from Polygon (pre-labeled sentiment)."""
-        from app.ml.news_features import fetch_news_live
-        try:
-            raw = fetch_news_live(symbol, hours_back=2)
-            results = []
-            for a in raw:
-                if a.get("sentiment") == "negative":
-                    results.append({
-                        "published_utc": a["published_utc"],
-                        "title": a.get("title", ""),
-                        "source": "polygon",
-                        "sentiment": "negative",
-                    })
-            return results
-        except Exception as exc:
-            logger.debug("Polygon news poll failed for %s: %s", symbol, exc)
-            return []
-
-    @staticmethod
-    def _poll_alpaca(symbol: str) -> List[Dict]:
-        """Fetch from Alpaca News (keyword-classified sentiment)."""
-        try:
-            from alpaca.data.historical import NewsClient
-            from alpaca.data.requests import NewsRequest
-            from app.config import settings
-
-            client = NewsClient(
-                api_key=settings.alpaca_api_key,
-                secret_key=settings.alpaca_secret_key,
+        if neg_count:
+            logger.warning(
+                "NewsMonitor: %d/%d watched symbols have negative news in last %dmin",
+                neg_count, len(symbols), NEGATIVE_WINDOW_MINUTES,
             )
-            start = datetime.now(timezone.utc) - timedelta(hours=2)
-            req = NewsRequest(symbols=symbol.upper(), limit=10, start=start)
-            news_set = client.get_news(req)
-            articles = news_set.data.get("news", [])
+        else:
+            logger.debug("NewsMonitor: no negative news across %d symbols", len(symbols))
 
-            results = []
-            for a in articles:
-                pub = a.created_at
-                if pub.tzinfo is None:
-                    pub = pub.replace(tzinfo=timezone.utc)
-                headline = a.headline or ""
-                summary = a.summary or ""
-                if _classify_negative(headline, summary):
-                    results.append({
-                        "published_utc": pub,
-                        "title": headline,
-                        "source": "alpaca",
-                        "sentiment": "negative",
-                    })
-            return results
-        except Exception as exc:
-            logger.debug("Alpaca news poll failed for %s: %s", symbol, exc)
-            return []
+    @staticmethod
+    def _poll_one(symbol: str) -> Tuple[Optional[datetime], Optional[dict]]:
+        """
+        Fetch live news for *symbol*.
+        Returns (most_recent_negative_utc, article_dict) or (None, None).
+        """
+        from app.ml.news_features import fetch_news_live
+        articles = fetch_news_live(symbol, hours_back=2)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=NEGATIVE_WINDOW_MINUTES)
+
+        for article in articles:  # already sorted desc by published_utc
+            if article["sentiment"] == "negative" and article["published_utc"] >= cutoff:
+                return article["published_utc"], article
+
+        return None, None
 
 
-# Module singleton
+# Module-level singleton — imported by PM and main.py
 news_monitor = NewsMonitor()
-
-# Expose _watched for daily reset in portfolio_manager
-_watched = news_monitor._watched

@@ -121,7 +121,11 @@ async def startup_event():
         orchestrator.register_agent("risk_manager", risk_manager)
         orchestrator.register_agent("trader", trader)
         await orchestrator.start()
-        logger.info("Orchestrator started")
+
+        # Phase 53: start live news monitor as background task
+        from app.agents.news_monitor import news_monitor
+        asyncio.create_task(news_monitor.run(), name="news_monitor")
+        logger.info("Orchestrator started (news monitor running)")
     except Exception as e:
         logger.error("Orchestrator startup failed: %s", e)
         raise

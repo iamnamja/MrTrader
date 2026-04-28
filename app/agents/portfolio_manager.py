@@ -17,6 +17,7 @@ from typing import Any, Coroutine, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.agents.base import BaseAgent
+from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
 from app.ml.cs_normalize import cs_normalize
 from app.ml.model import PortfolioSelectorModel
@@ -179,6 +180,9 @@ class PortfolioManager(BaseAgent):
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
+                    # Phase 53: clear intraday watchlist — all intraday positions flat at EOD
+                    from app.agents.news_monitor import _watched as _nm_watched
+                    _nm_watched.clear()
                     self.logger.info("Daily reset complete for %s", today)
 
                 is_weekday = now.weekday() < 5
@@ -868,6 +872,7 @@ class PortfolioManager(BaseAgent):
                 "trade_type": "intraday",
             }
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
+            news_monitor.watch(symbol)  # Phase 53: start monitoring for news exits
             self.logger.info(
                 "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
                 symbol, price, confidence,
@@ -972,6 +977,17 @@ class PortfolioManager(BaseAgent):
                     reason = f"earnings_in_{days}d"
             except Exception:
                 pass
+
+            # Phase 53: exit flag on negative intraday news
+            if action is None and news_monitor.has_negative_news(symbol):
+                article = news_monitor.get_latest_article(symbol)
+                title = (article or {}).get("title", "?")[:60] if article else "?"
+                action = "EXIT"
+                reason = f"negative_news: {title}"
+                self.logger.warning(
+                    "NEWS EXIT FLAG %s: negative article in last 30min — '%s'",
+                    symbol, title,
+                )
 
             if action is None:
                 if score < exit_threshold:
@@ -1221,6 +1237,12 @@ class PortfolioManager(BaseAgent):
                 return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.05%)"
         except Exception:
             pass
+
+        # Phase 53: block entry if negative news in last 30 min
+        if news_monitor.has_negative_news(symbol):
+            article = news_monitor.get_latest_article(symbol)
+            title = (article or {}).get("title", "?")[:60] if article else "?"
+            return f"negative_news: '{title}'"
 
         return None
 

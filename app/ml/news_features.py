@@ -17,7 +17,7 @@ only see articles that existed on that date.
 
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 import requests
@@ -99,20 +99,21 @@ def fetch_news(symbol: str, days_back: int = 14) -> List[Dict]:
     return articles
 
 
-_live_cache: dict = {}   # symbol → (articles, fetched_at); short TTL for intraday use
-_LIVE_CACHE_TTL = 290    # ~5 min, just under NewsMonitor poll interval
+# short TTL cache for live intraday polling — refreshed every 5 min
+_live_cache: dict = {}   # symbol → (articles_with_ts, fetched_at)
+_LIVE_CACHE_TTL = 290    # just under 5 min so poller always gets fresh data
 
 
 def fetch_news_live(symbol: str, hours_back: int = 2) -> List[Dict]:
     """
-    Fetch recent articles with full UTC datetime objects (not date-only).
-    Used by NewsMonitor for live negative-news detection.
+    Fetch very recent news for *symbol* with full UTC timestamps.
+    Used by the intraday news monitor (Phase 53).
 
     Returns list of dicts with:
-      published_utc  — tz-aware datetime
+      published_utc  — datetime (UTC, tz-aware)
       sentiment      — 'positive', 'neutral', or 'negative'
-      score          — float
-      title          — str
+      score          — float: 1.0 / 0.0 / -1.0
+      title          — article title (for logging)
     """
     now = time.time()
     cached = _live_cache.get(symbol)
@@ -121,7 +122,10 @@ def fetch_news_live(symbol: str, hours_back: int = 2) -> List[Dict]:
 
     articles = []
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        from datetime import timezone
+        cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=hours_back)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         params = {
             "ticker": symbol,
             "published_utc.gte": cutoff,
@@ -136,13 +140,14 @@ def fetch_news_live(symbol: str, hours_back: int = 2) -> List[Dict]:
             _live_cache[symbol] = (articles, now)
             return articles
 
+        from datetime import timezone
         for item in resp.json().get("results", []):
             pub_str = item.get("published_utc", "")
             try:
-                pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
-                if pub_dt.tzinfo is None:
-                    pub_dt = pub_dt.replace(tzinfo=timezone.utc)
-            except (ValueError, AttributeError):
+                pub_dt = datetime.strptime(pub_str[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
                 continue
 
             insights = item.get("insights", [])
