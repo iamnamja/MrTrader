@@ -287,6 +287,13 @@ def compute_intraday_features(
     feats["minutes_since_open"] = minutes_elapsed
     feats["is_open_session"] = float(minutes_elapsed <= 30)    # first 30 min: gap-fill / auction
     feats["is_close_session"] = float(minutes_elapsed >= 330)  # last 60 min: MOC / closing imbalance
+    # Phase 50: session segment — 0=open (60-90min), 1=mid (90-210min), 2=close (210-330min)
+    if minutes_elapsed < 90:
+        feats["session_segment"] = 0.0
+    elif minutes_elapsed < 210:
+        feats["session_segment"] = 1.0
+    else:
+        feats["session_segment"] = 2.0
 
     # ── Daily vol context ─────────────────────────────────────────────────
     if daily_bars is not None and len(daily_bars) >= 22:
@@ -358,6 +365,11 @@ def compute_intraday_features(
 
     # gap_followthrough: gap_pct × session_return — positive = gap direction held
     feats["gap_followthrough"] = float(feats.get("gap_pct", 0.0) * stock_session_ret)
+
+    # Phase 50: session-segment interactions — model learns how edge varies by time of day
+    seg = feats.get("session_segment", 0.0)
+    feats["seg_x_high_dist"] = float(seg * feats.get("prev_day_high_dist", 0.0))
+    feats["seg_x_atr_norm"] = float(seg * feats.get("atr_norm", 0.0))
 
     return feats
 
@@ -551,4 +563,6 @@ FEATURE_NAMES = [
     # Phase 47-5: Quality / structure features
     "trend_efficiency", "green_bar_ratio", "above_vwap_ratio", "pullback_from_high",
     "range_vs_20d_avg", "rel_strength_vs_spy", "vol_x_momentum", "gap_followthrough",
+    # Phase 50: time-of-day segmentation
+    "session_segment", "seg_x_high_dist", "seg_x_atr_norm",
 ]

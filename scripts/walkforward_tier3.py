@@ -132,52 +132,73 @@ class WalkForwardReport:
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
-def _load_model(model_name: str):
+def _load_model(model_name: str, version: Optional[int] = None):
+    """Load a model by name. If version is given, load that specific version
+    regardless of status — used for re-testing historical models."""
     import pickle
     try:
-        from app.database.models import ModelVersion
+        from app.database.models import ModelVersion as MV
         from app.database.session import get_session
         db = get_session()
         try:
-            mv = (
-                db.query(ModelVersion)
-                .filter_by(model_name=model_name, status="ACTIVE")
-                .order_by(ModelVersion.version.desc())
-                .first()
-            )
+            if version is not None:
+                mv = db.query(MV).filter_by(
+                    model_name=model_name, version=version
+                ).first()
+            else:
+                mv = (
+                    db.query(MV)
+                    .filter_by(model_name=model_name, status="ACTIVE")
+                    .order_by(MV.version.desc())
+                    .first()
+                )
             if mv and mv.model_path:
                 path = Path(mv.model_path)
                 if path.exists():
                     with open(path, "rb") as f:
                         obj = pickle.load(f)
                     if hasattr(obj, "is_trained"):
-                        logger.info("Loaded %s model v%d", model_name, mv.version)
+                        logger.info("Loaded %s model v%d (status=%s)",
+                                    model_name, mv.version, mv.status)
                         return obj, mv.version
                 from app.ml.model import PortfolioSelectorModel
                 m = PortfolioSelectorModel(model_type="xgboost")
                 m.load(str(path.parent), mv.version, model_name=model_name)
-                logger.info("Loaded %s model v%d", model_name, mv.version)
+                logger.info("Loaded %s model v%d (status=%s)",
+                            model_name, mv.version, mv.status)
                 return m, mv.version
         finally:
             db.close()
     except Exception as exc:
         logger.warning("DB model load failed: %s", exc)
-    # Fallback: glob latest pkl (numeric sort to handle v9x vs v1xx correctly)
+    # Fallback: load specific version pkl if requested, else latest
     model_dir = Path("app/ml/models")
+    if version is not None:
+        path = model_dir / f"{model_name}_v{version}.pkl"
+        if path.exists():
+            with open(path, "rb") as f:
+                obj = pickle.load(f)
+            if hasattr(obj, "is_trained"):
+                logger.info("Loaded %s model v%d from file", model_name, version)
+                return obj, version
+            from app.ml.model import PortfolioSelectorModel
+            m = PortfolioSelectorModel(model_type="xgboost")
+            m.load(str(model_dir), version, model_name=model_name)
+            return m, version
     files = sorted(model_dir.glob(f"{model_name}_v*.pkl"),
                    key=lambda p: int(p.stem.split("_v")[-1]))
     if files:
         with open(files[-1], "rb") as f:
             obj = pickle.load(f)
-        version = int(files[-1].stem.split("_v")[-1])
+        ver = int(files[-1].stem.split("_v")[-1])
         if hasattr(obj, "is_trained"):
-            logger.info("Loaded %s model v%d from file", model_name, version)
-            return obj, version
+            logger.info("Loaded %s model v%d from file", model_name, ver)
+            return obj, ver
         from app.ml.model import PortfolioSelectorModel
         m = PortfolioSelectorModel(model_type="xgboost")
-        m.load(str(files[-1].parent), version, model_name=model_name)
-        logger.info("Loaded %s model v%d from file", model_name, version)
-        return m, version
+        m.load(str(files[-1].parent), ver, model_name=model_name)
+        logger.info("Loaded %s model v%d from file", model_name, ver)
+        return m, ver
     return None, 0
 
 
@@ -193,12 +214,13 @@ def run_swing_walkforward(
     pm_abstention_vix: float = 0.0,
     pm_abstention_spy_ma_days: int = 0,
     pm_abstention_spy_5d: bool = False,
+    model_version: Optional[int] = None,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
 
     report = WalkForwardReport(model_type="swing")
-    model, version = _load_model("swing")
+    model, version = _load_model("swing", version=model_version)
     if model is None:
         _err("No swing model found — retrain first.")
         return report
@@ -310,12 +332,14 @@ def run_intraday_walkforward(
     meta_model=None,
     pm_abstention_vix: float = 0.0,
     pm_abstention_spy_ma_days: int = 0,
+    scan_offsets: Optional[List[int]] = None,
+    model_version: Optional[int] = None,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
 
     report = WalkForwardReport(model_type="intraday")
-    model, version = _load_model("intraday")
+    model, version = _load_model("intraday", version=model_version)
     if model is None:
         _err("No intraday model found — retrain first.")
         return report
@@ -390,6 +414,7 @@ def run_intraday_walkforward(
             meta_model=meta_model,
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
+            scan_offsets=scan_offsets,
         )
         result = sim.run(
             symbols_data,
@@ -449,6 +474,16 @@ def main() -> int:
                         help="PM abstention gate: skip entries when SPY < N-day SMA (0 = off)")
     parser.add_argument("--pm-abstention-spy-5d", action="store_true", default=False,
                         help="PM abstention gate: skip entries when SPY 5-day return <= 0 (Phase 55)")
+    parser.add_argument("--intraday-multi-scan", action="store_true", default=False,
+                        help="Phase 51: scan at offsets [12, 18, 24] instead of single scan at 12")
+    parser.add_argument("--intraday-model-version", type=int, default=0,
+                        help="Load a specific intraday model version (0 = active). "
+                             "Use this to re-test historical/retired models.")
+    parser.add_argument("--swing-model-version", type=int, default=0,
+                        help="Load a specific swing model version (0 = active). "
+                             "Use this to re-test historical/retired models.")
+    parser.add_argument("--record-results", action="store_true", default=False,
+                        help="Write tier3 Sharpe + gate result back to ModelVersion DB record")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -476,6 +511,9 @@ def main() -> int:
 
     _header("MrTrader — Walk-Forward Tier 3 Validation")
 
+    swing_ver = args.swing_model_version if args.swing_model_version > 0 else None
+    intraday_ver = args.intraday_model_version if args.intraday_model_version > 0 else None
+
     if args.model in ("swing", "both"):
         t0 = time.time()
         swing_report = run_swing_walkforward(
@@ -488,6 +526,7 @@ def main() -> int:
             pm_abstention_vix=args.pm_abstention_vix,
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
+            model_version=swing_ver,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
@@ -496,6 +535,7 @@ def main() -> int:
 
     if args.model in ("intraday", "both"):
         t0 = time.time()
+        intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
         intraday_report = run_intraday_walkforward(
             n_folds=args.folds,
             total_days=args.days,
@@ -503,11 +543,22 @@ def main() -> int:
             meta_model=intraday_meta_model,
             pm_abstention_vix=args.pm_abstention_vix,
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+            scan_offsets=intraday_scan_offsets,
+            model_version=intraday_ver,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
         if not intraday_report.gate_passed():
             passed = False
+        if args.record_results and intraday_report.folds:
+            from app.ml.intraday_training import IntradayModelTrainer
+            loaded_ver = intraday_report.folds[0].model_version if intraday_report.folds else 0
+            IntradayModelTrainer.record_tier3_result(
+                version=loaded_ver,
+                avg_sharpe=intraday_report.avg_sharpe,
+                fold_sharpes=[f.sharpe for f in intraday_report.folds],
+                gate_passed=intraday_report.gate_passed(),
+            )
 
     print()
     if passed:
