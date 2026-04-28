@@ -259,6 +259,12 @@ async def get_open_positions():
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
             t = db_trades.get(pos["symbol"])
+            stop = float(t.stop_price) if t and t.stop_price else None
+            target = float(t.target_price) if t and t.target_price else None
+            entry = float(t.entry_price) if t and t.entry_price else float(avg)
+            rr = None
+            if stop and target and entry and (entry - stop) > 0:
+                rr = round((target - entry) / (entry - stop), 2)
             result.append(PositionResponse(
                 symbol=pos["symbol"],
                 quantity=int(qty),
@@ -266,9 +272,14 @@ async def get_open_positions():
                 current_price=float(current) if current else None,
                 pnl_unrealized=float(pnl) if pnl is not None else None,
                 pnl_unrealized_pct=pnl_pct,
-                stop_price=float(t.stop_price) if t and t.stop_price else None,
-                target_price=float(t.target_price) if t and t.target_price else None,
+                stop_price=stop,
+                target_price=target,
                 signal_type=t.signal_type if t else None,
+                trade_type=getattr(t, "trade_type", None) if t else None,
+                bars_held=t.bars_held if t else None,
+                entry_date=t.created_at.strftime("%Y-%m-%d") if t and t.created_at else None,
+                trade_id=t.id if t else None,
+                risk_reward=rr,
             ))
         return result
     except Exception as exc:

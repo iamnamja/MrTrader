@@ -52,6 +52,11 @@ export interface Position {
   stop_price?: number
   target_price?: number
   signal_type?: string
+  trade_type?: string
+  bars_held?: number
+  entry_date?: string
+  trade_id?: number
+  risk_reward?: number
 }
 
 export interface Trade {

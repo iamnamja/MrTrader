@@ -403,24 +403,36 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Entry Date', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {rows.length === 0
-                ? <tr><td colSpan={7} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No open positions</td></tr>
+                ? <tr><td colSpan={14} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No open positions</td></tr>
                 : rows.map(p => {
-                  const pct = p.unrealized_plpc != null ? p.unrealized_plpc * 100 : null
+                  const pct = p.unrealized_plpc != null ? p.unrealized_plpc * 100 : (p.pnl_unrealized_pct ?? null)
+                  const qty = p.qty ?? p.quantity ?? 0
+                  const entry = p.avg_entry_price ?? p.avg_price ?? 0
+                  const cur = p.current_price ?? 0
+                  const mv = p.market_value ?? cur * qty
+                  const pnl = p.unrealized_pl ?? p.pnl_unrealized ?? 0
                   return (
                     <tr key={p.symbol}>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
-                      <td style={s.td}>{p.qty}</td>
-                      <td style={s.td}>{fmt$(p.avg_entry_price)}</td>
-                      <td style={s.td}>{fmt$(p.current_price)}</td>
-                      <td style={s.td}>{fmt$(p.market_value)}</td>
-                      <td style={{ ...s.td, color: clr(p.unrealized_pl) }}>{fmt$(p.unrealized_pl)}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.trade_type ?? '—'}</td>
+                      <td style={s.td}>{qty}</td>
+                      <td style={s.td}>{fmt$(entry)}</td>
+                      <td style={s.td}>{fmt$(cur)}</td>
+                      <td style={s.td}>{fmt$(mv)}</td>
+                      <td style={{ ...s.td, color: clr(pnl) }}>{fmt$(pnl)}</td>
                       <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
+                      <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{p.risk_reward != null ? p.risk_reward.toFixed(1) + ':1' : '—'}</td>
+                      <td style={{ ...s.td, color: C.blue, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{p.bars_held ?? '—'}</td>
                     </tr>
                   )
                 })}

@@ -60,10 +60,124 @@ class Trader(BaseAgent):
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
+    async def _reconcile_positions(self, alpaca) -> None:
+        """
+        On startup, reconcile Alpaca open positions with DB ACTIVE trades.
+        Any position held by Alpaca that lacks an ACTIVE DB trade gets a synthetic
+        record created so stop/target/signal are visible in the dashboard.
+        Also repopulates active_positions in-memory so exit logic works correctly.
+        """
+        try:
+            raw_positions = await asyncio.to_thread(alpaca.get_positions)
+        except Exception as exc:
+            self.logger.warning("Reconciliation: could not fetch Alpaca positions: %s", exc)
+            return
+
+        if not raw_positions:
+            return
+
+        db = get_session()
+        try:
+            db_active = {t.symbol: t for t in db.query(Trade).filter(Trade.status == "ACTIVE").all()}
+        except Exception as exc:
+            self.logger.warning("Reconciliation: DB query failed: %s", exc)
+            db.close()
+            return
+
+        for pos in raw_positions:
+            symbol = pos.get("symbol")
+            if not symbol:
+                continue
+
+            qty = int(pos.get("quantity") or pos.get("qty", 0))
+            avg = float(pos.get("avg_price") or pos.get("avg_entry_price", 0))
+
+            if symbol in db_active:
+                # DB record exists — reload in-memory state from DB
+                t = db_active[symbol]
+                if symbol not in self.active_positions:
+                    self.active_positions[symbol] = {
+                        "entry_price":   t.entry_price,
+                        "stop_price":    t.stop_price or avg * 0.98,
+                        "target_price":  t.target_price or avg * 1.06,
+                        "highest_price": avg,
+                        "atr":           0.0,
+                        "bars_held":     t.bars_held or 0,
+                        "trade_id":      t.id,
+                        "trade_type":    getattr(t, "trade_type", None) or "swing",
+                        "entry_date":    t.created_at.date() if t.created_at else datetime.now(ET).date(),
+                    }
+                    self.logger.info("Reconciled %s from DB trade id=%d", symbol, t.id)
+                continue
+
+            # No DB record — create a synthetic ACTIVE trade using generate_signal for stop/target
+            if symbol in self.active_positions:
+                continue  # already loaded
+
+            self.logger.warning("Reconciliation: %s in Alpaca but no DB trade — creating synthetic record", symbol)
+            try:
+                from app.strategy.signals import generate_signal
+                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
+                if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
+                    result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
+                    stop = result.stop_price if result.stop_price and result.stop_price > 0 else round(avg * 0.98, 2)
+                    target = result.target_price if result.target_price and result.target_price > 0 else round(avg * 1.06, 2)
+                    signal = result.signal_type
+                    atr = result.atr
+                else:
+                    stop = round(avg * 0.98, 2)
+                    target = round(avg * 1.06, 2)
+                    signal = "RECONCILED"
+                    atr = 0.0
+
+                trade = Trade(
+                    symbol=symbol,
+                    direction="BUY",
+                    entry_price=avg,
+                    quantity=qty,
+                    status="ACTIVE",
+                    signal_type=signal,
+                    trade_type="swing",
+                    stop_price=stop,
+                    target_price=target,
+                    highest_price=avg,
+                    bars_held=0,
+                )
+                db.add(trade)
+                db.commit()
+
+                self.active_positions[symbol] = {
+                    "entry_price":   avg,
+                    "stop_price":    stop,
+                    "target_price":  target,
+                    "highest_price": avg,
+                    "atr":           atr,
+                    "bars_held":     0,
+                    "trade_id":      trade.id,
+                    "trade_type":    "swing",
+                    "entry_date":    datetime.now(ET).date(),
+                }
+                self.logger.info(
+                    "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
+                    symbol, trade.id, stop, target,
+                )
+            except Exception as exc:
+                db.rollback()
+                self.logger.error("Reconciliation failed for %s: %s", symbol, exc)
+
+        db.close()
+
     async def run(self):
         """Continuously consume approved trades and monitor market conditions."""
         self.logger.info("Trader Agent started")
         self.status = "running"
+
+        # Reconcile Alpaca positions with DB on startup (handles restarts mid-session)
+        try:
+            from app.integrations import get_alpaca_client
+            await self._reconcile_positions(get_alpaca_client())
+        except Exception as exc:
+            self.logger.warning("Startup reconciliation failed: %s", exc)
 
         while self.status == "running":
             try:
@@ -374,6 +488,7 @@ class Trader(BaseAgent):
                 quantity=shares,
                 status="ACTIVE",
                 signal_type=result.signal_type,
+                trade_type=trade_type,
                 stop_price=result.stop_price,
                 target_price=result.target_price,
                 highest_price=filled_price,

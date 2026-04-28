@@ -19,6 +19,7 @@ class Trade(Base):
     status = Column(String(20), default="PENDING")  # PENDING, ACTIVE, CLOSED, REJECTED
     pnl = Column(Float, nullable=True)
     signal_type = Column(String(20), nullable=True)   # EMA_CROSSOVER | RSI_DIP | NONE
+    trade_type = Column(String(20), nullable=True, default="swing")  # swing | intraday
     stop_price = Column(Float, nullable=True)         # initial ATR stop
     target_price = Column(Float, nullable=True)       # ATR profit target
     highest_price = Column(Float, nullable=True)      # for trailing stop tracking

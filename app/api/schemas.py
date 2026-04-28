@@ -18,6 +18,11 @@ class PositionResponse(BaseModel):
     stop_price: Optional[float] = None
     target_price: Optional[float] = None
     signal_type: Optional[str] = None
+    trade_type: Optional[str] = None       # "swing" | "intraday"
+    bars_held: Optional[int] = None
+    entry_date: Optional[str] = None       # YYYY-MM-DD
+    trade_id: Optional[int] = None
+    risk_reward: Optional[float] = None    # (target-entry)/(entry-stop)
 
 
 class TradeResponse(BaseModel):
