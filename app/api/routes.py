@@ -194,7 +194,7 @@ async def get_dashboard_summary():
         )
         capital_deployed_pct = round(capital_deployed / account_value * 100, 1) if account_value else None
 
-        # Last signal from most recent TRADE_ENTERED decision
+        # Last signal: prefer TRADE_ENTERED decision; fall back to most recent Trade record
         def _last_signal():
             db = get_session()
             try:
@@ -204,11 +204,36 @@ async def get_dashboard_summary():
                     .order_by(desc(AgentDecision.timestamp))
                     .first()
                 )
-                if not d:
+                # Also check most recent Trade entry regardless of decision log
+                t = (
+                    db.query(Trade)
+                    .filter(Trade.status.in_(["ACTIVE", "CLOSED"]))
+                    .order_by(desc(Trade.created_at))
+                    .first()
+                )
+
+                # Pick the most recent timestamp between decision and trade record
+                decision_ts = d.timestamp if d else None
+                trade_ts = t.created_at if t else None
+
+                if decision_ts and trade_ts:
+                    use_decision = decision_ts >= trade_ts
+                elif decision_ts:
+                    use_decision = True
+                else:
+                    use_decision = False
+
+                if use_decision:
+                    r = d.reasoning or {}
+                    sig = r.get("signal_type", "TRADE")
+                    ts = decision_ts
+                elif trade_ts:
+                    sig = t.signal_type or "TRADE"
+                    ts = trade_ts
+                else:
                     return None, None
-                r = d.reasoning or {}
-                sig = r.get("signal_type", "TRADE")
-                age_hours = round((datetime.utcnow() - d.timestamp).total_seconds() / 3600, 1)
+
+                age_hours = round((datetime.utcnow() - ts).total_seconds() / 3600, 1)
                 return sig, age_hours
             except Exception:
                 return None, None
@@ -416,7 +441,8 @@ async def get_equity_history(range: str = "1d"):
         period = period_map.get(range, "1D")
         timeframe = tf_map.get(range, "5Min")
         req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
-        hist = _alpaca().trading_client.get_portfolio_history(req)
+        client = _alpaca()
+        hist = client.trading_client.get_portfolio_history(req)
 
         timestamps = hist.timestamp or []
         pnl_series = hist.profit_loss or []
@@ -428,6 +454,38 @@ async def get_equity_history(range: str = "1d"):
             dt = datetime.utcfromtimestamp(ts)
             label = dt.strftime("%H:%M") if range == "1d" else dt.strftime("%b %d")
             points.append({"time": label, "pnl": round(float(pnl), 2)})
+
+        # For multi-day views, Alpaca's daily bars don't include today's intraday P&L
+        # until after market close — append today's live figure so the chart is current
+        if range in ("1w", "1m"):
+            try:
+                positions = client.get_positions() or []
+                today_unrealized = sum(float(p.get("unrealized_pl", 0)) for p in positions)
+                # Also include today's realized P&L from closed trades
+                from datetime import date as _date
+                from app.database.models import Trade as _Trade
+                from app.database.session import get_session as _gs
+                _db = _gs()
+                try:
+                    today_str = _date.today().isoformat()
+                    closed_today = _db.query(_Trade).filter(
+                        _Trade.status == "CLOSED",
+                        _Trade.closed_at >= today_str,
+                    ).all()
+                    today_realized = sum(float(t.pnl or 0) for t in closed_today)
+                finally:
+                    _db.close()
+                today_pnl = round(today_unrealized + today_realized, 2)
+                from datetime import date as _date2
+                today_label = _date2.today().strftime("%b %d")
+                # Replace last point if it's already today, otherwise append
+                if points and points[-1]["time"] == today_label:
+                    points[-1]["pnl"] = today_pnl
+                else:
+                    points.append({"time": today_label, "pnl": today_pnl})
+            except Exception:
+                pass
+
         return points
 
     try:
