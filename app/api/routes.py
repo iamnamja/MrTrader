@@ -154,41 +154,34 @@ async def get_dashboard_summary():
         buying_power = float(account["buying_power"]) if account else None
         cash = float(account["cash"]) if account else None
 
-        # Realized P&L from DB (today and all-time)
-        def _pnl_from_db():
-            import zoneinfo
-            db = get_session()
+        # P&L from Alpaca portfolio history — ground truth, unaffected by DB duplicates
+        def _pnl_from_alpaca():
             try:
-                et = zoneinfo.ZoneInfo("America/New_York")
-                now_et = datetime.now(tz=et)
-                today_start_et = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Convert to UTC naive for comparison with DB timestamps stored as UTC naive
-                today_start_utc = today_start_et.astimezone(zoneinfo.ZoneInfo("UTC")).replace(tzinfo=None)
-                closed = db.query(Trade).filter(Trade.status == "CLOSED").all()
-                today_realized = sum(
-                    float(t.pnl or 0) for t in closed
-                    if t.closed_at and t.closed_at >= today_start_utc
-                )
-                total_realized = sum(float(t.pnl or 0) for t in closed)
-                return today_realized, total_realized
+                from alpaca.trading.requests import GetPortfolioHistoryRequest
+                # 1D range gives today's cumulative profit_loss series
+                req = GetPortfolioHistoryRequest(period="1D", timeframe="5Min")
+                hist = _alpaca().trading_client.get_portfolio_history(req)
+                pnl_series = hist.profit_loss or []
+                # Last non-None value is today's realized+unrealized P&L per Alpaca
+                today_alpaca = next((float(v) for v in reversed(pnl_series) if v is not None), None)
+                return today_alpaca
             except Exception:
-                return 0.0, 0.0
-            finally:
-                db.close()
+                return None
 
-        today_realized, total_realized = await asyncio.to_thread(_pnl_from_db)
+        today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
 
         if account_value is not None:
-            # Daily P&L = today's realized (closed trades) + current unrealized (open positions)
-            daily_pnl = round(today_realized + unrealized_pnl, 2)
-            previous_value = account_value - daily_pnl
-            daily_pnl_pct = round(daily_pnl / previous_value * 100, 2) if previous_value > 0 else 0.0
-            # Total P&L = all closed trades + current unrealized
-            total_pnl = round(total_realized + unrealized_pnl, 2)
-            initial_capital = max(account_value - total_pnl, 1.0)
-            total_pnl_pct = round(total_pnl / initial_capital * 100, 2)
+            # Daily P&L: use Alpaca's own series — immune to DB duplicate records
+            daily_pnl = round(today_alpaca_pnl, 2) if today_alpaca_pnl is not None else round(unrealized_pnl, 2)
+            prev_close = account_value - daily_pnl
+            daily_pnl_pct = round(daily_pnl / prev_close * 100, 2) if prev_close > 0 else 0.0
+            # Total P&L = account value vs paper trading starting capital ($100k)
+            # settings.initial_capital is $20k (live target), paper account started at $100k
+            paper_start = 100_000.0
+            total_pnl = round(account_value - paper_start, 2)
+            total_pnl_pct = round(total_pnl / paper_start * 100, 2)
         else:
-            daily_pnl = unrealized_pnl
+            daily_pnl = round(unrealized_pnl, 2)
             daily_pnl_pct = total_pnl = total_pnl_pct = None
 
         # Capital deployed = sum of market_value across open positions
