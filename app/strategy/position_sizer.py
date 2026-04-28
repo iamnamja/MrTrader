@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 RISK_FRACTION = 0.02          # risk 2% of account per trade
 CASH_CAP = 0.90               # never commit more than 90% of cash to one trade
+MAX_POSITION_PCT = 0.10       # never put more than 10% of account equity in one position
 
 # Conviction multiplier bounds (applied to risk_fraction based on ML score)
 _CONVICTION_MIN = 0.75        # low-confidence floor
@@ -81,7 +82,9 @@ def size_position(
 
     # Cap at 90% of available cash
     max_affordable = int(available_cash * CASH_CAP / entry_price)
-    shares = min(risk_based_shares, max_affordable)
+    # Cap at 10% of account equity per position (prevents oversized bets on tight-stop stocks)
+    max_position = int(account_equity * MAX_POSITION_PCT / entry_price)
+    shares = min(risk_based_shares, max_affordable, max_position)
 
     if shares <= 0:
         logger.debug(

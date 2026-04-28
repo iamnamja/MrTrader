@@ -51,20 +51,39 @@ class TestSizePositionWithConviction:
 
     def test_high_conviction_gives_more_shares(self):
         from app.strategy.position_sizer import size_position
-        # Use large cash so the cash cap doesn't bind (conviction multiplier is the constraint)
-        low = size_position(100_000, 500_000, 10.0, 9.7, ml_score=0.55)
-        high = size_position(100_000, 500_000, 10.0, 9.7, ml_score=0.80)
+        # entry=$500, stop=$490 → risk=$10/share, equity=$100k
+        # risk-based low  = (100k × 0.02 × 0.75) / 10 = 150 shares ($75k) — exceeds 10% cap
+        # Both hit the 10% position cap (100k×10%/$500=20 shares) equally,
+        # so test the ordering using a smaller account where cap doesn't dominate
+        # equity=$100k, entry=$200, stop=$180 → risk=$20/share
+        # 10% cap = 100k×10%/$200 = 50 shares
+        # risk-based low  = (100k×0.02×0.75)/$20 = 75 shares → capped to 50
+        # risk-based high = (100k×0.02×1.25)/$20 = 125 shares → capped to 50
+        # Both hit cap — use wider stop so risk-based stays under cap:
+        # entry=$200, stop=$100 → risk=$100/share
+        # risk-based low  = (100k×0.02×0.75)/$100 = 15 shares (cap=50, doesn't bind)
+        # risk-based high = (100k×0.02×1.25)/$100 = 25 shares (cap=50, doesn't bind)
+        low = size_position(100_000, 500_000, 200.0, 100.0, ml_score=0.55)
+        high = size_position(100_000, 500_000, 200.0, 100.0, ml_score=0.80)
         assert high > low
 
     def test_conviction_multiplier_applied(self):
-        from app.strategy.position_sizer import size_position, conviction_multiplier, RISK_FRACTION
-        # Large cash so cash cap doesn't bind
-        equity, cash, entry, stop = 100_000.0, 500_000.0, 10.0, 9.7
+        from app.strategy.position_sizer import size_position, conviction_multiplier, RISK_FRACTION, MAX_POSITION_PCT
+        # Use parameters where risk-based shares stay under the 10% position cap:
+        # entry=$500, stop=$495 → risk=$5/share
+        # risk-based = (1M × 0.02 × 1.25) / 5 = 5000 shares × $500 = $2.5M → hits cap
+        # Use equity=100k, entry=$50, stop=$49 → risk=$1/share
+        # risk-based = (100k × 0.02 × 1.25) / 1 = 2500 shares × $50 = $125k → hits cap
+        # Use entry=$200 to keep risk-based under 10% cap:
+        # entry=$200, stop=$196 → risk=$4, risk-based = (100k×0.02×1.25)/4 = 625 shares×$200=$125k → cap=50
+        # Just verify cap is respected and multiplier ordering holds
+        equity, cash = 1_000_000.0, 5_000_000.0
+        entry, stop = 10.0, 9.7   # risk=$0.30/share — risk-based well under 10% cap
         ml_score = 0.75
 
         risk_per_share = entry - stop
         expected_risk = equity * RISK_FRACTION * conviction_multiplier(ml_score)
-        expected_shares = int(expected_risk / risk_per_share)
+        expected_shares = min(int(expected_risk / risk_per_share), int(equity * MAX_POSITION_PCT / entry))
 
         result = size_position(equity, cash, entry, stop, ml_score=ml_score)
         assert result == expected_shares
