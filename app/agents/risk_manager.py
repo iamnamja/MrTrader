@@ -26,7 +26,7 @@ from app.agents.risk_rules import (
     validate_position_size,
     validate_sector_concentration,
 )
-from app.database.models import RiskMetric, TradeProposal
+from app.database.models import RiskMetric
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,10 @@ class RiskManager(BaseAgent):
         self._peak_equity: Optional[float] = None
         # Count of open intraday positions (updated on approve/exit messages)
         self._open_intraday_count: int = 0
+        # One-proposal-per-symbol-per-day dedup set (Phase C)
+        self._approved_today: set = set()
+        self._last_purge_date: str = ""
+        self._redis_purged_today: bool = False
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -60,9 +64,30 @@ class RiskManager(BaseAgent):
         """Continuously consume trade_proposals and validate them."""
         self.logger.info("Risk Manager started — listening on '%s'", TRADE_PROPOSALS_QUEUE)
         self.status = "running"
+        from datetime import timezone
 
         while self.status == "running":
             try:
+                from zoneinfo import ZoneInfo
+                ET = ZoneInfo("America/New_York")
+                now_et = __import__("datetime").datetime.now(ET)
+                today_str = now_et.strftime("%Y-%m-%d")
+
+                # Daily dedup reset
+                if today_str != self._last_purge_date:
+                    self._approved_today.clear()
+                    self._redis_purged_today = False
+                    self._last_purge_date = today_str
+
+                # 4:00 PM ET: purge stale approved proposals from Redis queue
+                if (
+                    now_et.weekday() < 5
+                    and now_et.hour >= 16
+                    and not self._redis_purged_today
+                ):
+                    self._purge_approved_queue()
+                    self._redis_purged_today = True
+
                 proposal = await asyncio.to_thread(
                     self.get_message, TRADE_PROPOSALS_QUEUE, 3
                 )
@@ -79,13 +104,12 @@ class RiskManager(BaseAgent):
                     proposal.get("source_agent", "unknown"),
                 )
 
-                db_proposal = await asyncio.to_thread(self._persist_proposal, proposal)
                 is_approved, reasoning = await self._validate_trade(proposal)
 
                 if is_approved:
-                    await self._approve(proposal, reasoning, db_proposal)
+                    await self._approve(proposal, reasoning)
                 else:
-                    await self._reject(proposal, reasoning, db_proposal)
+                    await self._reject(proposal, reasoning)
 
             except asyncio.CancelledError:
                 self.logger.info("Risk Manager cancelled — shutting down")
@@ -100,69 +124,34 @@ class RiskManager(BaseAgent):
                 # Brief pause before retrying to avoid tight error loops
                 await asyncio.sleep(1)
 
-    # ─── Proposal persistence ─────────────────────────────────────────────────
-
-    def _persist_proposal(self, proposal: Dict[str, Any]) -> Optional[Any]:
-        """Write proposal to DB immediately on receipt; returns the ORM object."""
-        from datetime import datetime as _dt
-        db = get_session()
-        try:
-            rec = TradeProposal(
-                symbol=proposal.get("symbol", ""),
-                trade_type=proposal.get("trade_type", "swing"),
-                direction=proposal.get("direction", "BUY"),
-                entry_price=proposal.get("entry_price"),
-                confidence=proposal.get("confidence"),
-                ml_score=proposal.get("ml_score") or proposal.get("confidence"),
-                source_agent=proposal.get("source_agent", "portfolio_manager"),
-                status="PENDING",
-                proposed_at=_dt.utcnow(),
-            )
-            db.add(rec)
-            db.commit()
-            db.refresh(rec)
-            return rec
-        except Exception as exc:
-            db.rollback()
-            self.logger.warning("Failed to persist proposal for %s: %s", proposal.get("symbol"), exc)
-            return None
-        finally:
-            db.close()
-
-    def _update_proposal_status(self, proposal_id: Optional[int], status: str, reason: str = "") -> None:
-        if proposal_id is None:
-            return
-        from datetime import datetime as _dt
-        db = get_session()
-        try:
-            rec = db.query(TradeProposal).filter(TradeProposal.id == proposal_id).first()
-            if rec:
-                rec.status = status
-                rec.reject_reason = reason or None
-                rec.decided_at = _dt.utcnow()
-                db.commit()
-        except Exception as exc:
-            db.rollback()
-            self.logger.warning("Failed to update proposal %s: %s", proposal_id, exc)
-        finally:
-            db.close()
-
     # ─── Approval / Rejection ─────────────────────────────────────────────────
 
-    async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any], db_proposal=None) -> None:
+    async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any]) -> None:
         from datetime import datetime
+
+        symbol = proposal.get("symbol", "")
+
+        # One-proposal-per-symbol-per-day dedup (Phase C)
+        if symbol in self._approved_today:
+            self.logger.info(
+                "DEDUP: %s already approved today — dropping duplicate proposal", symbol
+            )
+            await self.log_decision("TRADE_REJECTED", reasoning={
+                **reasoning,
+                "failed_rule": "duplicate_proposal_today",
+                "message": f"{symbol} already approved once today",
+            })
+            return
 
         if proposal.get("trade_type") == "intraday":
             self._open_intraday_count += 1
 
-        if db_proposal:
-            await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "APPROVED")
+        self._approved_today.add(symbol)
 
         approved_proposal = {
             **proposal,
             "stop_loss": reasoning.get("stop_loss"),
             "approved_at": datetime.utcnow().isoformat(),
-            "_proposal_id": db_proposal.id if db_proposal else None,
         }
         self.send_message(APPROVED_TRADES_QUEUE, approved_proposal)
         self.logger.info(
@@ -173,22 +162,35 @@ class RiskManager(BaseAgent):
         )
         await self.log_decision("TRADE_APPROVED", reasoning=reasoning)
 
-    async def _reject(self, proposal: Dict[str, Any], reasoning: Dict[str, Any], db_proposal=None) -> None:
-        failed_rule = reasoning.get("failed_rule", "unknown")
+    def _purge_approved_queue(self) -> None:
+        """Drain all pending messages from the approved trades queue at 4 PM ET."""
+        try:
+            count = 0
+            while True:
+                msg = self.get_message(APPROVED_TRADES_QUEUE, timeout=1)
+                if msg is None:
+                    break
+                count += 1
+            if count:
+                self.logger.warning("4 PM purge: discarded %d stale approved proposal(s)", count)
+            else:
+                self.logger.info("4 PM purge: approved queue already empty")
+        except Exception as exc:
+            self.logger.error("Failed to purge approved queue: %s", exc)
+
+    async def _reject(self, proposal: Dict[str, Any], reasoning: Dict[str, Any]) -> None:
         self.logger.warning(
             "REJECTED: %s %s — %s",
             proposal.get("symbol"),
             proposal.get("direction"),
-            failed_rule,
+            reasoning.get("failed_rule"),
         )
-        if db_proposal:
-            await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "REJECTED", failed_rule)
         # Optional AI veto explanation (non-blocking)
         try:
             from app.ai.claude_client import explain_risk_veto
             ai_explanation = explain_risk_veto(
                 symbol=proposal.get("symbol", "?"),
-                failed_rule=failed_rule,
+                failed_rule=reasoning.get("failed_rule", "unknown"),
                 veto_reason=reasoning.get("message", ""),
                 proposal=proposal,
             )
@@ -380,8 +382,7 @@ class RiskManager(BaseAgent):
                 quote = get_alpaca_client().get_quote(symbol)
                 if quote is not None:
                     spread_pct = quote["spread_pct"]
-                    # Spreads > 2% are stale IEX quotes, not real market spreads — ignore
-                    if spread_pct <= 0.02 and spread_pct > max_spread:
+                    if spread_pct > max_spread:
                         msg = (f"Bid-ask spread too wide: {spread_pct*100:.3f}% "
                                f"(limit {max_spread*100:.3f}%)")
                         reasoning["failed_rule"] = "bid_ask_spread"

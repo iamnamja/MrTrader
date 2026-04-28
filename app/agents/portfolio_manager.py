@@ -91,6 +91,59 @@ class PortfolioManager(BaseAgent):
         t = now.hour * 60 + now.minute
         return (start_h * 60 + start_m) <= t < (end_h * 60 + end_m)
 
+    # ─── Persistent daily-flag helpers (Phase A) ─────────────────────────────
+
+    def _load_daily_flags(self) -> None:
+        """Load today's workflow flags from DB so a restart doesn't re-run completed steps."""
+        try:
+            from app.database.daily_state import get_flag
+            today = datetime.now(ET).strftime("%Y-%m-%d")
+            if get_flag("swing_proposals_done", today):
+                self._selected_today = True
+                self.logger.info("Loaded from DB: swing_proposals_done=True")
+            if get_flag("intraday_proposals_done", today):
+                self._selected_intraday_today = True
+                self.logger.info("Loaded from DB: intraday_proposals_done=True")
+        except Exception as exc:
+            self.logger.warning("Could not load daily flags from DB: %s", exc)
+
+    def _persist_daily_flag(self, flag: str) -> None:
+        """Persist a workflow flag to DB so it survives a restart."""
+        try:
+            from app.database.daily_state import set_flag
+            today = datetime.now(ET).strftime("%Y-%m-%d")
+            set_flag(flag, True, today)
+        except Exception as exc:
+            self.logger.warning("Could not persist daily flag %s: %s", flag, exc)
+
+    async def _maybe_recover_swing(self) -> None:
+        """
+        Phase B: if the app starts between 9:50–11:00 AM and swing proposals
+        have not been sent yet today, run analysis + send immediately.
+        After 11:00 AM we skip — the window is gone.
+        """
+        now = datetime.now(ET)
+        if now.weekday() >= 5:
+            return
+        in_recovery_window = self._in_window(now, 9, 50, 11, 0)
+        if in_recovery_window and not self._selected_today:
+            self.logger.warning(
+                "Swing recovery: started at %02d:%02d with swing not done — running now",
+                now.hour, now.minute,
+            )
+            self._selected_today = True
+            self._persist_daily_flag("swing_proposals_done")
+            await self._run_task(
+                "swing_proposals_send_recovery", 9, 50,
+                self._send_swing_proposals(),
+            )
+        elif not in_recovery_window and not self._selected_today and now.hour >= 11:
+            self.logger.warning(
+                "Swing recovery: started at %02d:%02d — past 11:00 AM window, skipping swing for today",
+                now.hour, now.minute,
+            )
+            self._selected_today = True  # mark done so the loop doesn't try to send
+
     async def _run_task(
         self,
         name: str,
@@ -160,6 +213,13 @@ class PortfolioManager(BaseAgent):
         self.logger.info("Portfolio Manager started")
         self.status = "running"
         self._try_load_model()
+
+        # Load persisted daily flags so a mid-day restart doesn't re-run completed steps
+        self._load_daily_flags()
+
+        # Phase B: swing recovery — if we start between 9:50–11:00 AM and swing not done yet,
+        # run analysis + send immediately so we don't miss the window on a late restart
+        await self._maybe_recover_swing()
 
         while self.status == "running":
             try:
@@ -232,6 +292,7 @@ class PortfolioManager(BaseAgent):
                     and not self._selected_today
                 ):
                     self._selected_today = True
+                    self._persist_daily_flag("swing_proposals_done")
                     await self._run_task(
                         "swing_proposals_send", 9, 50,
                         self._send_swing_proposals(),
@@ -244,6 +305,7 @@ class PortfolioManager(BaseAgent):
                     and not self._selected_intraday_today
                 ):
                     self._selected_intraday_today = True
+                    self._persist_daily_flag("intraday_proposals_done")
                     from app.agents.premarket import premarket_intel
                     if premarket_intel.is_intraday_blocked():
                         self.logger.warning(

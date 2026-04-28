@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Text
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, JSON, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -24,6 +24,8 @@ class Trade(Base):
     target_price = Column(Float, nullable=True)       # ATR profit target
     highest_price = Column(Float, nullable=True)      # for trailing stop tracking
     bars_held = Column(Integer, default=0)            # bars in position
+    trade_type = Column(String(20), nullable=True, default="swing")  # "swing" | "intraday"
+    exit_reason = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     closed_at = Column(DateTime, nullable=True)
 
@@ -209,3 +211,44 @@ class TradingSession(Base):
 
     def __repr__(self):
         return f"<TradingSession {self.session_date} {self.mode}>"
+
+
+class TradeProposal(Base):
+    """Persisted record of every trade proposal from PM → RM → Trader."""
+    __tablename__ = "trade_proposals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), index=True, nullable=False)
+    trade_type = Column(String(20), nullable=False, default="swing")
+    direction = Column(String(10), nullable=False, default="BUY")
+    entry_price = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    ml_score = Column(Float, nullable=True)
+    status = Column(String(20), nullable=False, default="PENDING")  # PENDING/APPROVED/REJECTED
+    reject_reason = Column(String(255), nullable=True)
+    source_agent = Column(String(50), nullable=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    proposed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    decided_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<TradeProposal {self.symbol} {self.status}>"
+
+
+class DailyState(Base):
+    """
+    One row per trading day — persists PM workflow flags across restarts.
+    Loaded at startup so a restart mid-day doesn't re-run already-completed steps.
+    """
+    __tablename__ = "daily_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(String(10), unique=True, nullable=False, index=True)  # YYYY-MM-DD
+    swing_proposals_done = Column(Boolean, default=False)
+    intraday_proposals_done = Column(Boolean, default=False)
+    force_close_done = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<DailyState {self.date} swing={self.swing_proposals_done} intraday={self.intraday_proposals_done}>"

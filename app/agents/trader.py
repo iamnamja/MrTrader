@@ -60,145 +60,13 @@ class Trader(BaseAgent):
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
-    async def _reconcile_positions(self, alpaca) -> None:
-        """
-        On startup, reconcile Alpaca open positions with DB ACTIVE trades.
-        Any position held by Alpaca that lacks an ACTIVE DB trade gets a synthetic
-        record created so stop/target/signal are visible in the dashboard.
-        Also repopulates active_positions in-memory so exit logic works correctly.
-        """
-        try:
-            raw_positions = await asyncio.to_thread(alpaca.get_positions)
-        except Exception as exc:
-            self.logger.warning("Reconciliation: could not fetch Alpaca positions: %s", exc)
-            return
-
-        if not raw_positions:
-            return
-
-        db = get_session()
-        try:
-            db_active = {t.symbol: t for t in db.query(Trade).filter(Trade.status == "ACTIVE").all()}
-        except Exception as exc:
-            self.logger.warning("Reconciliation: DB query failed: %s", exc)
-            db.close()
-            return
-
-        for pos in raw_positions:
-            symbol = pos.get("symbol")
-            if not symbol:
-                continue
-
-            qty = int(pos.get("quantity") or pos.get("qty", 0))
-            avg = float(pos.get("avg_price") or pos.get("avg_entry_price", 0))
-
-            if symbol in db_active:
-                # DB record exists — reload in-memory state from DB
-                t = db_active[symbol]
-                if symbol not in self.active_positions:
-                    self.active_positions[symbol] = {
-                        "entry_price":   t.entry_price,
-                        "stop_price":    t.stop_price or avg * 0.98,
-                        "target_price":  t.target_price or avg * 1.06,
-                        "highest_price": avg,
-                        "atr":           0.0,
-                        "bars_held":     t.bars_held or 0,
-                        "trade_id":      t.id,
-                        "trade_type":    getattr(t, "trade_type", None) or "swing",
-                        "entry_date":    t.created_at.date() if t.created_at else datetime.now(ET).date(),
-                    }
-                    self.logger.info("Reconciled %s from DB trade id=%d", symbol, t.id)
-                continue
-
-            # No DB record — create a synthetic ACTIVE trade using generate_signal for stop/target
-            if symbol in self.active_positions:
-                continue  # already loaded
-
-            self.logger.warning("Reconciliation: %s in Alpaca but no DB trade — creating synthetic record", symbol)
-            try:
-                from app.strategy.signals import generate_signal
-                from app.database.models import TradeProposal
-
-                # Look up trade_type from the most recent persisted proposal for this symbol
-                rec_proposal = (
-                    db.query(TradeProposal)
-                    .filter(TradeProposal.symbol == symbol, TradeProposal.status == "APPROVED")
-                    .order_by(TradeProposal.proposed_at.desc())
-                    .first()
-                )
-                trade_type_rec = rec_proposal.trade_type if rec_proposal else None
-                if not trade_type_rec:
-                    # Fall back: intraday if market is open (a restart during market hours
-                    # is far more likely to be an intraday session), else swing
-                    now_et = datetime.now(ET)
-                    trade_type_rec = "intraday" if (9 <= now_et.hour < 16) else "swing"
-                    self.logger.warning(
-                        "Reconciliation: no proposal record for %s — defaulting trade_type=%s",
-                        symbol, trade_type_rec,
-                    )
-
-                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
-                if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
-                    result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
-                    stop = result.stop_price if result.stop_price and result.stop_price > 0 else round(avg * 0.98, 2)
-                    target = result.target_price if result.target_price and result.target_price > 0 else round(avg * 1.06, 2)
-                    # NONE means no rule-based pattern fired, but entry was ML-driven
-                    signal = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
-                    atr = result.atr
-                else:
-                    stop = round(avg * 0.98, 2)
-                    target = round(avg * 1.06, 2)
-                    signal = "ML_RANK"
-                    atr = 0.0
-
-                trade = Trade(
-                    symbol=symbol,
-                    direction="BUY",
-                    entry_price=avg,
-                    quantity=qty,
-                    status="ACTIVE",
-                    signal_type=signal,
-                    trade_type=trade_type_rec,
-                    stop_price=stop,
-                    target_price=target,
-                    highest_price=avg,
-                    bars_held=0,
-                )
-                db.add(trade)
-                db.commit()
-
-                self.active_positions[symbol] = {
-                    "entry_price":   avg,
-                    "stop_price":    stop,
-                    "target_price":  target,
-                    "highest_price": avg,
-                    "atr":           atr,
-                    "bars_held":     0,
-                    "trade_id":      trade.id,
-                    "trade_type":    "swing",
-                    "entry_date":    datetime.now(ET).date(),
-                }
-                self.logger.info(
-                    "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
-                    symbol, trade.id, stop, target,
-                )
-            except Exception as exc:
-                db.rollback()
-                self.logger.error("Reconciliation failed for %s: %s", symbol, exc)
-
-        db.close()
-
     async def run(self):
         """Continuously consume approved trades and monitor market conditions."""
         self.logger.info("Trader Agent started")
         self.status = "running"
 
-        # Reconcile Alpaca positions with DB on startup (handles restarts mid-session)
-        try:
-            from app.integrations import get_alpaca_client
-            await self._reconcile_positions(get_alpaca_client())
-        except Exception as exc:
-            self.logger.warning("Startup reconciliation failed: %s", exc)
+        # Rebuild in-memory state from DB + Alpaca on every startup
+        await self._reconcile_positions()
 
         while self.status == "running":
             try:
@@ -217,21 +85,6 @@ class Trader(BaseAgent):
                         break
                     symbol = proposal.get("symbol")
                     if symbol:
-                        # Discard stale proposals — approved more than 1 hour ago
-                        approved_at_str = proposal.get("approved_at")
-                        if approved_at_str:
-                            try:
-                                from datetime import timezone
-                                approved_at = datetime.fromisoformat(approved_at_str).replace(tzinfo=timezone.utc)
-                                age_minutes = (datetime.now(timezone.utc) - approved_at).total_seconds() / 60
-                                if age_minutes > 60:
-                                    self.logger.info(
-                                        "Discarding stale proposal for %s (approved %.0f min ago)",
-                                        symbol, age_minutes,
-                                    )
-                                    continue
-                            except Exception:
-                                pass
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
 
@@ -371,21 +224,14 @@ class Trader(BaseAgent):
     # ─── Entry ────────────────────────────────────────────────────────────────
 
     async def _check_entry(self, symbol: str, proposal: Dict[str, Any], alpaca):
-        """Fetch daily bars, compute entry prices via generate_signal(), enter if ML score passes.
-
-        generate_signal() is used only for ATR-based stop/target prices and current price.
-        The entry gate is the ML confidence score (>= ML_SCORE_THRESHOLD), not the
-        rule-based is_buy flag — the walk-forward validation assumes ML score is sufficient.
-        """
-        from app.strategy.signals import ML_SCORE_THRESHOLD
-        trade_type = proposal.get("trade_type", "swing")
-
+        """Fetch daily bars, run generate_signal(), enter on BUY."""
+        # Guard: already holding this symbol
         if symbol in self.active_positions:
-            self.logger.debug("%s: already in active_positions — skipping duplicate entry", symbol)
+            self.logger.debug("%s: already in active_positions — skipping entry", symbol)
             self.approved_symbols.pop(symbol, None)
             return
 
-        # No new entries after 3:00 PM ET — not enough time left in the day
+        # 3:00 PM ET cutoff — no new entries
         now_et = datetime.now(ET)
         if now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
             self.logger.info(
@@ -395,6 +241,23 @@ class Trader(BaseAgent):
             self.approved_symbols.pop(symbol, None)
             return
 
+        # Discard stale approved proposals (> 60 min old)
+        approved_at_str = proposal.get("approved_at")
+        if approved_at_str:
+            from datetime import timezone
+            try:
+                approved_at = datetime.fromisoformat(approved_at_str).replace(tzinfo=timezone.utc)
+                age_minutes = (datetime.now(timezone.utc) - approved_at).total_seconds() / 60
+                if age_minutes > 60:
+                    self.logger.info(
+                        "Discarding stale proposal for %s (approved %.0f min ago)", symbol, age_minutes
+                    )
+                    self.approved_symbols.pop(symbol, None)
+                    return
+            except Exception:
+                pass
+
+        trade_type = proposal.get("trade_type", "swing")
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
                 "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
@@ -410,34 +273,14 @@ class Trader(BaseAgent):
             return
 
         ml_score = proposal.get("confidence")
-        if ml_score is None or ml_score < ML_SCORE_THRESHOLD:
-            self.logger.debug(
-                "%s: ML score %.3f below threshold %.2f — skipping",
-                symbol, ml_score or 0.0, ML_SCORE_THRESHOLD,
-            )
+        result = generate_signal(symbol, bars, ml_score=ml_score)
+        if not result.is_buy:
             return
-
-        # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
-        result = generate_signal(symbol, bars, ml_score=ml_score, check_regime=False, check_earnings=True)
 
         # Size the position
         account = alpaca.get_account()
-        # Use portfolio_value (not buying_power) to avoid margin inflation.
-        # buying_power on a $100k paper account = $200k (2× margin) — that would
-        # produce 2× more shares than intended.
         equity = float(account.get("equity", 0)) if account else 0
         cash = float(account.get("cash", 0)) if account else 0
-
-        # In live mode, cap sizing to the capital ramp stage to limit real-money risk.
-        # In paper mode, use actual account equity (matches walk-forward assumptions).
-        from app.config import settings
-        if settings.trading_mode == "live":
-            from app.live_trading.capital_manager import capital_manager
-            stage_cap = capital_manager.get_current_capital()
-            cash = min(cash, stage_cap)
-            equity = min(equity, stage_cap)
-        # Also cap cash to actual cash (not buying_power) to avoid margin inflation
-        cash = min(cash, float(account.get("cash", cash)))
 
         shares = size_position(
             account_equity=equity,
@@ -478,10 +321,10 @@ class Trader(BaseAgent):
 
             quote = alpaca.get_quote(symbol)
             if quote and quote["ask"] > 0:
-                limit_price = round(quote["ask"] * (1 - limit_offset), 2)
+                limit_price = round(quote["ask"] * (1 - limit_offset), 4)
                 intended_price = quote["ask"]
             else:
-                limit_price = round(intended_price * (1 - limit_offset), 2)
+                limit_price = round(intended_price * (1 - limit_offset), 4)
 
             order = alpaca.place_limit_order(symbol, shares, "buy", limit_price)
             if not order:
@@ -518,6 +361,76 @@ class Trader(BaseAgent):
             order.get("order_id"), result, proposal,
         )
 
+    async def _reconcile_positions(self) -> None:
+        """
+        On startup: rebuild active_positions from DB ACTIVE trades, cross-checked
+        against live Alpaca positions. Orphaned DB trades (not on Alpaca) are
+        marked FORCE_CLOSED_RECONCILE; new Alpaca positions not in DB are logged.
+        """
+        self.logger.info("Reconciling positions from DB + Alpaca…")
+        db = get_session()
+        try:
+            active_trades = db.query(Trade).filter_by(status="ACTIVE").all()
+        except Exception as exc:
+            self.logger.error("Reconcile: DB query failed: %s", exc)
+            db.close()
+            return
+        finally:
+            db.close()
+
+        if not active_trades:
+            self.logger.info("Reconcile: no ACTIVE trades in DB")
+            return
+
+        try:
+            from app.integrations import get_alpaca_client
+            alpaca = get_alpaca_client()
+            alpaca_positions = {p["symbol"]: p for p in (alpaca.get_positions() or [])}
+        except Exception as exc:
+            self.logger.warning("Reconcile: Alpaca unavailable, loading from DB only: %s", exc)
+            alpaca_positions = {}
+
+        db = get_session()
+        try:
+            for trade in active_trades:
+                symbol = trade.symbol
+                if symbol in alpaca_positions:
+                    ap = alpaca_positions[symbol]
+                    self.active_positions[symbol] = {
+                        "entry_price":   float(trade.entry_price),
+                        "stop_price":    float(trade.stop_price or 0),
+                        "target_price":  float(trade.target_price or 0),
+                        "highest_price": float(trade.highest_price or trade.entry_price),
+                        "atr":           0.0,
+                        "bars_held":     int(trade.bars_held or 0),
+                        "trade_id":      trade.id,
+                        "trade_type":    trade.trade_type or "swing",
+                        "entry_date":    trade.created_at.date() if trade.created_at else None,
+                        "shares":        int(ap.get("qty", trade.quantity or 0)),
+                    }
+                    self.logger.info(
+                        "Reconcile: loaded %s trade_id=%d type=%s stop=%.2f target=%.2f",
+                        symbol, trade.id, trade.trade_type, trade.stop_price or 0, trade.target_price or 0,
+                    )
+                else:
+                    self.logger.warning(
+                        "Reconcile: %s is ACTIVE in DB (trade_id=%d) but not on Alpaca — marking closed",
+                        symbol, trade.id,
+                    )
+                    t = db.query(Trade).filter_by(id=trade.id).first()
+                    if t:
+                        t.status = "FORCE_CLOSED_RECONCILE"
+                        t.exit_reason = "not_on_alpaca_at_startup"
+                        t.closed_at = datetime.now(ET)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Reconcile: DB update failed: %s", exc)
+        finally:
+            db.close()
+
+        self.logger.info("Reconcile complete: %d position(s) loaded", len(self.active_positions))
+
     async def _record_entry(
         self,
         symbol: str,
@@ -533,20 +446,18 @@ class Trader(BaseAgent):
         trade_type = proposal.get("trade_type", "swing")
         db = get_session()
         try:
-            # NONE means no rule-based pattern fired but entry was ML-driven — label it clearly
-            signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
             trade = Trade(
                 symbol=symbol,
                 direction="BUY",
                 entry_price=filled_price,
                 quantity=shares,
                 status="ACTIVE",
-                signal_type=signal_type,
-                trade_type=trade_type,
+                signal_type=result.signal_type,
                 stop_price=result.stop_price,
                 target_price=result.target_price,
                 highest_price=filled_price,
                 bars_held=0,
+                trade_type=trade_type,
             )
             db.add(trade)
             db.flush()
@@ -562,15 +473,6 @@ class Trader(BaseAgent):
                 slippage_bps=slippage_bps,
             )
             db.add(db_order)
-
-            # Link back to the persisted TradeProposal so the audit trail is complete
-            proposal_id = proposal.get("_proposal_id")
-            if proposal_id:
-                from app.database.models import TradeProposal
-                tp = db.query(TradeProposal).filter(TradeProposal.id == proposal_id).first()
-                if tp:
-                    tp.trade_id = trade.id
-
             db.commit()
 
             self.active_positions[symbol] = {
@@ -965,6 +867,7 @@ class Trader(BaseAgent):
                     trade.status = "CLOSED"
                     trade.closed_at = datetime.now(ET)
                     trade.bars_held = pos["bars_held"]
+                    trade.exit_reason = reason
 
             db_order = Order(
                 trade_id=trade_id,
@@ -979,7 +882,6 @@ class Trader(BaseAgent):
 
             trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
             self.active_positions.pop(symbol, None)
-            self.approved_symbols.pop(symbol, None)  # prevent re-entry from stale proposal
 
             # Update circuit breaker with win/loss (strategy-level tracking)
             circuit_breaker.record_trade_result(won=(pnl > 0), strategy=trade_type)
@@ -1059,39 +961,6 @@ class Trader(BaseAgent):
             sym for sym, pos in self.active_positions.items()
             if pos.get("trade_type") == "intraday"
         ]
-
-        # Also check DB for intraday trades not yet in in-memory state (e.g. set via manual DB update)
-        try:
-            from app.database.db import SessionLocal
-            from app.database.models import Trade
-            db = SessionLocal()
-            try:
-                db_intraday = db.query(Trade).filter(
-                    Trade.status == "ACTIVE",
-                    Trade.trade_type == "intraday",
-                ).all()
-                for t in db_intraday:
-                    if t.symbol not in intraday_symbols:
-                        self.logger.warning(
-                            "force_close: %s in DB as intraday ACTIVE but not in active_positions — adding",
-                            t.symbol,
-                        )
-                        intraday_symbols.append(t.symbol)
-                        # Seed a minimal in-memory entry so _execute_exit can close it
-                        if t.symbol not in self.active_positions:
-                            self.active_positions[t.symbol] = {
-                                "trade_type": "intraday",
-                                "entry_price": float(t.entry_price or 0),
-                                "stop_price": float(t.stop_price or 0),
-                                "target_price": float(t.target_price or 0),
-                                "shares": int(t.quantity or 0),
-                                "trade_id": t.id,
-                            }
-            finally:
-                db.close()
-        except Exception as exc:
-            self.logger.warning("force_close: DB check failed: %s", exc)
-
         if not intraday_symbols:
             return
 
