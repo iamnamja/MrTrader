@@ -153,6 +153,28 @@ class Configuration(Base):
         return f"<Configuration {self.key}={self.value}>"
 
 
+class TradeProposal(Base):
+    """Persisted record of every PM proposal received by the Risk Manager."""
+    __tablename__ = "trade_proposals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), index=True, nullable=False)
+    trade_type = Column(String(20), nullable=False)          # "swing" | "intraday"
+    direction = Column(String(10), nullable=False, default="BUY")
+    entry_price = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    ml_score = Column(Float, nullable=True)
+    status = Column(String(20), nullable=False, default="PENDING")  # PENDING | APPROVED | REJECTED
+    reject_reason = Column(String(255), nullable=True)
+    source_agent = Column(String(50), nullable=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)  # set when executed
+    proposed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    decided_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<TradeProposal {self.symbol} {self.trade_type} {self.status}>"
+
+
 class WatchlistTicker(Base):
     """Dynamic ticker universe for portfolio manager selection."""
     __tablename__ = "watchlist_tickers"

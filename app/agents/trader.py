@@ -117,6 +117,26 @@ class Trader(BaseAgent):
             self.logger.warning("Reconciliation: %s in Alpaca but no DB trade — creating synthetic record", symbol)
             try:
                 from app.strategy.signals import generate_signal
+                from app.database.models import TradeProposal
+
+                # Look up trade_type from the most recent persisted proposal for this symbol
+                rec_proposal = (
+                    db.query(TradeProposal)
+                    .filter(TradeProposal.symbol == symbol, TradeProposal.status == "APPROVED")
+                    .order_by(TradeProposal.proposed_at.desc())
+                    .first()
+                )
+                trade_type_rec = rec_proposal.trade_type if rec_proposal else None
+                if not trade_type_rec:
+                    # Fall back: intraday if market is open (a restart during market hours
+                    # is far more likely to be an intraday session), else swing
+                    now_et = datetime.now(ET)
+                    trade_type_rec = "intraday" if (9 <= now_et.hour < 16) else "swing"
+                    self.logger.warning(
+                        "Reconciliation: no proposal record for %s — defaulting trade_type=%s",
+                        symbol, trade_type_rec,
+                    )
+
                 bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
                 if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
                     result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
@@ -137,7 +157,7 @@ class Trader(BaseAgent):
                     quantity=qty,
                     status="ACTIVE",
                     signal_type=signal,
-                    trade_type="swing",
+                    trade_type=trade_type_rec,
                     stop_price=stop,
                     target_price=target,
                     highest_price=avg,
@@ -508,6 +528,15 @@ class Trader(BaseAgent):
                 slippage_bps=slippage_bps,
             )
             db.add(db_order)
+
+            # Link back to the persisted TradeProposal so the audit trail is complete
+            proposal_id = proposal.get("_proposal_id")
+            if proposal_id:
+                from app.database.models import TradeProposal
+                tp = db.query(TradeProposal).filter(TradeProposal.id == proposal_id).first()
+                if tp:
+                    tp.trade_id = trade.id
+
             db.commit()
 
             self.active_positions[symbol] = {
