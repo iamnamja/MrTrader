@@ -55,6 +55,8 @@ MIN_DAYS = 20            # minimum trading days needed per symbol
 ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for 2h window
 ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
+
+ENTRY_OFFSETS = [12, 18, 24]  # Phase 50: bars post-open to scan (~60/90/120 min)
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
 
 # Parallelism config
@@ -276,7 +278,17 @@ class IntradayModelTrainer:
         # ── 4. Save ───────────────────────────────────────────────────────────
         version = self._next_version("intraday")
         saved_path = self.model.save(self.model_dir, version, model_name="intraday")
-        self._record_version(version, len(X_train), len(X_test), saved_path, days, metrics)
+        training_config = {
+            "days": days,
+            "n_features": len(feature_names),
+            "feature_names": list(feature_names),
+            "entry_offsets": ENTRY_OFFSETS,
+            "lgbm_ensemble": lgbm_proba_test is not None,
+            "use_ranker": use_ranker,
+            "top_n_by_liquidity": top_n_by_liquidity,
+        }
+        self._record_version(version, len(X_train), len(X_test), saved_path, days, metrics,
+                             training_config=training_config)
 
         logger.info("Total training time: %.1fs", (datetime.now() - t0).total_seconds())
         return version
@@ -641,9 +653,44 @@ class IntradayModelTrainer:
             files = sorted(_P(self.model_dir).glob(f"{model_name}_v*.pkl"))
             return (int(files[-1].stem.split("_v")[-1]) + 1) if files else 1
 
+    @staticmethod
+    def record_tier3_result(
+        version: int,
+        avg_sharpe: float,
+        fold_sharpes: list,
+        gate_passed: bool,
+    ) -> None:
+        """Write walk-forward results back into the ModelVersion performance field."""
+        try:
+            db = get_session()
+            row = db.query(ModelVersion).filter_by(
+                model_name="intraday", version=version
+            ).first()
+            if row is None:
+                return
+            perf = dict(row.performance or {})
+            perf["tier3_sharpe"] = round(avg_sharpe, 4)
+            perf["tier3_gate_passed"] = gate_passed
+            perf["tier3_fold_sharpes"] = [round(s, 4) for s in fold_sharpes]
+            row.performance = perf
+            if not gate_passed:
+                row.status = "RETIRED"
+                logger.info("Intraday v%d tier3 FAIL — status set to RETIRED", version)
+            db.commit()
+            logger.info("Recorded tier3 result for intraday v%d: Sharpe=%.3f gate=%s",
+                        version, avg_sharpe, gate_passed)
+        except Exception as exc:
+            logger.warning("Could not record tier3 result: %s", exc)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def _record_version(
         self, version: int, n_train: int, n_test: int,
         model_path: str, days: int, metrics: Dict,
+        training_config: Optional[Dict] = None,
     ) -> None:
         try:
             db = get_session()
@@ -653,13 +700,31 @@ class IntradayModelTrainer:
         try:
             end_dt = datetime.utcnow()
             start_dt = end_dt - timedelta(days=days)
+            # Retire previous ACTIVE versions — only one version is active at a time
+            prev = db.query(ModelVersion).filter_by(
+                model_name="intraday", status="ACTIVE"
+            ).all()
+            for p in prev:
+                p.status = "RETIRED"
+                logger.info("Retired intraday v%d", p.version)
+            performance = {
+                **metrics,
+                "n_train": n_train,
+                "n_test": n_test,
+                # Tier 3 walk-forward results — populated later by record_tier3_result()
+                "tier3_sharpe": None,
+                "tier3_gate_passed": None,
+                "tier3_fold_sharpes": None,
+            }
+            if training_config:
+                performance["training_config"] = training_config
             db.add(ModelVersion(
                 model_name="intraday",
                 version=version,
                 training_date=datetime.utcnow(),
                 data_range_start=start_dt.strftime("%Y-%m-%d"),
                 data_range_end=end_dt.strftime("%Y-%m-%d"),
-                performance={**metrics, "n_train": n_train, "n_test": n_test},
+                performance=performance,
                 status="ACTIVE",
                 model_path=model_path,
             ))

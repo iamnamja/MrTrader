@@ -26,9 +26,34 @@ AUC_DRIFT_THRESHOLD = 0.58
 KEEP_MODEL_VERSIONS = 3
 
 
+def _gate_passed_versions(model_name: str = "intraday") -> set:
+    """Return set of version numbers whose walk-forward gate passed (never prune these)."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import ModelVersion
+        db = get_session()
+        try:
+            rows = db.query(ModelVersion).filter_by(model_name=model_name).all()
+            return {
+                r.version for r in rows
+                if isinstance(r.performance, dict)
+                and r.performance.get("tier3_gate_passed") is True
+            }
+        finally:
+            db.close()
+    except Exception:
+        return set()
+
+
 def prune_old_model_files(model_dir: Path, keep: int = KEEP_MODEL_VERSIONS) -> None:
+    """Delete old pkl files but never delete gate-passed models."""
+    protected = _gate_passed_versions()
     files = sorted(model_dir.glob("intraday_v*.pkl"), key=lambda p: p.stat().st_mtime)
     for f in files[:-keep]:
+        version = int(f.stem.split("_v")[-1]) if "_v" in f.stem else -1
+        if version in protected:
+            logger.info("Skipping prune of v%d — tier3 gate passed", version)
+            continue
         try:
             f.unlink()
             logger.info("Pruned old model file: %s", f.name)
