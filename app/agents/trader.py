@@ -115,24 +115,18 @@ class Trader(BaseAgent):
             if symbol in self.active_positions:
                 continue  # already loaded
 
-            # Before creating a new record, check if a same-day CLOSED trade exists for this symbol.
-            # If so, this is a restart mid-session after a partial exit — the remaining shares are
-            # a remnant of that position. Reuse the most recent closed trade's metadata rather than
-            # creating a duplicate that would double-count P&L.
+            # Before creating a new record, check if a same-day trade already exists.
+            # This handles restart-after-partial-exit: remaining shares still open in Alpaca
+            # but the original Trade row was already closed. Reuse it to avoid double-counting P&L.
             today_start = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0)
             today_start_utc = today_start.astimezone(UTC_TZ).replace(tzinfo=None)
             existing_today = (
                 db.query(Trade)
-                .filter(
-                    Trade.symbol == symbol,
-                    Trade.created_at >= today_start_utc,
-                )
+                .filter(Trade.symbol == symbol, Trade.created_at >= today_start_utc)
                 .order_by(Trade.id.desc())
                 .first()
             )
             if existing_today:
-                # Remnant of a previously-closed or partial position — load in-memory using its
-                # original entry price/stop/target so exit P&L is calculated correctly.
                 self.logger.warning(
                     "Reconciliation: %s has existing trade id=%d today — treating as remnant, not creating new record",
                     symbol, existing_today.id,
@@ -147,9 +141,8 @@ class Trader(BaseAgent):
                     "trade_id":      existing_today.id,
                     "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
                     "entry_date":    existing_today.created_at.date() if existing_today.created_at else datetime.now(ET).date(),
-                    "_partial_exited": True,  # already had a partial — don't fire again
+                    "_partial_exited": True,
                 }
-                # Reopen the trade record so exit logic can close it properly
                 existing_today.status = "ACTIVE"
                 existing_today.quantity = qty
                 existing_today.exit_price = None

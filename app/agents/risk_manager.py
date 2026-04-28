@@ -233,6 +233,39 @@ class RiskManager(BaseAgent):
             reasoning["failed_rule"] = "symbol_halt"
             return False, reasoning
 
+        # ── Rule 0: Earnings calendar gate ───────────────────────────────────
+        try:
+            from app.calendars.earnings import earnings_calendar
+            trade_type = proposal.get("trade_type", "swing")
+            earnings_risk = earnings_calendar.get_earnings_risk(symbol, trade_type)
+            blocked = earnings_risk.block_intraday if trade_type == "intraday" else earnings_risk.block_swing
+            msg = earnings_risk.reason or (
+                f"earnings in {earnings_risk.days_until}d" if earnings_risk.days_until is not None else "ok"
+            )
+            reasoning["checks"].append({"rule": "earnings_gate", "ok": not blocked, "msg": msg})
+            if blocked:
+                reasoning["failed_rule"] = "earnings_gate"
+                return False, reasoning
+        except Exception as _e:
+            reasoning["checks"].append({"rule": "earnings_gate", "ok": True, "msg": f"skipped: {_e}"})
+
+        # ── Rule 0: Macro event window gate ──────────────────────────────────
+        try:
+            from app.calendars.macro import macro_calendar
+            macro_ctx = macro_calendar.get_context()
+            if macro_ctx.block_new_entries:
+                event_names = ", ".join(e.event_type for e in macro_ctx.events_today)
+                msg = f"within event window: {event_names}"
+                reasoning["checks"].append({"rule": "macro_event_window", "ok": False, "msg": msg})
+                reasoning["failed_rule"] = "macro_event_window"
+                return False, reasoning
+            reasoning["checks"].append({
+                "rule": "macro_event_window", "ok": True,
+                "msg": macro_ctx.next_event or "no events",
+            })
+        except Exception as _e:
+            reasoning["checks"].append({"rule": "macro_event_window", "ok": True, "msg": f"skipped: {_e}"})
+
         # ── Rule 0: Intraday position cap ────────────────────────────────────
         if proposal.get("trade_type") == "intraday":
             if self._open_intraday_count >= MAX_INTRADAY_POSITIONS:

@@ -158,11 +158,9 @@ async def get_dashboard_summary():
         def _pnl_from_alpaca():
             try:
                 from alpaca.trading.requests import GetPortfolioHistoryRequest
-                # 1D range gives today's cumulative profit_loss series
                 req = GetPortfolioHistoryRequest(period="1D", timeframe="5Min")
                 hist = _alpaca().trading_client.get_portfolio_history(req)
                 pnl_series = hist.profit_loss or []
-                # Last non-None value is today's realized+unrealized P&L per Alpaca
                 today_alpaca = next((float(v) for v in reversed(pnl_series) if v is not None), None)
                 return today_alpaca
             except Exception:
@@ -171,12 +169,9 @@ async def get_dashboard_summary():
         today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
 
         if account_value is not None:
-            # Daily P&L: use Alpaca's own series — immune to DB duplicate records
             daily_pnl = round(today_alpaca_pnl, 2) if today_alpaca_pnl is not None else round(unrealized_pnl, 2)
             prev_close = account_value - daily_pnl
             daily_pnl_pct = round(daily_pnl / prev_close * 100, 2) if prev_close > 0 else 0.0
-            # Total P&L = account value vs paper trading starting capital ($100k)
-            # settings.initial_capital is $20k (live target), paper account started at $100k
             paper_start = 100_000.0
             total_pnl = round(account_value - paper_start, 2)
             total_pnl_pct = round(total_pnl / paper_start * 100, 2)
@@ -191,12 +186,11 @@ async def get_dashboard_summary():
         )
         capital_deployed_pct = round(capital_deployed / account_value * 100, 1) if account_value else None
 
-        # Last signal from most recent TRADE_ENTERED decision
+        # Last signal — prefer AgentDecision log, fall back to most recent Trade
         def _last_signal():
             db = get_session()
             try:
                 now = datetime.utcnow()
-                # Primary: AgentDecision log
                 d = (
                     db.query(AgentDecision)
                     .filter(AgentDecision.decision_type == "TRADE_ENTERED")
@@ -205,31 +199,18 @@ async def get_dashboard_summary():
                 )
                 decision_ts = d.timestamp if d else None
                 decision_sig = (d.reasoning or {}).get("signal_type", "TRADE") if d else None
-
-                # Fallback: most recent Trade entry (catches sessions where decisions weren't logged)
-                t = (
-                    db.query(Trade)
-                    .order_by(desc(Trade.created_at))
-                    .first()
-                )
+                t = db.query(Trade).order_by(desc(Trade.created_at)).first()
                 trade_ts = t.created_at if t else None
                 trade_sig = t.signal_type if t else None
-
-                # Pick whichever is more recent
                 if decision_ts and trade_ts:
-                    if trade_ts > decision_ts:
-                        ts, sig = trade_ts, trade_sig or "TRADE"
-                    else:
-                        ts, sig = decision_ts, decision_sig or "TRADE"
+                    ts, sig = (trade_ts, trade_sig or "TRADE") if trade_ts > decision_ts else (decision_ts, decision_sig or "TRADE")
                 elif decision_ts:
                     ts, sig = decision_ts, decision_sig or "TRADE"
                 elif trade_ts:
                     ts, sig = trade_ts, trade_sig or "TRADE"
                 else:
                     return None, None
-
-                age_hours = round((now - ts).total_seconds() / 3600, 1)
-                return sig, age_hours
+                return sig, round((now - ts).total_seconds() / 3600, 1)
             except Exception:
                 return None, None
             finally:
@@ -430,7 +411,6 @@ async def get_equity_history(range: str = "1d"):
     range: '1d' (5-min bars today), '1w' (daily, 7 days), '1m' (daily, 30 days)
     """
     def _fetch():
-        import zoneinfo
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         period_map = {"1d": "1D", "1w": "1W", "1m": "1M"}
         tf_map = {"1d": "5Min", "1w": "1D", "1m": "1D"}
@@ -441,6 +421,7 @@ async def get_equity_history(range: str = "1d"):
 
         timestamps = hist.timestamp or []
         pnl_series = hist.profit_loss or []
+        import zoneinfo
         et = zoneinfo.ZoneInfo("America/New_York")
 
         points = []
@@ -449,7 +430,6 @@ async def get_equity_history(range: str = "1d"):
                 continue
             dt_et = datetime.fromtimestamp(ts, tz=et)
             if range == "1d":
-                # Only show regular market hours: 9:30 AM – 4:00 PM ET
                 h, m = dt_et.hour, dt_et.minute
                 if (h, m) < (9, 30) or (h, m) > (16, 0):
                     continue

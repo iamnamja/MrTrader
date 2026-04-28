@@ -729,6 +729,27 @@ class PortfolioManager(BaseAgent):
             self._swing_proposals = []
             return
 
+        # Phase 59: Macro calendar gate — suppress entries within high-impact event window
+        try:
+            from app.calendars.macro import macro_calendar
+            macro_ctx = macro_calendar.get_context()
+            if macro_ctx.block_new_entries:
+                event_names = ", ".join(e.event_type for e in macro_ctx.events_today)
+                self.logger.info("Macro gate: suppressing swing proposals — within %s window", event_names)
+                await self.log_decision(
+                    "SWING_ABSTAINED",
+                    reasoning={"reason": f"macro event window: {event_names}"},
+                )
+                self._swing_proposals = []
+                return
+            if macro_ctx.sizing_factor < 1.0:
+                self.logger.info("Macro gate: high-impact day — applying sizing_factor=%.2f to swing proposals",
+                                 macro_ctx.sizing_factor)
+                for p in self._swing_proposals:
+                    p["macro_sizing_factor"] = macro_ctx.sizing_factor
+        except Exception as exc:
+            self.logger.debug("Macro calendar check failed: %s", exc)
+
         self.logger.info("Sending %d swing proposals to Risk Manager (09:50)...", len(self._swing_proposals))
         for proposal in self._swing_proposals:
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
@@ -799,6 +820,17 @@ class PortfolioManager(BaseAgent):
         if not regime_ok:
             self.logger.info("PM abstention gate: suppressing all intraday entries today")
             return
+
+        # Phase 59: Macro calendar gate
+        try:
+            from app.calendars.macro import macro_calendar
+            macro_ctx = macro_calendar.get_context()
+            if macro_ctx.block_new_entries:
+                event_names = ", ".join(e.event_type for e in macro_ctx.events_today)
+                self.logger.info("Macro gate: suppressing intraday entries — within %s window", event_names)
+                return
+        except Exception as exc:
+            self.logger.debug("Macro calendar check failed: %s", exc)
 
         def _fetch_one_intraday(symbol: str) -> Optional[tuple]:
             """Return (features_dict, prior_day_range) or None."""
