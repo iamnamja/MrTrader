@@ -1059,6 +1059,39 @@ class Trader(BaseAgent):
             sym for sym, pos in self.active_positions.items()
             if pos.get("trade_type") == "intraday"
         ]
+
+        # Also check DB for intraday trades not yet in in-memory state (e.g. set via manual DB update)
+        try:
+            from app.database.db import SessionLocal
+            from app.database.models import Trade
+            db = SessionLocal()
+            try:
+                db_intraday = db.query(Trade).filter(
+                    Trade.status == "ACTIVE",
+                    Trade.trade_type == "intraday",
+                ).all()
+                for t in db_intraday:
+                    if t.symbol not in intraday_symbols:
+                        self.logger.warning(
+                            "force_close: %s in DB as intraday ACTIVE but not in active_positions — adding",
+                            t.symbol,
+                        )
+                        intraday_symbols.append(t.symbol)
+                        # Seed a minimal in-memory entry so _execute_exit can close it
+                        if t.symbol not in self.active_positions:
+                            self.active_positions[t.symbol] = {
+                                "trade_type": "intraday",
+                                "entry_price": float(t.entry_price or 0),
+                                "stop_price": float(t.stop_price or 0),
+                                "target_price": float(t.target_price or 0),
+                                "shares": int(t.quantity or 0),
+                                "trade_id": t.id,
+                            }
+            finally:
+                db.close()
+        except Exception as exc:
+            self.logger.warning("force_close: DB check failed: %s", exc)
+
         if not intraday_symbols:
             return
 
