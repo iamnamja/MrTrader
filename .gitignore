@@ -210,3 +210,23 @@ __marimo__/
 frontend/node_modules/
 frontend/dist/
 app/ml/models/feature_store.db
+
+# Local databases (runtime state, not version-controlled)
+*.db
+*.db-shm
+*.db-wal
+app/ml/models/price_cache/
+
+# Training data & model artifacts
+*.parquet
+app/ml/models/*.pkl
+app/ml/models/*.joblib
+
+# Backtest & training result artifacts
+results/
+!results/.gitkeep
+
+# Claude Code internal state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
