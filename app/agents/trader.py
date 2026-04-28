@@ -221,7 +221,13 @@ class Trader(BaseAgent):
     # ─── Entry ────────────────────────────────────────────────────────────────
 
     async def _check_entry(self, symbol: str, proposal: Dict[str, Any], alpaca):
-        """Fetch daily bars, run generate_signal(), enter on BUY."""
+        """Fetch daily bars, compute entry prices via generate_signal(), enter if ML score passes.
+
+        generate_signal() is used only for ATR-based stop/target prices and current price.
+        The entry gate is the ML confidence score (>= ML_SCORE_THRESHOLD), not the
+        rule-based is_buy flag — the walk-forward validation assumes ML score is sufficient.
+        """
+        from app.strategy.signals import ML_SCORE_THRESHOLD
         trade_type = proposal.get("trade_type", "swing")
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
@@ -238,9 +244,15 @@ class Trader(BaseAgent):
             return
 
         ml_score = proposal.get("confidence")
-        result = generate_signal(symbol, bars, ml_score=ml_score)
-        if not result.is_buy:
+        if ml_score is None or ml_score < ML_SCORE_THRESHOLD:
+            self.logger.debug(
+                "%s: ML score %.3f below threshold %.2f — skipping",
+                symbol, ml_score or 0.0, ML_SCORE_THRESHOLD,
+            )
             return
+
+        # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
+        result = generate_signal(symbol, bars, ml_score=ml_score, check_regime=False, check_earnings=True)
 
         # Size the position
         account = alpaca.get_account()
