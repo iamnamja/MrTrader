@@ -202,17 +202,40 @@ async def get_dashboard_summary():
         def _last_signal():
             db = get_session()
             try:
+                now = datetime.utcnow()
+                # Primary: AgentDecision log
                 d = (
                     db.query(AgentDecision)
                     .filter(AgentDecision.decision_type == "TRADE_ENTERED")
                     .order_by(desc(AgentDecision.timestamp))
                     .first()
                 )
-                if not d:
+                decision_ts = d.timestamp if d else None
+                decision_sig = (d.reasoning or {}).get("signal_type", "TRADE") if d else None
+
+                # Fallback: most recent Trade entry (catches sessions where decisions weren't logged)
+                t = (
+                    db.query(Trade)
+                    .order_by(desc(Trade.created_at))
+                    .first()
+                )
+                trade_ts = t.created_at if t else None
+                trade_sig = t.signal_type if t else None
+
+                # Pick whichever is more recent
+                if decision_ts and trade_ts:
+                    if trade_ts > decision_ts:
+                        ts, sig = trade_ts, trade_sig or "TRADE"
+                    else:
+                        ts, sig = decision_ts, decision_sig or "TRADE"
+                elif decision_ts:
+                    ts, sig = decision_ts, decision_sig or "TRADE"
+                elif trade_ts:
+                    ts, sig = trade_ts, trade_sig or "TRADE"
+                else:
                     return None, None
-                r = d.reasoning or {}
-                sig = r.get("signal_type", "TRADE")
-                age_hours = round((datetime.utcnow() - d.timestamp).total_seconds() / 3600, 1)
+
+                age_hours = round((now - ts).total_seconds() / 3600, 1)
                 return sig, age_hours
             except Exception:
                 return None, None
