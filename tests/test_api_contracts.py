@@ -182,6 +182,7 @@ class TestTradesEndpoint:
         trade.pnl = 50.0
         trade.status = "CLOSED"
         trade.signal_type = "EMA_CROSSOVER"
+        trade.trade_type = "swing"
         trade.stop_price = 145.0
         trade.target_price = 160.0
         trade.created_at = datetime.utcnow()

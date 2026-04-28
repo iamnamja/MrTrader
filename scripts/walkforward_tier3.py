@@ -532,6 +532,15 @@ def main() -> int:
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
         if not swing_report.gate_passed():
             passed = False
+        if args.record_results and swing_report.folds:
+            from app.ml.training import ModelTrainer
+            loaded_ver = swing_report.folds[0].model_version if swing_report.folds else 0
+            ModelTrainer.record_tier3_result(
+                version=loaded_ver,
+                avg_sharpe=swing_report.avg_sharpe,
+                fold_sharpes=[f.sharpe for f in swing_report.folds],
+                gate_passed=swing_report.gate_passed(),
+            )
 
     if args.model in ("intraday", "both"):
         t0 = time.time()

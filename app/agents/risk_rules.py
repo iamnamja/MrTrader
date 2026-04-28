@@ -21,7 +21,7 @@ class RiskLimits:
     MAX_PORTFOLIO_HEAT_PCT: float = 0.06       # 6%  – total risk across all positions
     NORMAL_VOLATILITY_ATR_RATIO: float = 0.02  # base ATR/price ratio for stop-loss calc
     STOP_LOSS_BASE_PCT: float = 0.02           # 2% stop loss at normal volatility
-    max_spread_pct: float = 0.0015             # 0.15% max bid-ask spread
+    max_spread_pct: float = 0.005              # 0.5% max bid-ask spread (IEX quotes > 2% treated as stale)
     max_adtv_pct: float = 0.01                 # 1% max trade cost as fraction of 20d ADTV
     max_correlation: float = 0.75              # max 60-day return correlation with open positions
     max_portfolio_beta: float = 1.30           # max portfolio beta vs SPY

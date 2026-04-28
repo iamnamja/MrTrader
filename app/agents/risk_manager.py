@@ -26,7 +26,7 @@ from app.agents.risk_rules import (
     validate_position_size,
     validate_sector_concentration,
 )
-from app.database.models import RiskMetric
+from app.database.models import RiskMetric, TradeProposal
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -79,12 +79,13 @@ class RiskManager(BaseAgent):
                     proposal.get("source_agent", "unknown"),
                 )
 
+                db_proposal = await asyncio.to_thread(self._persist_proposal, proposal)
                 is_approved, reasoning = await self._validate_trade(proposal)
 
                 if is_approved:
-                    await self._approve(proposal, reasoning)
+                    await self._approve(proposal, reasoning, db_proposal)
                 else:
-                    await self._reject(proposal, reasoning)
+                    await self._reject(proposal, reasoning, db_proposal)
 
             except asyncio.CancelledError:
                 self.logger.info("Risk Manager cancelled — shutting down")
@@ -99,18 +100,69 @@ class RiskManager(BaseAgent):
                 # Brief pause before retrying to avoid tight error loops
                 await asyncio.sleep(1)
 
+    # ─── Proposal persistence ─────────────────────────────────────────────────
+
+    def _persist_proposal(self, proposal: Dict[str, Any]) -> Optional[Any]:
+        """Write proposal to DB immediately on receipt; returns the ORM object."""
+        from datetime import datetime as _dt
+        db = get_session()
+        try:
+            rec = TradeProposal(
+                symbol=proposal.get("symbol", ""),
+                trade_type=proposal.get("trade_type", "swing"),
+                direction=proposal.get("direction", "BUY"),
+                entry_price=proposal.get("entry_price"),
+                confidence=proposal.get("confidence"),
+                ml_score=proposal.get("ml_score") or proposal.get("confidence"),
+                source_agent=proposal.get("source_agent", "portfolio_manager"),
+                status="PENDING",
+                proposed_at=_dt.utcnow(),
+            )
+            db.add(rec)
+            db.commit()
+            db.refresh(rec)
+            return rec
+        except Exception as exc:
+            db.rollback()
+            self.logger.warning("Failed to persist proposal for %s: %s", proposal.get("symbol"), exc)
+            return None
+        finally:
+            db.close()
+
+    def _update_proposal_status(self, proposal_id: Optional[int], status: str, reason: str = "") -> None:
+        if proposal_id is None:
+            return
+        from datetime import datetime as _dt
+        db = get_session()
+        try:
+            rec = db.query(TradeProposal).filter(TradeProposal.id == proposal_id).first()
+            if rec:
+                rec.status = status
+                rec.reject_reason = reason or None
+                rec.decided_at = _dt.utcnow()
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.warning("Failed to update proposal %s: %s", proposal_id, exc)
+        finally:
+            db.close()
+
     # ─── Approval / Rejection ─────────────────────────────────────────────────
 
-    async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any]) -> None:
+    async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any], db_proposal=None) -> None:
         from datetime import datetime
 
         if proposal.get("trade_type") == "intraday":
             self._open_intraday_count += 1
 
+        if db_proposal:
+            await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "APPROVED")
+
         approved_proposal = {
             **proposal,
             "stop_loss": reasoning.get("stop_loss"),
             "approved_at": datetime.utcnow().isoformat(),
+            "_proposal_id": db_proposal.id if db_proposal else None,
         }
         self.send_message(APPROVED_TRADES_QUEUE, approved_proposal)
         self.logger.info(
@@ -121,19 +173,22 @@ class RiskManager(BaseAgent):
         )
         await self.log_decision("TRADE_APPROVED", reasoning=reasoning)
 
-    async def _reject(self, proposal: Dict[str, Any], reasoning: Dict[str, Any]) -> None:
+    async def _reject(self, proposal: Dict[str, Any], reasoning: Dict[str, Any], db_proposal=None) -> None:
+        failed_rule = reasoning.get("failed_rule", "unknown")
         self.logger.warning(
             "REJECTED: %s %s — %s",
             proposal.get("symbol"),
             proposal.get("direction"),
-            reasoning.get("failed_rule"),
+            failed_rule,
         )
+        if db_proposal:
+            await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "REJECTED", failed_rule)
         # Optional AI veto explanation (non-blocking)
         try:
             from app.ai.claude_client import explain_risk_veto
             ai_explanation = explain_risk_veto(
                 symbol=proposal.get("symbol", "?"),
-                failed_rule=reasoning.get("failed_rule", "unknown"),
+                failed_rule=failed_rule,
                 veto_reason=reasoning.get("message", ""),
                 proposal=proposal,
             )
@@ -325,7 +380,8 @@ class RiskManager(BaseAgent):
                 quote = get_alpaca_client().get_quote(symbol)
                 if quote is not None:
                     spread_pct = quote["spread_pct"]
-                    if spread_pct > max_spread:
+                    # Spreads > 2% are stale IEX quotes, not real market spreads — ignore
+                    if spread_pct <= 0.02 and spread_pct > max_spread:
                         msg = (f"Bid-ask spread too wide: {spread_pct*100:.3f}% "
                                f"(limit {max_spread*100:.3f}%)")
                         reasoning["failed_rule"] = "bid_ask_spread"

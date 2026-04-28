@@ -20,7 +20,7 @@ export const api = {
   summary: () => get('/api/dashboard/summary'),
   health: () => get('/api/dashboard/health'),
   decisions: (limit = 50) => get(`/api/dashboard/decisions?limit=${limit}`),
-  positions: () => get('/api/positions'),
+  positions: () => get('/api/dashboard/positions'),
   trades: (status?: string) => get(`/api/dashboard/trades${status ? `?status=${status}` : ''}`),
   liveStatus: () => get('/api/dashboard/live/status'),
   auditLog: (limit = 20) => get(`/api/dashboard/live/audit-log?limit=${limit}`),

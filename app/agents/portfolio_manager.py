@@ -620,6 +620,46 @@ class PortfolioManager(BaseAgent):
             },
         )
 
+    def _fetch_vix_level(self) -> float:
+        """Fetch current VIX level. Tries yfinance first, falls back to FRED (1-day lag).
+        Returns 30.0 (conservative) if both sources fail."""
+        import os
+        # Primary: yfinance (real-time)
+        try:
+            import yfinance as yf
+            import pandas as pd
+            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.get_level_values(0)
+            vix.columns = [c.lower() for c in vix.columns]
+            if len(vix) > 0:
+                return float(vix["close"].iloc[-1])
+        except Exception:
+            pass
+
+        # Fallback: FRED VIXCLS (previous close, 1-day lag)
+        try:
+            import requests
+            fred_key = os.getenv("FRED_API_KEY")
+            if fred_key:
+                r = requests.get(
+                    "https://api.stlouisfed.org/fred/series/observations",
+                    params={"series_id": "VIXCLS", "sort_order": "desc", "limit": 3,
+                            "api_key": fred_key, "file_type": "json"},
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    obs = [o for o in r.json().get("observations", []) if o["value"] != "."]
+                    if obs:
+                        vix_level = float(obs[0]["value"])
+                        self.logger.info("VIX from FRED fallback (1d lag): %.1f", vix_level)
+                        return vix_level
+        except Exception:
+            pass
+
+        self.logger.warning("VIX unavailable from all sources — assuming VIX=30 (conservative)")
+        return 30.0
+
     def _market_regime_allows_entries(self) -> bool:
         """
         PM abstention gate. Returns False on unfavorable broad-market conditions:
@@ -643,11 +683,7 @@ class PortfolioManager(BaseAgent):
             spy_5d_ret = (spy_close / float(spy["close"].iloc[-6]) - 1.0) if len(spy) >= 6 else 0.0
             spy_momentum_weak = spy_5d_ret <= 0.0
 
-            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
-            if isinstance(vix.columns, pd.MultiIndex):
-                vix.columns = vix.columns.get_level_values(0)
-            vix.columns = [c.lower() for c in vix.columns]
-            vix_level = float(vix["close"].iloc[-1]) if len(vix) > 0 else 0.0
+            vix_level = self._fetch_vix_level()
             vix_high = vix_level >= 25.0
 
             if spy_below_ma or vix_high or spy_momentum_weak:
@@ -714,9 +750,33 @@ class PortfolioManager(BaseAgent):
         self._swing_proposals = []
 
     async def select_instruments(self):
-        """Public entry point for manual/forced selection — runs full analysis + send immediately."""
-        await self._analyze_swing_premarket()
-        await self._send_swing_proposals()
+        """Public entry point for manual/forced selection.
+
+        Routes to the correct strategy based on time of day so that a restart
+        or manual trigger mid-session doesn't fire swing proposals at 2 PM.
+        - Before 09:45 ET → swing (pre-market / open)
+        - 09:45–15:45 ET  → intraday (market hours)
+        - After 15:45 ET  → no-op (too close to close)
+        """
+        now = datetime.now(ET)
+        minutes = now.hour * 60 + now.minute
+
+        if minutes < 9 * 60 + 45:
+            # Pre-market / just after open — run swing
+            await self._analyze_swing_premarket()
+            await self._send_swing_proposals()
+        elif minutes < 15 * 60 + 45:
+            # Market hours — run intraday
+            self.logger.info(
+                "select_instruments called at %02d:%02d ET — routing to intraday scan",
+                now.hour, now.minute,
+            )
+            await self.select_intraday_instruments()
+        else:
+            self.logger.info(
+                "select_instruments called at %02d:%02d ET — too late in day, skipping",
+                now.hour, now.minute,
+            )
 
     # ─── Intraday Selection ───────────────────────────────────────────────────
 
@@ -1204,11 +1264,14 @@ class PortfolioManager(BaseAgent):
         except Exception:
             pass  # data unavailable — fail open
 
-        # Illiquidity guard: skip if bid/ask spread > 0.1% of mid
+        # Illiquidity guard: skip if bid/ask spread > 0.5% of mid.
+        # Spreads > 2% are treated as stale IEX quotes (not real spreads) and ignored.
         try:
             quote = self._alpaca.get_quote(symbol)
-            if quote is not None and quote["spread_pct"] > 0.001:
-                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.1%)"
+            if quote is not None:
+                sp = quote["spread_pct"]
+                if sp <= 0.02 and sp > 0.005:
+                    return f"spread_too_wide: {sp:.3%} (limit 0.5%)"
         except Exception:
             pass
 
@@ -1230,11 +1293,14 @@ class PortfolioManager(BaseAgent):
         if vol_surge is not None and vol_surge < 1.0:
             return f"low_volume: volume_surge={vol_surge:.2f} (need >=1.0)"
 
-        # Spread guard: skip if bid/ask spread > 0.05% of mid
+        # Spread guard: skip if bid/ask spread > 0.3% of mid.
+        # Spreads > 2% are treated as stale IEX quotes and ignored.
         try:
             quote = self._alpaca.get_quote(symbol)
-            if quote is not None and quote["spread_pct"] > 0.0005:
-                return f"spread_too_wide: {quote['spread_pct']:.3%} (limit 0.05%)"
+            if quote is not None:
+                sp = quote["spread_pct"]
+                if sp <= 0.02 and sp > 0.003:
+                    return f"spread_too_wide: {sp:.3%} (limit 0.3%)"
         except Exception:
             pass
 

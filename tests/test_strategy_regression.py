@@ -172,13 +172,13 @@ def test_position_sizer_basic():
     """size_position() must return a positive int for valid inputs."""
     from app.strategy.position_sizer import size_position
     shares = size_position(
-        account_equity=10_000,
-        available_cash=10_000,
+        account_equity=100_000,
+        available_cash=100_000,
         entry_price=100.0,
         stop_price=97.5,   # $2.50 risk per share
     )
-    # Expected: (10000 * 0.02) / 2.5 = 80 shares
-    assert shares == 80
+    # Expected: (100000 * 0.02) / 2.5 = 800 shares, capped at 10% = 100 shares
+    assert shares == 100
 
 
 def test_position_sizer_cash_cap():

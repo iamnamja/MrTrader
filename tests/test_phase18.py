@@ -84,7 +84,7 @@ class TestRiskLimitsNewFields:
     def test_default_spread_pct(self):
         from app.agents.risk_rules import RiskLimits
         limits = RiskLimits()
-        assert limits.max_spread_pct == 0.0015
+        assert limits.max_spread_pct == 0.005
 
     def test_default_adtv_pct(self):
         from app.agents.risk_rules import RiskLimits
@@ -103,7 +103,7 @@ class TestAgentConfigPhase18Keys:
 
     def test_default_values(self):
         from app.database.agent_config import _DEFAULTS
-        assert abs(_DEFAULTS["risk.max_spread_pct"] - 0.0015) < 1e-6
+        assert abs(_DEFAULTS["risk.max_spread_pct"] - 0.005) < 1e-6
         assert abs(_DEFAULTS["risk.max_adtv_pct"] - 0.01) < 1e-6
         assert abs(_DEFAULTS["strategy.limit_order_offset_pct"] - 0.003) < 1e-6
 

@@ -137,8 +137,8 @@ async def get_dashboard_summary():
             asyncio.to_thread(_trades_today_count),
         )
 
-        # Daily P&L = sum of unrealized P&L on open positions (what Alpaca tracks)
-        daily_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
+        # Unrealized P&L on open positions
+        unrealized_pnl = sum(float(p.get("unrealized_pl", 0)) for p in (positions or []))
 
         if account is None:
             logger.warning("Alpaca unavailable for summary — returning DB-only data")
@@ -154,22 +154,37 @@ async def get_dashboard_summary():
         buying_power = float(account["buying_power"]) if account else None
         cash = float(account["cash"]) if account else None
 
-        if account_value is not None:
-            previous_value = account_value - daily_pnl
-            daily_pnl_pct = (daily_pnl / previous_value * 100) if previous_value > 0 else 0.0
-            # Total P&L = cumulative from Alpaca portfolio history (matches equity curve source)
+        # Realized P&L from DB (today and all-time)
+        def _pnl_from_db():
+            from datetime import date as _date
+            db = get_session()
             try:
-                from alpaca.trading.requests import GetPortfolioHistoryRequest
-                _hist = _alpaca().trading_client.get_portfolio_history(
-                    GetPortfolioHistoryRequest(period="1M", timeframe="1D")
+                today_str = _date.today().isoformat()
+                closed = db.query(Trade).filter(Trade.status == "CLOSED").all()
+                today_realized = sum(
+                    float(t.pnl or 0) for t in closed
+                    if t.closed_at and t.closed_at.date().isoformat() == today_str
                 )
-                _pl_series = [v for v in (_hist.profit_loss or []) if v is not None]
-                total_pnl = round(sum(_pl_series), 2) if _pl_series else 0.0
+                total_realized = sum(float(t.pnl or 0) for t in closed)
+                return today_realized, total_realized
             except Exception:
-                total_pnl = 0.0
+                return 0.0, 0.0
+            finally:
+                db.close()
+
+        today_realized, total_realized = await asyncio.to_thread(_pnl_from_db)
+
+        if account_value is not None:
+            # Daily P&L = today's realized (closed trades) + current unrealized (open positions)
+            daily_pnl = round(today_realized + unrealized_pnl, 2)
+            previous_value = account_value - daily_pnl
+            daily_pnl_pct = round(daily_pnl / previous_value * 100, 2) if previous_value > 0 else 0.0
+            # Total P&L = all closed trades + current unrealized
+            total_pnl = round(total_realized + unrealized_pnl, 2)
             initial_capital = max(account_value - total_pnl, 1.0)
-            total_pnl_pct = round((total_pnl / initial_capital) * 100, 2)
+            total_pnl_pct = round(total_pnl / initial_capital * 100, 2)
         else:
+            daily_pnl = unrealized_pnl
             daily_pnl_pct = total_pnl = total_pnl_pct = None
 
         # Capital deployed = sum of market_value across open positions
@@ -259,6 +274,12 @@ async def get_open_positions():
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
             t = db_trades.get(pos["symbol"])
+            stop = float(t.stop_price) if t and t.stop_price else None
+            target = float(t.target_price) if t and t.target_price else None
+            entry = float(t.entry_price) if t and t.entry_price else float(avg)
+            rr = None
+            if stop and target and entry and (entry - stop) > 0:
+                rr = round((target - entry) / (entry - stop), 2)
             result.append(PositionResponse(
                 symbol=pos["symbol"],
                 quantity=int(qty),
@@ -266,9 +287,14 @@ async def get_open_positions():
                 current_price=float(current) if current else None,
                 pnl_unrealized=float(pnl) if pnl is not None else None,
                 pnl_unrealized_pct=pnl_pct,
-                stop_price=float(t.stop_price) if t and t.stop_price else None,
-                target_price=float(t.target_price) if t and t.target_price else None,
+                stop_price=stop,
+                target_price=target,
                 signal_type=t.signal_type if t else None,
+                trade_type=getattr(t, "trade_type", None) if t else None,
+                bars_held=t.bars_held if t else None,
+                entry_date=t.created_at.strftime("%Y-%m-%d") if t and t.created_at else None,
+                trade_id=t.id if t else None,
+                risk_reward=rr,
             ))
         return result
     except Exception as exc:
@@ -298,6 +324,7 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 pnl=t.pnl,
                 status=t.status,
                 signal_type=getattr(t, 'signal_type', None),
+                trade_type=getattr(t, 'trade_type', None),
                 stop_price=getattr(t, 'stop_price', None),
                 target_price=getattr(t, 'target_price', None),
                 created_at=t.created_at,

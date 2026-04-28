@@ -1835,13 +1835,23 @@ class ModelTrainer:
         try:
             end_dt = datetime.now()
             start_dt = end_dt - timedelta(days=365 * years)
+            # Retire previous ACTIVE swing versions — only one should be active at a time
+            prev = db.query(ModelVersion).filter_by(model_name="swing", status="ACTIVE").all()
+            for p in prev:
+                p.status = "RETIRED"
+                logger.info("Retired swing v%d", p.version)
             db.add(ModelVersion(
                 model_name="swing",
                 version=version,
                 training_date=datetime.utcnow(),
                 data_range_start=start_dt.strftime("%Y-%m-%d"),
                 data_range_end=end_dt.strftime("%Y-%m-%d"),
-                performance={**metrics, "n_train": n_train, "n_test": n_test},
+                performance={
+                    **metrics, "n_train": n_train, "n_test": n_test,
+                    "tier3_gate_passed": None,
+                    "tier3_avg_sharpe": None,
+                    "tier3_fold_sharpes": None,
+                },
                 status="ACTIVE",
                 model_path=model_path,
             ))
@@ -1861,3 +1871,39 @@ class ModelTrainer:
             logger.error("Failed to save model version: %s", exc)
         finally:
             db.close()
+
+    @staticmethod
+    def record_tier3_result(
+        version: int,
+        avg_sharpe: float,
+        fold_sharpes: list,
+        gate_passed: bool,
+    ) -> None:
+        """Write walk-forward results back into the swing ModelVersion performance field."""
+        try:
+            from app.database.session import get_session
+            from app.database.models import ModelVersion
+            db = get_session()
+            row = db.query(ModelVersion).filter_by(
+                model_name="swing", version=version
+            ).first()
+            if row is None:
+                return
+            perf = dict(row.performance or {})
+            perf["tier3_avg_sharpe"] = round(avg_sharpe, 4)
+            perf["tier3_gate_passed"] = gate_passed
+            perf["tier3_fold_sharpes"] = [round(s, 4) for s in fold_sharpes]
+            row.performance = perf
+            if not gate_passed:
+                row.status = "RETIRED"
+                logger.info("Swing v%d tier3 FAIL — status set to RETIRED", version)
+            db.commit()
+            logger.info("Recorded tier3 result for swing v%d: Sharpe=%.3f gate=%s",
+                        version, avg_sharpe, gate_passed)
+        except Exception as exc:
+            logger.warning("Could not record tier3 result for swing v%d: %s", version, exc)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
