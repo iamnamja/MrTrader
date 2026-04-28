@@ -401,6 +401,30 @@ class Trader(BaseAgent):
             )
             return
 
+        # ── Macro/market gate ─────────────────────────────────────────────────
+        # Block entries when market conditions are structurally bad today.
+        # Premarket module caches SPY intraday drawdown for 5 min — cheap to call.
+        try:
+            from app.agents.premarket import premarket_intel
+            if trade_type == "intraday" and premarket_intel.is_intraday_blocked():
+                self.logger.warning(
+                    "%s: intraday macro gate BLOCKED (SPY pre-mkt=%.1f%%, macro=%s) — skipping",
+                    symbol,
+                    premarket_intel.spy_premarket_pct * 100,
+                    list(premarket_intel.macro_flags.keys()),
+                )
+                self.approved_symbols.pop(symbol, None)
+                return
+            if trade_type == "swing" and premarket_intel.is_swing_blocked():
+                self.logger.warning(
+                    "%s: swing macro gate BLOCKED (SPY drawdown or FOMC) — skipping",
+                    symbol,
+                )
+                self.approved_symbols.pop(symbol, None)
+                return
+        except Exception as exc:
+            self.logger.debug("Macro gate check failed (non-fatal): %s", exc)
+
         bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
         if bars is None or bars.empty or len(bars) < MIN_BARS:
             self.logger.debug(
@@ -419,6 +443,53 @@ class Trader(BaseAgent):
 
         # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
         result = generate_signal(symbol, bars, ml_score=ml_score, check_regime=False, check_earnings=True)
+
+        # ── Real-time entry quality check ─────────────────────────────────────
+        # Validate current market conditions before committing capital.
+        # PM scored this symbol hours ago; Trader verifies the moment is still right.
+        current_price = alpaca.get_latest_price(symbol)
+        if current_price and result.entry_price > 0:
+            quote = None
+            intraday_bars_5m = None
+            try:
+                quote = alpaca.get_quote(symbol)
+            except Exception:
+                pass
+            try:
+                intraday_bars_5m = alpaca.get_bars(symbol, timeframe="5Min", limit=78)
+            except Exception:
+                pass
+
+            from app.strategy.entry_quality import check_entry_quality
+            eq = check_entry_quality(
+                symbol=symbol,
+                signal_price=result.entry_price,
+                current_price=current_price,
+                trade_type=trade_type,
+                quote=quote,
+                intraday_bars=intraday_bars_5m,
+            )
+            if not eq.approved:
+                self.logger.info(
+                    "%s: entry quality check FAILED (%s) — skipping; "
+                    "run=%.2f%% spread=%.3f%% momentum=%.2f%%",
+                    symbol, eq.reason,
+                    eq.price_run_pct * 100, eq.spread_pct * 100, eq.momentum_slope * 100,
+                )
+                await self.log_decision("ENTRY_REJECTED_QUALITY", reasoning={
+                    "symbol": symbol,
+                    "reason": eq.reason,
+                    "price_run_pct": round(eq.price_run_pct * 100, 2),
+                    "spread_pct": round(eq.spread_pct * 100, 3),
+                    "momentum_slope_pct": round(eq.momentum_slope * 100, 2),
+                    "volume_ratio": round(eq.volume_ratio, 2),
+                    "trade_type": trade_type,
+                })
+                # Don't discard the proposal entirely — re-check next scan cycle
+                # unless price has run too far (then it's unlikely to come back)
+                if "price_run" in eq.reason:
+                    self.approved_symbols.pop(symbol, None)
+                return
 
         # Size the position
         account = alpaca.get_account()
@@ -771,12 +842,68 @@ class Trader(BaseAgent):
                 },
             )
 
-        # Partial exit: when up 1×ATR, exit configurable % and move stop to breakeven
-        if not pos.get("_partial_exited") and pos.get("atr", 0) > 0:
-            atr_val = pos["atr"]
-            profit_1r = pos["entry_price"] + atr_val
-            if current_price >= profit_1r:
-                await self._execute_partial_exit(symbol, current_price, atr_val, alpaca)
+        # ── Dynamic adjustments: partial exit, stop trail, target extension ────
+        if pos.get("atr", 0) > 0 and not pos.get("_partial_exited"):
+            from app.strategy.signals import check_dynamic_adjustments
+            vix_now = 0.0
+            try:
+                from app.agents.circuit_breaker import circuit_breaker as _cb
+                vix_now = float(_cb._last_vix or 0.0)
+            except Exception:
+                pass
+
+            adj = check_dynamic_adjustments(
+                symbol=symbol,
+                current_price=current_price,
+                entry_price=pos["entry_price"],
+                stop_price=pos["stop_price"],
+                target_price=pos["target_price"],
+                highest_price=highest,
+                shares=pos.get("shares", 1),
+                atr=pos["atr"],
+                trade_type=pos.get("trade_type", "swing"),
+                vix=vix_now,
+            )
+
+            # Apply stop update (trail/tighten)
+            if adj.new_stop > pos["stop_price"]:
+                pos["stop_price"] = adj.new_stop
+                if adj.stop_tightened:
+                    db = get_session()
+                    try:
+                        trade = db.query(Trade).filter_by(id=pos.get("trade_id")).first()
+                        if trade:
+                            trade.stop_price = adj.new_stop
+                            db.commit()
+                    except Exception:
+                        db.rollback()
+                    finally:
+                        db.close()
+                    self.logger.info("%s: stop %s → $%.2f (%s)", symbol,
+                                     "tightened" if vix_now > 20 else "trailed",
+                                     adj.new_stop, adj.notes)
+
+            # Apply target extension
+            if adj.target_extended and adj.new_target > pos["target_price"]:
+                pos["target_price"] = adj.new_target
+                db = get_session()
+                try:
+                    trade = db.query(Trade).filter_by(id=pos.get("trade_id")).first()
+                    if trade:
+                        trade.target_price = adj.new_target
+                        db.commit()
+                except Exception:
+                    db.rollback()
+                finally:
+                    db.close()
+                self.logger.info("%s: target extended → $%.2f (%s)",
+                                 symbol, adj.new_target, adj.notes)
+
+            # Execute partial exit if triggered
+            if adj.partial_exit and adj.partial_exit_qty > 0:
+                await self._execute_partial_exit(
+                    symbol, current_price, pos["atr"], alpaca
+                )
 
         # Technical weakness detection → request PM re-evaluation (swing only)
         # These don't trigger immediate exit — PM decides EXIT/HOLD/EXTEND

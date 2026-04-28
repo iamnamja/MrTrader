@@ -1,7 +1,7 @@
 # Phases 58+ — Consolidated Roadmap (News Intelligence + Remaining Backlog)
 
-**Status:** Approved for discussion. Synthesizes external NIS spec + existing Phase 48–57 backlog.
-**Last updated:** 2026-04-27
+**Status:** Active. Synthesizes external NIS spec + existing Phase 48–57 backlog + live paper-trading session learnings (2026-04-28).
+**Last updated:** 2026-04-28
 
 ---
 
@@ -53,6 +53,30 @@ The spec is excellent engineering architecture for a mature system. Most of the 
 
 ---
 
+## Part 1b — Live Paper Trading Session Learnings (2026-04-28)
+
+First full paper trading session revealed systemic gaps in the PM→RM→Trader pipeline. All of the following were identified and either fixed (✅) or queued:
+
+| Gap | Status | What We Did |
+|---|---|---|
+| No durable state — restart wiped active_positions | ✅ Fixed (Phase A) | `_reconcile_positions()` on startup; `DailyState` table for PM flags |
+| PM had no time-of-day routing — swing fired at 2 PM | ✅ Fixed (Phase A) | Time-window guards; swing only pre-9:50, intraday only 9:45-10:30 |
+| No stale proposal TTL — morning approvals re-fired hours later | ✅ Fixed (Phase C) | 60-min TTL + 4 PM Redis purge + one-approval-per-symbol-per-day dedup |
+| No per-position size cap — oversized bets on tight-stop stocks | ✅ Fixed | 10% equity cap added to `size_position()` |
+| Force-close missed positions set via DB (in-memory state stale) | ✅ Fixed | Force-close now cross-checks DB for ACTIVE intraday trades |
+| Trader entered blindly regardless of current conditions | ✅ Fixed (Phase 67) | Entry quality check: price run, spread, intraday momentum, volume |
+| No live macro gate — entered on bad market days | ✅ Fixed (Phase 68) | `premarket_intel.is_swing_blocked()` + live SPY intraday drawdown check |
+| Stop/target not adjusted as market moved | ✅ Fixed (Phase 69) | `check_dynamic_adjustments()`: VIX-driven stop tightening + target extension |
+| Swing/intraday mixed up in DB (all showing "swing") | ✅ Fixed | `trade_type` persisted to Trade on entry; reconcile reads from DB |
+| Summary endpoint 500 error (missing DB column) | ✅ Fixed | `exit_reason` column added via ALTER TABLE |
+| Equity curve 1w/1m missing today's P&L | ✅ Fixed | Route appends today's live P&L (unrealized + realized) to history |
+| Last signal showing 150h (stale AgentDecision) | ✅ Fixed | Falls back to most recent Trade.created_at |
+| **Trader re-score of unexecuted candidates as market moves** | 🔜 Phase 70 | See below |
+| **Intraday correlation/sector concentration in RM** | 🔜 Phase 71 | See below |
+| **Full news intelligence pipeline** | 🔜 Phase 60+ | Existing plan unchanged |
+
+---
+
 ## Part 2 — Consolidated Backlog (All Open Phases)
 
 ### Immediate — Complete These Before Paper Trading Starts
@@ -65,6 +89,77 @@ The spec is excellent engineering architecture for a mature system. Most of the 
 | 56 | Paper Trading Monitoring Report | Engineering | Done (`scripts/paper_trading_report.py`) | — |
 
 **Merge gate for paper trading start:** Phases 52, 53, 56 merged + Phase 50 gate passed.
+
+---
+
+---
+
+### Phase 67 — Trader Entry Quality Check ✅ DONE (2026-04-28)
+
+Real-time entry quality filter in `app/strategy/entry_quality.py`. Called by Trader at execution time, after PM/RM approval, to validate that current conditions still support entering.
+
+**Checks:**
+1. **Price run** — stock hasn't moved >1.5% past signal price since PM scored it (hours ago)
+2. **Adverse move** — stock hasn't dropped >1.0% from signal price (gap-down since approval)
+3. **Spread/liquidity** — bid-ask spread ≤ 0.5% of mid-price
+4. **Intraday momentum** — 30-min slope of 5-min closes not sharply negative (−0.8% intraday, −1.5% swing)
+5. **Volume context** — current bar not suspiciously thin (<30% of 20-bar avg)
+
+On failure: logs `ENTRY_REJECTED_QUALITY` decision to DB. Price-run failures drop the proposal; other failures retry on next scan cycle.
+
+---
+
+### Phase 68 — Live Macro/Market Gate ✅ DONE (2026-04-28)
+
+Enhanced `premarket_intel` module with two new methods:
+
+- **`is_swing_blocked()`** — blocks swing entries on: SPY pre-market gap < −2.5%, FOMC day, or live SPY intraday drawdown > 2% from open
+- **`_get_spy_intraday_drawdown()`** — live SPY 5-min bar check, cached 5 min
+- **`get_market_context()`** — returns full context dict (spy pct, drawdown, macro flags, block status)
+
+Both intraday and swing gates now checked in `_check_entry` before sizing.
+
+---
+
+### Phase 69 — Dynamic Stop Trailing + Partial Exits ✅ DONE (2026-04-28)
+
+New `check_dynamic_adjustments()` function in `signals.py`. Called every scan cycle per open position.
+
+**What it does:**
+1. **Partial exit at T1** — when price hits entry + 2×ATR, sells `partial_exit_pct` (default 50%) of shares; caller tracks `_partial_exited` flag to fire once
+2. **VIX-driven stop tightening** — when VIX > 20 and position is profitable, tightens trailing stop to 1.5×ATR below highest price (vs. normal 2.5×ATR)
+3. **Normal trail at +4%** — tightens to 2×ATR below highest once up 4%
+4. **Target extension** — when price within 0.5×ATR of target and strong momentum (price > entry + 3×ATR), extends target by 1×ATR to let winners run
+
+Stop and target updates are persisted to DB immediately so they survive a restart.
+
+---
+
+### Phase 70 — PM Re-Scoring of Unexecuted Candidates (queued)
+
+**Gap:** PM scores candidates at 9:50 AM. If Trader hasn't entered by 1 PM (e.g., entry quality check failed all morning), the score is 4 hours stale. Market conditions may have fundamentally changed.
+
+**What to build:**
+- PM tracks `_pending_approvals: Dict[symbol, approved_at]` — set when proposal approved by RM
+- Every 30-min review cycle: re-score pending symbols using fresh daily bars
+- If fresh score < `MIN_CONFIDENCE * 0.9` → send `WITHDRAW` message to RM/Trader to drop the symbol
+- If score still high but entry quality was failing on price-run → update the target entry price
+
+**Files:** `app/agents/portfolio_manager.py`, new `PENDING_WITHDRAWALS_QUEUE`
+
+---
+
+### Phase 71 — Correlation/Sector Concentration in RM (queued)
+
+**Gap:** RM checks sector concentration in `validate_sector_concentration()` but uses a simple count, not correlation. Long NVDA + AMD + AVGO + SMCI = four separate 10% positions that are 90%+ correlated — effectively 40% in semis.
+
+**What to build:**
+- `validate_correlation_risk()` rule in `risk_rules.py`
+- Fetch 30-day daily returns for current portfolio + proposed symbol
+- Reject if pairwise correlation > 0.70 with any existing position that's already >8% of portfolio
+- Sector contribution cap: sum of market_value for any sector ≤ 25% of portfolio
+
+**Files:** `app/agents/risk_rules.py`, `app/agents/risk_manager.py`
 
 ---
 
@@ -359,10 +454,17 @@ Once Haiku scoring is stable and we have enough volume to measure its error rate
 ## Part 3 — One-Page Summary
 
 ```
-NOW (this week):
-  Complete Phase 50 (check v30 results)
-  Verify Phase 52/53/56, merge open PRs
-  Start paper trading
+DONE (2026-04-28 paper trading session):
+  Phase A  — State durability (reconcile, DailyState, PM flag persistence)
+  Phase B  — Swing recovery on late restart
+  Phase C  — Proposal hygiene (dedup, 4 PM Redis purge)
+  Phase 67 — Trader entry quality check (price run, spread, momentum, volume)
+  Phase 68 — Live macro/market gate (SPY drawdown, FOMC, swing-blocked)
+  Phase 69 — Dynamic stop trailing + partial exits (T1, VIX tightening, target ext.)
+
+NEXT (before next trading session):
+  Phase 70 — PM re-scoring of unexecuted candidates (stale entry withdrawal)
+  Phase 71 — Correlation/sector concentration in RM
 
 SPRINT 1 — Weeks 1-2: Calendar Intelligence
   Phase 58 — Earnings Calendar Gate        ← HIGHEST PRIORITY

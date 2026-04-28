@@ -361,6 +361,70 @@ class PremarketIntelligence:
                 return True
         return False
 
+    def is_swing_blocked(self) -> bool:
+        """
+        Return True if swing entries should be blocked today.
+        Swing is more resilient than intraday, so only block on extreme macro events:
+        - SPY pre-market gap < -2.5% (severe down open)
+        - FOMC day (too much uncertainty for multi-day holds)
+        - Live SPY drawdown > 2% from today's open (market deteriorating mid-day)
+        """
+        if self._spy_premarket_pct <= SPY_FUTURES_BLOCK_PCT:
+            return True
+        if "FOMC" in self._macro_flags:
+            return True
+        # Check live intraday SPY drawdown from today's open
+        intraday_drawdown = self._get_spy_intraday_drawdown()
+        if intraday_drawdown <= -0.02:
+            logger.warning(
+                "Swing entries blocked: SPY intraday drawdown %.1f%% from open",
+                intraday_drawdown * 100,
+            )
+            return True
+        return False
+
+    def _get_spy_intraday_drawdown(self) -> float:
+        """
+        Return SPY's % change from today's open to now.
+        Negative = down from open. Cached for 5 minutes to avoid hammering the API.
+        """
+        now = datetime.now(ET)
+        cache_key = "_spy_intraday_cache"
+        cached = getattr(self, cache_key, None)
+        if cached and (now - cached["ts"]).total_seconds() < 300:
+            return cached["value"]
+        try:
+            from app.integrations import get_alpaca_client
+            client = get_alpaca_client()
+            bars = client.get_bars("SPY", timeframe="5Min", limit=80)
+            if bars is None or len(bars) < 2:
+                return 0.0
+            today_str = now.strftime("%Y-%m-%d")
+            today_bars = bars[bars.index.strftime("%Y-%m-%d") == today_str]
+            if len(today_bars) < 2:
+                return 0.0
+            open_price = float(today_bars["open"].iloc[0])
+            current_price = float(today_bars["close"].iloc[-1])
+            drawdown = (current_price - open_price) / open_price if open_price > 0 else 0.0
+            setattr(self, cache_key, {"ts": now, "value": drawdown})
+            return drawdown
+        except Exception:
+            return 0.0
+
+    def get_market_context(self) -> dict:
+        """
+        Return a summary of current macro context for use by Trader's entry check.
+        Includes intraday SPY drawdown, pre-market pct, macro flags, block status.
+        """
+        return {
+            "spy_premarket_pct": round(self._spy_premarket_pct * 100, 2),
+            "spy_intraday_drawdown_pct": round(self._get_spy_intraday_drawdown() * 100, 2),
+            "macro_flags": list(self._macro_flags.keys()),
+            "intraday_blocked": self.is_intraday_blocked(),
+            "swing_blocked": self.is_swing_blocked(),
+            "sizing_factor": self.intraday_sizing_factor(),
+        }
+
 
 # Module-level singleton
 premarket_intel = PremarketIntelligence()
