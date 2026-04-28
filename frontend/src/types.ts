@@ -63,6 +63,7 @@ export interface Trade {
   symbol: string
   direction: string
   signal_type?: string
+  trade_type?: string
   entry_price?: number
   exit_price?: number
   quantity: number

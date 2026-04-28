@@ -309,6 +309,7 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 pnl=t.pnl,
                 status=t.status,
                 signal_type=getattr(t, 'signal_type', None),
+                trade_type=getattr(t, 'trade_type', None),
                 stop_price=getattr(t, 'stop_price', None),
                 target_price=getattr(t, 'target_price', None),
                 created_at=t.created_at,

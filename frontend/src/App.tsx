@@ -491,16 +491,19 @@ function TradesPanel() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened', 'Closed'].map(h => (
+              {['Symbol', 'Type', 'Dir', 'Signal', 'Entry', 'Exit', 'Qty', 'P&L', 'Status', 'Opened', 'Closed'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {rows.length === 0
-                ? <tr><td colSpan={10} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
-                : rows.map((t, i) => (
+                ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
+                : rows.map((t, i) => {
+                  const typeColor = t.trade_type === 'intraday' ? C.yellow : t.trade_type === 'swing' ? C.blue : C.muted
+                  return (
                   <tr key={i}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
+                    <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{t.trade_type ?? '—'}</td>
                     <td style={s.td}>{t.direction}</td>
                     <td style={{ ...s.td, color: C.blue }}>{t.signal_type ?? '—'}</td>
                     <td style={s.td}>{fmt$(t.entry_price)}</td>
@@ -513,7 +516,8 @@ function TradesPanel() {
                     <td style={{ ...s.td, color: C.muted }}>{fmtTs(t.created_at)}</td>
                     <td style={{ ...s.td, color: C.muted }}>{t.closed_at ? fmtTs(t.closed_at) : <span style={{ color: C.muted }}>—</span>}</td>
                   </tr>
-                ))}
+                  )
+                })}
             </tbody>
           </table>
         </div>

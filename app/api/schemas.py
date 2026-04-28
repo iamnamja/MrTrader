@@ -35,6 +35,7 @@ class TradeResponse(BaseModel):
     pnl: Optional[float] = None
     status: str
     signal_type: Optional[str] = None
+    trade_type: Optional[str] = None
     stop_price: Optional[float] = None
     target_price: Optional[float] = None
     created_at: datetime
