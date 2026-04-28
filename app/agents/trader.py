@@ -217,6 +217,21 @@ class Trader(BaseAgent):
                         break
                     symbol = proposal.get("symbol")
                     if symbol:
+                        # Discard stale proposals — approved more than 1 hour ago
+                        approved_at_str = proposal.get("approved_at")
+                        if approved_at_str:
+                            try:
+                                from datetime import timezone
+                                approved_at = datetime.fromisoformat(approved_at_str).replace(tzinfo=timezone.utc)
+                                age_minutes = (datetime.now(timezone.utc) - approved_at).total_seconds() / 60
+                                if age_minutes > 60:
+                                    self.logger.info(
+                                        "Discarding stale proposal for %s (approved %.0f min ago)",
+                                        symbol, age_minutes,
+                                    )
+                                    continue
+                            except Exception:
+                                pass
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
 
@@ -964,6 +979,7 @@ class Trader(BaseAgent):
 
             trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
             self.active_positions.pop(symbol, None)
+            self.approved_symbols.pop(symbol, None)  # prevent re-entry from stale proposal
 
             # Update circuit breaker with win/loss (strategy-level tracking)
             circuit_breaker.record_trade_result(won=(pnl > 0), strategy=trade_type)
