@@ -496,7 +496,6 @@ function TradesPanel() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <div style={s.cardTitle}>Trade History</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {/* Date filter */}
             {(['today', '7d', '30d', 'all'] as TradesDateFilter[]).map(d => (
               <button key={d} onClick={() => setDateFilter(d)} style={{
                 ...btnStyle,
@@ -504,7 +503,6 @@ function TradesPanel() {
                 borderColor: dateFilter === d ? C.accent : C.border,
               }}>{d === 'today' ? 'Today' : d === 'all' ? 'All time' : d}</button>
             ))}
-            {/* Status filter */}
             <select value={statusFilter}
               onChange={e => { setStatusFilter(e.target.value); load(e.target.value) }}
               style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, padding: '3px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'inherit' }}>
@@ -528,8 +526,7 @@ function TradesPanel() {
                 : rows.map((t, i) => {
                   const typeColor = t.trade_type === 'intraday' ? C.yellow : t.trade_type === 'swing' ? C.blue : C.muted
                   const pnlPct = t.exit_price && t.entry_price && t.entry_price > 0
-                    ? ((t.exit_price - t.entry_price) / t.entry_price * 100)
-                    : null
+                    ? ((t.exit_price - t.entry_price) / t.entry_price * 100) : null
                   return (
                   <tr key={i}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
@@ -541,9 +538,7 @@ function TradesPanel() {
                     <td style={{ ...s.td, color: clr(pnlPct) }}>{pnlPct != null ? fmtPct(pnlPct) : '—'}</td>
                     <td style={s.td}>{t.quantity}</td>
                     <td style={{ ...s.td, color: clr(t.pnl) }}>{t.pnl != null ? fmt$(t.pnl) : '—'}</td>
-                    <td style={s.td}>
-                      <StatusPill status={t.status} />
-                    </td>
+                    <td style={s.td}><StatusPill status={t.status} /></td>
                     <td style={{ ...s.td, color: C.muted }}>{fmtTs(t.created_at)}</td>
                     <td style={{ ...s.td, color: C.muted }}>{t.closed_at ? fmtTs(t.closed_at) : <span style={{ color: C.muted }}>—</span>}</td>
                   </tr>
@@ -1240,7 +1235,6 @@ function AnalyticsPanel() {
     try {
       const j = await api.signalAttribution(d) as { attribution?: unknown } | AttributionItem[]
       const raw = (j as { attribution?: unknown }).attribution ?? j
-      // API returns a dict keyed by signal type; normalise to array
       const arr: AttributionItem[] = Array.isArray(raw)
         ? raw
         : Object.entries(raw as Record<string, Record<string, number>>).map(([k, v]) => ({

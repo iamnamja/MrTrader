@@ -97,7 +97,13 @@ class TestRiskManagerIntradayRules:
             "trade_type": "intraday",
         }
 
-        with patch.object(rm, "_fetch_account_state", side_effect=Exception("no auth")):
+        from app.calendars.earnings import EarningsRisk, earnings_calendar
+        from app.calendars.macro import MacroContext, macro_calendar
+        clear_risk = EarningsRisk(symbol="AAPL", next_earnings=None, days_until=None)
+        clear_macro = MacroContext(block_new_entries=False)
+        with patch.object(rm, "_fetch_account_state", side_effect=Exception("no auth")), \
+             patch.object(earnings_calendar, "get_earnings_risk", return_value=clear_risk), \
+             patch.object(macro_calendar, "get_context", return_value=clear_macro):
             is_approved, reasoning = await rm._validate_trade(proposal)
 
         assert not is_approved
