@@ -264,7 +264,7 @@ class IntradayModelTrainer:
                 n_estimators=400, learning_rate=0.03, max_depth=6,
                 subsample=0.73, colsample_bytree=0.58, min_child_samples=24,
                 class_weight={0: 1.0, 1: float(spw)},
-                n_jobs=-1, random_state=42, verbose=-1,
+                n_jobs=24, random_state=42, verbose=-1,
             )
             lgbm.fit(X_train, y_train, sample_weight=sample_weight)
             lgbm_proba_test = lgbm.predict_proba(X_test)[:, 1]

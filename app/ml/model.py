@@ -57,7 +57,7 @@ class PortfolioSelectorModel:
                 reg_alpha=0.1,
                 reg_lambda=1.5,
                 random_state=42,
-                nthread=-1,
+                nthread=24,
                 verbosity=0,
             )
         elif model_type == "lgbm_ensemble":
@@ -75,7 +75,7 @@ class PortfolioSelectorModel:
                 reg_lambda=1.5,
                 random_state=42,
                 eval_metric="auc",
-                nthread=-1,
+                nthread=24,
                 verbosity=0,
             )
             self._lgbm_model = LGBMClassifier(
@@ -122,7 +122,7 @@ class PortfolioSelectorModel:
                 reg_lambda=1.5,
                 random_state=42,
                 eval_metric="auc",
-                nthread=-1,           # use all CPU cores
+                nthread=24,
                 verbosity=0,
             )
             if model_type == "ensemble":

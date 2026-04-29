@@ -1909,7 +1909,10 @@ class PortfolioManager(BaseAgent):
         self.logger.info("Starting scheduled model retraining...")
         try:
             loop = asyncio.get_event_loop()
-            import functools
+            import functools, os
+            # Cap worker threads so XGBoost/joblib don't spawn unbounded child processes on Windows
+            os.environ.setdefault("OMP_NUM_THREADS", "24")
+            os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
             version = await loop.run_in_executor(None, functools.partial(self.trainer.train_model, fetch_fundamentals=False))
             # Reload the freshly trained model
             self._try_load_model()
@@ -1918,6 +1921,13 @@ class PortfolioManager(BaseAgent):
         except Exception as e:
             self.logger.error("Retraining failed: %s", e, exc_info=True)
             await self.log_decision("RETRAINING_FAILED", reasoning={"error": str(e)})
+        finally:
+            # Reap any leftover joblib/loky worker processes spawned during training
+            try:
+                from joblib.externals.loky import get_reusable_executor
+                get_reusable_executor().shutdown(wait=False, kill_workers=True)
+            except Exception:
+                pass
 
     # ─── Model Loading ────────────────────────────────────────────────────────
 
