@@ -6,7 +6,7 @@ Thresholds live in RiskLimits and can be overridden during backtesting.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # noqa: F401
 
 
 @dataclass
@@ -161,7 +161,6 @@ def validate_correlation_risk(
         return True, "No open positions — correlation check skipped"
 
     try:
-        import numpy as np
         import pandas as pd
         import yfinance as yf
 

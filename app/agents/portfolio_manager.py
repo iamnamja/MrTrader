@@ -482,7 +482,6 @@ class PortfolioManager(BaseAgent):
         """
         try:
             from app.news.intelligence_service import nis
-            from app.agents.premarket import premarket_intel
 
             # Tier 1: refresh now that premarket data is available
             macro_ctx = await asyncio.to_thread(nis.get_macro_context, True)
@@ -1685,9 +1684,6 @@ class PortfolioManager(BaseAgent):
             # Phase 61: Decision audit — record every enter decision
             try:
                 from app.database.decision_audit import write_decision
-                final_size = proposal["quantity"] / max(1, int(
-                    self._calculate_quantity(price, 20_000.0, "swing", float(confidence))
-                ))
                 write_decision(
                     symbol, "swing", "enter",
                     model_score=float(confidence),

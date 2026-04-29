@@ -17,7 +17,7 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -155,6 +155,7 @@ CRITICAL RULES:
   or actual result differs significantly from estimate).
 """
 
+
 def macro_classify(events: list[dict]) -> Optional[dict]:
     """
     Tier 1: Classify today's macro events into a single day-level risk signal.
@@ -244,6 +245,7 @@ CRITICAL RULES:
   significantly in the news direction before this assessment.
 """
 
+
 def stock_score(
     symbol: str,
     articles: list[dict],
@@ -289,7 +291,7 @@ def stock_score(
         sentiment_hint = f" [pre-labeled: {a['sentiment']}]" if a.get("sentiment") else ""
         article_lines.append(
             f"- [{pub}] {a['headline']}{sentiment_hint}\n"
-            f"  {a.get('summary','')[:200]}"
+            f"  {a.get('summary', '')[:200]}"
         )
 
     prompt = f"""{_STOCK_SYSTEM}
@@ -300,7 +302,7 @@ Assessment horizon: swing trade (3-5 day hold)
 News lookback: last {lookback_hours} hours
 Macro context: {macro_context_summary}
 
-Recent news articles ({len(articles)} total, showing top {min(len(articles),10)}):
+Recent news articles ({len(articles)} total, showing top {min(len(articles), 10)}):
 {chr(10).join(article_lines)}
 
 Return JSON with exactly these fields:

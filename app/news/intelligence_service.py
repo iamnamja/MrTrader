@@ -13,7 +13,6 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 from app.news.signal import (
-    ActionPolicy,
     MacroContext,
     MacroEventSignal,
     NewsSignal,
@@ -217,7 +216,7 @@ class NewsIntelligenceService:
         try:
             from app.database.session import get_session
             from app.database.models import NewsSignalCache
-            import hashlib, json
+            import hashlib
             cache_key = hashlib.sha256(
                 f"stock_v1|{sig.symbol}|{sig.rationale}".encode()
             ).hexdigest()[:64]

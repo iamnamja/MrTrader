@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 # ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ ActionPolicy = Literal[
 ]
 
 # ── Tier 1: Macro Intelligence ─────────────────────────────────────────────────
+
 
 @dataclass
 class MacroEventSignal:
