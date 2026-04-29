@@ -2638,6 +2638,9 @@ export default function App() {
       </div>
 
       <ToastContainer toasts={toasts} />
+      <div style={{ position: 'fixed', bottom: 4, right: 8, fontSize: 9, color: '#1e2d40', userSelect: 'none' }}>
+        v2026.04.29
+      </div>
     </div>
   )
 }

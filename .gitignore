@@ -91,6 +91,10 @@ app/ml/models/price_cache/
 app/ml/models/*.pkl
 app/ml/models/*.joblib
 
+# Runtime logs (app server, training runs, backtests — not version-controlled)
+logs/
+*.log
+
 # Backtest & training result artifacts
 results/
 !results/.gitkeep

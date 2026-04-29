@@ -317,13 +317,26 @@ if os.path.isdir(_REACT_ASSETS):
     app.mount("/assets", StaticFiles(directory=_REACT_ASSETS), name="assets")
 
 
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard():
     if os.path.isfile(_REACT_INDEX):
         with open(_REACT_INDEX) as f:
-            return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store"})
+            return HTMLResponse(content=f.read(), headers=_NO_CACHE_HEADERS)
     with open(_LEGACY_HTML) as f:
-        return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store"})
+        return HTMLResponse(content=f.read(), headers=_NO_CACHE_HEADERS)
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard")
 
 
 if __name__ == "__main__":

@@ -71,7 +71,12 @@ class PortfolioManager(BaseAgent):
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type="xgboost")           # swing
         self.intraday_model = PortfolioSelectorModel(model_type="xgboost")  # intraday
-        self.trainer = ModelTrainer(n_workers=8)  # cap at 8 to avoid OOM on Windows (paging file)
+        from app.ml.retrain_config import SWING_RETRAIN
+        self.trainer = ModelTrainer(
+            model_type=SWING_RETRAIN["model_type"],
+            hpo_trials=SWING_RETRAIN["hpo_trials"],
+            n_workers=SWING_RETRAIN["n_workers"],
+        )
         self._analyzed_today: bool = False       # 08:00 pre-market analysis done
         self._selected_today: bool = False       # 09:50 proposals sent
         self._selected_intraday_today: bool = False  # legacy compat (missed-task check)
@@ -1905,29 +1910,59 @@ class PortfolioManager(BaseAgent):
     # ─── Retraining ───────────────────────────────────────────────────────────
 
     async def _retrain(self):
-        """Run training pipeline in a thread so it doesn't block the event loop."""
-        self.logger.info("Starting scheduled model retraining...")
+        """Retrain swing + intraday models using settings from app.ml.retrain_config."""
+        import functools, os
+        from app.ml.retrain_config import SWING_RETRAIN, INTRADAY_RETRAIN
+        from app.ml.intraday_training import IntradayModelTrainer
+
+        # Cap worker threads so XGBoost/joblib don't spawn unbounded child processes on Windows
+        os.environ.setdefault("OMP_NUM_THREADS", "24")
+        os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
+
+        loop = asyncio.get_event_loop()
+        swing_ver = intraday_ver = None
+
+        # ── Swing retrain ────────────────────────────────────────────────────
+        self.logger.info("Starting scheduled swing model retraining (model_type=%s, hpo=%d)...",
+                         SWING_RETRAIN["model_type"], SWING_RETRAIN["hpo_trials"])
         try:
-            loop = asyncio.get_event_loop()
-            import functools, os
-            # Cap worker threads so XGBoost/joblib don't spawn unbounded child processes on Windows
-            os.environ.setdefault("OMP_NUM_THREADS", "24")
-            os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
-            version = await loop.run_in_executor(None, functools.partial(self.trainer.train_model, fetch_fundamentals=False))
-            # Reload the freshly trained model
-            self._try_load_model()
-            self.logger.info("Model retrained → v%d now active", version)
-            await self.log_decision("MODEL_RETRAINED", reasoning={"version": version})
+            swing_ver = await loop.run_in_executor(
+                None,
+                functools.partial(self.trainer.train_model,
+                                  fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"]),
+            )
+            self.logger.info("Swing model retrained → v%d", swing_ver)
         except Exception as e:
-            self.logger.error("Retraining failed: %s", e, exc_info=True)
-            await self.log_decision("RETRAINING_FAILED", reasoning={"error": str(e)})
-        finally:
-            # Reap any leftover joblib/loky worker processes spawned during training
-            try:
-                from joblib.externals.loky import get_reusable_executor
-                get_reusable_executor().shutdown(wait=False, kill_workers=True)
-            except Exception:
-                pass
+            self.logger.error("Swing retraining failed: %s", e, exc_info=True)
+            await self.log_decision("RETRAINING_FAILED", reasoning={"strategy": "swing", "error": str(e)})
+
+        # ── Intraday retrain ─────────────────────────────────────────────────
+        self.logger.info("Starting scheduled intraday model retraining...")
+        try:
+            intraday_trainer = IntradayModelTrainer()
+            intraday_ver = await loop.run_in_executor(
+                None,
+                functools.partial(intraday_trainer.train_model, **INTRADAY_RETRAIN),
+            )
+            self.logger.info("Intraday model retrained → v%d", intraday_ver)
+        except Exception as e:
+            self.logger.error("Intraday retraining failed: %s", e, exc_info=True)
+            await self.log_decision("RETRAINING_FAILED", reasoning={"strategy": "intraday", "error": str(e)})
+
+        # ── Reload both models and log ────────────────────────────────────────
+        self._try_load_model()
+        if swing_ver or intraday_ver:
+            await self.log_decision("MODEL_RETRAINED", reasoning={
+                "swing_version": swing_ver,
+                "intraday_version": intraday_ver,
+            })
+
+        # Reap any leftover joblib/loky worker processes spawned during training
+        try:
+            from joblib.externals.loky import get_reusable_executor
+            get_reusable_executor().shutdown(wait=False, kill_workers=True)
+        except Exception:
+            pass
 
     # ─── Model Loading ────────────────────────────────────────────────────────
 
