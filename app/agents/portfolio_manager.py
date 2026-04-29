@@ -36,7 +36,10 @@ TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
 EXIT_THRESHOLD = 0.35          # re-score below this → exit signal
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
-INTRADAY_SCAN_MINUTE = 45      # 09:45 ET for intraday scan
+# Phase 51: three intraday scan windows (hour, minute)
+INTRADAY_SCAN_WINDOWS = [(9, 45), (11, 0), (13, 30)]
+INTRADAY_COOLDOWN_HOURS = 2     # min gap between entries in the same symbol
+INTRADAY_DAILY_LOSS_CAP_PCT = 0.01   # stop new intraday entries if day loss > 1% of account
 SWING_PREMARKET_HOUR = 8       # 08:00 ET: run swing model analysis pre-market
 SWING_SEND_HOUR = 9            # 09:50 ET: send swing proposals after open volatility settles
 SWING_SEND_MINUTE = 50
@@ -71,7 +74,9 @@ class PortfolioManager(BaseAgent):
         self.trainer = ModelTrainer(n_workers=8)  # cap at 8 to avoid OOM on Windows (paging file)
         self._analyzed_today: bool = False       # 08:00 pre-market analysis done
         self._selected_today: bool = False       # 09:50 proposals sent
-        self._selected_intraday_today: bool = False
+        self._selected_intraday_today: bool = False  # legacy compat (missed-task check)
+        self._intraday_windows_run: set = set()  # Phase 51: (hour,min) windows already scanned
+        self._intraday_symbol_last_entry: Dict[str, float] = {}  # symbol → monotonic ts of last entry
         self._retrained_today: bool = False
         self._premarket_run_today: bool = False  # 09:00 premarket routine done
         self._benchmark_recorded_today: bool = False
@@ -174,6 +179,8 @@ class PortfolioManager(BaseAgent):
                     self._analyzed_today = False
                     self._selected_today = False
                     self._selected_intraday_today = False
+                    self._intraday_windows_run = set()
+                    self._intraday_symbol_last_entry = {}
                     self._retrained_today = False
                     self._premarket_run_today = False
                     self._benchmark_recorded_today = False
@@ -238,28 +245,33 @@ class PortfolioManager(BaseAgent):
                         self._send_swing_proposals(),
                     )
 
-                # ── 09:45–10:30: intraday model selection ─────────────────────
-                if (
-                    is_weekday
-                    and self._in_window(now, 9, 45, 10, 30)
-                    and not self._selected_intraday_today
-                ):
-                    self._selected_intraday_today = True
-                    from app.agents.premarket import premarket_intel
-                    if premarket_intel.is_intraday_blocked():
-                        self.logger.warning(
-                            "Intraday scan BLOCKED by pre-market intelligence "
-                            "(macro event or SPY gap)"
-                        )
-                        await self.log_decision("SELECTION_SKIPPED", reasoning={
-                            "reason": "premarket_blocked",
-                            "strategy": "intraday",
-                        })
-                    else:
-                        await self._run_task(
-                            "intraday_selection", 9, 45,
-                            self.select_intraday_instruments(),
-                        )
+                # ── Phase 51: three intraday scan windows ─────────────────────
+                # Windows: 09:45, 11:00, 13:30 ET — each runs once per day.
+                for win_h, win_m in INTRADAY_SCAN_WINDOWS:
+                    # Window is "active" for 15 minutes after its scheduled time
+                    if (
+                        is_weekday
+                        and self._in_window(now, win_h, win_m, win_h, win_m + 15)
+                        and (win_h, win_m) not in self._intraday_windows_run
+                    ):
+                        self._intraday_windows_run.add((win_h, win_m))
+                        self._selected_intraday_today = True  # legacy compat
+                        from app.agents.premarket import premarket_intel
+                        if premarket_intel.is_intraday_blocked():
+                            self.logger.info(
+                                "Intraday scan %02d:%02d BLOCKED (macro gate or SPY gap)",
+                                win_h, win_m,
+                            )
+                            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                                "reason": "premarket_blocked",
+                                "strategy": "intraday",
+                                "window": f"{win_h:02d}:{win_m:02d}",
+                            })
+                        else:
+                            await self._run_task(
+                                f"intraday_selection_{win_h:02d}{win_m:02d}", win_h, win_m,
+                                self.select_intraday_instruments(window=(win_h, win_m)),
+                            )
 
                 # ── 09:30–16:00: 30-minute position review + reeval drain ─────
                 market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
@@ -456,6 +468,72 @@ class PortfolioManager(BaseAgent):
         )
         self.logger.info("Pre-market intelligence: %s", summary)
         await self.log_decision("PREMARKET_INTELLIGENCE", reasoning=summary)
+
+        # Phase 62: pre-warm NIS stock signal cache for candidate universe
+        await self._run_morning_nis_digest()
+
+    async def _run_morning_nis_digest(self) -> None:
+        """
+        Phase 62 — 09:00 ET: Pre-score the swing candidate universe via NIS Tier 2.
+
+        Populates the in-memory stock signal cache so _build_proposals() at 09:50
+        reads from cache rather than making live LLM calls on the critical path.
+        Also refreshes Tier 1 macro context (force_refresh=True after premarket runs).
+        """
+        try:
+            from app.news.intelligence_service import nis
+            from app.agents.premarket import premarket_intel
+
+            # Tier 1: refresh now that premarket data is available
+            macro_ctx = await asyncio.to_thread(nis.get_macro_context, True)
+            self.logger.info(
+                "NIS morning digest: macro risk=%s sizing=%.2f block=%s",
+                macro_ctx.overall_risk, macro_ctx.global_sizing_factor, macro_ctx.block_new_entries,
+            )
+
+            # Tier 2: pre-score top candidates from yesterday's model ranking
+            # Use the symbols already selected by _analyze_swing_premarket
+            candidates = [p["symbol"] for p in self._swing_proposals] if self._swing_proposals else []
+            if not candidates:
+                # Fallback: score a broad set from the universe
+                candidates = self._get_universe()[:50]
+
+            sector_map = {}
+            try:
+                from app.database.session import get_session
+                from app.database.models import WatchlistTicker
+                db = get_session()
+                try:
+                    rows = db.query(WatchlistTicker).filter(WatchlistTicker.active == 1).all()
+                    sector_map = {r.symbol: (r.sector or "Unknown") for r in rows}
+                finally:
+                    db.close()
+            except Exception:
+                pass
+
+            def _pre_score_batch():
+                nis.invalidate_stock_cache()
+                signals = nis.get_stock_signals_batch(candidates, sector_map=sector_map, macro_context=macro_ctx)
+                blocked = [s for s, sig in signals.items() if sig.action_policy == "block_entry"]
+                sized_down = [s for s, sig in signals.items() if "size_down" in sig.action_policy]
+                return len(signals), blocked, sized_down
+
+            n, blocked, sized_down = await asyncio.to_thread(_pre_score_batch)
+            self.logger.info(
+                "NIS morning digest: pre-scored %d symbols — %d block_entry, %d size_down",
+                n, len(blocked), len(sized_down),
+            )
+            if blocked:
+                self.logger.info("NIS block_entry pre-market: %s", blocked)
+            await self.log_decision("NIS_MORNING_DIGEST", reasoning={
+                "scored": n,
+                "block_entry": blocked,
+                "size_down": sized_down,
+                "macro_risk": macro_ctx.overall_risk,
+                "macro_sizing": macro_ctx.global_sizing_factor,
+            })
+        except Exception as exc:
+            self.logger.warning("NIS morning digest failed (non-fatal): %s", exc)
 
     async def _record_daily_benchmark(self) -> None:
         """
@@ -808,10 +886,11 @@ class PortfolioManager(BaseAgent):
 
     # ─── Intraday Selection ───────────────────────────────────────────────────
 
-    async def select_intraday_instruments(self):
+    async def select_intraday_instruments(self, window: tuple = (9, 45)):
         """Run intraday model on 5-min bars, send intraday proposals."""
         intraday_ver = getattr(self.intraday_model, "version", None)
-        self.logger.info("Selecting intraday instruments (09:45 scan) — model v%s", intraday_ver)
+        win_str = f"{window[0]:02d}:{window[1]:02d}"
+        self.logger.info("Selecting intraday instruments (%s scan) — model v%s", win_str, intraday_ver)
 
         if not self.intraday_model.is_trained:
             self.logger.warning("No intraday model available — skipping intraday scan")
@@ -917,13 +996,50 @@ class PortfolioManager(BaseAgent):
             self.logger.error("Intraday model prediction failed: %s", exc)
             return
 
+        # Phase 51: daily intraday P&L cap — stop new entries if day loss > 1% of account
+        try:
+            from app.database.session import get_session
+            from app.database.models import Trade
+            from datetime import date
+            _db = get_session()
+            try:
+                today_str = date.today().isoformat()
+                today_intraday = _db.query(Trade).filter(
+                    Trade.trade_type == "intraday",
+                    Trade.status == "CLOSED",
+                    Trade.closed_at >= today_str,
+                ).all()
+                intraday_day_pnl = sum(t.pnl or 0.0 for t in today_intraday)
+            finally:
+                _db.close()
+            try:
+                acct = self._alpaca.get_account()
+                _acct_val = acct["portfolio_value"]
+            except Exception:
+                _acct_val = 20_000.0
+            if intraday_day_pnl < -(_acct_val * INTRADAY_DAILY_LOSS_CAP_PCT):
+                self.logger.info(
+                    "Intraday daily loss cap hit (%.2f < -%.0f) — skipping %s scan",
+                    intraday_day_pnl, _acct_val * INTRADAY_DAILY_LOSS_CAP_PCT, win_str,
+                )
+                return
+        except Exception as exc:
+            self.logger.debug("Daily intraday P&L cap check failed (non-fatal): %s", exc)
+
         min_conf = MIN_CONFIDENCE
         ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+
         # Phase 51: per-symbol cooldown — skip symbols entered within last INTRADAY_COOLDOWN_HOURS
-        selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:TOP_N_INTRADAY]
+        now_mono = _time.monotonic()
+        cooldown_secs = INTRADAY_COOLDOWN_HOURS * 3600
+        selected = [
+            (sym, prob) for sym, prob in ranked
+            if prob >= min_conf
+            and (now_mono - self._intraday_symbol_last_entry.get(sym, 0)) > cooldown_secs
+        ][:TOP_N_INTRADAY]
 
         if not selected:
-            self.logger.info("No intraday candidates above confidence threshold")
+            self.logger.info("No intraday candidates above confidence threshold (or all on cooldown)")
             return
 
         self.logger.info("Intraday selected: %s", [s for s, _ in selected])
@@ -972,6 +1088,7 @@ class PortfolioManager(BaseAgent):
             }
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
             self._pending_approvals[proposal["symbol"]] = _time.monotonic()
+            self._intraday_symbol_last_entry[symbol] = _time.monotonic()  # Phase 51 cooldown
             news_monitor.watch(symbol)  # Phase 53: start monitoring for news exits
             self.logger.info(
                 "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
