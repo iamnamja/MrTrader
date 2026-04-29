@@ -311,12 +311,6 @@ _REACT_DIST = "frontend/dist"
 _REACT_INDEX = os.path.join(_REACT_DIST, "index.html")
 _LEGACY_HTML = "frontend/dashboard.html"
 
-# Mount React build assets if the dist folder exists (skipped in CI where dist is not built)
-_REACT_ASSETS = os.path.join(_REACT_DIST, "assets")
-if os.path.isdir(_REACT_ASSETS):
-    app.mount("/assets", StaticFiles(directory=_REACT_ASSETS), name="assets")
-
-
 _NO_CACHE_HEADERS = {
     "Cache-Control": "no-cache, no-store, must-revalidate",
     "Pragma": "no-cache",
@@ -337,6 +331,13 @@ async def dashboard():
 async def root_redirect():
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/dashboard")
+
+
+# Mount entire frontend/dist/ at root — must be LAST so API routes above take priority.
+# html=True serves index.html for unknown paths (SPA fallback).
+# This serves both /assets/index-*.js and any legacy /index-*.js paths correctly.
+if os.path.isdir(_REACT_DIST):
+    app.mount("/", StaticFiles(directory=_REACT_DIST, html=True), name="spa")
 
 
 if __name__ == "__main__":

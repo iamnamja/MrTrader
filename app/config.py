@@ -1,9 +1,12 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
+
+    model_config = ConfigDict(protected_namespaces=('settings_',), env_file=".env", case_sensitive=False)
 
     # Database
     database_url: str = "postgresql://mrtrader:mrtrader_password@localhost:5432/mrtrader"
@@ -71,9 +74,6 @@ class Settings(BaseSettings):
     market_close_time: str = "16:00"
     trader_check_interval: int = 300  # 5 minutes
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
 
 settings = Settings()
