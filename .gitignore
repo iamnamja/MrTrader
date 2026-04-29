@@ -208,7 +208,7 @@ __marimo__/
 
 # Frontend
 frontend/node_modules/
-frontend/dist/
+# frontend/dist/ is intentionally tracked — FastAPI serves it directly at /dashboard
 app/ml/models/feature_store.db
 
 # Local databases (runtime state, not version-controlled)
