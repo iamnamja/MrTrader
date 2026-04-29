@@ -1195,6 +1195,26 @@ class PortfolioManager(BaseAgent):
             except Exception:
                 pass
 
+            # Phase 72: NIS Tier 2 re-check for held swing positions
+            if action is None:
+                try:
+                    from app.news.intelligence_service import nis
+                    from app.agents.premarket import premarket_intel
+                    _macro_ctx = premarket_intel.macro_context
+                    _sector = self._get_symbol_sector(symbol)
+                    _news_sig = await asyncio.to_thread(
+                        nis.get_stock_signal, symbol, _sector, 24, _macro_ctx
+                    )
+                    if _news_sig.action_policy in ("exit_review", "block_entry"):
+                        action = "EXIT"
+                        reason = f"nis_{_news_sig.action_policy}: {_news_sig.rationale[:80]}"
+                        self.logger.info(
+                            "NIS exit_review %s (held position): %s",
+                            symbol, _news_sig.rationale,
+                        )
+                except Exception as _exc:
+                    self.logger.debug("NIS re-check failed for %s (non-fatal): %s", symbol, _exc)
+
             # Phase 53: exit flag on negative intraday news
             if action is None and news_monitor.has_negative_news(symbol):
                 article = news_monitor.get_latest_article(symbol)

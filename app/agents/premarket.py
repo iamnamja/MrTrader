@@ -255,8 +255,19 @@ class PremarketIntelligence:
                 if bars is None or len(bars) < 2:
                     continue
                 prior_close = float(bars["close"].iloc[-2])
-                # Use today's open as approximation (close of last bar may be today)
-                today_open = float(bars["close"].iloc[-1])
+                # Phase 73: prefer actual today's open from 1-min bars; fall back gracefully
+                today_open = None
+                try:
+                    intraday = client.get_bars(symbol, timeframe="1Min", limit=5)
+                    if intraday is not None and not intraday.empty and "open" in intraday.columns:
+                        today_open = float(intraday["open"].iloc[0])
+                except Exception:
+                    pass
+                if today_open is None:
+                    today_open = float(
+                        bars["open"].iloc[-1] if "open" in bars.columns
+                        else bars["close"].iloc[-1]
+                    )
                 if prior_close <= 0:
                     continue
                 gap_pct = (today_open - prior_close) / prior_close

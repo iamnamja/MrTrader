@@ -12,6 +12,7 @@ from app.api.orchestrator_routes import router as orchestrator_router
 from app.api.routes import router as dashboard_router
 from app.api.watchlist_routes import router as watchlist_router
 from app.api.config_routes import router as config_router
+from app.api.nis_routes import router as nis_router, audit_router
 from app.api.websocket import websocket_endpoint
 from fastapi import WebSocket as _WebSocket
 
@@ -34,6 +35,8 @@ app.include_router(orchestrator_router)
 app.include_router(dashboard_router)
 app.include_router(watchlist_router)
 app.include_router(config_router)
+app.include_router(nis_router)
+app.include_router(audit_router)
 
 # Add CORS middleware
 app.add_middleware(
