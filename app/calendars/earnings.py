@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)

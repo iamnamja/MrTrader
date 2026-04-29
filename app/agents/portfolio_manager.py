@@ -971,7 +971,6 @@ class PortfolioManager(BaseAgent):
                 "trade_type": "intraday",
             }
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
-            import time as _time
             self._pending_approvals[proposal["symbol"]] = _time.monotonic()
             news_monitor.watch(symbol)  # Phase 53: start monitoring for news exits
             self.logger.info(

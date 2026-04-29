@@ -18,8 +18,8 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
