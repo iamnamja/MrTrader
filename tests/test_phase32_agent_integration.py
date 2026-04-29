@@ -98,8 +98,8 @@ class TestRiskManagerIntradayRules:
         }
 
         with patch.object(rm, "_fetch_account_state", side_effect=Exception("no auth")), \
-             patch("app.agents.risk_manager.earnings_calendar.is_blocked", return_value=False), \
-             patch("app.agents.risk_manager.macro_calendar.is_entry_blocked", return_value=False):
+             patch("app.calendars.earnings.earnings_calendar.is_blocked", return_value=False), \
+             patch("app.calendars.macro.macro_calendar.is_entry_blocked", return_value=False):
             is_approved, reasoning = await rm._validate_trade(proposal)
 
         assert not is_approved

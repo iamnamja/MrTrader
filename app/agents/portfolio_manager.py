@@ -68,7 +68,7 @@ class PortfolioManager(BaseAgent):
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type="xgboost")           # swing
         self.intraday_model = PortfolioSelectorModel(model_type="xgboost")  # intraday
-        self.trainer = ModelTrainer()
+        self.trainer = ModelTrainer(n_workers=8)  # cap at 8 to avoid OOM on Windows (paging file)
         self._analyzed_today: bool = False       # 08:00 pre-market analysis done
         self._selected_today: bool = False       # 09:50 proposals sent
         self._selected_intraday_today: bool = False
