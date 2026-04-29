@@ -1163,6 +1163,22 @@ class PortfolioManager(BaseAgent):
         if gross_pct >= 0.75:  # stay below 80% hard cap — leave 5% buffer
             return
 
+        # Respect the same macro/regime gates that the PM uses at 09:50 send time.
+        # No point scanning and sending proposals that the trader will immediately discard.
+        try:
+            from app.agents.premarket import premarket_intel
+            if premarket_intel.is_swing_blocked():
+                self.logger.info(
+                    "30-min scan skipped — swing macro gate active (FOMC/SPY drawdown)"
+                )
+                return
+        except Exception:
+            pass
+        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
+        if not regime_ok:
+            self.logger.info("30-min scan skipped — PM abstention gate active (VIX/SPY MA)")
+            return
+
         self.logger.info("30-min review: budget available (%.0f%% deployed) — scanning for new entries", gross_pct * 100)
 
         features_by_symbol = await asyncio.to_thread(self._fetch_swing_features)
@@ -1463,6 +1479,44 @@ class PortfolioManager(BaseAgent):
                 "source_agent": "portfolio_manager",
                 "trade_type": "swing",
             }
+            # NIS Tier 2: apply news signal overlay (non-blocking)
+            try:
+                from app.news.intelligence_service import nis
+                from app.agents.premarket import premarket_intel
+                macro_ctx = premarket_intel.macro_context
+                sector = self._get_symbol_sector(symbol)
+                news_sig = await asyncio.to_thread(
+                    nis.get_stock_signal, symbol, sector, 24, macro_ctx
+                )
+                if news_sig.action_policy == "block_entry":
+                    self.logger.info(
+                        "NIS block_entry %s: %s", symbol, news_sig.rationale
+                    )
+                    continue
+                if news_sig.sizing_multiplier != 1.0:
+                    old_qty = proposal["quantity"]
+                    proposal["quantity"] = max(1, int(old_qty * news_sig.sizing_multiplier))
+                    self.logger.info(
+                        "NIS sizing %s: %.2f× (%d→%d) — %s",
+                        symbol, news_sig.sizing_multiplier, old_qty,
+                        proposal["quantity"], news_sig.rationale,
+                    )
+                proposal["news_signal"] = {
+                    "action_policy": news_sig.action_policy,
+                    "direction_score": news_sig.direction_score,
+                    "materiality_score": news_sig.materiality_score,
+                    "sizing_multiplier": news_sig.sizing_multiplier,
+                    "rationale": news_sig.rationale,
+                }
+                # Add news_score_overlay to ML confidence
+                overlay = news_sig.news_score_overlay()
+                if overlay != 0.0:
+                    proposal["confidence"] = round(
+                        float(min(1.0, max(0.0, float(confidence) + overlay))), 4
+                    )
+            except Exception as exc:
+                self.logger.debug("NIS Tier 2 overlay failed for %s (non-fatal): %s", symbol, exc)
+
             # Optional AI signal review (non-blocking)
             try:
                 from app.ai.claude_client import review_pm_signal
@@ -1483,6 +1537,20 @@ class PortfolioManager(BaseAgent):
             proposals.append(proposal)
 
         return proposals
+
+    def _get_symbol_sector(self, symbol: str) -> str:
+        """Return sector for a symbol from WatchlistTicker, or 'Unknown'."""
+        try:
+            from app.database.session import get_session
+            from app.database.models import WatchlistTicker
+            db = get_session()
+            try:
+                row = db.query(WatchlistTicker).filter_by(symbol=symbol).first()
+                return row.sector or "Unknown" if row else "Unknown"
+            finally:
+                db.close()
+        except Exception:
+            return "Unknown"
 
     def _fetch_target_upside(self, symbols: List[str]) -> Dict[str, float]:
         """

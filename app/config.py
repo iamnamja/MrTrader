@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Accepts ALPHA_VANTAGE_API_KEY or ALPHA_ADVANTAGE_API_KEY (common typo)
     alpha_vantage_api_key: Optional[str] = None
     alpha_advantage_api_key: Optional[str] = None  # alias for typo-tolerant .env
+    # Finnhub — economic calendar, earnings calendar, company news
+    finnhub_api_key: Optional[str] = None
+    finhub_api_key: Optional[str] = None   # typo-tolerant alias (one 'n')
     # Financial Modeling Prep — fundamentals, earnings history, analyst ratings
     fmp_api_key: Optional[str] = None
     # Polygon.io — intraday bars, options flow, news sentiment

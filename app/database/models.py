@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -209,3 +209,80 @@ class TradingSession(Base):
 
     def __repr__(self):
         return f"<TradingSession {self.session_date} {self.mode}>"
+
+
+# ── News Intelligence Service (NIS) tables ────────────────────────────────────
+
+class CalendarEvent(Base):
+    """Economic + earnings calendar events with consensus data from Finnhub."""
+    __tablename__ = "calendar_events"
+
+    id = Column(String(64), primary_key=True)           # sha256(event_type+event_time)
+    event_type = Column(String(50), nullable=False)     # FOMC, NFP, CPI, EARNINGS, etc.
+    symbol = Column(String(10), nullable=True)          # null for macro events
+    event_time = Column(DateTime, nullable=False, index=True)
+    importance = Column(String(10), nullable=False)     # low / medium / high
+    source = Column(String(20), nullable=False)         # finnhub / polygon / manual
+    estimate = Column(Float, nullable=True)             # consensus estimate
+    prior = Column(Float, nullable=True)
+    actual = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=True)
+    country = Column(String(5), nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+    payload = Column(JSON, nullable=True)               # raw Finnhub response
+
+
+class MacroSignalCache(Base):
+    """Cached Tier 1 macro LLM classifications (keyed by date)."""
+    __tablename__ = "macro_signal_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)   # YYYY-MM-DD
+    prompt_version = Column(String(20), nullable=False)
+    risk_level = Column(String(10), nullable=False)         # LOW / MEDIUM / HIGH
+    direction = Column(String(10), nullable=False)
+    sizing_factor = Column(Float, nullable=False)
+    block_new_entries = Column(Boolean, nullable=False, default=False)
+    rationale = Column(Text, nullable=True)
+    events_payload = Column(JSON, nullable=True)            # events that drove this
+    evaluated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NewsSignalCache(Base):
+    """Cached Tier 2 per-symbol LLM news scores."""
+    __tablename__ = "news_signal_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    cache_key = Column(String(64), nullable=False, unique=True)  # sha256(prompt_ver+headlines)
+    prompt_version = Column(String(20), nullable=False)
+    direction_score = Column(Float, nullable=False)
+    materiality_score = Column(Float, nullable=False)
+    downside_risk_score = Column(Float, nullable=False)
+    upside_catalyst_score = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=False)
+    already_priced_in_score = Column(Float, nullable=False)
+    action_policy = Column(String(30), nullable=False)
+    sizing_multiplier = Column(Float, nullable=False)
+    rationale = Column(Text, nullable=True)
+    top_headlines = Column(JSON, nullable=True)
+    evaluated_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LLMCallLog(Base):
+    """Audit log for every LLM call made by the NIS."""
+    __tablename__ = "llm_call_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    called_at = Column(DateTime, default=datetime.utcnow, index=True)
+    call_type = Column(String(20), nullable=False)      # macro_tier1 / stock_tier2
+    symbol = Column(String(10), nullable=True)
+    provider = Column(String(20), nullable=False, default="anthropic")
+    model_name = Column(String(50), nullable=False)
+    prompt_version = Column(String(20), nullable=False)
+    input_tokens = Column(Integer, nullable=False)
+    output_tokens = Column(Integer, nullable=False)
+    latency_ms = Column(Integer, nullable=False)
+    cost_usd = Column(Float, nullable=False)
+    cache_hit = Column(Boolean, nullable=False, default=False)
+    error = Column(Text, nullable=True)

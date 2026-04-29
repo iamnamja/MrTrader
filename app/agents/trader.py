@@ -429,11 +429,11 @@ class Trader(BaseAgent):
             self.approved_symbols.pop(symbol, None)
             return
 
-        # No new entries after 3:00 PM ET — not enough time left in the day
+        # Intraday only: no new entries after 3:00 PM ET (force-close at 3:45 PM)
         now_et = datetime.now(ET)
-        if now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
+        if trade_type == "intraday" and now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
             self.logger.info(
-                "%s: no new entries after 3:00 PM ET (%02d:%02d) — skipping",
+                "%s: no new intraday entries after 3:00 PM ET (%02d:%02d) — skipping",
                 symbol, now_et.hour, now_et.minute,
             )
             self.approved_symbols.pop(symbol, None)
@@ -451,20 +451,30 @@ class Trader(BaseAgent):
         try:
             from app.agents.premarket import premarket_intel
             if trade_type == "intraday" and premarket_intel.is_intraday_blocked():
+                macro_flags = list(premarket_intel.macro_flags.keys())
                 self.logger.warning(
                     "%s: intraday macro gate BLOCKED (SPY pre-mkt=%.1f%%, macro=%s) — skipping",
                     symbol,
                     premarket_intel.spy_premarket_pct * 100,
-                    list(premarket_intel.macro_flags.keys()),
+                    macro_flags,
                 )
                 self.approved_symbols.pop(symbol, None)
+                await self.log_decision("ENTRY_BLOCKED_MACRO", reasoning={
+                    "symbol": symbol, "trade_type": "intraday",
+                    "reason": f"macro gate: {macro_flags}",
+                })
                 return
             if trade_type == "swing" and premarket_intel.is_swing_blocked():
+                macro_flags = list(premarket_intel.macro_flags.keys())
                 self.logger.warning(
                     "%s: swing macro gate BLOCKED (SPY drawdown or FOMC) — skipping",
                     symbol,
                 )
                 self.approved_symbols.pop(symbol, None)
+                await self.log_decision("ENTRY_BLOCKED_MACRO", reasoning={
+                    "symbol": symbol, "trade_type": "swing",
+                    "reason": f"macro gate: {macro_flags}",
+                })
                 return
         except Exception as exc:
             self.logger.debug("Macro gate check failed (non-fatal): %s", exc)

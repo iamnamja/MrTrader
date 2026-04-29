@@ -58,6 +58,7 @@ class PremarketIntelligence:
         self._macro_flags: Dict[str, Any] = {}  # event_type → details
         self._spy_premarket_pct: float = 0.0
         self._last_8k_check: float = 0.0
+        self._nis_macro_context = None           # MacroContext from NIS (or None)
 
     # ─── Public API ───────────────────────────────────────────────────────────
 
@@ -82,13 +83,40 @@ class PremarketIntelligence:
             "8k_filings": [],
         }
 
-        # 1. Economic calendar
+        # 1. Economic calendar — try NIS first, fall back to legacy FMP/hardcoded
         try:
-            macro = self._fetch_macro_events(today)
+            from app.news.intelligence_service import nis
+            nis.invalidate_macro_cache()
+            nis_ctx = nis.get_macro_context()
+            self._nis_macro_context = nis_ctx
+            # Back-fill legacy _macro_flags for backwards-compat
+            macro: Dict[str, Any] = {}
+            for evt in nis_ctx.events_today:
+                macro[evt.event_type] = {
+                    "name": evt.event_type,
+                    "time": evt.event_time,
+                    "impact": evt.risk_level.lower(),
+                    "block": evt.block_new_entries,
+                    "sizing_factor": evt.sizing_factor,
+                    "rationale": evt.rationale,
+                }
+            if not macro:
+                macro = self._fetch_macro_events(today)
             summary["macro_flags"] = macro
             self._macro_flags = macro
+            logger.info(
+                "NIS macro context: risk=%s sizing=%.2f block=%s — %s",
+                nis_ctx.overall_risk, nis_ctx.global_sizing_factor,
+                nis_ctx.block_new_entries, nis_ctx.rationale,
+            )
         except Exception as exc:
-            logger.warning("Macro calendar fetch failed: %s", exc)
+            logger.warning("NIS macro context failed, falling back to legacy: %s", exc)
+            try:
+                macro = self._fetch_macro_events(today)
+                summary["macro_flags"] = macro
+                self._macro_flags = macro
+            except Exception as exc2:
+                logger.warning("Macro calendar fetch failed: %s", exc2)
 
         # 2. SPY pre-market context
         try:
@@ -336,6 +364,11 @@ class PremarketIntelligence:
         return dict(self._macro_flags)
 
     @property
+    def macro_context(self):
+        """Return the NIS MacroContext for today, or None if NIS unavailable."""
+        return self._nis_macro_context
+
+    @property
     def spy_premarket_pct(self) -> float:
         return self._spy_premarket_pct
 
@@ -344,6 +377,8 @@ class PremarketIntelligence:
         spy = self._spy_premarket_pct
         if spy <= SPY_FUTURES_HALVE_PCT:
             return 0.5
+        if self._nis_macro_context is not None:
+            return min(1.0, self._nis_macro_context.global_sizing_factor)
         if "FOMC" in self._macro_flags:
             return 0.5
         return 1.0
@@ -353,26 +388,39 @@ class PremarketIntelligence:
         spy = self._spy_premarket_pct
         if spy <= SPY_FUTURES_BLOCK_PCT:
             return True
-        if "FOMC" in self._macro_flags:
-            return True
-        if "NFP" in self._macro_flags:
-            now_et = datetime.now(ET)
-            if now_et.hour < 10:
+        # NIS-driven block (replaces binary FOMC check)
+        if self._nis_macro_context is not None:
+            if self._nis_macro_context.block_new_entries:
                 return True
+        else:
+            if "FOMC" in self._macro_flags:
+                return True
+            if "NFP" in self._macro_flags:
+                now_et = datetime.now(ET)
+                if now_et.hour < 10:
+                    return True
         return False
 
     def is_swing_blocked(self) -> bool:
         """
         Return True if swing entries should be blocked today.
-        Swing is more resilient than intraday, so only block on extreme macro events:
-        - SPY pre-market gap < -2.5% (severe down open)
-        - FOMC day (too much uncertainty for multi-day holds)
-        - Live SPY drawdown > 2% from today's open (market deteriorating mid-day)
+        NIS Tier 1 provides risk-scored blocking — HIGH risk with genuine uncertainty
+        blocks swing. SPY pre-market gap < -2.5% or live intraday drawdown > 2% also block.
         """
         if self._spy_premarket_pct <= SPY_FUTURES_BLOCK_PCT:
             return True
-        if "FOMC" in self._macro_flags:
-            return True
+        # NIS-driven block (consensus-aware, not binary)
+        if self._nis_macro_context is not None:
+            if self._nis_macro_context.block_new_entries:
+                logger.info(
+                    "Swing entries blocked by NIS: risk=%s — %s",
+                    self._nis_macro_context.overall_risk,
+                    self._nis_macro_context.rationale,
+                )
+                return True
+        else:
+            if "FOMC" in self._macro_flags:
+                return True
         # Check live intraday SPY drawdown from today's open
         intraday_drawdown = self._get_spy_intraday_drawdown()
         if intraday_drawdown <= -0.02:
@@ -416,7 +464,7 @@ class PremarketIntelligence:
         Return a summary of current macro context for use by Trader's entry check.
         Includes intraday SPY drawdown, pre-market pct, macro flags, block status.
         """
-        return {
+        ctx = {
             "spy_premarket_pct": round(self._spy_premarket_pct * 100, 2),
             "spy_intraday_drawdown_pct": round(self._get_spy_intraday_drawdown() * 100, 2),
             "macro_flags": list(self._macro_flags.keys()),
@@ -424,6 +472,11 @@ class PremarketIntelligence:
             "swing_blocked": self.is_swing_blocked(),
             "sizing_factor": self.intraday_sizing_factor(),
         }
+        if self._nis_macro_context is not None:
+            ctx["nis_risk_level"] = self._nis_macro_context.overall_risk
+            ctx["nis_sizing_factor"] = self._nis_macro_context.global_sizing_factor
+            ctx["nis_rationale"] = self._nis_macro_context.rationale
+        return ctx
 
 
 # Module-level singleton
