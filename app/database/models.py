@@ -313,6 +313,8 @@ class DecisionAudit(Base):
     final_decision = Column(String(20), nullable=False)  # 'enter'|'block'|'size_down'|'exit_review'
     size_multiplier = Column(Float, nullable=False, default=1.0)
     block_reason = Column(String(255), nullable=True)
+    # Top model features at decision time (JSON: {feature_name: value, ...} sorted by importance)
+    top_features = Column(JSON, nullable=True)
     # Back-filled by EOD script
     outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered
     outcome_4h_pct = Column(Float, nullable=True)       # price change 4h after decision

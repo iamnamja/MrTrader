@@ -24,6 +24,7 @@ def write_decision(
     block_reason: Optional[str] = None,
     news_signal=None,           # NewsSignal dataclass or None
     macro_context=None,         # MacroContext dataclass or None
+    top_features: Optional[dict] = None,  # {feature: value} top model inputs at decision time
 ) -> None:
     """
     Persist one PM decision row.  Fails silently — never blocks trading.
@@ -55,6 +56,9 @@ def write_decision(
         if macro_context is not None:
             row.macro_risk_level = getattr(macro_context, "overall_risk", None)
             row.macro_sizing_factor = getattr(macro_context, "global_sizing_factor", None)
+
+        if top_features:
+            row.top_features = top_features
 
         with get_session() as db:
             db.add(row)

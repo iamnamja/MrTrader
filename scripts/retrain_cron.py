@@ -148,6 +148,14 @@ def main() -> int:
     finally:
         db.close()
 
+    # Back-fill decision_audit outcomes (catches any the 16:30 EOD job missed)
+    try:
+        from app.database.decision_audit import backfill_outcomes
+        n = backfill_outcomes(lookback_days=14)
+        logger.info("decision_audit backfill: %d rows updated", n)
+    except Exception as exc:
+        logger.warning("decision_audit backfill failed (non-fatal): %s", exc)
+
     logger.info("Weekly retrain complete — v%d active", version)
     return 0
 

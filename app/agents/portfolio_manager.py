@@ -88,6 +88,11 @@ class PortfolioManager(BaseAgent):
         self._last_heartbeat_hour: int = -1      # last hour a loop-alive log was emitted
         # Per-task stats: attempts, failures, last duration (ms), last run timestamp
         self._task_stats: Dict[str, Dict[str, Any]] = {}
+        # Gap 1: cache features at inference so we can log top inputs per decision
+        self._last_swing_features: Dict[str, Dict[str, float]] = {}
+        self._last_intraday_features: Dict[str, Dict[str, float]] = {}
+        # Gap 2: EOD backfill + daily summary tracking
+        self._eod_jobs_run_today: bool = False
 
     # ─── Scheduling helpers ───────────────────────────────────────────────────
 
@@ -185,6 +190,9 @@ class PortfolioManager(BaseAgent):
                     self._premarket_run_today = False
                     self._benchmark_recorded_today = False
                     self._weekly_report_generated_today = False
+                    self._eod_jobs_run_today = False
+                    self._last_swing_features = {}
+                    self._last_intraday_features = {}
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
@@ -320,6 +328,18 @@ class PortfolioManager(BaseAgent):
                     await self._run_task(
                         "weekly_report", 16, 10,
                         self._generate_weekly_report(),
+                    )
+
+                # ── 16:30–16:59: EOD jobs (backfill outcomes + daily summary) ─
+                if (
+                    is_weekday
+                    and self._in_window(now, 16, 30, 17, 0)
+                    and not self._eod_jobs_run_today
+                ):
+                    self._eod_jobs_run_today = True
+                    await self._run_task(
+                        "eod_jobs", 16, 30,
+                        self._run_eod_jobs(),
                     )
 
                 # ── 17:00–23:59: retrain model ────────────────────────────────
@@ -534,6 +554,27 @@ class PortfolioManager(BaseAgent):
         except Exception as exc:
             self.logger.warning("NIS morning digest failed (non-fatal): %s", exc)
 
+    async def _run_eod_jobs(self) -> None:
+        """
+        16:30 ET: Back-fill outcome P&L for decision_audit rows and write daily summary.
+        Runs after market close so trades have settled.
+        """
+        # Gap 2: back-fill realized outcomes for all entered decisions
+        try:
+            from app.database.decision_audit import backfill_outcomes
+            n = await asyncio.to_thread(backfill_outcomes, 14)
+            self.logger.info("EOD backfill: %d decision_audit rows updated with outcomes", n)
+        except Exception as exc:
+            self.logger.warning("EOD backfill failed (non-fatal): %s", exc)
+
+        # Gap 3: write daily summary row to risk_metrics
+        try:
+            from app.database.daily_summary import write_daily_summary
+            await asyncio.to_thread(write_daily_summary)
+            self.logger.info("EOD daily summary written to risk_metrics")
+        except Exception as exc:
+            self.logger.warning("EOD daily summary failed (non-fatal): %s", exc)
+
     async def _record_daily_benchmark(self) -> None:
         """
         16:05 ET: Record today's strategy P&L vs SPY for benchmark comparison (Phase 22).
@@ -634,6 +675,7 @@ class PortfolioManager(BaseAgent):
             })
             return
 
+        self._last_swing_features = features_by_symbol  # Gap 1: cache for decision audit
         symbols = list(features_by_symbol.keys())
         model_feature_names = getattr(self.model, "feature_names", None)
         if model_feature_names:
@@ -1579,6 +1621,37 @@ class PortfolioManager(BaseAgent):
             title = (article or {}).get("title", "?")[:60] if article else "?"
             return f"negative_news: '{title}'"
 
+    def _top_features_for(self, symbol: str, strategy: str = "swing", top_n: int = 8) -> Optional[dict]:
+        """
+        Return the top-N most important feature values for symbol at decision time.
+        Uses model's global feature_importances_ to rank, then returns actual values.
+        Fails silently — audit trail never blocks trading.
+        """
+        try:
+            cache = self._last_swing_features if strategy == "swing" else self._last_intraday_features
+            feat_vals = cache.get(symbol)
+            if not feat_vals:
+                return None
+            model = self.model if strategy == "swing" else self.intraday_model
+            feature_names = getattr(model, "feature_names", None)
+            inner = getattr(model, "model", None)
+            importances = getattr(inner, "feature_importances_", None) if inner else None
+            if feature_names and importances is not None and len(feature_names) == len(importances):
+                ranked = sorted(
+                    zip(feature_names, importances), key=lambda x: x[1], reverse=True
+                )
+                return {
+                    f: round(float(feat_vals.get(f, 0.0)), 6)
+                    for f, _ in ranked[:top_n]
+                    if f in feat_vals
+                }
+            # Fallback: just return the top-N keys by absolute value
+            return dict(
+                sorted(feat_vals.items(), key=lambda kv: abs(kv[1]), reverse=True)[:top_n]
+            )
+        except Exception:
+            return None
+
         return None
 
     async def _build_proposals(self, selected: List[tuple]) -> List[Dict[str, Any]]:
@@ -1635,7 +1708,8 @@ class PortfolioManager(BaseAgent):
                         write_decision(symbol, "swing", "block",
                                        model_score=float(confidence),
                                        block_reason=f"nis_block_entry: {news_sig.rationale[:120]}",
-                                       news_signal=news_sig, macro_context=macro_ctx)
+                                       news_signal=news_sig, macro_context=macro_ctx,
+                                       top_features=self._top_features_for(symbol, "swing"))
                     except Exception:
                         pass
                     continue
@@ -1690,6 +1764,7 @@ class PortfolioManager(BaseAgent):
                     size_multiplier=round(float(news_sig.sizing_multiplier if news_sig else 1.0), 4),
                     news_signal=news_sig,
                     macro_context=macro_ctx,
+                    top_features=self._top_features_for(symbol, "swing"),
                 )
             except Exception:
                 pass

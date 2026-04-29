@@ -54,6 +54,16 @@ All phases 1–56 complete. Walk-forward gates passed for both models.
 - `_scan_new_opportunities()` gates on both macro + PM abstention before scanning
 - `_get_symbol_sector()` helper added to PM
 
+### Audit Trail Hardening (2026-04-29 session 3)
+
+| Gap | What Was Built |
+|---|---|
+| 1 — Feature explainability | `top_features` JSON column added to `decision_audit`; PM caches `features_by_symbol` and writes top-8 model-important feature values per decision |
+| 2 — Outcome backfill scheduled | `_run_eod_jobs()` in PM at 16:30 ET calls `backfill_outcomes(14)`; `retrain_cron.py` also calls it post-retrain |
+| 3 — Daily summary row | `app/database/daily_summary.py` → `write_daily_summary()` upserts `RiskMetric` with swing/intraday P&L, trade count, win rate, block rate breakdown |
+| 4 — Decision audit in report | `section_decision_audit()` + `section_daily_summary()` added to `scripts/paper_trading_report.py` |
+| 5 — Day replay script | `scripts/replay_day.py --date YYYY-MM-DD [--symbol X]` — chronological timeline of macro context, NIS signals, PM decisions (with top features), trades + fills, agent events |
+
 **Test count:** 1171 passing, 4 skipped.
 
 ---
@@ -192,6 +202,7 @@ COMPLETE (all shipped as of 2026-04-29):
   Swing review      — Phase 72 (NIS re-check for held positions)
   Gap accuracy      — Phase 73 (actual open bar, auto-exit already wired)
   API visibility    — Phase 74 (5 NIS + audit endpoints)
+  Audit hardening   — Gaps 1-5: feature explainability, EOD backfill, daily summary, report sections, day replay
 
 LET IT RUN:
   Phase 57  — Paper trading calibration (run 2-4 weeks, then review)
