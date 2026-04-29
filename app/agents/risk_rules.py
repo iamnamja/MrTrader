@@ -137,6 +137,78 @@ def validate_sector_concentration(
     )
 
 
+# ─── Rule 3b: Correlation Risk ───────────────────────────────────────────────
+
+def validate_correlation_risk(
+    symbol: str,
+    open_symbols: List[str],
+    account_value: float,
+    position_values: Dict[str, float],
+    lookback_days: int = 30,
+    limits: RiskLimits = None,
+) -> Tuple[bool, str]:
+    """
+    Reject if the proposed symbol is too highly correlated with an existing
+    position that already represents a meaningful slice of the portfolio.
+
+    Correlation is computed on daily close returns over the last `lookback_days`.
+    Fails open (returns True) if data is unavailable.
+    """
+    if limits is None:
+        limits = RiskLimits()
+
+    if not open_symbols:
+        return True, "No open positions — correlation check skipped"
+
+    try:
+        import numpy as np
+        import pandas as pd
+        import yfinance as yf
+
+        tickers = list({symbol} | set(open_symbols))
+        raw = yf.download(
+            tickers,
+            period=f"{lookback_days + 5}d",
+            progress=False,
+            auto_adjust=True,
+        )
+        if isinstance(raw.columns, pd.MultiIndex):
+            closes = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw["close"]
+        else:
+            closes = raw
+
+        closes = closes.dropna(how="all")
+        returns = closes.pct_change().dropna()
+
+        if symbol not in returns.columns or len(returns) < 10:
+            return True, f"Correlation check skipped — insufficient data for {symbol}"
+
+        sym_returns = returns[symbol]
+        for existing in open_symbols:
+            if existing not in returns.columns:
+                continue
+            pos_value = position_values.get(existing, 0.0)
+            pos_pct = pos_value / account_value if account_value > 0 else 0.0
+            if pos_pct < 0.05:
+                continue  # small positions don't drive sector risk
+            corr = float(sym_returns.corr(returns[existing]))
+            if corr > limits.max_correlation:
+                return (
+                    False,
+                    f"Correlation {symbol}/{existing} = {corr:.2f} > {limits.max_correlation:.2f} "
+                    f"({existing} is {pos_pct*100:.1f}% of portfolio)",
+                )
+
+        return True, f"Correlation risk OK for {symbol}"
+
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            "Correlation check failed (fail-open): %s", exc
+        )
+        return True, f"Correlation check skipped (data unavailable): {exc}"
+
+
 # ─── Rule 4: Daily Loss Limit ─────────────────────────────────────────────────
 
 def validate_daily_loss(

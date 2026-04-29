@@ -286,3 +286,34 @@ class LLMCallLog(Base):
     cost_usd = Column(Float, nullable=False)
     cache_hit = Column(Boolean, nullable=False, default=False)
     error = Column(Text, nullable=True)
+
+
+class DecisionAudit(Base):
+    """
+    Structured record of every PM entry/block decision.
+    Filled in at decision time; EOD script back-fills realized outcome columns.
+    Query example: SELECT block_reason, AVG(outcome_pnl_pct), COUNT(*)
+                   FROM decision_audit WHERE final_decision='block'
+                   GROUP BY block_reason
+    """
+    __tablename__ = "decision_audit"
+
+    id = Column(String(36), primary_key=True)          # UUID
+    decided_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    strategy = Column(String(20), nullable=False)       # 'swing' | 'intraday'
+    model_score = Column(Float, nullable=True)          # ML confidence at decision time
+    news_action_policy = Column(String(30), nullable=True)   # NIS Tier 2 action_policy
+    news_direction_score = Column(Float, nullable=True)
+    news_materiality = Column(Float, nullable=True)
+    news_sizing_multiplier = Column(Float, nullable=True)
+    news_rationale = Column(Text, nullable=True)
+    macro_risk_level = Column(String(10), nullable=True)     # NIS Tier 1 risk level
+    macro_sizing_factor = Column(Float, nullable=True)
+    final_decision = Column(String(20), nullable=False)  # 'enter'|'block'|'size_down'|'exit_review'
+    size_multiplier = Column(Float, nullable=False, default=1.0)
+    block_reason = Column(String(255), nullable=True)
+    # Back-filled by EOD script
+    outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered
+    outcome_4h_pct = Column(Float, nullable=True)       # price change 4h after decision
+    outcome_1d_pct = Column(Float, nullable=True)       # price change 1 day after decision

@@ -1480,6 +1480,8 @@ class PortfolioManager(BaseAgent):
                 "trade_type": "swing",
             }
             # NIS Tier 2: apply news signal overlay (non-blocking)
+            news_sig = None
+            macro_ctx = None
             try:
                 from app.news.intelligence_service import nis
                 from app.agents.premarket import premarket_intel
@@ -1492,6 +1494,14 @@ class PortfolioManager(BaseAgent):
                     self.logger.info(
                         "NIS block_entry %s: %s", symbol, news_sig.rationale
                     )
+                    try:
+                        from app.database.decision_audit import write_decision
+                        write_decision(symbol, "swing", "block",
+                                       model_score=float(confidence),
+                                       block_reason=f"nis_block_entry: {news_sig.rationale[:120]}",
+                                       news_signal=news_sig, macro_context=macro_ctx)
+                    except Exception:
+                        pass
                     continue
                 if news_sig.sizing_multiplier != 1.0:
                     old_qty = proposal["quantity"]
@@ -1534,6 +1544,23 @@ class PortfolioManager(BaseAgent):
                     proposal["ai_review"] = ai_summary
             except Exception:
                 pass
+
+            # Phase 61: Decision audit — record every enter decision
+            try:
+                from app.database.decision_audit import write_decision
+                final_size = proposal["quantity"] / max(1, int(
+                    self._calculate_quantity(price, 20_000.0, "swing", float(confidence))
+                ))
+                write_decision(
+                    symbol, "swing", "enter",
+                    model_score=float(confidence),
+                    size_multiplier=round(float(news_sig.sizing_multiplier if news_sig else 1.0), 4),
+                    news_signal=news_sig,
+                    macro_context=macro_ctx,
+                )
+            except Exception:
+                pass
+
             proposals.append(proposal)
 
         return proposals

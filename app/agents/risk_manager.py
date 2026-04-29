@@ -17,6 +17,7 @@ from app.agents.base import BaseAgent
 from app.agents.risk_rules import (
     RiskLimits,
     calculate_dynamic_stop_loss,
+    validate_correlation_risk,
     get_sector_exposure,
     validate_account_drawdown,
     validate_buying_power,
@@ -371,6 +372,20 @@ class RiskManager(BaseAgent):
         reasoning["checks"].append({"rule": "sector_concentration", "ok": ok, "msg": msg})
         if not ok:
             reasoning["failed_rule"] = "sector_concentration"
+            return False, reasoning
+
+        # ── Rule 3b: Correlation Risk ─────────────────────────────────────────
+        open_symbols = [p["symbol"] for p in positions if p.get("symbol") != symbol]
+        position_values = {
+            p["symbol"]: float(p.get("market_value", p.get("qty", 0) * entry_price))
+            for p in positions if p.get("symbol")
+        }
+        ok, msg = validate_correlation_risk(
+            symbol, open_symbols, account_value, position_values, limits=self.limits
+        )
+        reasoning["checks"].append({"rule": "correlation_risk", "ok": ok, "msg": msg})
+        if not ok:
+            reasoning["failed_rule"] = "correlation_risk"
             return False, reasoning
 
         # ── Rule 4: Daily Loss ────────────────────────────────────────────────

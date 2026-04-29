@@ -451,7 +451,7 @@ Once Haiku scoring is stable and we have enough volume to measure its error rate
 
 ---
 
-## Part 3 — One-Page Summary
+## Part 3 — One-Page Summary (updated 2026-04-29)
 
 ```
 DONE (2026-04-28 paper trading session):
@@ -461,29 +461,30 @@ DONE (2026-04-28 paper trading session):
   Phase 67 — Trader entry quality check (price run, spread, momentum, volume)
   Phase 68 — Live macro/market gate (SPY drawdown, FOMC, swing-blocked)
   Phase 69 — Dynamic stop trailing + partial exits (T1, VIX tightening, target ext.)
+  Phase 70 — PM re-scoring of unexecuted candidates (WITHDRAW signal) ✅
 
-NEXT (before next trading session):
-  Phase 70 — PM re-scoring of unexecuted candidates (stale entry withdrawal)
-  Phase 71 — Correlation/sector concentration in RM
+DONE (2026-04-29 NIS sprint):
+  Phase 58 — Earnings Calendar Gate ✅ (finnhub_source.fetch_earnings_calendar + CalendarEvent table)
+  Phase 59 — Macro Calendar Awareness ✅ (NIS Tier 1 wired into premarket.py — replaces binary FOMC block)
+  Phase 60 — Structured NewsSignal + Haiku LLM scorer ✅ (app/news/ full stack, 24 tests)
+  Phase 63 — News as PM scoring overlay ✅ (news_score_overlay() in _build_proposals())
 
-SPRINT 1 — Weeks 1-2: Calendar Intelligence
-  Phase 58 — Earnings Calendar Gate        ← HIGHEST PRIORITY
-  Phase 59 — Macro Calendar Awareness
-  Phase 51 — Multi-scan Intraday (if Phase 50 passes)
+  Bug fixes also shipped:
+    - Trader 3 PM cutoff now intraday-only (was blocking swing)
+    - log_decision emitted when macro gate blocks entry
+    - _scan_new_opportunities() now gates on macro + PM abstention
 
-SPRINT 2 — Weeks 3-4: Structured News + Audit
-  Phase 60 — Structured NewsSignal + Haiku LLM scorer
-  Phase 61 — Decision Audit Trail
+BUILDING NOW:
+  Phase 71 — Correlation/sector concentration in RM (pairwise corr >0.70 veto)
+  Phase 61 — Decision Audit Trail (decision_audit table, EOD P&L backfill)
 
-SPRINT 3 — Weeks 5-6: Morning Intelligence + First Review
-  Phase 62 — Morning Pre-Market Intelligence Digest
-  Phase 57 — Paper Trading Review + Calibration (4-week mark)
-
-FUTURE (after calibration):
-  Phase 63 — News as scoring overlay (continuous, not boolean)
-  Phase 64 — News as model features (needs 60 days history)
-  Phase 65 — Source expansion + basic clustering
-  Phase 66 — Sonnet escalation for high-stakes events
+REMAINING BACKLOG (priority order):
+  Phase 51 — Multi-scan intraday (3 windows: 9:45, 11:00, 13:30 + cooldown + daily P&L cap)
+  Phase 62 — Morning pre-market intelligence digest (8 AM NIS pre-score, cached before open)
+  Phase 57 — Paper Trading Review + Calibration (precondition: 4 weeks + Phase 61 data)
+  Phase 64 — News as model features (precondition: 60 days point-in-time history)
+  Phase 65 — Source expansion + basic clustering (after Phase 63 baseline measured)
+  Phase 66 — Sonnet escalation for high-stakes events (after Haiku error rate measured)
 ```
 
 ---
