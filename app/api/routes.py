@@ -869,6 +869,45 @@ async def get_performance_review(days: int = 30):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/analytics/daily-summary")
+async def get_daily_summary(days: int = 30):
+    """Return daily summary rows from risk_metrics (populated by PM EOD job at 16:30 ET)."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import RiskMetric
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with get_session() as db:
+            rows = (
+                db.query(RiskMetric)
+                .filter(RiskMetric.timestamp >= cutoff)
+                .order_by(RiskMetric.date.desc())
+                .limit(days)
+                .all()
+            )
+        result = []
+        for r in rows:
+            pos = r.position_concentration or {}
+            sec = r.sector_concentration or {}
+            result.append({
+                "date": r.date,
+                "daily_pnl": r.daily_pnl,
+                "swing_pnl": pos.get("swing_pnl", 0.0),
+                "intraday_pnl": pos.get("intraday_pnl", 0.0),
+                "swing_trades": pos.get("swing_trades", 0),
+                "intraday_trades": pos.get("intraday_trades", 0),
+                "swing_win_rate": pos.get("swing_win_rate"),
+                "block_rate": sec.get("block_rate", 0.0),
+                "nis_blocks": sec.get("nis_blocks", 0),
+                "macro_blocks": sec.get("macro_blocks", 0),
+                "correlation_blocks": sec.get("correlation_blocks", 0),
+            })
+        return {"rows": result, "count": len(result)}
+    except Exception as exc:
+        logger.error("Daily summary error: %s", exc)
+        return {"rows": [], "count": 0}
+
+
 @router.get("/analytics/portfolio-heat")
 async def get_portfolio_heat():
     """Return current portfolio heat (total risk as % of account value)."""

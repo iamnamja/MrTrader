@@ -9,6 +9,7 @@ import type {
   ReadinessReport, ReadinessCheckItem, AttributionItem,
   MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
   RegimeDetail, PerformanceReview, DriftItem, ConfigSchemaEntry,
+  NisMacroContext, NisSignal, DecisionAuditRow, GateSummaryRow, DailySummaryRow,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -194,9 +195,10 @@ function MacroWidget() {
 // ── Overview Panel ────────────────────────────────────────────────────────────
 type ChartRange = '1d' | '1w' | '1m'
 
-function OverviewPanel({ summary, health, decisions }: {
+function OverviewPanel({ summary, health, decisions, macroCtx }: {
   summary: Summary; health: Health | null
   decisions: Decision[]
+  macroCtx: NisMacroContext | null
 }) {
   const [positions, setPositions] = useState<import('./types').Position[]>([])
   const [chartRange, setChartRange] = useState<ChartRange>('1d')
@@ -251,6 +253,9 @@ function OverviewPanel({ summary, health, decisions }: {
           )
         })()}
       </div>
+
+      {/* Macro Risk Banner */}
+      <MacroRiskBanner ctx={macroCtx} />
 
       {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
@@ -376,6 +381,188 @@ function Pill({ label, ok, warn }: { label: string; ok: boolean; warn?: boolean 
       textTransform: 'uppercase', letterSpacing: '.06em',
       background: `${color}1a`, color, border: `1px solid ${color}4d`,
     }}>{label}</span>
+  )
+}
+
+// ── Macro Risk Banner ─────────────────────────────────────────────────────────
+function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
+  if (!ctx) return null
+  const riskColor = ctx.overall_risk === 'HIGH' ? C.red : ctx.overall_risk === 'MEDIUM' ? C.yellow : C.green
+  const sizeStr = ctx.global_sizing_factor !== 1.0 ? ` · sizing ${ctx.global_sizing_factor}×` : ''
+  const blockStr = ctx.block_new_entries ? ' · NEW ENTRIES BLOCKED' : ''
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+      borderRadius: 6, marginBottom: 12,
+      background: `${riskColor}10`, border: `1px solid ${riskColor}40`,
+    }}>
+      <span style={{ fontWeight: 700, fontSize: 11, color: riskColor, whiteSpace: 'nowrap' }}>
+        NIS MACRO: {ctx.overall_risk}{blockStr}{sizeStr}
+      </span>
+      {ctx.rationale && (
+        <span style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {ctx.rationale}
+        </span>
+      )}
+      <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+        {ctx.events_today.length} event{ctx.events_today.length !== 1 ? 's' : ''} today
+      </span>
+    </div>
+  )
+}
+
+// ── PM Decision Audit Table ───────────────────────────────────────────────────
+function DecisionAuditTable({ rows }: { rows: DecisionAuditRow[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null)
+  if (!rows.length) {
+    return <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>No PM decisions recorded yet</div>
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+      <thead><tr>
+        {['Time', 'Symbol', 'Strat', 'Decision', 'Score', 'NIS Policy', 'Block Reason', 'Outcome'].map(h =>
+          <th key={h} style={s.th}>{h}</th>)}
+      </tr></thead>
+      <tbody>
+        {rows.map(r => {
+          const decColor = r.final_decision === 'enter' ? C.green
+            : r.final_decision === 'block' ? C.red
+            : r.final_decision === 'exit_review' ? C.yellow : C.muted
+          const nisColor = r.news_action_policy === 'block_entry' ? C.red
+            : r.news_action_policy?.includes('size_down') ? C.yellow : C.muted
+          const isExpanded = expanded === r.id
+          return (
+            <>
+              <tr key={r.id} onClick={() => setExpanded(isExpanded ? null : r.id)}
+                style={{ cursor: r.top_features || r.block_reason ? 'pointer' : 'default',
+                  background: isExpanded ? `${C.surface2}` : 'transparent' }}>
+                <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(r.decided_at)}</td>
+                <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{r.symbol}</td>
+                <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{r.strategy}</td>
+                <td style={s.td}>
+                  <span style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                    background: `${decColor}20`, color: decColor }}>
+                    {r.final_decision.toUpperCase()}
+                  </span>
+                </td>
+                <td style={{ ...s.td, color: C.text }}>{r.model_score != null ? r.model_score.toFixed(3) : '—'}</td>
+                <td style={{ ...s.td, color: nisColor, fontSize: 10 }}>{r.news_action_policy ?? '—'}</td>
+                <td style={{ ...s.td, color: C.muted, fontSize: 10, maxWidth: 180, overflow: 'hidden',
+                  textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.block_reason ? r.block_reason.split(':')[0] : '—'}
+                </td>
+                <td style={{ ...s.td, color: r.outcome_pnl_pct != null ? clr(r.outcome_pnl_pct) : C.muted }}>
+                  {r.outcome_pnl_pct != null ? (r.outcome_pnl_pct >= 0 ? '+' : '') + (r.outcome_pnl_pct * 100).toFixed(2) + '%' : '—'}
+                </td>
+              </tr>
+              {isExpanded && (r.top_features || r.block_reason) && (
+                <tr key={r.id + '_exp'} style={{ background: C.surface2 }}>
+                  <td colSpan={8} style={{ padding: '8px 12px', fontSize: 10, color: C.muted }}>
+                    {r.block_reason && (
+                      <div style={{ marginBottom: 4 }}>
+                        <span style={{ color: C.red }}>Block: </span>{r.block_reason}
+                      </div>
+                    )}
+                    {r.top_features && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                        <span style={{ color: C.accent, marginRight: 4 }}>Top features:</span>
+                        {Object.entries(r.top_features).map(([f, v]) => (
+                          <span key={f}>{f}: <span style={{ color: C.text }}>{Number(v).toFixed(4)}</span></span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+// ── NIS Signals Table ─────────────────────────────────────────────────────────
+function NisSignalsTable({ signals }: { signals: NisSignal[] }) {
+  if (!signals.length) {
+    return <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>No signals cached yet — morning digest runs at 09:00 ET</div>
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+      <thead><tr>
+        {['Symbol', 'Policy', 'Direction', 'Materiality', 'Confidence', 'Size', 'Age', 'Rationale'].map(h =>
+          <th key={h} style={s.th}>{h}</th>)}
+      </tr></thead>
+      <tbody>
+        {signals.map(sig => {
+          const polColor = sig.action_policy === 'block_entry' ? C.red
+            : sig.action_policy?.includes('size_down') ? C.yellow
+            : sig.action_policy?.includes('size_up') ? C.green : C.muted
+          const dirColor = sig.direction_score > 0.1 ? C.green : sig.direction_score < -0.1 ? C.red : C.muted
+          const ageMin = Math.round(sig.age_seconds / 60)
+          const ageStr = ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin / 60)}h`
+          return (
+            <tr key={sig.symbol}>
+              <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{sig.symbol}</td>
+              <td style={s.td}>
+                <span style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                  background: `${polColor}20`, color: polColor }}>
+                  {sig.action_policy}
+                </span>
+              </td>
+              <td style={{ ...s.td, color: dirColor }}>{sig.direction_score >= 0 ? '+' : ''}{sig.direction_score.toFixed(2)}</td>
+              <td style={{ ...s.td, color: C.text }}>{sig.materiality_score.toFixed(2)}</td>
+              <td style={{ ...s.td, color: C.text }}>{sig.confidence.toFixed(2)}</td>
+              <td style={{ ...s.td, color: sig.sizing_multiplier !== 1.0 ? C.yellow : C.muted }}>
+                {sig.sizing_multiplier.toFixed(2)}×
+              </td>
+              <td style={{ ...s.td, color: C.muted }}>{ageStr}</td>
+              <td style={{ ...s.td, color: C.muted, fontSize: 10, maxWidth: 220,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {sig.rationale ?? '—'}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+// ── Gate Summary Table ────────────────────────────────────────────────────────
+function GateSummaryTable({ rows }: { rows: GateSummaryRow[] }) {
+  if (!rows.length) {
+    return <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>
+      No gate summary yet — needs ~2 weeks of data with backfilled outcomes
+    </div>
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+      <thead><tr>
+        {['Block Reason', 'Count', 'Avg Missed P&L', 'Verdict'].map(h =>
+          <th key={h} style={s.th}>{h}</th>)}
+      </tr></thead>
+      <tbody>
+        {rows.map((r, i) => {
+          const pnl = r.avg_pnl_pct
+          const verdict = pnl == null ? '—'
+            : pnl < -0.005 ? '✓ Blocked losers'
+            : pnl > 0.005 ? '⚠ Blocked winners'
+            : 'Neutral'
+          const verdictColor = pnl == null ? C.muted : pnl < -0.005 ? C.green : pnl > 0.005 ? C.red : C.muted
+          return (
+            <tr key={i}>
+              <td style={{ ...s.td, color: C.text, fontFamily: 'monospace' }}>{r.block_reason ?? 'unclassified'}</td>
+              <td style={{ ...s.td, color: C.accent }}>{r.count}</td>
+              <td style={{ ...s.td, color: pnl != null ? clr(pnl) : C.muted }}>
+                {pnl != null ? (pnl >= 0 ? '+' : '') + (pnl * 100).toFixed(2) + '%' : '—'}
+              </td>
+              <td style={{ ...s.td, color: verdictColor, fontWeight: 600 }}>{verdict}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 }
 
@@ -566,18 +753,35 @@ function StatusPill({ status }: { status: string }) {
 interface SignalRow { time: string; symbol: string; kind: 'buy' | 'sell' | 'signal'; msg: string }
 
 function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decision[] }) {
+  const [auditRows, setAuditRows] = useState<DecisionAuditRow[]>([])
+  const [strategy, setStrategy] = useState<'all' | 'swing' | 'intraday'>('all')
+
+  const loadAudit = useCallback(async (strat: string) => {
+    try {
+      const j = await api.decisionAuditRecent(150, strat === 'all' ? undefined : strat) as { decisions?: DecisionAuditRow[] }
+      setAuditRows(j.decisions ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadAudit(strategy) }, [loadAudit, strategy])
+  useEffect(() => {
+    const id = setInterval(() => loadAudit(strategy), 30000)
+    return () => clearInterval(id)
+  }, [loadAudit, strategy])
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Live signal feed */}
       <div style={s.card}>
-        <div style={s.cardTitle}>Live Signal Feed</div>
-        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+        <div style={s.cardTitle}>Live Signal Feed (WebSocket)</div>
+        <div style={{ maxHeight: 200, overflowY: 'auto' }}>
           {feed.length === 0
-            ? <div style={{ color: C.muted, textAlign: 'center', padding: 30, fontSize: 11 }}>Waiting for signals via WebSocket...</div>
+            ? <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>Waiting for signals via WebSocket...</div>
             : feed.map((row, i) => {
               const color = row.kind === 'buy' ? C.green : row.kind === 'sell' ? C.red : C.blue
               const label = row.kind === 'buy' ? 'ENTRY' : row.kind === 'sell' ? 'EXIT' : 'SIGNAL'
               return (
-                <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: `1px solid rgba(255,255,255,.04)`, fontSize: 11 }}>
+                <div key={i} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid rgba(255,255,255,.04)`, fontSize: 11 }}>
                   <span style={{ color: C.muted, minWidth: 80, whiteSpace: 'nowrap' }}>{row.time}</span>
                   <span style={{ color: C.accent, fontWeight: 600, minWidth: 50 }}>{row.symbol}</span>
                   <span style={{ padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600, background: `${color}26`, color }}>{label}</span>
@@ -587,9 +791,35 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
             })}
         </div>
       </div>
+
+      {/* PM Decision Audit — main review table */}
       <div style={s.card}>
-        <div style={s.cardTitle}>Agent Decisions (Last 50)</div>
-        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={s.cardTitle}>PM Decision Audit (click row for detail)</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['all', 'swing', 'intraday'] as const).map(s2 => (
+              <button key={s2} onClick={() => { setStrategy(s2); loadAudit(s2) }} style={{
+                padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: 'pointer',
+                border: `1px solid ${strategy === s2 ? C.accent : C.border}`,
+                background: strategy === s2 ? `${C.accent}22` : 'transparent',
+                color: strategy === s2 ? C.accent : C.muted,
+              }}>{s2}</button>
+            ))}
+            <button onClick={() => loadAudit(strategy)} style={{
+              padding: '3px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+              border: `1px solid ${C.border}`, background: 'transparent', color: C.muted,
+            }}>↻</button>
+          </div>
+        </div>
+        <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+          <DecisionAuditTable rows={auditRows} />
+        </div>
+      </div>
+
+      {/* Legacy agent decisions (compact) */}
+      <div style={s.card}>
+        <div style={s.cardTitle}>Agent System Events (Last 50)</div>
+        <div style={{ maxHeight: 200, overflowY: 'auto' }}>
           <DecisionsTable rows={decisions} />
         </div>
       </div>
@@ -1230,6 +1460,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: string |
 function AnalyticsPanel() {
   const [attribution, setAttribution] = useState<AttributionItem[]>([])
   const [days, setDays] = useState(90)
+  const [nisCtx, setNisCtx] = useState<NisMacroContext | null>(null)
+  const [nisSignals, setNisSignals] = useState<NisSignal[]>([])
+  const [gateSummary, setGateSummary] = useState<GateSummaryRow[]>([])
+  const [analyticsTab, setAnalyticsTab] = useState<'attribution' | 'nis' | 'gates'>('attribution')
 
   const load = useCallback(async (d = days) => {
     try {
@@ -1250,10 +1484,38 @@ function AnalyticsPanel() {
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    api.nisMacro().then((j: unknown) => {
+      const ctx = j as NisMacroContext & { status?: string }
+      if (!ctx.status) setNisCtx(ctx)
+    }).catch(() => {})
+    api.nisSignals().then((j: unknown) => {
+      const res = j as { signals?: NisSignal[] }
+      setNisSignals(res.signals ?? [])
+    }).catch(() => {})
+    api.decisionAuditSummary().then((j: unknown) => {
+      const res = j as { gate_summary?: GateSummaryRow[] }
+      setGateSummary(res.gate_summary ?? [])
+    }).catch(() => {})
+  }, [])
+
   const totalPnl = attribution.reduce((s, a) => s + a.total_pnl, 0)
 
   return (
     <div>
+      {/* Sub-tab selector */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+        {([['attribution', 'Signal Attribution'], ['nis', 'NIS Intelligence'], ['gates', 'Gate Calibration']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setAnalyticsTab(key)} style={{
+            padding: '6px 16px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            border: `1px solid ${analyticsTab === key ? C.accent : C.border}`,
+            background: analyticsTab === key ? `${C.accent}22` : 'transparent',
+            color: analyticsTab === key ? C.accent : C.muted,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {analyticsTab === 'attribution' && <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: C.accent }}>Signal Attribution</div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1297,6 +1559,83 @@ function AnalyticsPanel() {
             </table>
           )}
       </div>
+      </div>}
+
+      {analyticsTab === 'nis' && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Macro context card */}
+        {nisCtx ? (
+          <div style={s.card}>
+            <div style={s.cardTitle}>Today's NIS Macro Context</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 12 }}>
+              <KpiCard label="Overall Risk" value={nisCtx.overall_risk}
+                color={nisCtx.overall_risk === 'HIGH' ? C.red : nisCtx.overall_risk === 'MEDIUM' ? C.yellow : C.green} />
+              <KpiCard label="Sizing Factor" value={nisCtx.global_sizing_factor.toFixed(2) + '×'}
+                color={nisCtx.global_sizing_factor < 1 ? C.yellow : C.green} />
+              <KpiCard label="Block Entries" value={nisCtx.block_new_entries ? 'YES' : 'NO'}
+                color={nisCtx.block_new_entries ? C.red : C.green} />
+              <KpiCard label="Events Today" value={String(nisCtx.events_today.length)} />
+            </div>
+            {nisCtx.rationale && (
+              <div style={{ fontSize: 11, color: C.muted, padding: '8px 0', borderTop: `1px solid ${C.border}` }}>
+                {nisCtx.rationale}
+              </div>
+            )}
+            {nisCtx.events_today.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginTop: 8 }}>
+                <thead><tr>
+                  {['Event', 'Time', 'Risk', 'Direction', 'Sizing', 'Block', 'Summary'].map(h =>
+                    <th key={h} style={s.th}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {nisCtx.events_today.map((e, i) => (
+                    <tr key={i}>
+                      <td style={{ ...s.td, color: C.text, fontWeight: 600 }}>{e.event_type}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{e.event_time ?? '—'}</td>
+                      <td style={{ ...s.td, color: e.risk_level === 'HIGH' ? C.red : e.risk_level === 'MEDIUM' ? C.yellow : C.green }}>
+                        {e.risk_level}
+                      </td>
+                      <td style={{ ...s.td, color: e.direction === 'BULLISH' ? C.green : e.direction === 'BEARISH' ? C.red : C.muted }}>
+                        {e.direction}
+                      </td>
+                      <td style={{ ...s.td, color: e.sizing_factor < 1 ? C.yellow : C.muted }}>{e.sizing_factor.toFixed(2)}×</td>
+                      <td style={{ ...s.td, color: e.block_new_entries ? C.red : C.muted }}>{e.block_new_entries ? 'Yes' : 'No'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{e.consensus_summary ?? e.rationale ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ) : (
+          <div style={{ ...s.card, color: C.muted, textAlign: 'center', padding: 24, fontSize: 11 }}>
+            Macro context not yet available — premarket routine runs at 09:00 ET
+          </div>
+        )}
+
+        {/* Stock signals */}
+        <div style={s.card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={s.cardTitle}>Cached Stock Signals ({nisSignals.length})</div>
+            <div style={{ display: 'flex', gap: 8, fontSize: 10, color: C.muted }}>
+              {nisSignals.filter(s2 => s2.action_policy === 'block_entry').length > 0 &&
+                <span style={{ color: C.red }}>🚫 {nisSignals.filter(s2 => s2.action_policy === 'block_entry').length} blocked</span>}
+              {nisSignals.filter(s2 => s2.action_policy?.includes('size_down')).length > 0 &&
+                <span style={{ color: C.yellow }}>↓ {nisSignals.filter(s2 => s2.action_policy?.includes('size_down')).length} sized down</span>}
+            </div>
+          </div>
+          <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+            <NisSignalsTable signals={nisSignals} />
+          </div>
+        </div>
+      </div>}
+
+      {analyticsTab === 'gates' && <div style={s.card}>
+        <div style={s.cardTitle}>Gate Calibration — Did each block reason protect us?</div>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>
+          Positive avg missed P&amp;L = gate blocked winners (recalibrate). Negative = gate correctly blocked losers. Needs ~2 weeks of backfilled outcomes.
+        </div>
+        <GateSummaryTable rows={gateSummary} />
+      </div>}
     </div>
   )
 }
@@ -1442,6 +1781,7 @@ function PerformanceReviewPanel() {
   const [data, setData] = useState<PerformanceReview | null>(null)
   const [days, setDays] = useState(30)
   const [loading, setLoading] = useState(false)
+  const [dailyRows, setDailyRows] = useState<DailySummaryRow[]>([])
 
   const load = useCallback(async (d: number) => {
     setLoading(true)
@@ -1450,6 +1790,17 @@ function PerformanceReviewPanel() {
       setData(j)
     } catch { /* ignore */ }
     finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => {
+    // Fetch daily summary rows from risk_metrics (populated by EOD job)
+    fetch('/api/dashboard/analytics/daily-summary?days=30')
+      .then(r => r.ok ? r.json() : null)
+      .then((j: unknown) => {
+        const arr = (j as { rows?: DailySummaryRow[] })?.rows ?? []
+        setDailyRows(Array.isArray(arr) ? arr : [])
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => { load(days) }, [load, days])
@@ -1577,6 +1928,45 @@ function PerformanceReviewPanel() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Daily Summary Table */}
+      <div style={{ ...s.card, marginTop: 12 }}>
+        <div style={s.cardTitle}>Daily Summary (EOD job · last 30 days)</div>
+        {dailyRows.length === 0 ? (
+          <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>
+            No daily summary yet — EOD job runs at 16:30 ET
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>
+                {['Date', 'Total P&L', 'Swing P&L', 'Intraday P&L', 'Trades', 'Win Rate', 'Block Rate', 'NIS Blocks', 'Macro Blocks', 'Corr Blocks'].map(h =>
+                  <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {dailyRows.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, color: C.muted, whiteSpace: 'nowrap' }}>{r.date}</td>
+                    <td style={{ ...s.td, color: clr(r.daily_pnl), fontWeight: 600 }}>
+                      {r.daily_pnl != null ? (r.daily_pnl >= 0 ? '+' : '') + '$' + Math.abs(r.daily_pnl).toFixed(2) : '—'}
+                    </td>
+                    <td style={{ ...s.td, color: clr(r.swing_pnl) }}>{(r.swing_pnl >= 0 ? '+' : '') + '$' + Math.abs(r.swing_pnl).toFixed(2)}</td>
+                    <td style={{ ...s.td, color: clr(r.intraday_pnl) }}>{(r.intraday_pnl >= 0 ? '+' : '') + '$' + Math.abs(r.intraday_pnl).toFixed(2)}</td>
+                    <td style={s.td}>{r.swing_trades + r.intraday_trades}</td>
+                    <td style={{ ...s.td, color: r.swing_win_rate != null ? clr(r.swing_win_rate - 0.5) : C.muted }}>
+                      {r.swing_win_rate != null ? (r.swing_win_rate * 100).toFixed(0) + '%' : '—'}
+                    </td>
+                    <td style={{ ...s.td, color: r.block_rate > 0.5 ? C.yellow : C.muted }}>{(r.block_rate * 100).toFixed(0)}%</td>
+                    <td style={{ ...s.td, color: r.nis_blocks > 0 ? C.yellow : C.muted }}>{r.nis_blocks}</td>
+                    <td style={{ ...s.td, color: r.macro_blocks > 0 ? C.yellow : C.muted }}>{r.macro_blocks}</td>
+                    <td style={{ ...s.td, color: r.correlation_blocks > 0 ? C.yellow : C.muted }}>{r.correlation_blocks}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -2106,6 +2496,7 @@ export default function App() {
   const [signalFeed, setSignalFeed] = useState<SignalRow[]>([])
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([])
   const [wsConnected, setWsConnected] = useState(false)
+  const [macroCtx, setMacroCtx] = useState<NisMacroContext | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const { toasts, add: toast } = useToasts()
 
@@ -2198,6 +2589,11 @@ export default function App() {
   useEffect(() => {
     loadSummary()
     loadDecisions()
+    // Fetch NIS macro context once on load (updated daily by premarket routine)
+    api.nisMacro().then((j: unknown) => {
+      const ctx = j as NisMacroContext & { status?: string }
+      if (!ctx.status) setMacroCtx(ctx)
+    }).catch(() => {})
     const id = setInterval(() => { loadSummary(); loadDecisions() }, 10000)
     return () => clearInterval(id)
   }, [loadSummary, loadDecisions])
@@ -2224,7 +2620,7 @@ export default function App() {
       {/* Panels */}
       <div style={{ flex: 1, padding: '16px 20px', overflowY: 'auto' }}>
         {tab === 'Overview' && (
-          <OverviewPanel summary={summary} health={health} decisions={decisions} />
+          <OverviewPanel summary={summary} health={health} decisions={decisions} macroCtx={macroCtx} />
         )}
         {tab === 'Positions' && <PositionsPanel onRefresh={loadSummary} />}
         {tab === 'Trades' && <TradesPanel />}

@@ -69,4 +69,11 @@ export const api = {
   monitorHistory: (days = 7) => get(`/api/dashboard/monitor/history?days=${days}`),
   // AI briefing
   aiBriefing: () => get('/api/orchestrator/ai-briefing'),
+  // NIS & Decision Audit (Phase 74 + audit hardening)
+  nisMacro: () => get('/api/nis/macro'),
+  nisSignals: () => get('/api/nis/signals'),
+  nisCost: (days = 7) => get(`/api/nis/cost?days=${days}`),
+  decisionAuditRecent: (limit = 100, strategy?: string) =>
+    get(`/api/decision-audit/recent?limit=${limit}${strategy ? `&strategy=${strategy}` : ''}`),
+  decisionAuditSummary: () => get('/api/decision-audit/summary'),
 }

@@ -246,6 +246,80 @@ export interface MonitorHealth {
   consecutive_losing_days: number
 }
 
+export interface NisMacroEvent {
+  event_type: string
+  event_time: string | null
+  risk_level: string
+  direction: string
+  sizing_factor: number
+  block_new_entries: boolean
+  consensus_summary: string | null
+  rationale: string | null
+  already_priced_in: boolean
+}
+
+export interface NisMacroContext {
+  as_of: string
+  overall_risk: string        // 'LOW' | 'MEDIUM' | 'HIGH'
+  block_new_entries: boolean
+  global_sizing_factor: number
+  rationale: string | null
+  events_today: NisMacroEvent[]
+}
+
+export interface NisSignal {
+  symbol: string
+  action_policy: string
+  direction_score: number
+  materiality_score: number
+  downside_risk_score: number
+  upside_catalyst_score: number
+  confidence: number
+  already_priced_in_score: number
+  sizing_multiplier: number
+  rationale: string | null
+  top_headlines: string[]
+  scorer_tier: string
+  age_seconds: number
+  evaluated_at: string
+}
+
+export interface DecisionAuditRow {
+  id: string
+  decided_at: string
+  symbol: string
+  strategy: string
+  final_decision: string
+  model_score: number | null
+  size_multiplier: number
+  block_reason: string | null
+  news_action_policy: string | null
+  news_materiality: number | null
+  macro_risk_level: string | null
+  outcome_pnl_pct: number | null
+  top_features: Record<string, number> | null
+}
+
+export interface GateSummaryRow {
+  block_reason: string | null
+  count: number
+  avg_pnl_pct: number
+}
+
+export interface DailySummaryRow {
+  date: string
+  daily_pnl: number | null
+  swing_pnl: number
+  intraday_pnl: number
+  swing_trades: number
+  intraday_trades: number
+  swing_win_rate: number | null
+  block_rate: number
+  nis_blocks: number
+  macro_blocks: number
+  correlation_blocks: number
+}
+
 export interface DailySummary {
   date: string
   timestamp: string
