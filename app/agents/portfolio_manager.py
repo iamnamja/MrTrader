@@ -347,9 +347,11 @@ class PortfolioManager(BaseAgent):
                         self._run_eod_jobs(),
                     )
 
-                # ── 17:00–23:59: retrain model ────────────────────────────────
+                # ── 17:00–23:59: retrain model (scheduled weekday only) ───────
+                from app.ml.retrain_config import RETRAIN_WEEKDAY
                 if (
                     is_weekday
+                    and now.weekday() == RETRAIN_WEEKDAY
                     and now.hour >= 17
                     and not self._retrained_today
                 ):

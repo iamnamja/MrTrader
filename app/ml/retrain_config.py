@@ -16,6 +16,12 @@ Rules:
     is automatically restored — the new version is marked RETIRED
 """
 
+# ── Retraining schedule ──────────────────────────────────────────────────────
+# Day of week to run the weekly retrain (0=Monday … 6=Sunday).
+# Retrain only fires on this day — server restarts on other days don't trigger it.
+# Change to a different day if Wednesday conflicts with market events.
+RETRAIN_WEEKDAY: int = 2  # Wednesday
+
 # ── Swing model (daily bars, ~84 features, XGBoost) ─────────────────────────
 # Current champion: v135 — XGBoost, default hyperparams, 84 features
 # HPO: 20 trials per weekly retrain (~3 min extra, finds slightly better params)
