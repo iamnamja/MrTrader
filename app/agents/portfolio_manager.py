@@ -1910,54 +1910,153 @@ class PortfolioManager(BaseAgent):
     # ─── Retraining ───────────────────────────────────────────────────────────
 
     async def _retrain(self):
-        """Retrain swing + intraday models using settings from app.ml.retrain_config."""
-        import functools, os
-        from app.ml.retrain_config import SWING_RETRAIN, INTRADAY_RETRAIN
-        from app.ml.intraday_training import IntradayModelTrainer
+        """Retrain swing + intraday models with walk-forward gate enforcement.
 
-        # Cap worker threads so XGBoost/joblib don't spawn unbounded child processes on Windows
+        If the new model fails the gate, the previous ACTIVE model is restored
+        and the new version is marked RETIRED. Models only go live after passing.
+        """
+        import functools, os
+        from app.ml.retrain_config import SWING_RETRAIN, INTRADAY_RETRAIN, SWING_GATE, INTRADAY_GATE
+        from app.ml.intraday_training import IntradayModelTrainer
+        from app.database.session import get_session
+        from app.database.models import ModelVersion
+
         os.environ.setdefault("OMP_NUM_THREADS", "24")
         os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
-
         loop = asyncio.get_event_loop()
-        swing_ver = intraday_ver = None
 
-        # ── Swing retrain ────────────────────────────────────────────────────
-        self.logger.info("Starting scheduled swing model retraining (model_type=%s, hpo=%d)...",
-                         SWING_RETRAIN["model_type"], SWING_RETRAIN["hpo_trials"])
+        def _previous_active(strategy: str) -> int | None:
+            """Return version number of current ACTIVE model before we overwrite it."""
+            db = get_session()
+            try:
+                row = db.query(ModelVersion).filter_by(
+                    model_name=strategy, status="ACTIVE"
+                ).order_by(ModelVersion.version.desc()).first()
+                return row.version if row else None
+            finally:
+                db.close()
+
+        def _restore_previous(strategy: str, prev_version: int | None, new_version: int):
+            """Retire the failed new model and restore the previous ACTIVE one."""
+            if prev_version is None:
+                return
+            db = get_session()
+            try:
+                new = db.query(ModelVersion).filter_by(
+                    model_name=strategy, version=new_version
+                ).first()
+                if new:
+                    new.status = "RETIRED"
+                prev = db.query(ModelVersion).filter_by(
+                    model_name=strategy, version=prev_version
+                ).first()
+                if prev:
+                    prev.status = "ACTIVE"
+                db.commit()
+                self.logger.info("%s v%d gate failed — restored v%d as ACTIVE",
+                                 strategy, new_version, prev_version)
+            finally:
+                db.close()
+
+        swing_ver = intraday_ver = None
+        swing_promoted = intraday_promoted = False
+
+        # ── Swing retrain + gate ─────────────────────────────────────────────
+        self.logger.info("Swing retrain starting (model_type=%s hpo=%d wf_folds=%d)...",
+                         SWING_RETRAIN["model_type"], SWING_RETRAIN["hpo_trials"],
+                         SWING_RETRAIN["walk_forward_folds"])
+        prev_swing = _previous_active("swing")
         try:
             swing_ver = await loop.run_in_executor(
                 None,
                 functools.partial(self.trainer.train_model,
                                   fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"]),
             )
-            self.logger.info("Swing model retrained → v%d", swing_ver)
+            self.logger.info("Swing v%d trained — running walk-forward gate...", swing_ver)
+
+            # Walk-forward gate
+            from scripts.walkforward_tier3 import run_swing_walkforward
+            wf = await loop.run_in_executor(
+                None,
+                functools.partial(run_swing_walkforward,
+                                  n_folds=SWING_RETRAIN["walk_forward_folds"],
+                                  model_version=swing_ver),
+            )
+            avg_sh = wf.avg_sharpe
+            min_sh = wf.min_sharpe
+            gate_ok = (avg_sh >= SWING_GATE["min_avg_sharpe"] and
+                       min_sh >= SWING_GATE["min_fold_sharpe"])
+
+            from app.ml.training import ModelTrainer as _SwingTrainer
+            _SwingTrainer.record_tier3_result(swing_ver, avg_sh,
+                                              [f.sharpe for f in wf.folds], gate_ok)
+            if gate_ok:
+                swing_promoted = True
+                self.logger.info("Swing v%d GATE PASSED (avg=%.3f min=%.3f) — now ACTIVE",
+                                 swing_ver, avg_sh, min_sh)
+            else:
+                _restore_previous("swing", prev_swing, swing_ver)
+                self.logger.warning("Swing v%d GATE FAILED (avg=%.3f min=%.3f) — keeping v%d",
+                                    swing_ver, avg_sh, min_sh, prev_swing)
+                await self.log_decision("RETRAINING_GATE_FAILED", reasoning={
+                    "strategy": "swing", "version": swing_ver,
+                    "avg_sharpe": avg_sh, "min_sharpe": min_sh,
+                    "restored_version": prev_swing,
+                })
         except Exception as e:
-            self.logger.error("Swing retraining failed: %s", e, exc_info=True)
+            self.logger.error("Swing retrain failed: %s", e, exc_info=True)
             await self.log_decision("RETRAINING_FAILED", reasoning={"strategy": "swing", "error": str(e)})
 
-        # ── Intraday retrain ─────────────────────────────────────────────────
-        self.logger.info("Starting scheduled intraday model retraining...")
+        # ── Intraday retrain + gate ──────────────────────────────────────────
+        self.logger.info("Intraday retrain starting...")
+        prev_intraday = _previous_active("intraday")
         try:
             intraday_trainer = IntradayModelTrainer()
             intraday_ver = await loop.run_in_executor(
                 None,
                 functools.partial(intraday_trainer.train_model, **INTRADAY_RETRAIN),
             )
-            self.logger.info("Intraday model retrained → v%d", intraday_ver)
+            self.logger.info("Intraday v%d trained — running walk-forward gate...", intraday_ver)
+
+            from scripts.walkforward_tier3 import run_intraday_walkforward
+            wf = await loop.run_in_executor(
+                None,
+                functools.partial(run_intraday_walkforward, n_folds=3,
+                                  model_version=intraday_ver),
+            )
+            avg_sh = wf.avg_sharpe
+            min_sh = wf.min_sharpe
+            gate_ok = (avg_sh >= INTRADAY_GATE["min_avg_sharpe"] and
+                       min_sh >= INTRADAY_GATE["min_fold_sharpe"])
+
+            intraday_trainer.record_tier3_result(intraday_ver, avg_sh,
+                                                 [f.sharpe for f in wf.folds], gate_ok)
+            if gate_ok:
+                intraday_promoted = True
+                self.logger.info("Intraday v%d GATE PASSED (avg=%.3f min=%.3f) — now ACTIVE",
+                                 intraday_ver, avg_sh, min_sh)
+            else:
+                _restore_previous("intraday", prev_intraday, intraday_ver)
+                self.logger.warning("Intraday v%d GATE FAILED (avg=%.3f min=%.3f) — keeping v%d",
+                                    intraday_ver, avg_sh, min_sh, prev_intraday)
+                await self.log_decision("RETRAINING_GATE_FAILED", reasoning={
+                    "strategy": "intraday", "version": intraday_ver,
+                    "avg_sharpe": avg_sh, "min_sharpe": min_sh,
+                    "restored_version": prev_intraday,
+                })
         except Exception as e:
-            self.logger.error("Intraday retraining failed: %s", e, exc_info=True)
+            self.logger.error("Intraday retrain failed: %s", e, exc_info=True)
             await self.log_decision("RETRAINING_FAILED", reasoning={"strategy": "intraday", "error": str(e)})
 
-        # ── Reload both models and log ────────────────────────────────────────
+        # ── Reload whichever models passed, log outcome ───────────────────────
         self._try_load_model()
-        if swing_ver or intraday_ver:
+        if swing_promoted or intraday_promoted:
             await self.log_decision("MODEL_RETRAINED", reasoning={
-                "swing_version": swing_ver,
-                "intraday_version": intraday_ver,
+                "swing_version": swing_ver if swing_promoted else None,
+                "intraday_version": intraday_ver if intraday_promoted else None,
             })
 
-        # Reap any leftover joblib/loky worker processes spawned during training
+        # Reap leftover joblib/loky worker processes
         try:
             from joblib.externals.loky import get_reusable_executor
             get_reusable_executor().shutdown(wait=False, kill_workers=True)

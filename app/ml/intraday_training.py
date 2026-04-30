@@ -56,7 +56,7 @@ ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for
 ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
 
-ENTRY_OFFSETS = [12, 18, 24]  # Phase 50: bars post-open to scan (~60/90/120 min)
+ENTRY_OFFSETS = [12]  # single scan at bar 12 (~60 min post-open); v30 proved multi-window hurts
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
 
 # Parallelism config
@@ -788,7 +788,7 @@ def _symbol_to_rows(
     # Phase 50: multi-offset entry — sample at 3 points in the session so the model
     # learns how edge varies by time-of-day (open / mid / afternoon segments).
     # Each offset is the number of 5-min bars to use as features; remaining bars = hold window.
-    ENTRY_OFFSETS = [12, 18, 24]  # ~60min, 90min, 120min post-open
+    ENTRY_OFFSETS = [12]  # single scan; multi-window (v30) caused distribution mismatch at inference
 
     for i, day in enumerate(all_days):
         day_bars = day_groups.get(day)
