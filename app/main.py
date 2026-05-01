@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import subprocess
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedTimedRotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -34,23 +34,27 @@ def _setup_logging() -> None:
     root.setLevel(level)
 
     # Console handler (already added by uvicorn, but set our format)
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
-               for h in root.handlers):
+    plain_stream_handlers = [
+        h for h in root.handlers
+        if type(h) is logging.StreamHandler
+    ]
+    if not plain_stream_handlers:
         ch = logging.StreamHandler()
         ch.setFormatter(fmt)
         root.addHandler(ch)
     else:
-        for h in root.handlers:
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
-                h.setFormatter(fmt)
+        for h in plain_stream_handlers:
+            h.setFormatter(fmt)
 
-    # Rotating file handler — 10 MB per file, keep 30 files (~300 MB total)
-    fh = RotatingFileHandler(
+    # Daily rotating file handler — rotates at midnight, keeps 30 days
+    # Today: logs/mrtrader.log  |  Yesterday: logs/mrtrader.log.2026-04-30
+    fh = TimedTimedRotatingFileHandler(
         log_dir / "mrtrader.log",
-        maxBytes=10 * 1024 * 1024,
+        when="midnight",
         backupCount=30,
         encoding="utf-8",
     )
+    fh.suffix = "%Y-%m-%d"
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
