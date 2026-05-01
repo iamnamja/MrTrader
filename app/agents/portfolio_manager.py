@@ -11,6 +11,7 @@ Cycle:
 import asyncio
 import logging
 import time as _time
+import uuid
 import numpy as np
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
@@ -1330,6 +1331,7 @@ class PortfolioManager(BaseAgent):
                 "profit_target": target_price,
                 "source_agent": "portfolio_manager",
                 "trade_type": "intraday",
+                "proposal_uuid": str(uuid.uuid4()),
             }
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
             self._pending_approvals[proposal["symbol"]] = _time.monotonic()
@@ -1900,6 +1902,7 @@ class PortfolioManager(BaseAgent):
                 "profit_target": round(price * 1.05, 2),
                 "source_agent": "portfolio_manager",
                 "trade_type": "swing",
+                "proposal_uuid": str(uuid.uuid4()),
             }
             # NIS Tier 2: apply news signal overlay (non-blocking)
             news_sig = None

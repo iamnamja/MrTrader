@@ -132,7 +132,9 @@ class AlpacaClient:
             logger.debug(f"Position not found for {symbol}: {e}")
             return None
 
-    def place_market_order(self, symbol: str, quantity: int, side: str) -> Dict[str, Any]:
+    def place_market_order(
+        self, symbol: str, quantity: int, side: str, client_order_id: str | None = None
+    ) -> Dict[str, Any]:
         """
         Place a market order
 
@@ -140,20 +142,18 @@ class AlpacaClient:
             symbol: Stock symbol
             quantity: Number of shares
             side: 'buy' or 'sell'
+            client_order_id: Optional identifier we control (proposal UUID); queryable via Alpaca
         """
         try:
             _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-            order_request = MarketOrderRequest(
-                symbol=symbol,
-                qty=quantity,
-                side=order_side,
-                time_in_force=TimeInForce.DAY,
-            )
-            order = self.trading_client.submit_order(order_request)
+            kwargs = dict(symbol=symbol, qty=quantity, side=order_side, time_in_force=TimeInForce.DAY)
+            if client_order_id:
+                kwargs["client_order_id"] = client_order_id
+            order = self.trading_client.submit_order(MarketOrderRequest(**kwargs))
             logger.info(f"Market order placed: {symbol} {side} {quantity} shares")
             return {
-                "order_id": order.id,
+                "order_id": str(order.id),
                 "symbol": order.symbol,
                 "qty": int(order.qty),
                 "side": str(order.side),
@@ -166,7 +166,8 @@ class AlpacaClient:
             raise
 
     def place_limit_order(
-        self, symbol: str, quantity: int, side: str, limit_price: float
+        self, symbol: str, quantity: int, side: str, limit_price: float,
+        client_order_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Place a limit order
@@ -176,21 +177,21 @@ class AlpacaClient:
             quantity: Number of shares
             side: 'buy' or 'sell'
             limit_price: Limit price
+            client_order_id: Optional identifier we control (proposal UUID); queryable via Alpaca
         """
         try:
             _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-            order_request = LimitOrderRequest(
-                symbol=symbol,
-                qty=quantity,
-                side=order_side,
-                limit_price=limit_price,
-                time_in_force=TimeInForce.DAY,
+            kwargs = dict(
+                symbol=symbol, qty=quantity, side=order_side,
+                limit_price=limit_price, time_in_force=TimeInForce.DAY,
             )
-            order = self.trading_client.submit_order(order_request)
+            if client_order_id:
+                kwargs["client_order_id"] = client_order_id
+            order = self.trading_client.submit_order(LimitOrderRequest(**kwargs))
             logger.info(f"Limit order placed: {symbol} {side} {quantity} @ ${limit_price}")
             return {
-                "order_id": order.id,
+                "order_id": str(order.id),
                 "symbol": order.symbol,
                 "qty": int(order.qty),
                 "side": str(order.side),
