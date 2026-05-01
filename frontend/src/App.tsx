@@ -910,6 +910,19 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
     } catch { toast('Request failed', 'error') }
   }
 
+  if (status.trading_mode === 'paper') {
+    return (
+      <div style={{ ...s.card, textAlign: 'center', padding: 32 }}>
+        <div style={{ fontSize: 14, color: C.muted, marginBottom: 8 }}>Capital Ramp — Paper Mode</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+          Capital ramp stages apply to live trading only.<br />
+          In paper mode the full account equity is used for position sizing.<br />
+          Switch to live mode to activate the staged ramp.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>

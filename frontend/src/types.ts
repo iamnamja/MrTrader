@@ -92,6 +92,7 @@ export interface LiveStatus {
   days_elapsed?: number
   stages?: RampStage[]
   kill_switch_active?: boolean
+  trading_mode?: string
 }
 
 export interface AuditEntry {
