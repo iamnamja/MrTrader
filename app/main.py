@@ -228,8 +228,8 @@ async def startup_event():
     # Proposals in Redis survive process restarts; without this, a restarted RM will
     # re-approve proposals that PM already flagged as sent today.
     try:
-        from app.integrations.redis_queue import get_redis_queue
-        _rq = get_redis_queue()
+        from app.integrations.redis_queue import get_redis_queue as _get_rq
+        _rq = _get_rq()
         for _qname in ["trade_proposals", "risk_approved", "exit_requests", "pm_commands"]:
             _n = _rq.get_queue_length(_qname)
             if _n > 0:

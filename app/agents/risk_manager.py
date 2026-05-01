@@ -62,6 +62,9 @@ class RiskManager(BaseAgent):
         self.logger.info("Risk Manager started — listening on '%s'", TRADE_PROPOSALS_QUEUE)
         self.status = "running"
 
+        # Load persisted peak equity on startup so drawdown rule survives restarts
+        self._load_peak_equity()
+
         while self.status == "running":
             try:
                 proposal = await asyncio.to_thread(
@@ -69,6 +72,18 @@ class RiskManager(BaseAgent):
                 )
                 if proposal is None:
                     await asyncio.sleep(0)  # yield control
+                    continue
+
+                # Kill switch: reject all proposals immediately — no new trades allowed
+                from app.live_trading.kill_switch import kill_switch
+                if kill_switch.is_active:
+                    self.logger.warning(
+                        "Kill switch ACTIVE — rejecting proposal for %s",
+                        proposal.get("symbol"),
+                    )
+                    db_proposal = await asyncio.to_thread(self._persist_proposal, proposal)
+                    await self._reject(proposal, {"failed_rule": "kill_switch",
+                                                  "message": "Kill switch is active"}, db_proposal)
                     continue
 
                 self.logger.info(
@@ -311,6 +326,7 @@ class RiskManager(BaseAgent):
 
         if self._peak_equity is None or current_equity > self._peak_equity:
             self._peak_equity = current_equity
+            self._persist_peak_equity(current_equity)
 
         # ── Rule 0b: Gross exposure cap (80% of account) ─────────────────────
         total_deployed = sum(
@@ -691,6 +707,35 @@ class RiskManager(BaseAgent):
             return float(metric.daily_pnl) if metric and metric.daily_pnl is not None else 0.0
         finally:
             db.close()
+
+    # ── Phase 82: Persist peak equity across restarts ─────────────────────────
+
+    def _load_peak_equity(self) -> None:
+        """Restore peak equity high-water mark from DB on startup."""
+        try:
+            from app.database.config_store import get_config
+            db = get_session()
+            try:
+                val = get_config(db, "risk.peak_equity")
+                if val is not None:
+                    self._peak_equity = float(val)
+                    self.logger.info("Peak equity restored from DB: $%.2f", self._peak_equity)
+            finally:
+                db.close()
+        except Exception as exc:
+            self.logger.warning("Could not load peak equity from DB: %s", exc)
+
+    def _persist_peak_equity(self, value: float) -> None:
+        """Persist new peak equity high-water mark to DB."""
+        try:
+            from app.database.config_store import set_config
+            db = get_session()
+            try:
+                set_config(db, "risk.peak_equity", value, "Drawdown high-water mark")
+            finally:
+                db.close()
+        except Exception as exc:
+            self.logger.debug("Could not persist peak equity: %s", exc)
 
     def update_sector_map(self, sector_map: Dict[str, str]) -> None:
         """Update the symbol→sector mapping (called externally or at startup)."""
