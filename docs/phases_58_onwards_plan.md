@@ -155,17 +155,70 @@ Phases 72, 73, 74 shipped 2026-04-29.
 
 **Dependencies:** Phase 76 (so realized P&L is trustworthy)
 
-### Phase 78 — Periodic Reconciliation + Open-Order Sync (High, 1 day)
-**Gap:** Reconciliation runs only at startup. If Alpaca and DB diverge mid-session (manual close in Alpaca UI, limit order fills after restart), nothing notices until next restart.
+### Phase 78 — Order Lifecycle State Machine + Periodic Reconciliation (High, 2 days)
+
+**Context:** Today's order handling has multiple production gaps discovered during paper trading (TNDM duplicate positions, JBLU target miss, orphaned open orders). This phase makes the order lifecycle explicit, persistent, and resilient to crashes and restarts.
+
+#### 78a — Fix Partial Fill Handling (0.5 days)
+**Gap:** `_poll_pending_limit_orders` treats `partially_filled` identically to `filled` — records the partial qty and removes the order from tracking. The remaining unfilled shares stay open in Alpaca, can fill silently later, and become untracked positions.
 
 **What to build:**
-- `_reconciliation_loop` in PM — runs every 15 min during market hours, calls `startup_reconciler.reconcile()` plus new `cancel_orphaned_orders(alpaca, db_session)`
-- `cancel_orphaned_orders`: for each open Alpaca order without matching DB row, log + cancel
-- Persist `_pending_limit_orders` to DB table (or extend `Order.status='PENDING_LIMIT'`) so it survives restarts
+- When `order_status == "partially_filled"`: record the partial qty as a Trade ✅ (already done), then **immediately cancel the remainder** via `alpaca.cancel_order(order_id)`, log `PARTIAL_FILL_REMAINDER_CANCELLED` to decision audit
+- If partial fill qty is 0 (race condition): leave in pending, do not record or cancel
+- Test: mock status returning `partially_filled` with filled_qty=50/qty=100; assert Trade records 50 shares AND cancel is called for the order
 
-**Acceptance criteria:** Simulate restart with 1 pending limit order in Alpaca; verify it's cancelled OR re-tracked within 15 min of next reconciliation cycle.
+#### 78b — Persist `_pending_limit_orders` to DB (0.5 days)
+**Gap:** `_pending_limit_orders` is in-memory only. On uvicorn restart while a limit order is unfilled, the order ID is lost. Startup reconciler creates a placeholder Trade with default 2%/6% stop/target, overriding the strategy's ATR-based values.
 
-**Dependencies:** Phase 75
+**What to build:**
+- Add `PendingLimitOrder` DB table (or use `Order` with `status='PENDING_LIMIT'`): columns `symbol, order_id, shares, limit_price, intended_price, stop_price, target_price, atr, trade_type, created_at`
+- On limit order placement: write to DB immediately (before adding to in-memory dict)
+- On startup: load any rows where `status='PENDING_LIMIT'` and created today; re-populate `_pending_limit_orders` from DB; startup reconciler skips symbols that have a `PENDING_LIMIT` row
+- On fill/cancel/expire: delete the DB row
+- Test: simulate restart with one `PENDING_LIMIT` row; assert it's re-loaded into `_pending_limit_orders` and polled correctly
+
+#### 78c — Idempotency Keys on Order Placement (0.5 days)
+**Gap:** `place_limit_order` and `place_market_order` don't pass a `client_order_id`. If the app crashes between order submission and DB write, a restart can place a duplicate order.
+
+**What to build:**
+- Generate `client_order_id = f"mrtrader-{symbol}-{date.today()}-{uuid4().hex[:8]}"` before calling Alpaca
+- Pass as `client_order_id` in the order request
+- On duplicate detection (Alpaca returns 422 "order already exists for client_order_id"): look up the existing order by `client_order_id`, re-use its `order_id`, continue normally
+- Store `client_order_id` in `Order` table
+- Test: mock Alpaca to return 422 on second call; assert no duplicate Order row in DB
+
+#### 78d — Periodic Mid-Session Reconciliation (0.5 days)
+**Gap:** Reconciliation runs only at startup. Manual closes in Alpaca UI, fills of forgotten orders, or split/dividend adjustments aren't detected until next restart.
+
+**What to build:**
+- Add `_reconciliation_loop` task to Trader (not PM) — runs every 15 min during market hours (09:30–16:00 ET)
+- On each run: call `startup_reconciler.reconcile(alpaca, db)` + new `cancel_orphaned_orders(alpaca, db)` helper
+- `cancel_orphaned_orders`: for each open Alpaca order **not** in `_pending_limit_orders` (by order_id) and not in `Order` table, log `ORPHANED_ORDER_CANCELLED` to AuditLog and cancel
+- On ghost detection (DB ACTIVE but no Alpaca position): mark `Trade.status = 'RECONCILE_GHOST'`, do NOT re-enter, log to decision audit
+- Test: simulate mid-session manual close; assert Trade marked CLOSED within 15 min
+
+#### Summary — Order State Machine
+All orders must transition through explicit states, persisted in DB:
+
+```
+PENDING_LIMIT  →  FILLED         (polled, limit hit)
+               →  PARTIAL_FILLED (partial fill — record partial, cancel remainder)
+               →  CANCELLED      (EOD cutoff or manual)
+               →  EXPIRED        (DAY order expired)
+               →  REJECTED       (broker reject — alert + clean up)
+
+PENDING_MARKET →  FILLED         (poll get_order_status after submit)
+               →  REJECTED       (broker reject)
+```
+
+**Acceptance criteria (all sub-phases):**
+- Restart with 1 pending limit order → it's re-tracked from DB within 60s of startup
+- Partial fill (50 of 100 shares) → Trade records 50 shares, remainder cancelled, logged
+- Duplicate order attempt (crash+restart) → only 1 Order row in DB
+- Manual Alpaca close detected within 15 min of periodic reconciliation
+- Orphaned open order (not in our tracking) → cancelled + AuditLog within 15 min
+
+**Dependencies:** Phase 75 (kill switch must block entries before reconciler can safely cancel orders)
 
 ### Phase 79 — Point-in-Time Index Membership (High, 3 days)
 **Gap:** `SP_500_TICKERS`, `SP_100_TICKERS`, `RUSSELL_1000_TICKERS` are static Python lists reflecting ~early 2026 membership. Stocks delisted/acquired between 2021-2026 are silently absent from training, inflating walk-forward Sharpe.
@@ -395,7 +448,8 @@ LET IT RUN:
 CRITICAL / SAFETY (must fix before live money):
   Phase 75  — Wire kill switch into PM/RM/Trader + cancel open orders on activate [1 day]
   Phase 76  — Fix slippage measurement (use filled_avg_price, not get_latest_price) [0.5 days]
-  Phase 78  — Periodic reconciliation every 15 min; persist _pending_limit_orders [1 day]
+  Phase 78  — Order lifecycle state machine: partial fill cancel, persist pending orders to DB,
+              idempotency keys, periodic mid-session reconciliation [2 days]
   Phase 82  — Persist _peak_equity across restarts [0.5 days]
   Phase 83  — Deadman switch + external watchdog [1 day]
 
