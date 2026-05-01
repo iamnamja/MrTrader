@@ -482,6 +482,20 @@ LONG TERM (after calibration, needs 60 days NIS history):
               Also: confirm account type (cash vs margin) and T+1 settled-cash impact.
               Revisit: when paper trading is stable and 4+ weeks of clean data exists.
   Phase 91  — True technical day trader (new IntradayScalper agent, post-live-approval) [was Phase 80]
+  Phase 92  — Dashboard re-hydration on restart
+              On startup, reload today's agent_decisions from DB so morning summary, news digest,
+              premarket intel, and swing candidate panels repopulate immediately — currently these
+              panels go blank after any uvicorn restart until the next scheduled run.
+              Implementation: startup_event queries agent_decisions for today's
+              PREMARKET_INTELLIGENCE, NIS_MORNING_DIGEST, SWING_PREMARKET_ANALYSIS decisions
+              and pushes them into the dashboard cache / WebSocket state.
+  Phase 93  — Intraday model retrain (v34+)
+              v33 is producing 0–1 candidates per scan at barely-passing confidence (0.58–0.63).
+              Root cause: model likely trained on features that have drifted, or label quality
+              degraded. Action: run full intraday retrain with latest 90 days of 5-min bar data,
+              verify walk-forward gate (Sharpe > 1.5), confirm candidate count per scan increases
+              to 3–5 symbols at meaningful confidence (>0.65) before deploying.
+              Also review intraday feature engineering for staleness vs current market regime.
 
 OPEN QUESTIONS FOR MIN (from code review — must answer before proceeding):
   Q1: Universe scope after Phase 79 — retrain on PIT-R1000, keep SP-100-PIT gate, or accept bias?
