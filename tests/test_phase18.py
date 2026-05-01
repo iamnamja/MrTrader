@@ -168,7 +168,17 @@ class TestTraderLimitOrderEntry:
 
         result = self._make_result()
 
-        with patch("app.agents.trader.get_session"), \
+        mock_db = MagicMock()
+        mock_trade = MagicMock()
+        mock_trade.id = 99
+        mock_db.add = MagicMock()
+        mock_db.commit = MagicMock()
+        mock_db.rollback = MagicMock()
+        mock_db.close = MagicMock()
+        mock_db.refresh = MagicMock(side_effect=lambda obj: setattr(obj, "id", 99))
+        mock_db.query.return_value.filter_by.return_value.first.return_value = mock_trade
+
+        with patch("app.agents.trader.get_session", return_value=mock_db), \
              patch("app.database.agent_config.get_agent_config", return_value=0.003):
             await t._execute_entry("AAPL", 10, result, alpaca)
 
@@ -205,7 +215,9 @@ class TestTraderLimitOrderEntry:
                  patch.object(t, "log_decision", new_callable=AsyncMock):
                 await t._execute_entry("SPY", 5, result, alpaca)
 
-        alpaca.place_market_order.assert_called_once_with("SPY", 5, "buy")
+        alpaca.place_market_order.assert_called_once()
+        call_args = alpaca.place_market_order.call_args
+        assert call_args[0][:3] == ("SPY", 5, "buy")
         assert "SPY" not in t._pending_limit_orders
 
     @pytest.mark.asyncio
@@ -218,7 +230,11 @@ class TestTraderLimitOrderEntry:
 
         result = self._make_result()
 
-        with patch("app.agents.trader.get_session"), \
+        mock_db = MagicMock()
+        mock_db.refresh = MagicMock(side_effect=lambda obj: setattr(obj, "id", 99))
+        mock_db.query.return_value.filter_by.return_value.first.return_value = MagicMock(id=99)
+
+        with patch("app.agents.trader.get_session", return_value=mock_db), \
              patch("app.database.agent_config.get_agent_config", return_value=0.003):
             await t._execute_entry("TSLA", 3, result, alpaca)
 

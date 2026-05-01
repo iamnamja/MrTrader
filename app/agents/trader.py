@@ -618,6 +618,19 @@ class Trader(BaseAgent):
         trade_type = proposal.get("trade_type", "swing")
         intended_price = result.entry_price
 
+        proposal_uuid = proposal.get("proposal_uuid")
+        signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
+
+        # ── Write PENDING_FILL before touching Alpaca ─────────────────────────
+        # Survives any restart between order placement and fill confirmation.
+        pending_trade = self._write_pending_fill(
+            symbol, shares, intended_price, result, proposal, signal_type,
+        )
+        if pending_trade is None:
+            self.logger.error("Could not write PENDING_FILL for %s — aborting entry", symbol)
+            return
+        pending_trade_id = pending_trade
+
         if trade_type == "swing":
             # Use limit order 0.3% below ask for better execution
             limit_offset = 0.003
@@ -638,14 +651,22 @@ class Trader(BaseAgent):
             else:
                 limit_price = round(intended_price * (1 - limit_offset), 2)
 
-            order = alpaca.place_limit_order(symbol, shares, "buy", limit_price)
-            if not order:
-                self.logger.error("Limit entry order failed for %s", symbol)
+            try:
+                order = alpaca.place_limit_order(
+                    symbol, shares, "buy", limit_price, client_order_id=proposal_uuid,
+                )
+            except Exception as exc:
+                self.logger.error("Limit entry order failed for %s: %s", symbol, exc)
+                self._cancel_pending_fill(pending_trade_id)
                 return
 
             order_id = order.get("order_id")
+            # Update the PENDING_FILL record with the real Alpaca order ID
+            self._update_pending_fill_order_id(pending_trade_id, order_id)
+
             self._pending_limit_orders[symbol] = {
                 "order_id": order_id,
+                "trade_id": pending_trade_id,
                 "shares": shares,
                 "intended_price": intended_price,
                 "limit_price": limit_price,
@@ -657,12 +678,16 @@ class Trader(BaseAgent):
                 "LIMIT ORDER placed %s x%d @ $%.4f (ask=%.4f offset=%.1f%%) — awaiting fill",
                 symbol, shares, limit_price, intended_price, limit_offset * 100,
             )
-            return  # position is created once fill confirmed in _poll_pending_limit_orders
+            return  # position is confirmed in _poll_pending_limit_orders
 
         # Intraday: market order
-        order = alpaca.place_market_order(symbol, shares, "buy")
-        if not order:
-            self.logger.error("Market order failed for %s", symbol)
+        try:
+            order = alpaca.place_market_order(
+                symbol, shares, "buy", client_order_id=proposal_uuid,
+            )
+        except Exception as exc:
+            self.logger.error("Market order failed for %s: %s", symbol, exc)
+            self._cancel_pending_fill(pending_trade_id)
             return
 
         filled_price = alpaca.get_latest_price(symbol) or intended_price
@@ -670,8 +695,72 @@ class Trader(BaseAgent):
 
         await self._record_entry(
             symbol, shares, filled_price, intended_price, slippage_bps,
-            order.get("order_id"), result, proposal,
+            order.get("order_id"), result, proposal, pending_trade_id=pending_trade_id,
         )
+
+    def _write_pending_fill(
+        self, symbol: str, shares: int, intended_price: float,
+        result, proposal: Dict[str, Any], signal_type: str,
+    ) -> int | None:
+        """Write PENDING_FILL Trade to DB before placing the order. Returns trade.id or None."""
+        trade_type = proposal.get("trade_type", "swing")
+        proposal_uuid = proposal.get("proposal_uuid")
+        db = get_session()
+        try:
+            trade = Trade(
+                symbol=symbol,
+                direction="BUY",
+                entry_price=intended_price,
+                quantity=shares,
+                status="PENDING_FILL",
+                signal_type=signal_type,
+                trade_type=trade_type,
+                stop_price=result.stop_price,
+                target_price=result.target_price,
+                highest_price=intended_price,
+                bars_held=0,
+                proposal_id=proposal_uuid,
+            )
+            db.add(trade)
+            db.commit()
+            db.refresh(trade)
+            self.logger.info("PENDING_FILL written for %s (trade_id=%d)", symbol, trade.id)
+            return trade.id
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Failed to write PENDING_FILL for %s: %s", symbol, exc)
+            return None
+        finally:
+            db.close()
+
+    def _update_pending_fill_order_id(self, trade_id: int, alpaca_order_id: str) -> None:
+        """Store the Alpaca order ID on the PENDING_FILL trade record."""
+        db = get_session()
+        try:
+            trade = db.query(Trade).filter_by(id=trade_id).first()
+            if trade:
+                trade.alpaca_order_id = alpaca_order_id
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Failed to update alpaca_order_id for trade %d: %s", trade_id, exc)
+        finally:
+            db.close()
+
+    def _cancel_pending_fill(self, trade_id: int) -> None:
+        """Mark a PENDING_FILL trade as CANCELLED when order placement fails."""
+        db = get_session()
+        try:
+            trade = db.query(Trade).filter_by(id=trade_id, status="PENDING_FILL").first()
+            if trade:
+                trade.status = "CANCELLED"
+                db.commit()
+                self.logger.info("PENDING_FILL trade %d marked CANCELLED (order failed)", trade_id)
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Failed to cancel pending fill trade %d: %s", trade_id, exc)
+        finally:
+            db.close()
 
     async def _record_entry(
         self,
@@ -683,27 +772,35 @@ class Trader(BaseAgent):
         order_id: str,
         result,
         proposal: Dict[str, Any],
+        pending_trade_id: int | None = None,
     ):
-        """Persist a confirmed entry to DB and update active_positions."""
+        """Promote a PENDING_FILL trade to ACTIVE and record the fill details."""
         trade_type = proposal.get("trade_type", "swing")
+        signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
         db = get_session()
         try:
-            # NONE means no rule-based pattern fired but entry was ML-driven — label it clearly
-            signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
-            trade = Trade(
-                symbol=symbol,
-                direction="BUY",
-                entry_price=filled_price,
-                quantity=shares,
-                status="ACTIVE",
-                signal_type=signal_type,
-                trade_type=trade_type,
-                stop_price=result.stop_price,
-                target_price=result.target_price,
-                highest_price=filled_price,
-                bars_held=0,
-            )
-            db.add(trade)
+            # Update the existing PENDING_FILL record — don't create a duplicate
+            trade = db.query(Trade).filter_by(id=pending_trade_id, status="PENDING_FILL").first() \
+                if pending_trade_id else None
+
+            if trade:
+                trade.entry_price = filled_price
+                trade.quantity = shares
+                trade.status = "ACTIVE"
+                trade.highest_price = filled_price
+                trade.alpaca_order_id = order_id
+            else:
+                # Fallback: no PENDING_FILL found (e.g. reconciler path) — create fresh
+                trade = Trade(
+                    symbol=symbol, direction="BUY", entry_price=filled_price,
+                    quantity=shares, status="ACTIVE", signal_type=signal_type,
+                    trade_type=trade_type, stop_price=result.stop_price,
+                    target_price=result.target_price, highest_price=filled_price,
+                    bars_held=0, alpaca_order_id=order_id,
+                    proposal_id=proposal.get("proposal_uuid"),
+                )
+                db.add(trade)
+
             db.flush()
 
             db_order = Order(
@@ -718,11 +815,11 @@ class Trader(BaseAgent):
             )
             db.add(db_order)
 
-            # Link back to the persisted TradeProposal so the audit trail is complete
-            proposal_id = proposal.get("_proposal_id")
-            if proposal_id:
+            # Link back to TradeProposal audit trail
+            proposal_db_id = proposal.get("_proposal_id")
+            if proposal_db_id:
                 from app.database.models import TradeProposal
-                tp = db.query(TradeProposal).filter(TradeProposal.id == proposal_id).first()
+                tp = db.query(TradeProposal).filter(TradeProposal.id == proposal_db_id).first()
                 if tp:
                     tp.trade_id = trade.id
 
@@ -801,6 +898,7 @@ class Trader(BaseAgent):
                         order_id=order_id,
                         result=pending["result"],
                         proposal=pending["proposal"],
+                        pending_trade_id=pending.get("trade_id"),
                     )
                     self.logger.info(
                         "LIMIT FILLED %s x%d @ $%.4f (slip=%.1fbps)",
@@ -809,11 +907,13 @@ class Trader(BaseAgent):
 
                 elif order_status in ("canceled", "expired", "rejected"):
                     del self._pending_limit_orders[symbol]
+                    self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info("Limit order %s for %s cancelled/expired — removing", order_id, symbol)
 
                 elif cancel_unfilled:
                     alpaca.cancel_order(order_id)
                     del self._pending_limit_orders[symbol]
+                    self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info(
                         "EOD: cancelled unfilled limit order for %s (order=%s)", symbol, order_id
                     )

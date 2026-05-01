@@ -16,14 +16,16 @@ class Trade(Base):
     entry_price = Column(Float, nullable=False)
     exit_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=False)
-    status = Column(String(20), default="PENDING")  # PENDING, ACTIVE, CLOSED, REJECTED
+    status = Column(String(20), default="PENDING")  # PENDING_FILL, ACTIVE, CLOSED, REJECTED, CANCELLED, RECONCILE_GHOST
     pnl = Column(Float, nullable=True)
-    signal_type = Column(String(20), nullable=True)   # EMA_CROSSOVER | RSI_DIP | NONE
+    signal_type = Column(String(20), nullable=True)   # EMA_CROSSOVER | RSI_DIP | ML_RANK | RECONCILED
     trade_type = Column(String(20), nullable=True, default="swing")  # swing | intraday
     stop_price = Column(Float, nullable=True)         # initial ATR stop
     target_price = Column(Float, nullable=True)       # ATR profit target
     highest_price = Column(Float, nullable=True)      # for trailing stop tracking
     bars_held = Column(Integer, default=0)            # bars in position
+    alpaca_order_id = Column(String(50), nullable=True, index=True)   # Alpaca order UUID; set after order placed
+    proposal_id = Column(String(36), nullable=True, index=True)       # PM-generated UUID; threads through full chain
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     closed_at = Column(DateTime, nullable=True)
 

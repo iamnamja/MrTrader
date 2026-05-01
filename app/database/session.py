@@ -32,10 +32,29 @@ def get_db() -> Session:
 
 
 def init_db():
-    """Initialize database - create all tables"""
+    """Initialize database - create all tables and run column migrations."""
     logger.info("Initializing database...")
     Base.metadata.create_all(bind=engine)
+    _migrate_columns()
     logger.info("Database initialization complete")
+
+
+def _migrate_columns() -> None:
+    """Add new columns to existing tables (idempotent — safe to run on every startup)."""
+    migrations = [
+        # (table, column, definition)
+        ("trades", "alpaca_order_id", "VARCHAR(50)"),
+        ("trades", "proposal_id",    "VARCHAR(36)"),
+    ]
+    with engine.connect() as conn:
+        for table, col, col_def in migrations:
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"))
+                conn.commit()
+                logger.info("Migration: added %s.%s", table, col)
+            except Exception:
+                # Column already exists — expected on every subsequent startup
+                conn.rollback()
 
 
 def get_session() -> Session:
