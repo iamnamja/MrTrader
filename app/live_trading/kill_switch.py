@@ -90,10 +90,26 @@ class KillSwitch:
                 logger.error("KS: failed to close %s — %s", symbol, exc)
                 errors.append({"symbol": symbol, "error": str(exc)})
 
+        # Cancel all open orders so no pending limits can fill after halt
+        cancelled_orders: List[str] = []
+        try:
+            from app.startup_reconciler import _get_open_alpaca_orders
+            open_orders = _get_open_alpaca_orders(alpaca)
+            for o in open_orders:
+                try:
+                    alpaca.cancel_order(o["order_id"])
+                    cancelled_orders.append(o["order_id"])
+                    logger.warning("KS: cancelled open order %s (%s %s)", o["order_id"], o["side"], o["symbol"])
+                except Exception as exc:
+                    logger.error("KS: failed to cancel order %s — %s", o["order_id"], exc)
+        except Exception as exc:
+            logger.error("KS: could not fetch open orders for cancellation: %s", exc)
+
         result = {
             "status": "activated",
             "reason": reason,
             "positions_closed": closed,
+            "orders_cancelled": cancelled_orders,
             "errors": errors,
             "activated_at": datetime.utcnow().isoformat(),
         }

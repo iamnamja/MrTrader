@@ -299,7 +299,25 @@ class Trader(BaseAgent):
                         circuit_breaker._open_reason,
                     )
                 else:
-                    await self._scan_cycle()
+                    from app.live_trading.kill_switch import kill_switch
+                    if kill_switch.is_active:
+                        self.logger.warning("Kill switch ACTIVE — skipping scan; cancelling pending limit orders")
+                        self.approved_symbols.clear()
+                        if self._pending_limit_orders:
+                            try:
+                                from app.integrations import get_alpaca_client
+                                _ks_alpaca = get_alpaca_client()
+                                for _sym, _pend in list(self._pending_limit_orders.items()):
+                                    try:
+                                        _ks_alpaca.cancel_order(_pend["order_id"])
+                                        self.logger.warning("KS: cancelled pending limit %s (%s)", _pend["order_id"], _sym)
+                                    except Exception as _ce:
+                                        self.logger.error("KS: cancel pending limit %s failed: %s", _sym, _ce)
+                                self._pending_limit_orders.clear()
+                            except Exception as _ke:
+                                self.logger.error("KS: could not cancel pending limit orders: %s", _ke)
+                    else:
+                        await self._scan_cycle()
                 await asyncio.sleep(CHECK_INTERVAL)
 
             except asyncio.CancelledError:
@@ -681,6 +699,14 @@ class Trader(BaseAgent):
             return  # position is confirmed in _poll_pending_limit_orders
 
         # Intraday: market order
+        # Capture pre-trade mid as intended_price for accurate slippage measurement (Phase 76)
+        try:
+            _pre_quote = alpaca.get_quote(symbol)
+            if _pre_quote and _pre_quote.get("mid", 0) > 0:
+                intended_price = _pre_quote["mid"]
+        except Exception:
+            pass
+
         try:
             order = alpaca.place_market_order(
                 symbol, shares, "buy", client_order_id=proposal_uuid,
@@ -690,12 +716,25 @@ class Trader(BaseAgent):
             self._cancel_pending_fill(pending_trade_id)
             return
 
-        filled_price = alpaca.get_latest_price(symbol) or intended_price
+        # Poll for actual fill price instead of using next-bar price (Phase 76)
+        order_id = order.get("order_id")
+        filled_price = intended_price
+        for _attempt in range(6):
+            import time as _t
+            _t.sleep(1)
+            try:
+                _status = alpaca.get_order_status(order_id)
+                if _status and _status.get("filled_avg_price"):
+                    filled_price = float(_status["filled_avg_price"])
+                    break
+            except Exception:
+                pass
+
         slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2) if intended_price > 0 else 0.0
 
         await self._record_entry(
             symbol, shares, filled_price, intended_price, slippage_bps,
-            order.get("order_id"), result, proposal, pending_trade_id=pending_trade_id,
+            order_id, result, proposal, pending_trade_id=pending_trade_id,
         )
 
     def _write_pending_fill(

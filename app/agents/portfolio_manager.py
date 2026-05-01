@@ -961,6 +961,13 @@ class PortfolioManager(BaseAgent):
         Open volatility has settled; entries here get cleaner fills.
         Falls back to running a fresh analysis if 08:00 run was missed.
         """
+        from app.live_trading.kill_switch import kill_switch
+        if kill_switch.is_active:
+            self.logger.warning("Kill switch ACTIVE — suppressing all swing proposals")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "kill_switch"})
+            self._swing_proposals = []
+            return
+
         if not self._swing_proposals:
             self.logger.warning(
                 "No swing proposals cached at send time — pre-market analysis did not run or "
@@ -1066,6 +1073,12 @@ class PortfolioManager(BaseAgent):
         intraday_ver = getattr(self.intraday_model, "version", None)
         win_str = f"{window[0]:02d}:{window[1]:02d}"
         self.logger.info("Selecting intraday instruments (%s scan) — model v%s", win_str, intraday_ver)
+
+        from app.live_trading.kill_switch import kill_switch
+        if kill_switch.is_active:
+            self.logger.warning("Kill switch ACTIVE — suppressing intraday scan %s", win_str)
+            await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "kill_switch", "window": win_str})
+            return
 
         if not self.intraday_model.is_trained:
             self.logger.warning("No intraday model available — skipping intraday scan")
