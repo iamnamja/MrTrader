@@ -2374,11 +2374,44 @@ function ReasoningCard({ type, r }: { type: string; r: Record<string, unknown> }
     )
   }
 
-  // Fallback — clean key/value table
+  // POSITION_REVIEW — show per-symbol score + action
+  if (type === 'POSITION_REVIEW') {
+    const reviewed = (r.reviewed as string[]) || []
+    const actions = (r.actions as Record<string, { score?: number; action?: string; reason?: string }>) || {}
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {reviewed.map(sym => {
+          const a = actions[sym] ?? {}
+          const action = a.action ?? 'HOLD'
+          const color = action === 'EXIT' ? C.red : action === 'EXTEND_TARGET' ? C.green : C.muted
+          return (
+            <div key={sym} style={{ display: 'flex', gap: 8, padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,.04)', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: C.accent, minWidth: 55 }}>{sym}</span>
+              <span style={{ fontSize: 11, color: C.muted, minWidth: 70 }}>
+                {a.score != null ? `score ${(a.score * 100).toFixed(1)}%` : '—'}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, color }}>{action}</span>
+              {a.reason && <span style={{ fontSize: 10, color: C.muted }}>{String(a.reason)}</span>}
+            </div>
+          )
+        })}
+        {reviewed.length === 0 && <div style={{ fontSize: 11, color: C.muted }}>No positions reviewed</div>}
+      </div>
+    )
+  }
+
+  // Fallback — render scalars inline, objects/arrays as collapsed JSON
   return (
     <div style={{ paddingTop: 6 }}>
       {Object.entries(r).map(([k, v]) =>
-        typeof v === 'object' ? null : row(k.replace(/_/g, ' '), v)
+        typeof v === 'object' && v !== null
+          ? <div key={k} style={{ padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,.04)' }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 2 }}>{k.replace(/_/g, ' ')}</div>
+              <pre style={{ fontSize: 10, color: C.text, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {JSON.stringify(v, null, 2)}
+              </pre>
+            </div>
+          : row(k.replace(/_/g, ' '), v)
       )}
     </div>
   )
