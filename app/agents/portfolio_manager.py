@@ -849,6 +849,12 @@ class PortfolioManager(BaseAgent):
         ranked = sorted(zip(symbols, boosted_probs), key=lambda x: x[1], reverse=True)
         selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:top_n]
 
+        swing_top5 = [(s, round(p, 3)) for s, p in ranked[:5]]
+        self.logger.info(
+            "Swing scan: scored %d symbols, %d above %.2f threshold | top5: %s",
+            len(ranked), len(selected), min_conf,
+            ", ".join(f"{s}={p}" for s, p in swing_top5),
+        )
         self.logger.info(
             "Pre-market analysis complete — %d candidates: %s (proposals held until 09:50)",
             len(selected), [s for s, _ in selected],
@@ -1243,6 +1249,14 @@ class PortfolioManager(BaseAgent):
             self.logger.debug("Daily intraday P&L cap check failed (non-fatal): %s", exc)
 
         ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+
+        top5 = [(s, round(p, 3)) for s, p in ranked[:5]]
+        n_above = sum(1 for _, p in ranked if p >= intraday_min_conf)
+        self.logger.info(
+            "Intraday scan %s: scored %d symbols, %d above %.2f threshold | top5: %s",
+            win_str, len(ranked), n_above, intraday_min_conf,
+            ", ".join(f"{s}={p}" for s, p in top5),
+        )
 
         # Store top-N by score for later scans (10:45, 13:00 use this instead of full universe)
         if not use_morning_candidates:

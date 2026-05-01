@@ -1,26 +1,75 @@
 import asyncio
 import logging
+import os
+import subprocess
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import WebSocket as _WebSocket
+
 from app.config import settings
 from app.database import init_db, check_db_connection
 from app.integrations import get_alpaca_client, get_redis_queue
-import os
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from app.api.orchestrator_routes import router as orchestrator_router
 from app.api.routes import router as dashboard_router
 from app.api.watchlist_routes import router as watchlist_router
 from app.api.config_routes import router as config_router
 from app.api.nis_routes import router as nis_router, audit_router
 from app.api.websocket import websocket_endpoint
-from fastapi import WebSocket as _WebSocket
 
-# Configure logging
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+
+def _setup_logging() -> None:
+    """Configure root logger: console + rotating file, both at settings.log_level."""
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Console handler (already added by uvicorn, but set our format)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+               for h in root.handlers):
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+    else:
+        for h in root.handlers:
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+                h.setFormatter(fmt)
+
+    # Rotating file handler — 10 MB per file, keep 30 files (~300 MB total)
+    fh = RotatingFileHandler(
+        log_dir / "mrtrader.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=30,
+        encoding="utf-8",
+    )
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+
+def _git_info() -> tuple[str, str]:
+    """Return (short_commit_hash, branch_name). Returns ('unknown', 'unknown') on error."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        return commit, branch
+    except Exception:
+        return "unknown", "unknown"
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
@@ -52,7 +101,23 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize app on startup"""
-    logger.info("Starting MrTrader application...")
+    import sys
+    from datetime import datetime, timezone
+
+    commit, branch = _git_info()
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    py_ver = sys.version.split()[0]
+
+    banner = (
+        "\n"
+        "═" * 72 + "\n"
+        f"  MRTRADER STARTUP  {now_utc}\n"
+        f"  git: {commit}  branch: {branch}\n"
+        f"  mode: {settings.trading_mode.upper()}  capital: ${settings.initial_capital:,.0f}"
+        f"  python: {py_ver}  port: {settings.port}\n"
+        "═" * 72
+    )
+    logger.info(banner)
 
     # Initialize database
     try:
@@ -139,6 +204,28 @@ async def startup_event():
         orchestrator.register_agent("trader", trader)
         await orchestrator.start()
 
+        # Log active model versions from DB
+        try:
+            from app.database.session import get_session
+            from app.database.models import ModelVersion
+            _db = get_session()
+            try:
+                for _name in ("swing", "intraday"):
+                    _row = (
+                        _db.query(ModelVersion)
+                        .filter_by(model_name=_name, status="ACTIVE")
+                        .order_by(ModelVersion.version.desc())
+                        .first()
+                    )
+                    if _row:
+                        logger.info("Active model: %s v%d (path=%s)", _name, _row.version, _row.model_path)
+                    else:
+                        logger.warning("Active model: %s — NONE found in DB", _name)
+            finally:
+                _db.close()
+        except Exception as _e:
+            logger.warning("Could not log model versions: %s", _e)
+
         # Phase 53: start live news monitor as background task
         from app.agents.news_monitor import news_monitor
         asyncio.create_task(news_monitor.run(), name="news_monitor")
@@ -170,7 +257,11 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up on shutdown"""
-    logger.info("Shutting down MrTrader application...")
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    logger.info("═" * 72)
+    logger.info("  MRTRADER SHUTDOWN  %s", now_utc)
+    logger.info("═" * 72)
     from app.orchestrator import orchestrator
     await orchestrator.stop()
 

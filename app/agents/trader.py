@@ -600,6 +600,11 @@ class Trader(BaseAgent):
             self.logger.warning("%s: position sizer returned 0 shares — skipping", symbol)
             return
 
+        self.logger.info(
+            "ENTRY PROCEEDING %s | type=%s ml_score=%.3f price=$%.2f stop=$%.2f target=$%.2f shares=%d",
+            symbol, trade_type, ml_score or 0.0,
+            result.entry_price, result.stop_price, result.target_price, shares,
+        )
         await self._execute_entry(symbol, shares, result, alpaca)
 
     async def _execute_entry(self, symbol: str, shares: int, result, alpaca):
@@ -905,6 +910,19 @@ class Trader(BaseAgent):
         highest = max(pos["highest_price"], current_price)
         pos["highest_price"] = highest
 
+        # Periodic position status log — every ~30 min so we have a paper trail
+        _last_log = pos.get("_last_status_log", 0)
+        if now.timestamp() - _last_log >= 1800:
+            pos["_last_status_log"] = now.timestamp()
+            pnl_now = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
+            self.logger.info(
+                "POSITION STATUS %s | price=$%.2f entry=$%.2f stop=$%.2f target=$%.2f | "
+                "pnl=%.1f%% bars_held=%d",
+                symbol, current_price, pos["entry_price"],
+                pos.get("stop_price", 0), pos.get("target_price", 0),
+                pnl_now, pos.get("bars_held", 0),
+            )
+
         # bars_held = trading DAYS held, not heartbeat ticks.
         # Only increment when the calendar date advances (once per day).
         today_date = now.date()
@@ -1060,7 +1078,16 @@ class Trader(BaseAgent):
             should_exit = False
 
         if should_exit:
+            self.logger.info(
+                "EXIT TRIGGERED %s | reason=%s price=$%.2f stop=$%.2f target=$%.2f",
+                symbol, reason, current_price, pos.get("stop_price", 0), pos.get("target_price", 0),
+            )
             await self._execute_exit(symbol, current_price, reason, alpaca)
+        else:
+            self.logger.debug(
+                "EXIT CHECK %s | price=$%.2f stop=$%.2f target=$%.2f — holding",
+                symbol, current_price, pos.get("stop_price", 0), pos.get("target_price", 0),
+            )
 
     async def _execute_partial_exit(self, symbol: str, current_price: float, atr_val: float, alpaca) -> None:
         """
