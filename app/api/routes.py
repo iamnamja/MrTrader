@@ -295,7 +295,7 @@ async def get_open_positions():
                 signal_type=t.signal_type if t else None,
                 trade_type=getattr(t, "trade_type", None) if t else None,
                 bars_held=t.bars_held if t else None,
-                entry_date=t.created_at.strftime("%Y-%m-%d") if t and t.created_at else None,
+                entry_date=t.created_at.strftime("%Y-%m-%d %H:%M") if t and t.created_at else None,
                 trade_id=t.id if t else None,
                 risk_reward=rr,
             ))

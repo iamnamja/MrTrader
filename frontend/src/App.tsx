@@ -595,7 +595,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Entry Date', 'Bars'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
