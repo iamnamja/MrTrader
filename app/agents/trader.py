@@ -58,6 +58,10 @@ class Trader(BaseAgent):
         self._last_regime: str = ""   # track regime changes for stop tightening
         # Pending limit orders for swing entries (symbol → order metadata)
         self._pending_limit_orders: Dict[str, Dict[str, Any]] = {}
+        # Symbols discarded today after hitting max entry quality rejections.
+        # Cleared at midnight reset. Prevents re-approval from new PM proposal
+        # batches from bypassing the 3-strike discard.
+        self._daily_discarded_symbols: set = set()
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -244,6 +248,7 @@ class Trader(BaseAgent):
                 if today != self._last_date:
                     self._force_closed_today = False
                     self._last_date = today
+                    self._daily_discarded_symbols.clear()
 
                 # Drain all pending approved proposals (non-blocking)
                 while True:
@@ -430,6 +435,16 @@ class Trader(BaseAgent):
             self.approved_symbols.pop(symbol, None)
             return
 
+        if symbol in self._pending_limit_orders:
+            self.logger.debug("%s: limit order already pending — skipping duplicate entry", symbol)
+            self.approved_symbols.pop(symbol, None)
+            return
+
+        if symbol in self._daily_discarded_symbols:
+            self.logger.info("%s: discarded earlier today — rejecting re-approval", symbol)
+            self.approved_symbols.pop(symbol, None)
+            return
+
         # Intraday only: no new entries after 3:00 PM ET (force-close at 3:45 PM)
         now_et = datetime.now(ET)
         if trade_type == "intraday" and now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
@@ -552,6 +567,7 @@ class Trader(BaseAgent):
                         symbol, proposal["_reject_count"], eq.reason,
                     )
                     self.approved_symbols.pop(symbol, None)
+                    self._daily_discarded_symbols.add(symbol)
                 return
 
         # Size the position
