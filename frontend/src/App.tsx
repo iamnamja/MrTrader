@@ -319,7 +319,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
             : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead><tr>
-                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal', 'Opened'].map(h =>
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -349,6 +349,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                         <td style={{ ...s.td, color: C.red }}>{stop != null ? fmt$(stop) : '—'}</td>
                         <td style={{ ...s.td, color: C.green }}>{target != null ? fmt$(target) : '—'}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
                       </tr>
                     )
                   })}
@@ -577,7 +578,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
   }, [])
   useEffect(() => { load() }, [load])
 
-  const totalUnreal = rows.reduce((s, p) => s + (p.unrealized_pl ?? 0), 0)
+  const totalUnreal = rows.reduce((s, p) => s + (p.pnl_unrealized ?? p.unrealized_pl ?? 0), 0)
   const largest = rows.reduce((m, p) => (p.market_value ?? 0) > (m.market_value ?? 0) ? p : m, rows[0])
 
   return (
@@ -595,7 +596,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Entry Date', 'Bars'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
@@ -608,7 +609,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                   const entry = p.avg_entry_price ?? p.avg_price ?? 0
                   const cur = p.current_price ?? 0
                   const mv = p.market_value ?? cur * qty
-                  const pnl = p.unrealized_pl ?? p.pnl_unrealized ?? 0
+                  const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
                   return (
                     <tr key={p.symbol}>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
@@ -908,6 +909,19 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
       if (j.status === 'advanced') { toast('Capital stage advanced!', 'success'); load() }
       else toast(j.detail ?? j.status ?? 'Cannot advance', 'warning')
     } catch { toast('Request failed', 'error') }
+  }
+
+  if (status.trading_mode === 'paper') {
+    return (
+      <div style={{ ...s.card, textAlign: 'center', padding: 32 }}>
+        <div style={{ fontSize: 14, color: C.muted, marginBottom: 8 }}>Capital Ramp — Paper Mode</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+          Capital ramp stages apply to live trading only.<br />
+          In paper mode the full account equity is used for position sizing.<br />
+          Switch to live mode to activate the staged ramp.
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -2360,11 +2374,44 @@ function ReasoningCard({ type, r }: { type: string; r: Record<string, unknown> }
     )
   }
 
-  // Fallback — clean key/value table
+  // POSITION_REVIEW — show per-symbol score + action
+  if (type === 'POSITION_REVIEW') {
+    const reviewed = (r.reviewed as string[]) || []
+    const actions = (r.actions as Record<string, { score?: number; action?: string; reason?: string }>) || {}
+    return (
+      <div style={{ paddingTop: 6 }}>
+        {reviewed.map(sym => {
+          const a = actions[sym] ?? {}
+          const action = a.action ?? 'HOLD'
+          const color = action === 'EXIT' ? C.red : action === 'EXTEND_TARGET' ? C.green : C.muted
+          return (
+            <div key={sym} style={{ display: 'flex', gap: 8, padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,.04)', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: C.accent, minWidth: 55 }}>{sym}</span>
+              <span style={{ fontSize: 11, color: C.muted, minWidth: 70 }}>
+                {a.score != null ? `score ${(a.score * 100).toFixed(1)}%` : '—'}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, color }}>{action}</span>
+              {a.reason && <span style={{ fontSize: 10, color: C.muted }}>{String(a.reason)}</span>}
+            </div>
+          )
+        })}
+        {reviewed.length === 0 && <div style={{ fontSize: 11, color: C.muted }}>No positions reviewed</div>}
+      </div>
+    )
+  }
+
+  // Fallback — render scalars inline, objects/arrays as collapsed JSON
   return (
     <div style={{ paddingTop: 6 }}>
       {Object.entries(r).map(([k, v]) =>
-        typeof v === 'object' ? null : row(k.replace(/_/g, ' '), v)
+        typeof v === 'object' && v !== null
+          ? <div key={k} style={{ padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,.04)' }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 2 }}>{k.replace(/_/g, ' ')}</div>
+              <pre style={{ fontSize: 10, color: C.text, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {JSON.stringify(v, null, 2)}
+              </pre>
+            </div>
+          : row(k.replace(/_/g, ' '), v)
       )}
     </div>
   )

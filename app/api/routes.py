@@ -270,7 +270,9 @@ async def get_open_positions():
             qty = pos.get("quantity") or pos.get("qty", 0)
             avg = pos.get("avg_price") or pos.get("avg_entry_price", 0.0)
             current = pos.get("current_price")
-            pnl = pos.get("pnl_unrealized") or pos.get("unrealized_pl")
+            _pnl_a = pos.get("unrealized_pl")
+            _pnl_b = pos.get("pnl_unrealized")
+            pnl = _pnl_a if _pnl_a is not None else _pnl_b
             pnl_pct = None
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
@@ -293,7 +295,7 @@ async def get_open_positions():
                 signal_type=t.signal_type if t else None,
                 trade_type=getattr(t, "trade_type", None) if t else None,
                 bars_held=t.bars_held if t else None,
-                entry_date=t.created_at.strftime("%Y-%m-%d") if t and t.created_at else None,
+                entry_date=t.created_at.strftime("%Y-%m-%d %H:%M") if t and t.created_at else None,
                 trade_id=t.id if t else None,
                 risk_reward=rr,
             ))
@@ -674,11 +676,14 @@ async def get_live_trading_status():
     from app.trading_modes import mode_manager
 
     health = await asyncio.to_thread(monitor.health_check)
+    is_paper = mode_manager.mode.value == "paper"
     return {
         **health,
-        "trading_mode":    mode_manager.mode.value,
-        "capital":         capital_manager.get_current_capital(),
-        "capital_stage":   capital_manager.current_stage.stage,
+        "trading_mode":       mode_manager.mode.value,
+        "capital":            capital_manager.get_current_capital() if not is_paper else None,
+        "stage":              capital_manager.current_stage.stage if not is_paper else None,
+        "stages":             capital_manager.get_all_stages() if not is_paper else [],
+        "days_elapsed":       (next((s["days_elapsed"] for s in capital_manager.get_all_stages() if s["is_current"]), None)) if not is_paper else None,
         "kill_switch_active": kill_switch.is_active,
     }
 
