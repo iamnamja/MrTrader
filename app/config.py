@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Trading Configuration
     trading_mode: str = "paper"  # 'paper' or 'live'
-    initial_capital: float = 20000.0
+    initial_capital: float = 100000.0
     max_position_size_pct: float = 0.05  # 5%
     max_sector_concentration_pct: float = 0.20  # 20%
     max_daily_loss_pct: float = 0.02  # 2%
