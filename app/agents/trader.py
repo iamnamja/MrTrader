@@ -62,6 +62,7 @@ class Trader(BaseAgent):
         # Cleared at midnight reset. Prevents re-approval from new PM proposal
         # batches from bypassing the 3-strike discard.
         self._daily_discarded_symbols: set = set()
+        self._last_mid_recon_slot: int = -1  # Phase 78d: track 15-min reconciliation slots
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
@@ -241,6 +242,12 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.warning("Startup reconciliation failed: %s", exc)
 
+        # Phase 78b: reload any pending limit orders from DB so we resume polling
+        try:
+            self._reload_pending_limits_from_db()
+        except Exception as exc:
+            self.logger.warning("Could not reload pending limits from DB: %s", exc)
+
         while self.status == "running":
             try:
                 now = datetime.now(ET)
@@ -413,6 +420,23 @@ class Trader(BaseAgent):
         """One pass: check entries for pending symbols, exits for active positions."""
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
+
+        # Phase 78d: mid-session reconciliation every 15 min during market hours
+        now_et = datetime.now(ET)
+        if now_et.weekday() < 5 and 9 <= now_et.hour < 16:
+            recon_slot = (now_et.hour * 60 + now_et.minute) // 15
+            if recon_slot != self._last_mid_recon_slot:
+                self._last_mid_recon_slot = recon_slot
+                try:
+                    from app.startup_reconciler import reconcile
+                    from app.database.session import get_session as _gs
+                    _db = _gs()
+                    try:
+                        await asyncio.to_thread(reconcile, alpaca, _db)
+                    finally:
+                        _db.close()
+                except Exception as _re:
+                    self.logger.debug("Mid-session reconciliation failed: %s", _re)
 
         # Check for regime shift → tighten stops on all open swing positions
         await self._apply_regime_stop_tightening(alpaca)
@@ -682,7 +706,7 @@ class Trader(BaseAgent):
             # Update the PENDING_FILL record with the real Alpaca order ID
             self._update_pending_fill_order_id(pending_trade_id, order_id)
 
-            self._pending_limit_orders[symbol] = {
+            pending_entry = {
                 "order_id": order_id,
                 "trade_id": pending_trade_id,
                 "shares": shares,
@@ -692,6 +716,9 @@ class Trader(BaseAgent):
                 "proposal": proposal,
                 "queued_at": datetime.now(ET),
             }
+            self._pending_limit_orders[symbol] = pending_entry
+            # Phase 78b: persist to DB so a restart can reload this entry
+            self._save_pending_limit_db(symbol, pending_entry, result)
             self.logger.info(
                 "LIMIT ORDER placed %s x%d @ $%.4f (ask=%.4f offset=%.1f%%) — awaiting fill",
                 symbol, shares, limit_price, intended_price, limit_offset * 100,
@@ -798,6 +825,90 @@ class Trader(BaseAgent):
         except Exception as exc:
             db.rollback()
             self.logger.error("Failed to cancel pending fill trade %d: %s", trade_id, exc)
+        finally:
+            db.close()
+
+    # ── Phase 78b: persist/reload pending limit orders ─────────────────────────
+
+    def _save_pending_limit_db(self, symbol: str, pending: Dict[str, Any], result) -> None:
+        """Upsert a PendingLimitOrder row so it survives restarts."""
+        from app.database.models import PendingLimitOrder
+        db = get_session()
+        try:
+            row = db.query(PendingLimitOrder).filter_by(symbol=symbol).first()
+            if row is None:
+                row = PendingLimitOrder(symbol=symbol)
+                db.add(row)
+            row.order_id = pending["order_id"]
+            row.trade_id = pending.get("trade_id")
+            row.shares = pending["shares"]
+            row.limit_price = pending["limit_price"]
+            row.intended_price = pending["intended_price"]
+            row.stop_price = result.stop_price
+            row.target_price = result.target_price
+            row.atr = getattr(result, "atr", None)
+            row.trade_type = pending.get("proposal", {}).get("trade_type", "swing")
+            row.signal_type = getattr(result, "signal_type", None)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.debug("Could not persist pending limit for %s: %s", symbol, exc)
+        finally:
+            db.close()
+
+    def _delete_pending_limit_db(self, symbol: str) -> None:
+        """Remove the PendingLimitOrder row on fill/cancel."""
+        from app.database.models import PendingLimitOrder
+        db = get_session()
+        try:
+            row = db.query(PendingLimitOrder).filter_by(symbol=symbol).first()
+            if row:
+                db.delete(row)
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.debug("Could not delete pending limit for %s: %s", symbol, exc)
+        finally:
+            db.close()
+
+    def _reload_pending_limits_from_db(self) -> None:
+        """
+        On startup: load any today's PendingLimitOrder rows into _pending_limit_orders.
+        Called once during reconcile so active limit orders survive restarts.
+        """
+        from app.database.models import PendingLimitOrder
+        from app.strategy.signals import SignalResult
+        db = get_session()
+        try:
+            rows = db.query(PendingLimitOrder).all()
+            if not rows:
+                return
+            for row in rows:
+                if row.symbol in self._pending_limit_orders:
+                    continue  # already loaded
+                # Reconstruct a minimal SignalResult-like object
+                class _FakeResult:
+                    stop_price = row.stop_price
+                    target_price = row.target_price
+                    atr = row.atr or 1.0
+                    signal_type = row.signal_type or "ML_RANK"
+                    reasoning = {}
+                self._pending_limit_orders[row.symbol] = {
+                    "order_id": row.order_id,
+                    "trade_id": row.trade_id,
+                    "shares": row.shares,
+                    "intended_price": row.intended_price,
+                    "limit_price": row.limit_price,
+                    "result": _FakeResult(),
+                    "proposal": {"trade_type": row.trade_type},
+                    "queued_at": row.created_at,
+                }
+                self.logger.info(
+                    "Reloaded pending limit order for %s (order=%s) from DB",
+                    row.symbol, row.order_id,
+                )
+        except Exception as exc:
+            self.logger.warning("Could not reload pending limits from DB: %s", exc)
         finally:
             db.close()
 
@@ -927,7 +1038,24 @@ class Trader(BaseAgent):
                     filled_price = float(filled_price)
                     intended = pending["intended_price"]
                     slippage_bps = round((filled_price - intended) / intended * 10000, 2) if intended > 0 else 0.0
+
+                    # Phase 78a: cancel unfilled remainder on partial fills to prevent
+                    # silent second fills creating untracked additional shares.
+                    if order_status == "partially_filled":
+                        try:
+                            alpaca.cancel_order(order_id)
+                            self.logger.info(
+                                "PARTIAL_FILL %s: filled %d shares — cancelled remainder",
+                                symbol, filled_qty,
+                            )
+                            await self.log_decision("PARTIAL_FILL_REMAINDER_CANCELLED", reasoning={
+                                "symbol": symbol, "filled_qty": filled_qty, "order_id": order_id,
+                            })
+                        except Exception as _pf_exc:
+                            self.logger.warning("Could not cancel partial remainder for %s: %s", symbol, _pf_exc)
+
                     del self._pending_limit_orders[symbol]
+                    self._delete_pending_limit_db(symbol)
                     await self._record_entry(
                         symbol=symbol,
                         shares=filled_qty,
@@ -946,12 +1074,14 @@ class Trader(BaseAgent):
 
                 elif order_status in ("canceled", "expired", "rejected"):
                     del self._pending_limit_orders[symbol]
+                    self._delete_pending_limit_db(symbol)
                     self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info("Limit order %s for %s cancelled/expired — removing", order_id, symbol)
 
                 elif cancel_unfilled:
                     alpaca.cancel_order(order_id)
                     del self._pending_limit_orders[symbol]
+                    self._delete_pending_limit_db(symbol)
                     self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info(
                         "EOD: cancelled unfilled limit order for %s (order=%s)", symbol, order_id
