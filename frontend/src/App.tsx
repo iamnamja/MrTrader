@@ -319,7 +319,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
             : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead><tr>
-                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal'].map(h =>
+                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal', 'Opened'].map(h =>
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -349,6 +349,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                         <td style={{ ...s.td, color: C.red }}>{stop != null ? fmt$(stop) : '—'}</td>
                         <td style={{ ...s.td, color: C.green }}>{target != null ? fmt$(target) : '—'}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
                       </tr>
                     )
                   })}
