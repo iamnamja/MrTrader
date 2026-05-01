@@ -747,6 +747,25 @@ async def reset_kill_switch(reason: str = "Manual reset"):
     return {"status": "kill_switch_reset", "reason": reason}
 
 
+@router.get("/health/heartbeat")
+async def get_heartbeat():
+    """Phase 83: Return last PM heartbeat timestamp for watchdog.py."""
+    db = get_session()
+    try:
+        from app.database.models import ProcessHeartbeat
+        row = db.query(ProcessHeartbeat).filter_by(process_name="portfolio_manager").first()
+        if row is None:
+            return {"process_name": "portfolio_manager", "last_beat": None, "age_seconds": None}
+        age = (datetime.utcnow() - row.last_beat).total_seconds()
+        return {
+            "process_name": row.process_name,
+            "last_beat": row.last_beat.isoformat(),
+            "age_seconds": round(age, 1),
+        }
+    finally:
+        db.close()
+
+
 @router.get("/live/audit-log")
 async def get_live_audit_log(limit: int = 100):
     """Recent kill-switch, capital, and alert audit entries."""
