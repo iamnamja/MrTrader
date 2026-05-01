@@ -78,6 +78,10 @@ def run_swing(dry_run: bool) -> bool:
     from app.ml.training import ModelTrainer
     from app.database.session import get_session
 
+    if dry_run:
+        logger.info("DRY RUN — skipping swing training")
+        return True
+
     db = get_session()
     try:
         prev = _previous_active(db, "swing")
@@ -87,10 +91,6 @@ def run_swing(dry_run: bool) -> bool:
     logger.info("Swing retrain — model_type=%s hpo=%d wf_folds=%d prev_active=v%s",
                 SWING_RETRAIN["model_type"], SWING_RETRAIN["hpo_trials"],
                 SWING_RETRAIN["walk_forward_folds"], prev)
-
-    if dry_run:
-        logger.info("DRY RUN — skipping swing training")
-        return True
 
     trainer = ModelTrainer(
         model_type=SWING_RETRAIN["model_type"],
@@ -140,6 +140,10 @@ def run_intraday(dry_run: bool) -> bool:
     from app.ml.intraday_training import IntradayModelTrainer
     from app.database.session import get_session
 
+    if dry_run:
+        logger.info("DRY RUN — skipping intraday training")
+        return True
+
     db = get_session()
     try:
         prev = _previous_active(db, "intraday")
@@ -148,10 +152,6 @@ def run_intraday(dry_run: bool) -> bool:
 
     logger.info("Intraday retrain — days=%d fetch_spy=%s prev_active=v%s",
                 INTRADAY_RETRAIN["days"], INTRADAY_RETRAIN["fetch_spy"], prev)
-
-    if dry_run:
-        logger.info("DRY RUN — skipping intraday training")
-        return True
 
     trainer = IntradayModelTrainer()
     try:
