@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_is_postgres = settings.database_url.startswith("postgresql") or settings.database_url.startswith("postgres")
 engine = create_engine(
     settings.database_url,
     poolclass=QueuePool,
@@ -14,7 +15,7 @@ engine = create_engine(
     max_overflow=10,
     pool_recycle=3600,
     echo=settings.debug,
-    connect_args={"connect_timeout": 5},
+    connect_args={"connect_timeout": 5} if _is_postgres else {},
 )
 
 # Create session factory
