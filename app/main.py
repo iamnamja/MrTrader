@@ -277,7 +277,8 @@ async def startup_event():
 
         # Phase 53: start live news monitor as background task
         from app.agents.news_monitor import news_monitor
-        asyncio.create_task(news_monitor.run(), name="news_monitor")
+        _news_task = asyncio.create_task(news_monitor.run(), name="news_monitor")
+        app.state.news_monitor_task = _news_task
         logger.info("Orchestrator started (news monitor running)")
     except Exception as e:
         logger.error("Orchestrator startup failed: %s", e)
@@ -313,6 +314,15 @@ async def shutdown_event():
     logger.info("═" * 72)
     from app.orchestrator import orchestrator
     await orchestrator.stop()
+
+    # Cancel news monitor (created outside orchestrator, must be cancelled separately)
+    news_task = getattr(app.state, "news_monitor_task", None)
+    if news_task and not news_task.done():
+        news_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(news_task), timeout=3.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
 
 # Health and Status Endpoints
