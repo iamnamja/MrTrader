@@ -47,13 +47,13 @@ SWING_SEND_HOUR = 9            # 09:50 ET: send swing proposals after open volat
 SWING_SEND_MINUTE = 50
 REVIEW_INTERVAL_MINUTES = 30   # PM re-scores open positions every 30 minutes
 EARNINGS_EXIT_DAYS = 3         # exit swing positions this many days before earnings
-INTRADAY_PROPOSAL_STALE_MIN = 30    # proposals expire after 30 min (was 90)
-INTRADAY_AFTERNOON_CANDIDATES = 100 # top-N by score from 9:45 scan reused for 10:45/13:00
+INTRADAY_PROPOSAL_STALE_MIN = 30       # proposals expire after 30 min (was 90)
+INTRADAY_AFTERNOON_CANDIDATES = 100    # top-N by score from 9:45 scan reused for 10:45/13:00
 # SPY intraday % thresholds for dynamic confidence/size adjustment
-SPY_HARD_STOP_PCT   = -1.5   # below this: no new intraday longs all day
-SPY_CAUTION_PCT     = -0.75  # below this: raise min_confidence→0.65, size→50%
-SPY_CHASE_PCT       =  2.0   # above this: raise min_confidence→0.65 (gap caution)
-SPY_ADAPTIVE_DELTA  =  1.5   # adaptive re-scan if SPY moves this much from last scan
+SPY_HARD_STOP_PCT = -1.5   # below this: no new intraday longs all day
+SPY_CAUTION_PCT = -0.75    # below this: raise min_confidence→0.65, size→50%
+SPY_CHASE_PCT = 2.0        # above this: raise min_confidence→0.65 (gap caution)
+SPY_ADAPTIVE_DELTA = 1.5   # adaptive re-scan if SPY moves this much from last scan
 
 # ── Capital allocation ────────────────────────────────────────────────────────
 SWING_BUDGET_PCT = 0.70        # 70% of account reserved for swing trades
@@ -2109,7 +2109,8 @@ class PortfolioManager(BaseAgent):
         If the new model fails the gate, the previous ACTIVE model is restored
         and the new version is marked RETIRED. Models only go live after passing.
         """
-        import functools, os
+        import functools
+        import os
         from app.ml.retrain_config import SWING_RETRAIN, INTRADAY_RETRAIN, SWING_GATE, INTRADAY_GATE
         from app.ml.intraday_training import IntradayModelTrainer
         from app.database.session import get_session

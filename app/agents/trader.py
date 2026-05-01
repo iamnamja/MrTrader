@@ -899,6 +899,8 @@ class Trader(BaseAgent):
         if current_price is None:
             return
 
+        now = datetime.now(ET)
+
         # Update highest price for trailing stop
         highest = max(pos["highest_price"], current_price)
         pos["highest_price"] = highest

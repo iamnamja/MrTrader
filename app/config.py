@@ -75,5 +75,4 @@ class Settings(BaseSettings):
     trader_check_interval: int = 300  # 5 minutes
 
 
-
 settings = Settings()
