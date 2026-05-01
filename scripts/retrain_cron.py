@@ -1,34 +1,28 @@
 """
-Weekly model retraining script — Phase B4 (MLOps).
+Weekly model retraining script — gate-enforced, aligned with retrain_config.py.
 
-Designed to be called every Friday after market close (16:30 ET).
-Can be run via cron, Windows Task Scheduler, or GitHub Actions.
+Runs swing + intraday training, then validates each through the walk-forward gate.
+If a model fails the gate, the previous ACTIVE version is restored automatically.
 
-Usage:
-    python scripts/retrain_cron.py [--model-type lambdarank] [--years 5] [--dry-run]
-
-What it does:
-  1. Retrains the swing model on SP_500_TICKERS with the latest N years of data
-  2. Logs SHAP feature importance to the ModelVersion DB record
-  3. Alerts (WARNING log) if new OOS AUC < 0.65 (concept drift)
-  4. Archives the previous ACTIVE model version
-  5. Keeps at most 3 saved model files; deletes older ones
+Usage (from project root):
+    python scripts/retrain_cron.py [--swing-only] [--intraday-only] [--dry-run]
 
 Exit codes:
-  0  Success
-  1  Training failed
-  2  AUC drift detected (new AUC < 0.65) — model saved but flag raised
+  0  Both models passed (or were not run)
+  1  Training error
+  2  One or both models failed the walk-forward gate (previous champion kept)
 """
 import argparse
 import logging
 import os
 import sys
-
-os.environ.setdefault("OMP_NUM_THREADS", "1")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+os.environ.setdefault("OMP_NUM_THREADS", "24")
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,30 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-AUC_DRIFT_THRESHOLD = 0.65
-KEEP_MODEL_VERSIONS = 3
 
-
-def archive_old_versions(db, current_version: int) -> None:
-    """Set older ACTIVE model versions to ARCHIVED."""
-    from app.database.models import ModelVersion
-    old = (
-        db.query(ModelVersion)
-        .filter(
-            ModelVersion.model_name == "swing",
-            ModelVersion.status == "ACTIVE",
-            ModelVersion.version != current_version,
-        )
-        .all()
-    )
-    for mv in old:
-        mv.status = "ARCHIVED"
-        logger.info("Archived swing model v%d", mv.version)
-    db.commit()
-
-
-def prune_old_model_files(model_dir: Path, keep: int = KEEP_MODEL_VERSIONS) -> None:
-    """Delete oldest saved .pkl files, keeping the N most recent."""
+def prune_old_model_files(model_dir: Path, keep: int = 3) -> None:
+    """Delete oldest swing_v*.pkl files, keeping the N most recent."""
     files = sorted(model_dir.glob("swing_v*.pkl"), key=lambda p: p.stat().st_mtime)
     for f in files[:-keep]:
         try:
@@ -69,94 +42,180 @@ def prune_old_model_files(model_dir: Path, keep: int = KEEP_MODEL_VERSIONS) -> N
             logger.warning("Could not prune %s: %s", f.name, exc)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Weekly swing model retraining")
-    import os as _os
-    _cpus = _os.cpu_count() or 4
-    parser.add_argument("--model-type", default="lambdarank",
-                        choices=["lambdarank", "xgboost", "lightgbm"])
-    parser.add_argument("--years", type=int, default=5)
-    parser.add_argument("--model-dir", default="app/ml/models")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Run feature engineering only, skip training + save")
-    parser.add_argument(
-        "--n-workers", type=int, default=max(1, _cpus - 2),
-        help=(
-            f"Parallel workers for feature engineering (default: {max(1, _cpus - 2)} "
-            f"= all {_cpus} logical CPUs minus 2 for OS headroom). "
-            "Use --n-workers 0 to auto-detect (uses all CPUs)."
-        ),
+def _previous_active(db, strategy: str):
+    from app.database.models import ModelVersion
+    row = (
+        db.query(ModelVersion)
+        .filter_by(model_name=strategy, status="ACTIVE")
+        .order_by(ModelVersion.version.desc())
+        .first()
     )
-    args = parser.parse_args()
+    return row.version if row else None
 
+
+def _restore_previous(strategy: str, prev_version, new_version):
+    from app.database.session import get_session
+    from app.database.models import ModelVersion
+    if prev_version is None:
+        return
+    db = get_session()
+    try:
+        new = db.query(ModelVersion).filter_by(model_name=strategy, version=new_version).first()
+        if new:
+            new.status = "RETIRED"
+        prev = db.query(ModelVersion).filter_by(model_name=strategy, version=prev_version).first()
+        if prev:
+            prev.status = "ACTIVE"
+        db.commit()
+        logger.info("%s v%d gate failed — restored v%d as ACTIVE", strategy, new_version, prev_version)
+    finally:
+        db.close()
+
+
+def run_swing(dry_run: bool) -> bool:
+    """Train swing model + walk-forward gate. Returns True if promoted."""
+    from app.ml.retrain_config import SWING_RETRAIN, SWING_GATE
     from app.ml.training import ModelTrainer
-    from app.utils.constants import SP_500_TICKERS
     from app.database.session import get_session
 
-    n_workers = args.n_workers if args.n_workers > 0 else (_os.cpu_count() or 4)
-    logger.info(
-        "Weekly retrain starting — model_type=%s years=%d symbols=%d "
-        "n_workers=%d dry_run=%s",
-        args.model_type, args.years, len(SP_500_TICKERS), n_workers, args.dry_run,
+    db = get_session()
+    try:
+        prev = _previous_active(db, "swing")
+    finally:
+        db.close()
+
+    logger.info("Swing retrain — model_type=%s hpo=%d wf_folds=%d prev_active=v%s",
+                SWING_RETRAIN["model_type"], SWING_RETRAIN["hpo_trials"],
+                SWING_RETRAIN["walk_forward_folds"], prev)
+
+    if dry_run:
+        logger.info("DRY RUN — skipping swing training")
+        return True
+
+    trainer = ModelTrainer(
+        model_type=SWING_RETRAIN["model_type"],
+        hpo_trials=SWING_RETRAIN["hpo_trials"],
+        n_workers=SWING_RETRAIN["n_workers"],
     )
-
-    if args.dry_run:
-        logger.info("DRY RUN — skipping training and save")
-        return 0
+    try:
+        version = trainer.train_model(
+            fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"]
+        )
+        logger.info("Swing v%d trained — running walk-forward gate...", version)
+    except Exception as e:
+        logger.error("Swing training failed: %s", e, exc_info=True)
+        return False
 
     try:
-        trainer = ModelTrainer(
-            model_type=args.model_type,
-            label_scheme="lambdarank",
-            use_feature_store=True,
-            model_dir=args.model_dir,
-            n_workers=n_workers,
+        from scripts.walkforward_tier3 import run_swing_walkforward
+        wf = run_swing_walkforward(
+            n_folds=SWING_RETRAIN["walk_forward_folds"],
+            model_version=version,
         )
-        version = trainer.train_model(symbols=SP_500_TICKERS, years=args.years)
-        logger.info("Retrain complete — new model version: v%d", version)
-    except Exception as exc:
-        logger.error("Retrain failed: %s", exc, exc_info=True)
-        return 1
+        avg_sh = wf.avg_sharpe
+        min_sh = wf.min_sharpe
+        gate_ok = (avg_sh >= SWING_GATE["min_avg_sharpe"] and
+                   min_sh >= SWING_GATE["min_fold_sharpe"])
 
-    # Archive old versions and prune files
+        ModelTrainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
+
+        if gate_ok:
+            logger.info("Swing v%d GATE PASSED (avg_sharpe=%.3f min_sharpe=%.3f) — now ACTIVE",
+                        version, avg_sh, min_sh)
+            return True
+        else:
+            logger.warning("Swing v%d GATE FAILED (avg_sharpe=%.3f min_sharpe=%.3f) — restoring v%d",
+                           version, avg_sh, min_sh, prev)
+            _restore_previous("swing", prev, version)
+            return False
+    except Exception as e:
+        logger.error("Swing walk-forward gate failed: %s", e, exc_info=True)
+        _restore_previous("swing", prev, version)
+        return False
+
+
+def run_intraday(dry_run: bool) -> bool:
+    """Train intraday model + walk-forward gate. Returns True if promoted."""
+    from app.ml.retrain_config import INTRADAY_RETRAIN, INTRADAY_GATE
+    from app.ml.intraday_training import IntradayModelTrainer
+    from app.database.session import get_session
+
     db = get_session()
     try:
-        archive_old_versions(db, version)
+        prev = _previous_active(db, "intraday")
     finally:
         db.close()
 
-    prune_old_model_files(Path(args.model_dir), keep=KEEP_MODEL_VERSIONS)
+    logger.info("Intraday retrain — days=%d fetch_spy=%s prev_active=v%s",
+                INTRADAY_RETRAIN["days"], INTRADAY_RETRAIN["fetch_spy"], prev)
 
-    # Check for AUC drift
-    db = get_session()
+    if dry_run:
+        logger.info("DRY RUN — skipping intraday training")
+        return True
+
+    trainer = IntradayModelTrainer()
     try:
-        from app.database.models import ModelVersion
-        mv = (
-            db.query(ModelVersion)
-            .filter_by(model_name="swing", version=version)
-            .first()
-        )
-        if mv and mv.performance:
-            auc = mv.performance.get("auc")
-            if auc is not None and auc < AUC_DRIFT_THRESHOLD:
-                logger.warning(
-                    "AUC DRIFT: v%d AUC=%.4f < %.2f — model may be stale, "
-                    "review training data and feature distribution",
-                    version, auc, AUC_DRIFT_THRESHOLD,
-                )
-                return 2
-    finally:
-        db.close()
+        version = trainer.train_model(**INTRADAY_RETRAIN)
+        logger.info("Intraday v%d trained — running walk-forward gate...", version)
+    except Exception as e:
+        logger.error("Intraday training failed: %s", e, exc_info=True)
+        return False
 
-    # Back-fill decision_audit outcomes (catches any the 16:30 EOD job missed)
     try:
-        from app.database.decision_audit import backfill_outcomes
-        n = backfill_outcomes(lookback_days=14)
-        logger.info("decision_audit backfill: %d rows updated", n)
-    except Exception as exc:
-        logger.warning("decision_audit backfill failed (non-fatal): %s", exc)
+        from scripts.walkforward_tier3 import run_intraday_walkforward
+        wf = run_intraday_walkforward(n_folds=3, model_version=version)
+        avg_sh = wf.avg_sharpe
+        min_sh = wf.min_sharpe
+        gate_ok = (avg_sh >= INTRADAY_GATE["min_avg_sharpe"] and
+                   min_sh >= INTRADAY_GATE["min_fold_sharpe"])
 
-    logger.info("Weekly retrain complete — v%d active", version)
+        trainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
+
+        if gate_ok:
+            logger.info("Intraday v%d GATE PASSED (avg_sharpe=%.3f min_sharpe=%.3f) — now ACTIVE",
+                        version, avg_sh, min_sh)
+            return True
+        else:
+            logger.warning("Intraday v%d GATE FAILED (avg_sharpe=%.3f min_sharpe=%.3f) — restoring v%d",
+                           version, avg_sh, min_sh, prev)
+            _restore_previous("intraday", prev, version)
+            return False
+    except Exception as e:
+        logger.error("Intraday walk-forward gate failed: %s", e, exc_info=True)
+        _restore_previous("intraday", prev, version)
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Gate-enforced weekly model retrain")
+    parser.add_argument("--swing-only", action="store_true", help="Retrain swing model only")
+    parser.add_argument("--intraday-only", action="store_true", help="Retrain intraday model only")
+    parser.add_argument("--dry-run", action="store_true", help="Skip training, just log what would run")
+    args = parser.parse_args()
+
+    run_both = not args.swing_only and not args.intraday_only
+
+    results = {}
+
+    if run_both or args.swing_only:
+        results["swing"] = run_swing(args.dry_run)
+
+    if run_both or args.intraday_only:
+        results["intraday"] = run_intraday(args.dry_run)
+
+    # Reap loky workers
+    try:
+        from joblib.externals.loky import get_reusable_executor
+        get_reusable_executor().shutdown(wait=False, kill_workers=True)
+    except Exception:
+        pass
+
+    logger.info("Retrain complete — %s", results)
+
+    if not all(results.values()):
+        logger.warning("One or more models failed the gate — previous champions retained")
+        return 2
+
     return 0
 
 

@@ -811,7 +811,7 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
             }}>↻</button>
           </div>
         </div>
-        <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+        <div style={{ maxHeight: 260, overflowY: 'auto' }}>
           <DecisionAuditTable rows={auditRows} />
         </div>
       </div>
@@ -819,7 +819,7 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
       {/* Legacy agent decisions (compact) */}
       <div style={s.card}>
         <div style={s.cardTitle}>Agent System Events (Last 50)</div>
-        <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+        <div style={{ maxHeight: 260, overflowY: 'auto' }}>
           <DecisionsTable rows={decisions} />
         </div>
       </div>

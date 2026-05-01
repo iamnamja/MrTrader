@@ -36,8 +36,10 @@ TOP_N_INTRADAY = 5             # fewer intraday picks per session
 MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
 EXIT_THRESHOLD = 0.35          # re-score below this → exit signal
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
-# Phase 51: three intraday scan windows (hour, minute)
-INTRADAY_SCAN_WINDOWS = [(9, 45), (11, 0), (13, 30)]
+# Intraday scan windows (ET hour, minute). Shifted 11:00→10:45 to avoid lunch;
+# 13:30→13:00 to give the smaller afternoon universe more reaction time.
+# Lunch block (11:15–13:00) is enforced separately in the heartbeat loop.
+INTRADAY_SCAN_WINDOWS = [(9, 45), (10, 45), (13, 0)]
 INTRADAY_COOLDOWN_HOURS = 2     # min gap between entries in the same symbol
 INTRADAY_DAILY_LOSS_CAP_PCT = 0.01   # stop new intraday entries if day loss > 1% of account
 SWING_PREMARKET_HOUR = 8       # 08:00 ET: run swing model analysis pre-market
@@ -45,6 +47,13 @@ SWING_SEND_HOUR = 9            # 09:50 ET: send swing proposals after open volat
 SWING_SEND_MINUTE = 50
 REVIEW_INTERVAL_MINUTES = 30   # PM re-scores open positions every 30 minutes
 EARNINGS_EXIT_DAYS = 3         # exit swing positions this many days before earnings
+INTRADAY_PROPOSAL_STALE_MIN = 30    # proposals expire after 30 min (was 90)
+INTRADAY_AFTERNOON_CANDIDATES = 100 # top-N by score from 9:45 scan reused for 10:45/13:00
+# SPY intraday % thresholds for dynamic confidence/size adjustment
+SPY_HARD_STOP_PCT   = -1.5   # below this: no new intraday longs all day
+SPY_CAUTION_PCT     = -0.75  # below this: raise min_confidence→0.65, size→50%
+SPY_CHASE_PCT       =  2.0   # above this: raise min_confidence→0.65 (gap caution)
+SPY_ADAPTIVE_DELTA  =  1.5   # adaptive re-scan if SPY moves this much from last scan
 
 # ── Capital allocation ────────────────────────────────────────────────────────
 SWING_BUDGET_PCT = 0.70        # 70% of account reserved for swing trades
@@ -98,6 +107,12 @@ class PortfolioManager(BaseAgent):
         self._last_intraday_features: Dict[str, Dict[str, float]] = {}
         # Gap 2: EOD backfill + daily summary tracking
         self._eod_jobs_run_today: bool = False
+        # Adaptive intraday universe — top-N candidates from 9:45 scan reused for later windows
+        self._morning_intraday_candidates: List[str] = []
+        # SPY % at time of last intraday scan (for adaptive re-scan trigger)
+        self._last_scan_spy_pct: float = 0.0
+        # Monotonic timestamp of last adaptive re-scan (prevents back-to-back triggers)
+        self._last_adaptive_scan_at: float = 0.0
 
     # ─── Scheduling helpers ───────────────────────────────────────────────────
 
@@ -106,6 +121,28 @@ class PortfolioManager(BaseAgent):
         """Return True if now falls in [start_h:start_m, end_h:end_m)."""
         t = now.hour * 60 + now.minute
         return (start_h * 60 + start_m) <= t < (end_h * 60 + end_m)
+
+    def _get_spy_day_pct(self) -> Optional[float]:
+        """Return SPY % change from previous close to current price. None on error."""
+        try:
+            bars = self._alpaca.get_bars("SPY", timeframe="1Day", limit=2)
+            if bars is None or len(bars) < 2:
+                return None
+            prev_close = float(bars.iloc[-2]["close"])
+            current = self._alpaca.get_latest_price("SPY")
+            if not current or prev_close <= 0:
+                return None
+            return (float(current) - prev_close) / prev_close * 100
+        except Exception:
+            return None
+
+    async def _withdraw_all_pending(self, reason: str) -> None:
+        """Withdraw all pending approvals and clear the map."""
+        for symbol in list(self._pending_approvals.keys()):
+            self.send_message(EXIT_REQUESTS_QUEUE, {"symbol": symbol, "action": "WITHDRAW", "reason": reason})
+            await self.log_decision("PROPOSAL_WITHDRAWN", reasoning={"symbol": symbol, "reason": reason})
+        self._pending_approvals.clear()
+        self.logger.info("Withdrew all pending approvals — reason: %s", reason)
 
     async def _run_task(
         self,
@@ -197,6 +234,9 @@ class PortfolioManager(BaseAgent):
                     self._weekly_report_generated_today = False
                     self._eod_jobs_run_today = False
                     self._last_swing_features = {}
+                    self._morning_intraday_candidates = []
+                    self._last_scan_spy_pct = 0.0
+                    self._last_adaptive_scan_at = 0.0
                     self._last_intraday_features = {}
                     self._last_date = today
                     self._swing_proposals = []
@@ -258,14 +298,18 @@ class PortfolioManager(BaseAgent):
                         self._send_swing_proposals(),
                     )
 
-                # ── Phase 51: three intraday scan windows ─────────────────────
-                # Windows: 09:45, 11:00, 13:30 ET — each runs once per day.
+                # ── Intraday scan windows ─────────────────────────────────────
+                # Windows: 09:45, 10:45, 13:00 ET — each runs once per day.
+                # 10:45 and 13:00 use the morning candidates list (top-N from 9:45
+                # scan) instead of the full 716-symbol universe.
+                # Lunch block (11:15–13:00) is respected — no new scans during this window.
                 for win_h, win_m in INTRADAY_SCAN_WINDOWS:
                     # Window is "active" for 15 minutes after its scheduled time
                     if (
                         is_weekday
                         and self._in_window(now, win_h, win_m, win_h, win_m + 15)
                         and (win_h, win_m) not in self._intraday_windows_run
+                        and not self._in_window(now, 11, 15, 13, 0)  # lunch block
                     ):
                         self._intraday_windows_run.add((win_h, win_m))
                         self._selected_intraday_today = True  # legacy compat
@@ -281,10 +325,51 @@ class PortfolioManager(BaseAgent):
                                 "window": f"{win_h:02d}:{win_m:02d}",
                             })
                         else:
+                            # First window (9:45): full universe to build morning candidates list.
+                            # Later windows: reuse morning candidates for speed.
+                            use_morning = (win_h, win_m) != (9, 45)
                             await self._run_task(
                                 f"intraday_selection_{win_h:02d}{win_m:02d}", win_h, win_m,
-                                self.select_intraday_instruments(window=(win_h, win_m)),
+                                self.select_intraday_instruments(
+                                    window=(win_h, win_m),
+                                    use_morning_candidates=use_morning,
+                                ),
                             )
+
+                # ── Adaptive re-scan: SPY moves >1.5% from last scan reference ──
+                # Fires at most once per hour; skips lunch (11:15-13:00);
+                # withdraws stale proposals and re-scans morning candidates.
+                market_open_intraday = (now.hour > 9 or (now.hour == 9 and now.minute >= 45))
+                not_lunch = not self._in_window(now, 11, 15, 13, 0)
+                not_eod = now.hour < 15
+                adaptive_gap_ok = (_time.monotonic() - self._last_adaptive_scan_at) > 3600
+                if (
+                    is_weekday
+                    and market_open_intraday
+                    and not_lunch
+                    and not_eod
+                    and adaptive_gap_ok
+                    and self._morning_intraday_candidates
+                    and self._pending_approvals
+                ):
+                    try:
+                        spy_now = await asyncio.to_thread(self._get_spy_day_pct)
+                        if spy_now is not None and abs(spy_now - self._last_scan_spy_pct) >= SPY_ADAPTIVE_DELTA:
+                            self.logger.info(
+                                "SPY shifted %.1f%% → %.1f%% since last scan — adaptive re-scan triggered",
+                                self._last_scan_spy_pct, spy_now,
+                            )
+                            self._last_adaptive_scan_at = _time.monotonic()
+                            await self._withdraw_all_pending("spy_regime_shift")
+                            await self._run_task(
+                                "intraday_adaptive_rescan", now.hour, now.minute,
+                                self.select_intraday_instruments(
+                                    window=(now.hour, now.minute),
+                                    use_morning_candidates=True,
+                                ),
+                            )
+                    except Exception as _adp_exc:
+                        self.logger.debug("Adaptive re-scan check failed: %s", _adp_exc)
 
                 # ── 09:30–16:00: 30-minute position review + reeval drain ─────
                 market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
@@ -934,8 +1019,15 @@ class PortfolioManager(BaseAgent):
 
     # ─── Intraday Selection ───────────────────────────────────────────────────
 
-    async def select_intraday_instruments(self, window: tuple = (9, 45)):
-        """Run intraday model on 5-min bars, send intraday proposals."""
+    async def select_intraday_instruments(self, window: tuple = (9, 45), use_morning_candidates: bool = False):
+        """Run intraday model on 5-min bars, send intraday proposals.
+
+        Args:
+            window: (hour, minute) scheduled scan time.
+            use_morning_candidates: If True, scan only the top-N symbols cached from the
+                9:45 scan instead of the full Russell 1000 universe.  Dramatically reduces
+                scan time for 10:45 and 13:00 windows (and adaptive re-scans).
+        """
         intraday_ver = getattr(self.intraday_model, "version", None)
         win_str = f"{window[0]:02d}:{window[1]:02d}"
         self.logger.info("Selecting intraday instruments (%s scan) — model v%s", win_str, intraday_ver)
@@ -965,6 +1057,54 @@ class PortfolioManager(BaseAgent):
                 return
         except Exception as exc:
             self.logger.debug("Macro calendar check failed: %s", exc)
+
+        # ── SPY intraday regime gate ───────────────────────────────────────────
+        # Fetch once per scan; gate entries and adjust confidence/size.
+        spy_pct = await asyncio.to_thread(self._get_spy_day_pct)
+        self._last_scan_spy_pct = spy_pct if spy_pct is not None else self._last_scan_spy_pct
+        intraday_min_conf = MIN_CONFIDENCE  # may be raised below
+        intraday_size_mult = 1.0
+
+        if spy_pct is not None:
+            if spy_pct <= SPY_HARD_STOP_PCT:
+                self.logger.info(
+                    "SPY down %.1f%% — hard stop: suppressing all intraday longs for %s scan",
+                    spy_pct, win_str,
+                )
+                await self.log_decision("SELECTION_SKIPPED", reasoning={
+                    "reason": "spy_hard_stop", "spy_pct": round(spy_pct, 2),
+                    "strategy": "intraday", "window": win_str,
+                })
+                return
+            elif spy_pct <= SPY_CAUTION_PCT:
+                intraday_min_conf = 0.65
+                intraday_size_mult = 0.5
+                self.logger.info(
+                    "SPY down %.1f%% — caution mode: min_conf=%.2f size=50%% for %s scan",
+                    spy_pct, intraday_min_conf, win_str,
+                )
+            elif spy_pct >= SPY_CHASE_PCT:
+                intraday_min_conf = 0.65
+                self.logger.info(
+                    "SPY up %.1f%% — gap caution: min_conf=%.2f for %s scan",
+                    spy_pct, intraday_min_conf, win_str,
+                )
+
+        # ── Universe selection ─────────────────────────────────────────────────
+        # 9:45 scan: full Russell 1000 to build morning candidates list.
+        # Later scans: use cached morning candidates (top-N by score) for speed.
+        if use_morning_candidates and self._morning_intraday_candidates:
+            scan_universe = self._morning_intraday_candidates
+            self.logger.info(
+                "Using morning candidates universe (%d symbols) for %s scan",
+                len(scan_universe), win_str,
+            )
+        else:
+            scan_universe = RUSSELL_1000_TICKERS
+            self.logger.info(
+                "Using full universe (%d symbols) for %s scan",
+                len(scan_universe), win_str,
+            )
 
         def _fetch_one_intraday(symbol: str) -> Optional[tuple]:
             """Return (features_dict, prior_day_range) or None."""
@@ -1000,7 +1140,7 @@ class PortfolioManager(BaseAgent):
             feat_result: Dict[str, Dict[str, float]] = {}
             range_result: Dict[str, Optional[float]] = {}
             with ThreadPoolExecutor(max_workers=16) as pool:
-                futures = {pool.submit(_fetch_one_intraday, s): s for s in RUSSELL_1000_TICKERS}
+                futures = {pool.submit(_fetch_one_intraday, s): s for s in scan_universe}
                 for future in as_completed(futures, timeout=300):
                     sym = futures[future]
                     try:
@@ -1074,8 +1214,20 @@ class PortfolioManager(BaseAgent):
         except Exception as exc:
             self.logger.debug("Daily intraday P&L cap check failed (non-fatal): %s", exc)
 
-        min_conf = MIN_CONFIDENCE
         ranked = sorted(zip(symbols, probabilities), key=lambda x: x[1], reverse=True)
+
+        # Store top-N by score for later scans (10:45, 13:00 use this instead of full universe)
+        if not use_morning_candidates:
+            self._morning_intraday_candidates = [
+                sym for sym, _ in ranked[:INTRADAY_AFTERNOON_CANDIDATES]
+            ]
+            self.logger.info(
+                "Stored %d morning candidates for afternoon scans",
+                len(self._morning_intraday_candidates),
+            )
+
+        # min_conf may have been raised by SPY regime gate above (intraday_min_conf)
+        min_conf = intraday_min_conf
 
         # Phase 51: per-symbol cooldown — skip symbols entered within last INTRADAY_COOLDOWN_HOURS
         now_mono = _time.monotonic()
@@ -1112,6 +1264,9 @@ class PortfolioManager(BaseAgent):
             quantity = self._calculate_quantity(
                 price, account_value, trade_type="intraday", confidence=float(confidence)
             )
+            # Apply SPY caution sizing multiplier (0.5× in down-market caution mode)
+            if intraday_size_mult != 1.0:
+                quantity = max(1, int(quantity * intraday_size_mult))
             # Use ATR-based stops matching the backtester: 0.4x / 0.8x prior-day range.
             # Fall back to fixed pct if prior range unavailable.
             prior_range = prior_ranges_by_symbol.get(symbol)
@@ -1142,6 +1297,15 @@ class PortfolioManager(BaseAgent):
                 "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
                 symbol, price, confidence,
             )
+            try:
+                from app.database.decision_audit import write_decision
+                write_decision(
+                    symbol, "intraday", "enter",
+                    model_score=float(confidence),
+                    top_features=self._top_features_for(symbol, "intraday"),
+                )
+            except Exception:
+                pass
 
         await self.log_decision(
             "INTRADAY_INSTRUMENTS_SELECTED",
@@ -1497,7 +1661,7 @@ class PortfolioManager(BaseAgent):
 
         Thresholds:
           - Swing: withdraw if score < MIN_CONFIDENCE * 0.85 (15% grace on original threshold)
-          - All: withdraw if proposal is > 90 minutes old (Trader's 60-min TTL + buffer)
+          - All: withdraw if proposal is > 30 minutes old (aligned with Trader TTL)
         """
         import time as _time
         if not self._pending_approvals:
@@ -1525,8 +1689,8 @@ class PortfolioManager(BaseAgent):
         for symbol, sent_at in list(self._pending_approvals.items()):
             age_min = (now_mono - sent_at) / 60.0
 
-            # Stale: over 90 min — Trader's TTL is 60 min, give extra buffer
-            if age_min > 90:
+            # Stale: over 30 min — aligned with Trader TTL (also 30 min)
+            if age_min > INTRADAY_PROPOSAL_STALE_MIN:
                 to_withdraw.append((symbol, f"stale_{age_min:.0f}min"))
                 continue
 

@@ -36,10 +36,10 @@ def _make_pm_stub(pending: Dict[str, float], model_trained: bool = True):
 # ─── Tests: stale TTL ────────────────────────────────────────────────────────
 
 class TestPhase70Stale:
-    def test_stale_over_90min_sends_withdraw(self):
+    def test_stale_over_30min_sends_withdraw(self):
         import time
         now = time.monotonic()
-        pm = _make_pm_stub({"AAPL": now - 95 * 60})
+        pm = _make_pm_stub({"AAPL": now - 35 * 60})
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value=None):
@@ -55,7 +55,7 @@ class TestPhase70Stale:
     def test_stale_symbol_removed_from_pending(self):
         import time
         now = time.monotonic()
-        pm = _make_pm_stub({"TSLA": now - 100 * 60})
+        pm = _make_pm_stub({"TSLA": now - 35 * 60})
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value=None):
@@ -63,11 +63,11 @@ class TestPhase70Stale:
 
         assert "TSLA" not in pm._pending_approvals
 
-    def test_not_stale_under_90min_does_not_stale_withdraw(self):
-        """A 60-min old approval should go through rescore, not the stale branch."""
+    def test_not_stale_under_30min_does_not_stale_withdraw(self):
+        """A 20-min old approval should go through rescore, not the stale branch."""
         import time
         now = time.monotonic()
-        pm = _make_pm_stub({"MSFT": now - 60 * 60})
+        pm = _make_pm_stub({"MSFT": now - 20 * 60})
 
         bars = MagicMock()
         bars.empty = False

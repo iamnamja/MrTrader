@@ -31,7 +31,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     """
     from app.database.models import Trade, Order, AuditLog
 
-    result: Dict[str, Any] = {"ghost_positions": [], "orphaned_orders": []}
+    result: Dict[str, Any] = {"ghost_positions": [], "orphaned_orders": [], "untracked_positions": []}
 
     # ── 1. Ghost positions ─────────────────────────────────────────────────────
     try:
@@ -67,7 +67,43 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     except Exception as exc:
         logger.error("Ghost position check failed: %s", exc)
 
-    # ── 2. Orphaned Alpaca orders ──────────────────────────────────────────────
+    # ── 2. Untracked Alpaca positions (in Alpaca but no DB Trade record) ─────────
+    # Happens when a limit order fills after a uvicorn restart wipes _pending_limit_orders.
+    try:
+        active_db_symbols = {t.symbol for t in db_session.query(Trade).filter_by(status="ACTIVE").all()}
+        for symbol, pos in alpaca_positions.items():
+            if symbol not in active_db_symbols:
+                qty = int(float(pos.get("qty") or pos.get("quantity") or 0))
+                avg = float(pos.get("avg_entry_price") or pos.get("avg_price") or 0)
+                logger.warning(
+                    "UNTRACKED POSITION: %s x%d @ $%.2f is in Alpaca but has no ACTIVE DB Trade",
+                    symbol, qty, avg,
+                )
+                result["untracked_positions"].append({"symbol": symbol, "qty": qty, "avg_price": avg})
+                # Create a placeholder Trade so the UI can display it with stop/target
+                placeholder = Trade(
+                    symbol=symbol,
+                    direction="BUY",
+                    entry_price=avg,
+                    quantity=qty,
+                    status="ACTIVE",
+                    signal_type="RECONCILED",
+                    trade_type="swing",
+                )
+                db_session.add(placeholder)
+                db_session.add(AuditLog(
+                    action="RECONCILE_UNTRACKED_POSITION",
+                    details={
+                        "symbol": symbol, "qty": qty, "avg_price": avg,
+                        "reason": "Alpaca position with no DB Trade — likely a limit order filled after restart",
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                    timestamp=datetime.utcnow(),
+                ))
+    except Exception as exc:
+        logger.error("Untracked position check failed: %s", exc)
+
+    # ── 3. Orphaned Alpaca orders ──────────────────────────────────────────────
     try:
         # Get all open orders from Alpaca
         open_alpaca_orders = _get_open_alpaca_orders(alpaca)
@@ -105,10 +141,11 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
 
     n_ghosts = len(result["ghost_positions"])
     n_orphans = len(result["orphaned_orders"])
-    if n_ghosts or n_orphans:
+    n_untracked = len(result["untracked_positions"])
+    if n_ghosts or n_orphans or n_untracked:
         logger.warning(
-            "Startup reconciliation: %d ghost position(s), %d orphaned order(s)",
-            n_ghosts, n_orphans,
+            "Startup reconciliation: %d ghost position(s), %d orphaned order(s), %d untracked position(s)",
+            n_ghosts, n_orphans, n_untracked,
         )
     else:
         logger.info("Startup reconciliation: clean — no issues found")
