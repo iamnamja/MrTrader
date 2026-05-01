@@ -338,7 +338,8 @@ class Trader(BaseAgent):
                 self.logger.info("PM exit request for %s — reason: %s", symbol, reason)
                 try:
                     alpaca = get_alpaca_client()
-                    price = alpaca.get_latest_price(symbol) or self.active_positions[symbol]["entry_price"]
+                    _q = alpaca.get_quote(symbol)
+                    price = (_q["mid"] if _q else None) or alpaca.get_latest_price(symbol) or self.active_positions[symbol]["entry_price"]
                     await self._execute_exit(symbol, price, f"PM_{reason.upper()}", alpaca)
                 except Exception as exc:
                     self.logger.error("PM-requested exit failed for %s: %s", symbol, exc)
@@ -530,6 +531,10 @@ class Trader(BaseAgent):
                     symbol, eq.reason,
                     eq.price_run_pct * 100, eq.spread_pct * 100, eq.momentum_slope * 100,
                 )
+                # Track consecutive rejections; discard after 3 (≈15 min of retries)
+                proposal["_reject_count"] = proposal.get("_reject_count", 0) + 1
+                max_retries = 3
+                discard = "price_run" in eq.reason or proposal["_reject_count"] >= max_retries
                 await self.log_decision("ENTRY_REJECTED_QUALITY", reasoning={
                     "symbol": symbol,
                     "reason": eq.reason,
@@ -538,10 +543,14 @@ class Trader(BaseAgent):
                     "momentum_slope_pct": round(eq.momentum_slope * 100, 2),
                     "volume_ratio": round(eq.volume_ratio, 2),
                     "trade_type": trade_type,
+                    "reject_count": proposal["_reject_count"],
+                    "discarded": discard,
                 })
-                # Don't discard the proposal entirely — re-check next scan cycle
-                # unless price has run too far (then it's unlikely to come back)
-                if "price_run" in eq.reason:
+                if discard:
+                    self.logger.info(
+                        "%s: discarding proposal after %d rejection(s) (%s)",
+                        symbol, proposal["_reject_count"], eq.reason,
+                    )
                     self.approved_symbols.pop(symbol, None)
                 return
 
@@ -831,7 +840,8 @@ class Trader(BaseAgent):
 
         for symbol, pos in swing_positions:
             try:
-                current_price = alpaca.get_latest_price(symbol)
+                _q = alpaca.get_quote(symbol)
+                current_price = (_q["mid"] if _q else None) or alpaca.get_latest_price(symbol)
                 if current_price is None:
                     continue
                 bars = alpaca.get_bars(symbol, timeframe="1Day", limit=20)
@@ -866,14 +876,23 @@ class Trader(BaseAgent):
     async def _check_exit(self, symbol: str, alpaca):
         """Fetch current price, run check_exit(), close position if triggered."""
         pos = self.active_positions[symbol]
-        current_price = alpaca.get_latest_price(symbol)
+        # Prefer live NBBO mid-quote over last minute bar — IEX minute bars can be
+        # 10-30 min stale for low-volume names, causing stops/targets to miss.
+        quote = alpaca.get_quote(symbol)
+        current_price = (quote["mid"] if quote else None) or alpaca.get_latest_price(symbol)
         if current_price is None:
             return
 
         # Update highest price for trailing stop
         highest = max(pos["highest_price"], current_price)
         pos["highest_price"] = highest
-        pos["bars_held"] += 1
+
+        # bars_held = trading DAYS held, not heartbeat ticks.
+        # Only increment when the calendar date advances (once per day).
+        today_date = now.date()
+        if pos.get("_last_bar_date") != today_date:
+            pos["_last_bar_date"] = today_date
+            pos["bars_held"] += 1
 
         # Adverse-move warning: if down >3% from entry, log and tighten stop to breakeven
         pnl_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
@@ -998,6 +1017,10 @@ class Trader(BaseAgent):
         except Exception:
             pass
 
+        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        during_market_hours = market_open <= now <= market_close
+
         should_exit, reason, new_stop = check_exit(
             symbol=symbol,
             current_price=current_price,
@@ -1009,6 +1032,14 @@ class Trader(BaseAgent):
             max_hold_bars=max_hold,
         )
         pos["stop_price"] = new_stop  # keep trailing stop current
+
+        # Never exit during pre-market / after-hours — only stop/target during market hours
+        if should_exit and not during_market_hours:
+            self.logger.debug(
+                "%s: exit signal '%s' suppressed outside market hours (%s ET)",
+                symbol, reason, now.strftime("%H:%M"),
+            )
+            should_exit = False
 
         if should_exit:
             await self._execute_exit(symbol, current_price, reason, alpaca)
@@ -1070,6 +1101,11 @@ class Trader(BaseAgent):
                     filled_qty=partial_qty,
                 )
                 db.add(db_order)
+                # Accumulate partial pnl on the trade record so final pnl is complete
+                trade = db.query(Trade).filter_by(id=pos["trade_id"]).first()
+                if trade:
+                    trade.pnl = (trade.pnl or 0.0) + pnl
+                    pos["_partial_pnl"] = (pos.get("_partial_pnl") or 0.0) + pnl
                 db.commit()
         except Exception as exc:
             db.rollback()
@@ -1133,7 +1169,9 @@ class Trader(BaseAgent):
             self.logger.error("Exit order failed for %s", symbol)
             return
 
-        pnl = (current_price - pos["entry_price"]) * qty
+        final_leg_pnl = (current_price - pos["entry_price"]) * qty
+        partial_pnl = pos.get("_partial_pnl") or 0.0
+        pnl = final_leg_pnl + partial_pnl
         trade_id = pos.get("trade_id")
 
         db = get_session()

@@ -420,13 +420,14 @@ async def get_equity_history(range: str = "1d"):
         hist = _alpaca().trading_client.get_portfolio_history(req)
 
         timestamps = hist.timestamp or []
-        pnl_series = hist.profit_loss or []
+        equity_series = hist.equity or []
         import zoneinfo
         et = zoneinfo.ZoneInfo("America/New_York")
 
-        points = []
-        for ts, pnl in zip(timestamps, pnl_series):
-            if pnl is None:
+        # Build cumulative P&L as equity[i] - equity[0] (baseline at period start)
+        raw = []
+        for ts, eq in zip(timestamps, equity_series):
+            if eq is None:
                 continue
             dt_et = datetime.fromtimestamp(ts, tz=et)
             if range == "1d":
@@ -436,7 +437,12 @@ async def get_equity_history(range: str = "1d"):
                 label = dt_et.strftime("%I:%M %p").lstrip("0")
             else:
                 label = dt_et.strftime("%b %d")
-            points.append({"time": label, "pnl": round(float(pnl), 2)})
+            raw.append({"time": label, "equity": float(eq)})
+
+        if not raw:
+            return []
+        baseline = raw[0]["equity"]
+        points = [{"time": p["time"], "pnl": round(p["equity"] - baseline, 2)} for p in raw]
         return points
 
     try:

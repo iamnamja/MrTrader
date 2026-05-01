@@ -421,7 +421,7 @@ function DecisionAuditTable({ rows }: { rows: DecisionAuditRow[] }) {
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
       <thead><tr>
         {['Time', 'Symbol', 'Strat', 'Decision', 'Score', 'NIS Policy', 'Block Reason', 'Outcome'].map(h =>
-          <th key={h} style={s.th}>{h}</th>)}
+          <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2 }}>{h}</th>)}
       </tr></thead>
       <tbody>
         {rows.map(r => {
@@ -643,6 +643,7 @@ function TradesPanel() {
   const [allRows, setAllRows] = useState<Trade[]>([])
   const [statusFilter, setStatusFilter] = useState('')
   const [dateFilter, setDateFilter] = useState<TradesDateFilter>('all')
+  const [alpacaTotalPnl, setAlpacaTotalPnl] = useState<number | null>(null)
 
   const load = useCallback(async (f = statusFilter) => {
     try {
@@ -651,6 +652,14 @@ function TradesPanel() {
     } catch { /* ignore */ }
   }, [statusFilter])
   useEffect(() => { load() }, [load])
+
+  // Source Total P&L from Alpaca (same as Overview) — DB trade pnl sum is unreliable
+  useEffect(() => {
+    fetch('/api/dashboard/summary').then(r => r.json()).then(s => {
+      const v = s.total_pnl ?? s.pnl_total ?? null
+      if (v != null) setAlpacaTotalPnl(Number(v))
+    }).catch(() => {})
+  }, [])
 
   const rows = (() => {
     if (dateFilter === 'all') return allRows
@@ -665,19 +674,20 @@ function TradesPanel() {
   })()
 
   const closed = rows.filter(t => t.status === 'CLOSED')
-  const wins = closed.filter(t => (t.pnl ?? 0) > 0)
-  const totalPnl = closed.reduce((s, t) => s + (t.pnl ?? 0), 0)
-  const avgPnl = closed.length ? totalPnl / closed.length : 0
-  const wr = closed.length ? wins.length / closed.length * 100 : 0
+  // Exclude legacy unverified trades (early test runs with unreliable quantities) from stats
+  const verifiedClosed = closed.filter(t => t.signal_type !== 'LEGACY_UNVERIFIED')
+  const wins = verifiedClosed.filter(t => (t.pnl ?? 0) > 0)
+  const avgPnl = verifiedClosed.length ? verifiedClosed.reduce((s, t) => s + (t.pnl ?? 0), 0) / verifiedClosed.length : 0
+  const wr = verifiedClosed.length ? wins.length / verifiedClosed.length * 100 : 0
 
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
         <KpiCard label="Total Trades" value={String(rows.length)} />
-        <KpiCard label="Closed Trades" value={String(closed.length)} />
-        <KpiCard label="Win Rate" value={closed.length ? wr.toFixed(1) + '%' : '—'} />
+        <KpiCard label="Verified Closed" value={String(verifiedClosed.length)} />
+        <KpiCard label="Win Rate" value={verifiedClosed.length ? wr.toFixed(1) + '%' : '—'} />
         <KpiCard label="Avg Trade P&L" value={closed.length ? fmt$(avgPnl) : '—'} color={clr(avgPnl)} />
-        <KpiCard label="Total P&L" value={fmt$(totalPnl)} color={clr(totalPnl)} />
+        <KpiCard label="Total P&L" value={alpacaTotalPnl != null ? fmt$(alpacaTotalPnl) : '—'} color={alpacaTotalPnl != null ? clr(alpacaTotalPnl) : undefined} sub="account equity" />
       </div>
       <div style={s.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
@@ -711,15 +721,17 @@ function TradesPanel() {
               {rows.length === 0
                 ? <tr><td colSpan={12} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>No trades found</td></tr>
                 : rows.map((t, i) => {
+                  const isLegacy = t.signal_type === 'LEGACY_UNVERIFIED'
+                  const rowOpacity = isLegacy ? 0.4 : 1
                   const typeColor = t.trade_type === 'intraday' ? C.yellow : t.trade_type === 'swing' ? C.blue : C.muted
                   const pnlPct = t.exit_price && t.entry_price && t.entry_price > 0
                     ? ((t.exit_price - t.entry_price) / t.entry_price * 100) : null
                   return (
-                  <tr key={i}>
+                  <tr key={i} style={{ opacity: rowOpacity }} title={isLegacy ? 'Legacy test trade — quantities unverified against Alpaca' : undefined}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
                     <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{t.trade_type ?? '—'}</td>
                     <td style={s.td}>{t.direction}</td>
-                    <td style={{ ...s.td, color: C.blue }}>{t.signal_type ?? '—'}</td>
+                    <td style={{ ...s.td, color: C.blue }}>{isLegacy ? 'legacy' : (t.signal_type ?? '—')}</td>
                     <td style={s.td}>{fmt$(t.entry_price)}</td>
                     <td style={s.td}>{t.exit_price ? fmt$(t.exit_price) : <span style={{ color: C.muted }}>open</span>}</td>
                     <td style={{ ...s.td, color: clr(pnlPct) }}>{pnlPct != null ? fmtPct(pnlPct) : '—'}</td>
@@ -776,7 +788,7 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
         <div style={s.cardTitle}>Live Signal Feed (WebSocket)</div>
         <div style={{ maxHeight: 200, overflowY: 'auto' }}>
           {feed.length === 0
-            ? <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>Waiting for signals via WebSocket...</div>
+            ? <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>No signals yet this session — feed will populate on next trade entry, exit, or agent decision.</div>
             : feed.map((row, i) => {
               const color = row.kind === 'buy' ? C.green : row.kind === 'sell' ? C.red : C.blue
               const label = row.kind === 'buy' ? 'ENTRY' : row.kind === 'sell' ? 'EXIT' : 'SIGNAL'
@@ -852,7 +864,7 @@ function DecisionsTable({ rows }: { rows: Decision[] }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead><tr>
-        {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={s.th}>{h}</th>)}
+        {['Time', 'Agent', 'Action', 'Symbol'].map(h => <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2 }}>{h}</th>)}
       </tr></thead>
       <tbody>
         {rows.map((d, i) => {

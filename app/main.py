@@ -110,6 +110,20 @@ async def startup_event():
     except Exception as e:
         logger.warning("Startup reconciliation skipped: %s", e)
 
+    # Flush stale inter-agent queue messages before agents start consuming them.
+    # Proposals in Redis survive process restarts; without this, a restarted RM will
+    # re-approve proposals that PM already flagged as sent today.
+    try:
+        from app.integrations.redis_queue import get_redis_queue
+        _rq = get_redis_queue()
+        for _qname in ["trade_proposals", "risk_approved", "exit_requests", "pm_commands"]:
+            _n = _rq.get_queue_length(_qname)
+            if _n > 0:
+                _rq.clear_queue(_qname)
+                logger.warning("Startup: flushed %d stale message(s) from queue '%s'", _n, _qname)
+    except Exception as _e:
+        logger.warning("Startup queue flush failed (non-fatal): %s", _e)
+
     # Start orchestrator (registers + starts all agents)
     try:
         from app.agents.portfolio_manager import portfolio_manager

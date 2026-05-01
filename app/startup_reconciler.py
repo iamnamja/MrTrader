@@ -70,7 +70,11 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     # ── 2. Untracked Alpaca positions (in Alpaca but no DB Trade record) ─────────
     # Happens when a limit order fills after a uvicorn restart wipes _pending_limit_orders.
     try:
-        active_db_symbols = {t.symbol for t in db_session.query(Trade).filter_by(status="ACTIVE").all()}
+        live_statuses = ("ACTIVE", "RECONCILE_GHOST")
+        active_db_symbols = {
+            t.symbol for t in db_session.query(Trade)
+            .filter(Trade.status.in_(live_statuses)).all()
+        }
         for symbol, pos in alpaca_positions.items():
             if symbol not in active_db_symbols:
                 qty = int(float(pos.get("qty") or pos.get("quantity") or 0))
@@ -80,7 +84,10 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     symbol, qty, avg,
                 )
                 result["untracked_positions"].append({"symbol": symbol, "qty": qty, "avg_price": avg})
-                # Create a placeholder Trade so the UI can display it with stop/target
+                # Create a placeholder Trade with default stop/target (2% stop, 6% target)
+                # Trader will refine these via generate_signal() on next reconcile cycle
+                stop_price = round(avg * 0.98, 2) if avg > 0 else None
+                target_price = round(avg * 1.06, 2) if avg > 0 else None
                 placeholder = Trade(
                     symbol=symbol,
                     direction="BUY",
@@ -89,6 +96,8 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     status="ACTIVE",
                     signal_type="RECONCILED",
                     trade_type="swing",
+                    stop_price=stop_price,
+                    target_price=target_price,
                 )
                 db_session.add(placeholder)
                 db_session.add(AuditLog(

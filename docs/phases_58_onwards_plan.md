@@ -1,7 +1,7 @@
 # MrTrader — Consolidated Phase Roadmap
 
-**Last updated:** 2026-04-29  
-**Status:** Paper trading active. All major risk and news intelligence layers shipped.
+**Last updated:** 2026-05-01 (v3 — code-grounded review by Opus, full V1-V31 verification)
+**Status:** Paper trading active. Critical safety gaps identified — see Phase 75 and 76 before any live promotion.
 
 ---
 
@@ -84,6 +84,8 @@ All phases 1–56 complete. Walk-forward gates passed for both models.
 
 **Gate for live trading:** 4-week paper Sharpe > 0.5, max drawdown < 5%.
 
+> **⚠️ 2026-05-01 code-review update:** The above gate is necessary but NOT sufficient. Phases 75–78 + 82–83 must all be green before any real-money promotion. See code-grounded plan below.
+
 ---
 
 ### Tier 2 — Near-Term Engineering ✅ COMPLETE
@@ -95,6 +97,152 @@ Phases 72, 73, 74 shipped 2026-04-29.
 | 72 | NIS re-check for held swing positions | ✅ Done — `exit_review` policy triggers EXIT in 30-min review |
 | 73 | Overnight gap open price accuracy | ✅ Done — uses actual 1-min open bar; auto-exit already wired |
 | 74 | NIS & audit dashboard API | ✅ Done — 5 new endpoints in `app/api/nis_routes.py` |
+
+---
+
+---
+
+## Part 2b — Code-Grounded Priority Plan (Phases 75–84)
+
+> Added 2026-05-01 from full codebase review (V1-V31 verification, ~14 min Opus sweep). These phases supersede the old Tier 3 ordering below. Full detail: `docs/phase_plan_v3_code_grounded.md`.
+
+### ⛔ Critical Findings (must fix before live money)
+
+| Finding | File:Line | Severity |
+|---|---|---|
+| Kill switch is decorative — `kill_switch.is_active` checked in zero agent loops | `app/agents/*.py` (grep: 0 matches) | **CRITICAL** |
+| MetaLabel filter NOT in production — docs claim ~26% filter; code shows backtest-only | `app/agents/portfolio_manager.py` (grep: 0 matches for MetaLabel) | **HIGH** |
+| Slippage measurement broken — uses post-fill `get_latest_price` not `filled_avg_price` | `app/agents/trader.py:646` | **HIGH** |
+| Survivorship bias — universe is current static list, not point-in-time membership | `app/utils/constants.py:7,141,145` | **HIGH** |
+| Earnings gate fails open — yfinance 401s silently; `block_swing=False` on exception | `app/calendars/earnings.py:120-122` | **HIGH** |
+| `_peak_equity` resets on restart — drawdown rule loophole | `app/agents/risk_manager.py:54,312` | **MEDIUM** |
+| Multi-universe inconsistency — walk-forward on SP-100; training on R-1000; live on SP-500 | `scripts/walkforward_tier3.py:228` vs `train_model.py:580` vs `portfolio_manager.py:551` | **MEDIUM** |
+| Bar-12 intraday entry never sensitivity-tested (bars 9-15 never swept) | `app/ml/intraday_features.py:86` | **MEDIUM** |
+
+### Phase 75 — Wire Kill Switch Into All Agents (Critical, 1 day)
+**Gap:** `kill_switch.is_active` is checked in zero agent loops. Calling `activate()` closes positions but PM/RM/Trader continue accepting and executing new proposals. Fatal for a real account during a flash crash.
+
+**What to build:**
+- `app/agents/portfolio_manager.py`: early-return + `log_decision` in `_send_swing_proposals` and `select_intraday_instruments` when `kill_switch.is_active`
+- `app/agents/risk_manager.py`: reject all incoming proposals with `failed_rule="kill_switch"`
+- `app/agents/trader.py`: skip `_check_entry`; cancel pending limit orders when active
+- `app/live_trading/kill_switch.py`: also cancel all open Alpaca orders inside `activate()` (currently it only closes positions, not pending orders)
+- `tests/test_kill_switch_blocks.py`: new — activate kill switch, send fake proposal, assert Order count unchanged within 30s
+
+**Acceptance criteria:** After `kill_switch.activate()`, no new `Trade` rows created within 30s. All open Alpaca orders cancelled. AuditLog has `KILL_SWITCH_ACTIVATED` entry.
+
+**Blocker for live trading:** Yes.
+
+### Phase 76 — Fix Slippage Measurement for Market Orders (Critical, 0.5 days)
+**Gap:** `trader.py:646` uses `alpaca.get_latest_price(symbol)` AFTER `place_market_order()` returns — this is the *next* quote bar, not the fill price. `intended_price = result.entry_price` was set at signal time (often 5–30 min stale). So `slippage_bps` column is measuring (post-fill price drift vs signal-time price) — not actual execution quality.
+
+**What to build:**
+- Replace `get_latest_price` call with poll-loop on `alpaca.get_order_status(order_id)` using `filled_avg_price`
+- Capture `intended_price` from `alpaca.get_quote()["mid"]` immediately before order submission
+- `tests/test_slippage_market.py`: mock order status → assert correct `slippage_bps` computation
+
+**Acceptance criteria:** Median `|slippage_bps|` on market orders in next 5 paper-trading days documented and < 30bps for SP-100 names.
+
+### Phase 77 — Decision-Audit Dashboard Tile (High, 2 days)
+**Gap:** `decision_audit` table is populated but nothing reads it. Cannot answer "are the gates actually working?"
+
+**What to build:**
+- `GET /api/audit/summary` endpoint — aggregate win-rate by `block_reason`, avg realized P&L by `news_action_policy`, `model_score` bucket vs realized 4h return
+- Frontend tile on dashboard
+- `scripts/backfill_decision_outcomes.py` — 16:30 ET cron that populates `outcome_pnl_pct`, `outcome_4h_pct`, `outcome_1d_pct`
+
+**Acceptance criteria:** After 2 weeks, can read "NIS `sizing_multiplier 0.7-0.8` correlates with X bps lower realized return." Backfill runs in < 10 min.
+
+**Dependencies:** Phase 76 (so realized P&L is trustworthy)
+
+### Phase 78 — Periodic Reconciliation + Open-Order Sync (High, 1 day)
+**Gap:** Reconciliation runs only at startup. If Alpaca and DB diverge mid-session (manual close in Alpaca UI, limit order fills after restart), nothing notices until next restart.
+
+**What to build:**
+- `_reconciliation_loop` in PM — runs every 15 min during market hours, calls `startup_reconciler.reconcile()` plus new `cancel_orphaned_orders(alpaca, db_session)`
+- `cancel_orphaned_orders`: for each open Alpaca order without matching DB row, log + cancel
+- Persist `_pending_limit_orders` to DB table (or extend `Order.status='PENDING_LIMIT'`) so it survives restarts
+
+**Acceptance criteria:** Simulate restart with 1 pending limit order in Alpaca; verify it's cancelled OR re-tracked within 15 min of next reconciliation cycle.
+
+**Dependencies:** Phase 75
+
+### Phase 79 — Point-in-Time Index Membership (High, 3 days)
+**Gap:** `SP_500_TICKERS`, `SP_100_TICKERS`, `RUSSELL_1000_TICKERS` are static Python lists reflecting ~early 2026 membership. Stocks delisted/acquired between 2021-2026 are silently absent from training, inflating walk-forward Sharpe.
+
+**What to build:**
+- `app/data/universe_history.py` with `members_at(date)` function
+- `data/universe/sp500_membership.parquet` and `data/universe/russell1000_membership.parquet` — seeded from Polygon reference data or Wikipedia historical snapshots
+- Update `scripts/train_model.py:580` and `scripts/walkforward_tier3.py:228` to call `members_at(fold_train_start)`
+- Re-run swing walk-forward; report new Sharpe in `docs/ML_EXPERIMENT_LOG.md` (may be lower — that's the correct result)
+
+**Acceptance criteria:** `members_at(date(2022,1,1))` returns ~500 symbols including names since delisted (e.g. WORK, PAGS). New walk-forward Sharpe documented.
+
+### Phase 80 — Bar-12 Intraday Sensitivity Test (High, 1 day)
+**Gap:** Bar 12 entry was chosen by intuition before any sweep. Phase 50 tested bars 12/24/36 but those were multi-scan offsets (all failed gate). Bars 9-15 around the current entry have never been tested. If only bar 12 shows Sharpe > 1.5 and bars 11 and 13 don't, the edge may be in-sample noise.
+
+**What to build:**
+- `scripts/bar_sensitivity.py`: takes `--entry-offset` arg, runs full walk-forward for one bar, outputs Sharpe + win-rate + trade count
+- Run for offsets 9, 10, 11, 12, 13, 14, 15
+- New section in `docs/ML_EXPERIMENT_LOG.md` with results table
+
+**Acceptance criteria:** If 4 of 5 bars (10-14) pass Sharpe > 0.8 → document as robust. If only bar 12 passes → file follow-up, downgrade intraday Sharpe expectation in docs.
+
+**Dependencies:** Phase 79 preferred first (PIT universe for honest results)
+
+### Phase 81 — Earnings Calendar: Finnhub Primary + FMP Fallback, Fail-Closed (Medium, 1.5 days)
+**Gap:** `app/calendars/earnings.py:103` uses yfinance for earnings dates. yfinance returns 401 on most requests; on exception `block_swing=False` — gate fails open silently. Both Finnhub and FMP are already paying APIs with earnings calendar endpoints.
+
+**What to build:**
+- Replace `_fetch` with Finnhub call (reuse `app/news/sources/finnhub_source.py` pattern) as primary
+- On Finnhub failure → FMP fallback (`app/data/fmp_provider.py` already integrated)
+- On both failing → fail-closed for swing (`block_swing=True, reason="earnings_data_unavailable"`); fail-open for intraday (2hr hold, lower exposure)
+- Remove yfinance from earnings path entirely
+- New scheduled task at 06:00 ET: prefetch earnings dates for all watchlist symbols
+- New metric in `/api/health`: `earnings_data_freshness_pct` (% symbols with data < 24h old)
+- `tests/`: mock Finnhub 503 + FMP 503; assert swing `block_swing=True`; assert intraday `block_intraday=False`
+
+**Acceptance criteria:** Earnings gate works even when yfinance is dead. No swing entry within 2 trading days of earnings even when both primary sources fail.
+
+### Phase 82 — Persist `_peak_equity` (Medium, 0.5 days)
+**Gap:** `risk_manager.py:54` initializes `_peak_equity = None`, assigned to current equity if higher. On every uvicorn restart the drawdown high-water mark resets. If account goes from $20k → $19k and restarts, `_peak_equity` resets to $19k and the 5% drawdown rule now allows losing to $18.05k before tripping — creating a restart-loophole.
+
+**What to build:**
+- Add `Configuration` table key `risk.peak_equity` (float)
+- Load on startup; fall back to Alpaca portfolio history max
+- Update `_peak_equity` assignment to persist on every change
+- Test: simulate restart; assert `peak_equity == max(persisted, current)` after reload
+
+**Acceptance criteria:** Peak equity survives restart. Drawdown rule trips at the correct level (from historical peak, not restart-time equity).
+
+### Phase 83 — Deadman Switch + External Watchdog (Medium, 1 day)
+**Gap:** No external watchdog. If FastAPI process dies Friday at 14:00 ET, positions stay open indefinitely until Min notices manually.
+
+**What to build:**
+- PM writes heartbeat row to `process_heartbeat` table every 60s during market hours
+- `scripts/watchdog.py` (run as separate cron, every 2 min) — if last heartbeat > 5 min old AND market open, calls `kill_switch.activate(reason="deadman: PM heartbeat stale")` via API
+- Run on a cheap separate host (free-tier cloud VM or always-on laptop)
+
+**Acceptance criteria:** Kill FastAPI process; within 7 min all positions closed.
+
+**Dependencies:** Phase 75 (kill switch must actually block before this matters)
+
+**Blocker for live trading:** Yes.
+
+### Phase 84 — Integration Test: Full PM→RM→Trader Round Trip (Medium, 2 days)
+**Gap:** No e2e test that drives PM→RM→Trader→Alpaca-paper with persistent state. All "integration" tests are unit tests with mocks. V25 verified: no regression tests exist for known bugs.
+
+**What to build:**
+- `tests/test_e2e_round_trip.py` — uses Alpaca paper account (real Redis) to drive one swing proposal end-to-end
+- Asserts: `Trade.status='ACTIVE'` after fill; `Trade.status='CLOSED'` and `pnl` populated after stop/exit
+- Run on demand only (not in normal CI — takes minutes)
+
+**Acceptance criteria:** One test that can certify a release candidate.
+
+### Explicit Deferred (Don't Do)
+- **No new model training** until Phase 79+80 land (PIT universe + bar sensitivity)
+- **No new NIS features** until Phase 77 shows NIS scores predict realized P&L (needs 2 weeks data)
+- **No live-money switch** until Phases 75, 76, 78, 82, 83 all green
 
 ---
 
@@ -162,6 +310,20 @@ After Haiku error rate is measurable from `llm_call_log`:
   - All 3 intraday scan windows are distinct and non-overlapping
 - **Files:** `tests/test_live_readiness.py`
 
+#### Phase 81 — Dynamic Position Re-Evaluation (Market-Adaptive Hold/Exit)
+**Gap:** Once a swing position is entered, exit logic is purely price-rule-based (stop/target/trailing/max-hold). The system never asks "given what the market is doing right now, does this position still make sense?" A strong ML signal that has since flipped negative, a news event on the held symbol, or a broad regime shift can make a held position stale — but nothing acts on it intraday.
+
+**What to build:**
+- Every 60 minutes during market hours, re-score each held swing position using:
+  1. **ML re-score:** run inference on the held symbol with current bars → if score drops below `EXIT_THRESHOLD` (default 0.48) and position has been held ≥ 1 day: send EXIT signal
+  2. **NIS re-check:** already partly done via Phase 72 (30-min NIS loop) — deepen to also check symbol-specific filings or breaking news since entry
+  3. **Regime shift:** if SPY intraday regime flips to `bearish` (>1.5% drawdown from open) and position is still green, consider early partial exit to lock in gains
+- Log every re-evaluation to `decision_audit` as `POSITION_REVIEW` with `outcome=HOLD|EXIT|PARTIAL_EXIT`
+- **Files:** `app/agents/portfolio_manager.py` (new `_intraday_position_review()` task, runs at :15 past each hour), `app/agents/trader.py` (consume EXIT signal from queue)
+- **Gate:** Don't exit on first re-score drop — require 2 consecutive weak scores (avoid noise exits)
+
+**Philosophy:** Entries are based on pre-market signals. Intraday, the world changes. This phase makes the system responsive rather than mechanical once a position is open.
+
 #### Phase 79 — AUC Drift Live Alert
 **Gap:** The swing model retrains daily at 5 PM but silent failures aren't surfaced. If OOS AUC drops below gate threshold, no alert fires.
 
@@ -181,6 +343,27 @@ After Haiku error rate is measurable from `llm_call_log`:
 | Regime v2 | Finer-grained market regime (bull/bear/chop sub-modes) | Need live performance data to see where the model fails |
 | Options flow | Polygon options unusual activity as entry filter | Polygon premium required; validate concept first |
 | Intraday v2 | Retrain intraday with multi-scan data | Run 4 weeks of 3-window data, then retrain on richer intraday distribution |
+| Phase 80 | True Technical Day Trader (new strategy) | Fundamentally different architecture — not an enhancement, a new agent |
+
+#### Phase 80 — True Technical Day Trader
+**Context:** The current intraday model is an ML-scored, fixed-window position trader. It holds positions for hours and exits by EOD. A true day trader operates on a completely different paradigm: event-driven entries, purely technical signals, 5–45 minute holds, 5–20 trades per day.
+
+**What it is:**
+- Separate `IntradayScalper` agent (not a modification of the current intraday PM)
+- Entry triggers: VWAP breakout/reclaim, 1-min/5-min momentum, volume surge vs 20-day avg, L2 imbalance (if available)
+- Hold time: 5–45 minutes; max position 90 minutes
+- Universe: high-ADV liquid names (AAPL, TSLA, NVDA, SPY, QQQ, ~20–30 tickers, never 700+)
+- Exits: VWAP lose, target (0.3–0.5%), hard stop (0.2%), time stop (45 min)
+- No ML model scoring — pure signal-to-execution, sub-second latency target
+- All positions flat by 15:45 ET, no exceptions
+
+**Why deferred:**
+- Requires L1/L2 tick data (Alpaca's 1-min bars are too coarse for 5-min scalps)
+- Risk framework needs separate position limits (scalper holds many small positions simultaneously)
+- Requires backtesting harness different from walk-forward on daily bars
+- Current paper trading infrastructure should be validated first
+
+**Precondition:** Phase 57 calibration complete + live trading approved (swing/intraday system stable).
 
 ---
 
@@ -188,10 +371,10 @@ After Haiku error rate is measurable from `llm_call_log`:
 
 ```
 SYSTEM STATE: Paper trading active as of 2026-04-28
-MODELS: Swing v119 (Sharpe +1.181 ✅), Intraday v29 (Sharpe +1.776 ✅)
-TESTS: 1171 passing
+MODELS: Swing v141 (gate passed ✅), Intraday v33 (gate passed ✅)
+TESTS: 1171 passing (as of 2026-04-29 session 3; count may have grown)
 
-COMPLETE (all shipped as of 2026-04-29):
+COMPLETE (all shipped as of 2026-04-30):
   Foundation        — All phases 1–56, both model gates passed
   Hardening         — Phases A/B/C/67/68/69/70
   NIS               — Phases 58/59/60/63 (full Finnhub+Haiku stack)
@@ -203,21 +386,53 @@ COMPLETE (all shipped as of 2026-04-29):
   Gap accuracy      — Phase 73 (actual open bar, auto-exit already wired)
   API visibility    — Phase 74 (5 NIS + audit endpoints)
   Audit hardening   — Gaps 1-5: feature explainability, EOD backfill, daily summary, report sections, day replay
+  Institutional intraday — SPY regime gating, morning candidates cache, adaptive re-scan,
+                            lunch block (11:15–13:00), staleness 90→30 min, intraday decision audit
 
 LET IT RUN:
   Phase 57  — Paper trading calibration (run 2-4 weeks, then review)
 
-MEDIUM TERM (phases 75–79):
-  Phase 75  — EOD swing review signal (15:45 ET weak-score exit)
-  Phase 76  — Slippage analysis surfaced in reporting + API
-  Phase 77  — Graceful SIGTERM / queue drain on shutdown
-  Phase 78  — Live readiness checklist audit (extend test_live_readiness.py)
-  Phase 79  — AUC drift live alert wired into daily retrain
+CRITICAL / SAFETY (must fix before live money):
+  Phase 75  — Wire kill switch into PM/RM/Trader + cancel open orders on activate [1 day]
+  Phase 76  — Fix slippage measurement (use filled_avg_price, not get_latest_price) [0.5 days]
+  Phase 78  — Periodic reconciliation every 15 min; persist _pending_limit_orders [1 day]
+  Phase 82  — Persist _peak_equity across restarts [0.5 days]
+  Phase 83  — Deadman switch + external watchdog [1 day]
 
-LONG TERM (after calibration):
-  Phase 64  — News as model features (needs 60 days NIS history)
-  Phase 64  — News as model features (needs 60 days NIS history)
+HIGH (hardening + measurement):
+  Phase 77  — Decision-audit dashboard tile (are gates actually working?) [2 days]
+  Phase 79  — Point-in-time index membership (eliminate survivorship bias) [3 days]
+  Phase 80  — Bar-12 sensitivity test (sweep bars 9-15, validate intraday edge) [1 day]
+
+MEDIUM (correctness):
+  Phase 81  — Earnings calendar: replace yfinance with Finnhub, fail-closed [1.5 days]
+  Phase 84  — Integration test: full PM→RM→Trader round trip [2 days]
+
+LONG TERM (after calibration, needs 60 days NIS history):
+  Phase 64  — News as model features
   Phase 65  — Source expansion + dedup clustering
   Phase 66  — Sonnet escalation for high-stakes events
   Tier 4    — Intraday v2 retrain, regime v2, options flow
+  Phase 85  — EOD swing review signal (15:45 ET weak-score exit) [was Phase 75]
+  Phase 86  — Kill switch mode selector: named modes A/B/C (hard-block-exits / auto-flatten / full-freeze)
+              Currently Phase 75 implements mode A (hard block entries, allow exits).
+              Add a `kill_switch.activate(mode="flatten")` param so operator can choose per-situation.
+  Phase 87  — Graceful SIGTERM / queue drain [was Phase 77]
+  Phase 88  — Live readiness checklist audit [was Phase 78]
+  Phase 89  — AUC drift live alert [was Phase 79]
+  Phase 90  — Tax + P&L Impact Review (pre-live gate, NJ taxable account)
+              Before any real-money promotion: quantify wash sale exposure from paper trading history
+              (how many times did we exit a loss and re-enter the same symbol within 30 days?),
+              compute after-tax Sharpe assuming 37% Fed + 10% NJ on short-term gains, and decide
+              whether to enable hard wash-sale blocking (Phase 7b option) before going live.
+              Also: confirm account type (cash vs margin) and T+1 settled-cash impact.
+              Revisit: when paper trading is stable and 4+ weeks of clean data exists.
+  Phase 91  — True technical day trader (new IntradayScalper agent, post-live-approval) [was Phase 80]
+
+OPEN QUESTIONS FOR MIN (from code review — must answer before proceeding):
+  Q1: Universe scope after Phase 79 — retrain on PIT-R1000, keep SP-100-PIT gate, or accept bias?
+  Q2: Kill switch style — (a) hard block, (b) allow exits, (c) hard block + auto-flatten?
+  Q3: MetaLabel disposition — wire in live, delete docs, or train v2?
+  Q4: Going-live gate — after phases 75/76/78/82/83 green only, or also require 4 weeks clean paper?
+  Q5: Earnings gate fail behavior — fail-closed always, or fail-open for intraday?
 ```

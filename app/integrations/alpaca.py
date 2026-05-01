@@ -306,7 +306,7 @@ class AlpacaClient:
                     return df.tail(limit)
             except (KeyError, TypeError):
                 pass
-            logger.warning(f"No data found for {symbol}")
+            logger.debug(f"No data found for {symbol}")
             return pd.DataFrame()
 
         except Exception as e:

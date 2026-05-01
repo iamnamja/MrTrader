@@ -209,10 +209,39 @@ class PortfolioManager(BaseAgent):
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
+    def _restore_daily_flags(self) -> None:
+        """On startup, restore today's task flags from the AgentDecision log to prevent re-running."""
+        from app.database.session import get_session
+        from app.database.models import AgentDecision as _AD
+        today = datetime.now(ET).date()
+        db = get_session()
+        try:
+            # DB stores naive UTC; compare against UTC midnight for today (ET date)
+            from datetime import timezone
+            today_utc_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc)
+            today_decisions = db.query(_AD.decision_type).filter(
+                _AD.agent_name == "portfolio_manager",
+                _AD.timestamp >= today_utc_start.replace(tzinfo=None),
+            ).all()
+            types = {r.decision_type for r in today_decisions}
+            if "SWING_PREMARKET_ANALYSIS" in types:
+                self._analyzed_today = True
+                self.logger.info("Startup: swing_premarket_analysis already ran today — skipping re-run")
+            if "INSTRUMENTS_SELECTED" in types or "SWING_PROPOSALS_SENT" in types:
+                self._selected_today = True
+                self.logger.info("Startup: swing proposals already sent today — skipping re-send")
+            if "PREMARKET_INTELLIGENCE" in types:
+                self._premarket_run_today = True
+        except Exception as e:
+            self.logger.warning("Could not restore daily flags from DB: %s", e)
+        finally:
+            db.close()
+
     async def run(self):
         self.logger.info("Portfolio Manager started")
         self.status = "running"
         self._try_load_model()
+        self._restore_daily_flags()
 
         while self.status == "running":
             try:
@@ -926,11 +955,10 @@ class PortfolioManager(BaseAgent):
         Falls back to running a fresh analysis if 08:00 run was missed.
         """
         if not self._swing_proposals:
-            self.logger.warning("No pre-market analysis cached — running analysis now")
-            await self._analyze_swing_premarket()
-
-        if not self._swing_proposals:
-            self.logger.warning("Still no swing proposals after fallback analysis — skipping")
+            self.logger.warning(
+                "No swing proposals cached at send time — pre-market analysis did not run or "
+                "was cleared. Skipping today's swing proposals. Check logs for SELECTION_SKIPPED."
+            )
             return
 
         # Phase 3-Parallel: PM abstention gate — suppress entries on bad regime days

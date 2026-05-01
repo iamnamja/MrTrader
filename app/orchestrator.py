@@ -73,8 +73,8 @@ class AgentOrchestrator:
         for name, task in self._tasks.items():
             task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             logger.info("Agent %s stopped", name)
         self._tasks.clear()
