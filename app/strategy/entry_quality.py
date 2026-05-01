@@ -6,10 +6,15 @@ conditions may have changed. This module checks whether "right now" is
 actually a good moment to execute the trade.
 
 Checks (all must pass for BUY to proceed):
-  1. Price run   — stock hasn't already moved >1.5% past the signal price
-  2. Intraday momentum — 5-min trend not sharply against the daily signal
-  3. Spread/liquidity — bid-ask spread ≤ 0.5% of mid-price
-  4. Volume context  — current bar volume not suspiciously low (< 30% of avg)
+  1. Price run   — stock hasn't already moved too far past the signal price
+  2. Adverse move — stock hasn't dropped too far below the signal price
+  3. Spread/liquidity — bid-ask spread within acceptable range
+  4. Intraday momentum — 5-min trend not sharply against the signal
+  5. Volume context  — current bar volume not suspiciously low
+
+Thresholds are wider for intraday than swing because intraday signal prices
+are captured at 9:45 scan time but execution happens 10-15 min later after
+feature fetch + RM approval. Swing uses limit orders so slippage is bounded.
 """
 from __future__ import annotations
 
@@ -21,14 +26,25 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ── Thresholds ────────────────────────────────────────────────────────────────
+# ── Thresholds — intraday (wider: 10-15 min lag from scan to execution) ───────
+INTRADAY_MAX_PRICE_RUN_PCT = 0.025    # enter up to 2.5% above signal price
+INTRADAY_MAX_ADVERSE_MOVE_PCT = 0.020  # enter up to 2.0% below signal price
+INTRADAY_MAX_SPREAD_PCT = 0.010        # skip if spread > 1.0% (intraday names can be wider)
 
-MAX_PRICE_RUN_PCT = 0.015       # don't enter if price > 1.5% above signal price
-MAX_ADVERSE_MOVE_PCT = 0.010    # don't enter if price > 1.0% below signal (gap down)
-MAX_SPREAD_PCT = 0.005          # skip if bid-ask spread > 0.5% of mid
+# ── Thresholds — swing (tighter: limit orders bound slippage at execution) ────
+SWING_MAX_PRICE_RUN_PCT = 0.015       # enter up to 1.5% above signal price
+SWING_MAX_ADVERSE_MOVE_PCT = 0.015    # enter up to 1.5% below signal price
+SWING_MAX_SPREAD_PCT = 0.005          # skip if spread > 0.5%
+
+# ── Shared thresholds ─────────────────────────────────────────────────────────
 MIN_VOLUME_RATIO = 0.30         # skip if current bar volume < 30% of 20-bar avg
 INTRADAY_BARS_NEEDED = 12       # min 5-min bars to assess intraday momentum (1 hour)
 INTRADAY_MOMENTUM_LOOKBACK = 6  # bars for short-term slope (30 min)
+
+# Legacy aliases (used in tests)
+MAX_PRICE_RUN_PCT = SWING_MAX_PRICE_RUN_PCT
+MAX_ADVERSE_MOVE_PCT = SWING_MAX_ADVERSE_MOVE_PCT
+MAX_SPREAD_PCT = SWING_MAX_SPREAD_PCT
 
 
 @dataclass
@@ -66,12 +82,17 @@ def check_entry_quality(
     if signal_price <= 0 or current_price <= 0:
         return EntryQualityResult(approved=False, reason="invalid_prices")
 
+    is_intraday = trade_type == "intraday"
+    max_run = INTRADAY_MAX_PRICE_RUN_PCT if is_intraday else SWING_MAX_PRICE_RUN_PCT
+    max_adverse = INTRADAY_MAX_ADVERSE_MOVE_PCT if is_intraday else SWING_MAX_ADVERSE_MOVE_PCT
+    max_spread = INTRADAY_MAX_SPREAD_PCT if is_intraday else SWING_MAX_SPREAD_PCT
+
     # ── Check 1: price run ────────────────────────────────────────────────────
     price_run_pct = (current_price - signal_price) / signal_price
-    if price_run_pct > MAX_PRICE_RUN_PCT:
+    if price_run_pct > max_run:
         logger.info(
-            "%s entry rejected: price run +%.2f%% above signal $%.2f (current $%.2f)",
-            symbol, price_run_pct * 100, signal_price, current_price,
+            "%s entry rejected: price run +%.2f%% above signal $%.2f (current $%.2f, max=%.1f%%)",
+            symbol, price_run_pct * 100, signal_price, current_price, max_run * 100,
         )
         return EntryQualityResult(
             approved=False,
@@ -79,12 +100,10 @@ def check_entry_quality(
             price_run_pct=price_run_pct,
         )
 
-    # For swing, we're more tolerant of small adverse moves (noise); for intraday be stricter
-    adverse_threshold = MAX_ADVERSE_MOVE_PCT if trade_type == "intraday" else MAX_ADVERSE_MOVE_PCT * 1.5
-    if price_run_pct < -adverse_threshold:
+    if price_run_pct < -max_adverse:
         logger.info(
-            "%s entry rejected: adverse move %.2f%% from signal (current $%.2f, signal $%.2f)",
-            symbol, price_run_pct * 100, current_price, signal_price,
+            "%s entry rejected: adverse move %.2f%% from signal (current $%.2f, signal $%.2f, max=%.1f%%)",
+            symbol, price_run_pct * 100, current_price, signal_price, max_adverse * 100,
         )
         return EntryQualityResult(
             approved=False,
@@ -98,10 +117,10 @@ def check_entry_quality(
         bid, ask = float(quote["bid"]), float(quote["ask"])
         mid = (bid + ask) / 2
         spread_pct = (ask - bid) / mid if mid > 0 else 0.0
-        if spread_pct > MAX_SPREAD_PCT:
+        if spread_pct > max_spread:
             logger.info(
-                "%s entry rejected: spread %.3f%% > max %.3f%%",
-                symbol, spread_pct * 100, MAX_SPREAD_PCT * 100,
+                "%s entry rejected: spread %.3f%% > max %.3f%% (%s)",
+                symbol, spread_pct * 100, max_spread * 100, trade_type,
             )
             return EntryQualityResult(
                 approved=False,
