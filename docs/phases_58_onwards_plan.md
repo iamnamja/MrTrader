@@ -424,10 +424,12 @@ After Haiku error rate is measurable from `llm_call_log`:
 
 ```
 SYSTEM STATE: Paper trading active as of 2026-04-28
-MODELS: Swing v141 (gate passed ✅), Intraday v33 (gate passed ✅)
-TESTS: 1171 passing (as of 2026-04-29 session 3; count may have grown)
+MODELS: Swing v141 (gate passed ✅), Intraday v33 (gate passed ✅, but low candidate output)
+CAPITAL: $100k paper (matches Alpaca paper account)
+TESTS: 1171+ passing
+LAST UPDATED: 2026-05-01
 
-COMPLETE (all shipped as of 2026-04-30):
+COMPLETE (all shipped):
   Foundation        — All phases 1–56, both model gates passed
   Hardening         — Phases A/B/C/67/68/69/70
   NIS               — Phases 58/59/60/63 (full Finnhub+Haiku stack)
@@ -438,25 +440,62 @@ COMPLETE (all shipped as of 2026-04-30):
   Swing review      — Phase 72 (NIS re-check for held positions)
   Gap accuracy      — Phase 73 (actual open bar, auto-exit already wired)
   API visibility    — Phase 74 (5 NIS + audit endpoints)
-  Audit hardening   — Gaps 1-5: feature explainability, EOD backfill, daily summary, report sections, day replay
-  Institutional intraday — SPY regime gating, morning candidates cache, adaptive re-scan,
-                            lunch block (11:15–13:00), staleness 90→30 min, intraday decision audit
+  Observability     — Persistent daily log file (logs/mrtrader_YYYY-MM-DD.log),
+                      startup banner with git commit + model versions,
+                      position status every 30 min, exit trigger logging,
+                      intraday scan scores (top-5 + count above threshold)
+  Entry quality     — PR #109: intraday thresholds widened (2.5%/2.0%) to
+                      account for 10-15 min scan-to-execution lag (pending merge)
 
 LET IT RUN:
   Phase 57  — Paper trading calibration (run 2-4 weeks, then review)
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WEEKEND 2026-05-03/04 — PRIORITY ORDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  #1  Phase 93  — Intraday model retrain [SATURDAY MORNING — kick off + let run]
+                  v33 produces 0-1 candidates per scan at 0.58-0.63 confidence.
+                  Precision 27%, AUC 0.617 — model is underconfident on live data.
+                  Command: python scripts/retrain_cron.py --intraday-only
+                  Takes ~2 hrs. Walk-forward gate auto-promotes if Sharpe > 0.80.
+                  Goal: 3-5 candidates per scan at >0.65 confidence.
+
+  #2  Merge PR #109 — Entry quality threshold fix [5 MIN — CI should be green]
+                  Intraday price_run 1.5%→2.5%, adverse_move 1.0%→2.0%.
+                  Without this, even a better model will have trades rejected.
+
+  #3  Phase 75  — Wire kill switch into agent loops [~1 hr]
+                  kill_switch.is_active checked in ZERO agent loops currently.
+                  Activating it does nothing — trading continues. Critical safety
+                  gap before any live money.
+
+  #4  Phase 92  — Dashboard re-hydration on restart [~2 hrs]
+                  Morning summary, news digest, premarket intel panels go blank
+                  after every uvicorn restart. Data IS in DB — just not reloaded.
+                  Queries agent_decisions on startup and repopulates cache.
+
+  #5  Phase 76  — Fix slippage measurement [~1 hr]
+                  Use filled_avg_price from get_order_status(), not get_latest_price().
+                  Slippage tracking wrong → position sizing calibration drifts over time.
+
+  #6  Phase 78  — Partial fill / order lifecycle [~2 hrs if time allows]
+                  TNDM 168-share incident root cause. True partial fill cancel +
+                  DB persistence of pending orders + reconciliation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 CRITICAL / SAFETY (must fix before live money):
-  Phase 75  — Wire kill switch into PM/RM/Trader + cancel open orders on activate [1 day]
-  Phase 76  — Fix slippage measurement (use filled_avg_price, not get_latest_price) [0.5 days]
-  Phase 78  — Order lifecycle state machine: partial fill cancel, persist pending orders to DB,
-              idempotency keys, periodic mid-session reconciliation [2 days]
+  Phase 75  — Wire kill switch [see weekend #3]
+  Phase 76  — Fix slippage measurement [see weekend #5]
+  Phase 78  — Order lifecycle state machine [see weekend #6]
   Phase 82  — Persist _peak_equity across restarts [0.5 days]
   Phase 83  — Deadman switch + external watchdog [1 day]
 
 HIGH (hardening + measurement):
-  Phase 77  — Decision-audit dashboard tile (are gates actually working?) [2 days]
-  Phase 79  — Point-in-time index membership (eliminate survivorship bias) [3 days]
-  Phase 80  — Bar-12 sensitivity test (sweep bars 9-15, validate intraday edge) [1 day]
+  Phase 77  — Decision-audit dashboard tile [2 days]
+  Phase 79  — Point-in-time index membership (survivorship bias) [3 days]
+  Phase 80  — Bar-12 sensitivity test [1 day]
 
 MEDIUM (correctness):
   Phase 81  — Earnings calendar: replace yfinance with Finnhub, fail-closed [1.5 days]
@@ -467,40 +506,23 @@ LONG TERM (after calibration, needs 60 days NIS history):
   Phase 65  — Source expansion + dedup clustering
   Phase 66  — Sonnet escalation for high-stakes events
   Tier 4    — Intraday v2 retrain, regime v2, options flow
-  Phase 85  — EOD swing review signal (15:45 ET weak-score exit) [was Phase 75]
-  Phase 86  — Kill switch mode selector: named modes A/B/C (hard-block-exits / auto-flatten / full-freeze)
-              Currently Phase 75 implements mode A (hard block entries, allow exits).
-              Add a `kill_switch.activate(mode="flatten")` param so operator can choose per-situation.
-  Phase 87  — Graceful SIGTERM / queue drain [was Phase 77]
-  Phase 88  — Live readiness checklist audit [was Phase 78]
-  Phase 89  — AUC drift live alert [was Phase 79]
+  Phase 85  — EOD swing review signal (15:45 ET weak-score exit)
+  Phase 86  — Kill switch mode selector: modes A/B/C per-situation
+  Phase 87  — Graceful SIGTERM / queue drain
+  Phase 88  — Live readiness checklist audit
+  Phase 89  — AUC drift live alert
   Phase 90  — Tax + P&L Impact Review (pre-live gate, NJ taxable account)
-              Before any real-money promotion: quantify wash sale exposure from paper trading history
-              (how many times did we exit a loss and re-enter the same symbol within 30 days?),
-              compute after-tax Sharpe assuming 37% Fed + 10% NJ on short-term gains, and decide
-              whether to enable hard wash-sale blocking (Phase 7b option) before going live.
-              Also: confirm account type (cash vs margin) and T+1 settled-cash impact.
-              Revisit: when paper trading is stable and 4+ weeks of clean data exists.
-  Phase 91  — True technical day trader (new IntradayScalper agent, post-live-approval) [was Phase 80]
-  Phase 92  — Dashboard re-hydration on restart
-              On startup, reload today's agent_decisions from DB so morning summary, news digest,
-              premarket intel, and swing candidate panels repopulate immediately — currently these
-              panels go blank after any uvicorn restart until the next scheduled run.
-              Implementation: startup_event queries agent_decisions for today's
-              PREMARKET_INTELLIGENCE, NIS_MORNING_DIGEST, SWING_PREMARKET_ANALYSIS decisions
-              and pushes them into the dashboard cache / WebSocket state.
-  Phase 93  — Intraday model retrain (v34+)
-              v33 is producing 0–1 candidates per scan at barely-passing confidence (0.58–0.63).
-              Root cause: model likely trained on features that have drifted, or label quality
-              degraded. Action: run full intraday retrain with latest 90 days of 5-min bar data,
-              verify walk-forward gate (Sharpe > 1.5), confirm candidate count per scan increases
-              to 3–5 symbols at meaningful confidence (>0.65) before deploying.
-              Also review intraday feature engineering for staleness vs current market regime.
+              Quantify wash-sale exposure, after-tax Sharpe (37% Fed + 10% NJ),
+              confirm account type (cash vs margin), T+1 settled-cash impact.
+              Revisit: after 4+ weeks of stable paper trading data.
+  Phase 91  — True technical day trader (IntradayScalper agent, post-live)
+  Phase 92  — Dashboard re-hydration on restart [see weekend #4]
+  Phase 93  — Intraday model retrain [see weekend #1]
 
-OPEN QUESTIONS FOR MIN (from code review — must answer before proceeding):
-  Q1: Universe scope after Phase 79 — retrain on PIT-R1000, keep SP-100-PIT gate, or accept bias?
-  Q2: Kill switch style — (a) hard block, (b) allow exits, (c) hard block + auto-flatten?
-  Q3: MetaLabel disposition — wire in live, delete docs, or train v2?
-  Q4: Going-live gate — after phases 75/76/78/82/83 green only, or also require 4 weeks clean paper?
+OPEN QUESTIONS FOR MIN:
+  Q1: Universe scope — retrain on PIT-R1000, keep SP-100-PIT gate, or accept bias?
+  Q2: Kill switch modes — implement A/B/C selector now, or A-only for launch?
+  Q3: MetaLabel — wire in live, keep dormant, or delete?
+  Q4: Going-live gate — phases 75/76/78/82/83 green only, or also 4 weeks clean paper?
   Q5: Earnings gate fail behavior — fail-closed always, or fail-open for intraday?
 ```
