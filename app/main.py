@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import logging.handlers
 import os
 import subprocess
-from logging.handlers import TimedTimedRotatingFileHandler
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -22,8 +23,64 @@ from app.api.nis_routes import router as nis_router, audit_router
 from app.api.websocket import websocket_endpoint
 
 
+class _DailyFileHandler(logging.Handler):
+    """
+    Writes to logs/mrtrader_YYYY-MM-DD.log based on the current wall-clock date.
+
+    - On startup: opens today's dated file (appends if it already exists).
+    - At midnight: detects the date change on the next log write and seamlessly
+      switches to a new file — no restart required, no stale data in wrong file.
+    - Keeps last 30 daily files; older ones are pruned automatically.
+    """
+
+    _KEEP_DAYS = 30
+
+    def __init__(self, log_dir: Path, fmt: logging.Formatter) -> None:
+        super().__init__()
+        self._log_dir = log_dir
+        self.setFormatter(fmt)
+        self._current_date: str = ""
+        self._file = None
+        self._open_for_today()
+
+    def _today(self) -> str:
+        return time.strftime("%Y-%m-%d")
+
+    def _open_for_today(self) -> None:
+        if self._file:
+            self._file.close()
+        self._current_date = self._today()
+        path = self._log_dir / f"mrtrader_{self._current_date}.log"
+        self._file = open(path, "a", encoding="utf-8")
+        self._prune_old_files()
+
+    def _prune_old_files(self) -> None:
+        files = sorted(self._log_dir.glob("mrtrader_*.log"))
+        for old in files[: max(0, len(files) - self._KEEP_DAYS)]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._today() != self._current_date:
+            self._open_for_today()
+        try:
+            msg = self.format(record)
+            self._file.write(msg + "\n")
+            self._file.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        if self._file:
+            self._file.close()
+            self._file = None
+        super().close()
+
+
 def _setup_logging() -> None:
-    """Configure root logger: console + rotating file, both at settings.log_level."""
+    """Configure root logger: console + daily dated file."""
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
 
@@ -33,11 +90,8 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console handler (already added by uvicorn, but set our format)
-    plain_stream_handlers = [
-        h for h in root.handlers
-        if type(h) is logging.StreamHandler
-    ]
+    # Console handler (already added by uvicorn; just apply our format)
+    plain_stream_handlers = [h for h in root.handlers if type(h) is logging.StreamHandler]
     if not plain_stream_handlers:
         ch = logging.StreamHandler()
         ch.setFormatter(fmt)
@@ -46,17 +100,8 @@ def _setup_logging() -> None:
         for h in plain_stream_handlers:
             h.setFormatter(fmt)
 
-    # Daily rotating file handler — rotates at midnight, keeps 30 days
-    # Today: logs/mrtrader.log  |  Yesterday: logs/mrtrader.log.2026-04-30
-    fh = TimedTimedRotatingFileHandler(
-        log_dir / "mrtrader.log",
-        when="midnight",
-        backupCount=30,
-        encoding="utf-8",
-    )
-    fh.suffix = "%Y-%m-%d"
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
+    # Daily file handler — logs/mrtrader_YYYY-MM-DD.log, rotates at midnight
+    root.addHandler(_DailyFileHandler(log_dir, fmt))
 
 
 def _git_info() -> tuple[str, str]:
