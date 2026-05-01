@@ -577,7 +577,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
   }, [])
   useEffect(() => { load() }, [load])
 
-  const totalUnreal = rows.reduce((s, p) => s + (p.unrealized_pl ?? 0), 0)
+  const totalUnreal = rows.reduce((s, p) => s + (p.pnl_unrealized ?? p.unrealized_pl ?? 0), 0)
   const largest = rows.reduce((m, p) => (p.market_value ?? 0) > (m.market_value ?? 0) ? p : m, rows[0])
 
   return (
@@ -608,7 +608,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                   const entry = p.avg_entry_price ?? p.avg_price ?? 0
                   const cur = p.current_price ?? 0
                   const mv = p.market_value ?? cur * qty
-                  const pnl = p.unrealized_pl ?? p.pnl_unrealized ?? 0
+                  const pnl = p.pnl_unrealized ?? p.unrealized_pl ?? 0
                   return (
                     <tr key={p.symbol}>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
