@@ -304,11 +304,11 @@ def compute_intraday_features(
                 abs(spy_5d_ret) > 0.02 and feats["spy_5d_realized_vol"] < 0.15
             )
 
-            # SPY day vol vs 20-day avg: today's range / avg daily range
+            # SPY yesterday's range vs 20-day avg (trailing — no lookahead)
             if len(spy_daily_bars) >= 20:
-                today_range = float(spy_d_highs[-1] - spy_d_lows[-1])
+                yesterday_range = float(spy_d_highs[-1] - spy_d_lows[-1])
                 avg_range = float(np.mean(spy_d_highs[-20:] - spy_d_lows[-20:]))
-                feats["spy_day_vol_vs_avg"] = float(today_range / max(avg_range, 1e-6))
+                feats["spy_day_vol_vs_avg"] = float(yesterday_range / max(avg_range, 1e-6))
             else:
                 feats["spy_day_vol_vs_avg"] = 1.0
         except Exception:

@@ -873,12 +873,13 @@ def _symbol_to_rows(
             if daily_df is not None and daily_date_arr is not None:
                 daily_as_of = daily_df.iloc[daily_date_arr < day]
 
-            # Phase 86: SPY daily bars up to and including today (for market-condition features)
+            # Phase 86: SPY daily bars strictly BEFORE today — no lookahead
+            # (today's daily bar closes at 4 PM; entry is at bar 12 = 10:30 AM)
             spy_daily_as_of = None
             if spy_daily_by_day:
                 spy_daily_dates = sorted(spy_daily_by_day.keys())
                 spy_daily_rows = [
-                    spy_daily_by_day[d] for d in spy_daily_dates if d <= day
+                    spy_daily_by_day[d] for d in spy_daily_dates if d < day
                 ]
                 if spy_daily_rows:
                     import pandas as _pd

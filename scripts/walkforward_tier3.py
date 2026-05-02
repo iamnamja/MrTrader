@@ -407,6 +407,20 @@ def run_intraday_walkforward(
     if "SPY" in symbols_data:
         spy_data = symbols_data["SPY"]
 
+    # Phase 86: fetch SPY daily bars for market-condition features
+    spy_daily_data: Optional[pd.DataFrame] = None
+    try:
+        import yfinance as yf
+        _spy_daily = yf.download("SPY", period="3y", progress=False, auto_adjust=True)
+        if isinstance(_spy_daily.columns, pd.MultiIndex):
+            _spy_daily.columns = _spy_daily.columns.get_level_values(0)
+        _spy_daily.columns = [c.lower() for c in _spy_daily.columns]
+        if len(_spy_daily) >= 6:
+            spy_daily_data = _spy_daily
+            logger.info("SPY daily bars loaded: %d rows", len(spy_daily_data))
+    except Exception as exc:
+        logger.warning("SPY daily fetch failed (Phase 86 features will use defaults): %s", exc)
+
     logger.info("Intraday data loaded: %d symbols", len(symbols_data))
 
     # Fold boundaries — split the test period into n_folds equal segments
@@ -450,6 +464,7 @@ def run_intraday_walkforward(
             spy_data=spy_data,
             start_date=te_start,
             end_date=te_end,
+            spy_daily_data=spy_daily_data,
         )
         elapsed = time.time() - t_fold
         stop_exits = result.exit_breakdown.get("STOP", 0)
