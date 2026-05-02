@@ -20,11 +20,8 @@ class TestEarningsCalendar:
             next_date = None
         else:
             next_date = date.today() + timedelta(days=days_until)
-        with patch.object(cal, "_fetch", return_value=next_date):
-            cal._cache = {}  # force fresh fetch
-            # warm cache
-            cal._get_next_earnings("TEST")
-        cal._cache["TEST"] = (next_date, 1e18)  # set cached value
+        # Phase 81: _fetch returns (date, data_ok) tuple; cache stores (date, monotonic, data_ok)
+        cal._cache["TEST"] = (next_date, 1e18, True)
         return cal
 
     def test_swing_blocked_within_2_days(self):

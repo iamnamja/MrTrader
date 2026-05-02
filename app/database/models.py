@@ -340,3 +340,13 @@ class PendingLimitOrder(Base):
     trade_type = Column(String(20), nullable=False, default="swing")
     signal_type = Column(String(30), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ProcessHeartbeat(Base):
+    """Phase 83 — PM heartbeat for deadman watchdog."""
+    __tablename__ = "process_heartbeat"
+
+    id = Column(Integer, primary_key=True)
+    process_name = Column(String(50), nullable=False, unique=True, index=True)
+    last_beat = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)

@@ -1897,6 +1897,11 @@ class ModelTrainer:
             if not gate_passed:
                 row.status = "RETIRED"
                 logger.info("Swing v%d tier3 FAIL — status set to RETIRED", version)
+            else:
+                from pathlib import Path as _Path
+                sentinel = _Path("app/ml/models") / f"swing_v{version}.gate_passed"
+                sentinel.touch()
+                logger.info("Swing v%d gate_passed sentinel written", version)
             db.commit()
             logger.info("Recorded tier3 result for swing v%d: Sharpe=%.3f gate=%s",
                         version, avg_sharpe, gate_passed)
