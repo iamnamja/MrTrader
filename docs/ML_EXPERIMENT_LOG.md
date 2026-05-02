@@ -243,24 +243,27 @@ Note: Phases 81–84 are assigned to system hardening (earnings gate, peak equit
 
 Gate thresholds: avg Sharpe > 1.50, no fold < -0.30. Both cleared.
 
-**Key observation:** Avg Sharpe +1.830 exceeds the strict 1.50 intraday gate. The previously-failing low-vol melt-up period (Jul–Oct 2025) falls in fold 2 here and still passed at +0.78 — gates successfully removed the worst days without over-filtering in the moderate-vol periods. No need to proceed to Phase 86 or 87.
+**Key observation:** Avg Sharpe +1.830 exceeds the strict 1.50 intraday gate. The previously-failing low-vol melt-up period (Jul–Oct 2025) falls in fold 2 here and still passed at +0.78 — gates successfully removed the worst days without over-filtering in the moderate-vol periods. Phase 86/87 still worth doing: gates patch symptoms at runtime but v29 training signal is structurally compromised (forced positive labels on dead days).
 
-**Verdict:** ✅ GATE PASSED — merge Phase 85, deploy v29 with abstention gates active. Phase 86/87 deferred unless future walk-forward re-fails.
+**Verdict:** ✅ GATE PASSED — merge Phase 85, deploy v29 with abstention gates active. Proceed to Phase 86 to fix root cause in training.
 
 ---
 
 ### Phase 86 — Market Context Features + Retrain v30
 
 **Branch:** `feat/phase-86-market-context-features`  
-**Date started:** —  
+**Date started:** 2026-05-02  
 **Date completed:** —
 
 **What was changed:**
-- Added market vol features: `vix_level_norm`, `spy_5d_realized_vol`, `spy_20d_realized_vol`, `vol_regime`, `vol_regime_trend`
-- Added first-hour opportunity features: `spy_first_hour_range`, `spy_first_hour_eff`, `spy_vwap_dist_entry`
-- Added dispersion features: `universe_dispersion`, `top_vs_bottom_spread`
-- Added sector context features: `sector_etf_session_return`, `stock_vs_sector_return`
-- Total features: 50 → ~62
+- Added 5 market-condition features derived from SPY daily bars (53 → 58 total features):
+  - `spy_first_hour_range` — SPY H-L range over first 60 min / open (intraday vol context at entry time)
+  - `spy_5d_return` — SPY cumulative 5-day return, clamped [-15%, +15%] (market trend direction)
+  - `spy_5d_realized_vol` — SPY 5-day rolling std of daily returns, annualised (vol regime)
+  - `market_is_trending` — boolean: |spy_5d_return|>2% AND spy_5d_realized_vol<15% (trend vs chop)
+  - `spy_day_vol_vs_avg` — SPY today's intraday range vs 20-day avg (relative session vol)
+- SPY daily bars fetched once per training day in `_symbol_to_rows`, shared across all symbols
+- PM live inference: SPY daily bars fetched once in `_get_spy_intraday_state`, passed to all `compute_intraday_features` calls via closure
 - Retrained as v30
 
 **Walk-forward result:**

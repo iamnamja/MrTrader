@@ -152,10 +152,10 @@ class TestFeatureNamesConstant:
         assert len(FEATURE_NAMES) == len(result)
 
     def test_feature_names_count(self):
-        """FEATURE_NAMES must have the expected count (50 with Phase 47-5 features)."""
+        """FEATURE_NAMES must have the expected count (58 with Phase 86 market-condition features)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 53, (
-            f"Expected 53 features (50 Phase 47-5 + 3 Phase 50 session features), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 58, (
+            f"Expected 58 features (53 prior + 5 Phase 86 market-condition features), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):
