@@ -276,17 +276,44 @@ Gate thresholds: avg Sharpe > 1.50, no fold < -0.30. Both cleared.
 
 ---
 
-### Phase 87 — Forward-R Labels + Retrain v31
+### Phase 87 — Label Fix (B+A) + Ensemble 3 Seeds + Frozen HPO
 
-**Branch:** `feat/phase-87-forward-r-labels`  
+**Branch:** `feat/phase-87-label-fix-ensemble`  
 **Date started:** —  
 **Date completed:** —
 
-**What was changed:**
-- Replaced `path_quality` proxy label with simulator-aligned `realized_R` label
-- Positive label: `realized_R >= 0.5R AND absolute_move >= 0.30%`
-- Allows zero positive labels on days with no tradable opportunity
-- Retrained as v31 (with Phase 82 features retained)
+**Architecture rationale (confirmed 2026-05-02):**
+Phase 86 failure revealed that HPO variance dominates walk-forward results. v29 (+1.830) and
+v37 (-0.219) had identical 53 features — the difference was HPO randomness. Before adding new
+features (Phase 86 redesign), we must fix training stability. Three changes bundled:
+
+**What to build:**
+
+1. **Label fix Option B — allow zero positive-label days:**
+   Replace cross-sectional top-20% ranking with outcome-based labeling. Days where no symbol
+   achieves the target outcome get zero positive labels. Removes "force-pick on dead days" corruption.
+
+2. **Label fix Option A — minimum absolute move threshold (0.30%):**
+   Even if realized_R ≥ 0.5, require `abs(exit - entry) / entry ≥ 0.003`.
+   Prevents micro-moves from being labeled as wins.
+
+3. **Ensemble 3 seeds (permanent):**
+   Train XGBoost models with seeds 42, 123, 777. Blend probabilities by simple average.
+   Applied permanently to every future retrain. Eliminates single-seed lucky/unlucky draws.
+
+4. **Freeze HPO params:**
+   Run thorough HPO (100+ trials) once. Record winning params as `FROZEN_HPO_PARAMS` constant.
+   All future retrains use frozen params — no re-running random HPO.
+
+**Label formula:**
+```python
+entry = bar_12_close
+stop_dist = 0.4 * prior_range
+realized_R = (realized_exit - entry) / stop_dist
+absolute_move = abs(realized_exit - entry) / entry
+label = 1 if (realized_R >= 0.5 and absolute_move >= 0.003) else 0
+# Zero positives allowed on bad days
+```
 
 **Walk-forward result:**
 
@@ -297,9 +324,31 @@ Gate thresholds: avg Sharpe > 1.50, no fold < -0.30. Both cleared.
 | 3 | — | — | — | — |
 | **Avg** | | | | |
 
+**Stability check:** Run 3× with different seeds — expect spread < 0.30 (vs Phase 86's ~2.0).
+
 **Key observation:** —
 
 **Verdict:** 🔄 Pending
+
+---
+
+### Phase 87a — Regression Labels (Realized R-Multiple) [DEFERRED]
+
+**Branch:** `feat/phase-87a-regression-labels`  
+**Precondition:** Phase 87 ✅ + Phase 86b (stock-relative features) ✅  
+**Date started:** —
+
+**Rationale:** Binary labels discard magnitude. A +3R and +0.6R win both get label=1.
+Regression target (predict realized R-multiple directly) teaches model to distinguish great
+setups from marginal ones. Expected to improve ranking quality and Sharpe.
+
+**What to change:**
+- XGBoost objective: `binary:logistic` → `reg:squarederror` or `reg:pseudohubererror`
+- Label: `realized_R` (clipped to [-3.0, +3.0] to prevent outlier dominance)
+- Scoring: rank by predicted R-multiple directly (no probability threshold needed)
+- Keep ensemble 3 seeds + frozen HPO params (adapted for regression)
+
+**Verdict:** 🔄 Deferred — implement after Phase 86b validates stock-relative features
 
 ### Key Takeaways
 1. **Embargo worked**: Test set reduced by 428 samples (embargo removes same-period windows) — confirms leakage was present

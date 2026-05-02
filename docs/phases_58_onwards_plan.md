@@ -313,58 +313,124 @@ reduced gate trigger rate, more robust across unseen regimes.
 
 ---
 
-### Phase 86 — Intraday Market Context Features + Retrain v30
+### Phase 86 — Intraday Market Context Features (Redesign) ❌ REVERTED v1 / REDESIGN PENDING
 
-**Precondition:** Phase 85 ✅. Phase 85 gates remain active during v30 training and eval.
+**Precondition:** Phase 85 ✅. Phase 87 must complete first (see ordering below).
 
-**Why:** v29 scores candidates identically regardless of whether VIX=14 or VIX=28, whether
-SPY's first hour has 0.3% or 1.2% range, whether sector is confirming. Adding these features
-lets the model learn regime-awareness directly rather than relying on PM-level gates.
+**v1 attempt (reverted):** Added 5 market-wide SPY features (`spy_first_hour_range`,
+`spy_5d_return`, `spy_5d_realized_vol`, `market_is_trending`, `spy_day_vol_vs_avg`).
+Walk-forward avg Sharpe: **-0.529** (6 folds: +0.49, -1.88, -0.79, -0.46, +0.44, -1.37).
 
-**What to build** — add to `app/ml/intraday_features.py`:
-- Market vol: `vix_level_norm` (VIX/20), `spy_5d_realized_vol`, `spy_20d_realized_vol`, `vol_regime` (0/1/2), `vol_regime_trend`
-- First-hour opportunity: `spy_first_hour_range`, `spy_first_hour_eff`, `spy_vwap_dist_entry`
-- Cross-sectional dispersion: `universe_dispersion`, `top_vs_bottom_spread`
-- Sector context: `sector_etf_session_return`, `stock_vs_sector_return`
-- Retrain as v30. Feature count: 50 → ~62.
-- Log walk-forward results in `docs/ML_EXPERIMENT_LOG.md` Phase 86 section.
+**Root cause of failure:** All 5 features are **market-wide** — they have the same value for every
+symbol on a given day. After `cs_normalize` (z-score within each day's symbol set), all 5 features
+become exactly zero. Zero signal. Fully reverted.
 
-**Acceptance criteria:** Walk-forward avg Sharpe improves vs Phase 85 baseline (+1.830).
-If gate passes (>1.50), deploy v30 and stop. If not, proceed to Phase 87.
+**Redesign — stock-relative interaction features** (do *after* Phase 87):
+Instead of raw market-wide values, add features that compare the stock *against* the market:
+- `stock_vs_spy_5d_return`: stock's 5-day return minus SPY's 5-day return
+- `stock_vs_spy_mom_ratio`: stock 1d momentum / SPY 1d momentum (relative strength)
+- `stock_vol_vs_spy_vol`: stock's realized vol / SPY's realized vol (relative volatility)
+- `gap_vs_spy_gap`: stock's overnight gap minus SPY's overnight gap (idiosyncratic gap)
+- `intraday_strength_vs_spy`: stock's session return − SPY's session return at same bar
+
+These survive cs_normalize because each stock has a different value (it's a comparison).
+
+**Note:** SPY daily bars plumbing is already wired into:
+- `app/ml/intraday_features.py` (`spy_daily_bars` optional param — currently unused)
+- `app/backtesting/intraday_agent_simulator.py` (loads and passes through)
+- `scripts/walkforward_tier3.py` (fetches via yfinance)
+- `app/agents/portfolio_manager.py` (fetches 30 daily bars, passes to compute_features)
+
+No re-plumbing needed — just implement the new features.
+
+**Acceptance criteria:** Walk-forward avg Sharpe improves vs Phase 87 baseline.
+Gate: avg Sharpe > 1.50.
 
 **Files:** `app/ml/intraday_features.py`, `app/ml/intraday_training.py`  
-**Branch:** `feat/phase-86-market-context-features`
+**Branch:** `feat/phase-86b-stock-relative-features`
 
 ---
 
-### Phase 87 — Intraday Forward-R Labels + Retrain v31
+### Phase 87 — Intraday Label Fix + Ensemble + Frozen HPO
 
-**Precondition:** Phase 86 complete.
+**Precondition:** Phase 85 ✅. Do this before Phase 86 redesign.
 
-**Why:** The structural label problem still exists in v29/v30. Cross-sectional top-20% per day
-forces the model to always pick something, teaching it to rank the "least bad" option on dead days
-rather than learning to abstain. The fix allows zero positive-label days.
+**Why this ordering:** Phase 86 v1 failure taught us that HPO variance dominates walk-forward
+results. v29 scored +1.830 but v37 (same 53 features) scored -0.219 — that's HPO randomness,
+not model edge. Before adding any new features, we must fix the training stability problem so
+we can actually measure whether new features help.
 
-**What to build** — replace `path_quality` label in `app/ml/intraday_training.py`:
+**Three changes in one phase:**
+
+**A — Allow zero positive-label days (Label fix Option B):**
+Current `_symbol_to_rows` forces cross-sectional top-20% labels every day, teaching the model
+to always pick something even on flat/dead days. Fix: label by realized outcome, not rank.
+Days where no candidate achieves a good realized outcome get zero positive labels.
+
+**B — Minimum absolute move threshold (Label fix Option A):**
+Even if realized_R ≥ 0.5, require `abs(exit - entry) / entry ≥ 0.003` (0.30%) to cover
+commissions and spread. Prevents labeling micro-moves as "wins".
+
+**C — Ensemble 3 seeds (permanent stability fix):**
+Train 3 XGBoost models with seeds 42, 123, 777. Blend probabilities by simple average.
+Eliminates single-seed lucky/unlucky draws from walk-forward results.
+Apply at every retrain going forward — this is a permanent architecture change.
+
+**D — Freeze HPO params from v29:**
+v29's winning hyperparameters (from the lucky HPO draw that produced +1.830) are now the
+baseline. Do thorough HPO once to confirm or find better params, then freeze. No re-running
+random HPO on future retrains — use the frozen params + ensemble to get stable results.
+
+**HPO strategy going forward:**
+- Run thorough HPO (100+ trials) once during Phase 87
+- Record winning params in `app/ml/intraday_training.py` as `FROZEN_HPO_PARAMS`
+- All future retrains use `FROZEN_HPO_PARAMS` + 3-seed ensemble
+- Only re-run HPO if feature count changes significantly (new Phase 86b, etc.)
+
+**Label implementation:**
 ```python
-# Simulator-aligned forward-R label
+# In _symbol_to_rows — replace cross-sectional top-20% labeling:
 entry = bar_12_close
-stop_dist = 0.4 × ATR; target_dist = 0.8 × ATR
-# Simulate 24-bar hold using exact production exit logic
+stop_dist = 0.4 * prior_range   # same as PM proposals
+target_dist = 0.8 * prior_range
+# simulate 24-bar hold with production exit logic
 realized_R = (realized_exit - entry) / stop_dist
 absolute_move = abs(realized_exit - entry) / entry
-MIN_ABSOLUTE_MOVE = 0.003  # 0.30% covers commission + spread
+MIN_ABSOLUTE_MOVE = 0.003
 label = 1 if (realized_R >= 0.5 and absolute_move >= MIN_ABSOLUTE_MOVE) else 0
-# Days with no candidates achieving realized_R >= 0.5 get ZERO positive labels
+# No forced positives — day with no good setups gets all zeros
 ```
-- Retrain as v31 (with Phase 86 features retained).
-- Log walk-forward results in `docs/ML_EXPERIMENT_LOG.md` Phase 87 section.
 
 **Acceptance criteria:** Walk-forward avg Sharpe > 1.50, no fold below -0.30.
-If avg Sharpe is 1.20–1.49 after all three phases, reassess gate threshold per `docs/intraday_improvement_plan.md`.
+Stability check: run 3× with different random seeds — spread should be < 0.30 (vs current ~2.0).
 
 **Files:** `app/ml/intraday_training.py`  
-**Branch:** `feat/phase-87-forward-r-labels`
+**Branch:** `feat/phase-87-label-fix-ensemble`
+
+---
+
+### Phase 87a — Regression Labels (Realized R-Multiple) [AFTER Phase 86b]
+
+**Precondition:** Phase 87 ✅ + Phase 86b (stock-relative features) ✅.
+
+**Why:** Binary classification (0/1) discards magnitude information. A +3R win and a +0.6R win
+both get label=1. A regression target (predict realized R-multiple directly) teaches the model
+to distinguish great setups from marginal ones, which should improve ranking quality.
+
+**What to build:**
+- Replace binary label with `realized_R` as regression target in `_symbol_to_rows`
+- Change XGBoost objective from `binary:logistic` to `reg:squarederror` (or `reg:pseudohubererror` for robustness)
+- Scoring: use predicted R-multiple directly for ranking (higher = better)
+- Keep ensemble 3 seeds and frozen HPO (adapted for regression task)
+
+**Note on labeling floor:** Without a binary threshold, all days produce training rows. May need
+to clip realized_R at some floor (e.g., -3.0 to +3.0) to prevent outlier days from dominating.
+
+**Acceptance criteria:** Walk-forward avg Sharpe > Phase 87 baseline. Improvement expected
+because ranking quality improves (model now distinguishes +3R from +0.6R setups).
+
+**Files:** `app/ml/intraday_training.py`, `scripts/walkforward_tier3.py`  
+**Branch:** `feat/phase-87a-regression-labels`
 
 ---
 

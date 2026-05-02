@@ -317,6 +317,11 @@ class PortfolioSelectorModel:
 
         primary_proba = self.model.predict_proba(X_scaled)[:, 1]
 
+        # Phase 87: 3-seed XGBoost ensemble blend (if trained with ENSEMBLE_SEEDS)
+        if hasattr(self, "ensemble_models") and self.ensemble_models:
+            seed_probas = [m.predict_proba(X_scaled)[:, 1] for m in self.ensemble_models]
+            primary_proba = np.mean(seed_probas, axis=0)
+
         if self.model_type == "ensemble" and self._lr_model is not None:
             lr_proba = self._lr_model.predict_proba(X_scaled)[:, 1]
             probabilities = 0.70 * primary_proba + 0.30 * lr_proba
