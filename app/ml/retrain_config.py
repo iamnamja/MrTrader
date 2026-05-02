@@ -52,6 +52,6 @@ INTRADAY_RETRAIN: dict = dict(
 )
 
 INTRADAY_GATE = dict(
-    min_avg_sharpe=0.80,        # avg Sharpe across walk-forward folds
+    min_avg_sharpe=1.50,        # intraday gate is stricter than swing (Sharpe > 1.5)
     min_fold_sharpe=-0.30,      # no single fold below this floor
 )

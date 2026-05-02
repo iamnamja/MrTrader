@@ -171,7 +171,9 @@ def _load_model(model_name: str, version: Optional[int] = None):
             db.close()
     except Exception as exc:
         logger.warning("DB model load failed: %s", exc)
-    # Fallback: load specific version pkl if requested, else latest
+    # Fallback: load from pkl files when DB is unreachable.
+    # Only load a specific version if explicitly requested, OR if a .gate_passed
+    # sentinel exists — prevents auto-promoting models that never passed the gate.
     model_dir = Path("app/ml/models")
     if version is not None:
         path = model_dir / f"{model_name}_v{version}.pkl"
@@ -185,21 +187,40 @@ def _load_model(model_name: str, version: Optional[int] = None):
             m = PortfolioSelectorModel(model_type="xgboost")
             m.load(str(model_dir), version, model_name=model_name)
             return m, version
-    files = sorted(model_dir.glob(f"{model_name}_v*.pkl"),
-                   key=lambda p: int(p.stem.split("_v")[-1]))
-    if files:
-        with open(files[-1], "rb") as f:
-            obj = pickle.load(f)
-        ver = int(files[-1].stem.split("_v")[-1])
-        if hasattr(obj, "is_trained"):
-            logger.info("Loaded %s model v%d from file", model_name, ver)
-            return obj, ver
-        from app.ml.model import PortfolioSelectorModel
-        m = PortfolioSelectorModel(model_type="xgboost")
-        m.load(str(files[-1].parent), ver, model_name=model_name)
-        logger.info("Loaded %s model v%d from file", model_name, ver)
-        return m, ver
-    return None, 0
+
+    # When no version specified: only consider pkls that have a .gate_passed sentinel.
+    # This prevents a silently-retrained model from displacing the known-good version
+    # just because its version number is higher.
+    gated_files = sorted(
+        [p for p in model_dir.glob(f"{model_name}_v*.pkl")
+         if (p.parent / (p.stem + ".gate_passed")).exists()],
+        key=lambda p: int(p.stem.split("_v")[-1]),
+    )
+    if not gated_files:
+        # Warn loudly — no gated model means the system is misconfigured
+        logger.error(
+            "No gate_passed sentinel found for any %s model in %s — "
+            "cannot safely load a fallback model. Run the walk-forward gate "
+            "and touch %s_v<N>.gate_passed to certify a version.",
+            model_name, model_dir, model_name,
+        )
+        return None, 0
+
+    # Load the highest-versioned gated model
+    latest_gated = gated_files[-1]
+    ver = int(latest_gated.stem.split("_v")[-1])
+    with open(latest_gated, "rb") as f:
+        obj = pickle.load(f)
+    if hasattr(obj, "is_trained"):
+        logger.info("Loaded %s model v%d from file (gate_passed sentinel present)",
+                    model_name, ver)
+        return obj, ver
+    from app.ml.model import PortfolioSelectorModel
+    m = PortfolioSelectorModel(model_type="xgboost")
+    m.load(str(latest_gated.parent), ver, model_name=model_name)
+    logger.info("Loaded %s model v%d from file (gate_passed sentinel present)",
+                model_name, ver)
+    return m, ver
 
 
 # ── Swing walk-forward ─────────────────────────────────────────────────────────
