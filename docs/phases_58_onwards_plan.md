@@ -292,21 +292,132 @@ PENDING_MARKET →  FILLED         (poll get_order_status after submit)
 
 **Acceptance criteria:** One test that can certify a release candidate.
 
-### Explicit Deferred (Don't Do)
-- **No new model training** until Phase 79+80 land (PIT universe + bar sensitivity)
-- **No new NIS features** until Phase 77 shows NIS scores predict realized P&L (needs 2 weeks data)
-- **No live-money switch** until Phases 75, 76, 78, 82, 83 all green
+### Phase 85 — Intraday PM Abstention Gates (No Retrain) ✅ DONE
+
+**Completed:** 2026-05-02 — PR #118 merged.
+
+**Result:** Walk-forward avg Sharpe **+1.830** (gate: >1.50 ✅), no fold below -0.30 ✅.
+Gates live in `app/agents/portfolio_manager.py`. v29 remains champion model.
+
+**Why 86+87 are still worth doing (even though gate passed):**
+Phase 85 gates are a **runtime patch** — they compensate for model blindness at inference time.
+The underlying model (v29) was still trained with:
+- Zero market-condition awareness (same score whether VIX=14 or VIX=28)
+- Cross-sectional top-20% labels that forced positive labels on every trading day, including dead low-vol days — that bad signal is baked into v29's weights
+
+86+87 fix the root cause. The model would learn regime-awareness and self-select bad days
+rather than relying on gates to catch it. Expected outcome: higher Sharpe in fold 2 (moderate-vol),
+reduced gate trigger rate, more robust across unseen regimes.
+
+**Status of 86+87:** Active backlog — do after Phase 64 NIS backfill (64 can run overnight).
 
 ---
 
-### Tier 3 — Medium-Term (2–6 weeks out)
+### Phase 86 — Intraday Market Context Features + Retrain v30
 
-#### Phase 64 — News as Model Features
-**Precondition:** 60 trading days of point-in-time `NewsSignal` history in the DB.
+**Precondition:** Phase 85 ✅. Phase 85 gates remain active during v30 training and eval.
 
-Add `materiality_decayed_4h`, `direction_decayed_3d`, `article_count_4h`, `already_priced_in_score` as XGBoost training features. Walk-forward gate: Sharpe improvement > 0.10, no lookahead leakage.
+**Why:** v29 scores candidates identically regardless of whether VIX=14 or VIX=28, whether
+SPY's first hour has 0.3% or 1.2% range, whether sector is confirming. Adding these features
+lets the model learn regime-awareness directly rather than relying on PM-level gates.
 
-**Do not start before:** mid-July 2026 at earliest.
+**What to build** — add to `app/ml/intraday_features.py`:
+- Market vol: `vix_level_norm` (VIX/20), `spy_5d_realized_vol`, `spy_20d_realized_vol`, `vol_regime` (0/1/2), `vol_regime_trend`
+- First-hour opportunity: `spy_first_hour_range`, `spy_first_hour_eff`, `spy_vwap_dist_entry`
+- Cross-sectional dispersion: `universe_dispersion`, `top_vs_bottom_spread`
+- Sector context: `sector_etf_session_return`, `stock_vs_sector_return`
+- Retrain as v30. Feature count: 50 → ~62.
+- Log walk-forward results in `docs/ML_EXPERIMENT_LOG.md` Phase 86 section.
+
+**Acceptance criteria:** Walk-forward avg Sharpe improves vs Phase 85 baseline (+1.830).
+If gate passes (>1.50), deploy v30 and stop. If not, proceed to Phase 87.
+
+**Files:** `app/ml/intraday_features.py`, `app/ml/intraday_training.py`  
+**Branch:** `feat/phase-86-market-context-features`
+
+---
+
+### Phase 87 — Intraday Forward-R Labels + Retrain v31
+
+**Precondition:** Phase 86 complete.
+
+**Why:** The structural label problem still exists in v29/v30. Cross-sectional top-20% per day
+forces the model to always pick something, teaching it to rank the "least bad" option on dead days
+rather than learning to abstain. The fix allows zero positive-label days.
+
+**What to build** — replace `path_quality` label in `app/ml/intraday_training.py`:
+```python
+# Simulator-aligned forward-R label
+entry = bar_12_close
+stop_dist = 0.4 × ATR; target_dist = 0.8 × ATR
+# Simulate 24-bar hold using exact production exit logic
+realized_R = (realized_exit - entry) / stop_dist
+absolute_move = abs(realized_exit - entry) / entry
+MIN_ABSOLUTE_MOVE = 0.003  # 0.30% covers commission + spread
+label = 1 if (realized_R >= 0.5 and absolute_move >= MIN_ABSOLUTE_MOVE) else 0
+# Days with no candidates achieving realized_R >= 0.5 get ZERO positive labels
+```
+- Retrain as v31 (with Phase 86 features retained).
+- Log walk-forward results in `docs/ML_EXPERIMENT_LOG.md` Phase 87 section.
+
+**Acceptance criteria:** Walk-forward avg Sharpe > 1.50, no fold below -0.30.
+If avg Sharpe is 1.20–1.49 after all three phases, reassess gate threshold per `docs/intraday_improvement_plan.md`.
+
+**Files:** `app/ml/intraday_training.py`  
+**Branch:** `feat/phase-87-forward-r-labels`
+
+---
+
+### Explicit Deferred (Don't Do Yet)
+- **No live-money switch** until Phases 75, 76, 78, 82, 83 all green — ✅ ALL DONE
+- **No NIS model features (Phase 64)** until NIS history backfill runs — schedule overnight 2026-05-02
+
+---
+
+### Tier 3 — Medium-Term
+
+#### Phase 64 — NIS History Backfill + News as Swing Model Features
+
+**Status:** Backfill script to be built and run overnight 2026-05-02. Unlocks training immediately after.
+
+**Why the "mid-July" timeline is wrong:** Finnhub's `/company-news` endpoint accepts arbitrary
+historical date ranges (free tier: ~1 year back). We can backfill 252 days of point-in-time
+`NewsSignalCache` records in a single overnight run rather than waiting for live accumulation.
+
+**Step 1 — Overnight backfill script** (`scripts/backfill_nis_history.py`):
+```
+For each trading day D in past 252 days (most recent first):
+  For each symbol in SP500 universe (~500 symbols):
+    Call fetch_company_news(symbol, from_dt=D 09:00 ET, to_dt=D 10:30 ET)  ← pre-bar-12 only (no lookahead)
+    For each article: run llm_scorer.score_article() → NewsSignalCache row with scored_at=D 10:30 ET
+Rate limit: 60 Finnhub calls/min (free tier) → use ThreadPoolExecutor(max_workers=4) + sleep
+LLM cost: ~500 symbols × 252 days × 3 articles/day avg × $0.00025/call ≈ $95 total (Haiku)
+Runtime: ~8–12 hours overnight
+```
+- Write each row with `point_in_time=True` flag and `as_of_date=D` so walk-forward can filter correctly
+- Skip days where rows already exist (idempotent — safe to re-run)
+- Log progress: symbols done, articles scored, cost running total
+
+**Step 2 — Add NIS features to swing training** (`app/ml/features.py`, `app/ml/training.py`):
+- `nis_materiality_decayed_4h` — materiality_score × exp(-hours_since/4) at bar-12
+- `nis_direction_score_3d` — direction_score decayed over 3 trading days
+- `nis_article_count_4h` — number of scored articles in 4h window before bar-12
+- `nis_already_priced_in` — already_priced_in_score from most recent article
+- `nis_sizing_mult` — the sizing multiplier the PM would apply (0.5/0.7/1.0/1.2)
+- Use point-in-time lookup: only rows where `as_of_date <= training_date` — **no lookahead**
+
+**Step 3 — Retrain swing model** with new features, run walk-forward gate.
+Walk-forward gate: avg Sharpe improvement > 0.05 vs baseline, no lookahead leakage detectable.
+
+**Files:**
+- `scripts/backfill_nis_history.py` (new)
+- `app/ml/features.py` (add NIS feature computation)
+- `app/ml/training.py` (include NIS features in training pipeline)
+
+**Branch:** `feat/phase-64-nis-backfill-and-features`
+
+**Tonight's action:** Run `python scripts/backfill_nis_history.py` overnight. Check progress in morning.
+After backfill complete: implement Step 2+3 as a normal feature branch + PR.
 
 #### Phase 65 — Source Expansion + Basic Clustering
 After Phase 63 baseline measured (is news overlay adding alpha?):

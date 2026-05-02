@@ -269,6 +269,7 @@ class NewsSignalCache(Base):
     rationale = Column(Text, nullable=True)
     top_headlines = Column(JSON, nullable=True)
     evaluated_at = Column(DateTime, default=datetime.utcnow, index=True)
+    as_of_date = Column(String(10), nullable=True, index=True)  # Phase 64: YYYY-MM-DD for point-in-time backfill lookup
 
 
 class LLMCallLog(Base):
