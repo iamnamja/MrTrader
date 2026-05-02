@@ -887,6 +887,7 @@ class Trader(BaseAgent):
                 if row.symbol in self._pending_limit_orders:
                     continue  # already loaded
                 # Reconstruct a minimal SignalResult-like object
+
                 class _FakeResult:
                     stop_price = row.stop_price
                     target_price = row.target_price
