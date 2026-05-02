@@ -676,6 +676,13 @@ class IntradayModelTrainer:
             if not gate_passed:
                 row.status = "RETIRED"
                 logger.info("Intraday v%d tier3 FAIL — status set to RETIRED", version)
+            else:
+                # Write gate_passed sentinel so the pkl fallback loader can find this version
+                from pathlib import Path as _Path
+                model_dir = _Path("app/ml/models")
+                sentinel = model_dir / f"intraday_v{version}.gate_passed"
+                sentinel.touch()
+                logger.info("Intraday v%d gate_passed sentinel written", version)
             db.commit()
             logger.info("Recorded tier3 result for intraday v%d: Sharpe=%.3f gate=%s",
                         version, avg_sharpe, gate_passed)
