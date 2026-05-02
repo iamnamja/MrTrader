@@ -321,3 +321,13 @@ class DecisionAudit(Base):
     outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered
     outcome_4h_pct = Column(Float, nullable=True)       # price change 4h after decision
     outcome_1d_pct = Column(Float, nullable=True)       # price change 1 day after decision
+
+
+class ProcessHeartbeat(Base):
+    """Phase 83 — PM heartbeat for deadman watchdog."""
+    __tablename__ = "process_heartbeat"
+
+    id = Column(Integer, primary_key=True)
+    process_name = Column(String(50), nullable=False, unique=True, index=True)
+    last_beat = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)

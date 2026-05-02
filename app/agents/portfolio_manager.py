@@ -93,6 +93,7 @@ class PortfolioManager(BaseAgent):
         self._intraday_windows_run: set = set()  # Phase 51: (hour,min) windows already scanned
         self._intraday_symbol_last_entry: Dict[str, float] = {}  # symbol → monotonic ts of last entry
         self._retrained_today: bool = False
+        self._earnings_prefetched_today: bool = False  # 06:00 earnings calendar prefetch
         self._premarket_run_today: bool = False  # 09:00 premarket routine done
         self._benchmark_recorded_today: bool = False
         self._weekly_report_generated_today: bool = False
@@ -259,6 +260,7 @@ class PortfolioManager(BaseAgent):
                     self._intraday_windows_run = set()
                     self._intraday_symbol_last_entry = {}
                     self._retrained_today = False
+                    self._earnings_prefetched_today = False
                     self._premarket_run_today = False
                     self._benchmark_recorded_today = False
                     self._weekly_report_generated_today = False
@@ -288,6 +290,28 @@ class PortfolioManager(BaseAgent):
                         self._analyzed_today, self._selected_today,
                         self._selected_intraday_today, self._retrained_today,
                         self.model.is_trained,
+                    )
+
+                # ── Phase 83: DB heartbeat for deadman watchdog ───────────────
+                # Writes every 60s during market hours so watchdog.py can detect crash.
+                if is_weekday and (9 <= now.hour < 17):
+                    try:
+                        await asyncio.to_thread(self._write_heartbeat)
+                    except Exception as _hb_exc:
+                        self.logger.debug("Heartbeat write failed: %s", _hb_exc)
+
+                # ── 06:00–07:59: prefetch earnings calendar ───────────────────
+                # Warms cache for all watchlist symbols before trading starts.
+                # Fail-closed on swing entries if both sources fail (Phase 81).
+                if (
+                    is_weekday
+                    and self._in_window(now, 6, 0, 8, 0)
+                    and not self._earnings_prefetched_today
+                ):
+                    self._earnings_prefetched_today = True
+                    await self._run_task(
+                        "earnings_prefetch", 6, 0,
+                        self._prefetch_earnings_calendar(),
                     )
 
                 # ── 08:00–09:39: pre-market swing analysis ───────────────────
@@ -581,6 +605,35 @@ class PortfolioManager(BaseAgent):
                 if feats is not None:
                     features_by_symbol[symbol] = feats
         return features_by_symbol
+
+    def _write_heartbeat(self) -> None:
+        """Phase 83: Upsert PM heartbeat row so watchdog.py can detect process death."""
+        from app.database.session import get_session
+        from app.database.models import ProcessHeartbeat
+        from datetime import datetime as _dt
+        db = get_session()
+        try:
+            row = db.query(ProcessHeartbeat).filter_by(process_name="portfolio_manager").first()
+            if row is None:
+                row = ProcessHeartbeat(process_name="portfolio_manager", started_at=_dt.utcnow())
+                db.add(row)
+            row.last_beat = _dt.utcnow()
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.debug("Heartbeat upsert failed: %s", exc)
+        finally:
+            db.close()
+
+    async def _prefetch_earnings_calendar(self):
+        """
+        06:00 ET: Warm the earnings calendar cache for all watchlist symbols.
+        Phase 81: fail-closed — if both Finnhub and FMP fail, swing entries will be
+        blocked automatically until the cache is refreshed.
+        """
+        from app.calendars.earnings import earnings_calendar
+        symbols = list(SP_500_TICKERS)
+        await asyncio.to_thread(earnings_calendar.prefetch, symbols)
 
     async def _run_premarket_intelligence(self):
         """
