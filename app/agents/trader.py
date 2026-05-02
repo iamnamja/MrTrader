@@ -877,7 +877,6 @@ class Trader(BaseAgent):
         Called once during reconcile so active limit orders survive restarts.
         """
         from app.database.models import PendingLimitOrder
-        from app.strategy.signals import SignalResult
         db = get_session()
         try:
             rows = db.query(PendingLimitOrder).all()
