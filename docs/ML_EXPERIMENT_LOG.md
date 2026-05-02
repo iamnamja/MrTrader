@@ -255,29 +255,24 @@ Gate thresholds: avg Sharpe > 1.50, no fold < -0.30. Both cleared.
 **Date started:** 2026-05-02  
 **Date completed:** —
 
-**What was changed:**
-- Added 5 market-condition features derived from SPY daily bars (53 → 58 total features):
-  - `spy_first_hour_range` — SPY H-L range over first 60 min / open (intraday vol context at entry time)
-  - `spy_5d_return` — SPY cumulative 5-day return, clamped [-15%, +15%] (market trend direction)
-  - `spy_5d_realized_vol` — SPY 5-day rolling std of daily returns, annualised (vol regime)
-  - `market_is_trending` — boolean: |spy_5d_return|>2% AND spy_5d_realized_vol<15% (trend vs chop)
-  - `spy_day_vol_vs_avg` — SPY today's intraday range vs 20-day avg (relative session vol)
-- SPY daily bars fetched once per training day in `_symbol_to_rows`, shared across all symbols
-- PM live inference: SPY daily bars fetched once in `_get_spy_intraday_state`, passed to all `compute_intraday_features` calls via closure
-- Retrained as v30
+**What was tried (v34–v36, all reverted):**
+- Added 5 market-condition features from SPY daily bars (53 → 58 total): `spy_first_hour_range`, `spy_5d_return`, `spy_5d_realized_vol`, `market_is_trending`, `spy_day_vol_vs_avg`
+- Root problem discovered: ALL 5 are market-wide (same value every symbol per day). After `cs_normalize` in training and inference they are **zeroed out** — zero cross-sectional discriminating signal.
+- Bugs found and fixed: (1) lookahead — training used `d <= day` including today's daily bar close at 10:30 AM; fixed to `d < day`. (2) train/test mismatch — simulator called `compute_intraday_features` without `spy_daily_bars`; fixed by wiring through simulator and walk-forward.
+- Despite fixes, v36 avg Sharpe: -0.529 (gate: >0.8). The 5 near-zero features altered HPO search space, producing hyperparameters that don't generalise.
 
-**Walk-forward result:**
+**Walk-forward results (v36, reverted):**
 
-| Fold | Trades | Win% | Sharpe | Gate |
-|---|---|---|---|---|
-| 1 | — | — | — | — |
-| 2 | — | — | — | — |
-| 3 | — | — | — | — |
-| **Avg** | | | | |
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|---|
+| 1 | Oct 2024–Apr 2025 | 250 | 40.8% | -1.04 | ❌ |
+| 2 | Apr 2025–Oct 2025 | 252 | 46.0% | -0.41 | ❌ |
+| 3 | Oct 2025–Apr 2026 | 250 | 42.8% | -0.13 | ✅ |
+| **Avg** | | 752 | 43.2% | **-0.529** | ❌ |
 
-**Key observation:** —
+**Key observation:** Market-wide features are incompatible with cross-sectional training — cs-normalisation zeros them out. Phase 86 must be redesigned as **stock-relative interaction features** that vary across symbols (e.g. `stock_5d_return − spy_5d_return`). Plumbing kept (`spy_daily_bars` wired through training, simulator, walk-forward) for the redesigned attempt. v29 remains active.
 
-**Verdict:** 🔄 Pending
+**Verdict:** ❌ REVERTED — market-wide features incompatible with cs-normalisation. Redesign needed. Proceeding to Phase 87 (label fix) as the higher-leverage root-cause improvement.
 
 ---
 

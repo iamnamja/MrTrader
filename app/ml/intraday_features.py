@@ -1,7 +1,7 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (55 total — Phase 86 added 5 market-condition features):
+Features (53 total — Phase 50 added 3 session-segment features):
   ── Price / structure ──────────────────────────────────────────────────────
   orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
@@ -53,12 +53,6 @@ Features (55 total — Phase 86 added 5 market-condition features):
   spy_rsi_14          SPY RSI(14), normalised to [0, 1]
   rel_vol_spy         Stock 20-bar avg vol / SPY 20-bar avg vol
 
-  ── Phase 86: Market-condition features (from SPY daily bars) ─────────────
-  spy_first_hour_range  SPY H-L range over first 60 min / SPY open — intraday vol context
-  spy_5d_return         SPY cumulative 5-day return — market trend direction [-1,1] clamped
-  spy_5d_realized_vol   SPY 5-day rolling std of daily returns (annualised) — vol regime
-  market_is_trending    1 if |spy_5d_return|>2% AND spy_5d_realized_vol<1.5% (trend vs chop)
-  spy_day_vol_vs_avg    SPY today's intraday range vs 20-day avg range — relative session vol
 
   ── Session timing ────────────────────────────────────────────────────────
   time_of_day         Fraction of 6.5-hr session elapsed (0=open, 1=close)
@@ -282,58 +276,6 @@ def compute_intraday_features(
         feats["spy_session_return"] = 0.0
         feats["spy_rsi_14"] = 0.5
         feats["rel_vol_spy"] = 1.0
-
-    # ── Phase 86: Market-condition features (SPY daily bars) ─────────────
-    if spy_daily_bars is not None and len(spy_daily_bars) >= 6:
-        try:
-            spy_d_closes = spy_daily_bars["close"].values.astype(float)
-            spy_d_highs = spy_daily_bars["high"].values.astype(float)
-            spy_d_lows = spy_daily_bars["low"].values.astype(float)
-            spy_d_opens = spy_daily_bars["open"].values.astype(float)
-
-            # 5-day return: last 5 daily closes vs close 5 days ago
-            spy_5d_ret = float((spy_d_closes[-1] - spy_d_closes[-6]) / max(spy_d_closes[-6], 1e-6))
-            feats["spy_5d_return"] = float(np.clip(spy_5d_ret, -0.15, 0.15))
-
-            # 5-day realized vol: std of 5 daily log returns, annualised
-            daily_rets = np.diff(spy_d_closes[-6:]) / np.maximum(spy_d_closes[-6:-1], 1e-6)
-            feats["spy_5d_realized_vol"] = float(np.std(daily_rets) * np.sqrt(252))
-
-            # Market trending: strong trend + low vol = trending regime
-            feats["market_is_trending"] = float(
-                abs(spy_5d_ret) > 0.02 and feats["spy_5d_realized_vol"] < 0.15
-            )
-
-            # SPY yesterday's range vs 20-day avg (trailing — no lookahead)
-            if len(spy_daily_bars) >= 20:
-                yesterday_range = float(spy_d_highs[-1] - spy_d_lows[-1])
-                avg_range = float(np.mean(spy_d_highs[-20:] - spy_d_lows[-20:]))
-                feats["spy_day_vol_vs_avg"] = float(yesterday_range / max(avg_range, 1e-6))
-            else:
-                feats["spy_day_vol_vs_avg"] = 1.0
-        except Exception:
-            feats["spy_5d_return"] = 0.0
-            feats["spy_5d_realized_vol"] = 0.15
-            feats["market_is_trending"] = 0.0
-            feats["spy_day_vol_vs_avg"] = 1.0
-    else:
-        feats["spy_5d_return"] = 0.0
-        feats["spy_5d_realized_vol"] = 0.15
-        feats["market_is_trending"] = 0.0
-        feats["spy_day_vol_vs_avg"] = 1.0
-
-    # SPY first-hour range: H-L of first 12 bars (60 min) / first bar open
-    if spy_bars is not None and len(spy_bars) >= 12:
-        try:
-            fh_bars = spy_bars.iloc[:12]
-            fh_high = float(fh_bars["high"].max())
-            fh_low = float(fh_bars["low"].min())
-            fh_open = float(fh_bars["open"].iloc[0])
-            feats["spy_first_hour_range"] = float((fh_high - fh_low) / max(fh_open, 1e-6))
-        except Exception:
-            feats["spy_first_hour_range"] = 0.005
-    else:
-        feats["spy_first_hour_range"] = 0.005
 
     # ── Session timing ────────────────────────────────────────────────────
     # Use last bar's timestamp for actual time-of-day; fall back to bar count.
@@ -614,9 +556,6 @@ FEATURE_NAMES = [
     "atr_norm", "range_compression",
     # Market context
     "spy_session_return", "spy_rsi_14", "rel_vol_spy",
-    # Phase 86: market-condition features
-    "spy_first_hour_range", "spy_5d_return", "spy_5d_realized_vol",
-    "market_is_trending", "spy_day_vol_vs_avg",
     # Session timing
     "time_of_day", "minutes_since_open", "is_open_session", "is_close_session",
     # Daily vol context
