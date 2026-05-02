@@ -13,15 +13,15 @@ Schema: columns = ['ticker', 'added', 'removed']
 from __future__ import annotations
 
 import logging
-import os
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
 _UNIVERSE_DIR = Path(__file__).parent.parent.parent / "data" / "universe"
+
 
 # Fallback static lists when parquet not available
 def _fallback(index: str) -> List[str]:
