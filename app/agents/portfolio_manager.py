@@ -56,6 +56,16 @@ SPY_CAUTION_PCT = -0.75    # below this: raise min_confidence→0.65, size→50%
 SPY_CHASE_PCT = 2.0        # above this: raise min_confidence→0.65 (gap caution)
 SPY_ADAPTIVE_DELTA = 1.5   # adaptive re-scan if SPY moves this much from last scan
 
+# ── Phase 85: PM abstention gates ────────────────────────────────────────────
+# Gate 1A: skip scan if SPY first-hour (bars 0-11) high-low range < 0.45%
+SPY_MIN_FIRST_HOUR_RANGE = 0.0045
+# Gate 1B: reduce to 1 pick if top-decile score spread above median < threshold
+SCORE_SPREAD_MIN = 0.08
+# Gate 1C: melt-up compression — SPY up >2.5% over 5d, vol <0.60%/d, first hour also compressed
+MELTUP_5D_RETURN_MIN = 0.025
+MELTUP_5D_VOL_MAX = 0.006
+MELTUP_FIRST_HOUR_MAX = 0.005
+
 # ── Capital allocation ────────────────────────────────────────────────────────
 SWING_BUDGET_PCT = 0.70        # 70% of account reserved for swing trades
 INTRADAY_BUDGET_PCT = 0.30     # 30% of account reserved for intraday trades
@@ -136,6 +146,35 @@ class PortfolioManager(BaseAgent):
             return (float(current) - prev_close) / prev_close * 100
         except Exception:
             return None
+
+    def _get_spy_intraday_state(self) -> dict:
+        """Return SPY first-hour range and 5-day vol/return for Phase 85 gates.
+
+        Returns dict with keys: first_hour_range, spy_5d_return, spy_5d_vol.
+        All values are None on data error.
+        """
+        result = {"first_hour_range": None, "spy_5d_return": None, "spy_5d_vol": None}
+        try:
+            intraday = self._alpaca.get_bars("SPY", timeframe="5Min", limit=78)
+            if intraday is not None and len(intraday) >= 12:
+                bars_0_11 = intraday.iloc[:12]
+                prior_close = float(bars_0_11["open"].iloc[0])
+                if prior_close > 0:
+                    result["first_hour_range"] = (
+                        float(bars_0_11["high"].max()) - float(bars_0_11["low"].min())
+                    ) / prior_close
+        except Exception:
+            pass
+        try:
+            daily = self._alpaca.get_bars("SPY", timeframe="1Day", limit=7)
+            if daily is not None and len(daily) >= 6:
+                closes = daily["close"].astype(float).values
+                daily_rets = np.diff(closes) / closes[:-1]
+                result["spy_5d_return"] = float(daily_rets[-5:].sum())
+                result["spy_5d_vol"] = float(daily_rets[-5:].std())
+        except Exception:
+            pass
+        return result
 
     async def _withdraw_all_pending(self, reason: str) -> None:
         """Withdraw all pending approvals and clear the map."""
@@ -1282,6 +1321,64 @@ class PortfolioManager(BaseAgent):
                 len(self._morning_intraday_candidates),
             )
 
+        # ── Phase 85: PM abstention gates ────────────────────────────────────────
+        # Fetch SPY intraday state once; gates are non-fatal if data unavailable.
+        spy_state = await asyncio.to_thread(self._get_spy_intraday_state)
+        first_hour_range = spy_state["first_hour_range"]
+        spy_5d_return = spy_state["spy_5d_return"]
+        spy_5d_vol = spy_state["spy_5d_vol"]
+
+        # Gate 1A: SPY first-hour range gate — abstain if market has no intraday range
+        if first_hour_range is not None and first_hour_range < SPY_MIN_FIRST_HOUR_RANGE:
+            self.logger.info(
+                "Phase 85 Gate 1A: SPY first-hour range %.3f%% < %.2f%% — abstaining %s scan",
+                first_hour_range * 100, SPY_MIN_FIRST_HOUR_RANGE * 100, win_str,
+            )
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "phase85_gate1a_first_hour_range",
+                "spy_first_hour_range_pct": round(first_hour_range * 100, 3),
+                "threshold_pct": SPY_MIN_FIRST_HOUR_RANGE * 100,
+                "window": win_str,
+            })
+            return
+
+        # Gate 1C: melt-up compression guard — catch sustained low-vol melt-up regime
+        if (first_hour_range is not None and spy_5d_return is not None and spy_5d_vol is not None):
+            melt_up = (
+                spy_5d_return > MELTUP_5D_RETURN_MIN
+                and spy_5d_vol < MELTUP_5D_VOL_MAX
+                and first_hour_range < MELTUP_FIRST_HOUR_MAX
+            )
+            if melt_up:
+                self.logger.info(
+                    "Phase 85 Gate 1C: melt-up compression (5d_ret=%.2f%% vol=%.3f%% fhr=%.3f%%) — abstaining %s",
+                    spy_5d_return * 100, spy_5d_vol * 100, first_hour_range * 100, win_str,
+                )
+                await self.log_decision("SELECTION_SKIPPED", reasoning={
+                    "reason": "phase85_gate1c_meltup_compression",
+                    "spy_5d_return_pct": round(spy_5d_return * 100, 2),
+                    "spy_5d_vol_pct": round(spy_5d_vol * 100, 3),
+                    "spy_first_hour_range_pct": round(first_hour_range * 100, 3),
+                    "window": win_str,
+                })
+                return
+
+        # Gate 1B: score-spread abstention — reduce picks if model has no strong opinion
+        phase85_max_trades = TOP_N_INTRADAY
+        scores_only = [p for _, p in ranked]
+        if len(scores_only) >= 10:
+            top_n_decile = max(1, len(scores_only) // 10)
+            score_spread = (
+                float(np.mean(sorted(scores_only, reverse=True)[:top_n_decile]))
+                - float(np.median(scores_only))
+            )
+            if score_spread < SCORE_SPREAD_MIN:
+                phase85_max_trades = 1
+                self.logger.info(
+                    "Phase 85 Gate 1B: score spread %.3f < %.3f — capping picks at 1 for %s",
+                    score_spread, SCORE_SPREAD_MIN, win_str,
+                )
+
         # min_conf may have been raised by SPY regime gate above (intraday_min_conf)
         min_conf = intraday_min_conf
 
@@ -1292,7 +1389,7 @@ class PortfolioManager(BaseAgent):
             (sym, prob) for sym, prob in ranked
             if prob >= min_conf
             and (now_mono - self._intraday_symbol_last_entry.get(sym, 0)) > cooldown_secs
-        ][:TOP_N_INTRADAY]
+        ][:phase85_max_trades]
 
         if not selected:
             self.logger.info("No intraday candidates above confidence threshold (or all on cooldown)")
