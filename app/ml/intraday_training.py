@@ -132,8 +132,6 @@ class IntradayModelTrainer:
         symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         spy_data = self._fetch_spy(start_dt, end_dt, force_refresh) if fetch_spy else None
         daily_data = self._fetch_daily_all(symbols, start_dt, end_dt)
-        # Phase 86: SPY daily bars for market-condition features
-        spy_daily_data = self._fetch_daily_all(["SPY"], start_dt, end_dt).get("SPY")
         logger.info("Data fetch complete in %.1fs — %d/%d symbols",
                     (datetime.now() - t0).total_seconds(), len(symbols_data), len(symbols))
 
@@ -162,7 +160,7 @@ class IntradayModelTrainer:
         # ── 2. Build feature matrix (parallel per symbol) ─────────────────────
         t1 = datetime.now()
         X_train, y_train, X_test, y_test, feature_names, raw_train = self._build_daily_matrix(
-            symbols_data, spy_data, daily_data, spy_daily_data
+            symbols_data, spy_data, daily_data
         )
         logger.info("Feature matrix built in %.1fs — %d train / %d test rows, %d features",
                     (datetime.now() - t1).total_seconds(),
@@ -498,9 +496,9 @@ class IntradayModelTrainer:
             return polygon_hit
         return self._fetch_all(symbols, start, end, force_refresh=self._force_refresh)
 
-    def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None, spy_daily_data=None):
+    def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None):
         X_tr, y_tr, X_te, y_te, fnames, raw_tr = self._build_matrix_parallel(
-            symbols_data, spy_data, daily_data or {}, spy_daily_data
+            symbols_data, spy_data, daily_data or {}
         )
         return X_tr, y_tr, X_te, y_te, fnames, raw_tr
 
@@ -523,7 +521,6 @@ class IntradayModelTrainer:
         symbols_data: Dict[str, pd.DataFrame],
         spy_data: Optional[pd.DataFrame],
         daily_data: Dict[str, pd.DataFrame],
-        spy_daily_data: Optional[pd.DataFrame] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         # Collect all trading days across all symbols
         all_days: set = set()
@@ -547,8 +544,6 @@ class IntradayModelTrainer:
 
         # Precompute SPY day-slices once to avoid per-symbol work
         spy_by_day = _index_by_day(spy_data) if spy_data is not None else {}
-        # Phase 86: pre-slice SPY daily bars by day for market-condition features
-        spy_daily_by_day = _index_by_day(spy_daily_data) if spy_daily_data is not None else {}
 
         X_train_parts, raw_train_parts = [], []
         X_test_parts, raw_test_parts = [], []
@@ -556,7 +551,7 @@ class IntradayModelTrainer:
 
         syms = list(symbols_data.keys())
         tasks = [
-            (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days, spy_daily_by_day)
+            (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days)
             for sym in syms
         ]
 
@@ -773,8 +768,7 @@ def _symbol_to_rows(
     Accepts a single tuple so ProcessPoolExecutor can pickle it:
         (sym, df, spy_by_day, daily_df, train_days, test_days)
     """
-    sym, df, spy_by_day, daily_df, train_days, test_days, *_extra = args
-    spy_daily_by_day = _extra[0] if _extra else {}
+    sym, df, spy_by_day, daily_df, train_days, test_days = args
 
     if df is None or len(df) == 0:
         return [], [], [], [], [], []
@@ -873,18 +867,6 @@ def _symbol_to_rows(
             if daily_df is not None and daily_date_arr is not None:
                 daily_as_of = daily_df.iloc[daily_date_arr < day]
 
-            # Phase 86: SPY daily bars strictly BEFORE today — no lookahead
-            # (today's daily bar closes at 4 PM; entry is at bar 12 = 10:30 AM)
-            spy_daily_as_of = None
-            if spy_daily_by_day:
-                spy_daily_dates = sorted(spy_daily_by_day.keys())
-                spy_daily_rows = [
-                    spy_daily_by_day[d] for d in spy_daily_dates if d < day
-                ]
-                if spy_daily_rows:
-                    import pandas as _pd
-                    spy_daily_as_of = _pd.concat(spy_daily_rows)
-
             feats = compute_intraday_features(
                 feat_bars,
                 spy_by_day.get(day),
@@ -892,7 +874,6 @@ def _symbol_to_rows(
                 prior_day_high=prior_high,
                 prior_day_low=prior_low,
                 daily_bars=daily_as_of,
-                spy_daily_bars=spy_daily_as_of,
             )
             if feats is None:
                 continue
