@@ -130,17 +130,19 @@ class IntradayAgentSimulator:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         sector_map: Optional[Dict[str, str]] = None,
+        spy_daily_data: Optional[pd.DataFrame] = None,
     ) -> SimResult:
         """
         Run the intraday agent-driven backtest.
 
         Args:
-            symbols_data: dict of symbol → 5-min OHLCV DataFrame (multi-day)
-            spy_data:     SPY 5-min bars for feature computation
-            spy_prices:   SPY daily close for benchmark
-            start_date:   first day to trade (default: first available day)
-            end_date:     last day to trade (default: last available day)
-            sector_map:   symbol → sector for concentration rules
+            symbols_data:   dict of symbol → 5-min OHLCV DataFrame (multi-day)
+            spy_data:       SPY 5-min bars for feature computation
+            spy_prices:     SPY daily close for benchmark
+            start_date:     first day to trade (default: first available day)
+            end_date:       last day to trade (default: last available day)
+            sector_map:     symbol → sector for concentration rules
+            spy_daily_data: SPY daily OHLCV bars for Phase 86 market-condition features
         """
         if not symbols_data:
             return self._empty_result()
@@ -218,9 +220,18 @@ class IntradayAgentSimulator:
                     pass
 
             spy_day = self._get_day_bars(spy_data, day) if spy_data is not None else None
+            # Phase 86: SPY daily bars strictly before today (no lookahead)
+            spy_daily_as_of = None
+            if spy_daily_data is not None:
+                spy_d_idx = pd.DatetimeIndex(spy_daily_data.index)
+                spy_d_dates = spy_d_idx.normalize().date if hasattr(spy_d_idx.normalize(), "date") else np.array([d2.date() for d2 in spy_d_idx.normalize()])
+                spy_daily_as_of = spy_daily_data.iloc[spy_d_dates < day]
+                if len(spy_daily_as_of) == 0:
+                    spy_daily_as_of = None
             day_trades, day_tx = self._process_day(
                 day, symbols_data, spy_day, portfolio, sector_map,
                 skip_entries=skip_entries,
+                spy_daily_bars=spy_daily_as_of,
             )
             accepted_trades.extend(day_trades)
             tx_costs_total += day_tx
@@ -247,6 +258,7 @@ class IntradayAgentSimulator:
         portfolio: _PortfolioState,
         sector_map: Dict[str, str],
         skip_entries: bool = False,
+        spy_daily_bars: Optional[pd.DataFrame] = None,
     ) -> Tuple[List[Trade], float]:
         trades: List[Trade] = []
         tx_costs = 0.0
@@ -293,6 +305,7 @@ class IntradayAgentSimulator:
                         feat_bars, spy_day, prior_close,
                         prior_day_high=prior_high,
                         prior_day_low=prior_low,
+                        spy_daily_bars=spy_daily_bars,
                     )
                 except Exception:
                     feats = None

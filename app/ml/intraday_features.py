@@ -1,7 +1,7 @@
 """
 Intraday feature engineering for 5-minute bar models.
 
-Features (50 total — Phase 47-5 added 8 new features):
+Features (53 total — Phase 50 added 3 session-segment features):
   ── Price / structure ──────────────────────────────────────────────────────
   orb_position        Price position within opening 30-min range (0=low, 1=high)
   orb_breakout        +1 above ORB high, -1 below ORB low, 0 inside
@@ -53,6 +53,7 @@ Features (50 total — Phase 47-5 added 8 new features):
   spy_rsi_14          SPY RSI(14), normalised to [0, 1]
   rel_vol_spy         Stock 20-bar avg vol / SPY 20-bar avg vol
 
+
   ── Session timing ────────────────────────────────────────────────────────
   time_of_day         Fraction of 6.5-hr session elapsed (0=open, 1=close)
   minutes_since_open  Minutes elapsed since 09:30 open (0-390)
@@ -93,6 +94,7 @@ def compute_intraday_features(
     prior_day_high: Optional[float] = None,
     prior_day_low: Optional[float] = None,
     daily_bars: Optional[pd.DataFrame] = None,
+    spy_daily_bars: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict[str, float]]:
     """
     Compute intraday features from a slice of 5-min OHLCV bars.

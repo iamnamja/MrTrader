@@ -149,12 +149,13 @@ class PortfolioManager(BaseAgent):
             return None
 
     def _get_spy_intraday_state(self) -> dict:
-        """Return SPY first-hour range and 5-day vol/return for Phase 85 gates.
+        """Return SPY first-hour range, 5-day vol/return, and daily bars for Phase 85/86.
 
-        Returns dict with keys: first_hour_range, spy_5d_return, spy_5d_vol.
+        Returns dict with keys: first_hour_range, spy_5d_return, spy_5d_vol, spy_daily_bars.
         All values are None on data error.
         """
-        result = {"first_hour_range": None, "spy_5d_return": None, "spy_5d_vol": None}
+        result = {"first_hour_range": None, "spy_5d_return": None, "spy_5d_vol": None,
+                  "spy_daily_bars": None}
         try:
             intraday = self._alpaca.get_bars("SPY", timeframe="5Min", limit=78)
             if intraday is not None and len(intraday) >= 12:
@@ -167,12 +168,14 @@ class PortfolioManager(BaseAgent):
         except Exception:
             pass
         try:
-            daily = self._alpaca.get_bars("SPY", timeframe="1Day", limit=7)
+            # Fetch 30 days for Phase 86 market-condition features (need ≥6 for 5d vol)
+            daily = self._alpaca.get_bars("SPY", timeframe="1Day", limit=30)
             if daily is not None and len(daily) >= 6:
                 closes = daily["close"].astype(float).values
                 daily_rets = np.diff(closes) / closes[:-1]
                 result["spy_5d_return"] = float(daily_rets[-5:].sum())
                 result["spy_5d_vol"] = float(daily_rets[-5:].std())
+                result["spy_daily_bars"] = daily  # Phase 86: pass to compute_intraday_features
         except Exception:
             pass
         return result
@@ -1266,6 +1269,7 @@ class PortfolioManager(BaseAgent):
                     bars, prior_close=prior_close,
                     prior_day_high=prior_high, prior_day_low=prior_low,
                     daily_bars=daily,
+                    spy_daily_bars=spy_daily_bars,  # Phase 86: market-condition features
                 )
                 if feats is None:
                     return None
@@ -1380,6 +1384,7 @@ class PortfolioManager(BaseAgent):
         first_hour_range = spy_state["first_hour_range"]
         spy_5d_return = spy_state["spy_5d_return"]
         spy_5d_vol = spy_state["spy_5d_vol"]
+        spy_daily_bars = spy_state["spy_daily_bars"]  # Phase 86: market-condition features
 
         # Gate 1A: SPY first-hour range gate — abstain if market has no intraday range
         if first_hour_range is not None and first_hour_range < SPY_MIN_FIRST_HOUR_RANGE:

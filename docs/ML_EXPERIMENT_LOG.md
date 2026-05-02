@@ -243,38 +243,36 @@ Note: Phases 81–84 are assigned to system hardening (earnings gate, peak equit
 
 Gate thresholds: avg Sharpe > 1.50, no fold < -0.30. Both cleared.
 
-**Key observation:** Avg Sharpe +1.830 exceeds the strict 1.50 intraday gate. The previously-failing low-vol melt-up period (Jul–Oct 2025) falls in fold 2 here and still passed at +0.78 — gates successfully removed the worst days without over-filtering in the moderate-vol periods. No need to proceed to Phase 86 or 87.
+**Key observation:** Avg Sharpe +1.830 exceeds the strict 1.50 intraday gate. The previously-failing low-vol melt-up period (Jul–Oct 2025) falls in fold 2 here and still passed at +0.78 — gates successfully removed the worst days without over-filtering in the moderate-vol periods. Phase 86/87 still worth doing: gates patch symptoms at runtime but v29 training signal is structurally compromised (forced positive labels on dead days).
 
-**Verdict:** ✅ GATE PASSED — merge Phase 85, deploy v29 with abstention gates active. Phase 86/87 deferred unless future walk-forward re-fails.
+**Verdict:** ✅ GATE PASSED — merge Phase 85, deploy v29 with abstention gates active. Proceed to Phase 86 to fix root cause in training.
 
 ---
 
 ### Phase 86 — Market Context Features + Retrain v30
 
 **Branch:** `feat/phase-86-market-context-features`  
-**Date started:** —  
+**Date started:** 2026-05-02  
 **Date completed:** —
 
-**What was changed:**
-- Added market vol features: `vix_level_norm`, `spy_5d_realized_vol`, `spy_20d_realized_vol`, `vol_regime`, `vol_regime_trend`
-- Added first-hour opportunity features: `spy_first_hour_range`, `spy_first_hour_eff`, `spy_vwap_dist_entry`
-- Added dispersion features: `universe_dispersion`, `top_vs_bottom_spread`
-- Added sector context features: `sector_etf_session_return`, `stock_vs_sector_return`
-- Total features: 50 → ~62
-- Retrained as v30
+**What was tried (v34–v36, all reverted):**
+- Added 5 market-condition features from SPY daily bars (53 → 58 total): `spy_first_hour_range`, `spy_5d_return`, `spy_5d_realized_vol`, `market_is_trending`, `spy_day_vol_vs_avg`
+- Root problem discovered: ALL 5 are market-wide (same value every symbol per day). After `cs_normalize` in training and inference they are **zeroed out** — zero cross-sectional discriminating signal.
+- Bugs found and fixed: (1) lookahead — training used `d <= day` including today's daily bar close at 10:30 AM; fixed to `d < day`. (2) train/test mismatch — simulator called `compute_intraday_features` without `spy_daily_bars`; fixed by wiring through simulator and walk-forward.
+- Despite fixes, v36 avg Sharpe: -0.529 (gate: >0.8). The 5 near-zero features altered HPO search space, producing hyperparameters that don't generalise.
 
-**Walk-forward result:**
+**Walk-forward results (v36, reverted):**
 
-| Fold | Trades | Win% | Sharpe | Gate |
-|---|---|---|---|---|
-| 1 | — | — | — | — |
-| 2 | — | — | — | — |
-| 3 | — | — | — | — |
-| **Avg** | | | | |
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|---|
+| 1 | Oct 2024–Apr 2025 | 250 | 40.8% | -1.04 | ❌ |
+| 2 | Apr 2025–Oct 2025 | 252 | 46.0% | -0.41 | ❌ |
+| 3 | Oct 2025–Apr 2026 | 250 | 42.8% | -0.13 | ✅ |
+| **Avg** | | 752 | 43.2% | **-0.529** | ❌ |
 
-**Key observation:** —
+**Key observation:** Market-wide features are incompatible with cross-sectional training — cs-normalisation zeros them out. Phase 86 must be redesigned as **stock-relative interaction features** that vary across symbols (e.g. `stock_5d_return − spy_5d_return`). Plumbing kept (`spy_daily_bars` wired through training, simulator, walk-forward) for the redesigned attempt. v29 remains active.
 
-**Verdict:** 🔄 Pending
+**Verdict:** ❌ REVERTED — market-wide features incompatible with cs-normalisation. Redesign needed. Proceeding to Phase 87 (label fix) as the higher-leverage root-cause improvement.
 
 ---
 
