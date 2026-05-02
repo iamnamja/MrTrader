@@ -247,6 +247,7 @@ def run_swing_walkforward(
         return report
 
     from app.utils.constants import SP_100_TICKERS
+    from app.data.universe_history import members_at as _members_at
     symbols = symbols or list(SP_100_TICKERS)
 
     # Download full history
@@ -299,6 +300,9 @@ def run_swing_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}")
         t_fold = time.time()
+        # Point-in-time filter: only use symbols that were in the index at fold train start
+        pit_members = set(_members_at("sp100", tr_start))
+        fold_symbols_data = {s: d for s, d in symbols_data.items() if s in pit_members}
         sim = AgentSimulator(
             model=model,
             atr_stop_mult=atr_stop_mult,
@@ -309,7 +313,7 @@ def run_swing_walkforward(
             pm_abstention_spy_5d=pm_abstention_spy_5d,
         )
         result = sim.run(
-            symbols_data,
+            fold_symbols_data,
             start_date=te_start,
             end_date=te_end,
             spy_prices=spy_prices,
@@ -366,6 +370,7 @@ def run_intraday_walkforward(
         return report
 
     from app.utils.constants import RUSSELL_1000_TICKERS
+    from app.data.universe_history import members_at as _members_at
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     end_all = datetime.now().date()
@@ -430,6 +435,9 @@ def run_intraday_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}")
         t_fold = time.time()
+        # Point-in-time filter: only use symbols that were in the index at fold train start
+        pit_members = set(_members_at("russell1000", tr_start))
+        fold_symbols_data = {s: d for s, d in symbols_data.items() if s in pit_members}
         sim = IntradayAgentSimulator(
             model=model,
             meta_model=meta_model,
@@ -438,7 +446,7 @@ def run_intraday_walkforward(
             scan_offsets=scan_offsets,
         )
         result = sim.run(
-            symbols_data,
+            fold_symbols_data,
             spy_data=spy_data,
             start_date=te_start,
             end_date=te_end,

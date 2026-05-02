@@ -321,3 +321,32 @@ class DecisionAudit(Base):
     outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered
     outcome_4h_pct = Column(Float, nullable=True)       # price change 4h after decision
     outcome_1d_pct = Column(Float, nullable=True)       # price change 1 day after decision
+
+
+class PendingLimitOrder(Base):
+    """Phase 78b — persisted swing limit orders so they survive restarts."""
+    __tablename__ = "pending_limit_orders"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(10), nullable=False, unique=True, index=True)
+    order_id = Column(String(50), nullable=False, index=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True, index=True)
+    shares = Column(Integer, nullable=False)
+    limit_price = Column(Float, nullable=False)
+    intended_price = Column(Float, nullable=False)
+    stop_price = Column(Float, nullable=True)
+    target_price = Column(Float, nullable=True)
+    atr = Column(Float, nullable=True)
+    trade_type = Column(String(20), nullable=False, default="swing")
+    signal_type = Column(String(30), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ProcessHeartbeat(Base):
+    """Phase 83 — PM heartbeat for deadman watchdog."""
+    __tablename__ = "process_heartbeat"
+
+    id = Column(Integer, primary_key=True)
+    process_name = Column(String(50), nullable=False, unique=True, index=True)
+    last_beat = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
