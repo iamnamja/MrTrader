@@ -1,6 +1,5 @@
 {
   "permissions": {
-    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(*)",
       "Bash(git status)",
@@ -32,6 +31,10 @@
       "Bash(rm -rf *)",
       "Bash(docker compose down *)",
       "Bash(docker compose down)"
+    ],
+    "defaultMode": "bypassPermissions",
+    "additionalDirectories": [
+      "C:\\Users\\kimmi\\.claude\\projects\\c--Projects-MrTrader\\memory"
     ]
   }
 }
