@@ -223,13 +223,13 @@ class IntradayModelTrainer:
             # Phase 87: frozen HPO params + 3-seed ensemble.
             # If FROZEN_HPO_PARAMS is set, skip HPO and use them directly.
             # If None, run thorough 100-trial HPO once to find good params.
+            from xgboost import XGBClassifier
             hpo_params = FROZEN_HPO_PARAMS
             if hpo_params is None:
                 try:
                     import optuna
                     optuna.logging.set_verbosity(optuna.logging.WARNING)
                     from sklearn.model_selection import StratifiedKFold
-                    from xgboost import XGBClassifier
 
                     def _objective(trial):
                         params = {
