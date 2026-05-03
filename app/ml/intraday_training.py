@@ -270,7 +270,6 @@ class IntradayModelTrainer:
                 logger.info("Using frozen HPO params: %s", hpo_params)
 
             # Phase 87: 3-seed XGBoost ensemble — train on seeds 42, 123, 777 and blend.
-            from xgboost import XGBClassifier
             ensemble_models = []
             for seed in ENSEMBLE_SEEDS:
                 seed_params = {**(hpo_params or {}), "random_state": seed,
