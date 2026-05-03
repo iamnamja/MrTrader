@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -40,6 +41,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ET = timezone(timedelta(hours=-4))  # EDT; adjust to -5 in winter if needed
+
+# Finnhub free tier: 60 req/min. This lock enforces ≥1s between requests globally.
+_FINNHUB_LOCK = threading.Lock()
+_FINNHUB_LAST_REQ: list[float] = [0.0]
+_FINNHUB_MIN_INTERVAL = 1.05  # seconds between requests (57/min with margin)
+
+def _finnhub_rate_limit():
+    with _FINNHUB_LOCK:
+        elapsed = time.monotonic() - _FINNHUB_LAST_REQ[0]
+        if elapsed < _FINNHUB_MIN_INTERVAL:
+            time.sleep(_FINNHUB_MIN_INTERVAL - elapsed)
+        _FINNHUB_LAST_REQ[0] = time.monotonic()
 
 
 # ── Trading day helpers ───────────────────────────────────────────────────────
@@ -126,6 +139,7 @@ def _score_symbol(symbol: str, as_of_date: date, dry_run: bool) -> dict:
     from_dt = to_dt - timedelta(hours=24)  # 24-hour lookback window before bar-12
 
     try:
+        _finnhub_rate_limit()
         articles = fetch_company_news(symbol, lookback_hours=24)
         # Filter to only articles before 10:30 AM ET on as_of_date
         cutoff_ts = to_dt.timestamp()
@@ -217,7 +231,7 @@ def main():
                 pool.submit(_score_symbol, sym, as_of_date, args.dry_run): sym
                 for sym in symbols_todo
             }
-            for future in as_completed(futures, timeout=300):
+            for future in as_completed(futures, timeout=900):
                 out = future.result()
                 sym = out["symbol"]
 
@@ -240,8 +254,6 @@ def main():
                 finally:
                     db.close()
 
-            # Finnhub rate limit: 60 req/min free tier. With 4 workers, pause between symbol batches.
-            time.sleep(1.0)
 
         total_written += day_written
         total_skipped += skipped_today

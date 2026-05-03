@@ -51,13 +51,22 @@ HOLD_BARS = 24           # 2 hours of 5-min bars to achieve the target
 TEST_FRACTION = 0.20     # most recent 20% of days = test
 MIN_DAYS = 20            # minimum trading days needed per symbol
 
-# ATR-adaptive labeling (iter 1)
+# ATR-adaptive labeling (Phase 87: realized-R outcome labels)
 ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for 2h window
 ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
+MIN_ABSOLUTE_MOVE = 0.003  # Phase 87A: 0.30% minimum to cover commissions + spread
+MIN_REALIZED_R = 0.5       # Phase 87B: must achieve ≥0.5R to be labeled positive
 
 ENTRY_OFFSETS = [12]  # single scan at bar 12 (~60 min post-open); v30 proved multi-window hurts
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
+
+# Phase 87: frozen HPO params (set from thorough 100-trial search; reuse on every retrain)
+# None = run HPO to find initial params; once found, set these to freeze.
+FROZEN_HPO_PARAMS: Optional[dict] = None  # type: ignore[assignment]
+
+# Phase 87: ensemble seeds (3 XGBoost models blended by average probability)
+ENSEMBLE_SEEDS = [42, 123, 777]
 
 # Parallelism config
 FETCH_CHUNK_SIZE = 100   # symbols per Alpaca API call
@@ -211,50 +220,84 @@ class IntradayModelTrainer:
                              sample_weight=day_weights,
                              groups=group_counts.astype(np.int32))
         else:
-            # HPO: tune XGBoost hyperparameters with Optuna (50 trials, CV on train)
-            try:
-                import optuna
-                optuna.logging.set_verbosity(optuna.logging.WARNING)
-                from sklearn.model_selection import StratifiedKFold
-                from xgboost import XGBClassifier
+            # Phase 87: frozen HPO params + 3-seed ensemble.
+            # If FROZEN_HPO_PARAMS is set, skip HPO and use them directly.
+            # If None, run thorough 100-trial HPO once to find good params.
+            from xgboost import XGBClassifier
+            hpo_params = FROZEN_HPO_PARAMS
+            if hpo_params is None:
+                try:
+                    import optuna
+                    optuna.logging.set_verbosity(optuna.logging.WARNING)
+                    from sklearn.model_selection import StratifiedKFold
 
-                def _objective(trial):
-                    params = {
-                        "n_estimators": trial.suggest_int("n_estimators", 200, 600),
-                        "max_depth": trial.suggest_int("max_depth", 3, 6),
-                        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-                        "subsample": trial.suggest_float("subsample", 0.5, 0.9),
-                        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 0.8),
-                        "min_child_weight": trial.suggest_int("min_child_weight", 5, 30),
-                        "gamma": trial.suggest_float("gamma", 0.0, 0.5),
-                        "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 0.5),
-                        "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
-                        "scale_pos_weight": spw,
-                        "nthread": -1, "verbosity": 0, "eval_metric": "auc",
-                        "random_state": 42,
-                    }
-                    cv = StratifiedKFold(n_splits=3, shuffle=False)
-                    aucs = []
-                    for tr_idx, va_idx in cv.split(X_train, y_train):
-                        Xtr, Xva = X_train[tr_idx], X_train[va_idx]
-                        ytr, yva = y_train[tr_idx], y_train[va_idx]
-                        sw_tr = sample_weight[tr_idx] if sample_weight is not None else None
-                        clf = XGBClassifier(**params)
-                        clf.fit(Xtr, ytr, sample_weight=sw_tr)
-                        from sklearn.metrics import roc_auc_score
-                        aucs.append(roc_auc_score(yva, clf.predict_proba(Xva)[:, 1]))
-                    return float(np.mean(aucs))
+                    def _objective(trial):
+                        params = {
+                            "n_estimators": trial.suggest_int("n_estimators", 200, 800),
+                            "max_depth": trial.suggest_int("max_depth", 3, 7),
+                            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+                            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+                            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 0.9),
+                            "min_child_weight": trial.suggest_int("min_child_weight", 3, 40),
+                            "gamma": trial.suggest_float("gamma", 0.0, 1.0),
+                            "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
+                            "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 5.0),
+                            "scale_pos_weight": spw,
+                            "nthread": -1, "verbosity": 0, "eval_metric": "auc",
+                            "random_state": 42,
+                        }
+                        cv = StratifiedKFold(n_splits=3, shuffle=False)
+                        aucs = []
+                        for tr_idx, va_idx in cv.split(X_train, y_train):
+                            Xtr, Xva = X_train[tr_idx], X_train[va_idx]
+                            ytr, yva = y_train[tr_idx], y_train[va_idx]
+                            sw_tr = sample_weight[tr_idx] if sample_weight is not None else None
+                            clf = XGBClassifier(**params)
+                            clf.fit(Xtr, ytr, sample_weight=sw_tr)
+                            from sklearn.metrics import roc_auc_score
+                            aucs.append(roc_auc_score(yva, clf.predict_proba(Xva)[:, 1]))
+                        return float(np.mean(aucs))
 
-                study = optuna.create_study(direction="maximize")
-                study.optimize(_objective, n_trials=50, show_progress_bar=False)
-                best = study.best_params
-                logger.info("HPO best params: %s  AUC=%.4f", best, study.best_value)
-                self.model.model.set_params(**best)
-            except Exception as exc:
-                logger.warning("HPO failed, using defaults: %s", exc)
+                    study = optuna.create_study(direction="maximize")
+                    study.optimize(_objective, n_trials=100, show_progress_bar=False)
+                    hpo_params = study.best_params
+                    logger.info("HPO best params (freeze these in FROZEN_HPO_PARAMS): %s  AUC=%.4f",
+                                hpo_params, study.best_value)
+                except Exception as exc:
+                    logger.warning("HPO failed, using defaults: %s", exc)
+                    hpo_params = {}
+            else:
+                logger.info("Using frozen HPO params: %s", hpo_params)
 
+            # Phase 87: 3-seed XGBoost ensemble — train on seeds 42, 123, 777 and blend.
+            ensemble_models = []
+            for seed in ENSEMBLE_SEEDS:
+                seed_params = {**(hpo_params or {}), "random_state": seed,
+                               "scale_pos_weight": spw, "nthread": -1, "verbosity": 0,
+                               "eval_metric": "auc"}
+                clf = XGBClassifier(**seed_params)
+                clf.fit(X_train, y_train, sample_weight=sample_weight)
+                ensemble_models.append(clf)
+                logger.info("Trained XGBoost seed=%d", seed)
+
+            # Store ensemble on model object for inference blending
+            self.model.ensemble_models = ensemble_models
+            # Primary model (seed=42) for backward-compat save/load
+            self.model.model.set_params(**(hpo_params or {}),
+                                        random_state=ENSEMBLE_SEEDS[0],
+                                        scale_pos_weight=spw)
             self.model.train(X_train, y_train, feature_names, scale_pos_weight=spw,
                              sample_weight=sample_weight)
+
+        # Phase 87: blend 3-seed XGBoost ensemble probabilities for evaluation
+        ensemble_proba_test = None
+        if not use_ranker and hasattr(self.model, "ensemble_models") and len(self.model.ensemble_models) > 1:
+            try:
+                seed_probas = [m.predict_proba(X_test)[:, 1] for m in self.model.ensemble_models]
+                ensemble_proba_test = np.mean(seed_probas, axis=0)
+                logger.info("3-seed XGBoost ensemble blended for evaluation")
+            except Exception as exc:
+                logger.warning("Ensemble blending failed: %s", exc)
 
         # LightGBM ensemble: train LGBM alongside XGBoost, soft-vote probabilities
         lgbm_proba_test = None
@@ -272,7 +315,15 @@ class IntradayModelTrainer:
         except Exception as exc:
             logger.warning("LightGBM training failed: %s", exc)
 
-        metrics = self._evaluate(X_test, y_test, lgbm_proba=lgbm_proba_test)
+        # Final blended proba: average XGBoost ensemble + LGBM if both available
+        if ensemble_proba_test is not None and lgbm_proba_test is not None:
+            final_proba_test = (ensemble_proba_test + lgbm_proba_test) / 2.0
+        elif ensemble_proba_test is not None:
+            final_proba_test = ensemble_proba_test
+        else:
+            final_proba_test = lgbm_proba_test
+
+        metrics = self._evaluate(X_test, y_test, lgbm_proba=final_proba_test)
         logger.info("OOS metrics: %s", metrics)
 
         # ── 4. Save ───────────────────────────────────────────────────────────
@@ -284,6 +335,9 @@ class IntradayModelTrainer:
             "feature_names": list(feature_names),
             "entry_offsets": ENTRY_OFFSETS,
             "lgbm_ensemble": lgbm_proba_test is not None,
+            "xgb_3seed_ensemble": ensemble_proba_test is not None,
+            "frozen_hpo": FROZEN_HPO_PARAMS is not None,
+            "label_scheme": "realized_R_phase87",
             "use_ranker": use_ranker,
             "top_n_by_liquidity": top_n_by_liquidity,
         }
@@ -577,26 +631,17 @@ class IntradayModelTrainer:
                 if done % 100 == 0:
                     logger.info("Features: %d/%d symbols processed", done, len(syms))
 
-        # ── Cross-sectional re-labeling (iter 2) ─────────────────────────────
-        # Each future result also carries (day, best_return) per row.
-        # We rank symbols within each day; top 20% → label 1.
-        # Rebuild y from cross-sectional ranks rather than absolute ATR labels.
+        # ── Phase 87: direct outcome labels (replaces cross-sectional top-20% ranking) ──
+        # raw_parts carry [day_ordinal, binary_label] where label = realized_R ≥ 0.5R AND ≥0.30%.
+        # Days with no qualifying setups get all-zero labels — model learns to abstain on bad days.
         def _cross_sectional_labels(X_parts, raw_parts):
-            """Re-label rows by ranking best_return within each trading day,
-            then z-score features within each day (cross-sectional normalization)."""
+            """Apply cs_normalize per day; labels are pre-computed binary outcomes (Phase 87)."""
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
-            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, best_return]
+            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, binary_label]
             days_ord = raws[:, 0]
-            returns = raws[:, 1]
-            labels = np.zeros(len(X), dtype=np.int8)
-            for d in np.unique(days_ord):
-                mask = days_ord == d
-                if mask.sum() < 5:
-                    continue
-                threshold = np.percentile(returns[mask], 80)  # top 20%
-                labels[mask] = (returns[mask] >= threshold).astype(np.int8)
+            labels = raws[:, 1].astype(np.int8)
             # Cross-sectional normalization: z-score each feature within each day
             X = cs_normalize_by_group(X, days_ord)
             return X, labels
@@ -820,47 +865,42 @@ def _symbol_to_rows(
                 prior_high = float(prev["high"].max())
                 prior_low = float(prev["low"].min())
 
-            # Intraday path_quality label — same design as swing path_quality (Phase 45).
-            # Computes a continuous score [-2.5, 1.5] measuring trade quality:
-            #   upside_capture: how far price moved toward target (ATR-adaptive)
-            #   stop_pressure:  how close price came to stop (ATR-adaptive)
-            #   close_strength: where final close sits relative to target
-            # Using ATR-adaptive levels (matches IntradayAgentSimulator 1.2x/0.6x),
-            # but as a REGRESSION score rather than binary hit/miss to avoid
-            # the sparse positive label problem from v19 (binary ATR labels were
-            # too hard at 2h horizon → 0 positive examples → model never fires).
+            # Phase 87: realized-R outcome label (replaces path_quality cross-sectional ranking).
+            # Label = 1 if the trade achieves ≥0.5R gain AND ≥0.30% absolute move.
+            # Days with no qualifying setups get zero positive labels — model learns to abstain.
             if prior_high is not None and prior_low is not None and prior_close is not None:
-                range_pct = (prior_high - prior_low) / max(prior_close, 1e-6)
-                stop_pct_use = float(np.clip(ATR_MULT_STOP * range_pct, 0.002, 0.02))
-                target_pct_use = float(np.clip(ATR_MULT_TARGET * range_pct, 0.003, 0.04))
+                prior_range = prior_high - prior_low
+                stop_dist_abs = ATR_MULT_STOP * prior_range
+                target_dist_abs = ATR_MULT_TARGET * prior_range
             else:
-                stop_pct_use = STOP_PCT
-                target_pct_use = TARGET_PCT
+                stop_dist_abs = STOP_PCT * 100.0   # fallback in absolute $ terms ~ $0.30
+                target_dist_abs = TARGET_PCT * 100.0
 
             entry = float(feat_bars["close"].iloc[-1])
+            stop_dist_use = max(stop_dist_abs, entry * 0.002)    # floor 0.2%
+            target_dist_use = max(target_dist_abs, entry * 0.003)  # floor 0.3%
+
             max_high = entry
             min_low = entry
-            final_close = entry
+            realized_exit = entry
             for _, fbar in future_bars.iterrows():
                 h = float(fbar["high"])
                 lo = float(fbar["low"])
                 c = float(fbar["close"])
+                if lo <= entry - stop_dist_use:
+                    realized_exit = entry - stop_dist_use
+                    break
+                if h >= entry + target_dist_use:
+                    realized_exit = entry + target_dist_use
+                    break
                 max_high = max(max_high, h)
                 min_low = min(min_low, lo)
-                final_close = c
+                realized_exit = c
 
-            target_dist = entry * target_pct_use
-            stop_dist = entry * stop_pct_use
-
-            upside_capture = min((max_high - entry) / max(target_dist, 1e-8), 1.0)
-            stop_pressure = min((entry - min_low) / max(stop_dist, 1e-8), 1.0)
-            close_strength = float(np.clip(
-                (final_close - entry) / max(target_dist, 1e-8), -1.0, 1.0
-            ))
-            path_quality_score = 1.0 * upside_capture - 0.50 * stop_pressure + 0.25 * close_strength  # Phase 47-3: stop_pressure coeff reduced -1.25→-0.50
-
-            # Use path_quality score directly as the ranking signal (replaces Sharpe-adj return)
-            best_return = path_quality_score
+            realized_R = (realized_exit - entry) / max(stop_dist_use, 1e-8)
+            absolute_move = abs(realized_exit - entry) / max(entry, 1e-8)
+            binary_label = 1 if (realized_R >= MIN_REALIZED_R and absolute_move >= MIN_ABSOLUTE_MOVE) else 0
+            best_return = binary_label
 
             # Daily bars up to this day (O(1) slice via precomputed date array)
             daily_as_of = None
