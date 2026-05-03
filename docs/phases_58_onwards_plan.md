@@ -261,6 +261,155 @@ No e2e test drives PM→RM→Trader→Alpaca-paper with persistent state. All "i
 
 ---
 
+## Agent Architecture + Intelligence Improvements
+
+*Inspired by analysis of TradingAgents (TauricResearch/TradingAgents, arXiv 2412.20138) — a multi-agent LLM trading framework. We reviewed their architecture and extracted what's genuinely useful without abandoning the XGBoost + walk-forward rigor that gives MrTrader its reproducible edge.*
+
+---
+
+### Phase 91 — Pre-Execution Bull/Bear Debate Agent ⏳ AFTER PHASE 86b
+
+**Origin:** TradingAgents' most novel contribution is a structured adversarial debate before any investment decision. Two LLM agents argue opposite sides using the same evidence; a judge synthesizes. We adapt this to MrTrader's existing approval workflow as a second-pass filter on top of the ML signal, not a replacement.
+
+**Problem with current flow:**
+The PM generates a proposal from the XGBoost model score + NIS score alone. There is no mechanism to catch cases where the ML says "strong setup" but the news/fundamentals context says "this is a bad day for this stock specifically." A single ML score collapses all signals into one number and can't express internal contradiction.
+
+**What to build:**
+
+A `DebateAgent` that runs after the PM generates a proposal but before it is sent to the RM queue. For each proposed trade the agent:
+
+1. Receives a structured `DebateContext`:
+   - Symbol, strategy (swing/intraday), ML model score + top 5 SHAP features
+   - NIS scores: `direction_score`, `materiality_score`, `sizing_multiplier`, top headlines
+   - Key technicals: RSI, ATR%, recent momentum, proximity to support/resistance
+   - Market regime: VIX level, SPY vs MA20, sector ETF trend
+   - Proposed entry/stop/target and position size
+
+2. Runs two Claude Haiku calls in parallel:
+   - **Bull agent:** "Argue the strongest case FOR entering this trade given the above context."
+   - **Bear agent:** "Argue the strongest case AGAINST entering this trade given the above context."
+
+3. A **judge call** (Haiku or Sonnet depending on materiality) reads both arguments and returns a structured `DebateVerdict`:
+   - `proceed: bool`
+   - `confidence_adjustment: float` (e.g. -0.15 = reduce position 15%)
+   - `key_risk: str` (one-line bear argument that was most compelling)
+   - `key_thesis: str` (one-line bull argument that was most compelling)
+
+4. PM uses verdict to:
+   - Withdraw the proposal if `proceed=False` (logs reason to `decision_audit`)
+   - Scale down position size by `confidence_adjustment` if negative
+   - Attach `key_risk` and `key_thesis` to the proposal for audit trail
+
+**Why this works alongside XGBoost (not instead of it):**
+- XGBoost provides the quantitative edge: reproducible, backtestable, no hallucination risk
+- Debate provides the qualitative filter: catches macro/news context the model can't see
+- Debate only fires on proposals that already passed the ML gate — it's a second filter, not the first
+
+**Cost estimate:** ~3 Haiku calls per proposal × ~$0.001 each × ~5 proposals/day = $0.015/day. Negligible.
+
+**Precondition:** Phase 86b complete (need stable v39 model as baseline before adding debate overhead).
+
+**Files:**
+- `app/agents/debate_agent.py` — new `DebateAgent` class
+- `app/agents/portfolio_manager.py` — `_build_proposals()` calls debate before enqueuing
+- `app/database/models.py` — add `debate_verdict` JSON column to `decision_audit`
+
+**Acceptance criteria:** After 2 weeks of paper trading with debate enabled, `decision_audit` shows debate-withdrawn proposals had materially worse realized returns than debate-approved ones. Gate: debate-withdrawn avg realized return < debate-approved avg realized return.
+
+**Branch:** `feat/phase-91-debate-agent`
+
+---
+
+### Phase 92 — PM Decomposition ⏳ AFTER 4+ WEEKS PAPER TRADING DATA
+
+**Origin:** TradingAgents splits decision-making into Analyst → Researcher → Risk Manager → Portfolio Manager agents. Our PM is a 2,495-line file doing everything. The split makes sense — but only after paper trading is stable and we have behavioral baselines to verify nothing broke.
+
+**Why not do this now:**
+- PM is stable and tested. A refactor mid-paper-trading creates verification risk.
+- Need 4+ weeks of paper trading logs to establish behavioral baseline (proposal counts, block rates, position sizes) before restructuring.
+- Phase 92 is purely architectural — no new signal, no Sharpe improvement. Do it when the benefit (testability, extensibility) outweighs the risk.
+
+**Problem with current PM:**
+`portfolio_manager.py` owns five distinct responsibility layers that are tightly coupled:
+1. **Data fetching** (VIX, SPY bars, earnings calendar, features, NIS)
+2. **Universe filtering** (regime gates, symbol-level entry gates, candidate selection)
+3. **Intelligence synthesis** (ML scoring, NIS weighting, proposal construction)
+4. **Capital allocation** (position sizing, portfolio concentration limits)
+5. **Orchestration** (event loop, task scheduling, EOD jobs, retrain triggers)
+
+This makes it hard to test any one layer in isolation, impossible to parallelize data fetching, and expensive to add new signal sources (everything goes into one file).
+
+**Proposed decomposition:**
+
+**`MarketIntelligenceAgent`** — data gathering only, no decisions:
+- Absorbs: `_run_premarket_intelligence()`, `_run_morning_nis_digest()`, `_fetch_swing_features()`, `_prefetch_earnings_calendar()`, `_fetch_vix_level()`, `_get_spy_intraday_state()`, `_fetch_target_upside()`
+- Produces: `IntelligenceReport` (Pydantic model) written to DB or passed via queue
+- Runs concurrently during premarket window; PM consumes the report, not the raw data
+- Independently testable: mock the APIs, assert `IntelligenceReport` fields
+- Natural home for Phase 91 debate context construction
+
+**`UniverseFilterAgent`** — eligibility decisions only, no sizing:
+- Absorbs: `_market_regime_allows_entries()`, `_check_swing_entry_gates()`, `_check_intraday_entry_gates()`, `select_instruments()`, `select_intraday_instruments()`
+- Produces: `EligibleUniverse` (list of symbols + block reasons for rejected ones)
+- All gate logic isolated here — Phase 88 dynamic regime gates are added here, not to PM
+- Makes Phase 88 and Phase 91 composable: filters run before debate, debate runs before sizing
+
+**`PortfolioManager`** (slimmed) — decisions and orchestration only:
+- Retains: `_build_proposals()`, `_calculate_quantity()`, `_rescore_pending_approvals()`, `_review_open_positions()`, `run()`, task scheduling
+- Consumes `IntelligenceReport` + `EligibleUniverse`, produces trade proposals
+- Target: ~800 lines (down from 2,495)
+
+**Migration approach:**
+- Extract agents one at a time, each behind a feature flag
+- Run both old and new code in shadow mode for 1 week per agent, assert identical outputs
+- Only retire old code after shadow validation passes
+
+**Files:**
+- `app/agents/market_intelligence_agent.py` — new
+- `app/agents/universe_filter_agent.py` — new
+- `app/agents/portfolio_manager.py` — slimmed, consumes the above
+- `app/database/models.py` — `IntelligenceReport` table for audit/replay
+
+**Acceptance criteria:** Full pytest suite passes. Paper trading proposal rate, block rate, and position sizes are statistically identical before and after (±5% over 2-week shadow period).
+
+**Branch:** `feat/phase-92-pm-decomposition`
+
+---
+
+### Phase 93 — Structured Decision Schemas (Pydantic) ⏳ ALONGSIDE PHASE 92
+
+**Origin:** TradingAgents uses Pydantic models (`ResearchPlan`, `TraderProposal`, `PortfolioDecision`) for all inter-agent communication. MrTrader passes raw dicts between PM→RM→Trader, which means bugs only surface at runtime when a key is missing or misnamed.
+
+**Problem:**
+```python
+# Current: runtime dict — no type checking, no validation
+proposal = {"symbol": "AAPL", "model_score": 0.72, ...}
+# A missing key causes KeyError deep in Trader, not at proposal creation
+```
+
+**What to build:**
+Pydantic schemas for every inter-agent message:
+- `SwingProposal` / `IntradayProposal` — PM → RM queue
+- `ApprovedTrade` — RM → Trader queue
+- `TradeOutcome` — Trader → PM (fill confirmation, stop hit, exit)
+- `IntelligenceReport` — MarketIntelligenceAgent → PM (Phase 92)
+- `EligibleUniverse` — UniverseFilterAgent → PM (Phase 92)
+- `DebateVerdict` — DebateAgent → PM (Phase 91)
+
+**Why this matters:**
+- Validation at construction time, not at consumption time — bugs surface at the source
+- Self-documenting inter-agent contracts
+- Makes unit testing trivial: build a valid schema object, pass it, assert outputs
+- Required foundation for Phase 92 decomposition
+
+**Files:** `app/agents/schemas.py` — all inter-agent Pydantic models
+
+**Acceptance criteria:** All queue messages constructed via schemas. `mypy` passes on agent files. No raw dict construction in PM/RM/Trader for inter-agent messages.
+
+**Branch:** `feat/phase-93-pydantic-schemas` (can be done as part of Phase 92)
+
+---
+
 ## Deferred (After Live Trading + Calibration)
 
 | Phase | Name | Why Deferred |
