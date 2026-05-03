@@ -410,6 +410,228 @@ Pydantic schemas for every inter-agent message:
 
 ---
 
+## LLM Decision Enhancement Phases
+
+**Design principle:** LLM adds value where context and nuance matter; ML adds value where pattern recognition over large datasets matters. Use LLM for one call per decision boundary event (morning, pre-trade, post-loss, weekly) — never in tight loops. Keep XGBoost as the primary signal generator. Cost budget: <$1/day across all phases below.
+
+*All phases below use Claude Haiku unless noted. Haiku cost: ~$0.001/call. Sonnet: ~$0.01/call.*
+
+---
+
+### Phase 94 — Macro Morning Digest ⏳ AFTER PHASE 91
+
+**Problem:** `_run_premarket_intelligence()` fetches macro data (VIX, SPY pre-market, Fed calendar, sector moves) but interprets it with hard rules only (VIX ≥ 25 = bad, SPY < MA20 = bad). There is no synthesis of *why* today looks the way it does or what it means for specific sectors and strategies.
+
+**What to build:**
+One Haiku call at 8:30 AM ET each trading day. Input:
+- VIX level + 5-day trend
+- SPY pre-market move %
+- Overnight macro headlines (top 3 from NIS global feed)
+- Fed calendar (FOMC dates, scheduled speakers)
+- Sector ETF pre-market moves (XLK, XLF, XLE, XLV)
+- Previous day's win/loss ratio for reference
+
+Output: `MacroContext` struct:
+```python
+{
+  "regime_label": "risk-off",          # one of: risk-on, risk-off, neutral, event-driven
+  "regime_confidence": 0.82,
+  "narrative": "Tariff escalation overnight pushing VIX to 23. Tech pre-market -0.8%, energy flat. Fed speaker at 10am could add volatility. Favor defensive sectors; raise intraday score threshold.",
+  "sector_bias": {"XLK": -1, "XLE": 0, "XLV": 1},  # -1 avoid, 0 neutral, +1 favor
+  "caution_flags": ["fed_speaker_10am", "vix_elevated"]
+}
+```
+
+`MacroContext` is:
+- Attached to every proposal's debate context (Phase 91 bull/bear agents read it)
+- Used by Phase 88b opportunity score as qualitative input
+- Logged to `decision_audit` for each trading day
+
+**Cost:** 1 call/day × $0.001 = ~$0.02/month. Negligible.
+
+**Files:**
+- `app/agents/market_intelligence_agent.py` — `_generate_macro_context()` method
+- `app/database/models.py` — `MacroContext` table (one row per trading day)
+- `app/agents/portfolio_manager.py` — pass `MacroContext` into proposal construction and Phase 91 debate
+
+**Acceptance criteria:** `MacroContext` populated for every trading day in `decision_audit`. Phase 91 debate agent uses `narrative` field in bull/bear prompts. After 4 weeks: `regime_label=risk-off` days show lower avg proposal win rate than `risk-on` days (validates the signal).
+
+**Branch:** `feat/phase-94-macro-morning-digest`
+
+---
+
+### Phase 95 — Intraday Exit Timing LLM Advisory ⏳ AFTER PHASE 91
+
+**Problem:** When an open intraday position hits a re-evaluation trigger mid-hold (news event, approaching stop, sharp move in SPY), the PM re-scores mechanically with the ML model. The ML model was trained on bar-12 entry, not on mid-trade exit decisions. It has no concept of "this news just dropped and changes the thesis." Currently: either hold to bar-36 exit or stop out — nothing in between.
+
+**What to build:**
+A Haiku advisory call triggered when any of:
+- New NIS score for the symbol during the hold window changes by > 0.3 vs entry NIS
+- Position is down > 0.6R (approaching stop) and SPY is also down > 0.3%
+- Position is up > 0.6R (approaching target) and NIS shows negative news
+
+Input to advisory:
+- Entry price, current price, unrealized P&L in R-multiples
+- Time remaining in hold window (bars left)
+- NIS score at entry vs. current NIS score + latest headline
+- Current SPY move vs. entry SPY level
+- ML model score at entry + top SHAP features
+
+Output: `ExitAdvisory`:
+```python
+{
+  "recommendation": "hold" | "tighten_stop" | "exit_now",
+  "reasoning": "...",  # one sentence
+  "stop_adjustment": -0.02  # optional: move stop X% closer to market
+}
+```
+
+PM acts on `recommendation`:
+- `exit_now` → send market exit order immediately, log reason
+- `tighten_stop` → update stop level in Trade record, RM enforces
+- `hold` → no action, log for audit
+
+**Cost:** Fires rarely — only on trigger events. Estimate ~2 triggers/day × $0.001 = ~$0.04/month.
+
+**Files:**
+- `app/agents/portfolio_manager.py` — `_handle_reeval_requests()` calls advisory before ML re-score
+- `app/database/models.py` — add `exit_advisory_json` column to `Trade` table
+
+**Acceptance criteria:** After 4 weeks, trades where `exit_now` was recommended show better realized R than trades that held to natural exit on the same trigger events. Gate: advisory-exit avg R > hold-to-expiry avg R on trigger days (±0.1R tolerance).
+
+**Branch:** `feat/phase-95-exit-advisory`
+
+---
+
+### Phase 96 — Post-Loss Postmortem Agent ⏳ AFTER PHASE 77 (AUDIT DASHBOARD)
+
+**Problem:** When a trade loses significantly (> 1.0R loss), the only record is numbers in the `trades` table. There is no synthesis of *why* it lost or what could have been caught earlier. Losses are currently unlearnable events — they happen, get logged as numbers, and the model eventually retrains. A postmortem turns each loss into a structured learning artifact.
+
+**What to build:**
+A Haiku call triggered automatically when any trade closes with realized R < -0.8.
+
+Input:
+- Full trade record: symbol, entry time, exit time, entry price, exit price, realized R
+- ML model score at entry + top 5 SHAP features (what the model liked about this setup)
+- NIS scores at entry (was news a factor?)
+- MacroContext at entry date (what was the regime?)
+- SPY move during the hold window (was this market-driven or stock-specific?)
+- Any re-evaluation events during the hold (stop adjustments, advisory calls)
+
+Output: `PostMortem` stored in `decision_audit`:
+```python
+{
+  "loss_category": "macro_driven" | "stock_specific" | "model_overconfident" | "news_reversal" | "stop_too_tight",
+  "primary_cause": "SPY dropped 1.2% during hold, dragging stock despite strong setup",
+  "what_model_missed": "High materiality NIS score at entry was already-priced-in per direction_score",
+  "future_filter": "Consider blocking entries when NIS already_priced_in_score > 0.7 despite positive direction"
+}
+```
+
+`future_filter` suggestions are logged and reviewed weekly (Phase 97). The best ones get promoted into actual gate rules.
+
+**Cost:** Fires only on significant losses. Estimate ~3 losses/week × $0.001 = ~$0.01/month.
+
+**Files:**
+- `app/agents/portfolio_manager.py` — `_review_open_positions()` triggers postmortem on close
+- `app/database/models.py` — `PostMortem` table
+- Phase 77 dashboard — add postmortem tab showing recent loss_categories
+
+**Acceptance criteria:** Every trade with R < -0.8 has a `PostMortem` record within 1 minute of close. After 8 weeks, `loss_category` distribution is readable (not all "unknown"). At least one `future_filter` suggestion has been validated and promoted to a real gate.
+
+**Branch:** `feat/phase-96-postmortem-agent`
+
+---
+
+### Phase 97 — Weekly Performance Reflection ⏳ AFTER PHASE 96
+
+**Problem:** `_generate_weekly_report()` produces a raw stats dump (win rate, total P&L, top winners/losers). There is no synthesis layer that reads across the week's decisions and identifies patterns — which gate is working, which setup type is failing, whether the model is performing differently in different regimes.
+
+**What to build:**
+One Sonnet call every Sunday at 6 PM ET (after market close Friday, before Monday premarket).
+
+Input:
+- Week's trade summary: all closed trades with realized R, symbols, strategies
+- Block summary: how many proposals were blocked by each gate (VIX, SPY MA, NIS, debate)
+- PostMortem summaries from the week (Phase 96 outputs)
+- MacroContext labels for each day (Phase 94 outputs)
+- Comparison to prior 4-week avg win rate and Sharpe
+
+Output: `WeeklyReflection`:
+```python
+{
+  "week_label": "2026-05-03",
+  "regime_summary": "3 risk-off days, 2 neutral. Model performed well on risk-off (60% win rate) but poorly on neutral days (38%).",
+  "what_worked": "NIS gate correctly blocked 4 of 5 eventual losers. Intraday setups in XLE outperformed.",
+  "what_failed": "Swing model over-traded consumer discretionary in low-volatility chop. 3 of 4 losses were stock-specific, not macro.",
+  "gate_effectiveness": {"nis_block": "effective", "vix_gate": "over-cautious", "debate_agent": "2 correct withdrawals"},
+  "suggested_adjustments": "Consider raising swing score threshold from 0.65 to 0.70 on neutral-regime days.",
+  "action_items": ["Review earnings gate sensitivity for next week (3 major reports)", "Monitor XLE sector ETF for Phase 89b signal"]
+}
+```
+
+`WeeklyReflection` is:
+- Stored in DB for audit trail
+- Displayed on Phase 77 dashboard as weekly summary tile
+- Used as context in the following week's Phase 94 MacroContext calls ("last week's suggested adjustments were...")
+
+**Cost:** 1 Sonnet call/week × $0.01 = ~$0.04/month.
+
+**Files:**
+- `app/agents/portfolio_manager.py` — `_generate_weekly_report()` replaced by Sonnet call
+- `app/database/models.py` — `WeeklyReflection` table
+- Phase 77 dashboard — weekly reflection tile
+
+**Acceptance criteria:** `WeeklyReflection` generated every Sunday. After 8 weeks, `suggested_adjustments` show measurable directional accuracy — i.e., weeks where a threshold was raised show higher win rate the following week vs. weeks where no adjustment was suggested.
+
+**Branch:** `feat/phase-97-weekly-reflection`
+
+---
+
+### Phase 98 — Earnings Event Classification ⏳ AFTER PHASE 96
+
+**Problem:** The earnings gate (Phase 81) currently blocks ALL trades within N days of earnings, both pre- and post-event. Post-earnings, many of the best setups occur — earnings beats with raised guidance often lead to multi-day momentum. Currently we gate out and miss these. The issue is distinguishing "risky pre-earnings hold" from "high-quality post-earnings entry."
+
+**What to build:**
+A Haiku call triggered when an earnings announcement is detected in the NIS feed for a symbol in our universe.
+
+Input:
+- Earnings headline + full article text (from NIS/Finnhub)
+- Prior quarter's reported vs. estimated EPS
+- Revenue beat/miss if available
+- Guidance language (raised/maintained/lowered/withdrawn — extracted from article)
+- Stock pre-market reaction (price move %)
+
+Output: `EarningsClassification`:
+```python
+{
+  "verdict": "strong_beat" | "beat" | "inline" | "miss" | "strong_miss",
+  "guidance": "raised" | "maintained" | "lowered" | "withdrawn" | "not_provided",
+  "one_time_items": True | False,   # large write-downs, restructuring etc.
+  "post_entry_signal": "favorable" | "neutral" | "unfavorable",
+  "entry_window": "immediate" | "wait_1d" | "avoid",
+  "reasoning": "Beat on EPS (+12%) with raised FY guidance. Pre-market +4.5%. No one-time items. Strong post-earnings momentum setup."
+}
+```
+
+PM uses `EarningsClassification`:
+- `entry_window=immediate` + `post_entry_signal=favorable` → lift earnings gate for this symbol for 2 trading days
+- `entry_window=avoid` → extend earnings gate by 3 additional days
+- Log to `decision_audit` for each earnings event
+
+**Cost:** ~3 earnings events/week in our universe × $0.001 = ~$0.01/month.
+
+**Files:**
+- `app/agents/market_intelligence_agent.py` — `_classify_earnings_event()` triggered by NIS feed
+- `app/agents/portfolio_manager.py` — `_check_swing_entry_gates()` reads `EarningsClassification` before applying gate
+- `app/database/models.py` — `EarningsClassification` table
+
+**Acceptance criteria:** Every earnings announcement for a universe symbol gets classified within 15 minutes of release. After 8 weeks: `post_entry_signal=favorable` + `entry_window=immediate` trades show avg R > universe avg R (validates that post-earnings re-entry adds alpha vs. blanket gating).
+
+**Branch:** `feat/phase-98-earnings-classification`
+
+---
+
 ## Deferred (After Live Trading + Calibration)
 
 | Phase | Name | Why Deferred |
