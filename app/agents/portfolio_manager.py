@@ -1355,17 +1355,28 @@ class PortfolioManager(BaseAgent):
             from concurrent.futures import ThreadPoolExecutor, as_completed
             feat_result: Dict[str, Dict[str, float]] = {}
             range_result: Dict[str, Optional[float]] = {}
-            with ThreadPoolExecutor(max_workers=16) as pool:
+            # Cap at 8 workers — Alpaca's connection pool is 10; 16 workers with
+            # 2 requests/symbol saturated it and silently zeroed out the entire scan.
+            with ThreadPoolExecutor(max_workers=8) as pool:
                 futures = {pool.submit(_fetch_one_intraday, s): s for s in scan_universe}
+                n_ok = n_fail = 0
                 for future in as_completed(futures, timeout=300):
                     sym = futures[future]
                     try:
                         out = future.result(timeout=30)
                     except Exception:
+                        n_fail += 1
                         continue
                     if out is not None:
                         feat_result[sym] = out[0]
                         range_result[sym] = out[1]
+                        n_ok += 1
+                    else:
+                        n_fail += 1
+            self.logger.info(
+                "Intraday feature fetch: %d/%d symbols computed (%d failed/skipped)",
+                n_ok, len(scan_universe), n_fail,
+            )
             return feat_result, range_result
 
         try:
