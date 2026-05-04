@@ -212,6 +212,44 @@ SPY's first 30 minutes (bars 0–5) characterizes the day's regime:
 
 ---
 
+### Phase 100 — Alpaca as Single Source of Truth for Live Positions (High, 2-3 days)
+
+**Problem:** Two systems own position state — the DB and Alpaca — and diverge whenever uvicorn crashes mid-operation. The DB is currently used as a live position register AND a ledger, which means any gap between "Alpaca closes a position" and "DB gets updated" causes ghost/duplicate records. Reconciliation patches the symptom; this phase eliminates the cause.
+
+**Core principle:** Alpaca is always correct for live state. The DB is an append-only audit ledger.
+
+**What to build:**
+
+1. **`app/live_trading/position_store.py`** — thin read-through cache over Alpaca:
+   - `get_open_positions() → dict[symbol, Position]` — always fetches from Alpaca, caches for 30s
+   - `get_position(symbol) → Position | None`
+   - Cache invalidated on any order fill event
+
+2. **Trader reads positions from Alpaca, not DB:**
+   - `self.active_positions` in `trader.py` becomes a view over `position_store`, not a dict built from DB records
+   - Stop/target/bars_held metadata still written to DB (these don't exist in Alpaca), but position existence is always confirmed against Alpaca before acting
+
+3. **DB Trade records become ledger-only:**
+   - A Trade row is written on entry (PENDING_FILL → ACTIVE) and updated on exit (CLOSED + exit_price + pnl)
+   - No Trade row is ever used to determine whether a position is currently open — that comes from Alpaca
+   - `startup_reconciler.py` becomes lightweight: just closes any ACTIVE DB records for positions no longer in Alpaca, no synthetic record creation
+
+4. **Remove `_reconcile_positions()` from `trader.py`:**
+   - Startup no longer needs to rebuild `active_positions` from DB — it reads from Alpaca directly
+   - Eliminates the double-reconciler problem (both `trader.py` and `startup_reconciler.py` running on startup)
+
+**Files:**
+- `app/live_trading/position_store.py` (new)
+- `app/agents/trader.py` — replace `active_positions` dict population with `position_store` reads
+- `app/startup_reconciler.py` — simplify to ledger-only cleanup
+- `app/api/routes.py` — open positions endpoint reads from `position_store` not DB
+
+**Precondition:** Phase 99 complete (retraining decoupled) — eliminates the primary crash source before tackling this refactor.
+
+**Acceptance criteria:** Zero RECONCILE_GHOST records after 2 weeks of paper trading. Zero duplicate Trade records for the same position. Restarts produce no DB changes for positions that were already correctly tracked.
+
+---
+
 ### Phase 77 — Decision-Audit Dashboard (High, 2 days)
 
 `decision_audit` table is populated but unread. Cannot answer "are the gates working?"
