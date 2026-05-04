@@ -118,6 +118,8 @@ class IntradayBacktester:
                 feat_bars, spy_day, prior_close,
                 prior_day_high=prior_high,
                 prior_day_low=prior_low,
+                symbol=sym,
+                as_of_date=day,
             )
             if feats is None:
                 continue

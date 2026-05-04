@@ -306,6 +306,8 @@ class IntradayAgentSimulator:
                         prior_day_high=prior_high,
                         prior_day_low=prior_low,
                         spy_daily_bars=spy_daily_bars,
+                        symbol=sym,
+                        as_of_date=day,
                     )
                 except Exception:
                     feats = None

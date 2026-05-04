@@ -74,6 +74,13 @@ Features (53 total — Phase 50 added 3 session-segment features):
   rel_strength_vs_spy   Stock session_return - spy_session_return (alpha vs benchmark)
   vol_x_momentum        volume_surge × session_return interaction (volume-confirmed momentum)
   gap_followthrough     gap_pct × session_return — measures if gap direction continued
+
+  ── NIS features (Phase 64b) ──────────────────────────────────────────────
+  nis_direction_score   LLM news direction [-1, 1] (point-in-time from NewsSignalCache)
+  nis_materiality_score News materiality [0, 1] — how market-moving the event is
+  nis_already_priced_in Already-priced-in score [0, 1] — reduces edge of stale news
+  nis_sizing_mult       NIS position sizing multiplier [0.5, 2.0]
+  nis_downside_risk     Downside risk score [0, 1]
 """
 
 import logging
@@ -95,6 +102,8 @@ def compute_intraday_features(
     prior_day_low: Optional[float] = None,
     daily_bars: Optional[pd.DataFrame] = None,
     spy_daily_bars: Optional[pd.DataFrame] = None,
+    symbol: Optional[str] = None,
+    as_of_date=None,
 ) -> Optional[Dict[str, float]]:
     """
     Compute intraday features from a slice of 5-min OHLCV bars.
@@ -373,6 +382,27 @@ def compute_intraday_features(
     feats["seg_x_high_dist"] = float(seg * feats.get("prev_day_high_dist", 0.0))
     feats["seg_x_atr_norm"] = float(seg * feats.get("atr_norm", 0.0))
 
+    # ── NIS features (Phase 64b) ─────────────────────────────────────────────
+    # Point-in-time daily NIS signal — same lookup as swing model.
+    # Intraday entries are short-hold (< 1 session) but news context still
+    # matters: high materiality + negative direction = avoid entry.
+    _nis_default = {
+        "nis_direction_score": 0.0,
+        "nis_materiality_score": 0.0,
+        "nis_already_priced_in": 0.5,
+        "nis_sizing_mult": 1.0,
+        "nis_downside_risk": 0.5,
+    }
+    if symbol is not None:
+        try:
+            from app.ml.features import _get_nis_features_pit
+            feats.update(_get_nis_features_pit(symbol, as_of_date))
+        except Exception as _nis_exc:
+            logger.debug("NIS features failed for %s: %s", symbol, _nis_exc)
+            feats.update(_nis_default)
+    else:
+        feats.update(_nis_default)
+
     return feats
 
 
@@ -567,4 +597,7 @@ FEATURE_NAMES = [
     "range_vs_20d_avg", "rel_strength_vs_spy", "vol_x_momentum", "gap_followthrough",
     # Phase 50: time-of-day segmentation
     "session_segment", "seg_x_high_dist", "seg_x_atr_norm",
+    # NIS features (Phase 64b)
+    "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+    "nis_sizing_mult", "nis_downside_risk",
 ]
