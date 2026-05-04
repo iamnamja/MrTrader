@@ -194,6 +194,24 @@ SPY's first 30 minutes (bars 0–5) characterizes the day's regime:
 
 ## Safety + Hardening Backlog
 
+### Phase 99 — Decouple Nightly Retraining from Uvicorn (Medium, 1 day)
+
+**Problem:** Retraining runs inside the uvicorn process via `loop.run_in_executor`. On a 32-core machine, even 24 workers saturate file descriptors enough to drop the HTTP listener socket, killing the dashboard mid-training.
+
+**What to build:**
+- `scripts/retrain_scheduled.py` — standalone script that trains and writes results to DB, callable from CLI or subprocess
+- Orchestrator spawns it via `asyncio.create_subprocess_exec` instead of `run_in_executor`
+- Stdout/stderr piped to `logs/retrain_YYYY-MM-DD.log`
+- Uvicorn stays isolated: no worker threads competing for FDs
+
+**Files:**
+- `scripts/retrain_scheduled.py` (new)
+- `app/orchestrator.py` — replace `run_in_executor` with `create_subprocess_exec`
+
+**Acceptance criteria:** Retraining completes without dashboard dropping. Dashboard accessible throughout training run. Log file captures full training output.
+
+---
+
 ### Phase 77 — Decision-Audit Dashboard (High, 2 days)
 
 `decision_audit` table is populated but unread. Cannot answer "are the gates working?"
