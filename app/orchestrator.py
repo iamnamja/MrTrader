@@ -147,7 +147,7 @@ class AgentOrchestrator:
         try:
             from app.ml.training import ModelTrainer
             loop = asyncio.get_event_loop()
-            trainer = ModelTrainer()
+            trainer = ModelTrainer(n_workers=8)
             version = await loop.run_in_executor(
                 None, lambda: trainer.train_model(fetch_fundamentals=False)
             )
