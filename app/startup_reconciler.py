@@ -66,6 +66,20 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     },
                     timestamp=datetime.utcnow(),
                 ))
+
+        # Close stale RECONCILE_GHOST records for symbols no longer in Alpaca.
+        # Without this, old ghost rows accumulate across restarts and block the
+        # "untracked" check from creating fresh ACTIVE records on later restarts.
+        stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
+        for ghost in stale_ghosts:
+            if ghost.symbol not in alpaca_positions:
+                ghost.status = "CLOSED"
+                ghost.exit_reason = "RECONCILE_GHOST_EXPIRED"
+                ghost.closed_at = datetime.utcnow()
+                logger.info(
+                    "Closing stale RECONCILE_GHOST Trade#%d %s (no longer in Alpaca)",
+                    ghost.id, ghost.symbol,
+                )
     except Exception as exc:
         logger.error("Ghost position check failed: %s", exc)
 
@@ -151,7 +165,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     # ── 3. Untracked Alpaca positions ─────────────────────────────────────────
     # In Alpaca but no ACTIVE/PENDING_FILL/RECONCILE_GHOST DB record.
     try:
-        live_statuses = ("ACTIVE", "PENDING_FILL", "RECONCILE_GHOST")
+        live_statuses = ("ACTIVE", "PENDING_FILL")
         tracked_symbols = {
             t.symbol for t in db_session.query(Trade)
             .filter(Trade.status.in_(live_statuses)).all()
