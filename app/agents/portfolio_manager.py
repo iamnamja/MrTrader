@@ -1337,11 +1337,14 @@ class PortfolioManager(BaseAgent):
                     prior_high = float(prev["high"])
                     prior_low = float(prev["low"])
                     prior_day_range = prior_high - prior_low
+                from datetime import date as _date
                 feats = compute_intraday_features(
                     bars, prior_close=prior_close,
                     prior_day_high=prior_high, prior_day_low=prior_low,
                     daily_bars=daily,
                     spy_daily_bars=spy_daily_bars,  # Phase 86: market-condition features
+                    symbol=symbol,
+                    as_of_date=_date.today(),
                 )
                 if feats is None:
                     return None
@@ -1584,6 +1587,47 @@ class PortfolioManager(BaseAgent):
                 "trade_type": "intraday",
                 "proposal_uuid": str(uuid.uuid4()),
             }
+            # NIS overlay: block or resize intraday proposal based on live news signal
+            try:
+                from app.news.intelligence_service import nis
+                from app.agents.premarket import premarket_intel
+                _macro_ctx = premarket_intel.macro_context
+                _sector = self._get_symbol_sector(symbol)
+                _news_sig = await asyncio.to_thread(
+                    nis.get_stock_signal, symbol, _sector, 4, _macro_ctx
+                )
+                if _news_sig.action_policy == "block_entry":
+                    self.logger.info(
+                        "NIS block_entry intraday %s: %s", symbol, _news_sig.rationale
+                    )
+                    try:
+                        from app.database.decision_audit import write_decision
+                        write_decision(symbol, "intraday", "block",
+                                       model_score=float(confidence),
+                                       block_reason=f"nis_block_entry: {_news_sig.rationale[:120]}",
+                                       news_signal=_news_sig, macro_context=_macro_ctx,
+                                       top_features=self._top_features_for(symbol, "intraday"))
+                    except Exception:
+                        pass
+                    continue
+                if _news_sig.sizing_multiplier != 1.0:
+                    old_qty = proposal["quantity"]
+                    proposal["quantity"] = max(1, int(old_qty * _news_sig.sizing_multiplier))
+                    self.logger.info(
+                        "NIS sizing intraday %s: %.2f× (%d→%d) — %s",
+                        symbol, _news_sig.sizing_multiplier, old_qty,
+                        proposal["quantity"], _news_sig.rationale,
+                    )
+                proposal["news_signal"] = {
+                    "action_policy": _news_sig.action_policy,
+                    "direction_score": _news_sig.direction_score,
+                    "materiality_score": _news_sig.materiality_score,
+                    "sizing_multiplier": _news_sig.sizing_multiplier,
+                    "rationale": _news_sig.rationale,
+                }
+            except Exception as _exc:
+                self.logger.debug("NIS intraday overlay failed for %s (non-fatal): %s", symbol, _exc)
+
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
             self._pending_approvals[proposal["symbol"]] = _time.monotonic()
             self._intraday_symbol_last_entry[symbol] = _time.monotonic()  # Phase 51 cooldown

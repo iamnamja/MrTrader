@@ -914,6 +914,8 @@ def _symbol_to_rows(
                 prior_day_high=prior_high,
                 prior_day_low=prior_low,
                 daily_bars=daily_as_of,
+                symbol=sym,
+                as_of_date=day,
             )
             if feats is None:
                 continue

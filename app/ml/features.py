@@ -45,6 +45,8 @@ Feature groups (74 total):
       days-to-opex, earnings PEAD decay signal                          — computed
   31. VIX regime features: absolute level, 1y percentile, regime bucket,
       SPY trend (63d return), fear spike flag                           — yfinance / caller
+  36. NIS features: direction_score, materiality_score, already_priced_in,
+      sizing_mult, downside_risk — point-in-time from NewsSignalCache   — Phase 64
 """
 
 import logging
@@ -61,6 +63,53 @@ from app.indicators.technical import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_nis_features_pit(symbol: str, as_of_date) -> Dict[str, float]:
+    """Point-in-time NIS feature lookup — no lookahead.
+
+    Returns the most recent NewsSignalCache row for ``symbol`` whose
+    ``as_of_date`` column is <= the training window end date.  Falls back to
+    neutral defaults (no data is treated as zero news signal, not missing).
+    """
+    _default = {
+        "nis_direction_score": 0.0,
+        "nis_materiality_score": 0.0,
+        "nis_already_priced_in": 0.5,
+        "nis_sizing_mult": 1.0,
+        "nis_downside_risk": 0.5,
+    }
+    if as_of_date is None:
+        return _default
+    try:
+        from app.database.session import get_session
+        from app.database.models import NewsSignalCache
+        pit_str = str(as_of_date)[:10]  # YYYY-MM-DD
+        db = get_session()
+        try:
+            row = (
+                db.query(NewsSignalCache)
+                .filter(
+                    NewsSignalCache.symbol == symbol,
+                    NewsSignalCache.as_of_date <= pit_str,
+                )
+                .order_by(NewsSignalCache.as_of_date.desc())
+                .first()
+            )
+        finally:
+            db.close()
+        if row is None:
+            return _default
+        return {
+            "nis_direction_score": float(row.direction_score or 0.0),
+            "nis_materiality_score": float(row.materiality_score or 0.0),
+            "nis_already_priced_in": float(row.already_priced_in_score or 0.5),
+            "nis_sizing_mult": float(row.sizing_multiplier or 1.0),
+            "nis_downside_risk": float(row.downside_risk_score or 0.5),
+        }
+    except Exception as exc:
+        logger.debug("NIS PIT lookup failed for %s: %s", symbol, exc)
+        return _default
 
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1301,6 +1350,23 @@ class FeatureEngineer:
             features["choch_detected"] = 0.0
             features["bars_since_choch"] = 5.0
             features["hh_hl_sequence"] = 0.0
+
+        # ── 36. NIS features (Phase 64) ──────────────────────────────────────
+        # Point-in-time lookup: most recent NewsSignalCache row for this symbol
+        # with as_of_date <= current window date, so no lookahead into future news.
+        _nis_default = {
+            "nis_direction_score": 0.0,
+            "nis_materiality_score": 0.0,
+            "nis_already_priced_in": 0.5,
+            "nis_sizing_mult": 1.0,
+            "nis_downside_risk": 0.5,
+        }
+        try:
+            _nis = _get_nis_features_pit(symbol, as_of_date)
+            features.update(_nis)
+        except Exception as _nis_exc:
+            logger.debug("NIS features failed for %s: %s", symbol, _nis_exc)
+            features.update(_nis_default)
 
         # ── Regime interaction features (Phase 24b) ──────────────────────────
         # Cross-terms let the model learn regime-conditional signal strength.
