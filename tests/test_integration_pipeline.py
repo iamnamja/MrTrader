@@ -224,16 +224,29 @@ class TestStartupReconciler:
     def test_detects_ghost_position(self, db_session):
         from app.startup_reconciler import reconcile
         from tests.conftest import make_trade
-        # Create an active trade in DB
+        # Create two active trades in DB — GHOST will be absent from Alpaca, OTHER will be present
         make_trade(db_session, symbol="GHOST", status="ACTIVE")
+        make_trade(db_session, symbol="OTHER", status="ACTIVE")
         db_session.commit()
-        # Alpaca has NO positions
+        # Alpaca has OTHER but not GHOST — ghost detection fires because Alpaca returned >0 positions
         mock_alpaca = MagicMock()
-        mock_alpaca.get_positions.return_value = []
+        mock_alpaca.get_positions.return_value = [{"symbol": "OTHER", "qty": "10", "avg_entry_price": "100"}]
         with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
             result = reconcile(mock_alpaca, db_session)
         assert len(result["ghost_positions"]) == 1
         assert result["ghost_positions"][0]["symbol"] == "GHOST"
+
+    def test_ghost_detection_skipped_when_alpaca_empty(self, db_session):
+        from app.startup_reconciler import reconcile
+        from tests.conftest import make_trade
+        # Single ACTIVE trade in DB + Alpaca returns 0 positions = likely API error, skip ghost
+        make_trade(db_session, symbol="REALPOS", status="ACTIVE")
+        db_session.commit()
+        mock_alpaca = MagicMock()
+        mock_alpaca.get_positions.return_value = []
+        with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
+            result = reconcile(mock_alpaca, db_session)
+        assert len(result["ghost_positions"]) == 0
 
     def test_detects_orphaned_order(self, db_session):
         from app.startup_reconciler import reconcile

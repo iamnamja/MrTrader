@@ -13,10 +13,16 @@ writes AuditLog entries so humans can review.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Minimum number of Alpaca positions required before we trust a "ghost" detection.
+# If Alpaca returns fewer positions than this threshold AND we have many ACTIVE DB
+# trades, it's likely an API error rather than genuine position closure — skip ghost
+# marking to avoid false positives that generate duplicate records on next restart.
+_MIN_POSITIONS_TO_TRUST_GHOST = 1
 
 
 def reconcile(alpaca, db_session) -> Dict[str, Any]:
@@ -43,45 +49,61 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         logger.error("Could not fetch Alpaca positions — reconciliation skipped: %s", exc)
         return result
 
-    # ── 1. Ghost positions ─────────────────────────────────────────────────────
-    try:
-        active_trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
-        for trade in active_trades:
-            if trade.symbol not in alpaca_positions:
-                logger.warning(
-                    "GHOST POSITION: Trade#%d %s is ACTIVE in DB but not in Alpaca",
-                    trade.id, trade.symbol,
-                )
-                result["ghost_positions"].append({
-                    "trade_id": trade.id, "symbol": trade.symbol,
-                    "entry_price": trade.entry_price, "quantity": trade.quantity,
-                })
-                trade.status = "RECONCILE_GHOST"
-                db_session.add(AuditLog(
-                    action="RECONCILE_GHOST_POSITION",
-                    details={
-                        "trade_id": trade.id, "symbol": trade.symbol,
-                        "reason": "Active in DB but no matching Alpaca position on startup",
-                        "detected_at": datetime.utcnow().isoformat(),
-                    },
-                    timestamp=datetime.utcnow(),
-                ))
+    active_trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
+    n_active_db = len(active_trades)
+    n_alpaca_positions = len(alpaca_positions)
 
-        # Close stale RECONCILE_GHOST records for symbols no longer in Alpaca.
-        # Without this, old ghost rows accumulate across restarts and block the
-        # "untracked" check from creating fresh ACTIVE records on later restarts.
-        stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
-        for ghost in stale_ghosts:
-            if ghost.symbol not in alpaca_positions:
-                ghost.status = "CLOSED"
-                ghost.exit_reason = "RECONCILE_GHOST_EXPIRED"
-                ghost.closed_at = datetime.utcnow()
-                logger.info(
-                    "Closing stale RECONCILE_GHOST Trade#%d %s (no longer in Alpaca)",
-                    ghost.id, ghost.symbol,
-                )
-    except Exception as exc:
-        logger.error("Ghost position check failed: %s", exc)
+    # ── Fix 2: Guard against empty/truncated Alpaca response ─────────────────────
+    # If Alpaca returns 0 positions but we have ACTIVE trades in DB, it's almost
+    # certainly an API error. Marking everything as ghost would cause a flood of
+    # duplicate synthetic records on the next restart. Skip ghost detection entirely.
+    api_trustworthy = not (n_alpaca_positions == 0 and n_active_db > 0)
+    if not api_trustworthy:
+        logger.warning(
+            "Reconciliation: Alpaca returned 0 positions but DB has %d ACTIVE trade(s) — "
+            "skipping ghost detection to avoid false positives (likely API error)",
+            n_active_db,
+        )
+
+    # ── 1. Ghost positions ─────────────────────────────────────────────────────
+    if api_trustworthy:
+        try:
+            for trade in active_trades:
+                if trade.symbol not in alpaca_positions:
+                    logger.warning(
+                        "GHOST POSITION: Trade#%d %s is ACTIVE in DB but not in Alpaca",
+                        trade.id, trade.symbol,
+                    )
+                    result["ghost_positions"].append({
+                        "trade_id": trade.id, "symbol": trade.symbol,
+                        "entry_price": trade.entry_price, "quantity": trade.quantity,
+                    })
+                    trade.status = "RECONCILE_GHOST"
+                    db_session.add(AuditLog(
+                        action="RECONCILE_GHOST_POSITION",
+                        details={
+                            "trade_id": trade.id, "symbol": trade.symbol,
+                            "reason": "Active in DB but no matching Alpaca position on startup",
+                            "detected_at": datetime.utcnow().isoformat(),
+                        },
+                        timestamp=datetime.utcnow(),
+                    ))
+
+            # Close stale RECONCILE_GHOST records for symbols no longer in Alpaca.
+            # Without this, old ghost rows accumulate across restarts and block the
+            # "untracked" check from creating fresh ACTIVE records on later restarts.
+            stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
+            for ghost in stale_ghosts:
+                if ghost.symbol not in alpaca_positions:
+                    ghost.status = "CLOSED"
+                    ghost.exit_reason = "RECONCILE_GHOST_EXPIRED"
+                    ghost.closed_at = datetime.utcnow()
+                    logger.info(
+                        "Closing stale RECONCILE_GHOST Trade#%d %s (no longer in Alpaca)",
+                        ghost.id, ghost.symbol,
+                    )
+        except Exception as exc:
+            logger.error("Ghost position check failed: %s", exc)
 
     # ── 2. Pending fills — resolve via Alpaca order status ────────────────────
     # PENDING_FILL trades have an alpaca_order_id; check whether they filled,
@@ -163,22 +185,78 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         logger.error("Pending fill resolution failed: %s", exc)
 
     # ── 3. Untracked Alpaca positions ─────────────────────────────────────────
-    # In Alpaca but no ACTIVE/PENDING_FILL/RECONCILE_GHOST DB record.
+    # In Alpaca but no ACTIVE/PENDING_FILL DB record.
+    # Fix 3: Before creating a synthetic record, check if a recent trade already
+    # exists for this symbol (within 7 days). If so, reuse or skip — prevents
+    # duplicate records when the same position gets reconciled across multiple restarts.
     try:
         live_statuses = ("ACTIVE", "PENDING_FILL")
         tracked_symbols = {
             t.symbol for t in db_session.query(Trade)
             .filter(Trade.status.in_(live_statuses)).all()
         }
+        lookback_cutoff = datetime.utcnow() - timedelta(days=7)
+
         for symbol, pos in alpaca_positions.items():
-            if symbol not in tracked_symbols:
-                qty = int(float(pos.get("qty") or pos.get("quantity") or 0))
-                avg = float(pos.get("avg_entry_price") or pos.get("avg_price") or 0)
+            if symbol in tracked_symbols:
+                continue
+
+            qty = int(float(pos.get("qty") or pos.get("quantity") or 0))
+            avg = float(pos.get("avg_entry_price") or pos.get("avg_price") or 0)
+
+            # Fix 3: Check for a recent trade record for this symbol.
+            # If one exists within the last 7 days that is CLOSED/CANCELLED/RECONCILE_GHOST,
+            # it means the position was recently tracked and then closed — the closure may
+            # have happened externally (stop hit, EOD cancel) without the DB being updated.
+            # Reactivate the most recent record instead of creating a new duplicate.
+            recent_trade = (
+                db_session.query(Trade)
+                .filter(
+                    Trade.symbol == symbol,
+                    Trade.created_at >= lookback_cutoff,
+                    Trade.status.in_(("CLOSED", "CANCELLED", "RECONCILE_GHOST")),
+                )
+                .order_by(Trade.id.desc())
+                .first()
+            )
+
+            if recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05:
+                # Entry prices within 5% — same position, reactivate
+                logger.warning(
+                    "UNTRACKED POSITION: %s x%d @ $%.2f — reactivating Trade#%d (was %s) "
+                    "instead of creating duplicate",
+                    symbol, qty, avg, recent_trade.id, recent_trade.status,
+                )
+                recent_trade.status = "ACTIVE"
+                recent_trade.quantity = qty
+                recent_trade.exit_price = None
+                recent_trade.pnl = None
+                recent_trade.closed_at = None
+                recent_trade.exit_reason = None
+                recent_trade.highest_price = avg
+                result["untracked_positions"].append({
+                    "symbol": symbol, "qty": qty, "avg_price": avg,
+                    "action": "reactivated", "trade_id": recent_trade.id,
+                })
+                db_session.add(AuditLog(
+                    action="RECONCILE_REACTIVATED_TRADE",
+                    details={
+                        "trade_id": recent_trade.id, "symbol": symbol,
+                        "qty": qty, "avg_price": avg,
+                        "reason": "Reactivated existing trade instead of creating duplicate",
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                    timestamp=datetime.utcnow(),
+                ))
+            else:
+                # Genuinely new/untracked — create a fresh synthetic record
                 logger.warning(
                     "UNTRACKED POSITION: %s x%d @ $%.2f — creating RECONCILED trade",
                     symbol, qty, avg,
                 )
-                result["untracked_positions"].append({"symbol": symbol, "qty": qty, "avg_price": avg})
+                result["untracked_positions"].append({
+                    "symbol": symbol, "qty": qty, "avg_price": avg, "action": "created",
+                })
                 stop_price = round(avg * 0.98, 2) if avg > 0 else None
                 target_price = round(avg * 1.06, 2) if avg > 0 else None
                 placeholder = Trade(
