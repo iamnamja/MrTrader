@@ -9,7 +9,9 @@ Pipeline:
 
 import asyncio
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
 
 from app.scheduler import scheduler
@@ -142,16 +144,27 @@ class AgentOrchestrator:
                 await self._log_error("portfolio_manager", str(exc))
 
     async def _trigger_retraining(self) -> None:
-        """Kick off ML model retraining in a thread."""
-        logger.info("Orchestrator: triggering model retraining")
+        """Spawn retrain_cron.py as a subprocess so training workers are isolated from uvicorn."""
+        logger.info("Orchestrator: spawning retraining subprocess")
+        script = Path(__file__).resolve().parent.parent / "scripts" / "retrain_cron.py"
+        log_date = datetime.utcnow().strftime("%Y-%m-%d")
+        log_path = Path(__file__).resolve().parent.parent / "logs" / f"retrain_{log_date}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            from app.ml.training import ModelTrainer
-            loop = asyncio.get_event_loop()
-            trainer = ModelTrainer(n_workers=24)
-            version = await loop.run_in_executor(
-                None, lambda: trainer.train_model(fetch_fundamentals=False)
-            )
-            logger.info("Retraining complete → v%d", version)
+            with open(log_path, "a") as log_fh:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, str(script),
+                    stdout=log_fh, stderr=log_fh,
+                )
+            logger.info("Retraining subprocess started (pid=%d) — logging to %s", proc.pid, log_path)
+            returncode = await proc.wait()
+            if returncode == 0:
+                logger.info("Retraining subprocess completed successfully")
+            elif returncode == 2:
+                logger.warning("Retraining subprocess: one or more models failed the gate — previous champions retained")
+            else:
+                logger.error("Retraining subprocess exited with code %d — see %s", returncode, log_path)
+                await self._log_error("model_trainer", f"retrain_cron.py exited {returncode}")
         except Exception as exc:
             logger.error("Retraining trigger failed: %s", exc)
             await self._log_error("model_trainer", str(exc))
