@@ -5,7 +5,7 @@ All tests are pure-Python — no network, database, Redis, or Alpaca calls.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
@@ -239,3 +239,79 @@ class TestAgentOrchestrator:
             await self.orch.start()  # second call should be no-op
             mock_sched.start.assert_called_once()
             await self.orch.stop()
+
+
+class TestRetrainingSubprocess:
+    """Phase 99 — _trigger_retraining spawns subprocess, not run_in_executor."""
+
+    def setup_method(self):
+        self.orch = AgentOrchestrator()
+
+    @pytest.mark.asyncio
+    async def test_retraining_spawns_subprocess_on_success(self):
+        mock_proc = AsyncMock()
+        mock_proc.pid = 12345
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("builtins.open", mock_open()),
+        ):
+            await self.orch._trigger_retraining()
+
+        mock_exec.assert_called_once()
+        args = mock_exec.call_args[0]
+        assert args[1].endswith("retrain_cron.py")
+
+    @pytest.mark.asyncio
+    async def test_retraining_logs_error_on_nonzero_exit(self):
+        mock_proc = AsyncMock()
+        mock_proc.pid = 99
+        mock_proc.wait = AsyncMock(return_value=1)
+
+        errors_logged = []
+
+        async def fake_log_error(agent, msg):
+            errors_logged.append(msg)
+
+        self.orch._log_error = fake_log_error
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("builtins.open", mock_open()),
+        ):
+            await self.orch._trigger_retraining()
+
+        assert any("retrain_cron.py exited 1" in e for e in errors_logged)
+
+    @pytest.mark.asyncio
+    async def test_retraining_gate_fail_exit_code_2_not_logged_as_error(self):
+        """Exit code 2 = gate failed (expected path), should warn not error."""
+        mock_proc = AsyncMock()
+        mock_proc.pid = 42
+        mock_proc.wait = AsyncMock(return_value=2)
+
+        errors_logged = []
+
+        async def fake_log_error(agent, msg):
+            errors_logged.append(msg)
+
+        self.orch._log_error = fake_log_error
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("builtins.open", mock_open()),
+        ):
+            await self.orch._trigger_retraining()
+
+        assert not errors_logged  # gate fail is a warning, not an error
+
+    @pytest.mark.asyncio
+    async def test_retraining_does_not_import_modeltrainer(self):
+        """ModelTrainer must NOT be imported inside uvicorn — verify it's gone."""
+        import importlib
+        import app.orchestrator as orch_mod
+        source = importlib.util.find_spec("app.orchestrator").origin
+        with open(source) as f:
+            content = f.read()
+        assert "ModelTrainer" not in content
