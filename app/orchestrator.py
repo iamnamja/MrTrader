@@ -147,8 +147,10 @@ class AgentOrchestrator:
         try:
             from app.ml.training import ModelTrainer
             loop = asyncio.get_event_loop()
-            trainer = ModelTrainer()
-            version = await loop.run_in_executor(None, trainer.train_model)
+            trainer = ModelTrainer(n_workers=24)
+            version = await loop.run_in_executor(
+                None, lambda: trainer.train_model(fetch_fundamentals=False)
+            )
             logger.info("Retraining complete → v%d", version)
         except Exception as exc:
             logger.error("Retraining trigger failed: %s", exc)

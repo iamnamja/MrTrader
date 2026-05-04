@@ -119,6 +119,7 @@ class PortfolioManager(BaseAgent):
         self._last_intraday_features: Dict[str, Dict[str, float]] = {}
         # Gap 2: EOD backfill + daily summary tracking
         self._eod_jobs_run_today: bool = False
+        self._eod_order_cleanup_run_today: bool = False
         # Adaptive intraday universe — top-N candidates from 9:45 scan reused for later windows
         self._morning_intraday_candidates: List[str] = []
         # SPY % at time of last intraday scan (for adaptive re-scan trigger)
@@ -307,6 +308,7 @@ class PortfolioManager(BaseAgent):
                     self._benchmark_recorded_today = False
                     self._weekly_report_generated_today = False
                     self._eod_jobs_run_today = False
+                    self._eod_order_cleanup_run_today = False
                     self._last_swing_features = {}
                     self._morning_intraday_candidates = []
                     self._last_scan_spy_pct = 0.0
@@ -514,6 +516,18 @@ class PortfolioManager(BaseAgent):
                     await self._run_task(
                         "weekly_report", 16, 10,
                         self._generate_weekly_report(),
+                    )
+
+                # ── 15:55–16:29: cancel unfilled limit orders before close ────
+                if (
+                    is_weekday
+                    and self._in_window(now, 15, 55, 16, 30)
+                    and not self._eod_order_cleanup_run_today
+                ):
+                    self._eod_order_cleanup_run_today = True
+                    await self._run_task(
+                        "eod_order_cleanup", 15, 55,
+                        self._cancel_eod_pending_orders(),
                     )
 
                 # ── 16:30–16:59: EOD jobs (backfill outcomes + daily summary) ─
@@ -770,6 +784,64 @@ class PortfolioManager(BaseAgent):
             })
         except Exception as exc:
             self.logger.warning("NIS morning digest failed (non-fatal): %s", exc)
+
+    async def _cancel_eod_pending_orders(self) -> None:
+        """
+        15:55 ET: Cancel any PENDING_FILL trades whose limit orders won't fill before close.
+        Alpaca cancels unfilled day orders at 4 PM anyway, but doing it ourselves at 15:55
+        ensures the DB is updated before shutdown — preventing ghost/duplicate records on restart.
+        """
+        from app.database.session import get_session
+        from app.database.models import Trade
+        from app.integrations import get_alpaca_client
+
+        db = get_session()
+        try:
+            pending = db.query(Trade).filter_by(status="PENDING_FILL").all()
+            if not pending:
+                self.logger.info("EOD order cleanup: no PENDING_FILL trades to cancel")
+                return
+
+            alpaca = get_alpaca_client()
+            cancelled = 0
+            for trade in pending:
+                if not trade.alpaca_order_id:
+                    trade.status = "CANCELLED"
+                    trade.exit_reason = "EOD_NO_ORDER_ID"
+                    cancelled += 1
+                    continue
+                try:
+                    order_status = alpaca.get_order_status(trade.alpaca_order_id)
+                    status_str = str((order_status or {}).get("status", "")).lower()
+                    if status_str in ("new", "pending_new", "accepted", "held", "partially_filled"):
+                        # Still open — cancel it in Alpaca then mark DB
+                        try:
+                            alpaca.trading_client.cancel_order_by_id(trade.alpaca_order_id)
+                        except Exception:
+                            pass  # Alpaca may already be cancelling at EOD
+                        trade.status = "CANCELLED"
+                        trade.exit_reason = "EOD_LIMIT_EXPIRED"
+                        cancelled += 1
+                        self.logger.info(
+                            "EOD cleanup: cancelled PENDING_FILL Trade#%d %s (order %s)",
+                            trade.id, trade.symbol, trade.alpaca_order_id,
+                        )
+                    elif status_str in ("canceled", "expired", "rejected"):
+                        trade.status = "CANCELLED"
+                        trade.exit_reason = "EOD_LIMIT_EXPIRED"
+                        cancelled += 1
+                except Exception as exc:
+                    self.logger.warning(
+                        "EOD cleanup: could not check/cancel Trade#%d %s: %s",
+                        trade.id, trade.symbol, exc,
+                    )
+            db.commit()
+            self.logger.info("EOD order cleanup: cancelled %d PENDING_FILL trade(s)", cancelled)
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("EOD order cleanup failed: %s", exc)
+        finally:
+            db.close()
 
     async def _run_eod_jobs(self) -> None:
         """
@@ -1283,17 +1355,28 @@ class PortfolioManager(BaseAgent):
             from concurrent.futures import ThreadPoolExecutor, as_completed
             feat_result: Dict[str, Dict[str, float]] = {}
             range_result: Dict[str, Optional[float]] = {}
-            with ThreadPoolExecutor(max_workers=16) as pool:
+            # Cap at 8 workers — Alpaca's connection pool is 10; 16 workers with
+            # 2 requests/symbol saturated it and silently zeroed out the entire scan.
+            with ThreadPoolExecutor(max_workers=8) as pool:
                 futures = {pool.submit(_fetch_one_intraday, s): s for s in scan_universe}
+                n_ok = n_fail = 0
                 for future in as_completed(futures, timeout=300):
                     sym = futures[future]
                     try:
                         out = future.result(timeout=30)
                     except Exception:
+                        n_fail += 1
                         continue
                     if out is not None:
                         feat_result[sym] = out[0]
                         range_result[sym] = out[1]
+                        n_ok += 1
+                    else:
+                        n_fail += 1
+            self.logger.info(
+                "Intraday feature fetch: %d/%d symbols computed (%d failed/skipped)",
+                n_ok, len(scan_universe), n_fail,
+            )
             return feat_result, range_result
 
         try:
