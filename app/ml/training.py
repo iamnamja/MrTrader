@@ -60,7 +60,8 @@ PRUNED_FEATURES: frozenset = frozenset([
     "pe_ratio", "pb_ratio",
     # profit_margin / revenue_growth / debt_to_equity un-pruned in Phase 89a when
     # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
-    "earnings_proximity_days", "sector_momentum", "insider_score", "earnings_surprise",
+    "earnings_proximity_days", "insider_score", "earnings_surprise",
+    # sector_momentum / sector_momentum_5d un-pruned when sector_etf_history.parquet is present
     "regime_score", "vix_level", "vix_regime_bucket", "vix_fear_spike",
     "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
@@ -119,6 +120,7 @@ def _process_symbol_windows_worker(
     symbol_cache: dict,        # {date_isoformat: features_dict} — pre-loaded from FeatureStore
     progress_queue=None,       # multiprocessing.Queue for progress reporting
     fundamentals_history: Optional[list] = None,  # Phase 89a: sorted list of (date_str, {profit_margin, revenue_growth, debt_to_equity})
+    sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted list of (date_str, close)}
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -322,6 +324,37 @@ def _process_symbol_windows_worker(
                 features["profit_margin"] = pit["profit_margin"]
                 features["revenue_growth"] = pit["revenue_growth"]
                 features["debt_to_equity"] = pit["debt_to_equity"]
+
+        # Phase 89b: override sector_momentum / sector_momentum_5d with PIT ETF bars
+        if sector_etf_bars and features:
+            from app.ml.fundamental_fetcher import SECTOR_ETF_MAP
+            etf = SECTOR_ETF_MAP.get(sector)
+            bars = sector_etf_bars.get(etf) if etf else None
+            if bars:
+                as_of_str = str(w_end_date)
+                # bars is sorted ascending [(date_str, close), ...]
+                idx20 = idx5 = None
+                for i, (d, _) in enumerate(bars):
+                    if d <= as_of_str:
+                        idx20 = i
+                idx5 = idx20
+                if idx20 is not None and idx20 >= 20:
+                    features["sector_momentum"] = float(
+                        (bars[idx20][1] - bars[idx20 - 20][1]) / max(bars[idx20 - 20][1], 1e-8)
+                    )
+                    features["momentum_20d_sector_neutral"] = (
+                        features.get("momentum_20d", 0.0) - features["sector_momentum"]
+                    )
+                    features["momentum_60d_sector_neutral"] = (
+                        features.get("momentum_60d", 0.0) - features["sector_momentum"]
+                    )
+                if idx5 is not None and idx5 >= 5:
+                    features["sector_momentum_5d"] = float(
+                        (bars[idx5][1] - bars[idx5 - 5][1]) / max(bars[idx5 - 5][1], 1e-8)
+                    )
+                    features["momentum_5d_sector_neutral"] = (
+                        features.get("momentum_5d", 0.0) - features["sector_momentum_5d"]
+                    )
 
         features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
         if not feature_names:
@@ -1184,6 +1217,22 @@ class ModelTrainer:
             except Exception as _exc:
                 logger.warning("Phase 89a: could not load fundamentals_history.parquet — %s", _exc)
 
+        # Phase 89b: load sector ETF history for PIT sector_momentum override
+        _sector_etf_bars: Dict[str, list] = {}
+        _etf_hist_path = Path("data/sector_etf/sector_etf_history.parquet")
+        if _etf_hist_path.exists():
+            try:
+                _ef = pd.read_parquet(_etf_hist_path)
+                for etf, grp in _ef.groupby("etf"):
+                    grp_sorted = grp.sort_values("date")
+                    _sector_etf_bars[etf] = [
+                        (row["date"], float(row["close"]))
+                        for _, row in grp_sorted.iterrows()
+                    ]
+                logger.info("Phase 89b: loaded sector ETF history for %d ETFs", len(_sector_etf_bars))
+            except Exception as _exc:
+                logger.warning("Phase 89b: could not load sector_etf_history.parquet — %s", _exc)
+
         # Serialize DataFrames as Arrow/Parquet bytes for subprocess pickling (29a)
         # ~3-5x faster than records lists for 753 symbols x 1200 rows x 5 columns
         def _sym_args(symbol, df):
@@ -1205,6 +1254,7 @@ class ModelTrainer:
                 preloaded_cache.get(symbol, {}),
                 _progress_q,
                 _fund_hist_by_symbol.get(symbol),
+                _sector_etf_bars if _sector_etf_bars else None,
             )
 
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor

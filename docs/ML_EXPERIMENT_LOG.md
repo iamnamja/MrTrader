@@ -35,9 +35,18 @@ Tracks model improvement iterations for active and recent phases.
 **Training window:** 3 years (Polygon daily bars, 430 symbols)
 **Gate:** avg Sharpe > 0.80, no fold < -0.30
 
-*Results pending — will update when walk-forward completes.*
+**Walk-forward result:**
 
-**If fails:** Try shorter 3yr window specifically targeting fold 3 (2025 regime). Previous failures (v144/v145 at ~0.28) suggest macro NIS alone doesn't fix the 2025 regime collapse — but a tighter window may help the model not overfit to 2021-2022 data that contradicts recent regime.
+| Fold | Trades | Sharpe |
+|---|---|---|
+| 1 | 189 | +0.18 |
+| 2 | 254 | +0.44 |
+| 3 | 208 | **-1.07** |
+| **Avg** | 651 | **-0.148** ❌ GATE FAILED |
+
+v142 restored as ACTIVE champion. Fold 3 (2025 regime) continues to collapse — worse than v145 (-0.87). Macro NIS features are not helping and may be adding noise. **Root cause is not the features — the 3yr training window includes 2021-2022 bull market data that teaches patterns incompatible with the 2025 tariff/vol regime.**
+
+**Next swing retrain should try a shorter window (2yr or 18mo) to exclude 2021-2022.** Also: fundamentals (`profit_margin`, `revenue_growth`, `debt_to_equity`) and `sector_momentum` are now available via PIT parquets — include those in v147.
 
 ---
 
