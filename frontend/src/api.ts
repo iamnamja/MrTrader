@@ -38,6 +38,7 @@ export const api = {
   resumeTrading: () => post('/api/orchestrator/resume-trading'),
   triggerCycle: () => post('/api/orchestrator/trigger-cycle'),
   triggerRetraining: () => post('/api/orchestrator/trigger-retraining'),
+  triggerIntradayScan: () => post('/api/orchestrator/trigger-intraday-scan'),
   pauseJob: (id: string) => post(`/api/orchestrator/jobs/${id}/pause`),
   resumeJob: (id: string) => post(`/api/orchestrator/jobs/${id}/resume`),
   // Agent config
@@ -76,4 +77,7 @@ export const api = {
   decisionAuditRecent: (limit = 100, strategy?: string) =>
     get(`/api/decision-audit/recent?limit=${limit}${strategy ? `&strategy=${strategy}` : ''}`),
   decisionAuditSummary: () => get('/api/decision-audit/summary'),
+  proposalLog: (days = 3, strategy = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=${strategy}`),
+  swingProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=swing`),
+  intraProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=intraday`),
 }

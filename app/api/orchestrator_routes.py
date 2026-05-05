@@ -240,3 +240,36 @@ async def get_ai_briefing():
     except Exception as exc:
         logger.error("AI briefing error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/trigger-intraday-scan")
+async def trigger_intraday_scan():
+    """
+    Manually run an intraday scan using the full universe (use_morning_candidates=False).
+    This rebuilds the morning candidates list and persists it to DB, fixing post-restart timeouts.
+    Runs in the background — check logs for progress.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    now = datetime.now(ET)
+    _log("INFO", f"Manual intraday scan triggered ({now.strftime('%H:%M')} ET)")
+
+    async def _run():
+        try:
+            pm = orchestrator.agents.get("portfolio_manager")
+            if pm:
+                _log("INFO", "Intraday scan: running full-universe scan to rebuild morning candidates")
+                await pm.select_intraday_instruments(
+                    window=(now.hour, now.minute),
+                    use_morning_candidates=False,
+                )
+                _log("INFO", "Intraday scan complete — morning candidates rebuilt and persisted")
+            else:
+                _log("WARNING", "PM agent not registered")
+        except Exception as exc:
+            logger.error("Manual intraday scan error: %s", exc)
+            _log("ERROR", f"Manual intraday scan failed: {exc}")
+
+    asyncio.create_task(_run())
+    return {"status": "intraday_scan_started", "message": "Full-universe intraday scan running — check logs (takes ~5-7 min)"}

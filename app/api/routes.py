@@ -22,7 +22,7 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.database import check_db_connection
-from app.database.models import AgentDecision, AuditLog, RiskMetric, Trade
+from app.database.models import AgentDecision, AuditLog, ProposalLog, RiskMetric, Trade
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -1065,3 +1065,77 @@ async def get_model_versions(limit: int = 10):
     except Exception as exc:
         logger.error("Model versions error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Swing Proposal Log ───────────────────────────────────────────────────────
+
+@router.get("/proposal-log")
+async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
+    """Unified proposal log — swing and intraday proposals with full PM→RM→Trader audit trail."""
+    db = get_session()
+    try:
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        q = db.query(ProposalLog).filter(ProposalLog.proposed_at >= cutoff)
+        if strategy in ("swing", "intraday"):
+            q = q.filter(ProposalLog.strategy == strategy)
+        rows = q.order_by(desc(ProposalLog.proposed_at)).limit(min(limit, 1000)).all()
+        return [
+            {
+                "id": r.id,
+                "proposal_uuid": r.proposal_uuid,
+                "strategy": r.strategy,
+                "batch_id": r.batch_id,
+                "scan_time": r.scan_time.isoformat() if r.scan_time else None,
+                "scan_window": r.scan_window,
+                "scan_label": r.scan_label,
+                "symbol": r.symbol,
+                "rank": r.rank,
+                "sector": r.sector,
+                "ml_score": r.ml_score,
+                "confidence": r.confidence,
+                "above_threshold": r.above_threshold,
+                "model_version": r.model_version,
+                "top_features": r.top_features,
+                "vix_at_scan": r.vix_at_scan,
+                "spy_price_at_scan": r.spy_price_at_scan,
+                "opportunity_score": r.opportunity_score,
+                "gate_results": r.gate_results,
+                "scan_gate_block": r.scan_gate_block,
+                "nis_signal": r.nis_signal,
+                "pm_status": r.pm_status,
+                "pm_status_reason": r.pm_status_reason,
+                "pm_decided_at": r.pm_decided_at.isoformat() if r.pm_decided_at else None,
+                "direction": r.direction,
+                "entry_price": r.entry_price,
+                "stop_price": r.stop_price,
+                "target_price": r.target_price,
+                "quantity": r.quantity,
+                "rm_status": r.rm_status,
+                "rm_reason": r.rm_reason,
+                "rm_rule": r.rm_rule,
+                "rm_inputs": r.rm_inputs,
+                "rm_decided_at": r.rm_decided_at.isoformat() if r.rm_decided_at else None,
+                "trade_id": r.trade_id,
+                "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
+                "sent_to_rm_at": r.sent_to_rm_at.isoformat() if r.sent_to_rm_at else None,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.error("Proposal log error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.get("/swing-proposals")
+async def get_swing_proposals(days: int = 3, limit: int = 200):
+    """Swing proposals — reads from unified proposal_log. Kept for backward compatibility."""
+    return await get_proposal_log(days=days, limit=limit, strategy="swing")
+
+
+@router.get("/intra-proposals")
+async def get_intra_proposals(days: int = 3, limit: int = 200):
+    """Intraday proposals — reads from unified proposal_log. Kept for backward compatibility."""
+    return await get_proposal_log(days=days, limit=limit, strategy="intraday")

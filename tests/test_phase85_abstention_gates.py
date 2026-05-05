@@ -75,12 +75,12 @@ class TestGate1A_FirstHourRange:
 
     def test_gate1a_threshold_value(self):
         from app.agents.portfolio_manager import SPY_MIN_FIRST_HOUR_RANGE
-        assert SPY_MIN_FIRST_HOUR_RANGE == 0.0045
+        assert SPY_MIN_FIRST_HOUR_RANGE == 0.0020  # lowered from 0.0045 — only blocks ~5% of days
 
     def test_gate1a_triggers_below_threshold(self):
         from app.agents.portfolio_manager import SPY_MIN_FIRST_HOUR_RANGE
-        assert 0.003 < SPY_MIN_FIRST_HOUR_RANGE   # 0.30% range would trigger
-        assert 0.006 > SPY_MIN_FIRST_HOUR_RANGE   # 0.60% range would pass
+        assert 0.001 < SPY_MIN_FIRST_HOUR_RANGE   # 0.10% range would trigger
+        assert 0.003 > SPY_MIN_FIRST_HOUR_RANGE   # 0.30% range would pass
 
 
 class TestGate1B_ScoreSpread:

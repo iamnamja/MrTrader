@@ -1240,6 +1240,8 @@ function SessionPanel({ toast }: { toast: (msg: string, type?: 'success' | 'erro
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <CtrlBtn label="Run One Cycle" color={C.blue} busy={busy}
               onClick={() => act('Run One Cycle', api.triggerCycle, 'Cycle started — watch session log')} />
+            <CtrlBtn label="Run Intraday Scan" color={C.yellow} busy={busy}
+              onClick={() => act('Run Intraday Scan', api.triggerIntradayScan, 'Intraday scan started — takes ~5-7 min, watch logs')} />
             <CtrlBtn label="Retrain ML Model" color={C.accent} busy={busy}
               onClick={() => act('Retrain ML Model', api.triggerRetraining, 'Retraining started')} />
             {isTrading
@@ -2488,10 +2490,392 @@ function AgentFeed({ name, events, onToggle }: {
   )
 }
 
+// ── PM Proposals Table ────────────────────────────────────────────────────────
+
+interface SwingProposal {
+  id: number
+  proposal_uuid: string | null
+  strategy: string
+  batch_id: string
+  scan_label: string
+  scan_time: string | null
+  symbol: string
+  rank: number | null
+  ml_score: number | null
+  confidence: number | null
+  direction: string
+  entry_price: number | null
+  stop_price: number | null
+  target_price: number | null
+  quantity: number | null
+  sector: string | null
+  vix_at_scan: number | null
+  opportunity_score: number | null
+  gate_results: Record<string, string> | null
+  scan_gate_block: string | null
+  nis_signal: Record<string, unknown> | null
+  pm_status: string
+  pm_status_reason: string | null
+  rm_status: string | null
+  rm_reason: string | null
+  rm_rule: string | null
+  rm_inputs: Record<string, unknown> | null
+  rm_decided_at: string | null
+  trade_id: number | null
+  proposed_at: string | null
+  sent_to_rm_at: string | null
+}
+
+const PROPOSAL_STATUS_COLOR = (s: string): string => {
+  if (s === 'SENT') return C.accent
+  if (s === 'BELOW_THRESHOLD') return C.muted
+  if (s === 'BLOCKED' || s === 'SUPPRESSED' || s === 'EXPIRED') return C.red
+  if (s === 'PENDING') return C.yellow
+  return C.text
+}
+
+const RM_COLOR = (s: string | null): string => {
+  if (s === 'APPROVED') return C.green
+  if (s === 'REJECTED') return C.red
+  return C.muted
+}
+
+function PMProposalsTable() {
+  const [proposals, setProposals] = useState<SwingProposal[]>([])
+  const [loading, setLoading] = useState(true)
+  const [days, setDays] = useState(1)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [batchFilter, setBatchFilter] = useState<string>('all')
+
+  useEffect(() => {
+    setLoading(true)
+    api.swingProposals(days).then((data: unknown) => {
+      setProposals(data as SwingProposal[])
+    }).catch(console.error).finally(() => setLoading(false))
+  }, [days])
+
+  const batches = Array.from(new Set(proposals.map(p => p.batch_id))).sort().reverse()
+  const filtered = batchFilter === 'all' ? proposals : proposals.filter(p => p.batch_id === batchFilter)
+
+  const riskPct = (entry: number | null, stop: number | null) => {
+    if (!entry || !stop || entry <= 0) return null
+    return ((entry - stop) / entry * 100).toFixed(1)
+  }
+  const rewardPct = (entry: number | null, target: number | null) => {
+    if (!entry || !target || entry <= 0) return null
+    return ((target - entry) / entry * 100).toFixed(1)
+  }
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[1, 3, 7].map(d => (
+            <button key={d} onClick={() => setDays(d)}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                background: days === d ? C.accent : C.surface2, color: days === d ? '#000' : C.text }}>
+              {d}d
+            </button>
+          ))}
+        </div>
+        <select value={batchFilter} onChange={e => setBatchFilter(e.target.value)}
+          style={{ fontSize: 11, padding: '3px 8px', background: C.surface2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4 }}>
+          <option value="all">All batches</option>
+          {batches.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: C.muted, marginLeft: 'auto' }}>
+          {loading ? 'Loading…' : `${filtered.length} proposals`}
+        </span>
+      </div>
+
+      {/* Table */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr>
+              {['#', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Trade'].map(h => (
+                <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && !loading && (
+              <tr><td colSpan={14} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+            )}
+            {filtered.map(p => {
+              const isExpanded = expandedId === p.id
+              const rPct = riskPct(p.entry_price, p.stop_price)
+              const tPct = rewardPct(p.entry_price, p.target_price)
+              const rr = rPct && tPct ? (parseFloat(tPct) / parseFloat(rPct)).toFixed(1) : null
+              const gatesPassed = p.gate_results ? Object.values(p.gate_results).filter(v => v === 'pass').length : null
+              const gatesTotal = p.gate_results ? Object.keys(p.gate_results).length : null
+              return (
+                <>
+                  <tr key={p.id} onClick={() => setExpandedId(isExpanded ? null : p.id)}
+                    style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
+                      background: isExpanded ? C.surface2 : 'transparent' }}>
+                    <td style={s.td}>{p.rank ?? '—'}</td>
+                    <td style={{ ...s.td, fontWeight: 600, color: C.accent }}>{p.symbol}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{p.sector ?? '—'}</td>
+                    <td style={s.td}>{p.ml_score != null ? (p.ml_score * 100).toFixed(1) + '%' : '—'}</td>
+                    <td style={s.td}>{p.confidence != null ? (p.confidence * 100).toFixed(1) + '%' : '—'}</td>
+                    <td style={s.td}>{p.entry_price != null ? '$' + p.entry_price.toFixed(2) : '—'}</td>
+                    <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? '$' + p.stop_price.toFixed(2) : '—'}</td>
+                    <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? '$' + p.target_price.toFixed(2) : '—'}</td>
+                    <td style={{ ...s.td, color: C.yellow }}>{rPct ? rPct + '%' : '—'}</td>
+                    <td style={s.td}>{rr ? rr + 'x' : '—'}</td>
+                    <td style={s.td}>
+                      {gatesTotal != null
+                        ? <span style={{ color: gatesPassed === gatesTotal ? C.green : C.red }}>
+                            {gatesPassed}/{gatesTotal}
+                          </span>
+                        : '—'}
+                    </td>
+                    <td style={{ ...s.td }}>
+                      <span style={{ color: PROPOSAL_STATUS_COLOR(p.pm_status), fontWeight: 600 }}>{p.pm_status}</span>
+                      {p.pm_status_reason && <span style={{ color: C.muted, marginLeft: 4 }}>({p.pm_status_reason})</span>}
+                    </td>
+                    <td style={s.td}>
+                      {p.rm_status
+                        ? <span style={{ color: RM_COLOR(p.rm_status), fontWeight: 600 }}>{p.rm_status}</span>
+                        : <span style={{ color: C.muted }}>—</span>}
+                    </td>
+                    <td style={s.td}>
+                      {p.trade_id ? <span style={{ color: C.green }}>#{p.trade_id}</span> : '—'}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${p.id}-detail`}>
+                      <td colSpan={14} style={{ background: C.surface2, padding: '8px 16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Context</div>
+                            <div style={{ fontSize: 11 }}>Batch: <span style={{ color: C.text }}>{p.batch_id}</span></div>
+                            <div style={{ fontSize: 11 }}>Label: <span style={{ color: C.text }}>{p.scan_label}</span></div>
+                            <div style={{ fontSize: 11 }}>Time: <span style={{ color: C.text }}>{p.scan_time ? fmtTs(p.scan_time) : '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>VIX: <span style={{ color: C.text }}>{p.vix_at_scan?.toFixed(1) ?? '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>Opp score: <span style={{ color: C.text }}>{p.opportunity_score?.toFixed(2) ?? '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>Qty: <span style={{ color: C.text }}>{p.quantity ?? '—'} shares</span></div>
+                          </div>
+                          {p.gate_results && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Gate Results</div>
+                              {Object.entries(p.gate_results).map(([gate, result]) => (
+                                <div key={gate} style={{ fontSize: 11, display: 'flex', gap: 6 }}>
+                                  <span style={{ color: result === 'pass' ? C.green : C.red }}>{result === 'pass' ? '✓' : '✗'}</span>
+                                  <span style={{ color: C.muted }}>{gate}:</span>
+                                  <span style={{ color: C.text }}>{result}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {p.nis_signal && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>NIS Signal</div>
+                              {Object.entries(p.nis_signal).slice(0, 6).map(([k, v]) => (
+                                <div key={k} style={{ fontSize: 11 }}>
+                                  <span style={{ color: C.muted }}>{k}: </span>
+                                  <span style={{ color: C.text }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {p.rm_reason && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>RM Decision</div>
+                              <div style={{ fontSize: 11, color: RM_COLOR(p.rm_status) }}>{p.rm_status ?? '—'}</div>
+                              <div style={{ fontSize: 11, color: C.text, marginTop: 2 }}>{p.rm_reason}</div>
+                              {p.rm_decided_at && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{fmtTs(p.rm_decided_at)}</div>}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Intraday Proposals Table ──────────────────────────────────────────────────
+
+interface IntraProposal {
+  id: number
+  proposal_uuid: string | null
+  scan_time: string | null
+  scan_window: string
+  symbol: string
+  rank: number | null
+  ml_score: number | null
+  above_threshold: boolean
+  scan_gate_block: string | null
+  entry_price: number | null
+  stop_price: number | null
+  target_price: number | null
+  quantity: number | null
+  pm_status: string
+  nis_signal: Record<string, unknown> | null
+  rm_status: string | null
+  rm_reason: string | null
+  rm_rule: string | null
+  proposed_at: string | null
+  sent_to_rm_at: string | null
+}
+
+const INTRA_STATUS_COLOR = (s: string): string => {
+  if (s === 'SENT') return C.accent
+  if (s === 'SCORED') return C.muted
+  if (s === 'SCAN_GATE_BLOCKED') return C.red
+  if (s === 'ENTRY_GATE_BLOCKED' || s === 'NIS_BLOCKED' || s === 'COOLDOWN') return C.yellow
+  return C.text
+}
+
+function IntraProposalsTable() {
+  const [proposals, setProposals] = useState<IntraProposal[]>([])
+  const [loading, setLoading] = useState(true)
+  const [days, setDays] = useState(1)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [windowFilter, setWindowFilter] = useState<string>('all')
+
+  useEffect(() => {
+    setLoading(true)
+    api.intraProposals(days).then((data: unknown) => {
+      setProposals(data as IntraProposal[])
+    }).catch(console.error).finally(() => setLoading(false))
+  }, [days])
+
+  const windows = Array.from(new Set(proposals.map(p => `${p.scan_time?.slice(0, 10)} ${p.scan_window}`))).sort().reverse()
+  const filtered = windowFilter === 'all' ? proposals : proposals.filter(p => `${p.scan_time?.slice(0, 10)} ${p.scan_window}` === windowFilter)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[1, 3, 7].map(d => (
+            <button key={d} onClick={() => setDays(d)}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                background: days === d ? C.accent : C.surface2, color: days === d ? '#000' : C.text }}>
+              {d}d
+            </button>
+          ))}
+        </div>
+        <select value={windowFilter} onChange={e => setWindowFilter(e.target.value)}
+          style={{ fontSize: 11, padding: '3px 8px', background: C.surface2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4 }}>
+          <option value="all">All windows</option>
+          {windows.map(w => <option key={w} value={w}>{w}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: C.muted, marginLeft: 'auto' }}>
+          {loading ? 'Loading…' : `${filtered.length} rows`}
+        </span>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr>
+              {['Window', '#', 'Symbol', 'ML Score', 'Entry', 'Stop', 'Target', 'Status', 'Gate Block', 'RM'].map(h => (
+                <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && !loading && (
+              <tr><td colSpan={10} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
+                No intraday proposals found. Run an intraday scan to populate.
+              </td></tr>
+            )}
+            {filtered.map(p => {
+              const isExpanded = expandedId === p.id
+              return (
+                <>
+                  <tr key={p.id} onClick={() => setExpandedId(isExpanded ? null : p.id)}
+                    style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
+                      background: isExpanded ? C.surface2 : 'transparent',
+                      opacity: p.above_threshold ? 1 : 0.55 }}>
+                    <td style={{ ...s.td, color: C.muted }}>{p.scan_window}</td>
+                    <td style={s.td}>{p.rank ?? '—'}</td>
+                    <td style={{ ...s.td, fontWeight: 600, color: p.above_threshold ? C.accent : C.text }}>{p.symbol}</td>
+                    <td style={s.td}>{p.ml_score != null ? (p.ml_score * 100).toFixed(1) + '%' : '—'}</td>
+                    <td style={s.td}>{p.entry_price != null ? '$' + p.entry_price.toFixed(2) : '—'}</td>
+                    <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? '$' + p.stop_price.toFixed(2) : '—'}</td>
+                    <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? '$' + p.target_price.toFixed(2) : '—'}</td>
+                    <td style={s.td}>
+                      <span style={{ color: INTRA_STATUS_COLOR(p.pm_status), fontWeight: 600 }}>{p.pm_status}</span>
+                    </td>
+                    <td style={{ ...s.td, color: C.red, fontSize: 10 }}>{p.scan_gate_block ?? '—'}</td>
+                    <td style={s.td}>
+                      {p.rm_status
+                        ? <span style={{ color: RM_COLOR(p.rm_status), fontWeight: 600 }}>{p.rm_status}</span>
+                        : <span style={{ color: C.muted }}>—</span>}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${p.id}-detail`}>
+                      <td colSpan={10} style={{ background: C.surface2, padding: '8px 16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Info</div>
+                            <div style={{ fontSize: 11 }}>Time: <span style={{ color: C.text }}>{p.scan_time ? fmtTs(p.scan_time) : '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>Window: <span style={{ color: C.text }}>{p.scan_window}</span></div>
+                            <div style={{ fontSize: 11 }}>Above threshold: <span style={{ color: p.above_threshold ? C.green : C.muted }}>{p.above_threshold ? 'Yes' : 'No'}</span></div>
+                            <div style={{ fontSize: 11 }}>Qty: <span style={{ color: C.text }}>{p.quantity ?? '—'} shares</span></div>
+                          </div>
+                          {p.scan_gate_block && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Gate Block</div>
+                              <div style={{ fontSize: 11, color: C.red }}>{p.scan_gate_block}</div>
+                              <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>All symbols in this window were blocked by this gate.</div>
+                            </div>
+                          )}
+                          {p.scan_gate_block && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Entry Gate Block</div>
+                              <div style={{ fontSize: 11, color: C.yellow }}>{p.scan_gate_block}</div>
+                            </div>
+                          )}
+                          {p.nis_signal && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>NIS Signal</div>
+                              {Object.entries(p.nis_signal).slice(0, 6).map(([k, v]) => (
+                                <div key={k} style={{ fontSize: 11 }}>
+                                  <span style={{ color: C.muted }}>{k}: </span>
+                                  <span style={{ color: C.text }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {p.rm_reason && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>RM Decision</div>
+                              <div style={{ fontSize: 11, color: RM_COLOR(p.rm_status) }}>{p.rm_status ?? '—'}</div>
+                              <div style={{ fontSize: 11, color: C.text, marginTop: 2 }}>{p.rm_reason}</div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
   const [historical, setHistorical] = useState<AgentEvent[]>([])
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [agentSubTab, setAgentSubTab] = useState<'decisions' | 'proposals' | 'intraday'>('proposals')
 
   // Load historical decisions on mount — set loading false immediately so panel renders
   useEffect(() => {
@@ -2527,17 +2911,34 @@ function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Agent Decisions</h2>
         <span style={{ fontSize: 12, color: C.muted }}>
           {loading ? 'Loading…' : `${events.length} total events · live via WebSocket`}
         </span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-        {AGENT_NAMES.map(name => (
-          <AgentFeed key={name} name={name} events={forAgent(name)} onToggle={toggle} />
+      {/* Sub-tab toggle */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+        {(['proposals', 'intraday', 'decisions'] as const).map(t => (
+          <button key={t} onClick={() => setAgentSubTab(t)}
+            style={{ fontSize: 12, padding: '5px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: agentSubTab === t ? C.accent : C.surface2,
+              color: agentSubTab === t ? '#000' : C.text, fontWeight: agentSubTab === t ? 600 : 400 }}>
+            {t === 'proposals' ? 'Swing Proposals' : t === 'intraday' ? 'Intraday Proposals' : 'Agent Event Log'}
+          </button>
         ))}
       </div>
+
+      {agentSubTab === 'proposals' && <PMProposalsTable />}
+      {agentSubTab === 'intraday' && <IntraProposalsTable />}
+
+      {agentSubTab === 'decisions' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          {AGENT_NAMES.map(name => (
+            <AgentFeed key={name} name={name} events={forAgent(name)} onToggle={toggle} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
