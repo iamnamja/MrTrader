@@ -342,12 +342,18 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 exit_price=t.exit_price,
                 quantity=t.quantity,
                 pnl=t.pnl,
-                unrealized_pl=float(alpaca_positions[t.symbol]["unrealized_pl"])
-                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None,
-                unrealized_plpc=float(alpaca_positions[t.symbol]["unrealized_plpc"])
-                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None,
-                current_price=float(alpaca_positions[t.symbol]["current_price"])
-                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None,
+                unrealized_pl=(
+                    float(alpaca_positions[t.symbol]["unrealized_pl"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
+                unrealized_plpc=(
+                    float(alpaca_positions[t.symbol]["unrealized_plpc"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
+                current_price=(
+                    float(alpaca_positions[t.symbol]["current_price"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
                 status=t.status,
                 signal_type=getattr(t, 'signal_type', None),
                 trade_type=getattr(t, 'trade_type', None),
