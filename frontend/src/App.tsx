@@ -10,6 +10,7 @@ import type {
   MarketStatus, OrchestratorStatus, ScheduledJob, SessionLogEntry,
   RegimeDetail, PerformanceReview, DriftItem, ConfigSchemaEntry,
   NisMacroContext, NisSignal, DecisionAuditRow, GateSummaryRow, DailySummaryRow,
+  GateCalibrationReport,
 } from './types'
 
 // ── Colours / tokens ──────────────────────────────────────────────────────────
@@ -531,39 +532,132 @@ function NisSignalsTable({ signals }: { signals: NisSignal[] }) {
 }
 
 // ── Gate Summary Table ────────────────────────────────────────────────────────
-function GateSummaryTable({ rows }: { rows: GateSummaryRow[] }) {
-  if (!rows.length) {
-    return <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>
-      No gate summary yet — needs ~2 weeks of data with backfilled outcomes
+function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null }) {
+  const [view, setView] = useState<'per_gate' | 'by_category' | 'scan'>('per_gate')
+
+  if (!report) return (
+    <div style={{ color: C.muted, textAlign: 'center', padding: 20, fontSize: 11 }}>
+      Loading gate calibration data…
     </div>
+  )
+
+  const fmtPct = (v: number | null) => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+  const verdictStyle = (v: string | null) => ({
+    color: v === 'correct' ? C.green : v === 'recalibrate' ? C.red : C.muted,
+    fontWeight: 600 as const,
+  })
+  const catLabel: Record<string, string> = {
+    alpha: 'Alpha', quality: 'Quality', risk: 'Risk', structural: 'Structural', scan: 'Scan',
   }
+
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-      <thead><tr>
-        {['Block Reason', 'Count', 'Avg Missed P&L', 'Verdict'].map(h =>
-          <th key={h} style={s.th}>{h}</th>)}
-      </tr></thead>
-      <tbody>
-        {rows.map((r, i) => {
-          const pnl = r.avg_pnl_pct
-          const verdict = pnl == null ? '—'
-            : pnl < -0.005 ? '✓ Blocked losers'
-            : pnl > 0.005 ? '⚠ Blocked winners'
-            : 'Neutral'
-          const verdictColor = pnl == null ? C.muted : pnl < -0.005 ? C.green : pnl > 0.005 ? C.red : C.muted
-          return (
-            <tr key={i}>
-              <td style={{ ...s.td, color: C.text, fontFamily: 'monospace' }}>{r.block_reason ?? 'unclassified'}</td>
-              <td style={{ ...s.td, color: C.accent }}>{r.count}</td>
-              <td style={{ ...s.td, color: pnl != null ? clr(pnl) : C.muted }}>
-                {pnl != null ? (pnl >= 0 ? '+' : '') + (pnl * 100).toFixed(2) + '%' : '—'}
-              </td>
-              <td style={{ ...s.td, color: verdictColor, fontWeight: 600 }}>{verdict}</td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <div>
+      <div style={{ marginBottom: 10, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+        <strong style={{ color: C.text }}>Gate Calibration</strong> — did each block reason protect us?
+        &nbsp;Negative counterfactual P&amp;L = gate correctly blocked a loser.
+        Positive = gate blocked a winner (recalibrate). Outcomes backfilled nightly after T+4h (intraday) or T+24h (swing).
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+        {([['per_gate', 'Per Gate'], ['by_category', 'By Category'], ['scan', 'Scan Abstentions']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setView(key)} style={{
+            padding: '4px 12px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+            border: `1px solid ${view === key ? C.accent : C.border}`,
+            background: view === key ? `${C.accent}22` : 'transparent', color: C.text,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {view === 'per_gate' && (
+        report.per_gate.length === 0
+          ? <div style={{ color: C.muted, fontSize: 11, padding: 20, textAlign: 'center' }}>No blocked decisions recorded yet</div>
+          : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>
+                {['Block Reason', 'Category', 'Strategy', 'Blocked', 'With Outcome', '4h P&L', '1d P&L', 'Verdict'].map(h =>
+                  <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {report.per_gate.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, fontFamily: 'monospace', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={r.block_reason ?? ''}>{r.block_reason ?? 'unclassified'}</td>
+                    <td style={{ ...s.td, color: C.accent }}>{catLabel[r.gate_category ?? ''] ?? r.gate_category ?? '—'}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{r.strategy ?? '—'}</td>
+                    <td style={{ ...s.td }}>{r.count}</td>
+                    <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
+                    <td style={{ ...s.td, color: r.avg_outcome_4h_pct != null ? clr(r.avg_outcome_4h_pct) : C.muted }}>
+                      {fmtPct(r.avg_outcome_4h_pct)}
+                    </td>
+                    <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
+                      {fmtPct(r.avg_outcome_1d_pct)}
+                    </td>
+                    <td style={{ ...s.td, ...verdictStyle(r.verdict) }}>
+                      {r.verdict === 'correct' ? '✓ Correct' : r.verdict === 'recalibrate' ? '⚠ Recalibrate' : r.verdict ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+      )}
+
+      {view === 'by_category' && (
+        report.by_category.length === 0
+          ? <div style={{ color: C.muted, fontSize: 11, padding: 20, textAlign: 'center' }}>No data yet</div>
+          : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>
+                {['Category', 'Total Blocked', 'With Outcome', 'Avg 1d P&L'].map(h =>
+                  <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {report.by_category.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, fontWeight: 600 }}>{catLabel[r.gate_category ?? ''] ?? r.gate_category ?? 'Unknown'}</td>
+                    <td style={{ ...s.td }}>{r.count}</td>
+                    <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
+                    <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
+                      {fmtPct(r.avg_outcome_1d_pct)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+      )}
+
+      {view === 'scan' && (
+        report.scan_abstentions.length === 0
+          ? <div style={{ color: C.muted, fontSize: 11, padding: 20, textAlign: 'center' }}>
+              No scan abstentions recorded yet
+            </div>
+          : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>
+                {['Time', 'Gate', 'Detail', 'SPY Price', '1hr Range', 'SPY 4h', 'SPY 1d', 'Verdict'].map(h =>
+                  <th key={h} style={s.th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {report.scan_abstentions.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ ...s.td, color: C.muted }}>{new Date(r.abstained_at).toLocaleString()}</td>
+                    <td style={{ ...s.td, fontFamily: 'monospace', color: C.accent }}>{r.gate_type}</td>
+                    <td style={{ ...s.td, color: C.muted, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={r.gate_detail ?? ''}>{r.gate_detail ?? '—'}</td>
+                    <td style={s.td}>{r.spy_price_at_abstention != null ? `$${r.spy_price_at_abstention.toFixed(2)}` : '—'}</td>
+                    <td style={{ ...s.td, color: r.spy_first_hour_range_pct != null ? clr(r.spy_first_hour_range_pct) : C.muted }}>
+                      {r.spy_first_hour_range_pct != null ? r.spy_first_hour_range_pct.toFixed(3) + '%' : '—'}
+                    </td>
+                    <td style={{ ...s.td, color: r.spy_outcome_4h_pct != null ? clr(-r.spy_outcome_4h_pct) : C.muted }}>
+                      {fmtPct(r.spy_outcome_4h_pct)}
+                    </td>
+                    <td style={{ ...s.td, color: r.spy_outcome_1d_pct != null ? clr(-r.spy_outcome_1d_pct) : C.muted }}>
+                      {fmtPct(r.spy_outcome_1d_pct)}
+                    </td>
+                    <td style={{ ...s.td, color: r.verdict === 'good_abstention' ? C.green : r.verdict === 'bad_abstention' ? C.red : C.muted, fontWeight: 600 }}>
+                      {r.verdict === 'good_abstention' ? '✓ Good' : r.verdict === 'bad_abstention' ? '⚠ Missed' : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+      )}
+    </div>
   )
 }
 
@@ -663,12 +757,16 @@ function TradesPanel() {
   }, [])
 
   const rows = (() => {
-    if (dateFilter === 'all') return allRows
+    // Hide superseded duplicates by default — only show when explicitly selected
+    const base = statusFilter === 'RECONCILE_SUPERSEDED'
+      ? allRows
+      : allRows.filter(t => t.status !== 'RECONCILE_SUPERSEDED')
+    if (dateFilter === 'all') return base
     const now = Date.now()
     const cutoff = dateFilter === 'today'
       ? new Date(new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })).getTime()
       : now - (dateFilter === '7d' ? 7 : 30) * 86400_000
-    return allRows.filter(t => {
+    return base.filter(t => {
       const ts = t.created_at ? new Date(t.created_at.endsWith('Z') ? t.created_at : t.created_at + 'Z').getTime() : 0
       return ts >= cutoff
     })
@@ -707,6 +805,7 @@ function TradesPanel() {
               <option value="">All status</option>
               <option value="ACTIVE">Active</option>
               <option value="CLOSED">Closed</option>
+              <option value="RECONCILE_SUPERSEDED">Superseded (audit)</option>
             </select>
             <button onClick={() => load()} style={btnStyle}>Refresh</button>
           </div>
@@ -725,8 +824,12 @@ function TradesPanel() {
                   const isLegacy = t.signal_type === 'LEGACY_UNVERIFIED'
                   const rowOpacity = isLegacy ? 0.4 : 1
                   const typeColor = t.trade_type === 'intraday' ? C.yellow : t.trade_type === 'swing' ? C.blue : C.muted
-                  const pnlPct = t.exit_price && t.entry_price && t.entry_price > 0
-                    ? ((t.exit_price - t.entry_price) / t.entry_price * 100) : null
+                  // For closed trades use exit_price; for open use current_price from Alpaca
+                  const displayPrice = t.exit_price ?? t.current_price
+                  const pnlPct = displayPrice && t.entry_price && t.entry_price > 0
+                    ? ((displayPrice - t.entry_price) / t.entry_price * 100) : null
+                  // Prefer realised pnl for closed, unrealized for open
+                  const displayPnl = t.status === 'ACTIVE' ? (t.unrealized_pl ?? null) : (t.pnl ?? null)
                   return (
                   <tr key={i} style={{ opacity: rowOpacity }} title={isLegacy ? 'Legacy test trade — quantities unverified against Alpaca' : undefined}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
@@ -734,10 +837,20 @@ function TradesPanel() {
                     <td style={s.td}>{t.direction}</td>
                     <td style={{ ...s.td, color: C.blue }}>{isLegacy ? 'legacy' : (t.signal_type ?? '—')}</td>
                     <td style={s.td}>{fmt$(t.entry_price)}</td>
-                    <td style={s.td}>{t.exit_price ? fmt$(t.exit_price) : <span style={{ color: C.muted }}>open</span>}</td>
+                    <td style={s.td}>
+                      {t.exit_price
+                        ? fmt$(t.exit_price)
+                        : t.current_price
+                          ? <span style={{ color: C.muted }}>{fmt$(t.current_price)} <span style={{ fontSize: 9 }}>live</span></span>
+                          : <span style={{ color: C.muted }}>open</span>}
+                    </td>
                     <td style={{ ...s.td, color: clr(pnlPct) }}>{pnlPct != null ? fmtPct(pnlPct) : '—'}</td>
                     <td style={s.td}>{t.quantity}</td>
-                    <td style={{ ...s.td, color: clr(t.pnl) }}>{t.pnl != null ? fmt$(t.pnl) : '—'}</td>
+                    <td style={{ ...s.td, color: clr(displayPnl) }}>
+                      {displayPnl != null
+                        ? <>{fmt$(displayPnl)}{t.status === 'ACTIVE' && <span style={{ fontSize: 9, color: C.muted, marginLeft: 3 }}>unreal</span>}</>
+                        : '—'}
+                    </td>
                     <td style={s.td}><StatusPill status={t.status} /></td>
                     <td style={{ ...s.td, color: C.muted }}>{fmtTs(t.created_at)}</td>
                     <td style={{ ...s.td, color: C.muted }}>{t.closed_at ? fmtTs(t.closed_at) : <span style={{ color: C.muted }}>—</span>}</td>
@@ -1490,7 +1603,7 @@ function AnalyticsPanel() {
   const [days, setDays] = useState(90)
   const [nisCtx, setNisCtx] = useState<NisMacroContext | null>(null)
   const [nisSignals, setNisSignals] = useState<NisSignal[]>([])
-  const [gateSummary, setGateSummary] = useState<GateSummaryRow[]>([])
+  const [gateReport, setGateReport] = useState<GateCalibrationReport | null>(null)
   const [analyticsTab, setAnalyticsTab] = useState<'attribution' | 'nis' | 'gates'>('attribution')
 
   const load = useCallback(async (d = days) => {
@@ -1521,9 +1634,8 @@ function AnalyticsPanel() {
       const res = j as { signals?: NisSignal[] }
       setNisSignals(res.signals ?? [])
     }).catch(() => {})
-    api.decisionAuditSummary().then((j: unknown) => {
-      const res = j as { gate_summary?: GateSummaryRow[] }
-      setGateSummary(res.gate_summary ?? [])
+    api.gateCalibration().then((j: unknown) => {
+      setGateReport(j as GateCalibrationReport)
     }).catch(() => {})
   }, [])
 
@@ -1658,11 +1770,7 @@ function AnalyticsPanel() {
       </div>}
 
       {analyticsTab === 'gates' && <div style={s.card}>
-        <div style={s.cardTitle}>Gate Calibration — Did each block reason protect us?</div>
-        <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>
-          Positive avg missed P&amp;L = gate blocked winners (recalibrate). Negative = gate correctly blocked losers. Needs ~2 weeks of backfilled outcomes.
-        </div>
-        <GateSummaryTable rows={gateSummary} />
+        <GateCalibrationPanel report={gateReport} />
       </div>}
     </div>
   )

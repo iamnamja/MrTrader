@@ -77,6 +77,7 @@ export const api = {
   decisionAuditRecent: (limit = 100, strategy?: string) =>
     get(`/api/decision-audit/recent?limit=${limit}${strategy ? `&strategy=${strategy}` : ''}`),
   decisionAuditSummary: () => get('/api/decision-audit/summary'),
+  gateCalibration: () => get('/api/decision-audit/gate-calibration'),
   proposalLog: (days = 3, strategy = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=${strategy}`),
   swingProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=swing`),
   intraProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=intraday`),

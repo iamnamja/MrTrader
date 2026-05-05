@@ -26,33 +26,55 @@ audit_router = APIRouter(prefix="/api/decision-audit", tags=["decision-audit"])
 
 @router.get("/macro")
 def get_macro_context() -> Dict[str, Any]:
-    """Return today's NIS Tier 1 MacroContext as JSON."""
+    """Return today's NIS Tier 1 MacroContext as JSON.
+
+    Primary source: in-memory premarket_intel (populated at 09:00 ET).
+    Fallback: most recent nis_macro_snapshots DB row (survives server restarts).
+    """
     try:
         from app.agents.premarket import premarket_intel
         ctx = premarket_intel.macro_context
-        if ctx is None:
-            return {"status": "not_yet_run", "detail": "Premarket routine has not run yet today"}
-        return {
-            "as_of": ctx.as_of.isoformat() if hasattr(ctx.as_of, "isoformat") else str(ctx.as_of),
-            "overall_risk": ctx.overall_risk,
-            "block_new_entries": ctx.block_new_entries,
-            "global_sizing_factor": ctx.global_sizing_factor,
-            "rationale": ctx.rationale,
-            "events_today": [
-                {
-                    "event_type": e.event_type,
-                    "event_time": e.event_time,
-                    "risk_level": e.risk_level,
-                    "direction": e.direction,
-                    "sizing_factor": e.sizing_factor,
-                    "block_new_entries": e.block_new_entries,
-                    "consensus_summary": e.consensus_summary,
-                    "rationale": e.rationale,
-                    "already_priced_in": e.already_priced_in,
-                }
-                for e in ctx.events_today
-            ],
-        }
+        if ctx is not None:
+            return {
+                "as_of": ctx.as_of.isoformat() if hasattr(ctx.as_of, "isoformat") else str(ctx.as_of),
+                "overall_risk": ctx.overall_risk,
+                "block_new_entries": ctx.block_new_entries,
+                "global_sizing_factor": ctx.global_sizing_factor,
+                "rationale": ctx.rationale,
+                "source": "live",
+                "events_today": [
+                    {
+                        "event_type": e.event_type,
+                        "event_time": e.event_time,
+                        "risk_level": e.risk_level,
+                        "direction": e.direction,
+                        "sizing_factor": e.sizing_factor,
+                        "block_new_entries": e.block_new_entries,
+                        "consensus_summary": e.consensus_summary,
+                        "rationale": e.rationale,
+                        "already_priced_in": e.already_priced_in,
+                    }
+                    for e in ctx.events_today
+                ],
+            }
+
+        # Fallback: latest DB snapshot
+        from app.database.models import NisMacroSnapshot
+        with get_session() as db:
+            snap = db.query(NisMacroSnapshot).order_by(NisMacroSnapshot.snapshot_date.desc()).first()
+        if snap is not None:
+            return {
+                "as_of": snap.as_of.isoformat(),
+                "overall_risk": snap.overall_risk,
+                "block_new_entries": snap.block_new_entries,
+                "global_sizing_factor": snap.global_sizing_factor,
+                "rationale": snap.rationale,
+                "source": "db_snapshot",
+                "snapshot_date": snap.snapshot_date.isoformat(),
+                "events_today": snap.events_json or [],
+            }
+
+        return {"status": "not_yet_run", "detail": "Premarket routine has not run yet today"}
     except Exception as exc:
         logger.warning("GET /api/nis/macro failed: %s", exc)
         return {"status": "error", "detail": str(exc)}
@@ -165,6 +187,33 @@ def get_audit_summary() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning("GET /api/decision-audit/summary failed: %s", exc)
         return {"status": "error", "detail": str(exc)}
+
+
+@audit_router.get("/gate-calibration")
+def get_gate_calibration() -> Dict[str, Any]:
+    """
+    Rich gate calibration report: per-gate counterfactual P&L, by-category summary,
+    and scan abstention history with SPY outcomes.
+    """
+    try:
+        from app.database.decision_audit import gate_calibration_report
+        return gate_calibration_report()
+    except Exception as exc:
+        logger.warning("GET /api/decision-audit/gate-calibration failed: %s", exc)
+        return {"per_gate": [], "by_category": [], "scan_abstentions": [], "error": str(exc)}
+
+
+@audit_router.post("/backfill-outcomes")
+def trigger_backfill_outcomes(lookback_days: int = Query(default=7, ge=1, le=30)) -> Dict[str, Any]:
+    """Manually trigger the gate outcome backfill job (normally runs nightly)."""
+    try:
+        from app.database.decision_audit import backfill_gate_outcomes, backfill_scan_abstention_outcomes
+        gate_result = backfill_gate_outcomes(lookback_days=lookback_days)
+        scan_result = backfill_scan_abstention_outcomes(lookback_days=lookback_days)
+        return {"gate_outcomes": gate_result, "scan_abstentions": scan_result}
+    except Exception as exc:
+        logger.warning("POST /api/decision-audit/backfill-outcomes failed: %s", exc)
+        return {"error": str(exc)}
 
 
 @audit_router.get("/recent")

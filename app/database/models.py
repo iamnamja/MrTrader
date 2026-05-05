@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Text, Boolean
+from sqlalchemy import Column, Date, Integer, String, Float, DateTime, ForeignKey, JSON, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -324,10 +324,17 @@ class DecisionAudit(Base):
     block_reason = Column(String(255), nullable=True)
     # Top model features at decision time (JSON: {feature_name: value, ...} sorted by importance)
     top_features = Column(JSON, nullable=True)
-    # Back-filled by EOD script
-    outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered
-    outcome_4h_pct = Column(Float, nullable=True)       # price change 4h after decision
-    outcome_1d_pct = Column(Float, nullable=True)       # price change 1 day after decision
+    # Gate classification — used for calibration reporting
+    gate_category = Column(String(20), nullable=True, index=True)  # alpha|quality|risk|structural|scan
+    # Stock price at decision time — anchor for counterfactual P&L calculation
+    price_at_decision = Column(Float, nullable=True)
+    # Intended direction (BUY/SELL) — needed to compute signed counterfactual P&L
+    direction = Column(String(5), nullable=True)
+    # Back-filled by EOD script (gate_outcomes_backfill job)
+    outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered (APPROVED trades)
+    outcome_4h_pct = Column(Float, nullable=True)       # counterfactual: price change 4h after decision
+    outcome_1d_pct = Column(Float, nullable=True)       # counterfactual: price change 1d after decision
+    outcome_fetched_at = Column(DateTime, nullable=True)  # when backfill last ran for this row
 
 
 class PendingLimitOrder(Base):
@@ -570,6 +577,53 @@ class ProposalEvent(Base):
 
     def __repr__(self):
         return f"<ProposalEvent {self.proposal_uuid[:8]} {self.event_type} {self.event_time}>"
+
+
+class NisMacroSnapshot(Base):
+    """One row per premarket NIS macro run — survives server restarts.
+
+    The in-memory premarket_intel.macro_context is lost on restart; this table
+    lets the API fall back to the most recent snapshot so the UI always shows
+    the last-known macro context.
+    """
+    __tablename__ = "nis_macro_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(Date, nullable=False, unique=True, index=True)  # one per calendar day
+    as_of = Column(DateTime, nullable=False)
+    overall_risk = Column(String(10), nullable=False)        # LOW | MEDIUM | HIGH
+    block_new_entries = Column(Boolean, nullable=False, default=False)
+    global_sizing_factor = Column(Float, nullable=False, default=1.0)
+    rationale = Column(Text, nullable=True)
+    events_json = Column(JSON, nullable=True)                # full events_today array
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ScanAbstention(Base):
+    """Scan-level gate abstentions — entire intraday scan skipped due to a market gate.
+
+    Unlike per-symbol decision_audit rows, scan gates (gate1a SPY range, gate1c melt-up)
+    have no target symbol.  We record SPY price at abstention time and back-fill
+    SPY return over the session so we can evaluate whether abstaining was correct.
+    """
+    __tablename__ = "scan_abstentions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    abstained_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    strategy = Column(String(20), nullable=False, default="intraday")
+    gate_type = Column(String(50), nullable=False, index=True)  # gate1a_spy_range | gate1c_meltup
+    gate_detail = Column(Text, nullable=True)                   # human-readable trigger detail
+    # Link to the proposal_log batch that was killed
+    proposal_log_batch_id = Column(String(40), nullable=True, index=True)
+    # SPY price context
+    spy_price_at_abstention = Column(Float, nullable=True)
+    spy_first_hour_range_pct = Column(Float, nullable=True)     # gate1a diagnostic
+    # Back-filled by gate_outcomes_backfill job
+    spy_outcome_4h_pct = Column(Float, nullable=True)           # SPY return from abstention → +4h
+    spy_outcome_1d_pct = Column(Float, nullable=True)           # SPY return for full session
+    outcome_fetched_at = Column(DateTime, nullable=True)
+    # good_abstention = SPY fell (gate was right); bad_abstention = SPY rose (missed gains)
+    verdict = Column(String(20), nullable=True)
 
 
 class ProcessHeartbeat(Base):
