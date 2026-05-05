@@ -23,18 +23,18 @@ class TestPMAbstentionGatePresence:
         return inspect.getsource(pm_module)
 
     def test_abstention_gate_in_intraday_path(self):
-        """select_intraday_instruments must call _market_regime_allows_entries."""
+        """select_intraday_instruments must use opportunity score gate (Phase 88)."""
         from app.agents.portfolio_manager import PortfolioManager
         src = inspect.getsource(PortfolioManager.select_intraday_instruments)
-        assert "_market_regime_allows_entries" in src, (
+        assert "_compute_opportunity_score" in src or "_market_regime_allows_entries" in src, (
             "PM abstention gate missing from select_intraday_instruments()"
         )
 
     def test_abstention_gate_in_swing_path(self):
-        """_send_swing_proposals must call _market_regime_allows_entries."""
+        """_send_swing_proposals must use opportunity score gate (Phase 88)."""
         from app.agents.portfolio_manager import PortfolioManager
         src = inspect.getsource(PortfolioManager._send_swing_proposals)
-        assert "_market_regime_allows_entries" in src, (
+        assert "_compute_opportunity_score" in src or "_market_regime_allows_entries" in src, (
             "PM abstention gate missing from _send_swing_proposals()"
         )
 
@@ -154,8 +154,8 @@ class TestFeatureNamesConstant:
     def test_feature_names_count(self):
         """FEATURE_NAMES must have the expected count (58 with Phase 86 market-condition features)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 58, (
-            f"Expected 58 features (53 Phase 47-5/50 + 5 NIS Phase 64b), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 61, (
+            f"Expected 61 features (58 pre-86b + 3 Phase 86b stock-relative SPY), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):

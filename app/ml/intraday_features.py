@@ -635,4 +635,6 @@ FEATURE_NAMES = [
     # NIS features (Phase 64b)
     "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
     "nis_sizing_mult", "nis_downside_risk",
+    # Phase 86b: stock-relative SPY features (survive cs_normalize)
+    "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
 ]

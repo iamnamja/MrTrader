@@ -57,7 +57,9 @@ ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 # Removing them reduces overfitting surface without changing the signal.
 PRUNED_FEATURES: frozenset = frozenset([
     "price_above_ema200", "dist_from_ema200", "rs_vs_spy", "sentiment",
-    "pe_ratio", "pb_ratio", "profit_margin", "revenue_growth", "debt_to_equity",
+    "pe_ratio", "pb_ratio",
+    # profit_margin / revenue_growth / debt_to_equity un-pruned in Phase 89a when
+    # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
     "earnings_proximity_days", "sector_momentum", "insider_score", "earnings_surprise",
     "regime_score", "vix_level", "vix_regime_bucket", "vix_fear_spike",
     "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
@@ -116,6 +118,7 @@ def _process_symbol_windows_worker(
     label_scheme: str,
     symbol_cache: dict,        # {date_isoformat: features_dict} — pre-loaded from FeatureStore
     progress_queue=None,       # multiprocessing.Queue for progress reporting
+    fundamentals_history: Optional[list] = None,  # Phase 89a: sorted list of (date_str, {profit_margin, revenue_growth, debt_to_equity})
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -304,6 +307,22 @@ def _process_symbol_windows_worker(
 
         if not features:
             continue
+
+        # Phase 89a: override fundamentals with PIT-correct values from EDGAR 10-K store.
+        # fundamentals_history is sorted ascending by date; take the last entry ≤ as_of_date.
+        if fundamentals_history and features:
+            as_of_str = str(w_end_date)
+            pit = None
+            for snap_date, snap_vals in fundamentals_history:
+                if snap_date <= as_of_str:
+                    pit = snap_vals
+                else:
+                    break
+            if pit is not None:
+                features["profit_margin"] = pit["profit_margin"]
+                features["revenue_growth"] = pit["revenue_growth"]
+                features["debt_to_equity"] = pit["debt_to_equity"]
+
         features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
         if not feature_names:
             feature_names = list(features.keys())
@@ -1145,6 +1164,26 @@ class ModelTrainer:
                         100 * total_hits / max(total_slots, 1),
                         time.time() - t_preload)
 
+        # Phase 89a: load historical fundamentals parquet for PIT-correct feature override
+        _fund_hist_by_symbol: Dict[str, list] = {}
+        _fund_hist_path = Path("data/fundamentals/fundamentals_history.parquet")
+        if _fund_hist_path.exists():
+            try:
+                _fh = pd.read_parquet(_fund_hist_path)
+                for sym, grp in _fh.groupby("symbol"):
+                    grp_sorted = grp.sort_values("as_of_date")
+                    _fund_hist_by_symbol[sym] = [
+                        (row["as_of_date"], {
+                            "profit_margin": float(row.get("profit_margin", 0.0) or 0.0),
+                            "revenue_growth": float(row.get("revenue_growth", 0.0) or 0.0),
+                            "debt_to_equity": float(row.get("debt_to_equity", 0.0) or 0.0),
+                        })
+                        for _, row in grp_sorted.iterrows()
+                    ]
+                logger.info("Phase 89a: loaded fundamentals history for %d symbols", len(_fund_hist_by_symbol))
+            except Exception as _exc:
+                logger.warning("Phase 89a: could not load fundamentals_history.parquet — %s", _exc)
+
         # Serialize DataFrames as Arrow/Parquet bytes for subprocess pickling (29a)
         # ~3-5x faster than records lists for 753 symbols x 1200 rows x 5 columns
         def _sym_args(symbol, df):
@@ -1165,6 +1204,7 @@ class ModelTrainer:
                 self.label_scheme,
                 preloaded_cache.get(symbol, {}),
                 _progress_q,
+                _fund_hist_by_symbol.get(symbol),
             )
 
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
