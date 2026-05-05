@@ -127,16 +127,21 @@ class Trader(BaseAgent):
                 # DB record exists — reload in-memory state from DB
                 t = db_active[symbol]
                 if symbol not in self.active_positions:
+                    entry_date = t.created_at.date() if t.created_at else datetime.now(ET).date()
+                    # Recalculate bars_held from entry_date so restarts don't reset the counter.
+                    # DB value is only written on close so it's always 0 for active trades.
+                    days_since_entry = (datetime.now(ET).date() - entry_date).days
+                    bars_held = max(t.bars_held or 0, days_since_entry)
                     self.active_positions[symbol] = {
                         "entry_price":   t.entry_price,
                         "stop_price":    t.stop_price or avg * 0.98,
                         "target_price":  t.target_price or avg * 1.06,
                         "highest_price": avg,
                         "atr":           0.0,
-                        "bars_held":     t.bars_held or 0,
+                        "bars_held":     bars_held,
                         "trade_id":      t.id,
                         "trade_type":    getattr(t, "trade_type", None) or "swing",
-                        "entry_date":    t.created_at.date() if t.created_at else datetime.now(ET).date(),
+                        "entry_date":    entry_date,
                     }
                     self.logger.info("Reconciled %s from DB trade id=%d", symbol, t.id)
                 continue
@@ -1245,6 +1250,16 @@ class Trader(BaseAgent):
         if pos.get("_last_bar_date") != today_date:
             pos["_last_bar_date"] = today_date
             pos["bars_held"] += 1
+            # Persist so bars_held survives restarts (DB value only written on close otherwise)
+            try:
+                from app.database.session import get_session as _gs
+                with _gs() as _db:
+                    _t = _db.query(Trade).filter_by(id=pos["trade_id"]).first()
+                    if _t:
+                        _t.bars_held = pos["bars_held"]
+                        _db.commit()
+            except Exception:
+                pass
 
         # Adverse-move warning: if down >3% from entry, log and tighten stop to breakeven
         pnl_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
