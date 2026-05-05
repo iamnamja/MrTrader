@@ -49,14 +49,14 @@ def _fetch_symbol_history(symbol: str) -> list[dict]:
     Returns list of dicts: {symbol, as_of_date, pe_ratio, pb_ratio,
                             profit_margin, revenue_growth, debt_to_equity}
     """
-    from app.ml.fundamental_fetcher import _get_cik, _fetch_edgar_facts
+    from app.ml.fundamental_fetcher import _get_cik, _get_company_facts
 
     cik = _get_cik(symbol)
     if cik is None:
         logger.debug("No CIK for %s — skipping", symbol)
         return []
 
-    facts = _fetch_edgar_facts(cik)
+    facts = _get_company_facts(cik)
     if not facts:
         return []
 
