@@ -1079,48 +1079,88 @@ class PortfolioManager(BaseAgent):
         self.logger.warning("VIX unavailable from all sources — assuming VIX=30 (conservative)")
         return 30.0
 
-    def _market_regime_allows_entries(self) -> bool:
+    def _compute_opportunity_score(self) -> tuple:
         """
-        PM abstention gate. Returns False on unfavorable broad-market conditions:
-          - VIX >= 25 (elevated fear)
-          - SPY below its 20-day MA (short-term downtrend)
-          - SPY 5-day return <= 0 (negative momentum, Phase 55)
-        Any condition alone is enough to abstain. Fails open if data unavailable.
+        Phase 88: Replace binary VIX/SPY gates with a continuous 0.0–1.0 day
+        opportunity score. Returns (score, vix, spy_close, spy_ma20, spy_5d_ret).
+
+        Score components:
+          - vix_score:   drops as VIX rises (0 at VIX=15 → 1 at VIX=35 → clamped)
+          - vix_trend:   penalty if VIX is spiking vs its 5-day avg
+          - ma_score:    1.0 if SPY above MA20, 0.4 if below (not binary block)
+          - mom_score:   SPY 5d momentum, clamped 0–1
+
+        Caller maps score → max_candidates:
+          ≥ 0.65 → normal (TOP_N_INTRADAY)
+          0.35–0.64 → reduced (2)
+          < 0.35 → skip (0)
         """
         try:
             import yfinance as yf
             import pandas as pd
-            spy = yf.download("SPY", period="30d", progress=False, auto_adjust=True)
+            spy = yf.download("SPY", period="40d", progress=False, auto_adjust=True)
             if isinstance(spy.columns, pd.MultiIndex):
                 spy.columns = spy.columns.get_level_values(0)
             spy.columns = [c.lower() for c in spy.columns]
             if len(spy) < 20:
-                return True
+                return 1.0, None, None, None, None
+
             spy_close = float(spy["close"].iloc[-1])
             spy_ma20 = float(spy["close"].tail(20).mean())
-            spy_below_ma = spy_close < spy_ma20
             spy_5d_ret = (spy_close / float(spy["close"].iloc[-6]) - 1.0) if len(spy) >= 6 else 0.0
-            spy_momentum_weak = spy_5d_ret <= 0.0
 
             vix_level = self._fetch_vix_level()
-            vix_high = vix_level >= 25.0
 
-            if spy_below_ma or vix_high or spy_momentum_weak:
-                self.logger.info(
-                    "PM abstention gate ACTIVE — SPY=%.2f MA20=%.2f (below=%s) "
-                    "VIX=%.1f (>=25=%s) SPY5d=%.2f%% (weak=%s)",
-                    spy_close, spy_ma20, spy_below_ma, vix_level, vix_high,
-                    spy_5d_ret * 100, spy_momentum_weak,
-                )
-                return False
-            self.logger.info(
-                "PM abstention gate clear — SPY=%.2f MA20=%.2f VIX=%.1f SPY5d=%.2f%%",
-                spy_close, spy_ma20, vix_level, spy_5d_ret * 100,
-            )
-            return True
+            # VIX: 1.0 at VIX=15, 0.0 at VIX=35
+            vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
+
+            # VIX trend: penalty if VIX spiking vs 5-day avg
+            vix_5d_avg = vix_level  # fallback if can't fetch VIX history
+            try:
+                vix_hist = yf.download("^VIX", period="10d", progress=False, auto_adjust=True)
+                if isinstance(vix_hist.columns, pd.MultiIndex):
+                    vix_hist.columns = vix_hist.columns.get_level_values(0)
+                vix_hist.columns = [c.lower() for c in vix_hist.columns]
+                if len(vix_hist) >= 5:
+                    vix_5d_avg = float(vix_hist["close"].tail(5).mean())
+            except Exception:
+                pass
+            vix_trend = float(np.clip(1.0 - (vix_level - vix_5d_avg) / 5.0, 0.0, 1.0))
+
+            # SPY vs MA20: not a binary block — below MA = 0.4 score (reduced, not zero)
+            ma_score = 1.0 if spy_close >= spy_ma20 else 0.4
+
+            # SPY 5d momentum: 0.5 at flat, 1.0 at +2%, 0.0 at -2%
+            mom_score = float(np.clip(0.5 + spy_5d_ret * 25.0, 0.0, 1.0))
+
+            score = 0.35 * vix_score + 0.20 * vix_trend + 0.30 * ma_score + 0.15 * mom_score
+            return score, vix_level, spy_close, spy_ma20, spy_5d_ret
         except Exception as exc:
-            self.logger.warning("PM abstention gate check failed (%s) — failing open", exc)
+            self.logger.warning("Opportunity score check failed (%s) — failing open", exc)
+            return 1.0, None, None, None, None
+
+    def _market_regime_allows_entries(self) -> bool:
+        """
+        Swing PM abstention gate. Uses opportunity score < 0.35 as the block
+        threshold (equivalent to old VIX>=25 OR SPY<MA20 in most regimes).
+        Fails open if data unavailable.
+        """
+        score, vix, spy_close, spy_ma20, spy_5d_ret = self._compute_opportunity_score()
+        if vix is None:
             return True
+        allows = score >= 0.35
+        if not allows:
+            self.logger.info(
+                "PM abstention gate ACTIVE — score=%.2f SPY=%.2f MA20=%.2f "
+                "VIX=%.1f SPY5d=%.2f%%",
+                score, spy_close, spy_ma20, vix, (spy_5d_ret or 0) * 100,
+            )
+        else:
+            self.logger.info(
+                "PM abstention gate clear — score=%.2f SPY=%.2f MA20=%.2f VIX=%.1f SPY5d=%.2f%%",
+                score, spy_close, spy_ma20, vix, (spy_5d_ret or 0) * 100,
+            )
+        return allows
 
     async def _send_swing_proposals(self):
         """
@@ -1142,14 +1182,16 @@ class PortfolioManager(BaseAgent):
             )
             return
 
-        # Phase 3-Parallel: PM abstention gate — suppress entries on bad regime days
-        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
-        if not regime_ok:
-            self.logger.info("PM abstention gate: suppressing %d swing proposals today",
-                             len(self._swing_proposals))
+        # Phase 88: graduated opportunity score for swing (mirrors intraday gate)
+        swing_opp_score, _vix, _spy, _ma20, _spy5d = await asyncio.to_thread(self._compute_opportunity_score)
+        if swing_opp_score < 0.35:
+            self.logger.info(
+                "Phase 88: opportunity score %.2f < 0.35 — suppressing %d swing proposals",
+                swing_opp_score, len(self._swing_proposals),
+            )
             await self.log_decision(
                 "SWING_ABSTAINED",
-                reasoning={"reason": "PM abstention gate: VIX>=25 or SPY below 20-day MA"},
+                reasoning={"reason": "phase88_opportunity_score_low", "score": round(swing_opp_score, 3)},
             )
             self._swing_proposals = []
             return
@@ -1256,11 +1298,16 @@ class PortfolioManager(BaseAgent):
             })
             return
 
-        # PM abstention gate: skip all intraday entries on bad regime days (VIX>=25 or SPY<MA20)
-        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
-        if not regime_ok:
-            self.logger.info("PM abstention gate: suppressing all intraday entries today")
+        # Phase 88: graduated opportunity score — replaces binary VIX/SPY gate
+        opp_score, _vix, _spy, _ma20, _spy5d = await asyncio.to_thread(self._compute_opportunity_score)
+        if opp_score < 0.35:
+            self.logger.info(
+                "Phase 88: opportunity score %.2f < 0.35 — suppressing all intraday entries", opp_score,
+            )
             return
+        # score 0.35–0.64 → cap at 2 candidates; ≥ 0.65 → normal
+        _phase88_max = TOP_N_INTRADAY if opp_score >= 0.65 else 2
+        self.logger.info("Phase 88: opportunity score %.2f → max_candidates=%d", opp_score, _phase88_max)
 
         # Phase 59: Macro calendar gate
         try:
@@ -1508,7 +1555,7 @@ class PortfolioManager(BaseAgent):
                 return
 
         # Gate 1B: score-spread abstention — reduce picks if model has no strong opinion
-        phase85_max_trades = TOP_N_INTRADAY
+        phase85_max_trades = _phase88_max
         scores_only = [p for _, p in ranked]
         if len(scores_only) >= 10:
             top_n_decile = max(1, len(scores_only) // 10)
@@ -1862,9 +1909,9 @@ class PortfolioManager(BaseAgent):
                 return
         except Exception:
             pass
-        regime_ok = await asyncio.to_thread(self._market_regime_allows_entries)
-        if not regime_ok:
-            self.logger.info("30-min scan skipped — PM abstention gate active (VIX/SPY MA)")
+        _30min_opp, _, _, _, _ = await asyncio.to_thread(self._compute_opportunity_score)
+        if _30min_opp < 0.35:
+            self.logger.info("30-min scan skipped — opportunity score %.2f < 0.35", _30min_opp)
             return
 
         self.logger.info("30-min review: budget available (%.0f%% deployed) — scanning for new entries", gross_pct * 100)
