@@ -17,10 +17,42 @@ Tracks model improvement iterations for active and recent phases.
 
 | Model | Version | Features | Label | Avg Sharpe | Gate |
 |---|---|---|---|---|---|
-| Swing | v142 | 84 | path_quality (5d) | unknown (promoted ~2026-05-01) | ✅ |
-| Intraday | v29 | 50 | realized-R ≥ 0.5 + Phase 85 gates | +1.830 | ✅ |
+| Swing | v142 | 84 | path_quality (5d) | +1.181 (promoted ~2026-05-01) | ✅ |
+| Intraday | v29 | 50 | cross-sectional top-20% + Phase 85 gates | +1.830 | ✅ |
 
-> **Note:** Swing v119 was documented champion but v142 (84 features) was promoted by automated retrain ~May 1. v142 details not fully logged — see model file `app/ml/models/swing_v142.pkl`. Intraday v29 has 50 features (pre-NIS); live inference now computes 58 features causing mismatch — next gate-passing intraday retrain will fix this.
+> **Retrain in progress (2026-05-05 EOD):** Swing v146 (89 feat = 84 + 5 macro NIS) and Intraday v30 (63 feat = 53 + 5 NIS + 5 macro NIS) are training now. Results will be logged below when walk-forward completes.
+
+---
+
+## Retrain Campaign — 2026-05-05 EOD (Macro NIS Integration)
+
+**Context:** Phases 64 (stock NIS) + 90 (macro NIS) added 10 new features with full historical backfill. Current champions (v142/v29) were trained before these features existed — live inference uses them but training didn't see them.
+
+### Swing v146 — 89 features (84 + 5 macro NIS) 🔄 IN PROGRESS
+
+**Training started:** 2026-05-05 ~16:08 ET
+**Features added:** `macro_avg_direction`, `macro_pct_bearish`, `macro_pct_bullish`, `macro_avg_materiality`, `macro_pct_high_risk`
+**Training window:** 3 years (Polygon daily bars, 430 symbols)
+**Gate:** avg Sharpe > 0.80, no fold < -0.30
+
+*Results pending — will update when walk-forward completes.*
+
+**If fails:** Try shorter 3yr window specifically targeting fold 3 (2025 regime). Previous failures (v144/v145 at ~0.28) suggest macro NIS alone doesn't fix the 2025 regime collapse — but a tighter window may help the model not overfit to 2021-2022 data that contradicts recent regime.
+
+---
+
+### Intraday v30 — 58 features (50 + 5 NIS + 3 SPY-relative) 🔄 IN PROGRESS
+
+**Training started:** 2026-05-05 ~16:08 ET
+**Features added over v29 (50 feat):**
+- Phase 64: 5 stock NIS features (`nis_direction_score`, `nis_materiality_score`, `nis_already_priced_in`, `nis_sizing_mult`, `nis_downside_risk`) in `intraday_features.py`
+- Phase 86b: 3 stock-relative SPY features (`stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`) in `intraday_features.py`
+- **Note:** Macro NIS features (Phase 90) live in `features.py` (swing only) — intraday uses `intraday_features.py`, so macro NIS is NOT included in this retrain
+**Label scheme:** `cross_sectional_top20pct_phase89` (same as gate-passing v29)
+**Training window:** 730 days (Alpaca 5min bars, 750 symbols)
+**Gate:** avg Sharpe > 1.50, no fold < -0.30
+
+*Results pending — will update when walk-forward completes.*
 
 ---
 
