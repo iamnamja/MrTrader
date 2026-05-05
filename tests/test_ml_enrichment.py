@@ -132,7 +132,12 @@ class TestFeatureEngineerEnriched:
     def test_all_features_finite(self):
         fe = self._fe()
         result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
+        # NIS features are intentionally NaN when no DB data — XGBoost handles via missing-value direction
+        _nis_keys = {"nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+                     "nis_sizing_mult", "nis_downside_risk"}
         for k, v in result.items():
+            if k in _nis_keys:
+                continue
             assert np.isfinite(v), f"Feature {k} is not finite: {v}"
 
     def test_consecutive_days_signed(self):

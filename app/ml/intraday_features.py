@@ -386,12 +386,15 @@ def compute_intraday_features(
     # Point-in-time daily NIS signal — same lookup as swing model.
     # Intraday entries are short-hold (< 1 session) but news context still
     # matters: high materiality + negative direction = avoid entry.
-    _nis_default = {
-        "nis_direction_score": 0.0,
-        "nis_materiality_score": 0.0,
-        "nis_already_priced_in": 0.5,
-        "nis_sizing_mult": 1.0,
-        "nis_downside_risk": 0.5,
+    # NaN when no data — lets XGBoost use its learned missing-value direction
+    # rather than treating default values as real signal.
+    _nan = float("nan")
+    _nis_missing = {
+        "nis_direction_score": _nan,
+        "nis_materiality_score": _nan,
+        "nis_already_priced_in": _nan,
+        "nis_sizing_mult": _nan,
+        "nis_downside_risk": _nan,
     }
     if symbol is not None:
         try:
@@ -399,9 +402,9 @@ def compute_intraday_features(
             feats.update(_get_nis_features_pit(symbol, as_of_date))
         except Exception as _nis_exc:
             logger.debug("NIS features failed for %s: %s", symbol, _nis_exc)
-            feats.update(_nis_default)
+            feats.update(_nis_missing)
     else:
-        feats.update(_nis_default)
+        feats.update(_nis_missing)
 
     return feats
 

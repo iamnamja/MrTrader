@@ -36,14 +36,16 @@ def _make_nis_row(direction=0.7, materiality=0.6, already_priced_in=0.2,
 class TestNisPitLookup:
     """Unit tests for _get_nis_features_pit."""
 
-    def test_returns_defaults_when_no_as_of_date(self):
+    def test_returns_nan_when_no_as_of_date(self):
+        import math
         from app.ml.features import _get_nis_features_pit
         result = _get_nis_features_pit("AAPL", as_of_date=None)
-        assert result["nis_direction_score"] == 0.0
-        assert result["nis_materiality_score"] == 0.0
-        assert result["nis_sizing_mult"] == 1.0
+        assert math.isnan(result["nis_direction_score"])
+        assert math.isnan(result["nis_materiality_score"])
+        assert math.isnan(result["nis_sizing_mult"])
 
-    def test_returns_defaults_when_no_row_found(self):
+    def test_returns_nan_when_no_row_found(self):
+        import math
         from app.ml.features import _get_nis_features_pit
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
@@ -52,8 +54,8 @@ class TestNisPitLookup:
             patch("app.database.session.get_session", return_value=mock_db),
         ):
             result = _get_nis_features_pit("AAPL", as_of_date=date(2025, 1, 10))
-        assert result["nis_direction_score"] == 0.0
-        assert result["nis_sizing_mult"] == 1.0
+        assert math.isnan(result["nis_direction_score"])
+        assert math.isnan(result["nis_sizing_mult"])
 
     def test_returns_row_values_when_found(self):
         from app.ml.features import _get_nis_features_pit
@@ -65,12 +67,13 @@ class TestNisPitLookup:
         assert abs(result["nis_direction_score"] - 0.8) < 1e-6
         assert abs(result["nis_sizing_mult"] - 1.3) < 1e-6
 
-    def test_returns_defaults_on_db_exception(self):
+    def test_returns_nan_on_db_exception(self):
+        import math
         from app.ml.features import _get_nis_features_pit
         with patch("app.database.session.get_session", side_effect=Exception("db down")):
             result = _get_nis_features_pit("AAPL", as_of_date=date(2025, 1, 10))
-        assert result["nis_direction_score"] == 0.0
-        assert result["nis_sizing_mult"] == 1.0
+        assert math.isnan(result["nis_direction_score"])
+        assert math.isnan(result["nis_sizing_mult"])
 
 
 class TestNisFeaturesInEngineer:
@@ -97,7 +100,8 @@ class TestNisFeaturesInEngineer:
         assert "nis_downside_risk" in feats
         assert abs(feats["nis_direction_score"] - 0.75) < 1e-6
 
-    def test_nis_defaults_when_no_db_row(self):
+    def test_nis_nan_when_no_db_row(self):
+        import math
         from app.ml.features import FeatureEngineer
         bars = _make_bars(120)
         mock_db = MagicMock()
@@ -110,10 +114,11 @@ class TestNisFeaturesInEngineer:
                 as_of_date=date(2025, 6, 1),
             )
         assert feats is not None
-        assert feats["nis_direction_score"] == 0.0
-        assert feats["nis_sizing_mult"] == 1.0
+        assert math.isnan(feats["nis_direction_score"])
+        assert math.isnan(feats["nis_sizing_mult"])
 
-    def test_nis_defaults_when_no_as_of_date(self):
+    def test_nis_nan_when_no_as_of_date(self):
+        import math
         from app.ml.features import FeatureEngineer
         bars = _make_bars(120)
         fe = FeatureEngineer()
@@ -123,7 +128,7 @@ class TestNisFeaturesInEngineer:
             as_of_date=None,
         )
         assert feats is not None
-        assert feats["nis_direction_score"] == 0.0
+        assert math.isnan(feats["nis_direction_score"])
 
     def test_nis_point_in_time_filter(self):
         """DB query must filter as_of_date <= window date (no lookahead)."""
