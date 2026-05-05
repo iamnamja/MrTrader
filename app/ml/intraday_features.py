@@ -382,6 +382,38 @@ def compute_intraday_features(
     feats["seg_x_high_dist"] = float(seg * feats.get("prev_day_high_dist", 0.0))
     feats["seg_x_atr_norm"] = float(seg * feats.get("atr_norm", 0.0))
 
+    # ── Phase 86b: stock-relative SPY features (survive cs_normalize) ───────
+    # These vary by symbol within each day, so cs_normalize preserves signal.
+    # Contrast: raw SPY values (same for every symbol) → zeroed by cs_normalize.
+    if spy_daily_bars is not None and len(spy_daily_bars) >= 6 and daily_bars is not None and len(daily_bars) >= 6:
+        try:
+            spy_d = spy_daily_bars["close"].values.astype(float)
+            stk_d = daily_bars["close"].values.astype(float)
+            spy_5d = float((spy_d[-1] - spy_d[-6]) / (spy_d[-6] + 1e-8))
+            stk_5d = float((stk_d[-1] - stk_d[-6]) / (stk_d[-6] + 1e-8))
+            feats["stock_vs_spy_5d_return"] = float(stk_5d - spy_5d)
+            spy_1d = float((spy_d[-1] - spy_d[-2]) / (spy_d[-2] + 1e-8))
+            stk_1d = float((stk_d[-1] - stk_d[-2]) / (stk_d[-2] + 1e-8))
+            feats["stock_vs_spy_mom_ratio"] = float(stk_1d - spy_1d)
+        except Exception:
+            feats["stock_vs_spy_5d_return"] = 0.0
+            feats["stock_vs_spy_mom_ratio"] = 0.0
+    else:
+        feats["stock_vs_spy_5d_return"] = 0.0
+        feats["stock_vs_spy_mom_ratio"] = 0.0
+
+    # gap_vs_spy_gap: stock's overnight gap minus SPY's — idiosyncratic gap signal
+    stock_gap_pct = feats.get("gap_pct", 0.0)
+    spy_gap_pct = 0.0
+    if spy_bars is not None and len(spy_bars) >= 1 and spy_daily_bars is not None and len(spy_daily_bars) >= 2:
+        try:
+            spy_prior_close = float(spy_daily_bars["close"].values[-2])
+            spy_open = float(spy_bars["open"].values[0])
+            spy_gap_pct = float((spy_open - spy_prior_close) / (spy_prior_close + 1e-8))
+        except Exception:
+            spy_gap_pct = 0.0
+    feats["gap_vs_spy_gap"] = float(stock_gap_pct - spy_gap_pct)
+
     # ── NIS features (Phase 64b) ─────────────────────────────────────────────
     # Point-in-time daily NIS signal — same lookup as swing model.
     # Intraday entries are short-hold (< 1 session) but news context still
@@ -603,4 +635,6 @@ FEATURE_NAMES = [
     # NIS features (Phase 64b)
     "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
     "nis_sizing_mult", "nis_downside_risk",
+    # Phase 86b: stock-relative SPY features (survive cs_normalize)
+    "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
 ]
