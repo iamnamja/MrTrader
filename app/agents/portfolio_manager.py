@@ -871,6 +871,18 @@ class PortfolioManager(BaseAgent):
         except Exception as exc:
             self.logger.warning("EOD backfill failed (non-fatal): %s", exc)
 
+        # Gap 2b: back-fill counterfactual outcomes for gated (blocked) decisions
+        try:
+            from app.database.decision_audit import backfill_gate_outcomes, backfill_scan_abstention_outcomes
+            gate_res = await asyncio.to_thread(backfill_gate_outcomes, 14)
+            scan_res = await asyncio.to_thread(backfill_scan_abstention_outcomes, 14)
+            self.logger.info(
+                "EOD gate backfill: %s gate outcomes, %s scan abstentions updated",
+                gate_res, scan_res,
+            )
+        except Exception as exc:
+            self.logger.warning("EOD gate backfill failed (non-fatal): %s", exc)
+
         # Gap 3: write daily summary row to risk_metrics
         try:
             from app.database.daily_summary import write_daily_summary
@@ -1658,6 +1670,18 @@ class PortfolioManager(BaseAgent):
                     _idb3.close()
             except Exception:
                 pass
+            try:
+                from app.database.decision_audit import write_scan_abstention
+                _spy_px = float(spy_state.get("spy_price") or spy_state.get("spy_close") or 0) or None
+                write_scan_abstention(
+                    gate_type="gate1a_spy_range",
+                    gate_detail=_gate_reason,
+                    proposal_log_batch_id=_intraday_batch_id,
+                    spy_price=_spy_px,
+                    spy_first_hour_range_pct=round(first_hour_range * 100, 3),
+                )
+            except Exception:
+                pass
             return
 
         # Gate 1C: melt-up compression guard — catch sustained low-vol melt-up regime
@@ -1690,6 +1714,18 @@ class PortfolioManager(BaseAgent):
                         _idb3.commit()
                     finally:
                         _idb3.close()
+                except Exception:
+                    pass
+                try:
+                    from app.database.decision_audit import write_scan_abstention
+                    _spy_px2 = float(spy_state.get("spy_price") or spy_state.get("spy_close") or 0) or None
+                    write_scan_abstention(
+                        gate_type="gate1c_meltup",
+                        gate_detail=f"5d_ret={spy_5d_return*100:.2f}% vol={spy_5d_vol*100:.3f}% fhr={first_hour_range*100:.3f}%",
+                        proposal_log_batch_id=_intraday_batch_id,
+                        spy_price=_spy_px2,
+                        spy_first_hour_range_pct=round(first_hour_range * 100, 3),
+                    )
                 except Exception:
                     pass
                 return

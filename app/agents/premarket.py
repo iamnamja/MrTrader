@@ -89,6 +89,12 @@ class PremarketIntelligence:
             nis.invalidate_macro_cache()
             nis_ctx = nis.get_macro_context()
             self._nis_macro_context = nis_ctx
+            # Persist snapshot so the API can serve it after a server restart
+            try:
+                from app.database.decision_audit import persist_nis_macro_snapshot
+                persist_nis_macro_snapshot(nis_ctx)
+            except Exception:
+                pass
             # Back-fill legacy _macro_flags for backwards-compat
             macro: Dict[str, Any] = {}
             for evt in nis_ctx.events_today:

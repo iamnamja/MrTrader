@@ -60,15 +60,21 @@ export interface Position {
 }
 
 export interface Trade {
+  id?: number
   symbol: string
   direction: string
   signal_type?: string
   trade_type?: string
   entry_price?: number
   exit_price?: number
+  current_price?: number
   quantity: number
   pnl?: number
+  unrealized_pl?: number
+  unrealized_plpc?: number
   status: string
+  stop_price?: number
+  target_price?: number
   created_at?: string
   closed_at?: string
 }
@@ -305,6 +311,41 @@ export interface GateSummaryRow {
   block_reason: string | null
   count: number
   avg_pnl_pct: number
+}
+
+export interface GatePerGateRow {
+  block_reason: string | null
+  gate_category: string | null
+  strategy: string | null
+  count: number
+  outcome_count: number
+  avg_outcome_4h_pct: number | null
+  avg_outcome_1d_pct: number | null
+  verdict: 'correct' | 'recalibrate' | 'neutral' | null
+}
+
+export interface GateCategoryRow {
+  gate_category: string | null
+  count: number
+  outcome_count: number
+  avg_outcome_1d_pct: number | null
+}
+
+export interface ScanAbstentionRow {
+  abstained_at: string
+  gate_type: string
+  gate_detail: string | null
+  spy_price_at_abstention: number | null
+  spy_first_hour_range_pct: number | null
+  spy_outcome_4h_pct: number | null
+  spy_outcome_1d_pct: number | null
+  verdict: string | null
+}
+
+export interface GateCalibrationReport {
+  per_gate: GatePerGateRow[]
+  by_category: GateCategoryRow[]
+  scan_abstentions: ScanAbstentionRow[]
 }
 
 export interface DailySummaryRow {
