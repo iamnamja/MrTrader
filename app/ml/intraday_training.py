@@ -141,6 +141,7 @@ class IntradayModelTrainer:
         symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         spy_data = self._fetch_spy(start_dt, end_dt, force_refresh) if fetch_spy else None
         daily_data = self._fetch_daily_all(symbols, start_dt, end_dt)
+        spy_daily_data = self._fetch_daily_all(["SPY"], start_dt, end_dt).get("SPY")
         logger.info("Data fetch complete in %.1fs — %d/%d symbols",
                     (datetime.now() - t0).total_seconds(), len(symbols_data), len(symbols))
 
@@ -169,7 +170,7 @@ class IntradayModelTrainer:
         # ── 2. Build feature matrix (parallel per symbol) ─────────────────────
         t1 = datetime.now()
         X_train, y_train, X_test, y_test, feature_names, raw_train = self._build_daily_matrix(
-            symbols_data, spy_data, daily_data
+            symbols_data, spy_data, daily_data, spy_daily_data
         )
         logger.info("Feature matrix built in %.1fs — %d train / %d test rows, %d features",
                     (datetime.now() - t1).total_seconds(),
@@ -550,9 +551,9 @@ class IntradayModelTrainer:
             return polygon_hit
         return self._fetch_all(symbols, start, end, force_refresh=self._force_refresh)
 
-    def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None):
+    def _build_daily_matrix(self, symbols_data, spy_data, daily_data=None, spy_daily_data=None):
         X_tr, y_tr, X_te, y_te, fnames, raw_tr = self._build_matrix_parallel(
-            symbols_data, spy_data, daily_data or {}
+            symbols_data, spy_data, daily_data or {}, spy_daily_data
         )
         return X_tr, y_tr, X_te, y_te, fnames, raw_tr
 
@@ -575,6 +576,7 @@ class IntradayModelTrainer:
         symbols_data: Dict[str, pd.DataFrame],
         spy_data: Optional[pd.DataFrame],
         daily_data: Dict[str, pd.DataFrame],
+        spy_daily_data: Optional[pd.DataFrame] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         # Collect all trading days across all symbols
         all_days: set = set()
@@ -605,7 +607,7 @@ class IntradayModelTrainer:
 
         syms = list(symbols_data.keys())
         tasks = [
-            (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days)
+            (sym, symbols_data[sym], spy_by_day, daily_data.get(sym), train_days, test_days, spy_daily_data)
             for sym in syms
         ]
 
@@ -821,7 +823,7 @@ def _symbol_to_rows(
     Accepts a single tuple so ProcessPoolExecutor can pickle it:
         (sym, df, spy_by_day, daily_df, train_days, test_days)
     """
-    sym, df, spy_by_day, daily_df, train_days, test_days = args
+    sym, df, spy_by_day, daily_df, train_days, test_days, spy_daily_df = args if len(args) == 7 else (*args, None)
 
     if df is None or len(df) == 0:
         return [], [], [], [], [], []
@@ -838,6 +840,12 @@ def _symbol_to_rows(
     if daily_df is not None and len(daily_df) > 0:
         d_idx = pd.DatetimeIndex(daily_df.index)
         daily_date_arr = np.array(d_idx.normalize().date)
+
+    # SPY daily bars date array for point-in-time slicing (Phase 86b)
+    spy_daily_date_arr = None
+    if spy_daily_df is not None and len(spy_daily_df) > 0:
+        s_idx = pd.DatetimeIndex(spy_daily_df.index)
+        spy_daily_date_arr = np.array(s_idx.normalize().date)
 
     train_rows, train_raw = [], []
     test_rows, test_raw = [], []
@@ -913,6 +921,10 @@ def _symbol_to_rows(
             if daily_df is not None and daily_date_arr is not None:
                 daily_as_of = daily_df.iloc[daily_date_arr < day]
 
+            spy_daily_as_of = None
+            if spy_daily_df is not None and spy_daily_date_arr is not None:
+                spy_daily_as_of = spy_daily_df.iloc[spy_daily_date_arr < day]
+
             feats = compute_intraday_features(
                 feat_bars,
                 spy_by_day.get(day),
@@ -920,6 +932,7 @@ def _symbol_to_rows(
                 prior_day_high=prior_high,
                 prior_day_low=prior_low,
                 daily_bars=daily_as_of,
+                spy_daily_bars=spy_daily_as_of,
                 symbol=sym,
                 as_of_date=day,
             )
