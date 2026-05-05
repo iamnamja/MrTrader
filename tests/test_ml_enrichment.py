@@ -133,10 +133,12 @@ class TestFeatureEngineerEnriched:
         fe = self._fe()
         result = fe.engineer_features("AAPL", _make_bars(260), fetch_fundamentals=False)
         # NIS features are intentionally NaN when no DB data — XGBoost handles via missing-value direction
-        _nis_keys = {"nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
-                     "nis_sizing_mult", "nis_downside_risk"}
+        _nan_ok = {"nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+                   "nis_sizing_mult", "nis_downside_risk",
+                   "macro_avg_direction", "macro_pct_bearish", "macro_pct_bullish",
+                   "macro_avg_materiality", "macro_pct_high_risk"}
         for k, v in result.items():
-            if k in _nis_keys:
+            if k in _nan_ok:
                 continue
             assert np.isfinite(v), f"Feature {k} is not finite: {v}"
 

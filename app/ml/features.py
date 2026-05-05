@@ -47,6 +47,8 @@ Feature groups (74 total):
       SPY trend (63d return), fear spike flag                           — yfinance / caller
   36. NIS features: direction_score, materiality_score, already_priced_in,
       sizing_mult, downside_risk — point-in-time from NewsSignalCache   — Phase 64
+  37. Macro NIS features: avg_direction, pct_bearish, pct_bullish,
+      avg_materiality, pct_high_risk — aggregated from MacroSignalCache — Phase 90
 """
 
 import logging
@@ -63,6 +65,54 @@ from app.indicators.technical import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_macro_nis_features_pit(as_of_date) -> Dict[str, float]:
+    """Point-in-time macro NIS feature lookup from MacroSignalCache.
+
+    Returns the most recent MacroSignalCache row whose date <= as_of_date.
+    Falls back to NaN so XGBoost uses its learned missing-value direction
+    for dates that predate the backfill.
+    """
+    _nan = float("nan")
+    _missing = {
+        "macro_avg_direction": _nan,
+        "macro_pct_bearish": _nan,
+        "macro_pct_bullish": _nan,
+        "macro_avg_materiality": _nan,
+        "macro_pct_high_risk": _nan,
+    }
+    if as_of_date is None:
+        return _missing
+    try:
+        from app.database.session import get_session
+        from app.database.models import MacroSignalCache
+        pit_str = str(as_of_date)[:10]
+        db = get_session()
+        try:
+            row = (
+                db.query(MacroSignalCache)
+                .filter(MacroSignalCache.date <= pit_str)
+                .order_by(MacroSignalCache.date.desc())
+                .first()
+            )
+        finally:
+            db.close()
+        if row is None or not row.events_payload:
+            return _missing
+        feats = row.events_payload.get("macro_nis_features")
+        if not feats:
+            return _missing
+        return {
+            "macro_avg_direction": float(feats.get("macro_avg_direction", _nan)),
+            "macro_pct_bearish": float(feats.get("macro_pct_bearish", _nan)),
+            "macro_pct_bullish": float(feats.get("macro_pct_bullish", _nan)),
+            "macro_avg_materiality": float(feats.get("macro_avg_materiality", _nan)),
+            "macro_pct_high_risk": float(feats.get("macro_pct_high_risk", _nan)),
+        }
+    except Exception as exc:
+        logger.debug("Macro NIS PIT lookup failed: %s", exc)
+        return _missing
 
 
 def _get_nis_features_pit(symbol: str, as_of_date) -> Dict[str, float]:
@@ -1373,6 +1423,25 @@ class FeatureEngineer:
         except Exception as _nis_exc:
             logger.debug("NIS features failed for %s: %s", symbol, _nis_exc)
             features.update(_nis_missing)
+
+        # ── 37. Macro NIS features (Phase 90) ────────────────────────────────
+        # Market-wide sentiment aggregated from per-symbol NIS scores for the day.
+        # Gives the model a regime signal: heavy bearish news across the universe
+        # should suppress swing entries even if an individual stock looks strong.
+        _nan = float("nan")
+        _macro_missing = {
+            "macro_avg_direction": _nan,
+            "macro_pct_bearish": _nan,
+            "macro_pct_bullish": _nan,
+            "macro_avg_materiality": _nan,
+            "macro_pct_high_risk": _nan,
+        }
+        try:
+            _macro = _get_macro_nis_features_pit(as_of_date)
+            features.update(_macro)
+        except Exception as _macro_exc:
+            logger.debug("Macro NIS features failed: %s", _macro_exc)
+            features.update(_macro_missing)
 
         # ── Regime interaction features (Phase 24b) ──────────────────────────
         # Cross-terms let the model learn regime-conditional signal strength.
