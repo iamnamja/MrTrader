@@ -23,7 +23,7 @@ class _TokenBucket:
     to avoid racing the exact boundary.
     """
 
-    def __init__(self, rate: float = 180, per: float = 60.0):
+    def __init__(self, rate: float = 100, per: float = 60.0):
         self._capacity = rate
         self._tokens = rate
         self._rate = rate / per          # tokens per second
@@ -313,6 +313,77 @@ class AlpacaClient:
         except Exception as e:
             logger.error(f"Error fetching bars for {symbol}: {e}")
             raise
+
+    def get_bars_batch(
+        self,
+        symbols: List[str],
+        timeframe: str = "5Min",
+        limit: int = 100,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch bars for many symbols in a single API request.
+
+        Returns dict {symbol: DataFrame} — symbols with no data are omitted.
+        Uses one rate-limiter token for the entire batch (vs. one per symbol in get_bars).
+        Splits into chunks of 200 to stay within Alpaca URL length limits.
+        """
+        timeframe_map = {
+            "1Min": TimeFrame.Minute,
+            "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+            "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+            "1H": TimeFrame.Hour,
+            "1D": TimeFrame.Day,
+            "1Day": TimeFrame.Day,
+        }
+        tf = timeframe_map.get(timeframe, TimeFrame(5, TimeFrameUnit.Minute))
+        is_daily = timeframe in ("1D", "1Day")
+        result: Dict[str, pd.DataFrame] = {}
+        # 5Min bars: 50 symbols per chunk keeps response under Alpaca's page limit
+        # (~50 × 78 bars = 3,900 rows — safely under the ~10k row page cap).
+        # Daily bars: 200 per chunk is fine (25 rows per symbol = 5,000 rows).
+        chunk_size = 50 if not is_daily else 200
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i: i + chunk_size]
+            try:
+                if is_daily:
+                    _start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
+                    request = StockBarsRequest(
+                        symbol_or_symbols=chunk,
+                        timeframe=tf,
+                        start=_start,
+                    )
+                else:
+                    # Do not specify feed — lets Alpaca use SIP on paper accounts
+                    # (IEX covers only a subset of symbols in multi-symbol batch mode)
+                    request = StockBarsRequest(
+                        symbol_or_symbols=chunk,
+                        timeframe=tf,
+                        limit=limit,
+                    )
+                _rate_limiter.acquire()
+                bars_resp = self.data_client.get_stock_bars(request)
+                for sym in chunk:
+                    try:
+                        sym_bars = bars_resp[sym]
+                        if not sym_bars:
+                            continue
+                        records = [
+                            {
+                                "open": b.open, "high": b.high, "low": b.low,
+                                "close": b.close, "volume": b.volume,
+                                "vwap": getattr(b, "vwap", None),
+                                "trade_count": getattr(b, "trade_count", None),
+                            }
+                            for b in sym_bars
+                        ]
+                        timestamps = [b.timestamp for b in sym_bars]
+                        df = pd.DataFrame(records, index=pd.DatetimeIndex(timestamps, name="timestamp"))
+                        result[sym] = df.tail(limit)
+                    except (KeyError, TypeError):
+                        pass
+            except Exception as exc:
+                logger.warning("get_bars_batch chunk %d failed: %s", i // chunk_size, exc)
+        return result
 
     def get_quote(self, symbol: str) -> Optional[Dict[str, float]]:
         """

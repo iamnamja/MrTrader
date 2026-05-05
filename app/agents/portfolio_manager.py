@@ -58,7 +58,7 @@ SPY_ADAPTIVE_DELTA = 1.5   # adaptive re-scan if SPY moves this much from last s
 
 # ── Phase 85: PM abstention gates ────────────────────────────────────────────
 # Gate 1A: skip scan if SPY first-hour (bars 0-11) high-low range < 0.45%
-SPY_MIN_FIRST_HOUR_RANGE = 0.0045
+SPY_MIN_FIRST_HOUR_RANGE = 0.0020
 # Gate 1B: reduce to 1 pick if top-decile score spread above median < threshold
 SCORE_SPREAD_MIN = 0.08
 # Gate 1C: melt-up compression — SPY up >2.5% over 5d, vol <0.60%/d, first hour also compressed
@@ -277,6 +277,21 @@ class PortfolioManager(BaseAgent):
                 self.logger.info("Startup: swing proposals already sent today — skipping re-send")
             if "PREMARKET_INTELLIGENCE" in types:
                 self._premarket_run_today = True
+            # Restore morning intraday candidates so post-restart scans use the short list
+            try:
+                import json
+                from app.database.config_store import get_config as _gc
+                raw = _gc(db, "intraday.morning_candidates")
+                if raw:
+                    payload = json.loads(raw)
+                    if payload.get("date") == today.isoformat() and payload.get("symbols"):
+                        self._morning_intraday_candidates = payload["symbols"]
+                        self.logger.info(
+                            "Startup: restored %d morning intraday candidates from DB",
+                            len(self._morning_intraday_candidates),
+                        )
+            except Exception as _ce:
+                self.logger.debug("Could not restore morning candidates: %s", _ce)
         except Exception as e:
             self.logger.warning("Could not restore daily flags from DB: %s", e)
         finally:
@@ -1219,6 +1234,7 @@ class PortfolioManager(BaseAgent):
 
         self.logger.info("Sending %d swing proposals to Risk Manager (09:50)...", len(self._swing_proposals))
         import time as _time
+        _send_ts = datetime.utcnow()
         for proposal in self._swing_proposals:
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
             self._pending_approvals[proposal["symbol"]] = _time.monotonic()
@@ -1226,6 +1242,20 @@ class PortfolioManager(BaseAgent):
                 "Proposal sent: %s @ $%.2f (confidence=%.2f)",
                 proposal["symbol"], proposal["entry_price"], proposal["confidence"],
             )
+            # Update ProposalLog: mark as SENT to RM
+            try:
+                from app.database.models import ProposalLog
+                from app.database.session import get_session as _gss
+                _sdb = _gss()
+                try:
+                    _sdb.query(ProposalLog).filter(
+                        ProposalLog.proposal_uuid == proposal.get("proposal_uuid"),
+                    ).update({"pm_status": "SENT", "sent_to_rm_at": _send_ts})
+                    _sdb.commit()
+                finally:
+                    _sdb.close()
+            except Exception:
+                pass
 
         await self.log_decision(
             "INSTRUMENTS_SELECTED",
@@ -1368,49 +1398,83 @@ class PortfolioManager(BaseAgent):
                 len(scan_universe), win_str,
             )
 
-        def _fetch_one_intraday(symbol: str) -> Optional[tuple]:
-            """Return (features_dict, prior_day_range) or None."""
-            from app.ml.intraday_features import compute_intraday_features, MIN_BARS
-            try:
-                bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
-                if bars is None or bars.empty or len(bars) < MIN_BARS:
-                    return None
-                daily = self._alpaca.get_bars(symbol, timeframe="1Day", limit=25)
-                prior_close = prior_high = prior_low = None
-                prior_day_range = None
-                if daily is not None and len(daily) >= 2:
-                    prev = daily.iloc[-2]
-                    prior_close = float(prev["close"])
-                    prior_high = float(prev["high"])
-                    prior_low = float(prev["low"])
-                    prior_day_range = prior_high - prior_low
-                from datetime import date as _date
-                feats = compute_intraday_features(
-                    bars, prior_close=prior_close,
-                    prior_day_high=prior_high, prior_day_low=prior_low,
-                    daily_bars=daily,
-                    spy_daily_bars=spy_daily_bars,  # Phase 86: market-condition features
-                    symbol=symbol,
-                    as_of_date=_date.today(),
-                )
-                if feats is None:
-                    return None
-                return feats, prior_day_range
-            except Exception as exc:
-                self.logger.debug("Intraday feature skip %s: %s", symbol, exc)
-                return None
-
         def _fetch_intraday_features() -> tuple:
-            """Return (features_by_symbol, prior_ranges_by_symbol)."""
+            """
+            Two-phase fetch:
+            1. Batch-fetch daily bars for the full universe (1 API call per 200 symbols)
+               to rank by volume and pre-filter to the top 150 liquid symbols.
+            2. Per-symbol 5Min + daily fetch for only those 150 symbols (~300 API calls,
+               ~100s at 3 req/s — well within the 5-min timeout).
+            """
+            from app.ml.intraday_features import compute_intraday_features, MIN_BARS
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from datetime import date as _date
+
+            # ── Phase 1: daily batch to rank by volume, keep top 150 ─────────
+            PREFILTER_N = 150
+            self.logger.info(
+                "Intraday fetch phase 1: daily batch for %d symbols to select top-%d by volume",
+                len(scan_universe), PREFILTER_N,
+            )
+            daily_batch = self._alpaca.get_bars_batch(scan_universe, timeframe="1Day", limit=25)
+            self.logger.info("Daily batch: %d symbols returned", len(daily_batch))
+
+            # Rank by prior-day volume descending, keep top N
+            vol_ranked = sorted(
+                ((sym, float(df.iloc[-2]["volume"]) if len(df) >= 2 else 0.0)
+                 for sym, df in daily_batch.items()),
+                key=lambda x: x[1], reverse=True,
+            )
+            prefiltered = [sym for sym, _ in vol_ranked[:PREFILTER_N]]
+            self.logger.info(
+                "Intraday fetch phase 1 complete: %d → %d symbols after volume filter",
+                len(daily_batch), len(prefiltered),
+            )
+
+            # ── Phase 2: per-symbol 5Min fetch for prefiltered set ───────────
+            # Fetch SPY daily bars here (sync, inside the thread) so the closure
+            # is self-contained — spy_daily_bars in the outer scope isn't assigned yet.
+            try:
+                _spy_state = self._get_spy_intraday_state()
+                _spy_daily_bars = _spy_state.get("spy_daily_bars")
+            except Exception:
+                _spy_daily_bars = None
+
+            def _fetch_one(symbol: str, _spy_daily=_spy_daily_bars) -> Optional[tuple]:
+                try:
+                    bars = self._alpaca.get_bars(symbol, timeframe="5Min", limit=78)
+                    if bars is None or bars.empty or len(bars) < MIN_BARS:
+                        return None
+                    daily = daily_batch.get(symbol)
+                    prior_close = prior_high = prior_low = None
+                    prior_day_range = None
+                    if daily is not None and len(daily) >= 2:
+                        prev = daily.iloc[-2]
+                        prior_close = float(prev["close"])
+                        prior_high = float(prev["high"])
+                        prior_low = float(prev["low"])
+                        prior_day_range = prior_high - prior_low
+                    feats = compute_intraday_features(
+                        bars, prior_close=prior_close,
+                        prior_day_high=prior_high, prior_day_low=prior_low,
+                        daily_bars=daily,
+                        spy_daily_bars=_spy_daily,
+                        symbol=symbol,
+                        as_of_date=_date.today(),
+                    )
+                    if feats is None:
+                        return None
+                    return feats, prior_day_range
+                except Exception as exc:
+                    self.logger.warning("Intraday feature skip %s: %s", symbol, exc)
+                    return None
+
             feat_result: Dict[str, Dict[str, float]] = {}
             range_result: Dict[str, Optional[float]] = {}
-            # Cap at 8 workers — Alpaca's connection pool is 10; 16 workers with
-            # 2 requests/symbol saturated it and silently zeroed out the entire scan.
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                futures = {pool.submit(_fetch_one_intraday, s): s for s in scan_universe}
-                n_ok = n_fail = 0
-                for future in as_completed(futures, timeout=300):
+            n_ok = n_fail = 0
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_fetch_one, s): s for s in prefiltered}
+                for future in as_completed(futures, timeout=240):
                     sym = futures[future]
                     try:
                         out = future.result(timeout=30)
@@ -1423,18 +1487,19 @@ class PortfolioManager(BaseAgent):
                         n_ok += 1
                     else:
                         n_fail += 1
+
             self.logger.info(
                 "Intraday feature fetch: %d/%d symbols computed (%d failed/skipped)",
-                n_ok, len(scan_universe), n_fail,
+                n_ok, len(prefiltered), n_fail,
             )
             return feat_result, range_result
 
         try:
             features_by_symbol, prior_ranges_by_symbol = await asyncio.wait_for(
-                asyncio.to_thread(_fetch_intraday_features), timeout=420
+                asyncio.to_thread(_fetch_intraday_features), timeout=300
             )
         except asyncio.TimeoutError:
-            self.logger.error("Intraday feature fetch timed out after 7 minutes — skipping")
+            self.logger.error("Intraday feature fetch timed out after 5 minutes — skipping")
             return
 
         if not features_by_symbol:
@@ -1501,6 +1566,38 @@ class PortfolioManager(BaseAgent):
             ", ".join(f"{s}={p}" for s, p in top5),
         )
 
+        # Persist scan results to ProposalLog (log top-N for DB, does not cap scoring universe)
+        _scan_time_utc = datetime.utcnow()
+        _intraday_batch_id = f"intra_{_scan_time_utc.strftime('%Y%m%d_%H%M%S')}_{win_str.replace(':', '')}"
+        _LOG_TOP_N = 50  # how many rows to write to proposal_log; scoring uses full ranked list
+        try:
+            from app.database.models import ProposalLog
+            from app.database.session import get_session as _gs2
+            _idb = _gs2()
+            try:
+                _intraday_ver = getattr(self.intraday_model, "version", None)
+                for _rank, (_sym, _prob) in enumerate(ranked[:_LOG_TOP_N], start=1):
+                    _row = ProposalLog(
+                        strategy="intraday",
+                        batch_id=_intraday_batch_id,
+                        scan_time=_scan_time_utc,
+                        scan_window=win_str,
+                        symbol=_sym,
+                        rank=_rank,
+                        ml_score=round(float(_prob), 4),
+                        confidence=round(float(_prob), 4),
+                        above_threshold=(_prob >= intraday_min_conf),
+                        model_version=str(_intraday_ver) if _intraday_ver else None,
+                        pm_status="SCORED",
+                        proposed_at=_scan_time_utc,
+                    )
+                    _idb.add(_row)
+                _idb.commit()
+            finally:
+                _idb.close()
+        except Exception as _loge:
+            self.logger.debug("ProposalLog intraday write failed (non-fatal): %s", _loge)
+
         # Store top-N by score for later scans (10:45, 13:00 use this instead of full universe)
         if not use_morning_candidates:
             self._morning_intraday_candidates = [
@@ -1510,6 +1607,22 @@ class PortfolioManager(BaseAgent):
                 "Stored %d morning candidates for afternoon scans",
                 len(self._morning_intraday_candidates),
             )
+            # Persist to DB so candidates survive a restart mid-day
+            try:
+                import json
+                from app.database.session import get_session as _gs
+                from app.database.config_store import set_config as _sc
+                _db = _gs()
+                try:
+                    _sc(_db, "intraday.morning_candidates", json.dumps({
+                        "date": datetime.now(ET).strftime("%Y-%m-%d"),
+                        "symbols": self._morning_intraday_candidates,
+                    }), description="Morning intraday candidates — persisted for restart recovery")
+                    _db.commit()
+                finally:
+                    _db.close()
+            except Exception as _pe:
+                self.logger.debug("Could not persist morning candidates: %s", _pe)
 
         # ── Phase 85: PM abstention gates ────────────────────────────────────────
         # Fetch SPY intraday state once; gates are non-fatal if data unavailable.
@@ -1521,6 +1634,7 @@ class PortfolioManager(BaseAgent):
 
         # Gate 1A: SPY first-hour range gate — abstain if market has no intraday range
         if first_hour_range is not None and first_hour_range < SPY_MIN_FIRST_HOUR_RANGE:
+            _gate_reason = f"gate1a_spy_range:{first_hour_range*100:.3f}%<{SPY_MIN_FIRST_HOUR_RANGE*100:.2f}%"
             self.logger.info(
                 "Phase 85 Gate 1A: SPY first-hour range %.3f%% < %.2f%% — abstaining %s scan",
                 first_hour_range * 100, SPY_MIN_FIRST_HOUR_RANGE * 100, win_str,
@@ -1531,6 +1645,19 @@ class PortfolioManager(BaseAgent):
                 "threshold_pct": SPY_MIN_FIRST_HOUR_RANGE * 100,
                 "window": win_str,
             })
+            try:
+                from app.database.models import ProposalLog
+                from app.database.session import get_session as _gs3
+                _idb3 = _gs3()
+                try:
+                    _idb3.query(ProposalLog).filter(
+                        ProposalLog.batch_id == _intraday_batch_id,
+                    ).update({"scan_gate_block": _gate_reason, "pm_status": "SCAN_GATE_BLOCKED"})
+                    _idb3.commit()
+                finally:
+                    _idb3.close()
+            except Exception:
+                pass
             return
 
         # Gate 1C: melt-up compression guard — catch sustained low-vol melt-up regime
@@ -1552,6 +1679,19 @@ class PortfolioManager(BaseAgent):
                     "spy_first_hour_range_pct": round(first_hour_range * 100, 3),
                     "window": win_str,
                 })
+                try:
+                    from app.database.models import ProposalLog
+                    from app.database.session import get_session as _gs3
+                    _idb3 = _gs3()
+                    try:
+                        _idb3.query(ProposalLog).filter(
+                            ProposalLog.batch_id == _intraday_batch_id,
+                        ).update({"scan_gate_block": "gate1c_meltup", "pm_status": "SCAN_GATE_BLOCKED"})
+                        _idb3.commit()
+                    finally:
+                        _idb3.close()
+                except Exception:
+                    pass
                 return
 
         # Gate 1B: score-spread abstention — reduce picks if model has no strong opinion
@@ -1683,6 +1823,31 @@ class PortfolioManager(BaseAgent):
                 "Intraday proposal: %s @ $%.2f (confidence=%.2f)",
                 symbol, price, confidence,
             )
+            try:
+                from app.database.models import ProposalLog
+                from app.database.session import get_session as _gs4
+                _idb4 = _gs4()
+                try:
+                    _idb4.query(ProposalLog).filter(
+                        ProposalLog.batch_id == _intraday_batch_id,
+                        ProposalLog.symbol == symbol,
+                    ).update({
+                        "pm_status": "SENT",
+                        "pm_decided_at": datetime.utcnow(),
+                        "sent_to_rm_at": datetime.utcnow(),
+                        "proposal_uuid": proposal.get("proposal_uuid"),
+                        "direction": proposal.get("direction", "BUY"),
+                        "entry_price": price,
+                        "stop_price": proposal.get("stop_loss"),
+                        "target_price": proposal.get("profit_target"),
+                        "quantity": proposal.get("quantity"),
+                        "nis_signal": proposal.get("news_signal"),
+                    })
+                    _idb4.commit()
+                finally:
+                    _idb4.close()
+            except Exception:
+                pass
             try:
                 from app.database.decision_audit import write_decision
                 write_decision(
@@ -2326,6 +2491,40 @@ class PortfolioManager(BaseAgent):
                 )
             except Exception:
                 pass
+
+            # ProposalLog: persist swing proposal as PENDING (status updated to SENT in _send_swing_proposals)
+            try:
+                from app.database.models import ProposalLog
+                from app.database.session import get_session as _gsp
+                _pdb = _gsp()
+                try:
+                    _swing_ver = getattr(self.model, "version", None)
+                    _pl_row = ProposalLog(
+                        proposal_uuid=proposal["proposal_uuid"],
+                        strategy="swing",
+                        scan_time=datetime.utcnow(),
+                        symbol=symbol,
+                        ml_score=round(float(confidence), 4),
+                        confidence=round(float(proposal.get("confidence", confidence)), 4),
+                        above_threshold=True,
+                        model_version=str(_swing_ver) if _swing_ver else None,
+                        top_features=self._top_features_for(symbol, "swing"),
+                        nis_signal=proposal.get("news_signal"),
+                        pm_status="PENDING",
+                        pm_decided_at=datetime.utcnow(),
+                        direction=proposal.get("direction", "BUY"),
+                        entry_price=proposal.get("entry_price"),
+                        stop_price=proposal.get("stop_loss"),
+                        target_price=proposal.get("profit_target"),
+                        quantity=proposal.get("quantity"),
+                        proposed_at=datetime.utcnow(),
+                    )
+                    _pdb.add(_pl_row)
+                    _pdb.commit()
+                finally:
+                    _pdb.close()
+            except Exception as _ple:
+                self.logger.debug("ProposalLog swing write failed (non-fatal): %s", _ple)
 
             proposals.append(proposal)
 

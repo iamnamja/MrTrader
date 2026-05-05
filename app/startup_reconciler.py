@@ -95,20 +95,66 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
             for ghost in stale_ghosts:
                 if ghost.symbol not in alpaca_positions:
+                    exit_price, exit_order_id = _lookup_sell_fill(alpaca, ghost.symbol, ghost.quantity)
                     ghost.status = "CLOSED"
-                    ghost.exit_reason = "RECONCILE_GHOST_EXPIRED"
+                    ghost.exit_reason = "reconcile_ghost_expired"
                     ghost.closed_at = datetime.utcnow()
-                    logger.info(
-                        "Closing stale RECONCILE_GHOST Trade#%d %s (no longer in Alpaca)",
-                        ghost.id, ghost.symbol,
-                    )
+                    if exit_price is not None:
+                        ghost.exit_price = exit_price
+                        ghost.pnl = round((exit_price - float(ghost.entry_price or 0)) * (ghost.quantity or 0), 2)
+                        logger.info(
+                            "Closing stale RECONCILE_GHOST Trade#%d %s — exit=$%.4f pnl=$%.2f (order %s)",
+                            ghost.id, ghost.symbol, exit_price, ghost.pnl or 0, exit_order_id or "?",
+                        )
+                    else:
+                        logger.info(
+                            "Closing stale RECONCILE_GHOST Trade#%d %s (no Alpaca sell found)",
+                            ghost.id, ghost.symbol,
+                        )
         except Exception as exc:
             logger.error("Ghost position check failed: %s", exc)
 
     # ── 2. Pending fills — resolve via Alpaca order status ────────────────────
     # PENDING_FILL trades have an alpaca_order_id; check whether they filled,
     # were cancelled, or are still open (leave those — Trader will poll them).
+    # Also check CANCELLED trades with real Alpaca order IDs — the order may have
+    # filled before the DB was updated (restart race condition).
     try:
+        cancelled_with_id = [
+            t for t in db_session.query(Trade).filter_by(status="CANCELLED").all()
+            if t.alpaca_order_id and not t.alpaca_order_id.startswith("order-")
+        ]
+        for trade in cancelled_with_id:
+            try:
+                order_status = alpaca.get_order_status(trade.alpaca_order_id)
+            except Exception:
+                continue
+            if order_status is None:
+                continue
+            status_str = str(order_status.get("status", "")).lower()
+            filled_qty = int(order_status.get("filled_qty") or 0)
+            filled_price = order_status.get("filled_avg_price")
+            if status_str in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
+                # The order actually filled — this is a cancel/fill mismatch
+                # Mark it as superseded; the position is tracked elsewhere (RECONCILED row)
+                logger.warning(
+                    "CANCEL/FILL MISMATCH: Trade#%d %s marked CANCELLED but Alpaca shows FILLED "
+                    "@ $%s — marking RECONCILE_SUPERSEDED",
+                    trade.id, trade.symbol, filled_price,
+                )
+                trade.status = "RECONCILE_SUPERSEDED"
+                trade.status_reason = f"Order filled on Alpaca but DB marked CANCELLED; position tracked separately"
+                db_session.add(AuditLog(
+                    action="RECONCILE_CANCEL_FILL_MISMATCH",
+                    details={
+                        "trade_id": trade.id, "symbol": trade.symbol,
+                        "alpaca_order_id": trade.alpaca_order_id,
+                        "filled_price": float(filled_price), "filled_qty": filled_qty,
+                        "reason": "CANCELLED in DB but FILLED on Alpaca — restart race condition",
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                    timestamp=datetime.utcnow(),
+                ))
         pending_trades = db_session.query(Trade).filter_by(status="PENDING_FILL").all()
         for trade in pending_trades:
             if not trade.alpaca_order_id:
@@ -330,6 +376,31 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         logger.info("Startup reconciliation: clean — no issues found")
 
     return result
+
+
+def _lookup_sell_fill(alpaca, symbol: str, qty) -> tuple:
+    """Return (filled_avg_price, order_id) for the most recent SELL fill for symbol, or (None, None)."""
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
+        orders = alpaca.trading_client.get_orders(req)
+        target_qty = int(qty or 0)
+        for o in orders:
+            if o.symbol != symbol:
+                continue
+            if "SELL" not in str(o.side).upper():
+                continue
+            if "FILLED" not in str(o.status).upper():
+                continue
+            filled_qty = int(o.filled_qty or 0)
+            if target_qty > 0 and abs(filled_qty - target_qty) > max(5, target_qty * 0.2):
+                continue
+            if o.filled_avg_price:
+                return float(o.filled_avg_price), str(o.id)
+    except Exception as exc:
+        logger.debug("_lookup_sell_fill failed for %s: %s", symbol, exc)
+    return None, None
 
 
 def _get_open_alpaca_orders(alpaca) -> List[Dict[str, Any]]:

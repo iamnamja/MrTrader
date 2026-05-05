@@ -16,7 +16,10 @@ class Trade(Base):
     entry_price = Column(Float, nullable=False)
     exit_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=False)
-    status = Column(String(20), default="PENDING")  # PENDING_FILL, ACTIVE, CLOSED, REJECTED, CANCELLED, RECONCILE_GHOST
+    # PENDING_FILL | ACTIVE | CLOSED | REJECTED | CANCELLED
+    # RECONCILE_GHOST | RECONCILE_SUPERSEDED | FORCE_CLOSED_NO_POSITION
+    status = Column(String(30), default="PENDING")
+    status_reason = Column(String(255), nullable=True)   # human-readable note on current status
     pnl = Column(Float, nullable=True)
     signal_type = Column(String(20), nullable=True)   # EMA_CROSSOVER | RSI_DIP | ML_RANK | RECONCILED
     trade_type = Column(String(20), nullable=True, default="swing")  # swing | intraday
@@ -26,6 +29,9 @@ class Trade(Base):
     bars_held = Column(Integer, default=0)            # bars in position
     alpaca_order_id = Column(String(50), nullable=True, index=True)   # Alpaca order UUID; set after order placed
     proposal_id = Column(String(36), nullable=True, index=True)       # PM-generated UUID; threads through full chain
+    # stop_hit | target_hit | time_exit | pm_review | news_exit | manual | kill_switch
+    # | eod_intraday | reconcile_ghost_expired | reconcile_superseded
+    exit_reason = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     closed_at = Column(DateTime, nullable=True)
 
@@ -341,6 +347,229 @@ class PendingLimitOrder(Base):
     trade_type = Column(String(20), nullable=False, default="swing")
     signal_type = Column(String(30), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class SwingProposalLog(Base):
+    """PM-generated swing proposals — persisted at scan time, survives restarts.
+
+    One row per symbol per scan batch. Tracks the full scoring context so
+    you can reconstruct why each symbol was proposed or skipped.
+    """
+    __tablename__ = "swing_proposal_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Batch identity — all rows from one pre-market scan share this
+    batch_id = Column(String(40), nullable=False, index=True)   # ISO date + scan label e.g. "2026-05-05_premarket"
+    scan_time = Column(DateTime, nullable=False, default=datetime.utcnow)
+    scan_label = Column(String(30), nullable=False, default="premarket")  # "premarket" | "30min" | "rescan"
+
+    # Symbol + ranking
+    symbol = Column(String(10), nullable=False, index=True)
+    rank = Column(Integer, nullable=True)           # rank within batch (1 = highest score)
+    ml_score = Column(Float, nullable=True)         # raw model confidence
+
+    # Proposal details
+    direction = Column(String(5), nullable=False, default="BUY")
+    entry_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    target_price = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+    confidence = Column(Float, nullable=True)       # final confidence (after NIS overlay)
+    sector = Column(String(50), nullable=True)
+
+    # Market context at scan time
+    vix_at_scan = Column(Float, nullable=True)
+    spy_price_at_scan = Column(Float, nullable=True)
+    spy_ma20_at_scan = Column(Float, nullable=True)
+    spy_5d_return_at_scan = Column(Float, nullable=True)
+    opportunity_score = Column(Float, nullable=True)  # Phase 88 composite score
+
+    # Gate results (JSON): each gate that passed/blocked this proposal
+    gate_results = Column(JSON, nullable=True)      # {"earnings": "pass", "macro": "block: FOMC", ...}
+    nis_signal = Column(JSON, nullable=True)        # NIS action_policy, scores, rationale
+    ai_review = Column(JSON, nullable=True)         # Claude AI review if run
+
+    # Status lifecycle
+    status = Column(String(20), nullable=False, default="PENDING", index=True)
+    # PENDING → SENT (forwarded to RM) | BLOCKED (gate/NIS blocked before RM)
+    # EXPIRED (not sent — restart/missed window) | SUPPRESSED (opportunity score low)
+    status_reason = Column(String(255), nullable=True)
+
+    # RM outcome (filled in after RM decides)
+    rm_status = Column(String(20), nullable=True)   # APPROVED | REJECTED | None (not yet sent)
+    rm_reason = Column(String(255), nullable=True)
+    rm_decided_at = Column(DateTime, nullable=True)
+
+    # Trade linkage
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+
+    proposed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    sent_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<SwingProposalLog {self.symbol} {self.scan_label} {self.status}>"
+
+
+class IntraProposalLog(Base):
+    """PM-generated intraday scan results — one row per symbol per scan window.
+
+    Written at scoring time so you can see what PM considered even if gates blocked
+    the entire scan before proposals were forwarded to RM.
+    """
+    __tablename__ = "intra_proposal_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    scan_time = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    window = Column(String(10), nullable=False)  # "09:45", "10:45", "13:00", "12:12" etc.
+
+    symbol = Column(String(10), nullable=False, index=True)
+    rank = Column(Integer, nullable=True)
+    ml_score = Column(Float, nullable=True)
+    above_threshold = Column(Boolean, nullable=False, default=False)
+
+    # Scan-level gate block (1A/1B/1C) — applies to all symbols in this window
+    scan_gate_block = Column(String(100), nullable=True)  # None = not blocked; else reason
+
+    # Per-symbol proposal outcome (only set for symbols that survived scan gates)
+    entry_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    target_price = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="SCORED")
+    # SCORED | SENT | ENTRY_GATE_BLOCKED | NIS_BLOCKED | COOLDOWN
+
+    nis_signal = Column(JSON, nullable=True)
+    entry_gate_reason = Column(String(255), nullable=True)
+
+    # RM outcome (filled after RM decides)
+    rm_status = Column(String(20), nullable=True)
+    rm_reason = Column(String(255), nullable=True)
+
+    proposed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<IntraProposalLog {self.symbol} {self.window} {self.status}>"
+
+
+class ProposalLog(Base):
+    """Unified PM proposal log — one row per symbol per scan, covers both swing and intraday.
+
+    Lifecycle: PM writes at scan time (pm_status=SCORED/SENT/GATE_BLOCKED).
+    RM writes back rm_status after approving/rejecting.
+    Trader writes trade_id after placing the order.
+
+    proposal_uuid is the shared key that flows through PM queue message -> RM -> Trader -> Trade.
+    """
+    __tablename__ = "proposal_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+    proposal_uuid = Column(String(36), nullable=True, index=True)  # PM-generated UUID; may be null for gate-blocked rows
+    strategy = Column(String(10), nullable=False, index=True)       # 'swing' | 'intraday'
+    batch_id = Column(String(50), nullable=True, index=True)        # groups all rows from one scan
+
+    # ── Trigger context ───────────────────────────────────────────────────────
+    triggered_by = Column(String(30), nullable=True)  # 'scheduled' | 'manual_ui' | 'adaptive_rescan' | 'pm_review'
+    scan_time = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    scan_window = Column(String(20), nullable=True)   # '09:45' | 'premarket' | '13:00' etc.
+    scan_label = Column(String(30), nullable=True)    # human label e.g. 'premarket', '30min_review'
+
+    # ── Symbol ────────────────────────────────────────────────────────────────
+    symbol = Column(String(10), nullable=False, index=True)
+    rank = Column(Integer, nullable=True)
+    sector = Column(String(50), nullable=True)
+
+    # ── ML scoring ────────────────────────────────────────────────────────────
+    ml_score = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)         # final confidence after any NIS adjustment
+    above_threshold = Column(Boolean, nullable=True)
+    model_version = Column(String(20), nullable=True) # e.g. 'intraday_v29', 'swing_v38'
+    top_features = Column(JSON, nullable=True)        # {feature: value} sorted by importance
+
+    # ── Market context at scan time ───────────────────────────────────────────
+    vix_at_scan = Column(Float, nullable=True)
+    spy_price_at_scan = Column(Float, nullable=True)
+    spy_5d_return_at_scan = Column(Float, nullable=True)
+    spy_first_hour_range = Column(Float, nullable=True)
+    opportunity_score = Column(Float, nullable=True)
+
+    # ── Gate results ──────────────────────────────────────────────────────────
+    # JSON: {"gate_1a": {"value": 0.27, "threshold": 0.20, "result": "pass"}, ...}
+    gate_results = Column(JSON, nullable=True)
+    scan_gate_block = Column(String(120), nullable=True)  # set when entire scan blocked before per-symbol step
+    nis_signal = Column(JSON, nullable=True)              # full NIS Tier 2 response
+
+    # ── PM outcome ────────────────────────────────────────────────────────────
+    # SCORED | SENT | SCAN_GATE_BLOCKED | ENTRY_GATE_BLOCKED | NIS_BLOCKED | COOLDOWN | SUPPRESSED
+    pm_status = Column(String(30), nullable=False, default="SCORED", index=True)
+    pm_status_reason = Column(String(255), nullable=True)
+    pm_decided_at = Column(DateTime, nullable=True)
+
+    # ── Proposal details (set when pm_status=SENT) ───────────────────────────
+    direction = Column(String(5), nullable=True, default="BUY")
+    entry_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    target_price = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+
+    # ── RM outcome (RM writes back using proposal_uuid) ───────────────────────
+    # PENDING | APPROVED | REJECTED | WITHDRAWN
+    rm_status = Column(String(20), nullable=True, index=True)
+    rm_reason = Column(String(255), nullable=True)
+    rm_rule = Column(String(50), nullable=True)       # which RM rule fired e.g. 'max_positions'
+    rm_inputs = Column(JSON, nullable=True)           # portfolio state at RM decision time
+    rm_decided_at = Column(DateTime, nullable=True)
+
+    # ── Outcome back-fill (EOD script) ────────────────────────────────────────
+    outcome_pnl_pct = Column(Float, nullable=True)    # realized P&L % if trade taken
+    outcome_4h_pct = Column(Float, nullable=True)     # price change 4h after signal
+    outcome_1d_pct = Column(Float, nullable=True)     # price change 1d after signal
+
+    # ── Trade linkage ─────────────────────────────────────────────────────────
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+
+    # ── Timestamps ────────────────────────────────────────────────────────────
+    proposed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    sent_to_rm_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<ProposalLog {self.strategy} {self.symbol} {self.pm_status}>"
+
+
+class ProposalEvent(Base):
+    """Append-only lineage log — one row per state change per proposal.
+
+    Answers: what happened to this proposal, in what order, and why?
+    Never updated — only inserted. Query by proposal_uuid to reconstruct timeline.
+    """
+    __tablename__ = "proposal_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    proposal_uuid = Column(String(36), nullable=False, index=True)
+    event_time = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    # Who triggered this event
+    # 'portfolio_manager' | 'risk_manager' | 'trader' | 'user' | 'reconciler'
+    actor = Column(String(30), nullable=False)
+
+    # SCORED | SCAN_GATE_BLOCKED | ENTRY_GATE_BLOCKED | NIS_BLOCKED | COOLDOWN
+    # SENT_TO_RM | RM_APPROVED | RM_REJECTED | RM_WITHDRAWN
+    # ORDER_PLACED | PARTIALLY_FILLED | FILLED
+    # STOP_MOVED | PM_REVIEW_HOLD | PM_REVIEW_EXIT
+    # TRADE_CLOSED | KILL_SWITCH | FORCE_CLOSED
+    event_type = Column(String(40), nullable=False, index=True)
+
+    # Free-form JSON — whatever is relevant to this specific event
+    # e.g. STOP_MOVED: {old_stop, new_stop, reason, current_price}
+    # e.g. RM_REJECTED: {rule, portfolio_heat, open_positions, limit}
+    # e.g. TRADE_CLOSED: {exit_price, pnl, pnl_pct, exit_reason, bars_held}
+    details = Column(JSON, nullable=True)
+
+    def __repr__(self):
+        return f"<ProposalEvent {self.proposal_uuid[:8]} {self.event_type} {self.event_time}>"
 
 
 class ProcessHeartbeat(Base):

@@ -27,7 +27,7 @@ from app.agents.risk_rules import (
     validate_position_size,
     validate_sector_concentration,
 )
-from app.database.models import RiskMetric, TradeProposal
+from app.database.models import RiskMetric, TradeProposal, ProposalLog, ProposalEvent
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -163,6 +163,48 @@ class RiskManager(BaseAgent):
         finally:
             db.close()
 
+    def _writeback_proposal_log(
+        self,
+        proposal_uuid: Optional[str],
+        rm_status: str,
+        rm_reason: str,
+        rm_rule: str,
+        rm_inputs: Dict[str, Any],
+    ) -> None:
+        """Write RM decision back to ProposalLog row (keyed by proposal_uuid) and append event."""
+        if not proposal_uuid:
+            return
+        from datetime import datetime as _dt
+        now = _dt.utcnow()
+        db = get_session()
+        try:
+            rows = db.query(ProposalLog).filter(ProposalLog.proposal_uuid == proposal_uuid).all()
+            for row in rows:
+                row.rm_status = rm_status
+                row.rm_reason = rm_reason[:255] if rm_reason else None
+                row.rm_rule = rm_rule[:50] if rm_rule else None
+                row.rm_inputs = rm_inputs
+                row.rm_decided_at = now
+            event_type = "RM_APPROVED" if rm_status == "APPROVED" else "RM_REJECTED"
+            db.add(ProposalEvent(
+                proposal_uuid=proposal_uuid,
+                event_time=now,
+                actor="risk_manager",
+                event_type=event_type,
+                details={
+                    "rm_status": rm_status,
+                    "rm_reason": rm_reason,
+                    "rm_rule": rm_rule,
+                    "rm_inputs": rm_inputs,
+                },
+            ))
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.debug("ProposalLog writeback failed for %s: %s", proposal_uuid, exc)
+        finally:
+            db.close()
+
     # ─── Approval / Rejection ─────────────────────────────────────────────────
 
     async def _approve(self, proposal: Dict[str, Any], reasoning: Dict[str, Any], db_proposal=None) -> None:
@@ -173,6 +215,17 @@ class RiskManager(BaseAgent):
 
         if db_proposal:
             await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "APPROVED")
+
+        # Write back to unified ProposalLog
+        rm_inputs = {k: reasoning.get(k) for k in (
+            "portfolio_heat", "open_positions", "open_intraday", "cash_available",
+            "max_position_pct", "daily_loss_limit_hit",
+        ) if reasoning.get(k) is not None}
+        await asyncio.to_thread(
+            self._writeback_proposal_log,
+            proposal.get("proposal_uuid"),
+            "APPROVED", "", "", rm_inputs,
+        )
 
         approved_proposal = {
             **proposal,
@@ -199,6 +252,20 @@ class RiskManager(BaseAgent):
         )
         if db_proposal:
             await asyncio.to_thread(self._update_proposal_status, db_proposal.id, "REJECTED", failed_rule)
+
+        # Write back to unified ProposalLog
+        rm_inputs = {k: reasoning.get(k) for k in (
+            "portfolio_heat", "open_positions", "open_intraday", "cash_available",
+            "max_position_pct", "daily_loss_limit_hit",
+        ) if reasoning.get(k) is not None}
+        await asyncio.to_thread(
+            self._writeback_proposal_log,
+            proposal.get("proposal_uuid"),
+            "REJECTED",
+            reasoning.get("message", failed_rule),
+            failed_rule,
+            rm_inputs,
+        )
         # Optional AI veto explanation (non-blocking)
         try:
             from app.ai.claude_client import explain_risk_veto
