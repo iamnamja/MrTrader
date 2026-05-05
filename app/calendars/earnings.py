@@ -107,15 +107,56 @@ class EarningsCalendar:
         return (d - date.today()).days
 
     def prefetch(self, symbols: List[str]) -> None:
-        """Warm cache for a batch of symbols — call at 06:00 ET pre-market."""
-        logger.info("Prefetching earnings calendar for %d symbols", len(symbols))
-        ok = fail = 0
-        for sym in symbols:
-            _, data_ok = self._get_next_earnings(sym)
-            if data_ok:
+        """Warm cache for a batch of symbols — call at 06:00 ET pre-market.
+
+        Makes one bulk Finnhub call (the API returns the full calendar regardless
+        of symbol filter), then falls back to per-symbol FMP only for symbols not
+        found in the Finnhub response. This avoids 500 individual Finnhub calls
+        that immediately trigger 429 rate limits.
+        """
+        if not symbols:
+            return
+        logger.info("Prefetching earnings calendar for %d symbols (bulk Finnhub)", len(symbols))
+        now = time.monotonic()
+        today = date.today()
+        window = today + timedelta(days=30)
+        found_via_finnhub: set[str] = set()
+
+        # ── Single bulk Finnhub call ─────────────────────────────────────────
+        try:
+            from app.news.sources.finnhub_source import fetch_earnings_calendar
+            bulk = fetch_earnings_calendar(symbols, from_date=today, to_date=window)
+            symbol_set = {s.upper() for s in symbols}
+            # Populate cache for every symbol in the request
+            for sym in symbol_set:
+                entry = bulk.get(sym)
+                if entry and entry.get("date"):
+                    d = entry["date"]
+                    if isinstance(d, str):
+                        d = date.fromisoformat(d)
+                    self._cache[sym] = (d, now, True)
+                else:
+                    # Finnhub returned cleanly but no upcoming earnings → safe
+                    self._cache[sym] = (None, now, True)
+                found_via_finnhub.add(sym)
+            logger.info("Finnhub bulk fetch: %d symbols populated", len(found_via_finnhub))
+        except Exception as exc:
+            logger.warning("Finnhub bulk earnings fetch failed: %s — falling back to per-symbol FMP", exc)
+
+        # ── Per-symbol FMP fallback for any symbol Finnhub didn't cover ──────
+        missing = [s for s in symbols if s.upper() not in found_via_finnhub]
+        ok = len(found_via_finnhub)
+        fail = 0
+        for sym in missing:
+            try:
+                d = _fetch_fmp_next_earnings(sym)
+                self._cache[sym.upper()] = (d, now, True)
                 ok += 1
-            else:
+            except Exception as exc:
+                logger.warning("FMP earnings fetch failed for %s: %s — fail-closed", sym, exc)
+                self._cache[sym.upper()] = (None, now, False)
                 fail += 1
+
         logger.info(
             "Earnings prefetch complete: %d ok, %d data-unavailable (fail-closed for swing)",
             ok, fail,
