@@ -1,7 +1,7 @@
 # MrTrader — Active Phase Roadmap
 
-**Last updated:** 2026-05-05
-**Status:** Paper trading active. 8 open positions. Models loaded: swing v142, intraday v29.
+**Last updated:** 2026-05-05 (EOD update)
+**Status:** Paper trading active. 5 open positions (ZS closed target_hit +6.8%). Retrains running. Models: swing v142, intraday v29.
 **Completed phases:** `docs/phases_archive.md`
 
 ---
@@ -10,11 +10,13 @@
 
 | Model | Version | Avg Sharpe | Gate | Features | Notes |
 |---|---|---|---|---|---|
-| Swing | v142 | +1.181 | ✅ >0.80 | 84 | Active champion |
+| Swing | v142 | +1.181 | ✅ >0.80 | 84 | Active champion — pre-dates macro NIS |
 | Swing | v144 | ~0.28 | ❌ | 89 (+ stock NIS) | Gate failed — NIS didn't help fold 3 collapse |
 | Swing | v145 | ~0.28 | ❌ | 94 (+ macro NIS) | Gate failed — macro NIS alone insufficient |
+| Swing | v146 | 🔄 training | — | 89 (84 + macro NIS) | Tonight's retrain — in progress |
 | Intraday | v29 | +1.830 | ✅ >1.50 | 50 | Active champion (cross-sectional labels) |
 | Intraday | v39/v40 | negative | ❌ | 58/63 | Realized-R scheme failed (AUC ~0.51) |
+| Intraday | v30 | 🔄 training | — | 58 (50 + 5 NIS + 3 SPY-relative) | Tonight's retrain — in progress |
 
 **Key insight:** Cross-sectional top-20% labels + walk-forward gates is the right architecture for intraday. Realized-R labels (Phase 87/88/89 realized-R experiments) produced AUC ~0.51 — random. Reverted in Phase 89.
 
@@ -49,61 +51,78 @@ Tried `realized_R ≥ 0.5` label scheme. AUC ~0.51 across all folds — features
 ### Phase 99 — Decouple Nightly Retraining ✅ (PR #123)
 Retraining now runs as subprocess, not inside uvicorn executor.
 
+### Phase 86b — Stock-Relative SPY Features ✅ (PR #129, 2026-05-05)
+- Added 3 intraday features that survive cs_normalize: `stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`
+- Feature count: 58 → 61. Included in tonight's intraday v30 retrain.
+
 ### Fix — Bulk Finnhub Earnings Prefetch ✅ (PR #128, 2026-05-05)
 - `prefetch()` was making 500 individual Finnhub calls on startup → instant 429 storm
 - Fixed to single bulk call (Finnhub returns full calendar server-side regardless of symbol filter)
 
+### Phase 88 — Continuous Opportunity Score (Dynamic Regime Gates) ✅ (PR #130, 2026-05-05)
+- Replaced hard VIX ≥ 25 / SPY < MA20 binary gates with a graduated PM-level opportunity score
+- `score = 0.35*vix_score + 0.20*vix_trend + 0.30*range_score + 0.15*eff_score`
+- Score ≥ 0.70 → normal sizing, 0.40–0.69 → reduced candidates, < 0.40 → skip
+- All stays in PM layer (cs_normalize would zero market-wide signals if used as model features)
+
+### Phase 89b — Sector ETF History Backfill ✅ (PR #132, 2026-05-05)
+- Extended Polygon daily bar cache to 11 sector ETFs
+- `sector_momentum` now populated during training (was zeroed previously)
+- Also wired Phase 89a fundamentals into swing training pipeline
+
+### Fix — Unified Proposal Log + Trade History Cleanup (Phases A/B/C) ✅ (PR #133, 2026-05-05)
+- Unified `proposal_log` schema (swing + intraday in one table)
+- `exit_price` captured on trade close; `exit_reason` field added
+- Pending fills promoted correctly on reconcile
+
+### Fix — Gate Calibration Persistence ✅ (PR #134, 2026-05-05)
+- `decision_audit` table extended: `gate_category`, `price_at_decision`, `direction`, `outcome_fetched_at`
+- New `nis_macro_snapshots` table — persists daily premarket NIS macro context so API survives restarts
+- New `scan_abstentions` table — logs gate1a/gate1c SPY-level abstentions with SPY outcome backfill
+- `gate_categories.py` classifies all block reasons into alpha/quality/risk/structural/scan
+- EOD backfill job fetches Alpaca T+4h/T+24h prices for calibratable blocked rows
+- DB migration: `python scripts/migrate_gate_calibration.py` ✅ run 2026-05-05
+
+### Fix — bars_held Persistence Across Restarts ✅ (PR #135, 2026-05-05)
+- `bars_held` was only written to DB on trade close → always 0 for active trades after restart
+- `min_hold_bars=3` guard in `check_exit()` was blocking ALL exits (including target hits) post-restart
+- Fix 1: on reconcile, `bars_held = max(db_value, calendar_days_since_entry)` 
+- Fix 2: persist `bars_held` to DB each time it increments (once per calendar day)
+- ZS position hit target $140.85 at $141.94 (+6.8%) and closed correctly after this was diagnosed
+
+### Fix — Summary Endpoint Thread-Safety + Live P&L in Trades ✅ (PR #136, 2026-05-05)
+- `_alpaca()` was called inside `asyncio.to_thread()` in the summary endpoint → intermittent blank KPIs
+- Fixed: call `_alpaca()` in main async context, only thread the blocking network calls
+- `_pnl_from_alpaca` timeout now caught (was causing uncaught 500 on timeout)
+- Trade history endpoint now enriches ACTIVE trades with live `unrealized_pl`, `unrealized_plpc`, `current_price`
+
 ---
 
-## Next: Retrain Both Models with Full NIS + Macro NIS Features
+## Retrains In Progress — 2026-05-05 EOD
 
-**When:** After market close today (2026-05-05).
+Both models are retraining now that macro NIS backfill is complete. Champions (v142/v29) were trained before Phase 90 macro features existed.
 
-Both models need retraining now that macro NIS backfill is complete. Current champions (v142/v29) were trained before Phase 90 macro features existed.
+| Model | Current | New version | Target features | Status |
+|---|---|---|---|---|
+| Swing | v142 (84 feat) | v146 | 89 feat (84 + 5 macro NIS) | 🔄 running |
+| Intraday | v29 (50 feat) | v30 | 58 feat (50 + 5 NIS + 3 SPY-relative) | 🔄 running |
 
-| Model | Current | Target features | Command |
-|---|---|---|---|
-| Swing | v142 (84 feat) | 89 feat (84 + 5 macro NIS) | `python scripts/retrain_cron.py --swing-only` |
-| Intraday | v29 (50 feat) | 63 feat (53 + 5 stock NIS + 5 macro NIS) | `python scripts/retrain_cron.py --intraday-only` |
+Gate thresholds: swing avg Sharpe > 0.8, intraday > 1.5.
 
-Gate thresholds: swing avg Sharpe > 0.8, intraday avg Sharpe > 1.5.
-
-**If swing still fails gate:** Try shorter training window (3yr vs 5yr) — Fold 3 (2025) is a structurally different regime that the 2021-2022 data may be distorting.
+**If swing still fails gate:** Try 3yr training window — Fold 3 (2025) is a structurally different regime that 2021–2022 data may be distorting.
 
 ---
 
 ## Backlog — Ordered by Expected Impact
 
-### Phase 86b — Stock-Relative Interaction Features (Medium, 1 day)
+### Phase 86b — Stock-Relative Interaction Features ✅ (PR #129, 2026-05-05)
 
-Features that survive cs_normalize because they vary by symbol:
-- `stock_vs_spy_5d_return`: stock 5d return − SPY 5d return
-- `stock_vs_spy_mom_ratio`: stock 1d momentum / SPY 1d momentum
-- `gap_vs_spy_gap`: stock overnight gap − SPY overnight gap
-
-SPY daily bars plumbing already wired. Safe to implement during market hours (no live path changes).
-
-**Files:** `app/ml/intraday_features.py`, `app/ml/intraday_training.py`
-
----
-
-### Phase 88 — Dynamic Regime Gates (Medium, 1-2 days)
-
-Replace hard VIX ≥ 25 / SPY < MA20 binary gates with graduated PM-level signals.
-
-**88a — Sector-level abstention:** Per-sector ETF vs its own 20d MA. Allows tech stocks on strong tech day even if SPY is weak.
-
-**88b — Continuous opportunity score:**
-```python
-score = 0.35*vix_score + 0.20*vix_trend + 0.30*range_score + 0.15*eff_score
-# Score ≥ 0.70 → normal, 0.40–0.69 → reduced candidates, < 0.40 → skip
-```
-
-**88c — First 30-min regime signal:** Trending/choppy/quiet open → scale `max_candidates`.
-
-All stays in PM layer (not model features — cs_normalize would zero market-wide signals).
-
-Safe to implement during market hours (PM logic only, no model changes).
+- `stock_vs_spy_5d_return`: stock 5d return − SPY 5d return (idiosyncratic trend)
+- `stock_vs_spy_mom_ratio`: stock 1d return − SPY 1d return (idiosyncratic daily momentum)
+- `gap_vs_spy_gap`: stock overnight gap − SPY gap (stock-specific gap signal)
+- All vary per-symbol within each day → survive cs_normalize (unlike raw SPY values)
+- Feature count: 58 → 61 intraday features
+- **Walk-forward pending:** included in tonight's v30 retrain
 
 ---
 
@@ -113,26 +132,35 @@ Safe to implement during market hours (PM logic only, no model changes).
 
 - Backfill quarterly fundamentals from SEC EDGAR XBRL, store by filing date (point-in-time safe)
 - Un-prune `pe_ratio`, `pb_ratio`, `revenue_growth`, `profit_margin`, `debt_to_equity`
+- Phase 89b wired the training pipeline; data backfill is the remaining piece
 
-Safe to implement during market hours (new script + data store only).
-
----
-
-### Phase 89b — Sector ETF History (Medium, 1 day)
-
-`sector_momentum` zeroed during training, fetched live. Extend Polygon daily bar cache to 11 sector ETFs.
-
-Safe to implement during market hours.
+Safe during market hours (new script + data store only).
 
 ---
 
 ### Phase 100 — Alpaca as Single Source of Truth (High, 2-3 days)
 
-Eliminate the DB-vs-Alpaca position state divergence at root. DB becomes append-only audit ledger; `position_store.py` always reads live state from Alpaca.
+Eliminate DB-vs-Alpaca position state divergence at root. DB becomes append-only audit ledger; always read live state from Alpaca.
 
-**Precondition:** Phase 99 ✅ (complete).
+**Why:** bars_held, stop/target drift, and reconcile bugs all stem from maintaining duplicate state. Alpaca is authoritative by definition.
 
-**Not safe during market hours** — touches live position tracking path.
+**Precondition:** Phase 99 ✅ (complete). **Not safe during market hours** — touches live position tracking path.
+
+---
+
+### Gate Calibration Tuning (Ongoing, as data accumulates)
+
+New gate calibration infrastructure (PR #134) is live. After ~2 weeks of data:
+- Review `Analytics > Gate Calibration` for gates where `verdict = recalibrate`
+- Tune or remove gates that block trades the market would have rewarded
+- Focus on `alpha` and `quality` gate categories (calibratable)
+
+---
+
+### Phase 87a — Regression Labels (Deferred)
+
+**Precondition:** Phase 86b ✅ + stable retrain results.
+Binary labels discard magnitude. Regression target (predict realized R-multiple) would teach model to distinguish great setups from marginal ones. Deferred until cross-sectional label architecture is more thoroughly explored.
 
 ---
 
