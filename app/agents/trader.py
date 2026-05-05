@@ -39,6 +39,31 @@ MIN_BARS = 220            # minimum daily bars required for EMA(200) + buffer
 INTRADAY_FORCE_CLOSE_HOUR = 15
 INTRADAY_FORCE_CLOSE_MINUTE = 45  # 3:45 PM ET force-flat all intraday positions
 
+# Canonical exit reasons written to trades.exit_reason
+_EXIT_REASON_MAP = {
+    "STOP": "stop_hit",
+    "STOP_HIT": "stop_hit",
+    "TARGET": "target_hit",
+    "TARGET_HIT": "target_hit",
+    "TIME": "time_exit",
+    "TIME_EXIT": "time_exit",
+    "EOD": "eod_intraday",
+    "EOD_INTRADAY": "eod_intraday",
+    "PM_EXIT": "pm_review",
+    "PM_HOLD": "pm_review",
+    "PM_APPROACHING_STOP": "pm_review",
+    "NEWS": "news_exit",
+    "NEWS_EXIT": "news_exit",
+    "KILL_SWITCH": "kill_switch",
+    "MANUAL": "manual",
+    "PARTIAL": "partial_exit",
+}
+
+
+def _normalise_exit_reason(reason: str) -> str:
+    key = (reason or "").upper().strip()
+    return _EXIT_REASON_MAP.get(key, reason.lower() if reason else "unknown")
+
 
 class Trader(BaseAgent):
     """
@@ -973,6 +998,28 @@ class Trader(BaseAgent):
                 if tp:
                     tp.trade_id = trade.id
 
+            # Write trade_id back to unified ProposalLog and append ORDER_PLACED event
+            proposal_uuid = proposal.get("proposal_uuid")
+            if proposal_uuid:
+                from app.database.models import ProposalLog, ProposalEvent
+                for pl_row in db.query(ProposalLog).filter(ProposalLog.proposal_uuid == proposal_uuid).all():
+                    pl_row.trade_id = trade.id
+                db.add(ProposalEvent(
+                    proposal_uuid=proposal_uuid,
+                    event_time=datetime.now(ET),
+                    actor="trader",
+                    event_type="ORDER_PLACED",
+                    details={
+                        "trade_id": trade.id,
+                        "symbol": symbol,
+                        "filled_price": filled_price,
+                        "intended_price": intended_price,
+                        "slippage_bps": slippage_bps,
+                        "shares": shares,
+                        "alpaca_order_id": order_id,
+                    },
+                ))
+
             db.commit()
 
             self.active_positions[symbol] = {
@@ -1463,6 +1510,7 @@ class Trader(BaseAgent):
                         trade.exit_price = actual_price
                         trade.pnl = (actual_price - pos["entry_price"]) * pos.get("quantity", trade.quantity or 0)
                         trade.status = "FORCE_CLOSED_NO_POSITION"
+                        trade.exit_reason = "force_closed_no_position"
                         trade.closed_at = datetime.now(ET)
                         db.commit()
                 except Exception as e:
@@ -1498,6 +1546,7 @@ class Trader(BaseAgent):
                     trade.status = "CLOSED"
                     trade.closed_at = datetime.now(ET)
                     trade.bars_held = pos["bars_held"]
+                    trade.exit_reason = _normalise_exit_reason(reason)
 
             db_order = Order(
                 trade_id=trade_id,
@@ -1508,6 +1557,28 @@ class Trader(BaseAgent):
                 filled_qty=qty,
             )
             db.add(db_order)
+
+            # Append TRADE_CLOSED event to ProposalEvent log
+            proposal_uuid = pos.get("proposal_uuid")
+            if proposal_uuid:
+                from app.database.models import ProposalEvent
+                entry = pos.get("entry_price", 0)
+                pnl_pct = round((current_price - entry) / entry * 100, 3) if entry > 0 else None
+                db.add(ProposalEvent(
+                    proposal_uuid=proposal_uuid,
+                    event_time=datetime.now(ET),
+                    actor="trader",
+                    event_type="TRADE_CLOSED",
+                    details={
+                        "exit_price": current_price,
+                        "pnl": round(pnl, 2),
+                        "pnl_pct": pnl_pct,
+                        "exit_reason": _normalise_exit_reason(reason),
+                        "bars_held": pos.get("bars_held", 0),
+                        "alpaca_order_id": order.get("order_id"),
+                    },
+                ))
+
             db.commit()
 
             trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
