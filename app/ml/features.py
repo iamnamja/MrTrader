@@ -69,18 +69,23 @@ def _get_nis_features_pit(symbol: str, as_of_date) -> Dict[str, float]:
     """Point-in-time NIS feature lookup — no lookahead.
 
     Returns the most recent NewsSignalCache row for ``symbol`` whose
-    ``as_of_date`` column is <= the training window end date.  Falls back to
-    neutral defaults (no data is treated as zero news signal, not missing).
+    ``as_of_date`` column is <= the training window end date.
+
+    When no row exists (symbol has no NIS data for this period), returns NaN
+    for all NIS features so XGBoost uses its learned missing-value direction
+    rather than treating the default value as real signal.  This prevents
+    spurious patterns in historical folds that predate NIS backfill.
     """
-    _default = {
-        "nis_direction_score": 0.0,
-        "nis_materiality_score": 0.0,
-        "nis_already_priced_in": 0.5,
-        "nis_sizing_mult": 1.0,
-        "nis_downside_risk": 0.5,
+    _nan = float("nan")
+    _missing = {
+        "nis_direction_score": _nan,
+        "nis_materiality_score": _nan,
+        "nis_already_priced_in": _nan,
+        "nis_sizing_mult": _nan,
+        "nis_downside_risk": _nan,
     }
     if as_of_date is None:
-        return _default
+        return _missing
     try:
         from app.database.session import get_session
         from app.database.models import NewsSignalCache
@@ -99,17 +104,17 @@ def _get_nis_features_pit(symbol: str, as_of_date) -> Dict[str, float]:
         finally:
             db.close()
         if row is None:
-            return _default
+            return _missing
         return {
-            "nis_direction_score": float(row.direction_score or 0.0),
-            "nis_materiality_score": float(row.materiality_score or 0.0),
-            "nis_already_priced_in": float(row.already_priced_in_score or 0.5),
-            "nis_sizing_mult": float(row.sizing_multiplier or 1.0),
-            "nis_downside_risk": float(row.downside_risk_score or 0.5),
+            "nis_direction_score": float(row.direction_score) if row.direction_score is not None else _nan,
+            "nis_materiality_score": float(row.materiality_score) if row.materiality_score is not None else _nan,
+            "nis_already_priced_in": float(row.already_priced_in_score) if row.already_priced_in_score is not None else _nan,
+            "nis_sizing_mult": float(row.sizing_multiplier) if row.sizing_multiplier is not None else _nan,
+            "nis_downside_risk": float(row.downside_risk_score) if row.downside_risk_score is not None else _nan,
         }
     except Exception as exc:
         logger.debug("NIS PIT lookup failed for %s: %s", symbol, exc)
-        return _default
+        return _missing
 
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1354,19 +1359,20 @@ class FeatureEngineer:
         # ── 36. NIS features (Phase 64) ──────────────────────────────────────
         # Point-in-time lookup: most recent NewsSignalCache row for this symbol
         # with as_of_date <= current window date, so no lookahead into future news.
-        _nis_default = {
-            "nis_direction_score": 0.0,
-            "nis_materiality_score": 0.0,
-            "nis_already_priced_in": 0.5,
-            "nis_sizing_mult": 1.0,
-            "nis_downside_risk": 0.5,
+        _nan = float("nan")
+        _nis_missing = {
+            "nis_direction_score": _nan,
+            "nis_materiality_score": _nan,
+            "nis_already_priced_in": _nan,
+            "nis_sizing_mult": _nan,
+            "nis_downside_risk": _nan,
         }
         try:
             _nis = _get_nis_features_pit(symbol, as_of_date)
             features.update(_nis)
         except Exception as _nis_exc:
             logger.debug("NIS features failed for %s: %s", symbol, _nis_exc)
-            features.update(_nis_default)
+            features.update(_nis_missing)
 
         # ── Regime interaction features (Phase 24b) ──────────────────────────
         # Cross-terms let the model learn regime-conditional signal strength.

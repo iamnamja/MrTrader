@@ -104,7 +104,12 @@ class TestIntradayFeatures:
         from app.ml.intraday_features import compute_intraday_features
         bars = _make_5min_df(50)
         feats = compute_intraday_features(bars, prior_close=100.0)
+        # NIS features are intentionally NaN when no symbol/DB data provided
+        _nis_keys = {"nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+                     "nis_sizing_mult", "nis_downside_risk"}
         for k, v in feats.items():
+            if k in _nis_keys:
+                continue
             assert np.isfinite(v), f"Feature {k} is not finite: {v}"
 
     def test_bb_position_in_zero_one(self):
