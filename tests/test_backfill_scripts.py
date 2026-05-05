@@ -112,50 +112,31 @@ class TestFundamentalsBackfill:
 # ── Phase 89b: sector ETF backfill ────────────────────────────────────────────
 
 class TestSectorEtfBackfill:
-    def _make_mock_client(self, bars_df):
-        client = MagicMock()
-        client.get_bars.return_value = bars_df
-        return client
+    def _make_bars_df(self):
+        dates = pd.date_range("2023-01-03", periods=30, freq="B")
+        return pd.DataFrame({
+            "open": [100.0] * 30,
+            "high": [101.0] * 30,
+            "low":  [99.0] * 30,
+            "close": [100.5] * 30,
+            "volume": [1_000_000] * 30,
+        }, index=dates)
 
     def test_dry_run_no_crash(self, tmp_path, monkeypatch):
         """dry_run=True logs output and returns without writing files."""
         monkeypatch.chdir(tmp_path)
-
-        dates = pd.date_range("2023-01-03", periods=30, freq="B")
-        df = pd.DataFrame({
-            "open": [100.0] * 30,
-            "high": [101.0] * 30,
-            "low":  [99.0] * 30,
-            "close": [100.5] * 30,
-            "volume": [1_000_000] * 30,
-        }, index=dates)
-
-        mock_client = self._make_mock_client(df)
-
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
-            from scripts.backfill_sector_etf_history import run
+        from scripts.backfill_sector_etf_history import run, SECTOR_ETFS
+        fake_data = {etf: self._make_bars_df() for etf in SECTOR_ETFS}
+        with patch("app.data.polygon_provider.PolygonProvider.get_daily_bars_bulk", return_value=fake_data):
             run(days=90, dry_run=True)
-
         assert not (tmp_path / "data" / "sector_etf" / "sector_etf_history.parquet").exists()
 
     def test_writes_parquet_with_correct_columns(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-
-        dates = pd.date_range("2023-01-03", periods=30, freq="B")
-        df = pd.DataFrame({
-            "open": [100.0] * 30,
-            "high": [101.0] * 30,
-            "low":  [99.0] * 30,
-            "close": [100.5] * 30,
-            "volume": [1_000_000] * 30,
-        }, index=dates)
-
-        mock_client = self._make_mock_client(df)
-
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
-            from scripts.backfill_sector_etf_history import run, SECTOR_ETFS
+        from scripts.backfill_sector_etf_history import run, SECTOR_ETFS
+        fake_data = {etf: self._make_bars_df() for etf in SECTOR_ETFS}
+        with patch("app.data.polygon_provider.PolygonProvider.get_daily_bars_bulk", return_value=fake_data):
             run(days=90, dry_run=False)
-
         out = tmp_path / "data" / "sector_etf" / "sector_etf_history.parquet"
         assert out.exists()
         result = pd.read_parquet(out)

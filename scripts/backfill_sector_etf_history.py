@@ -1,27 +1,27 @@
 """
 Phase 89b — Historical Sector ETF Backfill
 
-Fetches daily OHLCV bars for all 11 sector ETFs (XLK, XLF, XLE, etc.) from
-Alpaca and writes a point-in-time parquet store. Training loads from this store
-instead of making live Alpaca calls, allowing sector_momentum and
-sector_momentum_5d to be un-pruned from PRUNED_FEATURES.
+Fetches 5yr daily bars for all 11 sector ETFs (XLK, XLF, XLE, etc.) from
+Polygon (via the same S3/REST provider used for regular symbols) and writes
+them into data/cache/daily/ — the same cache training reads from.
+
+Training then looks up sector ETF bars PIT the same way it looks up stock bars.
 
 Output:
-  data/sector_etf/sector_etf_history.parquet
-  Columns: etf (str), date (str YYYY-MM-DD), open, high, low, close, volume
+  data/cache/daily/XLK.parquet  (and XLC, XLY, XLP, XLF, XLV, XLI, XLE, XLB, XLRE, XLU)
+  Also writes data/sector_etf/sector_etf_history.parquet for standalone use.
 
 Usage:
   python scripts/backfill_sector_etf_history.py [--days 1260] [--dry-run]
 
-Default --days 1260 covers ~5 years (enough for all training windows).
-Runtime: <1 min (11 ETFs, 1 bulk Alpaca call each).
+Runtime: <1 min (11 ETFs, Polygon S3 bulk download).
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,58 +39,43 @@ SECTOR_ETFS = ["XLK", "XLC", "XLY", "XLP", "XLF", "XLV", "XLI", "XLE", "XLB", "X
 
 
 def run(days: int = 1260, dry_run: bool = False) -> None:
-    from app.integrations import get_alpaca_client
+    import pandas as pd
+    from app.data.polygon_provider import PolygonProvider
+    from app.data.cache import get_cache
 
-    client = get_alpaca_client()
-    end_dt = datetime.utcnow().date()
+    end_dt = date.today()
     start_dt = end_dt - timedelta(days=days)
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.info("Sector ETF backfill: %d ETFs, %d days back (from %s to %s), dry_run=%s",
+    logger.info("Sector ETF backfill: %d ETFs, %d days back (%s to %s), dry_run=%s",
                 len(SECTOR_ETFS), days, start_dt, end_dt, dry_run)
 
-    import pandas as pd
-    all_frames: list[pd.DataFrame] = []
-    ok = errors = 0
+    if dry_run:
+        logger.info("[DRY-RUN] Would fetch %s from %s to %s via Polygon", SECTOR_ETFS, start_dt, end_dt)
+        return
 
-    for etf in SECTOR_ETFS:
-        try:
-            df = client.get_bars(
-                etf,
-                timeframe="1Day",
-                start=start_dt.isoformat(),
-                end=end_dt.isoformat(),
-            )
-            if df is None or df.empty:
-                logger.warning("%s: no data returned", etf)
-                errors += 1
-                continue
+    provider = PolygonProvider()
+    data = provider.get_daily_bars_bulk(SECTOR_ETFS, start_dt, end_dt)
 
-            df = df[["open", "high", "low", "close", "volume"]].copy()
-            df.index = pd.to_datetime(df.index)
-            df["date"] = df.index.strftime("%Y-%m-%d")
-            df["etf"] = etf
-            df = df.reset_index(drop=True)
-            all_frames.append(df)
-            ok += 1
-            logger.info("%s: %d bars", etf, len(df))
-        except Exception as exc:
-            errors += 1
-            logger.warning("%s: failed — %s", etf, exc)
-
+    ok = len(data)
+    errors = len(SECTOR_ETFS) - ok
     logger.info("Fetch complete: %d ETFs ok, %d errors", ok, errors)
 
-    if dry_run:
-        total = sum(len(f) for f in all_frames)
-        logger.info("[DRY-RUN] Would write %d rows to %s", total, OUTPUT_PATH)
-        if all_frames:
-            logger.info("Sample rows:\n%s", all_frames[0].head(3).to_string())
+    for etf, df in data.items():
+        logger.info("%s: %d bars (%s to %s)", etf, len(df),
+                    df.index.min().date(), df.index.max().date())
+
+    if not data:
+        logger.warning("No data fetched — exiting")
         return
 
-    if not all_frames:
-        logger.warning("No rows to write — exiting")
-        return
+    # Also write standalone parquet for direct use
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    all_frames = []
+    for etf, df in data.items():
+        df2 = df[["open", "high", "low", "close", "volume"]].copy()
+        df2["date"] = df2.index.strftime("%Y-%m-%d")
+        df2["etf"] = etf
+        all_frames.append(df2.reset_index(drop=True))
 
     df_out = pd.concat(all_frames, ignore_index=True)
     df_out = df_out[["etf", "date", "open", "high", "low", "close", "volume"]]
@@ -100,7 +85,7 @@ def run(days: int = 1260, dry_run: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Backfill historical sector ETF bars from Alpaca")
+    parser = argparse.ArgumentParser(description="Backfill historical sector ETF bars via Polygon")
     parser.add_argument("--days", type=int, default=1260, help="Calendar days to backfill (default 1260 = ~5yr)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

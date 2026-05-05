@@ -16,7 +16,7 @@
 | Swing | v146 | 🔄 training | — | 89 (84 + macro NIS) | Tonight's retrain — in progress |
 | Intraday | v29 | +1.830 | ✅ >1.50 | 50 | Active champion (cross-sectional labels) |
 | Intraday | v39/v40 | negative | ❌ | 58/63 | Realized-R scheme failed (AUC ~0.51) |
-| Intraday | v30 | 🔄 training | — | 58 (50 + 5 NIS + 3 SPY-relative) | Tonight's retrain — in progress |
+| Intraday | v30 | 🔄 training | — | 61 (50 + 5 NIS + 3 SPY-relative + 3 other) | Tonight's retrain — in progress |
 
 **Key insight:** Cross-sectional top-20% labels + walk-forward gates is the right architecture for intraday. Realized-R labels (Phase 87/88/89 realized-R experiments) produced AUC ~0.51 — random. Reverted in Phase 89.
 
@@ -126,15 +126,29 @@ Gate thresholds: swing avg Sharpe > 0.8, intraday > 1.5.
 
 ---
 
-### Phase 89a — Historical Fundamentals Backfill (High, 3 days)
+### Phase 89a — Historical Fundamentals Backfill ✅ (2026-05-05)
 
-`revenue_growth` is top SHAP feature at inference but zeroed during training (`--no-fundamentals`). Model trains on price signals, scores live setups with fundamentals it never saw.
+- `scripts/backfill_fundamentals_history.py` run: 391/430 symbols, 11,285 PIT snapshots → `data/fundamentals/fundamentals_history.parquet`
+- Training auto-loads the parquet and overrides `profit_margin`, `revenue_growth`, `debt_to_equity` with PIT-correct values per training window
+- `pe_ratio`, `pb_ratio` still pruned (require live price at filing date — harder to backfill correctly)
+- **Next retrain will include fundamentals for the first time**
 
-- Backfill quarterly fundamentals from SEC EDGAR XBRL, store by filing date (point-in-time safe)
-- Un-prune `pe_ratio`, `pb_ratio`, `revenue_growth`, `profit_margin`, `debt_to_equity`
-- Phase 89b wired the training pipeline; data backfill is the remaining piece
+### Phase 89b — Sector ETF History + sector_momentum Un-pruning ✅ (2026-05-05)
 
-Safe during market hours (new script + data store only).
+- `scripts/backfill_sector_etf_history.py` fixed (was using Alpaca IEX = 100 bars; switched to Polygon S3 = 864 bars per ETF, full 3yr)
+- 11 ETFs × 864 bars → `data/sector_etf/sector_etf_history.parquet` + `data/cache/daily/XLK.parquet` etc.
+- `training.py` now loads ETF history at startup and computes PIT `sector_momentum` (20d) and `sector_momentum_5d` (5d) per training window
+- Removed `sector_momentum` and `sector_momentum_5d` from `PRUNED_FEATURES`
+- Also updates `momentum_20d_sector_neutral`, `momentum_60d_sector_neutral`, `momentum_5d_sector_neutral` from PIT values
+
+### NIS Backfill — Stock-Level (Backlog)
+
+**Stock-level NIS** (`NewsSignalCache`) only has data from May 2025 onwards (430 symbols, ~1yr). Training windows go back 2-3 years — the model sees NaN for NIS in most training rows, limiting signal quality.
+
+**Fix:** Per-symbol historical news backfill via Polygon → LLM scorer (same approach as `backfill_macro_nis_llm.py` but per-symbol).
+- **Cost estimate:** ~$50-100 in LLM API calls (430 symbols × ~500 articles/year × 2yr)
+- **Precondition:** Review tonight's v30 SHAP — if NIS features have low importance, deprioritize
+- **Script needed:** `scripts/backfill_stock_nis_history.py` (doesn't exist yet)
 
 ---
 
