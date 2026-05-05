@@ -116,19 +116,20 @@ async def get_dashboard_summary():
     """Account value, P&L, position counts, and system status at a glance."""
     try:
         # Fire Alpaca, DB queries, and stats all in parallel — don't wait for Alpaca before starting DB work
-        def _fetch_alpaca():
-            try:
-                alpaca = _alpaca()
-                acct = alpaca.get_account()
-                pos = alpaca.get_positions()
-                return acct, pos
-            except Exception:
-                return None, []
-
+        # Call _alpaca() in the main thread (same pattern as /positions endpoint) to avoid thread-safety issues
         async def _fetch_alpaca_safe():
             try:
-                return await asyncio.wait_for(asyncio.to_thread(_fetch_alpaca), timeout=ALPACA_TIMEOUT)
-            except (asyncio.TimeoutError, Exception):
+                _client = _alpaca()
+                acct, pos = await asyncio.wait_for(
+                    asyncio.gather(
+                        asyncio.to_thread(_client.get_account),
+                        asyncio.to_thread(_client.get_positions),
+                    ),
+                    timeout=ALPACA_TIMEOUT,
+                )
+                return acct, pos
+            except (asyncio.TimeoutError, Exception) as _e:
+                logger.warning("Summary _fetch_alpaca_safe failed: %s", _e, exc_info=True)
                 return None, []
 
         (account, positions), (win_rate, max_dd), trades_count = await asyncio.gather(
@@ -166,7 +167,10 @@ async def get_dashboard_summary():
             except Exception:
                 return None
 
-        today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
+        try:
+            today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            today_alpaca_pnl = None
 
         if account_value is not None:
             daily_pnl = round(today_alpaca_pnl, 2) if today_alpaca_pnl is not None else round(unrealized_pnl, 2)
@@ -316,6 +320,19 @@ async def get_trade_history(limit: int = 100, status: str = ""):
         if status:
             q = q.filter(Trade.status == status.upper())
         trades = q.limit(min(limit, 500)).all()
+
+        # Enrich active trades with live Alpaca unrealized P&L (single batch call)
+        alpaca_positions: dict = {}
+        try:
+            positions = await asyncio.wait_for(
+                asyncio.to_thread(_alpaca().get_positions), timeout=5.0
+            )
+            alpaca_positions = {
+                p["symbol"]: p for p in (positions or [])
+            }
+        except Exception:
+            pass
+
         return [
             TradeResponse(
                 id=t.id,
@@ -325,6 +342,18 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 exit_price=t.exit_price,
                 quantity=t.quantity,
                 pnl=t.pnl,
+                unrealized_pl=(
+                    float(alpaca_positions[t.symbol]["unrealized_pl"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
+                unrealized_plpc=(
+                    float(alpaca_positions[t.symbol]["unrealized_plpc"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
+                current_price=(
+                    float(alpaca_positions[t.symbol]["current_price"])
+                    if t.status == "ACTIVE" and t.symbol in alpaca_positions else None
+                ),
                 status=t.status,
                 signal_type=getattr(t, 'signal_type', None),
                 trade_type=getattr(t, 'trade_type', None),
