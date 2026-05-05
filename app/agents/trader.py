@@ -59,6 +59,7 @@ _EXIT_REASON_MAP = {
     "PARTIAL": "partial_exit",
 }
 
+
 def _normalise_exit_reason(reason: str) -> str:
     key = (reason or "").upper().strip()
     return _EXIT_REASON_MAP.get(key, reason.lower() if reason else "unknown")

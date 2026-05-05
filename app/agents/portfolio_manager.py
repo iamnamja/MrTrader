@@ -1630,7 +1630,7 @@ class PortfolioManager(BaseAgent):
         first_hour_range = spy_state["first_hour_range"]
         spy_5d_return = spy_state["spy_5d_return"]
         spy_5d_vol = spy_state["spy_5d_vol"]
-        spy_daily_bars = spy_state["spy_daily_bars"]  # Phase 86: market-condition features
+        spy_daily_bars = spy_state["spy_daily_bars"]  # noqa: F841
 
         # Gate 1A: SPY first-hour range gate — abstain if market has no intraday range
         if first_hour_range is not None and first_hour_range < SPY_MIN_FIRST_HOUR_RANGE:

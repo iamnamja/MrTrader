@@ -22,7 +22,7 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.database import check_db_connection
-from app.database.models import AgentDecision, AuditLog, IntraProposalLog, ProposalLog, RiskMetric, SwingProposalLog, Trade
+from app.database.models import AgentDecision, AuditLog, ProposalLog, RiskMetric, Trade
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)

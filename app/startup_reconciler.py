@@ -143,7 +143,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     trade.id, trade.symbol, filled_price,
                 )
                 trade.status = "RECONCILE_SUPERSEDED"
-                trade.status_reason = f"Order filled on Alpaca but DB marked CANCELLED; position tracked separately"
+                trade.status_reason = "Order filled on Alpaca but DB marked CANCELLED; position tracked separately"
                 db_session.add(AuditLog(
                     action="RECONCILE_CANCEL_FILL_MISMATCH",
                     details={

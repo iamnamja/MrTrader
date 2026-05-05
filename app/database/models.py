@@ -486,7 +486,7 @@ class ProposalLog(Base):
     ml_score = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)         # final confidence after any NIS adjustment
     above_threshold = Column(Boolean, nullable=True)
-    model_version = Column(String(20), nullable=True) # e.g. 'intraday_v29', 'swing_v38'
+    model_version = Column(String(20), nullable=True)  # e.g. 'intraday_v29', 'swing_v38'
     top_features = Column(JSON, nullable=True)        # {feature: value} sorted by importance
 
     # ── Market context at scan time ───────────────────────────────────────────
