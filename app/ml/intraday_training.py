@@ -337,7 +337,7 @@ class IntradayModelTrainer:
             "lgbm_ensemble": lgbm_proba_test is not None,
             "xgb_3seed_ensemble": ensemble_proba_test is not None,
             "frozen_hpo": FROZEN_HPO_PARAMS is not None,
-            "label_scheme": "realized_R_phase87",
+            "label_scheme": "cross_sectional_top20pct_phase89",
             "use_ranker": use_ranker,
             "top_n_by_liquidity": top_n_by_liquidity,
         }
@@ -631,17 +631,25 @@ class IntradayModelTrainer:
                 if done % 100 == 0:
                     logger.info("Features: %d/%d symbols processed", done, len(syms))
 
-        # ── Phase 87: direct outcome labels (replaces cross-sectional top-20% ranking) ──
-        # raw_parts carry [day_ordinal, binary_label] where label = realized_R ≥ 0.5R AND ≥0.30%.
-        # Days with no qualifying setups get all-zero labels — model learns to abstain on bad days.
+        # ── Phase 89: restore cross-sectional top-20% labels ────────────────────
+        # raw_parts carry [day_ordinal, raw_2h_return]. Per-day top-20% → label=1.
+        # cs_normalize applied to features (not labels) for cross-sectional alignment.
         def _cross_sectional_labels(X_parts, raw_parts):
-            """Apply cs_normalize per day; labels are pre-computed binary outcomes (Phase 87)."""
+            """Rank raw 2h returns within each day; top 20% get label=1."""
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
-            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, binary_label]
+            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, raw_return]
             days_ord = raws[:, 0]
-            labels = raws[:, 1].astype(np.int8)
+            raw_returns = raws[:, 1]
+            labels = np.zeros(len(raw_returns), dtype=np.int8)
+            for day_val in np.unique(days_ord):
+                mask = days_ord == day_val
+                day_rets = raw_returns[mask]
+                if mask.sum() < 2:
+                    continue
+                threshold = np.percentile(day_rets, 80)  # top 20%
+                labels[mask] = (day_rets >= threshold).astype(np.int8)
             # Cross-sectional normalization: z-score each feature within each day
             X = cs_normalize_by_group(X, days_ord)
             return X, labels
@@ -897,10 +905,8 @@ def _symbol_to_rows(
                 min_low = min(min_low, lo)
                 realized_exit = c
 
-            realized_R = (realized_exit - entry) / max(stop_dist_use, 1e-8)
-            absolute_move = abs(realized_exit - entry) / max(entry, 1e-8)
-            binary_label = 1 if (realized_R >= MIN_REALIZED_R and absolute_move >= MIN_ABSOLUTE_MOVE) else 0
-            best_return = binary_label
+            # Phase 89: raw 2h return — cross-sectional top-20% ranking applied in caller
+            best_return = (realized_exit - entry) / max(entry, 1e-8)
 
             # Daily bars up to this day (O(1) slice via precomputed date array)
             daily_as_of = None
