@@ -33,6 +33,9 @@ class TradeResponse(BaseModel):
     exit_price: Optional[float] = None
     quantity: int
     pnl: Optional[float] = None
+    unrealized_pl: Optional[float] = None
+    unrealized_plpc: Optional[float] = None
+    current_price: Optional[float] = None
     status: str
     signal_type: Optional[str] = None
     trade_type: Optional[str] = None
