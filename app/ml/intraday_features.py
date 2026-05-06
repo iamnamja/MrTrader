@@ -632,9 +632,13 @@ FEATURE_NAMES = [
     "range_vs_20d_avg", "rel_strength_vs_spy", "vol_x_momentum", "gap_followthrough",
     # Phase 50: time-of-day segmentation
     "session_segment", "seg_x_high_dist", "seg_x_atr_norm",
-    # NIS features (Phase 64b)
-    "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
-    "nis_sizing_mult", "nis_downside_risk",
+    # NIS features intentionally excluded from this list (Phase 1c).
+    # They encode time (NaN = pre-May-2025) rather than sentiment quality, creating
+    # a time-leak in walk-forward folds. Re-add after 2yr backfill via
+    # backfill_stock_nis_history.py reduces NaN rate to <20%.
+    # NIS is still active at PM gate layer in features.py — infrastructure preserved.
+    # "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+    # "nis_sizing_mult", "nis_downside_risk",
     # Phase 86b: stock-relative SPY features (survive cs_normalize)
     "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
 ]

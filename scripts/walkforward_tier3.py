@@ -236,6 +236,7 @@ def run_swing_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     pm_abstention_spy_5d: bool = False,
     model_version: Optional[int] = None,
+    transaction_cost_pct: float = 0.0005,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -311,6 +312,7 @@ def run_swing_walkforward(
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=pm_abstention_spy_5d,
+            transaction_cost_pct=transaction_cost_pct,
         )
         result = sim.run(
             fold_symbols_data,
@@ -359,6 +361,7 @@ def run_intraday_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     scan_offsets: Optional[List[int]] = None,
     model_version: Optional[int] = None,
+    transaction_cost_pct: float = 0.0015,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -458,6 +461,7 @@ def run_intraday_walkforward(
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             scan_offsets=scan_offsets,
+            transaction_cost_pct=transaction_cost_pct,
         )
         result = sim.run(
             fold_symbols_data,
@@ -528,6 +532,10 @@ def main() -> int:
                              "Use this to re-test historical/retired models.")
     parser.add_argument("--record-results", action="store_true", default=False,
                         help="Write tier3 Sharpe + gate result back to ModelVersion DB record")
+    parser.add_argument("--swing-cost-bps", type=float, default=5.0,
+                        help="Round-trip transaction cost in bps for swing (default: 5bps)")
+    parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
+                        help="Round-trip transaction cost in bps for intraday (default: 15bps)")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -571,6 +579,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
+            transaction_cost_pct=args.swing_cost_bps / 10_000,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
@@ -598,6 +607,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
+            transaction_cost_pct=args.intraday_cost_bps / 10_000,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")

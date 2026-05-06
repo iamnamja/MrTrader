@@ -55,7 +55,7 @@ ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 
 # Phase 43 — features with zero importance in v110 (55 features never used in any split).
 # Removing them reduces overfitting surface without changing the signal.
-PRUNED_FEATURES: frozenset = frozenset([
+_BASE_PRUNED: frozenset = frozenset([
     "price_above_ema200", "dist_from_ema200", "rs_vs_spy", "sentiment",
     "pe_ratio", "pb_ratio",
     # profit_margin / revenue_growth / debt_to_equity un-pruned in Phase 89a when
@@ -76,6 +76,26 @@ PRUNED_FEATURES: frozenset = frozenset([
     "earnings_drift_signal", "earnings_pead_strength", "adx_x_spy_trend",
     "rsi_x_spy_trend",
 ])
+
+# Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
+# NIS data only exists from May 2025 — ~80% of training rows have NaN, so XGBoost
+# learns NaN = pre-2025 regime rather than learning sentiment quality. This is an
+# inadvertent time-proxy that inflates walk-forward results on 2025 folds.
+#
+# Infrastructure + backfill data are fully preserved (NewsSignalCache, MacroSignalCache,
+# backfill_stock_nis_history.py). Re-enable by removing from _NIS_PRUNED_WHILE_SPARSE
+# once stock-level NIS is backfilled 2+ years (scripts/backfill_stock_nis_history.py).
+# Macro NIS requires similar 2+ year backfill via backfill_macro_nis_llm.py.
+#
+# NIS is still used at inference time via PM gate layer (portfolio_manager.py).
+_NIS_PRUNED_WHILE_SPARSE: frozenset = frozenset([
+    "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
+    "nis_sizing_mult", "nis_downside_risk",
+    "macro_avg_direction", "macro_pct_bearish", "macro_pct_bullish",
+    "macro_avg_materiality", "macro_pct_high_risk",
+])
+
+PRUNED_FEATURES: frozenset = _BASE_PRUNED | _NIS_PRUNED_WHILE_SPARSE
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):

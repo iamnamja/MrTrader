@@ -36,7 +36,10 @@ class TestComputeIntradayFeaturesWithDailyContext:
         daily = _make_daily_bars()
         result = compute_intraday_features(bars, daily_bars=daily)
         assert result is not None
-        assert len(result) == len(FEATURE_NAMES)
+        # Phase 1c: compute returns superset (NIS still computed for PM gate),
+        # FEATURE_NAMES is the training subset.
+        missing = set(FEATURE_NAMES) - set(result.keys())
+        assert not missing, f"FEATURE_NAMES keys missing from computed: {missing}"
 
     def test_daily_vol_features_present(self):
         from app.ml.intraday_features import compute_intraday_features
@@ -71,11 +74,12 @@ class TestComputeIntradayFeaturesWithDailyContext:
         assert result["daily_vol_percentile"] == 0.5
 
     def test_returns_33_features_without_daily(self):
-        """Always returns full FEATURE_NAMES count; daily context defaults filled."""
+        """All FEATURE_NAMES (training subset) are present even without daily context."""
         from app.ml.intraday_features import compute_intraday_features, FEATURE_NAMES
         bars = _make_bars()
         result = compute_intraday_features(bars)
-        assert len(result) == len(FEATURE_NAMES)
+        missing = set(FEATURE_NAMES) - set(result.keys())
+        assert not missing, f"FEATURE_NAMES keys missing from computed: {missing}"
 
 
 class TestOutcomeBasedLabel:
