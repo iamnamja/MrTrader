@@ -592,7 +592,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
-            transaction_cost_pct=args.swing_cost_bps / 10_000,
+            transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.swing_purge_days,
         )
         swing_report.print()
@@ -621,7 +621,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
-            transaction_cost_pct=args.intraday_cost_bps / 10_000,
+            transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.intraday_purge_days,
         )
         intraday_report.print()
