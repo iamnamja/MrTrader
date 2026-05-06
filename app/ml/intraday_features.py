@@ -286,6 +286,28 @@ def compute_intraday_features(
         feats["spy_rsi_14"] = 0.5
         feats["rel_vol_spy"] = 1.0
 
+    # ── Macro regime features (VIX proxy, VIX percentile, SPY MA20 dist) ────
+    if spy_daily_bars is not None and len(spy_daily_bars) >= 20:
+        spy_d_closes = spy_daily_bars["close"].values.astype(float)
+        spy_d_rets = np.diff(spy_d_closes) / np.maximum(spy_d_closes[:-1], 1e-8)
+        spy_rvol_20d = float(np.std(spy_d_rets[-20:]) * np.sqrt(252) * 100) if len(spy_d_rets) >= 20 else 20.0
+        feats["regime_vix_proxy"] = float(np.clip(spy_rvol_20d, 5.0, 80.0))
+        if len(spy_d_rets) >= 60:
+            vols = np.array([
+                np.std(spy_d_rets[max(0, i - 20):i]) * np.sqrt(252) * 100
+                for i in range(20, len(spy_d_rets) + 1)
+            ])
+            feats["regime_vix_pct60d"] = float(np.mean(vols[-1] >= vols[-60:]))
+        else:
+            feats["regime_vix_pct60d"] = 0.5
+        spy_ma20 = float(spy_d_closes[-20:].mean())
+        spy_last = float(spy_d_closes[-1])
+        feats["regime_spy_ma20_dist"] = float((spy_last - spy_ma20) / spy_ma20) if spy_ma20 > 0 else 0.0
+    else:
+        feats["regime_vix_proxy"] = 20.0
+        feats["regime_vix_pct60d"] = 0.5
+        feats["regime_spy_ma20_dist"] = 0.0
+
     # ── Session timing ────────────────────────────────────────────────────
     # Use last bar's timestamp for actual time-of-day; fall back to bar count.
     try:
@@ -641,4 +663,6 @@ FEATURE_NAMES = [
     # "nis_sizing_mult", "nis_downside_risk",
     # Phase 86b: stock-relative SPY features (survive cs_normalize)
     "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
+    # Item 3: macro regime features — VIX proxy, VIX 60d percentile, SPY MA20 distance
+    "regime_vix_proxy", "regime_vix_pct60d", "regime_spy_ma20_dist",
 ]
