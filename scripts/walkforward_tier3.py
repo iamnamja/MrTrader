@@ -236,6 +236,8 @@ def run_swing_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     pm_abstention_spy_5d: bool = False,
     model_version: Optional[int] = None,
+    transaction_cost_pct: float = 0.0005,
+    purge_days: int = 10,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -281,12 +283,14 @@ def run_swing_walkforward(
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
 
     # Build fold boundaries (expanding window)
-    # total_years split into folds+1 equal segments; train grows, test = last segment each fold
+    # total_years split into folds+1 equal segments; train grows, test = last segment each fold.
+    # purge_days gap between train_end and test_start prevents 5-day label leakage:
+    # a label computed at the last training day uses bars purge_days into the future.
     segment_days = int(total_years * 365 / (n_folds + 1))
     fold_boundaries = []
     for fold_idx in range(n_folds):
         train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
-        test_start_dt = train_end_dt + timedelta(days=1)
+        test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
         test_end_dt = train_end_dt + timedelta(days=segment_days)
         fold_boundaries.append((
             start_all.date(),
@@ -311,6 +315,7 @@ def run_swing_walkforward(
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=pm_abstention_spy_5d,
+            transaction_cost_pct=transaction_cost_pct,
         )
         result = sim.run(
             fold_symbols_data,
@@ -359,6 +364,8 @@ def run_intraday_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     scan_offsets: Optional[List[int]] = None,
     model_version: Optional[int] = None,
+    transaction_cost_pct: float = 0.0015,
+    purge_days: int = 2,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -432,14 +439,17 @@ def run_intraday_walkforward(
         _err("No trading days found in data.")
         return report
 
+    # purge_days trading-day gap between train_end and test_start prevents intraday
+    # label leakage (2-day hold means labels at train boundary use test-window bars).
     segment_size = max(1, len(all_days_sorted) // (n_folds + 1))
     fold_boundaries = []
     for fi in range(n_folds):
-        te_start_idx = segment_size * (fi + 1)
-        te_end_idx = min(te_start_idx + segment_size - 1, len(all_days_sorted) - 1)
+        tr_end_idx = segment_size * (fi + 1) - 1
+        te_start_idx = min(tr_end_idx + purge_days + 1, len(all_days_sorted) - 1)
+        te_end_idx = min(segment_size * (fi + 1) + segment_size - 1, len(all_days_sorted) - 1)
         fold_boundaries.append((
             all_days_sorted[0],
-            all_days_sorted[te_start_idx - 1],
+            all_days_sorted[tr_end_idx],
             all_days_sorted[te_start_idx],
             all_days_sorted[te_end_idx],
         ))
@@ -458,6 +468,7 @@ def run_intraday_walkforward(
             pm_abstention_vix=pm_abstention_vix,
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             scan_offsets=scan_offsets,
+            transaction_cost_pct=transaction_cost_pct,
         )
         result = sim.run(
             fold_symbols_data,
@@ -528,6 +539,16 @@ def main() -> int:
                              "Use this to re-test historical/retired models.")
     parser.add_argument("--record-results", action="store_true", default=False,
                         help="Write tier3 Sharpe + gate result back to ModelVersion DB record")
+    parser.add_argument("--swing-cost-bps", type=float, default=5.0,
+                        help="Round-trip transaction cost in bps for swing (default: 5bps)")
+    parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
+                        help="Round-trip transaction cost in bps for intraday (default: 15bps)")
+    parser.add_argument("--swing-purge-days", type=int, default=10,
+                        help="Calendar days to skip between train_end and test_start for swing "
+                             "(prevents 5-day label leakage; default: 10)")
+    parser.add_argument("--intraday-purge-days", type=int, default=2,
+                        help="Trading days to skip between train_end and test_start for intraday "
+                             "(prevents 2-day hold label leakage; default: 2)")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -571,6 +592,8 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
+            transaction_cost_pct=args.swing_cost_bps / 10_000,
+            purge_days=args.swing_purge_days,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
@@ -598,6 +621,8 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
+            transaction_cost_pct=args.intraday_cost_bps / 10_000,
+            purge_days=args.intraday_purge_days,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")

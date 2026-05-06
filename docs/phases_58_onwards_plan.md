@@ -113,7 +113,18 @@ Gate thresholds: swing avg Sharpe > 0.8, intraday > 1.5.
 
 ---
 
-## Backlog — Ordered by Expected Impact
+## ⚠️ Backlog Superseded — See MASTER_BACKLOG.md
+
+Following a multi-LLM review on 2026-05-05, the backlog has been fundamentally restructured. The below items are preserved for reference but the active working backlog is now:
+
+**`docs/MASTER_BACKLOG.md`** — centralized, phased, with immediate priorities for this week.  
+**`docs/llm_review_synthesis.md`** — full analysis from Claude + ChatGPT + Gemini reviews.
+
+**Immediate status change:** Paper trading only until Phase 1+2 of MASTER_BACKLOG complete. No live capital. No new model retrains until walk-forward includes cost model, purge/embargo, and PM opportunity score simulation.
+
+---
+
+## Legacy Backlog (Preserved for Reference)
 
 ### Phase 86b — Stock-Relative Interaction Features ✅ (PR #129, 2026-05-05)
 

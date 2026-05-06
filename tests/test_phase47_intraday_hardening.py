@@ -144,18 +144,18 @@ class TestFeatureNamesConstant:
         result = compute_intraday_features(bars, prior_close=99.0,
                                            prior_day_high=101.0, prior_day_low=97.0)
         assert result is not None
-        assert set(result.keys()) == set(FEATURE_NAMES), (
-            f"Key mismatch:\n"
-            f"  Extra in computed: {set(result.keys()) - set(FEATURE_NAMES)}\n"
-            f"  Missing from computed: {set(FEATURE_NAMES) - set(result.keys())}"
+        # Phase 1c: NIS features removed from FEATURE_NAMES (training) but still computed
+        # (for PM gate use). FEATURE_NAMES is a subset of computed features.
+        missing_from_computed = set(FEATURE_NAMES) - set(result.keys())
+        assert not missing_from_computed, (
+            f"Features in FEATURE_NAMES but not computed: {missing_from_computed}"
         )
-        assert len(FEATURE_NAMES) == len(result)
 
     def test_feature_names_count(self):
-        """FEATURE_NAMES must have the expected count (58 with Phase 86 market-condition features)."""
+        """FEATURE_NAMES must have the expected count (56 = 61 pre-1c minus 5 NIS features)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 61, (
-            f"Expected 61 features (58 pre-86b + 3 Phase 86b stock-relative SPY), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 56, (
+            f"Expected 56 features (61 pre-Phase-1c minus 5 NIS removed as time-leak), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):

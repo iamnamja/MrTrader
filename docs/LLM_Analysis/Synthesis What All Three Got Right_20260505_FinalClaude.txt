@@ -1,0 +1,200 @@
+Synthesis: What All Three Got Right (High Confidence)
+Before the phased plan, here's where all three reviews converge — these are almost certainly true:
+
+1. The walk-forward is measuring the wrong thing. All three flag this independently. The current tier-3 walk-forward evaluates model signal in isolation. The live system adds PM opportunity score, RM gates (22 checks), position caps, earnings blackouts, and execution simulation. Those filters change which trades happen. A model Sharpe of +1.83 means nothing if 40% of its signals get blocked by RM gates in live trading. We're promoting models on a metric that doesn't reflect the actual strategy.
+
+2. The NIS time-leak is serious (Gemini's best insight). This one I hadn't fully worked through before: when NIS is NaN in 80% of training rows, XGBoost doesn't just learn "news quality" — it learns NaN = pre-May-2025 regime, non-NaN = 2025 regime. We've inadvertently encoded time into the model. This could partially explain why v41 (with NIS) did slightly better on fold 2 (Apr–Oct 2025) than v29 — the model partially learned "non-NaN = act differently in this regime." NIS must come out of training until fully backfilled. It should live in the PM gate layer only.
+
+3. The Sharpe collapse is both selection bias AND regime (Claude's framing is closest to correct). Claude argues 60% selection bias, 20% PIT leakage from v142's original non-PIT-correct fundamentals, 15% genuine regime, 5% data sparsity. I think that's roughly right. The original +1.181 and +1.830 are inflated — but fold 3 covering Feb 2025–now is also genuinely hard (April 2025 was a -15% SPY drawdown in weeks). Both things are true.
+
+4. HPO variance of ~2.0 Sharpe means our gate thresholds are below the noise floor. If seeds alone move results by 2 Sharpe units, passing a gate of >0.8 or >1.5 is partially luck. The 3-seed ensemble mitigates this but doesn't eliminate it. Frozen HPO prevents drift across retrains but the original HPO was done on a specific data window, meaning those params may be overfit to that window.
+
+5. The swing RSI_DIP/EMA_CROSSOVER pre-filters are constraining the alpha ceiling. All three flag this. The ML model is only learning "which rule-based candidates don't fail" — not "what makes a good swing trade." But I'd add a caveat the LLMs miss: removing the pre-filters isn't just a code change, it requires redesigning the label too. If we score the full universe, we need a label that doesn't presuppose an entry trigger.
+
+6. cs_normalize eliminates all market-wide context from the intraday model. The fix is straightforward: split features into Branch A (cross-sectional, normalized) and Branch B (global, not normalized). XGBoost sees both. This is a clean 1-week code change that would be high value.
+
+7. Dynamic position sizing is missing. All three agree. Fixed percentage per trade ignores the signal confidence, the current volatility regime, and the portfolio context. Vol-targeting is the standard fix.
+
+Where I Disagree With the Reviews
+On "stop all retraining until statistics are fixed" (Claude): I partly disagree. The statistical rigor work and the model work can proceed in parallel — they're largely independent tasks. What we should stop is interpreting new Sharpe numbers as meaningful without the statistical corrections in place. But we shouldn't freeze the research loop entirely.
+
+On "remove pre-filters immediately" (Gemini): This is correct directionally but the LLMs underestimate the scope. Removing pre-filters means redefining what a trade is, rewriting the label generator, reprocessing the entire training dataset, and redesigning the PM scan. It's probably a 2-week change, not a 2-day change. Worth doing but needs to be sequenced correctly.
+
+On "realized-R label failed, abandon it" (current assumption): I think the failure was implementation-specific, not the concept. The realized-R attempt didn't properly account for the fact that our stop/target exits are asymmetric. A properly implemented version using the actual simulated execution P&L (including stops, targets, time exits) is worth one more attempt — but only after the simulation is fixed.
+
+On survivorship bias: For S&P 500 + NASDAQ 100 large-caps, survivorship bias exists but is less severe than the reviews imply. These are the largest companies — they don't disappear quietly. Worth eventually fixing, not an immediate blocker.
+
+The Honest Phased Roadmap
+Phase 1 — Statistical Truth (2–3 weeks)
+Goal: Know what our numbers actually mean before doing anything else.
+
+1a. Add transaction costs to walk-forward
+
+Swing: $0.005/share + half-spread estimate (~3bps) + market impact proxy. Probably 5-8bps round trip.
+Intraday: Same fees + higher impact proxy (5-min bars, tighter ATR targets). Probably 10-20bps round trip. On a 0.8×ATR target (~$0.80 on a $100 stock), 15bps = $0.15 = ~19% of the target. This materially erodes the intraday edge.
+Deliverable: Re-run all existing walk-forwards with cost model. Get net Sharpe numbers.
+1b. Add purge and embargo to walk-forward folds
+
+Swing: 5-day purge between train/test (a trade entered on the last train day can't appear in the first test week)
+Intraday: 1-day purge
+Both: 3-day embargo after test window before next fold starts
+Deliverable: Cleaner fold boundaries. Probably drops Sharpe slightly — that's the real number.
+1c. Implement deflated Sharpe ratio
+
+Implement Bailey & López de Prado (2014) DSR on all champion results
+Input: number of trials (we've tried ~15 model variants), trial Sharpe distribution, backtest length
+Deliverable: Honest expected Sharpe that accounts for the multiple-comparison problem. Possibly shows current edge is near zero — we need to know this.
+1d. Remove NIS from training, move to PM gate only
+
+Pull nis_* and macro_* features from training pipeline entirely
+In PM layer: if nis_downside_risk > 0.7 → suppress entry; if nis_direction_score < -0.3 → block long
+Deliverable: Cleaner model without time-leak proxy. Simpler feature set.
+1e. Bootstrap the champion walk-forwards
+
+Resample fold splits 100× for v142 and v29
+Plot distribution of resulting Sharpes
+If original result is in top 5% tail → confirmed selection bias
+Deliverable: Know whether +1.181 and +1.830 were luck or signal.
+Phase 2 — Simulation Realism (2–3 weeks)
+Goal: One honest number that reflects what the strategy actually earns.
+
+2a. Wire PM opportunity score into the walk-forward simulation
+
+The fold simulator checks opportunity score on each simulated day
+If score < 0.35 → skip all entries for that day
+If score 0.35–0.65 → cap at 2 candidates
+Deliverable: We'll finally know if the opportunity score actually helps. Specifically: does it rescue the Apr–Oct 2025 fold? If yes → it's working. If no → the regime problem goes deeper than the score.
+2b. Wire RM gate checks into the walk-forward simulation
+
+Budget caps, position limits, earnings blackouts already have the data
+Don't need to simulate all 22 checks — the critical ones are: position cap, budget cap, earnings blackout, gross exposure
+Deliverable: Strategy Sharpe, not model Sharpe. The gap between these two numbers is the most informative diagnostic in the system.
+2c. Add cross-sectional dispersion gate
+
+For intraday: if daily cross-sectional return dispersion < threshold (e.g., std(returns) < 0.5×ATR), skip all entries
+This directly addresses the Apr–Oct 2025 problem: in correlated macro-driven markets, the cross-sectional ranking model has no valid premise
+Deliverable: Intraday should only trade when stock-specific factors dominate market-wide factors.
+2d. Build the live-vs-sim reconciliation harness
+
+For every paper trade, log: model predicted probability, simulated P&L from walk-forward analog, actual realized P&L
+Daily divergence report
+This single diagnostic will tell us more than any retrain
+Phase 3 — Model Architecture Repair (3–4 weeks)
+Goal: Fix the structural design flaws before adding anything new.
+
+3a. Remove swing pre-filters (biggest single change)
+
+Score the full 430-symbol universe daily rather than only RSI_DIP/EMA_CROSSOVER candidates
+Redesign label: instead of path_quality conditional on a specific entry pattern, use a triple-barrier label applied uniformly:
+Upper barrier: +2.0×ATR from close
+Lower barrier: -1.2×ATR from close
+Time barrier: 10 days
+Label: +1 (upper hit first), -1 (lower hit first), 0 (time)
+The model learns the entry pattern, not just which pre-filtered candidates succeed
+PM still filters: take top N by probability, require minimum probability threshold
+Deliverable: Model can discover breakout, compression, and continuation patterns it currently can't see.
+3b. Fix cs_normalize for intraday (Branch A/B split)
+
+Branch A (cross-sectional, z-scored): all stock-specific features
+Branch B (global, NOT normalized): VIX bucket, SPY above/below MA20, SPY 5d return, market breadth %, cross-sectional dispersion, day of week
+Both branches concat into the feature matrix XGBoost sees
+Deliverable: Model can learn "top 20% momentum structure + VIX > 25 = avoid" — currently impossible.
+3c. Dynamic position sizing (vol-targeting)
+
+Position size = (target_vol_contribution) / (predicted_daily_vol)
+target_vol_contribution = 0.5% of account per position
+predicted_daily_vol = ATR-based estimate
+Multiply by regime multiplier from opportunity score (0.5–1.0×)
+Multiply by signal confidence bucket (0.5–1.0×)
+Deliverable: Positions automatically shrink in volatile regimes. Removes a major regime sensitivity at the execution layer.
+3d. Intraday label: add absolute hurdle
+
+Current: top 20% of 2h return cross-sectionally
+New: top 20% cross-sectionally AND 2h return > estimated cost + 0.2×ATR buffer
+On flat/crashing days where no stock has a clean 2h return, we label nothing positive → drop those days from training
+Deliverable: Model is no longer forced to pick "winners" on days when there are none.
+Phase 4 — Feature Discipline (2 weeks)
+Goal: Fewer, better features. Stop adding, start pruning.
+
+4a. Feature correlation clustering
+
+Compute Spearman correlation matrix on all 84 swing / 61 intraday features
+Cluster features with |ρ| > 0.70
+Keep one representative per cluster (highest permutation importance)
+Target: 25–35 swing features, 20–30 intraday features
+Likely casualties: Multiple RSI variants (keep rsi_14 only), multiple momentum horizons (keep 5d, 60d, 252d), multiple stochastic variants, redundant WQ alphas
+4b. Permutation importance ablation by feature family
+
+Evaluate each feature family separately on walk-forward folds (with costs, with purge)
+Feature groups: technicals, volume, relative momentum, volatility, fundamentals, earnings, WQ alphas, regime interactions, sector
+Keep only families that improve worst-fold Sharpe, not average Sharpe
+Deliverable: Evidence-based feature set instead of intuition-based accumulation.
+4c. Residualize swing technicals against sector
+
+Add: stock_return - sector_ETF_return for 5d, 20d, 60d horizons
+These are likely more predictive than raw momentum because they isolate stock-specific alpha
+Already have sector ETF bars from Phase 89b
+Phase 5 — Regime Robustness (2–3 weeks)
+Goal: Know when to trade and when not to.
+
+5a. Regime diagnostic report
+
+Run v142 and v29 through the full simulation (with Phase 2 additions)
+Segment every simulated trade by: VIX bucket (<15, 15-20, 20-25, 25-30, >30), SPY trend (above/below MA20/50/200), market breadth, cross-sectional dispersion bucket
+Show: win rate, avg R, Sharpe, max drawdown per bucket
+Deliverable: Know exactly which regime the models work in. That becomes the tradable condition.
+5b. Expand and validate the opportunity score
+
+Add to opportunity score: market breadth (% symbols above MA20), cross-sectional dispersion (std of intraday returns), VIX term structure (VIX9D/VIX ratio)
+Backtest the opportunity score explicitly: strategy with score ON vs strategy with score OFF
+Tune thresholds on training data only, validate on held-out fold
+Deliverable: Opportunity score becomes a validated component of the strategy, not an assumed-good overlay.
+5c. Sample weighting by regime similarity
+
+In training, weight recent high-VIX rows more heavily (higher penalty for errors in chaotic markets)
+Implementation: sample_weight = base_weight × (1 + regime_weight_multiplier) where regime_weight_multiplier > 0 for VIX > 20 periods
+This teaches the model to be cautious in regimes that historically go wrong
+Deliverable: Model trained to be conservative in the conditions we know are hard.
+Phase 6 — Live Readiness (2–3 weeks, can run parallel with Phase 4/5)
+Goal: The plumbing works before we put real money in.
+
+6a. Phase 100: Alpaca as single source of truth
+
+Remove position state from DB as authoritative source
+On every tick: read positions from Alpaca, compute desired state from PM
+DB becomes append-only event log + audit trail
+Any mismatch → safe mode (no new entries)
+6b. Kill switch and safe mode
+
+If live P&L diverges from simulated P&L by > N-sigma over rolling window → halt
+Websocket disconnect → safe mode (close positions at market open, no new entries)
+Idempotent order IDs to prevent double-fills
+6c. Gate calibration review loop
+
+After Phase 5 regime diagnostics, review decision_audit gate calibration data
+For gates with high block rate and positive simulated outcomes → recalibrate
+This is already partially built (PR #134)
+Summary: What to Do Now vs. Later
+Priority	Phase	Time	What Changes
+Immediate	1a	1 week	Add transaction costs to walk-forward
+Immediate	1d	2 days	Remove NIS from training, keep as PM gate
+Immediate	2c	3 days	Add dispersion gate to intraday simulation
+High	1b	1 week	Purge/embargo in walk-forward folds
+High	2a	1 week	Wire opportunity score into simulation
+High	2d	1 week	Live-vs-sim reconciliation harness
+High	3b	1 week	Fix cs_normalize Branch A/B split
+High	3c	3 days	Vol-targeted position sizing
+Medium	3a	2–3 weeks	Remove swing pre-filters + new label
+Medium	4a–b	2 weeks	Feature pruning and ablation
+Medium	5a	1 week	Regime diagnostic report
+Later	1c	1 week	Deflated Sharpe implementation
+Later	5b–c	2 weeks	Opportunity score expansion + sample weighting
+Parallel	6a–c	2–3 weeks	Phase 100 + kill switch
+What to Stop Doing Now
+Stop retraining swing until Phase 1 is done. Every new retrain on broken validation infrastructure just creates more noise.
+Stop adding features. The model has 84 swing features. We need to prove the existing ones have value before adding more.
+Stop treating the current Sharpe numbers as real. v29's +1.830 and v142's +1.181 are inflated by PIT leakage, no transaction costs, no gates, and 3 folds with no purge. The real numbers are probably 30–50% lower.
+The Honest Bottom Line
+The engineering is genuinely good. The statistical foundation is not. The three LLMs are largely right about this, and I'd add: the NIS time-leak (Gemini), the multiple-comparisons problem (Claude), and the three-separate-realities framing (ChatGPT) are the three most valuable insights from the reviews.
+
+The path forward is: fix the measurement before fixing the model. Once we have one honest simulation that mirrors live execution, includes costs, and applies PM/RM gates — then we'll know whether we have a real edge to build on or need to go back further. That's not pessimism, that's how serious quant research works.

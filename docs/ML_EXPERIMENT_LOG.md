@@ -11,6 +11,8 @@ Tracks model improvement iterations for active and recent phases.
 - Walk-forward gate (intraday): avg Sharpe > 1.50, no fold < -0.30
 - Walk-forward gate (swing): avg Sharpe > 0.80, no fold < -0.30
 
+> **2026-05-05 Meta-update:** Multi-LLM review revealed the walk-forward gate numbers to date are NOT reliable baselines because: (1) no transaction costs, (2) no PM opportunity score simulated, (3) no purge/embargo between folds, (4) NIS features encode time (NaN = pre-2025 regime). Phases 1–2 of MASTER_BACKLOG fix this. Re-run all champions after Phase 1+2 complete to get honest numbers. See `docs/llm_review_synthesis.md`.
+
 ---
 
 ## Current Champion Models
@@ -261,6 +263,62 @@ v38+gates detail: 524 total trades (144/224/156), win rates 49.3%/46.9%/51.9%, m
 | HPO variance ~2.0 Sharpe on identical features | 100-trial search once → freeze → 3-seed ensemble permanently |
 | Forced top-20% labels corrupt bad-day training | Realized-R outcome labels allow zero positives on bad days |
 | Gates rescue bad folds but don't fix training | Model must learn to self-abstain, not rely on PM-level runtime gates |
+
+---
+
+---
+
+## Re-Validation on Current Data Window — 2026-05-05
+
+**Purpose:** Re-run existing champions on current data window (folds ending 2026-04-17) to see if they still hold up. Result: neither does. This is the key finding that triggered the multi-LLM review and Phase 1–3 work.
+
+### Intraday v41 — 61 features (NIS + SPY-relative + cs top-20%) ❌
+
+**Trained:** 2026-05-05 EOD  
+**HPO best:** AUC=0.6465 (OOS: 0.6289)  
+**Top 5 features:** `seg_x_atr_norm` (14%), `atr_norm` (11%), `range_compression` (6%), `minutes_since_open` (3%), `time_of_day` (3%) — NIS not in top 5
+
+| Fold | Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | Oct 2024–Apr 2025 | 248 | 41.1% | +0.69 |
+| 2 | Apr 2025–Oct 2025 | 249 | 45.4% | **-0.34** |
+| 3 | Oct 2025–Apr 2026 | 249 | 49.8% | +0.15 |
+| **Avg** | | 746 | 45.4% | **+0.167** ❌ GATE FAILED |
+
+v29 restored as ACTIVE champion. New features (NIS, SPY-relative) did not help and v41 is worse on fold 3 (+0.15 vs v29's +0.97). Fold 2 (Apr–Oct 2025) remains the regime problem.
+
+**Key insight from NIS NaN analysis:** NIS features at 80% NaN teach the model `NaN = 2021-2024 regime`. v41's slight improvement on fold 2 (-0.34 vs v29's -1.27) may be the model learning to treat non-NaN rows differently by time period, not by sentiment. NIS must be removed from training. See Phase 1c.
+
+### Intraday v29 — Re-validated on Current Window ❌
+
+**Original gate result (older window):** +1.830  
+**Same model, current data window:**
+
+| Fold | Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | Oct 2024–Apr 2025 | 248 | 41.1% | **-0.67** |
+| 2 | Apr 2025–Oct 2025 | 249 | 45.4% | **-1.27** |
+| 3 | Oct 2025–Apr 2026 | 249 | 49.8% | **+0.97** |
+| **Avg** | | 746 | 45.4% | **-0.327** ❌ |
+
+The original +1.830 was computed before Apr–Oct 2025 existed in any test fold. v29 was never validated against that regime. Fold 3 (+0.97) shows the model architecture works in calmer conditions — the problem is regime-specific, not fundamental.
+
+**Decomposition of Sharpe collapse (per multi-LLM review):**
+- ~60%: Selection bias (v29 was best of several variants; regression to mean as new data arrives)
+- ~20%: PIT leakage (v142 trained with non-PIT-correct fundamentals; similar effect for intraday timing data)
+- ~15%: Genuine non-stationarity (tariff shock is a real regime shift)
+- ~5%: Data sparsity (limited crisis regime in training history)
+
+### Swing v142 — Re-validated on Current Window ❌
+
+| Fold | Train | Test | Trades | Win% | Sharpe | MaxDD |
+|---|---|---|---|---|---|---|
+| 1 | 2021-04→2022-08 | 2022-08→2023-11 | 189 | 47.1% | +1.20 | 3.1% |
+| 2 | 2021-04→2023-11 | 2023-11→2025-02 | 231 | 43.7% | +0.24 | 4.0% |
+| 3 | 2021-04→2025-02 | 2025-02→2026-05 | 172 | 39.5% | **-0.51** | 5.1% |
+| **Avg** | | | 592 | 43.4% | **+0.310** ❌ |
+
+Fold 3 (Feb 2025–now) collapses across ALL swing versions. This is the 2025 tariff shock + elevated VIX period. Win rate 39.5% (vs 47.1% in fold 1) shows the model's entry pattern selection is failing, not just timing.
 
 ---
 
