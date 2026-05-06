@@ -154,6 +154,13 @@ def _queue_patch():
     return patch.object(rq_mod, "redis_queue", _fake_queue)
 
 
+def _base_session_patch(session_factory):
+    """Patch app.agents.base.get_session to prevent log_decision() from writing
+    to the real PostgreSQL DB during tests. Without this patch, TRADE_APPROVED /
+    TRADE_REJECTED audit rows leak into production every time the e2e suite runs."""
+    return patch("app.agents.base.get_session", side_effect=session_factory)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -184,6 +191,7 @@ async def test_rm_approves_valid_proposal():
     with (
         _queue_patch(),
         patch("app.agents.risk_manager.get_session", side_effect=SessionFactory),
+        _base_session_patch(SessionFactory),
         patch("app.integrations.get_alpaca_client") as mock_ac,
         patch("app.calendars.earnings.earnings_calendar") as mock_ec,
         patch("app.live_trading.kill_switch.kill_switch") as mock_ks,
@@ -316,6 +324,7 @@ async def _trader_context(session_factory, alpaca):
     with (
         _queue_patch(),
         patch("app.agents.trader.get_session", side_effect=session_factory),
+        _base_session_patch(session_factory),
         patch("app.integrations.get_alpaca_client", return_value=alpaca),
         patch("app.live_trading.kill_switch.kill_switch") as mock_ks,
         patch("app.calendars.earnings.earnings_calendar") as mock_ec,
