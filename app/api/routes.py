@@ -1165,7 +1165,7 @@ async def get_regime_analytics(days: int = 30):
     try:
         from datetime import timedelta
         from app.database.models import ProposalLog, RegimeSnapshot
-        from sqlalchemy import func, case
+        from sqlalchemy import func
 
         cutoff = datetime.utcnow() - timedelta(days=days)
 

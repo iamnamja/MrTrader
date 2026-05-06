@@ -914,7 +914,6 @@ class PortfolioManager(BaseAgent):
         """EOD: log days where regime model and opportunity score disagree."""
         from app.database.session import get_session
         from app.database.models import ProposalLog
-        from sqlalchemy import func
 
         today_start = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         db = get_session()
