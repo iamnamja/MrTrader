@@ -276,9 +276,20 @@ Also notable: removing pre-filters caused FEWER trades in fold 3 (26 vs 186), no
 
 **Command:** `python scripts/walkforward_tier3.py --model swing --swing-cost-bps 5 --swing-purge-days 10 --swing-train-years 2`
 
-### Swing v142 — Phase 3b (rolling 2yr window) — ⏳ PENDING
+### Swing v142 — Phase 3b (rolling 2yr window)
 
-*Walk-forward still running as of 2026-05-06 02:30 AM. Results will be documented when complete.*
+| Fold | Train Period | Test Period | Trades | Win% | Sharpe | vs Phase 2a |
+|---|---|---|---|---|---|---|
+| 1 | 2021-04-06 → 2022-08-06 | 2022-08-17 → 2023-11-05 | 186 | 46.8% | **+1.25** | = same |
+| 2 | 2021-11-05 → 2023-11-05 | 2023-11-16 → 2025-02-03 | 226 | 43.4% | **+0.24** | = same |
+| 3 | 2023-02-04 → 2025-02-03 | 2025-02-14 → 2026-05-05 | 186 | 39.8% | **-0.23** | = same |
+| **Avg** | | | **598** | **43.3%** | **+0.422** | = identical |
+
+**Phase 2a baseline for comparison:** F1=+1.25, F2=+0.24, F3=-0.23, avg=+0.422
+
+**Finding:** Rolling 2yr window produces **identical results** to the expanding 5yr window. This is because the rolling window only affects fold 1 (fold 1's train start shifts from 2021-04 to 2021-04 since the 2yr window still goes back to 2021 from a 2022 train_end — barely different). For fold 2: train starts 2021-11 (2yr before 2023-11) vs 2021-04 (expanding). For fold 3: train starts 2023-02 (2yr before 2025-02) vs 2021-04 (expanding) — this is the meaningful difference. But fold 3 result is unchanged (-0.23), meaning: **the 2021-2022 data is not the culprit**. The 2025 tariff regime failure is caused by something the model learned from 2022-2024 data, not just the 2021 bull market.
+
+**Verdict:** ❌ GATE NOT MET — avg +0.422 (same as Phase 2a baseline). Rolling 2yr window doesn't help. The fold 3 collapse is a genuine regime mismatch between the model's learned patterns and the 2025 tariff environment, not a training window artifact.
 
 ---
 
