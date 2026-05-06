@@ -193,6 +193,114 @@ function MacroWidget() {
   )
 }
 
+// ── Regime Model Widget (Phase R4) ───────────────────────────────────────────
+interface RegimeCurrent {
+  regime_score: number | null
+  regime_label: string | null
+  trigger: string | null
+  snapshot_time: string | null
+  age_hours: number | null
+  stale?: boolean
+  message?: string
+}
+
+function RegimeModelWidget() {
+  const [ctx, setCtx] = useState<RegimeCurrent | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.regimeCurrent()
+      .then(d => { setCtx(d as RegimeCurrent); setLoading(false) })
+      .catch(() => setLoading(false))
+    const iv = setInterval(() => {
+      api.regimeCurrent()
+        .then(d => setCtx(d as RegimeCurrent))
+        .catch(() => {})
+    }, 120_000)
+    return () => clearInterval(iv)
+  }, [])
+
+  const labelColor = (label: string | null) => {
+    if (label === 'RISK_ON') return C.green
+    if (label === 'RISK_OFF') return C.red
+    return C.yellow
+  }
+
+  const scoreBarColor = (score: number | null) => {
+    if (score == null) return C.muted
+    if (score >= 0.65) return C.green
+    if (score < 0.35) return C.red
+    return C.yellow
+  }
+
+  const ageLabel = (snap_time: string | null, age_h: number | null) => {
+    if (!snap_time) return '—'
+    if (age_h == null) return '—'
+    if (age_h < 1/60) return 'just now'
+    if (age_h < 1) return `${Math.round(age_h * 60)}m ago`
+    return `${age_h.toFixed(1)}h ago`
+  }
+
+  if (loading) return (
+    <div style={{ ...s.card, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted, fontSize: 12 }}>
+      Loading regime model…
+    </div>
+  )
+
+  const score = ctx?.regime_score ?? null
+  const label = ctx?.regime_label ?? null
+  const lcolor = labelColor(label)
+  const scolor = scoreBarColor(score)
+
+  return (
+    <div style={s.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={s.cardTitle}>Regime Model V1</div>
+        {ctx?.stale && <span style={{ fontSize: 9, color: C.yellow, background: '#f97316' + '22', padding: '2px 6px', borderRadius: 4 }}>STALE</span>}
+      </div>
+
+      {!ctx || ctx.message || score == null ? (
+        <div style={{ color: C.muted, fontSize: 12, paddingTop: 8 }}>
+          {ctx?.message ?? 'No regime score yet today'}
+        </div>
+      ) : (
+        <>
+          {/* Label badge */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <span style={{
+              background: lcolor + '22', color: lcolor,
+              border: `1px solid ${lcolor}55`,
+              borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 700,
+            }}>{label}</span>
+            <span style={{ fontSize: 22, fontWeight: 700, color: scolor }}>{(score * 100).toFixed(1)}</span>
+            <span style={{ fontSize: 10, color: C.muted }}>/100</span>
+          </div>
+
+          {/* Score gauge bar */}
+          <div style={{ background: '#ffffff18', borderRadius: 4, height: 6, marginBottom: 12, position: 'relative' }}>
+            <div style={{
+              width: `${(score * 100).toFixed(1)}%`, height: '100%',
+              background: scolor, borderRadius: 4, transition: 'width 0.4s',
+            }} />
+            {/* threshold markers */}
+            <div style={{ position: 'absolute', left: '35%', top: -2, bottom: -2, width: 1, background: C.red + '88' }} />
+            <div style={{ position: 'absolute', left: '65%', top: -2, bottom: -2, width: 1, background: C.green + '88' }} />
+          </div>
+
+          {/* Meta */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: C.muted }}>
+            <span>trigger: {ctx.trigger ?? '—'}</span>
+            <span>{ageLabel(ctx.snapshot_time, ctx.age_hours)}</span>
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+            RISK_OFF &lt;35 · NEUTRAL 35–65 · RISK_ON &gt;65
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ── Overview Panel ────────────────────────────────────────────────────────────
 type ChartRange = '1d' | '1w' | '1m'
 
@@ -361,9 +469,10 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
         </div>
       </div>
 
-      {/* Macro (left) + Recent Decisions (right) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      {/* Macro + Regime Model (left/mid) + Recent Decisions (right) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
         <MacroWidget />
+        <RegimeModelWidget />
         <div style={{ ...s.card, display: 'flex', flexDirection: 'column' }}>
           <div style={s.cardTitle}>Recent Decisions</div>
           <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>

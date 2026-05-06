@@ -904,6 +904,46 @@ class PortfolioManager(BaseAgent):
         except Exception as exc:
             self.logger.warning("EOD daily summary failed (non-fatal): %s", exc)
 
+        # Phase R4: log regime divergence for today
+        try:
+            await asyncio.to_thread(self._log_regime_divergence_today)
+        except Exception as exc:
+            self.logger.warning("Regime divergence log failed (non-fatal): %s", exc)
+
+    def _log_regime_divergence_today(self) -> None:
+        """EOD: log days where regime model and opportunity score disagree."""
+        from app.database.session import get_session
+        from app.database.models import ProposalLog
+        from sqlalchemy import func
+
+        today_start = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        db = get_session()
+        try:
+            rows = (
+                db.query(ProposalLog)
+                .filter(
+                    ProposalLog.proposed_at >= today_start,
+                    ProposalLog.regime_score_at_scan.isnot(None),
+                    ProposalLog.opportunity_score.isnot(None),
+                )
+                .all()
+            )
+            if not rows:
+                self.logger.info("Regime divergence: no proposals with regime+opportunity scores today")
+                return
+
+            n_regime_block = sum(1 for r in rows if r.regime_score_at_scan < 0.35)
+            n_opp_block = sum(1 for r in rows if r.opportunity_score is not None and r.opportunity_score < 0.5)
+            n_both_block = sum(1 for r in rows if r.regime_score_at_scan < 0.35 and (r.opportunity_score or 1) < 0.5)
+            n_diverge = n_regime_block + n_opp_block - 2 * n_both_block
+
+            self.logger.info(
+                "REGIME DIVERGENCE TODAY: %d proposals | regime_block=%d opp_block=%d diverge=%d",
+                len(rows), n_regime_block, n_opp_block, n_diverge,
+            )
+        finally:
+            db.close()
+
     async def _record_daily_benchmark(self) -> None:
         """
         16:05 ET: Record today's strategy P&L vs SPY for benchmark comparison (Phase 22).
@@ -951,6 +991,57 @@ class PortfolioManager(BaseAgent):
             await self.log_decision("WEEKLY_PERFORMANCE_REPORT", reasoning=report)
         except Exception as exc:
             self.logger.warning("Weekly report generation failed: %s", exc)
+
+        # Phase R4: regime weekly summary
+        try:
+            await asyncio.to_thread(self._log_regime_weekly_summary)
+        except Exception as exc:
+            self.logger.warning("Regime weekly summary failed (non-fatal): %s", exc)
+
+    def _log_regime_weekly_summary(self) -> None:
+        """Log regime model weekly summary: RISK_OFF/NEUTRAL/RISK_ON day counts + divergence."""
+        from datetime import timedelta
+        from app.database.session import get_session
+        from app.database.models import RegimeSnapshot, ProposalLog
+        from sqlalchemy import func
+
+        cutoff = datetime.now(ET).date() - timedelta(days=7)
+        db = get_session()
+        try:
+            label_counts = (
+                db.query(RegimeSnapshot.regime_label, func.count(RegimeSnapshot.id))
+                .filter(
+                    RegimeSnapshot.snapshot_date >= cutoff,
+                    RegimeSnapshot.snapshot_trigger != "backfill",
+                )
+                .group_by(RegimeSnapshot.regime_label)
+                .all()
+            )
+            counts = {label: n for label, n in label_counts}
+
+            # Intraday proposals sent by regime label
+            intra_by_label = (
+                db.query(ProposalLog.regime_label_at_scan, func.count(ProposalLog.id))
+                .filter(
+                    ProposalLog.proposed_at >= datetime.now(ET).replace(tzinfo=None) - timedelta(days=7),
+                    ProposalLog.strategy == "intraday",
+                    ProposalLog.pm_status.in_(["SENT", "PENDING"]),
+                    ProposalLog.regime_label_at_scan.isnot(None),
+                )
+                .group_by(ProposalLog.regime_label_at_scan)
+                .all()
+            )
+            intra_counts = {label: n for label, n in intra_by_label}
+
+            self.logger.info(
+                "REGIME WEEKLY SUMMARY (last 7 days): "
+                "RISK_OFF=%d days, NEUTRAL=%d days, RISK_ON=%d days | "
+                "Intraday proposals by label: RISK_OFF=%d NEUTRAL=%d RISK_ON=%d",
+                counts.get("RISK_OFF", 0), counts.get("NEUTRAL", 0), counts.get("RISK_ON", 0),
+                intra_counts.get("RISK_OFF", 0), intra_counts.get("NEUTRAL", 0), intra_counts.get("RISK_ON", 0),
+            )
+        finally:
+            db.close()
 
     async def _analyze_swing_premarket(self):
         """
