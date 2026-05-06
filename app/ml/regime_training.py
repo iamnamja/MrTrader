@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
 from xgboost import XGBClassifier
 
 from app.ml.regime_features import REGIME_FEATURE_NAMES, RegimeFeatureBuilder
