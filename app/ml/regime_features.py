@@ -11,7 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Optional
 
 import numpy as np
