@@ -181,6 +181,40 @@ Re-tested May 2026 on most recent 365 days — fails (+0.611 avg Sharpe).
 
 ---
 
+## Phase 2a — PM Opportunity Score Walk-Forward — 2026-05-05
+
+**What:** Wired the live PM continuous opportunity score into both simulators using historical SPY + VIX daily bars:
+`score = 0.35×vix_score + 0.20×vix_trend + 0.30×ma_score + 0.15×mom_score`
+`< 0.35 → skip all entries | 0.35–0.65 → cap candidates at 2 | ≥ 0.65 → normal`
+
+**Flag:** `--pm-opportunity-score`
+
+### Swing v142 — Phase 2a (opportunity score ON)
+
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 1 |
+|---|---|---|---|---|---|
+| 1 | 2022-08-17 → 2023-11-05 | 186 | 46.8% | **+1.25** | = |
+| 2 | 2023-11-16 → 2025-02-03 | 226 | 43.4% | **+0.24** | = |
+| 3 | 2025-02-14 → 2026-05-05 | 186 | 39.8% | **-0.23** | = |
+| **Avg** | | **598** | **43.3%** | **+0.422** | ❌ No change |
+
+**Finding:** Opportunity score has zero impact on swing. Identical trade counts — the score never suppressed a swing entry day. The fold 3 collapse is caused by RSI_DIP/EMA_CROSSOVER pre-filters catching falling knives in the tariff regime, not by calendar-level macro condition. Fix is Phase 3a (remove pre-filters).
+
+### Intraday v29 — Phase 2a (opportunity score ON)
+
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 1 |
+|---|---|---|---|---|---|
+| 1 | 2024-02-07 → 2024-10-31 | 264 | 42.4% | **-2.85** | ↓ worse |
+| 2 | 2024-11-05 → 2025-08-05 | 373 | 44.0% | **-1.81** | ↑ better |
+| 3 | 2025-08-08 → 2026-05-05 | 354 | 47.2% | **-1.08** | ↓ worse |
+| **Avg** | | **991** | **44.5%** | **-1.916** | ❌ Worse than baseline |
+
+**Phase 1 baseline for comparison:** F1=-1.36, F2=-2.19, F3=+0.60, avg=-0.984
+
+**Finding:** Opportunity score hurt intraday overall (-1.916 vs -0.984). Fold 3 (2025-08 → 2026-05) regressed from +0.60 to -1.08 — this was the only profitable fold. The score appears to be filtering out good intraday days during the recent high-vol regime where cross-sectional dispersion is high (i.e., good setup days) but SPY MA conditions look "opportunistic". Phase 2c (dispersion gate) is the next test — it targets macro-dominated low-dispersion days specifically.
+
+---
+
 ### Phase 85 — PM Abstention Gates (No Retrain) ✅ DONE
 
 **Branch:** `feat/phase-85-intraday-gates` | **Completed:** 2026-05-02
