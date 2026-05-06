@@ -293,6 +293,65 @@ Also notable: removing pre-filters caused FEWER trades in fold 3 (26 vs 186), no
 
 ---
 
+## Phase 4a — Absolute Hurdle Label Fix (Intraday Retrain) — 2026-05-06
+
+**What:** Added `CS_ABSOLUTE_HURDLE = 0.0030` to intraday label scheme. Top-20% cross-sectional label now additionally requires ≥0.30% absolute 2h return. Prevents labeling least-bad stocks as winners on flat/down market days.
+
+**Label scheme:** `cross_sectional_top20pct_abs_hurdle_0.30pct`
+**Model trained:** v43 (XGBoost 3-seed ensemble + LightGBM) | **HPO AUC:** 0.6652 | **OOS AUC:** 0.6243
+**Top features:** `seg_x_atr_norm`, `atr_norm`, `range_compression`, `minutes_since_open`, `time_of_day`
+**Training time:** 2999.9s (~50 min) | **Dataset:** 277k train / 60k test rows, 61 features
+
+**Walk-forward result:**
+
+| Fold | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | — | — | — | ❌ |
+| 2 | — | — | — | ❌ |
+| 3 | — | — | — | ❌ |
+| **Avg** | **—** | **—** | **-1.594** | ❌ GATE FAILED |
+
+**Min fold Sharpe:** -2.025 | **Gate:** avg > 1.0, min > -0.30
+
+**v29 restored as ACTIVE champion.**
+
+**Finding:** Absolute hurdle fix did not improve walk-forward Sharpe vs v29 baseline (-0.984). Result (-1.594) is actually worse than Phase 2c baseline (-1.816 with dispersion gate). The label fix is conceptually sound but the walk-forward period includes the 2025 tariff regime where cross-sectional dispersion is so high (or so low on macro-dominated days) that no label scheme on top-20% percentile ranking will produce reliable positives. The problem is regime mismatch, not label quality.
+
+**Note on AUC drift:** HPO AUC 0.6652 (above 0.65 threshold — no drift alert). OOS AUC 0.6243 (acceptable). The model learned something but it doesn't translate to Sharpe in the current regime.
+
+**Verdict:** ❌ GATE NOT MET — v29 retained. Label fix alone is insufficient. Next investigation: label distribution analysis — how many positives survive the hurdle filter on down days vs up days, and whether the model is being trained on too sparse a positive class in the 2025 regime.
+
+---
+
+## Phase 4b — Swing Retrain (v142 → v148) — 2026-05-06
+
+**What:** Standard retrain with current architecture (84 features, RSI/EMA pre-filters intact, 3yr training window). No architecture changes. Refreshed on data through 2026-05-06.
+
+**Model trained:** v148 | **HPO AUC:** 0.5969 | **OOS AUC:** 0.6216
+**Early stopping:** iteration 30 (very early — model barely learned)
+**Drift alert:** AUC 0.6216 < 0.65 threshold
+**Top features:** `volatility`, `atr_norm`, `parkinson_vol`, `realized_vol_20d`, `vrp`
+**Class ratio:** neg=36097, pos=9077, scale_pos_weight=3.98
+
+**Walk-forward result:**
+
+| Fold | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | — | — | — | — |
+| 2 | — | — | — | — |
+| 3 | — | — | — | — |
+| **Avg** | **—** | **—** | **-0.066** | ❌ GATE FAILED |
+
+**Min fold Sharpe:** -0.308 | **Gate:** avg > 0.6, min > -0.30
+
+**v142 restored as ACTIVE champion.**
+
+**Finding:** Refreshing the model on current data (including the 2025 tariff period) made it worse than v142. The HPO AUC of 0.5969 and early stopping at iteration 30 indicate the model failed to find a generalizable pattern in the training data — likely because the 3yr window (2023-2026) spans very different regimes (2023-2024 bull melt-up + 2025 tariff volatility) and the XGBoost learner is averaging over contradictory signals. v142 (trained before the 2025 regime) had more consistent training signal.
+
+**Verdict:** ❌ GATE NOT MET — v142 retained. Standard retrain is counterproductive in the current regime. The swing model needs a fundamentally different approach: regime-adaptive features, regime-aware training split, or separate models per regime.
+
+---
+
 ## Phase 1e — DSR Hard Gate — 2026-05-06
 
 **What:** Added DSR p > 0.95 as hard requirement in `WalkForwardReport.gate_passed()`. A model must now pass both the Sharpe threshold AND statistical significance after selection bias correction (N=15 trials). Previously DSR was printed but not enforced.

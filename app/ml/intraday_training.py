@@ -338,7 +338,7 @@ class IntradayModelTrainer:
             "lgbm_ensemble": lgbm_proba_test is not None,
             "xgb_3seed_ensemble": ensemble_proba_test is not None,
             "frozen_hpo": FROZEN_HPO_PARAMS is not None,
-            "label_scheme": "cross_sectional_top20pct_phase89",
+            "label_scheme": "cross_sectional_top20pct_abs_hurdle_0.30pct",
             "use_ranker": use_ranker,
             "top_n_by_liquidity": top_n_by_liquidity,
         }
@@ -636,8 +636,13 @@ class IntradayModelTrainer:
         # ── Phase 89: restore cross-sectional top-20% labels ────────────────────
         # raw_parts carry [day_ordinal, raw_2h_return]. Per-day top-20% → label=1.
         # cs_normalize applied to features (not labels) for cross-sectional alignment.
+        # Phase 1 (label fix): minimum absolute 2h return to qualify as a positive label.
+        # Prevents labeling "least bad" stocks as winners on down days.
+        # 0.30% = roughly 1/3 of the 0.8×ATR target — a stock must actually move up.
+        CS_ABSOLUTE_HURDLE = 0.0030
+
         def _cross_sectional_labels(X_parts, raw_parts):
-            """Rank raw 2h returns within each day; top 20% get label=1."""
+            """Rank raw 2h returns within each day; top 20% AND above hurdle get label=1."""
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
@@ -651,7 +656,10 @@ class IntradayModelTrainer:
                 if mask.sum() < 2:
                     continue
                 threshold = np.percentile(day_rets, 80)  # top 20%
-                labels[mask] = (day_rets >= threshold).astype(np.int8)
+                # Must be top-20% AND have a minimum positive absolute return
+                labels[mask] = (
+                    (day_rets >= threshold) & (day_rets >= CS_ABSOLUTE_HURDLE)
+                ).astype(np.int8)
             # Cross-sectional normalization: z-score each feature within each day
             X = cs_normalize_by_group(X, days_ord)
             return X, labels
