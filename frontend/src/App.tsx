@@ -2630,6 +2630,9 @@ interface SwingProposal {
   rm_inputs: Record<string, unknown> | null
   rm_decided_at: string | null
   trade_id: number | null
+  trader_status: string | null
+  trader_reason: string | null
+  trader_decided_at: string | null
   proposed_at: string | null
   sent_to_rm_at: string | null
 }
@@ -2646,6 +2649,40 @@ const RM_COLOR = (s: string | null): string => {
   if (s === 'APPROVED') return C.green
   if (s === 'REJECTED') return C.red
   return C.muted
+}
+
+const TRADER_COLOR = (s: string | null): string => {
+  if (s === 'FILLED') return C.green
+  if (s === 'QUALITY_REJECTED' || s === 'DISCARDED') return C.red
+  if (s === 'QUEUED') return C.yellow
+  return C.muted
+}
+
+function ExecutionCell({ rmStatus, rmReason, traderStatus, traderReason }: {
+  rmStatus: string | null, rmReason: string | null,
+  traderStatus: string | null, traderReason: string | null
+}) {
+  if (rmStatus === 'REJECTED') {
+    return (
+      <span style={{ color: C.red, fontSize: 11 }} title={rmReason ?? ''}>
+        RM: {rmReason ?? 'Rejected'}
+      </span>
+    )
+  }
+  if (rmStatus === 'APPROVED') {
+    if (traderStatus === 'FILLED') {
+      return <span style={{ color: C.green, fontWeight: 600, fontSize: 11 }}>Filled</span>
+    }
+    if (traderStatus === 'QUALITY_REJECTED' || traderStatus === 'DISCARDED') {
+      return (
+        <span style={{ color: C.red, fontSize: 11 }} title={traderReason ?? ''}>
+          {traderReason ?? traderStatus}
+        </span>
+      )
+    }
+    return <span style={{ color: C.yellow, fontSize: 11 }}>Queued</span>
+  }
+  return <span style={{ color: C.muted }}>—</span>
 }
 
 function PMProposalsTable() {
@@ -2702,14 +2739,14 @@ function PMProposalsTable() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr>
-              {['#', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Trade'].map(h => (
+              {['Time', 'PM Rank', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Execution', 'Trade'].map(h => (
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
-              <tr><td colSpan={14} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+              <tr><td colSpan={16} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
             )}
             {filtered.map(p => {
               const isExpanded = expandedId === p.id
@@ -2723,6 +2760,7 @@ function PMProposalsTable() {
                   <tr key={p.id} onClick={() => setExpandedId(isExpanded ? null : p.id)}
                     style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
                       background: isExpanded ? C.surface2 : 'transparent' }}>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(p.scan_time ?? undefined)}</td>
                     <td style={s.td}>{p.rank ?? '—'}</td>
                     <td style={{ ...s.td, fontWeight: 600, color: C.accent }}>{p.symbol}</td>
                     <td style={{ ...s.td, color: C.muted }}>{p.sector ?? '—'}</td>
@@ -2750,12 +2788,15 @@ function PMProposalsTable() {
                         : <span style={{ color: C.muted }}>—</span>}
                     </td>
                     <td style={s.td}>
+                      <ExecutionCell rmStatus={p.rm_status} rmReason={p.rm_reason} traderStatus={p.trader_status} traderReason={p.trader_reason} />
+                    </td>
+                    <td style={s.td}>
                       {p.trade_id ? <span style={{ color: C.green }}>#{p.trade_id}</span> : '—'}
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${p.id}-detail`}>
-                      <td colSpan={14} style={{ background: C.surface2, padding: '8px 16px' }}>
+                      <td colSpan={16} style={{ background: C.surface2, padding: '8px 16px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           <div>
                             <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Context</div>
@@ -2832,6 +2873,9 @@ interface IntraProposal {
   rm_status: string | null
   rm_reason: string | null
   rm_rule: string | null
+  trader_status: string | null
+  trader_reason: string | null
+  trader_decided_at: string | null
   proposed_at: string | null
   sent_to_rm_at: string | null
 }
@@ -2887,14 +2931,14 @@ function IntraProposalsTable() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr>
-              {['Window', '#', 'Symbol', 'ML Score', 'Entry', 'Stop', 'Target', 'Status', 'Gate Block', 'RM'].map(h => (
+              {['Time', 'Window', 'PM Rank', 'Symbol', 'ML Score', 'Entry', 'Stop', 'Target', 'Status', 'Gate Block', 'RM', 'Execution'].map(h => (
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
-              <tr><td colSpan={10} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
+              <tr><td colSpan={12} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
                 No intraday proposals found. Run an intraday scan to populate.
               </td></tr>
             )}
@@ -2906,6 +2950,7 @@ function IntraProposalsTable() {
                     style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
                       background: isExpanded ? C.surface2 : 'transparent',
                       opacity: p.above_threshold ? 1 : 0.55 }}>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(p.scan_time ?? undefined)}</td>
                     <td style={{ ...s.td, color: C.muted }}>{p.scan_window}</td>
                     <td style={s.td}>{p.rank ?? '—'}</td>
                     <td style={{ ...s.td, fontWeight: 600, color: p.above_threshold ? C.accent : C.text }}>{p.symbol}</td>
@@ -2922,10 +2967,13 @@ function IntraProposalsTable() {
                         ? <span style={{ color: RM_COLOR(p.rm_status), fontWeight: 600 }}>{p.rm_status}</span>
                         : <span style={{ color: C.muted }}>—</span>}
                     </td>
+                    <td style={s.td}>
+                      <ExecutionCell rmStatus={p.rm_status} rmReason={p.rm_reason} traderStatus={p.trader_status} traderReason={p.trader_reason} />
+                    </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${p.id}-detail`}>
-                      <td colSpan={10} style={{ background: C.surface2, padding: '8px 16px' }}>
+                      <td colSpan={12} style={{ background: C.surface2, padding: '8px 16px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           <div>
                             <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Info</div>
