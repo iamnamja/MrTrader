@@ -238,6 +238,7 @@ def run_swing_walkforward(
     model_version: Optional[int] = None,
     transaction_cost_pct: float = 0.0005,
     purge_days: int = 10,
+    use_opportunity_score: bool = False,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -280,6 +281,20 @@ def run_swing_walkforward(
     spy_raw.columns = [c.lower() for c in spy_raw.columns]
     spy_prices = spy_raw["close"]
 
+    # Download VIX for opportunity score (Phase 2a); stored in symbols_data so simulator sees it
+    if use_opportunity_score:
+        try:
+            vix_raw = yf.download("^VIX", start=start_all.date().isoformat(),
+                                  end=end_all.date().isoformat(), progress=False, auto_adjust=True)
+            if isinstance(vix_raw.columns, pd.MultiIndex):
+                vix_raw.columns = vix_raw.columns.get_level_values(0)
+            vix_raw.columns = [c.lower() for c in vix_raw.columns]
+            if len(vix_raw) >= 5:
+                symbols_data["^VIX"] = vix_raw
+                logger.info("VIX history loaded: %d rows (for opportunity score)", len(vix_raw))
+        except Exception as exc:
+            logger.warning("VIX download failed — opportunity score will use defaults: %s", exc)
+
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
 
     # Build fold boundaries (expanding window)
@@ -316,6 +331,7 @@ def run_swing_walkforward(
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=pm_abstention_spy_5d,
             transaction_cost_pct=transaction_cost_pct,
+            use_opportunity_score=use_opportunity_score,
         )
         result = sim.run(
             fold_symbols_data,
@@ -366,6 +382,7 @@ def run_intraday_walkforward(
     model_version: Optional[int] = None,
     transaction_cost_pct: float = 0.0015,
     purge_days: int = 2,
+    use_opportunity_score: bool = False,
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -469,6 +486,7 @@ def run_intraday_walkforward(
             pm_abstention_spy_ma_days=pm_abstention_spy_ma_days,
             scan_offsets=scan_offsets,
             transaction_cost_pct=transaction_cost_pct,
+            use_opportunity_score=use_opportunity_score,
         )
         result = sim.run(
             fold_symbols_data,
@@ -549,6 +567,9 @@ def main() -> int:
     parser.add_argument("--intraday-purge-days", type=int, default=2,
                         help="Trading days to skip between train_end and test_start for intraday "
                              "(prevents 2-day hold label leakage; default: 2)")
+    parser.add_argument("--pm-opportunity-score", action="store_true", default=False,
+                        help="Phase 2a: apply PM continuous opportunity score gate in simulation "
+                             "(score<0.35=skip, 0.35-0.65=cap at 2 candidates). Downloads VIX.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -592,8 +613,9 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
-            transaction_cost_pct=args.swing_cost_bps / 10_000,
+            transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.swing_purge_days,
+            use_opportunity_score=args.pm_opportunity_score,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
@@ -621,8 +643,9 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
-            transaction_cost_pct=args.intraday_cost_bps / 10_000,
+            transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.intraday_purge_days,
+            use_opportunity_score=args.pm_opportunity_score,
         )
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")

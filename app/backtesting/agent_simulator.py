@@ -123,6 +123,7 @@ class AgentSimulator:
         pm_abstention_vix: float = 0.0,         # Phase 45 P3-Parallel: abstain if VIX >= this (0=off)
         pm_abstention_spy_ma_days: int = 0,     # Phase 45 P3-Parallel: abstain if SPY < N-day SMA (0=off)
         pm_abstention_spy_5d: bool = False,     # Phase 55: abstain if SPY 5d return <= 0 (negative momentum)
+        use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -140,6 +141,7 @@ class AgentSimulator:
         self.pm_abstention_vix = pm_abstention_vix
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
         self.pm_abstention_spy_5d = pm_abstention_spy_5d
+        self.use_opportunity_score = use_opportunity_score
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -287,6 +289,38 @@ class AgentSimulator:
                                 _skip_entries = True
                                 logger.debug("PM abstention (SPY 5d) on %s: 5d ret=%.3f",
                                              day, spy_5d_ret)
+                except Exception:
+                    pass
+
+            # Phase 2a: continuous PM opportunity score gate (same formula as live PM)
+            if not _skip_entries and self.use_opportunity_score and _spy_closes is not None:
+                try:
+                    spy_idx = _spy_closes.index
+                    spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                    spy_hist = _spy_closes.loc[spy_dates <= day]
+                    if len(spy_hist) >= 20:
+                        spy_close = float(spy_hist.iloc[-1])
+                        spy_ma20 = float(spy_hist.tail(20).mean())
+                        spy_5d_ret = (spy_close / float(spy_hist.iloc[-6]) - 1.0) if len(spy_hist) >= 6 else 0.0
+                        ma_score = 1.0 if spy_close >= spy_ma20 else 0.4
+                        mom_score = float(np.clip(0.5 + spy_5d_ret * 25.0, 0.0, 1.0))
+                        vix_score, vix_trend = 1.0, 1.0
+                        if _vix_closes is not None:
+                            vix_idx = _vix_closes.index
+                            vix_dates_v = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
+                            vix_hist = _vix_closes.loc[vix_dates_v <= day]
+                            if len(vix_hist) > 0:
+                                vix_level = float(vix_hist.iloc[-1])
+                                vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
+                                vix_5d_avg = float(vix_hist.tail(5).mean()) if len(vix_hist) >= 5 else vix_level
+                                vix_trend = float(np.clip(1.0 - (vix_level - vix_5d_avg) / 5.0, 0.0, 1.0))
+                        opp_score = 0.35 * vix_score + 0.20 * vix_trend + 0.30 * ma_score + 0.15 * mom_score
+                        if opp_score < 0.35:
+                            _skip_entries = True
+                            logger.debug("Opp score %.2f < 0.35 on %s — skipping entries", opp_score, day)
+                        elif opp_score < 0.65:
+                            _max_pos_today = min(_max_pos_today, 2)
+                            logger.debug("Opp score %.2f on %s — capping candidates at 2", opp_score, day)
                 except Exception:
                     pass
 

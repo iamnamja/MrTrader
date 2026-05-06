@@ -108,6 +108,7 @@ class IntradayAgentSimulator:
         pm_abstention_vix: float = 0.0,
         pm_abstention_spy_ma_days: int = 0,
         scan_offsets: Optional[List[int]] = None,
+        use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -118,6 +119,7 @@ class IntradayAgentSimulator:
         self.meta_model = meta_model
         self.pm_abstention_vix = pm_abstention_vix
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
+        self.use_opportunity_score = use_opportunity_score
         # Phase 51: scan_offsets controls how many entry windows per day.
         # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
         self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
@@ -216,6 +218,34 @@ class IntradayAgentSimulator:
                             _spy_ma = float(_spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
                             if float(_spy_hist.iloc[-1]) < _spy_ma:
                                 skip_entries = True
+                except Exception:
+                    pass
+
+            # Phase 2a: continuous PM opportunity score gate (same formula as live PM)
+            if not skip_entries and self.use_opportunity_score and _spy_daily_closes is not None:
+                try:
+                    _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
+                    _spy_dates = _spy_idx.date if hasattr(_spy_idx, "date") else np.array([d.date() for d in _spy_idx])
+                    _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
+                    if len(_spy_hist) >= 20:
+                        spy_close = float(_spy_hist.iloc[-1])
+                        spy_ma20 = float(_spy_hist.tail(20).mean())
+                        spy_5d_ret = (spy_close / float(_spy_hist.iloc[-6]) - 1.0) if len(_spy_hist) >= 6 else 0.0
+                        ma_score = 1.0 if spy_close >= spy_ma20 else 0.4
+                        mom_score = float(np.clip(0.5 + spy_5d_ret * 25.0, 0.0, 1.0))
+                        vix_score, vix_trend = 1.0, 1.0
+                        if _vix_closes is not None:
+                            _vix_idx2 = pd.DatetimeIndex(_vix_closes.index)
+                            _vix_dates2 = _vix_idx2.date if hasattr(_vix_idx2, "date") else np.array([d.date() for d in _vix_idx2])
+                            _vix_hist2 = _vix_closes.iloc[_vix_dates2 <= day]
+                            if len(_vix_hist2) > 0:
+                                vix_level = float(_vix_hist2.iloc[-1])
+                                vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
+                                vix_5d_avg = float(_vix_hist2.tail(5).mean()) if len(_vix_hist2) >= 5 else vix_level
+                                vix_trend = float(np.clip(1.0 - (vix_level - vix_5d_avg) / 5.0, 0.0, 1.0))
+                        opp_score = 0.35 * vix_score + 0.20 * vix_trend + 0.30 * ma_score + 0.15 * mom_score
+                        if opp_score < 0.35:
+                            skip_entries = True
                 except Exception:
                     pass
 
