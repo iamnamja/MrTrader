@@ -167,6 +167,15 @@ class PremarketIntelligence:
             except Exception as exc:
                 logger.warning("8-K check failed: %s", exc)
 
+        # 7. Regime model scoring
+        try:
+            regime_ctx = self._run_regime_scoring("premarket")
+            if regime_ctx:
+                summary["regime_score"] = regime_ctx["regime_score"]
+                summary["regime_label"] = regime_ctx["regime_label"]
+        except Exception as exc:
+            logger.warning("Regime scoring in premarket routine failed: %s", exc)
+
         logger.info("Pre-market routine complete: %s", summary)
         return summary
 
@@ -512,6 +521,140 @@ class PremarketIntelligence:
             return drawdown
         except Exception:
             return 0.0
+
+    # ─── Regime Model Integration (Phase R3) ─────────────────────────────────
+
+    def _run_regime_scoring(self, trigger: str) -> Optional[dict]:
+        """Score the regime model and persist to regime_snapshots. Returns score dict or None."""
+        try:
+            from app.ml.regime_model import RegimeModel
+            result = RegimeModel.instance().score(
+                as_of_date=date.today(),
+                trigger=trigger,
+            )
+            logger.info(
+                "Regime score [%s]: %.4f (%s)",
+                trigger, result["regime_score"], result["regime_label"],
+            )
+            return result
+        except Exception as exc:
+            logger.error("Regime scoring failed (trigger=%s): %s", trigger, exc)
+            return None
+
+    def _schedule_regime_reeval_jobs(self, scheduler) -> None:
+        """Register APScheduler one-shot jobs for post-macro-event regime re-evals."""
+        try:
+            from app.calendars.macro import MacroCalendar
+            cal = MacroCalendar()
+            ctx = cal.get_context()
+            today_str = date.today().isoformat()
+            for evt in ctx.events_today:
+                if evt.date_str != today_str:
+                    continue
+                try:
+                    h, m = map(int, evt.time_str.split(":"))
+                    # Schedule re-eval 5 minutes after event release
+                    reeval_m = m + 5
+                    reeval_h = h
+                    if reeval_m >= 60:
+                        reeval_m -= 60
+                        reeval_h += 1
+                    trigger_name = f"post_{evt.event_type.lower()}"
+                    run_dt = datetime.now(ET).replace(
+                        hour=reeval_h, minute=reeval_m, second=0, microsecond=0
+                    )
+                    if run_dt > datetime.now(ET):
+                        scheduler.add_job(
+                            lambda tn=trigger_name: self._run_regime_scoring(tn),
+                            trigger="date",
+                            run_date=run_dt,
+                            id=f"regime_reeval_{trigger_name}",
+                            replace_existing=True,
+                        )
+                        logger.info(
+                            "Regime re-eval job scheduled: %s at %02d:%02d ET",
+                            trigger_name, reeval_h, reeval_m,
+                        )
+                except Exception as exc:
+                    logger.warning("Could not schedule regime re-eval for %s: %s", evt.event_type, exc)
+        except Exception as exc:
+            logger.warning("_schedule_regime_reeval_jobs failed: %s", exc)
+
+    def _startup_regime_catchup(self) -> None:
+        """
+        Called on startup. If premarket regime scoring was missed (server was down at 7am
+        and it's now before 11:30 ET), run a catchup score with trigger='startup_catchup'.
+        Also re-schedules any post-event re-evals that are still in the future.
+        """
+        try:
+            now_et = datetime.now(ET)
+            if now_et.hour > 11 or (now_et.hour == 11 and now_et.minute >= 30):
+                logger.info("Regime startup catchup skipped — past 11:30 ET")
+                return
+
+            # Check if we already have a premarket row for today
+            from app.database.session import get_session
+            from app.database.models import RegimeSnapshot
+            today = date.today()
+            with get_session() as session:
+                existing = session.query(RegimeSnapshot).filter(
+                    RegimeSnapshot.snapshot_date == today,
+                    RegimeSnapshot.snapshot_trigger.in_(["premarket", "startup_catchup"]),
+                ).first()
+
+            if existing:
+                logger.info("Regime startup catchup skipped — premarket row already exists for %s", today)
+            else:
+                logger.info("Regime startup catchup: running missed premarket scoring")
+                self._run_regime_scoring("startup_catchup")
+        except Exception as exc:
+            logger.error("_startup_regime_catchup failed: %s", exc)
+
+    def get_regime_context(self) -> Optional[dict]:
+        """
+        Return the latest regime score for today from regime_snapshots.
+        Returns None if no row exists yet (before first premarket run).
+        """
+        try:
+            from app.database.session import get_session
+            from app.database.models import RegimeSnapshot
+            today = date.today()
+            with get_session() as session:
+                row = (
+                    session.query(RegimeSnapshot)
+                    .filter(
+                        RegimeSnapshot.snapshot_date == today,
+                        RegimeSnapshot.snapshot_trigger != "backfill",
+                    )
+                    .order_by(RegimeSnapshot.snapshot_time.desc())
+                    .first()
+                )
+                if row is None:
+                    return None
+                age_hours = (
+                    (datetime.now(ET).replace(tzinfo=None) - row.snapshot_time).total_seconds() / 3600
+                    if row.snapshot_time else 99
+                )
+                result = {
+                    "regime_score": row.regime_score,
+                    "regime_label": row.regime_label,
+                    "trigger": row.snapshot_trigger,
+                    "snapshot_time": row.snapshot_time.isoformat() if row.snapshot_time else None,
+                    "age_hours": round(age_hours, 2),
+                }
+                # Warn if score is stale during market hours
+                now_et = datetime.now(ET)
+                if 9 <= now_et.hour < 16 and age_hours > 4:
+                    logger.warning(
+                        "Regime score is stale (%.1fh old) — applying 20%% uncertainty haircut",
+                        age_hours,
+                    )
+                    result["regime_score"] = round(row.regime_score * 0.8, 4)
+                    result["stale"] = True
+                return result
+        except Exception as exc:
+            logger.error("get_regime_context failed: %s", exc)
+            return None
 
     def get_market_context(self) -> dict:
         """
