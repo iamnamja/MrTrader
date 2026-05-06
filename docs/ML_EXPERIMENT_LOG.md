@@ -80,6 +80,44 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+---
+
+## Phase 1d — Deflated Sharpe Ratio + Bootstrap Analysis — 2026-05-05
+
+**Purpose:** Quantify selection bias from testing ~15 model variants. DSR (Bailey & López de Prado 2014) corrects the raw Sharpe for the expected maximum Sharpe from N independent random trials.
+
+### DSR Results
+
+| Model | Version | Raw Sharpe | N Trials | DSR z-score | P(SR>0) | Significant? |
+|---|---|---|---|---|---|---|
+| Swing | v142 | +1.181 (original) | 15 | -9.96 | 0.000 | ❌ No |
+| Swing | v142 | +0.422 (Phase 1 corrected) | 15 | -30.95 | 0.000 | ❌ No |
+| Intraday | v29 | +1.830 (original) | 15 | +0.87 | 0.807 | ⚠️ Borderline |
+| Intraday | v29 | -0.984 (Phase 1 corrected) | 15 | -56.77 | 0.000 | ❌ No |
+
+**Interpretation:**
+- **Swing v142 original +1.181 is statistically meaningless** even before Phase 1 corrections. With 15 trials, the expected maximum Sharpe from random noise exceeds +1.181. We cannot tell whether swing v142 has any genuine edge.
+- **Intraday v29 original +1.830 was borderline** (p=0.807) — meaningful signal existed but not definitively proven. The original result was partly real, partly selection bias.
+- With Phase 1 corrections, both models fail DSR comprehensively.
+- **DSR is now printed in every walk-forward run** (added to `walkforward_tier3.py`). Any future model must pass DSR p > 0.95 as an additional gate condition.
+
+### Bootstrap Distribution (Small Sample — 10 Resamples)
+
+Full 200-resample bootstrap would take ~50 hours (200 × 17min swing). A 10-resample run is pending — will document the distribution shape below. The DSR analytic result above is the primary Phase 1d deliverable.
+
+*Bootstrap results: pending — run `python scripts/bootstrap_sharpe.py --model swing --n-resamples 10` overnight.*
+
+### Updated Gate Criteria (Post Phase 1d)
+
+```
+avg net Sharpe > 0.6 (swing) / > 1.0 (intraday)   [lower but honest — with costs + purge]
+worst fold Sharpe > -0.30
+DSR p-value > 0.95                                  [NEW — corrects for N trials tested]
+Max drawdown < 15%
+```
+
+---
+
 > **Retrain in progress (2026-05-05 EOD):** Swing v146 (89 feat = 84 + 5 macro NIS) and Intraday v30 (63 feat = 53 + 5 NIS + 5 macro NIS) are training now. Results will be logged below when walk-forward completes.
 
 ---
