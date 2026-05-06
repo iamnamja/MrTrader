@@ -130,7 +130,12 @@ class WalkForwardReport:
         return sum(f.trades for f in self.folds)
 
     def gate_passed(self) -> bool:
-        return self.avg_sharpe >= SHARPE_GATE and self.min_sharpe >= MIN_FOLD_SHARPE
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        return (
+            self.avg_sharpe >= SHARPE_GATE
+            and self.min_sharpe >= MIN_FOLD_SHARPE
+            and dsr_p > 0.95  # Phase 1e: DSR significance required
+        )
 
     def print(self) -> None:
         _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)")
@@ -143,13 +148,13 @@ class WalkForwardReport:
         print(f"  Total trades:  {self.total_trades}")
         dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
         dsr_sig = "✅ significant" if dsr_p > 0.95 else "❌ not significant"
-        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}")
+        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}  (gate: p > 0.95)")
         print()
         if self.gate_passed():
-            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f} > {SHARPE_GATE}")
+            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f} > {SHARPE_GATE}, DSR p={dsr_p:.3f} > 0.95")
         else:
             _err(f"GATE NOT MET — avg Sharpe {self.avg_sharpe:.3f} (need {SHARPE_GATE}), "
-                 f"min fold {self.min_sharpe:.3f} (need {MIN_FOLD_SHARPE})")
+                 f"min fold {self.min_sharpe:.3f} (need {MIN_FOLD_SHARPE}), DSR p={dsr_p:.3f} (need >0.95)")
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────

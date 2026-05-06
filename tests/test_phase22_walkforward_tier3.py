@@ -118,7 +118,9 @@ class TestWalkForwardReport:
     def test_gate_passes_when_avg_and_min_ok(self):
         from scripts.walkforward_tier3 import WalkForwardReport, SHARPE_GATE, MIN_FOLD_SHARPE
         r = WalkForwardReport(model_type="swing")
-        r.folds = [_fold(SHARPE_GATE + 0.1), _fold(SHARPE_GATE + 0.2)]
+        # Phase 1e: DSR gate requires high Sharpe + sufficient trades to be significant.
+        # Use Sharpe=3.5 with 500 trades/fold so DSR p > 0.95 is satisfied.
+        r.folds = [_fold(3.5, trades=500), _fold(3.5, trades=500)]
         assert r.gate_passed() is True
 
     def test_gate_fails_when_avg_below(self):
