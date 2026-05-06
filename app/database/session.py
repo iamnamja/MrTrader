@@ -45,6 +45,14 @@ def _migrate_columns() -> None:
         # (table, column, definition)
         ("trades", "alpaca_order_id", "VARCHAR(50)"),
         ("trades", "proposal_id",    "VARCHAR(36)"),
+        # Phase R — regime context columns
+        ("proposal_log", "regime_score_at_scan",   "REAL"),
+        ("proposal_log", "regime_label_at_scan",   "VARCHAR(15)"),
+        ("proposal_log", "regime_trigger_at_scan", "VARCHAR(30)"),
+        ("decision_audit", "regime_score_at_decision", "REAL"),
+        ("daily_state",    "regime_score_premarket",   "REAL"),
+        ("daily_state",    "regime_label_premarket",   "VARCHAR(15)"),
+        ("daily_state",    "regime_last_updated_at",   "TIMESTAMP"),
     ]
     with engine.connect() as conn:
         for table, col, col_def in migrations:
