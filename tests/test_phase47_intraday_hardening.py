@@ -152,10 +152,12 @@ class TestFeatureNamesConstant:
         )
 
     def test_feature_names_count(self):
-        """FEATURE_NAMES must have the expected count (56 = 61 pre-1c minus 5 NIS features)."""
+        """FEATURE_NAMES count: 56 base + 3 temporary regime features added in Item 3 experiment.
+        The 3 regime features (regime_vix_proxy/pct60d/spy_ma20_dist) will be removed atomically
+        with Phase R5 retrain once the separate Regime Model is validated."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 56, (
-            f"Expected 56 features (61 pre-Phase-1c minus 5 NIS removed as time-leak), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 59, (
+            f"Expected 59 features (56 base + 3 Item-3 regime features), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):
