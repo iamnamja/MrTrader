@@ -445,6 +445,20 @@ def run_intraday_walkforward(
     except Exception as exc:
         logger.warning("SPY daily fetch failed (Phase 86 features will use defaults): %s", exc)
 
+    # Download VIX daily bars for opportunity score (Phase 2a)
+    if use_opportunity_score:
+        try:
+            import yfinance as yf
+            _vix_daily = yf.download("^VIX", period="3y", progress=False, auto_adjust=True)
+            if isinstance(_vix_daily.columns, pd.MultiIndex):
+                _vix_daily.columns = _vix_daily.columns.get_level_values(0)
+            _vix_daily.columns = [c.lower() for c in _vix_daily.columns]
+            if len(_vix_daily) >= 5:
+                symbols_data["^VIX"] = _vix_daily
+                logger.info("VIX daily bars loaded: %d rows (for opportunity score)", len(_vix_daily))
+        except Exception as exc:
+            logger.warning("VIX download failed — opportunity score will use SPY-only: %s", exc)
+
     logger.info("Intraday data loaded: %d symbols", len(symbols_data))
 
     # Fold boundaries — split the test period into n_folds equal segments

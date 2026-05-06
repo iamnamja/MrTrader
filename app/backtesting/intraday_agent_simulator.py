@@ -172,9 +172,14 @@ class IntradayAgentSimulator:
         equity_by_date: Dict[date, float] = {}
         tx_costs_total = 0.0
 
-        # Precompute VIX and SPY daily closes for abstention gate
+        # Precompute VIX and SPY daily closes for abstention gate / opportunity score
         _vix_closes: Optional[pd.Series] = None
         _spy_daily_closes: Optional[pd.Series] = None
+        # Phase 2a: pre-load VIX from symbols_data if opportunity score enabled
+        if self.use_opportunity_score:
+            _vix_df = symbols_data.get("^VIX") or symbols_data.get("VIX")
+            if _vix_df is not None and "close" in _vix_df.columns:
+                _vix_closes = _vix_df["close"]
         if self.pm_abstention_vix > 0 or self.pm_abstention_spy_ma_days > 0:
             try:
                 import yfinance as yf
