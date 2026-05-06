@@ -267,6 +267,7 @@ def run_swing_walkforward(
     purge_days: int = 10,
     use_opportunity_score: bool = False,
     no_prefilters: bool = False,
+    train_years: Optional[int] = None,  # Phase 3b: rolling window (None = expanding)
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -325,18 +326,23 @@ def run_swing_walkforward(
 
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
 
-    # Build fold boundaries (expanding window)
-    # total_years split into folds+1 equal segments; train grows, test = last segment each fold.
-    # purge_days gap between train_end and test_start prevents 5-day label leakage:
-    # a label computed at the last training day uses bars purge_days into the future.
+    # Build fold boundaries.
+    # train_years=None: expanding window (train always from start_all).
+    # train_years=N: rolling window (train starts at train_end - N years per fold).
+    # purge_days gap between train_end and test_start prevents 5-day label leakage.
     segment_days = int(total_years * 365 / (n_folds + 1))
     fold_boundaries = []
     for fold_idx in range(n_folds):
         train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
         test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
         test_end_dt = train_end_dt + timedelta(days=segment_days)
+        if train_years is not None:
+            fold_train_start = max(start_all.date(),
+                                   (train_end_dt - timedelta(days=train_years * 365)).date())
+        else:
+            fold_train_start = start_all.date()
         fold_boundaries.append((
-            start_all.date(),
+            fold_train_start,
             train_end_dt.date(),
             test_start_dt.date(),
             min(test_end_dt.date(), end_all.date()),
@@ -621,6 +627,10 @@ def main() -> int:
     parser.add_argument("--no-prefilters", action="store_true", default=False,
                         help="Phase 3a: bypass RSI 40-70 and EMA20/50 trader pre-filters in swing. "
                              "Lets ML model score the full universe without rule-based entry gates.")
+    parser.add_argument("--swing-train-years", type=int, default=None,
+                        help="Phase 3b: rolling training window per fold — limit each fold's "
+                             "training data to the N most recent years before train_end "
+                             "(None = expanding window). Use 2 to exclude 2021-2022 bull regime.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -668,6 +678,7 @@ def main() -> int:
             purge_days=args.swing_purge_days,
             use_opportunity_score=args.pm_opportunity_score,
             no_prefilters=args.no_prefilters,
+            train_years=args.swing_train_years,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
