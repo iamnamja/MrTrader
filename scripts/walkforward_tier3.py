@@ -261,6 +261,7 @@ def run_swing_walkforward(
     transaction_cost_pct: float = 0.0005,
     purge_days: int = 10,
     use_opportunity_score: bool = False,
+    no_prefilters: bool = False,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -354,6 +355,7 @@ def run_swing_walkforward(
             pm_abstention_spy_5d=pm_abstention_spy_5d,
             transaction_cost_pct=transaction_cost_pct,
             use_opportunity_score=use_opportunity_score,
+            no_prefilters=no_prefilters,
         )
         result = sim.run(
             fold_symbols_data,
@@ -611,6 +613,9 @@ def main() -> int:
     parser.add_argument("--dispersion-gate", action="store_true", default=False,
                         help="Phase 2c: skip intraday entries on days where cross-sectional return "
                              "dispersion < 0.5x rolling 60-day median (macro-dominated days)")
+    parser.add_argument("--no-prefilters", action="store_true", default=False,
+                        help="Phase 3a: bypass RSI 40-70 and EMA20/50 trader pre-filters in swing. "
+                             "Lets ML model score the full universe without rule-based entry gates.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -657,6 +662,7 @@ def main() -> int:
             transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.swing_purge_days,
             use_opportunity_score=args.pm_opportunity_score,
+            no_prefilters=args.no_prefilters,
         )
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")

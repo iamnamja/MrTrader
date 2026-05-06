@@ -124,6 +124,7 @@ class AgentSimulator:
         pm_abstention_spy_ma_days: int = 0,     # Phase 45 P3-Parallel: abstain if SPY < N-day SMA (0=off)
         pm_abstention_spy_5d: bool = False,     # Phase 55: abstain if SPY 5d return <= 0 (negative momentum)
         use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
+        no_prefilters: bool = False,             # Phase 3a: bypass RSI/EMA20/50 trader pre-filters
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -142,6 +143,7 @@ class AgentSimulator:
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
         self.pm_abstention_spy_5d = pm_abstention_spy_5d
         self.use_opportunity_score = use_opportunity_score
+        self.no_prefilters = no_prefilters
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -452,7 +454,7 @@ class AgentSimulator:
             # Near-term trend: price above EMA-20 and EMA-50
             ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
             ema50 = float(closes.ewm(span=50, adjust=False).mean().iloc[-1])
-            if close <= ema20 or close <= ema50:
+            if not self.no_prefilters and (close <= ema20 or close <= ema50):
                 return False, 0.0, 0.0
 
             # RSI zone: not overbought, not in freefall (40–70)
@@ -463,7 +465,7 @@ class AgentSimulator:
             avg_gain = float(np.mean(gains[-14:])) if len(gains) >= 14 else float(np.mean(gains))
             avg_loss = float(np.mean(losses[-14:])) if len(losses) >= 14 else float(np.mean(losses))
             rsi = 100.0 - (100.0 / (1.0 + avg_gain / max(avg_loss, 1e-8)))
-            if not (40.0 <= rsi <= 70.0):
+            if not self.no_prefilters and not (40.0 <= rsi <= 70.0):
                 return False, 0.0, 0.0
 
             # Volume confirmation: today's volume >= 80% of 20-day avg
