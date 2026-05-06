@@ -109,6 +109,8 @@ class IntradayAgentSimulator:
         pm_abstention_spy_ma_days: int = 0,
         scan_offsets: Optional[List[int]] = None,
         use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
+        use_dispersion_gate: bool = False,      # Phase 2c: skip low cross-sectional dispersion days
+        dispersion_threshold: float = 0.5,     # Phase 2c: skip if dispersion < threshold × median
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -120,6 +122,8 @@ class IntradayAgentSimulator:
         self.pm_abstention_vix = pm_abstention_vix
         self.pm_abstention_spy_ma_days = pm_abstention_spy_ma_days
         self.use_opportunity_score = use_opportunity_score
+        self.use_dispersion_gate = use_dispersion_gate
+        self.dispersion_threshold = dispersion_threshold
         # Phase 51: scan_offsets controls how many entry windows per day.
         # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
         self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
@@ -204,6 +208,33 @@ class IntradayAgentSimulator:
             except Exception as exc:
                 logger.debug("Abstention gate data fetch failed: %s", exc)
 
+        # Phase 2c: pre-compute cross-sectional dispersion per trading day.
+        # Dispersion = std of 2-hour returns (bars 12→36) across all symbols.
+        # Days with dispersion < threshold × rolling 60-day median are low-opportunity
+        # (macro dominated) and should be skipped by the intraday model.
+        _daily_dispersion: dict = {}
+        if self.use_dispersion_gate:
+            entry_bar = FEATURE_BARS        # bar 12 = entry point
+            hold_bars = 24                  # 24 bars = 2 hours
+            exit_bar = entry_bar + hold_bars  # bar 36
+            for d in all_days:
+                returns = []
+                for sym, df in symbols_data.items():
+                    if sym in ("SPY", "^VIX", "VIX"):
+                        continue
+                    df_idx = pd.DatetimeIndex(df.index)
+                    day_mask = df_idx.normalize().date == d
+                    day_bars = df.loc[day_mask]
+                    if len(day_bars) < exit_bar + 1:
+                        continue
+                    entry_price = float(day_bars["close"].iloc[entry_bar - 1])
+                    exit_price = float(day_bars["close"].iloc[exit_bar - 1])
+                    if entry_price > 0:
+                        returns.append(exit_price / entry_price - 1.0)
+                if len(returns) >= 10:
+                    _daily_dispersion[d] = float(np.std(returns))
+            logger.info("Dispersion gate: computed %d days", len(_daily_dispersion))
+
         for day in trading_days:
             # Phase 46-C: PM abstention gate — skip all entries on bad macro days
             skip_entries = False
@@ -253,6 +284,19 @@ class IntradayAgentSimulator:
                             skip_entries = True
                 except Exception:
                     pass
+
+            # Phase 2c: cross-sectional dispersion gate
+            if not skip_entries and self.use_dispersion_gate and _daily_dispersion:
+                today_disp = _daily_dispersion.get(day)
+                if today_disp is not None:
+                    past_days = sorted(d for d in _daily_dispersion if d < day)
+                    if len(past_days) >= 20:
+                        window = past_days[-60:]
+                        median_disp = float(np.median([_daily_dispersion[d] for d in window]))
+                        if median_disp > 0 and today_disp < self.dispersion_threshold * median_disp:
+                            skip_entries = True
+                            logger.debug("Dispersion gate on %s: %.4f < %.2f×%.4f",
+                                         day, today_disp, self.dispersion_threshold, median_disp)
 
             spy_day = self._get_day_bars(spy_data, day) if spy_data is not None else None
             # Phase 86: SPY daily bars strictly before today (no lookahead)

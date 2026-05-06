@@ -85,6 +85,31 @@ Re-tested May 2026 on most recent 365 days — fails (+0.611 avg Sharpe).
 
 ---
 
+## Phase 2a — PM Opportunity Score Walk-Forward — 2026-05-05
+
+**What:** Wired the live PM continuous opportunity score into both simulators using historical SPY + VIX daily bars:
+`score = 0.35×vix_score + 0.20×vix_trend + 0.30×ma_score + 0.15×mom_score`
+`< 0.35 → skip all entries | 0.35–0.65 → cap candidates at 2 | ≥ 0.65 → normal`
+
+**Flag:** `--pm-opportunity-score`
+
+### Swing v142 — Phase 2a (opportunity score ON)
+
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 1 |
+|---|---|---|---|---|---|
+| 1 | 2022-08-17 → 2023-11-05 | 186 | 46.8% | **+1.25** | = |
+| 2 | 2023-11-16 → 2025-02-03 | 226 | 43.4% | **+0.24** | = |
+| 3 | 2025-02-14 → 2026-05-05 | 186 | 39.8% | **-0.23** | = |
+| **Avg** | | **598** | **43.3%** | **+0.422** | ❌ No change |
+
+**Finding:** Opportunity score has zero impact on swing. Identical trade counts — the score never suppressed a swing entry day. The fold 3 collapse is caused by RSI_DIP/EMA_CROSSOVER pre-filters catching falling knives in the tariff regime, not by calendar-level macro condition. Fix is Phase 3a (remove pre-filters).
+
+### Intraday v29 — Phase 2a (opportunity score ON)
+
+*Results pending — see below when complete.*
+
+---
+
 ### Phase 85 — PM Abstention Gates (No Retrain) ✅ DONE
 
 **Branch:** `feat/phase-85-intraday-gates` | **Completed:** 2026-05-02
