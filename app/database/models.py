@@ -538,6 +538,12 @@ class ProposalLog(Base):
     # ── Trade linkage ─────────────────────────────────────────────────────────
     trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
 
+    # ── Trader outcome (trader writes back after entry quality check / fill) ──
+    # QUEUED | QUALITY_REJECTED | FILLED | DISCARDED
+    trader_status = Column(String(20), nullable=True, index=True)
+    trader_reason = Column(String(255), nullable=True)  # e.g. "spread 9.8% > max 0.5%"
+    trader_decided_at = Column(DateTime, nullable=True)
+
     # ── Timestamps ────────────────────────────────────────────────────────────
     proposed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     sent_to_rm_at = Column(DateTime, nullable=True)

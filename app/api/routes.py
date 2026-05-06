@@ -319,6 +319,10 @@ async def get_trade_history(limit: int = 100, status: str = ""):
         q = db.query(Trade).order_by(desc(Trade.created_at))
         if status:
             q = q.filter(Trade.status == status.upper())
+        else:
+            # Never surface PENDING_FILL rows — those are crash-recovery bookmarks,
+            # not confirmed trades. They flip to ACTIVE once Alpaca confirms the fill.
+            q = q.filter(Trade.status != "PENDING_FILL")
         trades = q.limit(min(limit, 500)).all()
 
         # Enrich active trades with live Alpaca unrealized P&L (single batch call)
@@ -1146,6 +1150,9 @@ async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
                 "rm_inputs": r.rm_inputs,
                 "rm_decided_at": r.rm_decided_at.isoformat() if r.rm_decided_at else None,
                 "trade_id": r.trade_id,
+                "trader_status": r.trader_status,
+                "trader_reason": r.trader_reason,
+                "trader_decided_at": r.trader_decided_at.isoformat() if r.trader_decided_at else None,
                 "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
                 "sent_to_rm_at": r.sent_to_rm_at.isoformat() if r.sent_to_rm_at else None,
             }

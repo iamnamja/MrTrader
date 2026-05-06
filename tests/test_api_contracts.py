@@ -189,7 +189,9 @@ class TestTradesEndpoint:
         trade.closed_at = datetime.utcnow()
 
         sess = _empty_db_session()
-        sess.query.return_value.order_by.return_value.limit.return_value.all.return_value = [trade]
+        chain = sess.query.return_value.order_by.return_value
+        chain.filter.return_value.limit.return_value.all.return_value = [trade]
+        chain.limit.return_value.all.return_value = [trade]  # status= filter path
 
         with make_client(db_session=sess) as client:
             r = client.get("/api/dashboard/trades")

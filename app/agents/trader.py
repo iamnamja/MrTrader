@@ -633,6 +633,32 @@ class Trader(BaseAgent):
                     "reject_count": proposal["_reject_count"],
                     "discarded": discard,
                 })
+                # Write trader outcome back to ProposalLog
+                proposal_uuid = proposal.get("proposal_uuid")
+                if proposal_uuid:
+                    try:
+                        from app.database.session import get_session
+                        from app.database.models import ProposalLog
+                        _reason_map = {
+                            "price_run": f"Price ran {eq.price_run_pct*100:.1f}% from signal",
+                            "spread": f"Spread {eq.spread_pct*100:.1f}% > max 0.5%",
+                            "adverse_move": f"Adverse move {eq.price_run_pct*100:.1f}% from signal",
+                        }
+                        trader_reason = next(
+                            (v for k, v in _reason_map.items() if k in eq.reason),
+                            eq.reason,
+                        )
+                        db = get_session()
+                        try:
+                            for pl_row in db.query(ProposalLog).filter(ProposalLog.proposal_uuid == proposal_uuid).all():
+                                pl_row.trader_status = "DISCARDED" if discard else "QUALITY_REJECTED"
+                                pl_row.trader_reason = trader_reason
+                                pl_row.trader_decided_at = datetime.now(ET)
+                            db.commit()
+                        finally:
+                            db.close()
+                    except Exception:
+                        pass
                 if discard:
                     self.logger.info(
                         "%s: discarding proposal after %d rejection(s) (%s)",
@@ -1003,12 +1029,15 @@ class Trader(BaseAgent):
                 if tp:
                     tp.trade_id = trade.id
 
-            # Write trade_id back to unified ProposalLog and append ORDER_PLACED event
+            # Write trade_id and trader outcome back to unified ProposalLog
             proposal_uuid = proposal.get("proposal_uuid")
             if proposal_uuid:
                 from app.database.models import ProposalLog, ProposalEvent
                 for pl_row in db.query(ProposalLog).filter(ProposalLog.proposal_uuid == proposal_uuid).all():
                     pl_row.trade_id = trade.id
+                    pl_row.trader_status = "FILLED"
+                    pl_row.trader_reason = f"Filled @ ${filled_price:.2f}"
+                    pl_row.trader_decided_at = datetime.now(ET)
                 db.add(ProposalEvent(
                     proposal_uuid=proposal_uuid,
                     event_time=datetime.now(ET),
