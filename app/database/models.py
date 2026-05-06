@@ -544,6 +544,11 @@ class ProposalLog(Base):
     trader_reason = Column(String(255), nullable=True)  # e.g. "spread 9.8% > max 0.5%"
     trader_decided_at = Column(DateTime, nullable=True)
 
+    # ── Regime context at scan time (Phase R3) ────────────────────────────────
+    regime_score_at_scan = Column(Float, nullable=True)        # [0,1] regime model score
+    regime_label_at_scan = Column(String(15), nullable=True)   # RISK_OFF | NEUTRAL | RISK_ON
+    regime_trigger_at_scan = Column(String(30), nullable=True)  # premarket | startup_catchup | …
+
     # ── Timestamps ────────────────────────────────────────────────────────────
     proposed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     sent_to_rm_at = Column(DateTime, nullable=True)

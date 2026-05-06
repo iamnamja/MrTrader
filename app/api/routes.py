@@ -1105,6 +1105,59 @@ async def get_model_versions(limit: int = 10):
 
 # ─── Swing Proposal Log ───────────────────────────────────────────────────────
 
+@router.get("/regime/current")
+async def get_regime_current():
+    """Return latest regime model score for today from regime_snapshots."""
+    try:
+        from app.agents.premarket import premarket_intel
+        ctx = await asyncio.to_thread(premarket_intel.get_regime_context)
+        if ctx is None:
+            return {"regime_score": None, "regime_label": None, "trigger": None, "message": "No regime score for today yet"}
+        return ctx
+    except Exception as exc:
+        logger.error("regime/current error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/regime/history")
+async def get_regime_history(days: int = 30):
+    """Return time series of regime scores from regime_snapshots."""
+    db = get_session()
+    try:
+        from datetime import timedelta
+        from app.database.models import RegimeSnapshot
+        cutoff = datetime.utcnow().date() - timedelta(days=days)
+        rows = (
+            db.query(RegimeSnapshot)
+            .filter(
+                RegimeSnapshot.snapshot_date >= cutoff,
+                RegimeSnapshot.snapshot_trigger != "backfill",
+            )
+            .order_by(RegimeSnapshot.snapshot_date.desc(), RegimeSnapshot.snapshot_time.desc())
+            .limit(500)
+            .all()
+        )
+        return [
+            {
+                "snapshot_date": r.snapshot_date.isoformat() if r.snapshot_date else None,
+                "snapshot_time": r.snapshot_time.isoformat() if r.snapshot_time else None,
+                "trigger": r.snapshot_trigger,
+                "regime_score": r.regime_score,
+                "regime_label": r.regime_label,
+                "model_version": r.model_version,
+                "vix_level": r.vix_level,
+                "spy_1d_return": r.spy_1d_return,
+                "spy_ma20_dist": r.spy_ma20_dist,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.error("regime/history error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
 @router.get("/proposal-log")
 async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
     """Unified proposal log — swing and intraday proposals with full PM→RM→Trader audit trail."""

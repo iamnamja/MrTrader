@@ -126,6 +126,8 @@ class PortfolioManager(BaseAgent):
         self._last_scan_spy_pct: float = 0.0
         # Monotonic timestamp of last adaptive re-scan (prevents back-to-back triggers)
         self._last_adaptive_scan_at: float = 0.0
+        # Regime context from last premarket / re-eval (Phase R3 — parallel running only)
+        self._current_regime_ctx: Optional[dict] = None
 
     # ─── Scheduling helpers ───────────────────────────────────────────────────
 
@@ -302,6 +304,14 @@ class PortfolioManager(BaseAgent):
         self.status = "running"
         self._try_load_model()
         self._restore_daily_flags()
+
+        # Phase R3: run startup catchup if premarket regime scoring was missed
+        try:
+            from app.agents.premarket import premarket_intel
+            await asyncio.to_thread(premarket_intel._startup_regime_catchup)
+            self._current_regime_ctx = premarket_intel.get_regime_context()
+        except Exception as _rc_exc:
+            self.logger.debug("Regime startup catchup failed (non-fatal): %s", _rc_exc)
 
         while self.status == "running":
             try:
@@ -734,6 +744,9 @@ class PortfolioManager(BaseAgent):
         )
         self.logger.info("Pre-market intelligence: %s", summary)
         await self.log_decision("PREMARKET_INTELLIGENCE", reasoning=summary)
+
+        # Phase R3: cache regime context for this session's proposal writes
+        self._current_regime_ctx = premarket_intel.get_regime_context()
 
         # Phase 62: pre-warm NIS stock signal cache for candidate universe
         await self._run_morning_nis_digest()
@@ -1589,6 +1602,7 @@ class PortfolioManager(BaseAgent):
             try:
                 _intraday_ver = getattr(self.intraday_model, "version", None)
                 for _rank, (_sym, _prob) in enumerate(ranked[:_LOG_TOP_N], start=1):
+                    _regime = self._current_regime_ctx or {}
                     _row = ProposalLog(
                         strategy="intraday",
                         batch_id=_intraday_batch_id,
@@ -1602,6 +1616,9 @@ class PortfolioManager(BaseAgent):
                         model_version=str(_intraday_ver) if _intraday_ver else None,
                         pm_status="SCORED",
                         proposed_at=_scan_time_utc,
+                        regime_score_at_scan=_regime.get("regime_score"),
+                        regime_label_at_scan=_regime.get("regime_label"),
+                        regime_trigger_at_scan=_regime.get("trigger"),
                     )
                     _idb.add(_row)
                 _idb.commit()
@@ -2535,6 +2552,7 @@ class PortfolioManager(BaseAgent):
                 _pdb = _gsp()
                 try:
                     _swing_ver = getattr(self.model, "version", None)
+                    _regime = self._current_regime_ctx or {}
                     _pl_row = ProposalLog(
                         proposal_uuid=proposal["proposal_uuid"],
                         strategy="swing",
@@ -2554,6 +2572,9 @@ class PortfolioManager(BaseAgent):
                         target_price=proposal.get("profit_target"),
                         quantity=proposal.get("quantity"),
                         proposed_at=datetime.utcnow(),
+                        regime_score_at_scan=_regime.get("regime_score"),
+                        regime_label_at_scan=_regime.get("regime_label"),
+                        regime_trigger_at_scan=_regime.get("trigger"),
                     )
                     _pdb.add(_pl_row)
                     _pdb.commit()
