@@ -204,13 +204,14 @@ class Trader(BaseAgent):
                 )
                 trade_type_rec = rec_proposal.trade_type if rec_proposal else None
                 if not trade_type_rec:
-                    # Fall back: intraday if market is open (a restart during market hours
-                    # is far more likely to be an intraday session), else swing
-                    now_et = datetime.now(ET)
-                    trade_type_rec = "intraday" if (9 <= now_et.hour < 16) else "swing"
+                    # Default to swing for unknown positions — never intraday.
+                    # Defaulting to intraday caused ghost positions (e.g. pre-existing
+                    # Alpaca paper account holdings) to be force-closed at 3:45 PM
+                    # every session, even though MrTrader never opened them.
+                    trade_type_rec = "swing"
                     self.logger.warning(
-                        "Reconciliation: no proposal record for %s — defaulting trade_type=%s",
-                        symbol, trade_type_rec,
+                        "Reconciliation: no proposal record for %s — defaulting trade_type=swing",
+                        symbol,
                     )
 
                 bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
