@@ -393,3 +393,611 @@ python scripts/walkforward_tier3.py --model intraday --intraday-model-version 29
 python scripts/walkforward_tier3.py --model swing --cost-model --purge-days 10
 python scripts/walkforward_tier3.py --model intraday --intraday-model-version 29 --cost-model --purge-days 2 --with-opportunity-score
 ```
+
+---
+
+## PHASE R — Regime Model (Next Major Track)
+
+**Last updated:** 2026-05-06  
+**Status:** Spec complete. Not started. Prerequisite: Phase 1+2 can run in parallel.
+
+### Why This Track Exists
+
+Two failed experiments (Phase 86, Item 3) confirmed: `cs_normalize` zeros any market-wide feature because it is identical across all symbols on a given day. The stock selection models cannot learn macro regime context this way. A separate model is required.
+
+**Root cause proven:** Item 3 (2026-05-06) added `regime_vix_proxy`, `regime_vix_pct60d`, `regime_spy_ma20_dist` to intraday features. Walk-forward result: avg Sharpe -0.331, indistinguishable from v29 baseline (-0.327). Features confirmed zeroed. See `ML_EXPERIMENT_LOG.md` Item 3 entry.
+
+**Correct fix:** A **Regime Model** runs independently of cs_normalize, scores the macro environment once at premarket (and re-scores dynamically after macro events), and feeds its output into the PM pipeline as a gate and sizing scalar.
+
+---
+
+### Design Principles
+
+1. **Separation of concerns.** Regime model answers "should we be trading at all today?" Stock models answer "which stocks, given we are trading." These require different feature types and different normalization.
+
+2. **NIS macro belongs here.** The LLM-scored macro risk (FOMC/CPI/NFP pre-release assessment) is a regime signal, not a stock signal. It feeds the regime model as a feature. The binary hard block stays as an emergency fallback only.
+
+3. **Dynamic, not static.** The regime score is not computed once at 7am and frozen. It re-evaluates after each macro event release (NFP at 8:35, FOMC at 2:05, etc.). The system tracks a schedule of re-evaluation triggers and fires them automatically.
+
+4. **Resilient by design.** If uvicorn is down at 7am, the system catches up on restart. If a re-evaluation job fails, it retries. The `regime_snapshots` table is the single source of truth — any component reads from there, not from in-memory state.
+
+5. **Graduated, not binary.** The output is a continuous score [0.0, 1.0], not a hard block/allow. Position sizing and ML score thresholds are scaled continuously. The hard NIS block remains only for true emergency conditions (FOMC window before release, SPY futures < -2.5%).
+
+6. **Auditable.** Every regime score written to `regime_snapshots` includes the full feature dict, the trigger reason, and the model version. Post-hoc analysis can slice any proposal by the regime score at the time it was made.
+
+---
+
+### Architecture
+
+```
+INPUTS (market-wide — no cs_normalize)
+┌────────────┐ ┌────────────┐ ┌─────────────────┐ ┌──────────────┐
+│ VIX level  │ │ SPY daily  │ │ MacroCalendar   │ │ NIS Tier 1   │
+│ + 1y hist  │ │ bars 252d  │ │ days_to_FOMC    │ │ risk_level   │
+│ (yfinance) │ │ (Alpaca)   │ │ days_to_CPI/NFP │ │ sizing_factor│
+└─────┬──────┘ └─────┬──────┘ └────────┬────────┘ └──────┬───────┘
+      └──────────────┴─────────────────┴─────────────────┘
+                                │
+                   ┌────────────▼─────────────┐
+                   │   RegimeFeatureBuilder    │  app/ml/regime_features.py
+                   │   build(as_of_date) -> {} │
+                   └────────────┬─────────────┘
+                                │
+                   ┌────────────▼─────────────┐
+                   │       RegimeModel         │  app/ml/regime_model.py
+                   │  XGBoost + calibration    │
+                   │  regime_score [0.0, 1.0]  │
+                   │  regime_label (enum)      │
+                   └────────────┬─────────────┘
+                                │ writes to
+                   ┌────────────▼─────────────┐
+                   │    regime_snapshots       │  PostgreSQL table
+                   │  (audit + persistence)   │
+                   └────────────┬─────────────┘
+                                │ read by
+        ┌───────────────────────┼──────────────────────┐
+        │                       │                      │
+┌───────▼───────┐   ┌───────────▼────────┐  ┌─────────▼──────────┐
+│ PremarketAgent│   │ PortfolioManager   │  │ API /regime/current │
+│ 7am baseline  │   │ each scan:         │  │ dashboard widget    │
+│ + re-eval     │   │ gate + size scale  │  │                     │
+│   schedule    │   │ + ML threshold adj │  │                     │
+└───────────────┘   └────────────────────┘  └────────────────────┘
+```
+
+---
+
+### Resiliency Model
+
+**Problem:** Uvicorn may be down at 7am. A macro event (NFP 8:30) may fire while the system is restarting. A re-evaluation job may fail silently.
+
+**Solution: `regime_snapshots` as source of truth + startup catchup + APScheduler re-eval jobs**
+
+```
+On uvicorn startup:
+  1. Check regime_snapshots for today's 'premarket' row
+  2. If missing AND time < 11:30 ET → run premarket scoring now (catchup)
+  3. If missing AND time >= 11:30 ET → log warning, use NEUTRAL (0.5) as safe default
+  4. Rebuild APScheduler re-eval jobs for any macro events today that haven't fired yet
+     (check MacroCalendar.events_today, filter to event_time + 5min > now_et)
+  5. If a re-eval should have fired while we were down (event released, no snapshot row):
+     → run it immediately on startup (backfill for missed window)
+
+APScheduler re-eval jobs (registered at startup and on premarket run):
+  - For each MacroCalendar event today with time_str set:
+      schedule job at event_time + 5min
+      job: RegimeModel.score(trigger='post_<event_type>') → write to regime_snapshots
+  - FOMC: always schedule re-eval at 2:05pm ET regardless of calendar (hardcoded)
+  - If market breadth data becomes available (Phase R2): add 10:00am ET re-eval
+
+Re-eval job behavior:
+  1. Build fresh features (VIX may have moved, SPY may have gapped)
+  2. Score regime model
+  3. Write new row to regime_snapshots with snapshot_trigger = 'post_nfp' etc.
+  4. If score changed by > 0.15 from last score: log WARNING with delta
+  5. If score crosses RISK_OFF threshold (< 0.35): log CRITICAL + PM reads new score on next scan
+  6. PM always reads LATEST regime_snapshots row for today (not just premarket row)
+```
+
+**Failure modes handled:**
+
+| Failure | Response |
+|---|---|
+| Uvicorn down at 7am | Catchup run on restart if before 11:30 ET |
+| Re-eval job throws exception | APScheduler retries 3x with 60s backoff; logs CRITICAL on final failure |
+| Regime model file missing | Fall back to `_compute_opportunity_score_legacy()` with logged warning |
+| DB write fails | Score cached in-memory; retry on next tick; logged to file |
+| VIX data unavailable | Use last known value from `regime_snapshots`; log warning |
+| MacroCalendar has no time_str | Skip re-eval schedule for that event; log warning |
+| PM reads stale score (>4h old during market hours) | Log warning; apply 20% haircut to regime_score as uncertainty penalty |
+
+---
+
+### Database Schema
+
+#### New table: `regime_snapshots`
+
+```sql
+CREATE TABLE regime_snapshots (
+    id                  SERIAL PRIMARY KEY,
+    snapshot_time       TIMESTAMP NOT NULL,          -- UTC
+    snapshot_date       DATE NOT NULL,               -- ET trading date
+    snapshot_trigger    VARCHAR(30) NOT NULL,        -- 'premarket' | 'post_nfp' | 'post_fomc' |
+                                                     --   'post_cpi' | 'startup_catchup' |
+                                                     --   'manual' | '10am_breadth'
+
+    -- Model output
+    regime_score        FLOAT NOT NULL,              -- [0.0, 1.0]
+    regime_label        VARCHAR(15) NOT NULL,        -- 'RISK_OFF' | 'NEUTRAL' | 'RISK_ON'
+
+    -- Score thresholds used (stored so threshold changes are auditable)
+    risk_off_threshold  FLOAT NOT NULL DEFAULT 0.35,
+    risk_on_threshold   FLOAT NOT NULL DEFAULT 0.65,
+
+    -- Raw input features (named columns for SQL slicing)
+    vix_level           FLOAT,
+    vix_pct_1y          FLOAT,
+    vix_pct_60d         FLOAT,
+    spy_1d_return       FLOAT,
+    spy_5d_return       FLOAT,
+    spy_20d_return      FLOAT,
+    spy_ma20_dist       FLOAT,
+    spy_ma50_dist       FLOAT,
+    spy_ma200_dist      FLOAT,
+    spy_rvol_5d         FLOAT,
+    spy_rvol_20d        FLOAT,
+    days_to_fomc        INTEGER,
+    days_to_cpi         INTEGER,
+    days_to_nfp         INTEGER,
+    is_fomc_day         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_cpi_day          BOOLEAN NOT NULL DEFAULT FALSE,
+    is_nfp_day          BOOLEAN NOT NULL DEFAULT FALSE,
+    nis_risk_level      VARCHAR(10),                 -- 'LOW' | 'MEDIUM' | 'HIGH'
+    nis_sizing_factor   FLOAT,
+    breadth_pct_ma50    FLOAT,                       -- NULL until Phase R2 breadth data available
+
+    -- Model metadata
+    model_version       VARCHAR(30),                 -- 'regime_v1' | NULL for backfill rows
+    feature_json        JSONB,                       -- full feature dict
+
+    created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_regime_snapshot UNIQUE (snapshot_date, snapshot_trigger)
+);
+
+CREATE INDEX ix_regime_snapshots_date ON regime_snapshots (snapshot_date DESC);
+CREATE INDEX ix_regime_snapshots_score ON regime_snapshots (regime_score);
+```
+
+#### New table: `regime_model_versions`
+
+```sql
+CREATE TABLE regime_model_versions (
+    id              SERIAL PRIMARY KEY,
+    version         VARCHAR(30) NOT NULL UNIQUE,  -- 'regime_v1'
+    trained_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    training_start  DATE NOT NULL,
+    training_end    DATE NOT NULL,
+    label_scheme    VARCHAR(50) NOT NULL,          -- 'rule_based_v1' | 'trade_outcome_v1'
+    n_training_days INTEGER,
+    n_features      INTEGER,
+    feature_list    JSONB,
+    val_auc_fold1   FLOAT,
+    val_auc_fold2   FLOAT,
+    val_auc_fold3   FLOAT,
+    val_auc_avg     FLOAT,
+    val_brier_score FLOAT,                        -- calibration quality
+    gate_passed     BOOLEAN NOT NULL DEFAULT FALSE,
+    status          VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',  -- 'ACTIVE' | 'ARCHIVED'
+    model_path      VARCHAR(255),
+    notes           TEXT
+);
+```
+
+#### Changes to existing tables
+
+```sql
+-- proposal_log (primary unified table)
+ALTER TABLE proposal_log ADD COLUMN regime_score_at_scan  FLOAT;
+ALTER TABLE proposal_log ADD COLUMN regime_label_at_scan  VARCHAR(15);
+ALTER TABLE proposal_log ADD COLUMN regime_trigger_at_scan VARCHAR(30);  -- which snapshot row was used
+
+-- decision_audit (agent decisions)
+ALTER TABLE decision_audit ADD COLUMN regime_score_at_decision FLOAT;
+
+-- daily_state (per-day system state)
+ALTER TABLE daily_state ADD COLUMN regime_score_premarket FLOAT;
+ALTER TABLE daily_state ADD COLUMN regime_label_premarket VARCHAR(15);
+ALTER TABLE daily_state ADD COLUMN regime_last_updated_at TIMESTAMP;
+```
+
+#### Join patterns
+
+```sql
+-- "How did we trade in different regimes?"
+SELECT
+    r.regime_label,
+    COUNT(p.id) as proposals,
+    AVG(p.outcome_1d_pct) as avg_1d_outcome,
+    AVG(t.pnl) as avg_pnl
+FROM proposal_log p
+JOIN regime_snapshots r
+    ON r.snapshot_date = DATE(p.scan_time AT TIME ZONE 'America/New_York')
+    AND r.snapshot_trigger = 'premarket'  -- use morning score
+LEFT JOIN trades t ON p.trade_id = t.id
+WHERE p.pm_status = 'SENT'
+GROUP BY r.regime_label;
+
+-- "What was regime score when this trade was entered?"
+SELECT t.symbol, t.entry_price, t.pnl, p.regime_score_at_scan, p.regime_label_at_scan
+FROM trades t
+JOIN proposal_log p ON t.proposal_id = p.proposal_uuid
+ORDER BY t.created_at DESC;
+
+-- "Regime history this month"
+SELECT snapshot_date, snapshot_trigger, regime_score, regime_label, vix_level, spy_5d_return
+FROM regime_snapshots
+WHERE snapshot_date >= CURRENT_DATE - 30
+ORDER BY snapshot_date, snapshot_time;
+```
+
+---
+
+### Backfill Plan
+
+| Data | Source | Go-back | Notes |
+|---|---|---|---|
+| VIX level + history | yfinance `^VIX` | 2023-01-01 | Already used in `features.py` |
+| SPY daily bars | Alpaca historical | 2023-01-01 | Already fetched; extend window |
+| MacroCalendar events | `app/calendars/macro.py` | 2023-01-01 | Hardcoded — fully available |
+| NIS macro risk level | `NisMacroSnapshot` table | 2025-05-01 | NULL before this → default 0.5 |
+| Market breadth | Compute from intraday_cache | 2024-01-01 | 720 symbols × daily close |
+
+Script: `scripts/backfill_regime_snapshots.py`
+- Iterates trading days 2023-01-01 → today
+- `model_version = NULL` (no model yet — just raw features)
+- `regime_score = NULL`, `regime_label = NULL`
+- Provides feature data for model training and future re-scoring
+- Runtime: ~5 min for 3yr window (SPY bars cached locally)
+
+---
+
+### Feature Set
+
+```python
+REGIME_FEATURE_NAMES = [
+    # VIX / realized vol
+    "vix_level",           # spot VIX [5, 80]
+    "vix_pct_1y",          # percentile vs 252-day window [0,1]
+    "vix_pct_60d",         # percentile vs 60-day window [0,1] — faster signal
+    "spy_rvol_5d",         # SPY 5d realized vol annualized (%)
+    "spy_rvol_20d",        # SPY 20d realized vol annualized (%)
+
+    # SPY price / trend
+    "spy_1d_return",       # yesterday's daily return
+    "spy_5d_return",       # 5-day rolling return
+    "spy_20d_return",      # 20-day rolling return
+    "spy_ma20_dist",       # (spy_close - MA20) / MA20
+    "spy_ma50_dist",       # (spy_close - MA50) / MA50
+    "spy_ma200_dist",      # (spy_close - MA200) / MA200 — secular context
+
+    # Macro calendar
+    "days_to_fomc",        # clipped to [0, 30]
+    "days_to_cpi",         # clipped to [0, 30]
+    "days_to_nfp",         # clipped to [0, 30]
+    "is_fomc_day",         # 1.0 if FOMC today, else 0.0
+    "is_cpi_day",          # 1.0 if CPI today, else 0.0
+    "is_nfp_day",          # 1.0 if NFP today, else 0.0
+
+    # NIS Tier 1 macro (NULL before May 2025 → use XGBoost missing-value handling)
+    "nis_risk_numeric",    # HIGH=1.0, MEDIUM=0.5, LOW=0.0
+    "nis_sizing_factor",   # [0.5, 1.0] recommended by NIS
+
+    # Market breadth — Phase R2 (NULL until computed; 0.5 default)
+    "breadth_pct_ma50",    # % of 720-symbol universe above MA50
+]
+```
+
+**What is intentionally excluded from V1:**
+- Sector ETF rotation (add in V2)
+- Put/call ratio (requires CBOE data; add in V2)
+- VIX term structure (requires VX futures; add in V3)
+- Individual stock breadth (overlap with stock model; keep separate)
+
+---
+
+### Label Scheme
+
+**V1: Rule-based (implement immediately, no training data dependency)**
+
+```python
+def label_regime_day(vix_level, spy_1d_return, spy_ma20_dist) -> int:
+    """
+    1 = FAVORABLE trading environment
+    0 = HOSTILE — sit out
+    """
+    return int(
+        spy_1d_return > 0.0      # market went up yesterday
+        and vix_level < 20.0     # vol is calm
+        and spy_ma20_dist > 0.0  # SPY above medium-term trend
+    )
+```
+
+Expected positive rate: ~52% (slightly above half of trading days in a bull market). Not a class imbalance problem.
+
+**V2: Trade-outcome labels (activate after 90 days of paper data)**
+
+```python
+# For each trading day d:
+# positive_days = trades WHERE trade_type='intraday'
+#                 AND DATE(closed_at AT TIME ZONE 'ET') = d
+#                 AND avg(pnl_pct) > 0
+# label = 1 if the day was net-profitable, 0 otherwise
+```
+
+Switch happens atomically: retrain `regime_v2` on outcome labels, validate AUC >= 0.60, promote.
+
+---
+
+### Dynamic Re-Evaluation Schedule
+
+The regime model does not run once at 7am. It maintains a dynamic schedule of re-evaluation triggers built from today's MacroCalendar events:
+
+```
+7:00am ET    → baseline premarket score    (trigger='premarket')
+               [schedules re-eval jobs for all today's events]
+
+8:35am ET    → if NFP today: post-event re-score  (trigger='post_nfp')
+               [NFP releases at 8:30; 5-min buffer for data propagation]
+
+2:05pm ET    → if FOMC today: post-announcement   (trigger='post_fomc')
+               [FOMC announces at 2:00pm ET]
+
+8:35am ET    → if CPI today: post-CPI score        (trigger='post_cpi')
+
+[startup catchup logic — see Resiliency Model above]
+```
+
+**Implementation in `app/agents/premarket.py`:**
+
+```python
+def _schedule_regime_reeval_jobs(self, scheduler: AsyncIOScheduler):
+    """Register APScheduler one-shot jobs for today's macro event re-evaluations."""
+    from app.calendars.macro import MacroCalendar
+    cal = MacroCalendar()
+    ctx = cal.get_context()
+    now_et = datetime.now(ET)
+    today_str = now_et.strftime("%Y-%m-%d")
+
+    for evt in ctx.events_today:
+        if evt.date_str != today_str:
+            continue
+        h, m = map(int, evt.time_str.split(":"))
+        release_dt = now_et.replace(hour=h, minute=m, second=0, microsecond=0)
+        reeval_dt = release_dt + timedelta(minutes=5)
+
+        if reeval_dt <= now_et:
+            # Already past — check if we have a snapshot for it; if not, run now
+            trigger_name = f"post_{evt.event_type.lower()}"
+            existing = self._get_regime_snapshot(today_str, trigger_name)
+            if existing is None:
+                logger.info("Startup catchup: running missed regime re-eval for %s", trigger_name)
+                asyncio.create_task(self._run_regime_reeval(trigger_name))
+        else:
+            # Future — schedule it
+            trigger_name = f"post_{evt.event_type.lower()}"
+            scheduler.add_job(
+                self._run_regime_reeval,
+                trigger="date",
+                run_date=reeval_dt,
+                args=[trigger_name],
+                id=f"regime_reeval_{trigger_name}_{today_str}",
+                replace_existing=True,
+            )
+            logger.info("Scheduled regime re-eval: %s at %s ET", trigger_name, reeval_dt.strftime("%H:%M"))
+```
+
+---
+
+### Integration With Existing PM Gates
+
+**During Phase R3-R4 (parallel running — no decision changes):**
+
+```python
+# In portfolio_manager.py scan path:
+regime_ctx = self._get_latest_regime_snapshot()  # reads DB
+scan_log["regime_score"] = regime_ctx["regime_score"] if regime_ctx else None
+scan_log["regime_label"] = regime_ctx["regime_label"] if regime_ctx else None
+# Write to proposal_log rows but do NOT gate on it yet
+```
+
+**During Phase R5 (regime model is primary gate):**
+
+```python
+regime_score = regime_ctx["regime_score"] if regime_ctx else 0.5
+
+# Gate: no new entries in RISK_OFF
+if regime_score < 0.35:
+    self._log_abstention("regime_risk_off", regime_score)
+    return
+
+# Size scaling
+size_multiplier = (
+    0.5  if regime_score < 0.50 else
+    0.75 if regime_score < 0.65 else
+    1.0
+)
+
+# ML threshold: demand higher confidence in uncertain regimes
+base_threshold = self._intraday_min_conf  # e.g. 0.55
+effective_threshold = base_threshold * (1.0 + 0.4 * max(0, 0.65 - regime_score))
+```
+
+**Hard blocks that remain regardless of regime model:**
+- `is_intraday_blocked()` NIS hard block (FOMC window before announcement)
+- SPY futures < -2.5% at open
+- Kill switch active
+- RM max-positions gate
+
+---
+
+### Phased Implementation Plan
+
+#### Phase R1 — Data Infrastructure (3 days)
+
+**Goal:** Feature pipeline computable for any historical date.
+
+**Deliverables:**
+- `app/ml/regime_features.py` — `RegimeFeatureBuilder.build(as_of_date) -> dict`
+  - SPY daily bars: extend current fetch window from 20d → 252d in `portfolio_manager.py`
+  - VIX: use existing yfinance fetch from `features.py` L567, add 252d history
+  - MacroCalendar: `days_to_fomc/cpi/nfp` computed from sorted event list
+  - NIS: query `NisMacroSnapshot` table for latest entry on or before `as_of_date`
+- Alembic migration: create `regime_snapshots`, `regime_model_versions` tables
+- Alembic migration: add columns to `proposal_log`, `decision_audit`, `daily_state`
+- `scripts/backfill_regime_snapshots.py` — populates raw features 2023-01-01 → today (model_version=NULL)
+
+**Tests:**
+- Unit test `RegimeFeatureBuilder.build(date(2025, 4, 7))` — VIX was ~23, SPY below MA20, NFP that week → manual verify
+- Backfill script completes, 750+ rows in `regime_snapshots`, no NULL on named feature columns (except NIS pre-May-2025 which is expected)
+
+**Gate:** 750+ backfilled rows, all named columns non-NULL except NIS pre-May-2025.
+
+**Do not touch:** Any PM scan logic, any ML training code, any existing gates.
+
+---
+
+#### Phase R2 — Train Regime V1 (2 days)
+
+**Goal:** Working regime model with validated walk-forward AUC.
+
+**Deliverables:**
+- `app/ml/regime_training.py` — `RegimeModelTrainer`:
+  - `generate_labels(df) -> pd.Series` — V1 rule-based labels
+  - `train(start, end) -> model` — XGBoost + `CalibratedClassifierCV(method='isotonic')`
+  - Walk-forward: 3 expanding folds (2023-2024 / 2023-2025 / 2023-2026)
+  - Saves to `app/ml/models/regime_model_v{N}.pkl`
+  - Writes to `regime_model_versions` table
+- `scripts/train_regime_model.py` — CLI wrapper
+- `app/ml/regime_model.py` — `RegimeModel` singleton:
+  - Loads model from disk at startup
+  - `score(as_of_date=None, trigger='manual') -> dict` — builds features, predicts, writes to `regime_snapshots`
+  - 5-minute in-memory cache (avoids re-scoring on every PM scan tick)
+  - Falls back to `_compute_opportunity_score_legacy()` if model not loaded
+
+**Tests:**
+- Walk-forward AUC >= 0.60 all 3 folds
+- Calibration Brier score < 0.22
+- SHAP: `vix_level` and `spy_ma20_dist` must be top-3 features
+- Score FOMC day (2026-05-07) → verify regime_score < 0.40
+
+**Gate:** AUC >= 0.60 worst fold AND Brier < 0.22.
+
+---
+
+#### Phase R3 — Premarket Integration + Resiliency (3 days)
+
+**Goal:** Model runs at 7am, re-evals after macro events, persists to DB, uvicorn-restart safe.
+
+**Deliverables:**
+- Modify `app/agents/premarket.py`:
+  - `_run_regime_scoring(trigger: str)` — scores model, writes `regime_snapshots`
+  - `_schedule_regime_reeval_jobs(scheduler)` — registers APScheduler one-shot jobs
+  - `_startup_regime_catchup()` — called on init; checks for missed premarket + missed event re-evals
+  - `get_regime_context() -> dict` — reads latest `regime_snapshots` row for today
+- Modify `app/agents/portfolio_manager.py`:
+  - Read `regime_ctx` from `premarket_intel.get_regime_context()` in each scan
+  - Write `regime_score_at_scan`, `regime_label_at_scan`, `regime_trigger_at_scan` to all `proposal_log` rows
+  - Write to `daily_state.regime_score_premarket` at premarket time
+  - **No gate changes yet** — parallel running only
+- API endpoint `GET /api/regime/current` — reads latest `regime_snapshots` for today
+- API endpoint `GET /api/regime/history?days=30` — time series for dashboard
+
+**Resiliency tests:**
+- Simulate uvicorn killed at 6:55am, restarted at 9:15am → verify startup catchup runs and writes `regime_snapshots` row with `trigger='startup_catchup'`
+- Simulate NFP day with uvicorn restarted at 8:45am → verify post_nfp re-eval runs immediately on startup
+- Simulate DB write failure → verify in-memory cache holds score, retries on next tick
+- Simulate VIX fetch failure → verify last-known VIX used from `regime_snapshots` previous row
+
+**Gate:** 3+ consecutive trading days with regime scores in `regime_snapshots`. All `proposal_log` rows have `regime_score_at_scan` populated. No incidents in logs.
+
+---
+
+#### Phase R4 — Parallel Running + Evidence Collection (10+ trading days)
+
+**Goal:** Build confidence before changing any decisions.
+
+**Deliverables:**
+- Dashboard widget (small panel on Overview page): regime score gauge, label, last updated time
+- Analytics query: for each `regime_label_at_scan`, compute avg `outcome_1d_pct` from `proposal_log`
+- Weekly summary in logs: "RISK_OFF days: N, avg SPY return: X%, intraday proposals sent: Y"
+- Track divergence: days where regime model would have blocked but opportunity score allowed (and vice versa)
+
+**Acceptance criteria:**
+- >= 10 trading days of parallel data
+- At least 1 RISK_OFF day observed and logged
+- Agreement rate with current opportunity_score >= 70%
+- On FOMC day (2026-05-07): verify regime_score drops below 0.40 before 2pm, rises after 2:05pm re-eval
+
+**Gate:** 10+ trading days, FOMC test passed, no regressions in paper trading.
+
+---
+
+#### Phase R5 — Gate Integration (after R4 validated)
+
+**Goal:** Regime model becomes the primary gate and size scaler.
+
+**Deliverables:**
+- Modify `portfolio_manager.py` scan gate to use `regime_score` as primary
+- Rename `_compute_opportunity_score()` → `_compute_opportunity_score_legacy()` (kept as fallback)
+- Implement `regime_size_multiplier(score)` in `app/strategy/position_sizer.py`
+- Implement `effective_min_conf` threshold scaling
+- Remove the 3 zeroed features from `intraday_features.py` (`regime_vix_proxy/pct60d/spy_ma20_dist`) atomically with next model retrain
+- Update `ScanAbstentions` table writes to include `regime_score` as the abstention reason
+
+**Gate:** 20+ trading days with regime model as primary gate. No false RISK_OFF blocks on confirmed good days. No regressions vs baseline paper P&L.
+
+---
+
+#### Phase R6 — Regime-Aware Stock Model Retraining (after 90 days paper data)
+
+**Goal:** `regime_score` enters the stock model as a Branch B non-normalized feature.
+
+**Deliverables:**
+- Add `regime_score` as a pass-through feature in `compute_intraday_features()` — bypasses cs_normalize
+- Retrain intraday model with `regime_score` as an explicit input (XGBoost learns interaction terms automatically)
+- Walk-forward validation with Phase 1+2 corrections applied
+- Gate: avg Sharpe (net of costs) > 1.0, worst fold > -0.30
+
+**Prerequisite:** Phase 1+2 honest walk-forward must be complete before claiming this helped.
+
+---
+
+### What NOT to Change During R1-R4
+
+| Component | Reason |
+|---|---|
+| `cs_normalize.py` | Regime model solves this at a higher level; cs_normalize is still correct for stock features |
+| Stock ML models (v142, v29) | Paper trading; regime model gates when they run, not how they're trained |
+| `FEATURE_NAMES` in `intraday_features.py` | Remove `regime_vix_proxy/pct60d/spy_ma20_dist` atomically with R5 retrain only |
+| `_compute_opportunity_score()` in PM | Keep as fallback until R5 validated |
+| `is_intraday_blocked()` hard gates | Keep all emergency circuit breakers; regime model supplements |
+| `NisMacroSnapshot` / `MacroSignalCache` tables | No structural changes; NIS becomes a feature input only |
+| Frontend proposal tables | Add regime widget as additive panel only; don't restructure existing pages |
+| RM gates (max positions, correlation, concentration) | Unchanged throughout |
+
+---
+
+### Open Questions (Decide Before R2)
+
+1. **Breadth data source:** Compute from 720-symbol `intraday_cache` (free, already have it) vs FMP API `/market-breadth` endpoint. Recommendation: intraday_cache — avoids new API dependency.
+
+2. **Re-eval frequency cap:** If 3 macro events fire in one day (unlikely but possible), cap re-evals at 3 per day to avoid thrashing. Add `max_reevals_per_day = 3` config in `app/config.py`.
+
+3. **Regime model retraining cadence:** Monthly automated retrain triggered by `scripts/retrain_regime_model.py` in `retrain_cron.py`. Gate: AUC >= 0.60 on last 90d held-out. Auto-promote if gate passed; alert if not.
+
+4. **What if regime model is confidently WRONG on a day that turned out good?** Track this. After 90 days, compute: on RISK_OFF days, what % of time would we have made money if we'd traded anyway? If > 40%, the model is hurting us and needs retraining or threshold adjustment.
+
+---
+
+*This spec is the authoritative design document for Phase R. Update it as decisions are made. Do not start R2 until R1 gate is passed.*
