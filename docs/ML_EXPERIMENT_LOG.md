@@ -106,7 +106,16 @@ Re-tested May 2026 on most recent 365 days — fails (+0.611 avg Sharpe).
 
 ### Intraday v29 — Phase 2a (opportunity score ON)
 
-*Results pending — see below when complete.*
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 1 |
+|---|---|---|---|---|---|
+| 1 | 2024-02-07 → 2024-10-31 | 264 | 42.4% | **-2.85** | ↓ worse |
+| 2 | 2024-11-05 → 2025-08-05 | 373 | 44.0% | **-1.81** | ↑ better |
+| 3 | 2025-08-08 → 2026-05-05 | 354 | 47.2% | **-1.08** | ↓ worse |
+| **Avg** | | **991** | **44.5%** | **-1.916** | ❌ Worse than baseline |
+
+**Phase 1 baseline for comparison:** F1=-1.36, F2=-2.19, F3=+0.60, avg=-0.984
+
+**Finding:** Opportunity score hurt intraday overall (-1.916 vs -0.984). Fold 3 (2025-08 → 2026-05) regressed from +0.60 to -1.08 — this was the only profitable fold. The score appears to be filtering out good intraday days during the recent high-vol regime where cross-sectional dispersion is high (i.e., good setup days) but SPY MA conditions look "opportunistic". Phase 2c (dispersion gate) is the next test — it targets macro-dominated low-dispersion days specifically.
 
 ---
 
