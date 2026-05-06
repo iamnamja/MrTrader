@@ -17,10 +17,106 @@ Tracks model improvement iterations for active and recent phases.
 
 ## Current Champion Models
 
-| Model | Version | Features | Label | Avg Sharpe | Gate |
+| Model | Version | Features | Label | Original Sharpe | Honest Sharpe (Phase 1 corrections) | Status |
+|---|---|---|---|---|---|---|
+| Swing | v142 | 84 | path_quality (5d) | +1.181 | **+0.422** ❌ | Paper only — stale |
+| Intraday | v29 | 50 | cross-sectional top-20% | +1.830 | **-0.984** ❌ | Paper only — stale |
+
+> **Phase 1 corrections applied (2026-05-05):** Walk-forward now includes (1) 5bps/15bps round-trip transaction costs, (2) 10-day swing / 2-day intraday purge at fold boundaries, (3) NIS features removed from training (time-leak). These are the first honest Sharpe numbers. Both models fail. See Phase 1 Corrections section below for full fold detail.
+
+---
+
+## Phase 1 Corrections Baseline Walk-Forward — 2026-05-05
+
+**Purpose:** First honest re-validation of champions after applying Phase 1a (cost model), Phase 1b (purge/embargo), Phase 1c (NIS removal). Establishes true baseline before any new model work.
+
+**Corrections vs original walk-forward:**
+| Correction | Before | After |
+|---|---|---|
+| Transaction costs | 0bps | 5bps RT (swing) / 15bps RT (intraday) |
+| Fold purge gap | None | 10 calendar days (swing) / 2 trading days (intraday) |
+| NIS features | In training | Removed (time-leak — encode regime not sentiment) |
+| Walk-forward window | Varies | Same 730d intraday / 5yr swing as original |
+
+### Intraday v29 — Phase 1 Corrections
+
+**Run date:** 2026-05-05 | **Cost:** 15bps RT (7.5bps/side) | **Purge:** 2 trading days
+
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
 |---|---|---|---|---|---|
-| Swing | v142 | 84 | path_quality (5d) | +1.181 (promoted ~2026-05-01) | ✅ |
-| Intraday | v29 | 50 | cross-sectional top-20% + Phase 85 gates | +1.830 | ✅ |
+| 1 | 2024-10-24 → 2025-04-22 | 244 | 41.4% | **-1.36** | ❌ |
+| 2 | 2025-04-25 → 2025-10-17 | 245 | 45.7% | **-2.19** | ❌ |
+| 3 | 2025-10-22 → 2026-04-17 | 245 | 50.2% | **+0.60** | ❌ |
+| **Avg** | | **734** | **45.8%** | **-0.984** | ❌ GATE FAILED |
+
+**Gate:** avg Sharpe > 1.0 (updated honest gate) | **Min fold:** -2.19 (gate: > -0.30)
+
+**Interpretation:**
+- Fold 2 (Apr–Oct 2025 tariff shock) is the regime killer at -2.19. Win rate 45.7% — model has some signal but costs destroy it in a choppy trending market.
+- Fold 3 (Oct 2025–Apr 2026) recovers to +0.60 at 50.2% win rate — model works in recent regime.
+- Original +1.830 was computed without costs or purge. True net Sharpe on the same data would have been ~+0.8–1.0 if costs had been included.
+- **Root cause:** 15bps RT is too high relative to the 0.8×ATR target in a chop regime. Need either lower-cost execution or wider target, or a dispersion gate to skip low-opportunity days.
+
+### Swing v142 — Phase 1 Corrections
+
+**Run date:** 2026-05-05 | **Cost:** 5bps RT (2.5bps/side) | **Purge:** 10 calendar days
+
+| Fold | Test Period | Trades | Win% | Sharpe | Max DD | Gate |
+|---|---|---|---|---|---|---|
+| 1 | 2022-08-17 → 2023-11-05 | 186 | 46.8% | **+1.25** | 3.0% | ✅ |
+| 2 | 2023-11-16 → 2025-02-03 | 226 | 43.4% | **+0.24** | 3.8% | ✅ |
+| 3 | 2025-02-14 → 2026-05-05 | 186 | 39.8% | **-0.23** | 5.0% | ✅ |
+| **Avg** | | **598** | **43.3%** | **+0.422** | | ❌ GATE FAILED (avg < 0.6) |
+
+**Gate:** avg Sharpe > 0.6 (updated honest gate) | **Min fold:** -0.23 (gate > -0.30 ✅ just passes)
+
+**Interpretation:**
+- Fold 1 (2022–2023 bear/recovery): +1.25 — model generalises well to trending-down/recovery regime.
+- Fold 2 (2023–2025 melt-up): degrades to +0.24 — EMA/RSI_DIP signals are late entries in a sustained bull run.
+- Fold 3 (2025 tariff/vol shock): -0.23, win rate 39.8%. The RSI_DIP pre-filter catches falling knives in gap-and-trend regimes. Just barely passes the min-fold gate.
+- Cost correction matters: with wrong 10bps RT, fold 3 was -0.47 (fails gate). With correct 5bps RT, fold 3 is -0.23 (passes). Swing is less cost-sensitive than intraday.
+- **Root cause of avg Sharpe below gate:** Mid-period degradation (fold 2 at +0.24) pulls avg down. RSI_DIP + EMA_CROSSOVER pre-filters cap alpha ceiling. ML signal is present but entry timing is constrained by hardcoded rules.
+- **Next steps:** (1) PM opportunity score gate for 2025 regime (Phase 2a), (2) remove RSI_DIP/EMA_CROSSOVER pre-filters and let ML pick entries (Phase 3a), (3) shorten training window to exclude 2021 bull distortion.
+
+---
+
+---
+
+## Phase 1d — Deflated Sharpe Ratio + Bootstrap Analysis — 2026-05-05
+
+**Purpose:** Quantify selection bias from testing ~15 model variants. DSR (Bailey & López de Prado 2014) corrects the raw Sharpe for the expected maximum Sharpe from N independent random trials.
+
+### DSR Results
+
+| Model | Version | Raw Sharpe | N Trials | DSR z-score | P(SR>0) | Significant? |
+|---|---|---|---|---|---|---|
+| Swing | v142 | +1.181 (original) | 15 | -9.96 | 0.000 | ❌ No |
+| Swing | v142 | +0.422 (Phase 1 corrected) | 15 | -30.95 | 0.000 | ❌ No |
+| Intraday | v29 | +1.830 (original) | 15 | +0.87 | 0.807 | ⚠️ Borderline |
+| Intraday | v29 | -0.984 (Phase 1 corrected) | 15 | -56.77 | 0.000 | ❌ No |
+
+**Interpretation:**
+- **Swing v142 original +1.181 is statistically meaningless** even before Phase 1 corrections. With 15 trials, the expected maximum Sharpe from random noise exceeds +1.181. We cannot tell whether swing v142 has any genuine edge.
+- **Intraday v29 original +1.830 was borderline** (p=0.807) — meaningful signal existed but not definitively proven. The original result was partly real, partly selection bias.
+- With Phase 1 corrections, both models fail DSR comprehensively.
+- **DSR is now printed in every walk-forward run** (added to `walkforward_tier3.py`). Any future model must pass DSR p > 0.95 as an additional gate condition.
+
+### Bootstrap Distribution (Small Sample — 10 Resamples)
+
+Full 200-resample bootstrap would take ~50 hours (200 × 17min swing). A 10-resample run is pending — will document the distribution shape below. The DSR analytic result above is the primary Phase 1d deliverable.
+
+*Bootstrap results: pending — run `python scripts/bootstrap_sharpe.py --model swing --n-resamples 10` overnight.*
+
+### Updated Gate Criteria (Post Phase 1d)
+
+```
+avg net Sharpe > 0.6 (swing) / > 1.0 (intraday)   [lower but honest — with costs + purge]
+worst fold Sharpe > -0.30
+DSR p-value > 0.95                                  [NEW — corrects for N trials tested]
+Max drawdown < 15%
+```
+
+---
 
 > **Retrain in progress (2026-05-05 EOD):** Swing v146 (89 feat = 84 + 5 macro NIS) and Intraday v30 (63 feat = 53 + 5 NIS + 5 macro NIS) are training now. Results will be logged below when walk-forward completes.
 

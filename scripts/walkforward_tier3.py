@@ -31,8 +31,11 @@ from typing import Dict, List, Optional
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+import math
+
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -46,6 +49,22 @@ logger = logging.getLogger(__name__)
 # ── Gate thresholds ───────────────────────────────────────────────────────────
 SHARPE_GATE = 0.8       # avg OOS Sharpe required to pass
 MIN_FOLD_SHARPE = -0.3  # no individual fold may be below this
+N_TRIALS_TESTED = 15    # approx number of model variants tried historically (for DSR)
+
+
+def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
+    """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
+    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction."""
+    if n_trials <= 1 or n_obs <= 1:
+        return sharpe, 0.5
+    euler_mascheroni = 0.5772156649
+    sr_star = (
+        (1 - euler_mascheroni) * norm.ppf(1 - 1.0 / n_trials)
+        + euler_mascheroni * norm.ppf(1 - 1.0 / (n_trials * math.e))
+    )
+    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
+    dsr_z = (sharpe - sr_star) / math.sqrt(sr_var)
+    return dsr_z, float(norm.cdf(dsr_z))
 
 
 # ── Console helpers ───────────────────────────────────────────────────────────
@@ -122,6 +141,9 @@ class WalkForwardReport:
         print(f"  Min fold Sharpe: {self.min_sharpe:.3f}  (gate: > {MIN_FOLD_SHARPE})")
         print(f"  Avg win rate:  {self.avg_win_rate:.1%}")
         print(f"  Total trades:  {self.total_trades}")
+        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        dsr_sig = "✅ significant" if dsr_p > 0.95 else "❌ not significant"
+        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}")
         print()
         if self.gate_passed():
             _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f} > {SHARPE_GATE}")
@@ -592,7 +614,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
-            transaction_cost_pct=args.swing_cost_bps / 10_000,
+            transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.swing_purge_days,
         )
         swing_report.print()
@@ -621,7 +643,7 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
-            transaction_cost_pct=args.intraday_cost_bps / 10_000,
+            transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
             purge_days=args.intraday_purge_days,
         )
         intraday_report.print()
