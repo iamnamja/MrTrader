@@ -640,3 +640,74 @@ class ProcessHeartbeat(Base):
     process_name = Column(String(50), nullable=False, unique=True, index=True)
     last_beat = Column(DateTime, nullable=False, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# ── Phase R — Regime Model ─────────────────────────────────────────────────────
+
+class RegimeSnapshot(Base):
+    """One row per regime scoring event.
+
+    Multiple rows per day are possible: premarket (07:00 ET), post-NFP (08:35),
+    post-CPI (08:35), post-FOMC (14:05), startup_catchup (on uvicorn restart),
+    and manual triggers.
+
+    The UNIQUE constraint on (snapshot_date, snapshot_trigger) prevents duplicate
+    premarket runs. Post-event re-evals use different trigger strings.
+    """
+    __tablename__ = "regime_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    snapshot_time = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # premarket | post_nfp | post_cpi | post_fomc | startup_catchup | manual
+    snapshot_trigger = Column(String(30), nullable=False)
+
+    # Model output — NULL until regime model trained (Phase R2)
+    model_version = Column(Integer, nullable=True, index=True)
+    regime_score = Column(Float, nullable=True)    # [0,1] probability of RISK_ON
+    # RISK_ON | RISK_CAUTION | RISK_OFF | UNKNOWN (no model yet)
+    regime_label = Column(String(15), nullable=False, default="UNKNOWN")
+
+    # Raw features (always populated — even before model exists)
+    vix_level = Column(Float, nullable=True)
+    vix_pct_1y = Column(Float, nullable=True)
+    vix_pct_60d = Column(Float, nullable=True)
+    spy_rvol_5d = Column(Float, nullable=True)
+    spy_rvol_20d = Column(Float, nullable=True)
+    spy_1d_return = Column(Float, nullable=True)
+    spy_5d_return = Column(Float, nullable=True)
+    spy_20d_return = Column(Float, nullable=True)
+    spy_ma20_dist = Column(Float, nullable=True)
+    spy_ma50_dist = Column(Float, nullable=True)
+    spy_ma200_dist = Column(Float, nullable=True)
+    days_to_fomc = Column(Float, nullable=True)
+    days_to_cpi = Column(Float, nullable=True)
+    days_to_nfp = Column(Float, nullable=True)
+    is_fomc_day = Column(Float, nullable=True)
+    is_cpi_day = Column(Float, nullable=True)
+    is_nfp_day = Column(Float, nullable=True)
+    nis_risk_numeric = Column(Float, nullable=True)   # NULL pre-May-2025 — expected
+    nis_sizing_factor = Column(Float, nullable=True)  # NULL pre-May-2025 — expected
+    breadth_pct_ma50 = Column(Float, nullable=True)   # NULL until Phase R2 breadth data
+
+    error_detail = Column(Text, nullable=True)        # non-NULL if scoring failed
+
+
+class RegimeModelVersion(Base):
+    """Registry of trained regime models.
+
+    Mirrors the swing/intraday model version pattern.
+    """
+    __tablename__ = "regime_model_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(Integer, nullable=False, unique=True, index=True)
+    trained_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    train_start = Column(Date, nullable=False)
+    train_end = Column(Date, nullable=False)
+    feature_names_json = Column(JSON, nullable=True)    # list of feature names used
+    wf_auc_mean = Column(Float, nullable=True)          # walk-forward mean AUC
+    wf_auc_min = Column(Float, nullable=True)           # worst fold AUC
+    brier_score = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    model_path = Column(String(255), nullable=True)
