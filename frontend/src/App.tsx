@@ -17,7 +17,7 @@ import type {
 const C = {
   bg: '#0b0e14', surface: '#131720', surface2: '#1c2230', border: '#1e2d40',
   text: '#d1d5db', muted: '#6b7280', green: '#22c55e', red: '#ef4444',
-  blue: '#3b82f6', yellow: '#eab308', accent: '#38bdf8',
+  blue: '#3b82f6', yellow: '#eab308', accent: '#38bdf8', orange: '#f97316',
 }
 
 // ── Inline style helpers ───────────────────────────────────────────────────────
@@ -2672,6 +2672,13 @@ function ExecutionCell({ rmStatus, rmReason, traderStatus, traderReason }: {
   if (rmStatus === 'APPROVED') {
     if (traderStatus === 'FILLED') {
       return <span style={{ color: C.green, fontWeight: 600, fontSize: 11 }}>Filled</span>
+    }
+    if (traderStatus === 'MACRO_BLOCKED') {
+      return (
+        <span style={{ color: C.orange, fontSize: 11 }} title={traderReason ?? ''}>
+          Blocked: {traderReason ?? 'Macro gate'}
+        </span>
+      )
     }
     if (traderStatus === 'QUALITY_REJECTED' || traderStatus === 'DISCARDED') {
       return (

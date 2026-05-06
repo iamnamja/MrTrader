@@ -87,6 +87,10 @@ class Trader(BaseAgent):
         # Cleared at midnight reset. Prevents re-approval from new PM proposal
         # batches from bypassing the 3-strike discard.
         self._daily_discarded_symbols: set = set()
+        # Per-symbol quality rejection counts, persisted across PM re-proposals.
+        # PM sends fresh proposals every 30 min — without this, _reject_count resets
+        # and symbols never hit the 3-strike discard.
+        self._daily_quality_rejections: Dict[str, int] = {}
         self._last_mid_recon_slot: int = -1  # Phase 78d: track 15-min reconciliation slots
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
@@ -286,6 +290,7 @@ class Trader(BaseAgent):
                     self._force_closed_today = False
                     self._last_date = today
                     self._daily_discarded_symbols.clear()
+                    self._daily_quality_rejections.clear()
 
                 # Drain all pending approved proposals (non-blocking)
                 while True:
@@ -554,15 +559,35 @@ class Trader(BaseAgent):
                 return
             if trade_type == "swing" and premarket_intel.is_swing_blocked():
                 macro_flags = list(premarket_intel.macro_flags.keys())
+                block_reason = f"Macro gate: {', '.join(macro_flags) if macro_flags else 'SPY drawdown/FOMC'}"
                 self.logger.warning(
-                    "%s: swing macro gate BLOCKED (SPY drawdown or FOMC) — skipping",
-                    symbol,
+                    "%s: swing macro gate BLOCKED (%s) — skipping",
+                    symbol, block_reason,
                 )
                 self.approved_symbols.pop(symbol, None)
                 await self.log_decision("ENTRY_BLOCKED_MACRO", reasoning={
                     "symbol": symbol, "trade_type": "swing",
-                    "reason": f"macro gate: {macro_flags}",
+                    "reason": block_reason,
                 })
+                # Write back so Execution column shows reason instead of "Queued"
+                proposal_uuid = proposal.get("proposal_uuid")
+                if proposal_uuid:
+                    try:
+                        from app.database.session import get_session
+                        from app.database.models import ProposalLog
+                        db = get_session()
+                        try:
+                            for pl_row in db.query(ProposalLog).filter(
+                                ProposalLog.proposal_uuid == proposal_uuid
+                            ).all():
+                                pl_row.trader_status = "MACRO_BLOCKED"
+                                pl_row.trader_reason = block_reason
+                                pl_row.trader_decided_at = datetime.now(ET)
+                            db.commit()
+                        finally:
+                            db.close()
+                    except Exception:
+                        pass
                 return
         except Exception as exc:
             self.logger.debug("Macro gate check failed (non-fatal): %s", exc)
@@ -618,8 +643,13 @@ class Trader(BaseAgent):
                     symbol, eq.reason,
                     eq.price_run_pct * 100, eq.spread_pct * 100, eq.momentum_slope * 100,
                 )
-                # Track consecutive rejections; discard after 3 (≈15 min of retries)
-                proposal["_reject_count"] = proposal.get("_reject_count", 0) + 1
+                # Track rejections using a day-level counter that survives PM re-proposals.
+                # Without _daily_quality_rejections, each fresh PM proposal resets
+                # _reject_count to 0 and the symbol never hits the 3-strike discard.
+                self._daily_quality_rejections[symbol] = (
+                    self._daily_quality_rejections.get(symbol, 0) + 1
+                )
+                proposal["_reject_count"] = self._daily_quality_rejections[symbol]
                 max_retries = 3
                 discard = "price_run" in eq.reason or proposal["_reject_count"] >= max_retries
                 await self.log_decision("ENTRY_REJECTED_QUALITY", reasoning={
