@@ -215,6 +215,83 @@ Re-tested May 2026 on most recent 365 days — fails (+0.611 avg Sharpe).
 
 ---
 
+## Phase 2c — Cross-Sectional Dispersion Gate — 2026-05-06
+
+**What:** Skip intraday entries on days where cross-sectional return dispersion (std of 2h returns across all symbols, bars 12→36) < 0.5 × rolling 60-day median. These are macro-dominated days where all stocks move together and individual stock selection has no edge.
+
+**Flag:** `--dispersion-gate` (combined with `--pm-opportunity-score`)
+
+**Command:** `python scripts/walkforward_tier3.py --model intraday --intraday-cost-bps 15 --intraday-purge-days 2 --pm-opportunity-score --dispersion-gate`
+
+### Intraday v29 — Phase 2c (opp score + dispersion gate)
+
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 2a |
+|---|---|---|---|---|---|
+| 1 | 2024-02-07 → 2024-10-31 | 264 | 42.4% | **-2.85** | = same |
+| 2 | 2024-11-05 → 2025-08-05 | 369 | 44.4% | **-1.68** | ↑ better |
+| 3 | 2025-08-08 → 2026-05-05 | 344 | 48.0% | **-0.91** | ↑ better |
+| **Avg** | | **977** | **44.9%** | **-1.816** | ↑ slight improvement |
+
+**Phase 2a baseline for comparison:** F1=-2.85, F2=-1.81, F3=-1.08, avg=-1.916
+
+**Finding:** Dispersion gate helps folds 2 and 3 marginally (F2: -1.81→-1.68, F3: -1.08→-0.91) but fold 1 is unchanged at -2.85. Still fails gate comprehensively. The dispersion gate is filtering some low-opportunity days but the core problem (model trained on cross-sectional top-20% label in a regime where no stocks have clean setups) remains. Net improvement over Phase 2a: +0.1 Sharpe. Not significant enough to unlock the model.
+
+**Verdict:** ❌ GATE NOT MET — avg -1.816. Phase 2c is a marginal incremental improvement. The real fix requires model architecture repair (Phase 3a/3b/4a in MASTER_BACKLOG).
+
+---
+
+## Phase 3a — Remove RSI/EMA Pre-Filters From Swing — 2026-05-06
+
+**What:** Added `no_prefilters=True` option to `AgentSimulator._trader_signal()`. When enabled, bypasses:
+- RSI 40-70 zone gate (was preventing entries in RSI < 40 downtrend or RSI > 70 overbought)
+- EMA-20/50 near-term trend filter (was preventing entries when price below recent EMAs)
+- EMA-200 long-term trend filter and volume check are KEPT
+
+**Rationale:** In 2025 tariff/vol regime, RSI_DIP/EMA_CROSSOVER pre-filters catch falling knives. ML model should score full universe.
+
+**Command:** `python scripts/walkforward_tier3.py --model swing --swing-cost-bps 5 --swing-purge-days 10 --no-prefilters`
+
+### Swing v142 — Phase 3a (no pre-filters)
+
+| Fold | Test Period | Trades | Win% | Sharpe | vs Phase 2a |
+|---|---|---|---|---|---|
+| 1 | 2022-08-17 → 2023-11-05 | 318 | 40.9% | **+0.24** | ↓ worse |
+| 2 | 2023-11-16 → 2025-02-03 | 125 | 38.4% | **+0.10** | ↓ worse |
+| 3 | 2025-02-14 → 2026-05-05 | 26 | 3.9% | **-2.54** | ↓ much worse |
+| **Avg** | | **469** | **27.7%** | **-0.731** | ❌ Much worse |
+
+**Phase 2a baseline for comparison:** F1=+1.25, F2=+0.24, F3=-0.23, avg=+0.422
+
+**Finding:** Removing pre-filters made swing significantly worse. Fold 3 collapsed catastrophically: only 26 trades with 3.9% win rate and -2.54 Sharpe. The pre-filters (EMA-20/50, RSI 40-70) were serving as a regime guard — in a sharply declining 2025 tariff market, they prevented entries in falling stocks below their moving averages. Without them, the ML model (trained on 2021-2024 data) enters stocks that look like historical RSI dip setups but are actually momentum selldowns.
+
+Also notable: removing pre-filters caused FEWER trades in fold 3 (26 vs 186), not more. Without EMA/RSI filters, the model's PM confidence threshold becomes the sole gate. In a declining market, few stocks pass confidence >= 0.40 AND EMA-200, so very few entries.
+
+**Verdict:** ❌ REVERT — removing pre-filters is net negative. The correct fix per MASTER_BACKLOG is Step 1 + Step 2 together: score full universe WITH pre-filter features included as ML inputs + retrain on triple-barrier labels. Just removing the rule-based gates without a retrained model leaves the ML flying blind.
+
+---
+
+## Phase 3b — Rolling 2yr Training Window for Swing — 2026-05-06
+
+**What:** Added `--swing-train-years 2` to walk-forward. Each fold's training data limited to 2 years before `train_end` (rolling window) instead of all data from 2021 (expanding window). Intent: exclude 2021-2022 bull market patterns from fold 2-3 training.
+
+**Command:** `python scripts/walkforward_tier3.py --model swing --swing-cost-bps 5 --swing-purge-days 10 --swing-train-years 2`
+
+### Swing v142 — Phase 3b (rolling 2yr window) — ⏳ PENDING
+
+*Walk-forward still running as of 2026-05-06 02:30 AM. Results will be documented when complete.*
+
+---
+
+## Phase 1e — DSR Hard Gate — 2026-05-06
+
+**What:** Added DSR p > 0.95 as hard requirement in `WalkForwardReport.gate_passed()`. A model must now pass both the Sharpe threshold AND statistical significance after selection bias correction (N=15 trials). Previously DSR was printed but not enforced.
+
+**Implementation:** `gate_passed()` now calls `_deflated_sharpe_ratio()` and requires `dsr_p > 0.95`.
+
+**Impact:** All current models already fail Sharpe gates comprehensively (-0.731 to -1.916). The DSR gate adds a second layer of protection once Sharpe recovers — ensures future models with marginal improvements aren't promoted due to selection bias.
+
+---
+
 ### Phase 85 — PM Abstention Gates (No Retrain) ✅ DONE
 
 **Branch:** `feat/phase-85-intraday-gates` | **Completed:** 2026-05-02
