@@ -661,8 +661,9 @@ FEATURE_NAMES = [
     # NIS is still active at PM gate layer in features.py — infrastructure preserved.
     # "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
     # "nis_sizing_mult", "nis_downside_risk",
-    # Phase 86b: stock-relative SPY features (survive cs_normalize)
+    # Phase 86b: stock-relative SPY features (vary per-symbol → survive cs_normalize)
     "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
-    # Item 3: macro regime features — VIX proxy, VIX 60d percentile, SPY MA20 distance
-    "regime_vix_proxy", "regime_vix_pct60d", "regime_spy_ma20_dist",
+    # NOTE: regime_vix_proxy, regime_vix_pct60d, regime_spy_ma20_dist removed —
+    # market-wide features identical across all symbols → zeroed by cs_normalize.
+    # Regime gating handled by dedicated Regime Model (Phase R3+).
 ]

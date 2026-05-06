@@ -35,7 +35,7 @@ from app.data import get_provider
 from app.database.models import ModelVersion
 from app.database.session import get_session
 from app.ml.cs_normalize import cs_normalize_by_group
-from app.ml.intraday_features import compute_intraday_features, MIN_BARS
+from app.ml.intraday_features import compute_intraday_features, MIN_BARS, FEATURE_NAMES as _INTRADAY_FEATURE_NAMES
 from app.ml.model import PortfolioSelectorModel
 
 logger = logging.getLogger(__name__)
@@ -946,6 +946,11 @@ def _symbol_to_rows(
             )
             if feats is None:
                 continue
+
+            # Filter feats to FEATURE_NAMES (authoritative list) — preserves canonical order
+            # and excludes features added by compute_intraday_features() that are not in the list
+            # (e.g. market-wide regime proxies zeroed by cs_normalize, NIS when disabled).
+            feats = {k: feats[k] for k in _INTRADAY_FEATURE_NAMES if k in feats}
 
             if not feature_names:
                 feature_names = list(feats.keys())

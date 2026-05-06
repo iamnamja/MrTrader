@@ -152,12 +152,12 @@ class TestFeatureNamesConstant:
         )
 
     def test_feature_names_count(self):
-        """FEATURE_NAMES count: 56 base + 3 temporary regime features added in Item 3 experiment.
-        The 3 regime features (regime_vix_proxy/pct60d/spy_ma20_dist) will be removed atomically
-        with Phase R5 retrain once the separate Regime Model is validated."""
+        """FEATURE_NAMES count: 56 features. Phase 86b removed 3 market-wide regime proxy features
+        (regime_vix_proxy/pct60d/spy_ma20_dist) that cs_normalize zeros out — confirmed in Item 3.
+        Regime gating is now handled by the dedicated Regime Model (Phase R3+)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 59, (
-            f"Expected 59 features (56 base + 3 Item-3 regime features), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 56, (
+            f"Expected 56 features (regime proxies removed in Phase 86b), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):

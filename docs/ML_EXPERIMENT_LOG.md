@@ -718,11 +718,38 @@ Gate: AUC min ≥ 0.60 ✅, Brier < 0.22 ✅
 
 ---
 
+## Phase 86b — Stock-Relative SPY Features ❌ GATE FAILED (2026-05-06)
+
+**Model:** Intraday v46 (56 features — removed 3 market-wide regime proxy features that cs_normalize zeros)
+**Base:** Cross-sectional top-20% labels, 3-seed XGBoost+LightGBM ensemble, 730d window
+**New features tested:** `stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`
+**Infrastructure fix:** Made `FEATURE_NAMES` authoritative in training — added filter in `_symbol_to_rows()` so only listed features enter the matrix. Previously `feats.keys()` was used directly, making `FEATURE_NAMES` a no-op documentation list.
+
+**Walk-forward results (3 folds, 730d window, 711 symbols):**
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | Oct 2024 – Apr 2025 | 244 | -1.15 | ❌ |
+| 2 | Apr 2025 – Oct 2025 | 244 | -2.33 | ❌ |
+| 3 | Oct 2025 – Apr 2026 | 245 | -1.47 | ❌ |
+| **Avg** | | **733** | **-1.649** | ❌ GATE FAILED |
+
+Gate: avg Sharpe > 1.50, no fold < -0.30.
+
+**Top 5 features (v46):** seg_x_atr_norm (15%), atr_norm (10%), range_compression (6%), minutes_since_open (3%), time_of_day (3%). The 3 new 86b features do not appear in top 5 — they added no meaningful signal.
+
+**Analysis:** All 3 folds negative (vs v29 on current window: -0.67, -1.27, +0.97 avg -0.327). v46 is structurally worse than v29, not better. The 86b features don't help. Fold 3 (Oct 2025–Apr 2026), which was v29's only positive fold (+0.97), turns negative at -1.47 in v46. Root cause unclear — possibly HPO variance (new HPO run with different random state found different params) rather than feature effect.
+
+**Key infrastructure fix kept:** `FEATURE_NAMES` is now authoritative in training (filtering applied in `_symbol_to_rows()`). Market-wide regime proxy features (`regime_vix_proxy`, `regime_vix_pct60d`, `regime_spy_ma20_dist`) removed from `FEATURE_NAMES` — they are identical across all symbols on a given day and get zeroed by cs_normalize.
+
+**Verdict:** ❌ GATE FAILED — v46 not deployed. v44 restored as ACTIVE champion. Moving to MIN_REALIZED_R tuning with realized-R label scheme (v38 base).
+
+---
+
 ## Next Experiments — Intraday Stock Model (2026-05-06+)
 
-**Current champions:** Intraday v29 (avg -0.327 on current window), Swing v142 (avg +0.310). Both fail honest walk-forward. Regime model (R5) handles macro gating; stock models need to improve cross-sectional selection.
+**Current champion:** Intraday v44 (64 features, avg Sharpe TBD on current window). v29 re-validated at -0.327.
 
-**Planned sequence:**
-1. **Phase 86b** — 3 stock-relative SPY features (`stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`). These vary cross-sectionally → survive cs_normalize. Base: v38 (realized-R labels + 3-seed ensemble + frozen HPO).
-2. **MIN_REALIZED_R tuning** — If 86b gate fails, lower 0.50 → 0.35–0.40. Phase 87 showed v38 structurally healthier but under-trades (524 vs 750 trades).
-3. **Shorter training window** — If still failing, rolling 18-month window. Hypothesis: 2021-22 bull data incompatible with 2025 tariff/vol regime.
+**Remaining sequence:**
+1. **MIN_REALIZED_R tuning** — Switch to realized-R label scheme (v38 base), lower threshold 0.50 → 0.35. Phase 87 showed v38 structurally healthier (all folds positive, +0.675 avg on old window) but undertrades (524 vs 750) due to strict threshold.
+2. **Shorter training window** — If still failing, try 365d rolling window. Hypothesis: 730d includes 2022-23 bull data that teaches patterns incompatible with 2025 tariff/vol regime.
