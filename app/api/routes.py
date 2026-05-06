@@ -319,6 +319,10 @@ async def get_trade_history(limit: int = 100, status: str = ""):
         q = db.query(Trade).order_by(desc(Trade.created_at))
         if status:
             q = q.filter(Trade.status == status.upper())
+        else:
+            # Never surface PENDING_FILL rows — those are crash-recovery bookmarks,
+            # not confirmed trades. They flip to ACTIVE once Alpaca confirms the fill.
+            q = q.filter(Trade.status != "PENDING_FILL")
         trades = q.limit(min(limit, 500)).all()
 
         # Enrich active trades with live Alpaca unrealized P&L (single batch call)
