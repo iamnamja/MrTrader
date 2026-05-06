@@ -550,3 +550,76 @@ Fold 3 (Feb 2025–now) collapses across ALL swing versions. This is the 2025 ta
 6. **Triple-barrier labels:** Tried and reverted — stop exits didn't improve
 
 Full swing improvement history: `docs/ML_EXPERIMENT_LOG_archive.md`
+
+---
+
+## 2026-05-06 Experiment Campaign — Items 2 & 3
+
+**Context:** Both champion models fail honest walk-forward (swing v142 avg +0.310, intraday v29 avg -0.327 on current window). Root cause is 2025 tariff/vol regime mismatch. This campaign tests two hypotheses in parallel.
+
+---
+
+### Item 2 — Triple-barrier Labels for Swing ❌ GATE FAILED
+
+**Date:** 2026-05-06
+**Model:** swing v149/v150 (both trained; v150 used for WF)
+**Label scheme:** `triple_barrier` — bar-by-bar simulation: label=1 if target hit before stop, label=0 if stop hit first. 1.5x ATR target / 0.5x ATR stop.
+**Baseline:** swing v142 (avg Sharpe +0.310 on current 3-fold window)
+**Hypothesis:** Outcome-based labels better capture real trade quality vs path_quality cross-sectional ranking. Triple-barrier is the ground truth of whether a trade worked.
+
+**Walk-forward results (8 folds, 5yr window, 81 symbols):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|---|
+| 1 | — | — | — | — | — |
+| 2 | — | — | — | — | — |
+| 3 | — | — | — | — | — |
+| 4 | — | — | — | — | — |
+| 5 | — | — | — | — | — |
+| 6 | 2024-09-18→2025-03-28 | 117 | 34.2% | -2.07 | ❌ |
+| 7 | 2025-04-08→2025-10-16 | 111 | 36.9% | +0.46 | ✅ |
+| 8 | 2025-10-27→2026-05-06 | 106 | 34.0% | -2.13 | ❌ |
+| **Avg** | | **834** | **38.5%** | **-0.732** | ❌ GATE FAILED |
+
+Gate: avg Sharpe > 0.80, no fold < -0.30. Both failed comprehensively.
+
+**Analysis:** Triple-barrier labels produce worse results than path_quality in the current regime. The bar-by-bar stop simulation may be too sensitive to intraday noise — stops are triggered by short-term volatility spikes even when the trade would have been profitable over the intended 5-day hold. In the 2025 tariff regime (high VIX, gap-and-fade pattern), this means many genuine winners get labeled 0 (stop hit on day 1 gap down). The cross-sectional label scheme (path_quality) may be more robust because it's insensitive to stop placement.
+
+**Verdict:** ❌ GATE FAILED — v149/v150 not deployed. v142 remains active champion. Triple-barrier labels ruled out for swing in current regime.
+
+---
+
+### Item 3 — Regime Features for Intraday 🔄 PENDING WALK-FORWARD
+
+**Date:** 2026-05-06
+**Model:** intraday v44 (AUC=0.630 on OOS)
+**New features added to `compute_intraday_features()`:**
+- `regime_vix_proxy`: SPY 20d realized vol annualized (VIX proxy, clipped 5–80)
+- `regime_vix_pct60d`: current vol level vs trailing 60d window [0,1] percentile
+- `regime_spy_ma20_dist`: (SPY close - MA20) / MA20 — above/below medium-term trend
+
+**Hypothesis:** Intraday model has no awareness of macro vol regime. These features let it learn to be more conservative in high-vol / above-trend environments (the 2025 tariff regime). Unlike Phase 86 market-wide features, these survive `cs_normalize` because they are computed from SPY daily bars and are **the same for all symbols on a given day** — BUT they interact with stock-specific features (e.g. `regime_vix_pct60d * atr_norm`) which the model can discover.
+
+> **Note:** These features are identical across symbols on a given day, so `cs_normalize` will zero them out if used alone. The bet is that XGBoost learns interaction terms (e.g. high-VIX + high-atr stock = avoid) rather than using the raw feature value. This is the same limitation as Phase 86 — if cs_normalize zeros them, results will mirror Phase 86 failure.
+
+**Walk-forward results (8 folds, 730d window, 711 symbols):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|---|
+| 1 | 2024-07-19→2024-10-02 | 106 | 43.4% | -2.36 | ❌ |
+| 2 | 2024-10-07→2024-12-19 | 106 | 47.2% | -0.13 | ✅ |
+| 3 | 2024-12-24→2025-03-13 | 106 | 48.1% | -0.24 | ✅ |
+| 4 | 2025-03-18→2025-06-02 | 106 | 42.4% | -0.74 | ❌ |
+| 5 | 2025-06-05→2025-08-20 | 106 | 50.0% | -0.27 | ✅ |
+| 6 | 2025-08-25→2025-11-06 | 106 | 60.4% | +1.12 | ✅ |
+| 7 | 2025-11-11→2026-01-28 | 106 | 46.2% | +0.08 | ✅ |
+| 8 | 2026-02-02→2026-04-17 | 108 | 51.8% | -0.10 | ✅ |
+| **Avg** | | **850** | **48.7%** | **-0.331** | ❌ GATE FAILED |
+
+Gate: avg Sharpe > 1.50, no fold < -0.30. Both failed.
+
+**Analysis:** Confirmed hypothesis — `regime_vix_proxy`, `regime_vix_pct60d`, `regime_spy_ma20_dist` are identical across all symbols on a given day, so `cs_normalize` (z-score within each day's symbol set) reduces them to exactly zero. The model never received the intended signal. Results are nearly identical to v29 baseline (-0.327), confirming zero information gain. This is the same failure mode as Phase 86 market-wide features.
+
+**Root cause resolution:** A separate Regime Model operating outside cs_normalize is required. See comprehensive architecture plan in `docs/MASTER_BACKLOG.md` — Phases R1-R6.
+
+**Verdict:** ❌ GATE FAILED — v44 not deployed. v29 remains active champion. Regime features confirmed incompatible with cs_normalize architecture. Next step: build dedicated Regime Model pipeline.
