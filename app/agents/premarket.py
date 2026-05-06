@@ -400,6 +400,35 @@ class PremarketIntelligence:
             return 0.5
         return 1.0
 
+    def _all_todays_events_released(self) -> bool:
+        """
+        Return True if all high-impact macro events scheduled for today have
+        already passed their release time (+ 5 min buffer).
+
+        This lets the NIS pre-release block expire naturally once every event
+        on the calendar has printed — without needing a manual override.
+        FOMC at 2:00 PM keeps the block active until 2:05 PM ET.
+        """
+        try:
+            from app.calendars.macro import MacroCalendar
+            cal = MacroCalendar()
+            now_et = datetime.now(ET)
+            today_str = now_et.strftime("%Y-%m-%d")
+            ctx = cal.get_context()
+            if not ctx.events_today:
+                return True  # no events today — block is stale, lift it
+            for evt in ctx.events_today:
+                if evt.date_str != today_str:
+                    continue
+                h, m = map(int, evt.time_str.split(":"))
+                release_dt = now_et.replace(hour=h, minute=m, second=0, microsecond=0)
+                # Still within 5-min buffer after release
+                if now_et < release_dt.replace(minute=m + 5) if m <= 54 else release_dt:
+                    return False  # at least one event not yet released
+            return True  # all events have printed
+        except Exception:
+            return False  # conservative: keep blocking if we can't determine
+
     def is_intraday_blocked(self) -> bool:
         """Return True if no new intraday entries should be placed this session."""
         spy = self._spy_premarket_pct
@@ -408,6 +437,10 @@ class PremarketIntelligence:
         # NIS-driven block (replaces binary FOMC check)
         if self._nis_macro_context is not None:
             if self._nis_macro_context.block_new_entries:
+                # Lift block once all scheduled events for today have been released
+                if self._all_todays_events_released():
+                    logger.info("NIS intraday block lifted — all today's macro events released")
+                    return False
                 return True
         else:
             if "FOMC" in self._macro_flags:
@@ -429,6 +462,10 @@ class PremarketIntelligence:
         # NIS-driven block (consensus-aware, not binary)
         if self._nis_macro_context is not None:
             if self._nis_macro_context.block_new_entries:
+                # Lift block once all scheduled events for today have been released
+                if self._all_todays_events_released():
+                    logger.info("NIS swing block lifted — all today's macro events released")
+                    return False
                 logger.info(
                     "Swing entries blocked by NIS: risk=%s — %s",
                     self._nis_macro_context.overall_risk,
