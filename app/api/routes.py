@@ -1158,6 +1158,90 @@ async def get_regime_history(days: int = 30):
         db.close()
 
 
+@router.get("/regime/analytics")
+async def get_regime_analytics(days: int = 30):
+    """Regime model analytics: outcome by label, divergence vs opportunity score, daily counts."""
+    db = get_session()
+    try:
+        from datetime import timedelta
+        from app.database.models import ProposalLog, RegimeSnapshot
+        from sqlalchemy import func
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # Outcome by regime label
+        outcome_rows = (
+            db.query(
+                ProposalLog.regime_label_at_scan,
+                func.count(ProposalLog.id).label("n"),
+                func.avg(ProposalLog.outcome_1d_pct).label("avg_outcome_1d"),
+                func.avg(ProposalLog.outcome_pnl_pct).label("avg_pnl"),
+            )
+            .filter(
+                ProposalLog.proposed_at >= cutoff,
+                ProposalLog.regime_label_at_scan.isnot(None),
+            )
+            .group_by(ProposalLog.regime_label_at_scan)
+            .all()
+        )
+
+        # Divergence: days where regime would have blocked (score < 0.35) but opportunity score allowed
+        divergence_rows = (
+            db.query(
+                ProposalLog.regime_score_at_scan,
+                ProposalLog.opportunity_score,
+                ProposalLog.regime_label_at_scan,
+                ProposalLog.strategy,
+                func.date(ProposalLog.proposed_at).label("scan_date"),
+            )
+            .filter(
+                ProposalLog.proposed_at >= cutoff,
+                ProposalLog.regime_score_at_scan.isnot(None),
+                ProposalLog.opportunity_score.isnot(None),
+            )
+            .all()
+        )
+
+        # Compute agreement rate
+        n_agree = sum(
+            1 for r in divergence_rows
+            if (r.regime_score_at_scan < 0.35) == (r.opportunity_score < 0.5)
+        )
+        agreement_rate = round(n_agree / len(divergence_rows), 3) if divergence_rows else None
+
+        # Days with regime score (from regime_snapshots, non-backfill)
+        cutoff_date = datetime.utcnow().date() - timedelta(days=days)
+        regime_days = (
+            db.query(func.count(func.distinct(RegimeSnapshot.snapshot_date)))
+            .filter(
+                RegimeSnapshot.snapshot_date >= cutoff_date,
+                RegimeSnapshot.snapshot_trigger != "backfill",
+            )
+            .scalar()
+        )
+
+        return {
+            "days": days,
+            "regime_days_with_score": regime_days,
+            "agreement_rate_vs_opportunity_score": agreement_rate,
+            "n_proposals_with_regime": len(divergence_rows),
+            "outcome_by_label": [
+                {
+                    "regime_label": r.regime_label_at_scan,
+                    "n_proposals": r.n,
+                    "avg_outcome_1d_pct": round(r.avg_outcome_1d * 100, 3) if r.avg_outcome_1d is not None else None,
+                    "avg_pnl_pct": round(r.avg_pnl * 100, 3) if r.avg_pnl is not None else None,
+                }
+                for r in outcome_rows
+            ],
+        }
+    except Exception as exc:
+        logger.error("regime/analytics error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
 @router.get("/proposal-log")
 async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
     """Unified proposal log — swing and intraday proposals with full PM→RM→Trader audit trail."""

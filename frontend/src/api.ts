@@ -81,4 +81,8 @@ export const api = {
   proposalLog: (days = 3, strategy = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=${strategy}`),
   swingProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=swing`),
   intraProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=intraday`),
+  // Regime model (Phase R3/R4)
+  regimeCurrent: () => get('/api/dashboard/regime/current'),
+  regimeHistory: (days = 30) => get(`/api/dashboard/regime/history?days=${days}`),
+  regimeAnalytics: (days = 30) => get(`/api/dashboard/regime/analytics?days=${days}`),
 }
