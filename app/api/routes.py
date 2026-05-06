@@ -411,8 +411,11 @@ async def get_agent_decisions(limit: int = 50):
             # 4. symbols list or selected list (INSTRUMENTS_SELECTED)
             syms = r.get("symbols") or r.get("selected")
             if isinstance(syms, list) and syms:
-                first = syms[0]
-                return first if isinstance(first, str) else (first.get("symbol") if isinstance(first, dict) else None)
+                if len(syms) == 1:
+                    # Single symbol — show it
+                    first = syms[0]
+                    return first if isinstance(first, str) else (first.get("symbol") if isinstance(first, dict) else None)
+                # Multiple symbols (e.g. INTRADAY_FORCE_CLOSED) — don't pick one arbitrarily
             return None
 
         return [
