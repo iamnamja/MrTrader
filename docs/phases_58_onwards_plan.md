@@ -1,8 +1,20 @@
 # MrTrader — Active Phase Roadmap
 
-**Last updated:** 2026-05-05 (EOD update)
-**Status:** Paper trading active. 5 open positions (ZS closed target_hit +6.8%). Retrains running. Models: swing v142, intraday v29.
-**Completed phases:** `docs/phases_archive.md`
+**Last updated:** 2026-05-06
+**Status:** Paper trading active. Regime model pipeline (R1–R4) complete and live. Models: swing v142, intraday v29 (both fail honest walk-forward on current window — ML improvement campaign next). R4 gate accumulation in progress (need 10+ trading days; FOMC test 2026-05-07).
+**Completed phases:** `docs/phases_archive.md` (includes R1–R4)
+
+### 2026-05-06 Completed
+- **Phase R1** — Backfill 872 RegimeSnapshot rows (gate: ≥500 ✅)
+- **Phase R2** — Train regime_v2.pkl (XGBoost + IsotonicRegression, AUC min 0.9583, Brier 0.021 ✅)
+- **Phase R3** — Premarket integration (7am scoring, startup catchup, post-event re-evals, ProposalLog columns)
+- **Phase R4** — Parallel running analytics (RegimeModelWidget, weekly summary, divergence tracker, API endpoints)
+- **Data backfill** — 872 snapshots scored + model_version set; 268 proposal_log rows backfilled (0 NULLs remaining)
+
+### Next
+- **FOMC test (2026-05-07):** verify regime_score < 0.40 before 2pm ET, rises after 2:05pm re-eval
+- **Phase 86b:** stock-relative SPY features for intraday model (first ML campaign experiment)
+- **R5 gate:** unlocks ~2026-05-21 after 10+ trading days accumulate
 
 ---
 

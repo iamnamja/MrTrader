@@ -86,6 +86,50 @@ Gates in `app/agents/portfolio_manager.py`:
 
 ---
 
+## Regime Model Pipeline — Complete ✅ (2026-05-06)
+
+### Phase R1 — Backfill RegimeSnapshot History
+**Gate passed:** 872 backfill rows written (≥500 required). Scored using rule-based labels: `spy_1d_return > 0 AND vix_level < 20 AND spy_ma20_dist > 0` → RISK_ON. Rows cover 2023-01-01 to 2026-04-30.
+
+Key files: `app/database/models.py` (RegimeSnapshot table), `app/ml/regime_features.py`, `app/ml/regime_feature_builder.py`
+
+### Phase R2 — Regime Model V1 Training (regime_v2.pkl)
+**Gate passed:** AUC min 0.9583 ≥ 0.60 ✅, Brier 0.0210 < 0.22 ✅
+
+**Architecture:** XGBoost binary classifier + IsotonicRegression calibration (manual 80/20 split — `CalibratedClassifierCV` incompatible with XGBoost 2.0.3 + sklearn 1.8). 20 features: VIX level/percentiles, SPY returns/MA distances/realized vol, FOMC/CPI/NFP calendar proximity, NIS risk/sizing, breadth_pct_ma50.
+
+**Walk-forward results (3 expanding folds, 2023-01-01 start):**
+
+| Fold | Train End | Test End | n_train | n_test | AUC | Brier |
+|---|---|---|---|---|---|---|
+| 1 | 2024-12-31 | 2025-06-30 | 522 | 129 | 0.9912 | 0.027 |
+| 2 | 2025-06-30 | 2025-12-31 | 651 | 132 | 1.000 | 0.000 |
+| 3 | 2025-12-31 | 2026-04-30 | 783 | 86 | 0.9583 | 0.036 |
+| **Avg** | | | | | **0.9832** | **0.0210** |
+
+Thresholds: RISK_OFF < 0.35, RISK_ON ≥ 0.65, NEUTRAL in between.
+
+Key files: `app/ml/regime_training.py`, `app/ml/regime_model.py`, `scripts/train_regime_model.py`
+
+### Phase R3 — Premarket Integration
+Regime model scores at 7am ET daily (trigger=`premarket`). Startup catchup if no row exists and hour < 11:30 ET. Post-event re-evals scheduled via APScheduler for FOMC/CPI/NFP days. Staleness haircut: >4h old during market hours → 20% penalty + `stale=True` flag. ProposalLog writes `regime_score_at_scan`, `regime_label_at_scan`, `regime_trigger_at_scan`.
+
+Key files: `app/agents/premarket.py`, `app/agents/portfolio_manager.py`, `app/database/models.py`
+
+### Phase R4 — Parallel Running Analytics
+Dashboard `RegimeModelWidget` (score gauge, threshold markers, label badge, auto-refresh). Weekly summary logger + daily divergence tracker in PM. API endpoints: `/regime/current`, `/regime/history`, `/regime/analytics`.
+
+**Gate accumulation:** needs 10+ trading days + FOMC test (2026-05-07). R5 unlocks ~2026-05-21.
+
+Key files: `app/api/routes.py`, `frontend/src/App.tsx`, `tests/test_regime_r4_analytics.py`
+
+### Data Backfill (2026-05-06)
+After R3/R4 deployment: 872 backfill RegimeSnapshot rows scored with regime_v2 (model_version=2 written to each). 268 pre-R3 proposal_log rows backfilled with nearest-date snapshot scores (0 remaining NULLs).
+
+Key file: `scripts/backfill_proposal_regime_scores.py`
+
+---
+
 ## Code-Grounded Critical Findings (2026-05-01) — All Resolved
 
 | Finding | Fix | Status |

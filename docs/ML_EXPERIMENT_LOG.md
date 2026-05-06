@@ -682,3 +682,47 @@ Gate: avg Sharpe > 1.50, no fold < -0.30. Both failed.
 **Root cause resolution:** A separate Regime Model operating outside cs_normalize is required. See comprehensive architecture plan in `docs/MASTER_BACKLOG.md` — Phases R1-R6.
 
 **Verdict:** ❌ GATE FAILED — v44 not deployed. v29 remains active champion. Regime features confirmed incompatible with cs_normalize architecture. Next step: build dedicated Regime Model pipeline.
+
+---
+
+## Regime Model V1 — regime_v2.pkl ✅ GATE PASSED (2026-05-06)
+
+**Phase:** R2 (part of Phases R1–R4 completed 2026-05-06)
+**Model file:** `models/regime/regime_model_v2.pkl`
+**Architecture:** XGBoost binary classifier + IsotonicRegression calibration (manual 80/20 split)
+
+**Why manual calibration:** `CalibratedClassifierCV` incompatible with XGBoost 2.0.3 + sklearn 1.8 — `is_classifier()` returns False for XGBClassifier, causing ValueError. Fix: train XGB on 80% of data, fit `IsotonicRegression` on remaining 20%.
+
+**Label scheme (rule_based_v1):** `spy_1d_return > 0 AND vix_level < 20 AND spy_ma20_dist > 0` → label 1 (favorable). Replaced by trade-outcome labels in R6 (after 90 days paper data).
+
+**Features (20):** `vix_level`, `vix_pct_1y`, `vix_pct_60d`, `spy_rvol_5d`, `spy_rvol_20d`, `spy_1d_return`, `spy_5d_return`, `spy_20d_return`, `spy_ma20_dist`, `spy_ma50_dist`, `spy_ma200_dist`, `days_to_fomc`, `days_to_cpi`, `days_to_nfp`, `is_fomc_day`, `is_cpi_day`, `is_nfp_day`, `nis_risk_numeric`, `nis_sizing_factor`, `breadth_pct_ma50`
+
+**Null handling:** `nis_risk_numeric` → 0.5, `nis_sizing_factor` → 1.0, `breadth_pct_ma50` → 0.5 (structurally null in backfill rows)
+
+**Walk-forward results (3 expanding folds, 2023-01-01 start):**
+
+| Fold | Train End | Test End | n_train | n_test | AUC | Brier |
+|---|---|---|---|---|---|---|
+| 1 | 2024-12-31 | 2025-06-30 | 522 | 129 | 0.9912 | 0.027 |
+| 2 | 2025-06-30 | 2025-12-31 | 651 | 132 | 1.000 | 0.000 |
+| 3 | 2025-12-31 | 2026-04-30 | 783 | 86 | 0.9583 | 0.036 |
+| **Avg** | | | | | **0.9832** | **0.0210** |
+
+Gate: AUC min ≥ 0.60 ✅, Brier < 0.22 ✅
+
+**Thresholds:** RISK_OFF < 0.35, NEUTRAL 0.35–0.65, RISK_ON ≥ 0.65
+
+**Note on high AUC:** Rule-based labels are deterministic functions of the same SPY/VIX features the model trains on — AUC near 1.0 is expected and validates the model learns the rule correctly. Real generalization test is R4 gate: do regime scores correlate with actual next-day P&L over 10+ trading days?
+
+**Status:** ACTIVE — scoring daily at 7am ET (Phase R3). Parallel running analytics accumulating (Phase R4). R5 gate unlocks ~2026-05-21.
+
+---
+
+## Next Experiments — Intraday Stock Model (2026-05-06+)
+
+**Current champions:** Intraday v29 (avg -0.327 on current window), Swing v142 (avg +0.310). Both fail honest walk-forward. Regime model (R5) handles macro gating; stock models need to improve cross-sectional selection.
+
+**Planned sequence:**
+1. **Phase 86b** — 3 stock-relative SPY features (`stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`). These vary cross-sectionally → survive cs_normalize. Base: v38 (realized-R labels + 3-seed ensemble + frozen HPO).
+2. **MIN_REALIZED_R tuning** — If 86b gate fails, lower 0.50 → 0.35–0.40. Phase 87 showed v38 structurally healthier but under-trades (524 vs 750 trades).
+3. **Shorter training window** — If still failing, rolling 18-month window. Hypothesis: 2021-22 bull data incompatible with 2025 tariff/vol regime.
