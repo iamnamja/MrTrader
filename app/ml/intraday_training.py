@@ -56,7 +56,8 @@ ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for
 ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
 MIN_ABSOLUTE_MOVE = 0.003  # Phase 87A: 0.30% minimum to cover commissions + spread
-MIN_REALIZED_R = 0.40      # Phase 88: loosened from 0.5 → 0.40 (experiment log recommendation)
+MIN_REALIZED_R = 0.35      # Phase MIN_R experiment: tried 0.35 — incompatible with cs_normalize
+USE_REALIZED_R_LABELS = False  # realized-R labels fail with cs_normalize (AUC ~0.55) — keep cross-sectional
 
 ENTRY_OFFSETS = [12]  # single scan at bar 12 (~60 min post-open); v30 proved multi-window hurts
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
@@ -338,7 +339,11 @@ class IntradayModelTrainer:
             "lgbm_ensemble": lgbm_proba_test is not None,
             "xgb_3seed_ensemble": ensemble_proba_test is not None,
             "frozen_hpo": FROZEN_HPO_PARAMS is not None,
-            "label_scheme": "cross_sectional_top20pct_abs_hurdle_0.30pct",
+            "label_scheme": (
+                f"realized_r_gte{MIN_REALIZED_R}_abs_hurdle_0.30pct"
+                if USE_REALIZED_R_LABELS
+                else "cross_sectional_top20pct_abs_hurdle_0.30pct"
+            ),
             "use_ranker": use_ranker,
             "top_n_by_liquidity": top_n_by_liquidity,
         }
@@ -633,39 +638,48 @@ class IntradayModelTrainer:
                 if done % 100 == 0:
                     logger.info("Features: %d/%d symbols processed", done, len(syms))
 
-        # ── Phase 89: restore cross-sectional top-20% labels ────────────────────
-        # raw_parts carry [day_ordinal, raw_2h_return]. Per-day top-20% → label=1.
-        # cs_normalize applied to features (not labels) for cross-sectional alignment.
-        # Phase 1 (label fix): minimum absolute 2h return to qualify as a positive label.
-        # Prevents labeling "least bad" stocks as winners on down days.
-        # 0.30% = roughly 1/3 of the 0.8×ATR target — a stock must actually move up.
-        CS_ABSOLUTE_HURDLE = 0.0030
+        # ── Labeling: realized-R outcome or cross-sectional top-20% ─────────────
+        # raw_parts carry [day_ordinal, raw_2h_return, atr_target_pct].
+        # cs_normalize applied to features for cross-sectional alignment.
 
-        def _cross_sectional_labels(X_parts, raw_parts):
-            """Rank raw 2h returns within each day; top 20% AND above hurdle get label=1."""
+        CS_ABSOLUTE_HURDLE = 0.0030  # used by both schemes
+
+        def _apply_labels(X_parts, raw_parts):
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
-            raws = np.concatenate(raw_parts)   # shape (N, 2): [day_ordinal, raw_return]
+            raws = np.concatenate(raw_parts)   # shape (N, 3): [day_ordinal, return, atr_target_pct]
             days_ord = raws[:, 0]
             raw_returns = raws[:, 1]
-            labels = np.zeros(len(raw_returns), dtype=np.int8)
-            for day_val in np.unique(days_ord):
-                mask = days_ord == day_val
-                day_rets = raw_returns[mask]
-                if mask.sum() < 2:
-                    continue
-                threshold = np.percentile(day_rets, 80)  # top 20%
-                # Must be top-20% AND have a minimum positive absolute return
-                labels[mask] = (
-                    (day_rets >= threshold) & (day_rets >= CS_ABSOLUTE_HURDLE)
+            atr_targets = raws[:, 2]
+
+            if USE_REALIZED_R_LABELS:
+                # Realized-R outcome labels: return must be ≥ MIN_REALIZED_R × ATR_target.
+                # Zero positives allowed on bad days — model can learn to abstain.
+                realized_r = raw_returns / np.maximum(atr_targets, 1e-8)
+                labels = (
+                    (realized_r >= MIN_REALIZED_R) & (raw_returns >= CS_ABSOLUTE_HURDLE)
                 ).astype(np.int8)
-            # Cross-sectional normalization: z-score each feature within each day
+            else:
+                # Cross-sectional top-20% labels with absolute hurdle (Phase 89).
+                # Prevents labeling "least bad" stocks as winners on down days.
+                labels = np.zeros(len(raw_returns), dtype=np.int8)
+                for day_val in np.unique(days_ord):
+                    mask = days_ord == day_val
+                    day_rets = raw_returns[mask]
+                    if mask.sum() < 2:
+                        continue
+                    threshold = np.percentile(day_rets, 80)  # top 20%
+                    labels[mask] = (
+                        (day_rets >= threshold) & (day_rets >= CS_ABSOLUTE_HURDLE)
+                    ).astype(np.int8)
+
+            # Cross-sectional normalization applied regardless of label scheme
             X = cs_normalize_by_group(X, days_ord)
             return X, labels
 
-        X_train, y_train = _cross_sectional_labels(X_train_parts, raw_train_parts)
-        X_test, y_test = _cross_sectional_labels(X_test_parts, raw_test_parts)
+        X_train, y_train = _apply_labels(X_train_parts, raw_train_parts)
+        X_test, y_test = _apply_labels(X_test_parts, raw_test_parts)
 
         # Keep raw_train for sample-weight computation in caller
         raw_train = np.concatenate(raw_train_parts) if raw_train_parts else np.array([])
@@ -923,6 +937,7 @@ def _symbol_to_rows(
 
             # Phase 89: raw 2h return — cross-sectional top-20% ranking applied in caller
             best_return = (realized_exit - entry) / max(entry, 1e-8)
+            atr_target_pct = target_dist_use / max(entry, 1e-8)  # fractional ATR target
 
             # Daily bars up to this day (O(1) slice via precomputed date array)
             daily_as_of = None
@@ -956,13 +971,13 @@ def _symbol_to_rows(
                 feature_names = list(feats.keys())
 
             row = list(feats.values())
-            # raw = [day_ordinal, best_return] for cross-sectional ranking in caller
+            # raw = [day_ordinal, best_return, atr_target_pct] for labeling in caller
             day_ord = float(day.toordinal())
             if day in train_days:
                 train_rows.append(row)
-                train_raw.append([day_ord, best_return])
+                train_raw.append([day_ord, best_return, atr_target_pct])
             else:
                 test_rows.append(row)
-                test_raw.append([day_ord, best_return])
+                test_raw.append([day_ord, best_return, atr_target_pct])
 
     return train_rows, train_raw, test_rows, test_raw, feature_names

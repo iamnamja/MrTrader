@@ -41,7 +41,7 @@ SWING_GATE = dict(
 
 # ── Intraday model (5-min bars, 50 features, XGBoost + LightGBM ensemble) ───
 # Current champion: v29 — XGBoost HPO-tuned (n_est=577, depth=6, lr=0.0176),
-# 50 features, SINGLE scan at bar 12 (60 min post-open), 730 days history.
+# 56 features, SINGLE scan at bar 12 (60 min post-open), 730 days history.
 # IMPORTANT: ENTRY_OFFSETS must stay [12] — multi-window (v30) failed the gate
 # due to distribution mismatch (trained on 3 windows, deployed on 1).
 INTRADAY_RETRAIN: dict = dict(
