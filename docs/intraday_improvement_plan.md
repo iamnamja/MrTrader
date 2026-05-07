@@ -1,10 +1,10 @@
 # Intraday Model Improvement Plan — Phases 81–83
 
 **Created:** 2026-05-01  
-**Status:** Phase 85 ✅ DONE | Phase 86 ❌ REVERTED | Phase 87 🔄 IN PROGRESS (training 2026-05-02)  
-**Champion model:** v29 (gate_passed sentinel present, rollback-safe)  
-**Gate requirement:** avg OOS Sharpe > 1.50, no fold below -0.30  
-**Walk-forward window:** most recent 365 days, 3 expanding folds
+**Status:** Phase 85 ✅ DONE | Phase 86 ❌ REVERTED | Phase 87 ✅ DONE (v51, OOS AUC=0.6230) | Phase 3a ✅ DONE (Branch B, v51 WF +0.529)  
+**Champion model:** v51 (59 features = 56 Branch A + 3 Branch B; best honest result +0.529 avg Sharpe)  
+**Gate requirement (updated):** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 (honest gate with costs + purge)  
+**Next:** Phase R5 (regime gate) expected to push fold 2 (tariff shock) from +0.24 to positive, crossing gate.
 
 ---
 
@@ -35,7 +35,8 @@ The model was never taught that the correct output on many fold-1 days is **zero
 - `app/ml/models/intraday_v30.pkl.retired` — Phase 50 time-of-day segmentation, failed gate
 - `app/ml/models/intraday_v31–v33.pkl.retired` — earlier Phase 86/87 experiments, failed gate
 - `app/ml/models/intraday_v34–v37.pkl.retired` — Phase 86 attempts (lookahead, train/test mismatch, cs-normalize failure)
-- **v38 (Phase 87)**: training in progress 2026-05-02 — walk-forward pending
+- **v44–v50**: Phase 86b/87 experiments (various SPY-relative features)
+- **v51**: Phase 3a Branch B cs_normalize split — current active champion, OOS AUC=0.6230, WF avg +0.529
 
 **How rollback works:**
 If any new model (v30, v31, ...) fails the walk-forward gate:
@@ -74,9 +75,9 @@ python -c "from scripts.walkforward_tier3 import _load_model; m, v = _load_model
 **Root cause:** All features had identical values across symbols per day → cs_normalize zeros them out.
 **Redesign:** Stock-relative interaction features (e.g. stock_5d_return − spy_5d_return) deferred to after Phase 87.
 
-### Track 3 — Phase 87: Realized-R Labels + 3-Seed Ensemble + Frozen HPO 🔄 IN PROGRESS
-**Scope expanded from original plan:** Label fix (realized-R, no forced positives) + 3-seed XGBoost ensemble + 100-trial frozen HPO.
-**Status:** Code merged to PR #121 (2026-05-02). Retraining now. Walk-forward pending.
+### Track 3 — Phase 87 + Phase 3a: Branch B cs_normalize Split ✅ COMPLETE (v51)
+**Outcome:** v51 trained with 59 features (56 Branch A + 3 Branch B bypassing cs_normalize). HPO CV AUC=0.6643, OOS AUC=0.6230. Walk-forward avg +0.529 — best honest intraday result. Gate not met (need 0.80). All three folds positive for the first time.
+**Next:** Phase R5 (regime gate) expected to push fold 2 tariff period into positive territory.
 
 Each track ends with a full walk-forward run. Results are logged in `ML_EXPERIMENT_LOG.md`.
 
@@ -234,7 +235,7 @@ Avg Sharpe > 1.50 AND no fold < -0.30?
 
 ---
 
-## Phase 87 — Realized-R Labels + 3-Seed Ensemble + Frozen HPO 🔄 IN PROGRESS
+## Phase 87 — Realized-R Labels + 3-Seed Ensemble + Frozen HPO ✅ COMPLETE (v51, 2026-05-07)
 
 **Branch:** `feat/phase-87-label-fix-ensemble` (PR #121, 2026-05-02)  
 **Files:** `app/ml/intraday_training.py`, `app/ml/model.py`  

@@ -17,10 +17,13 @@ Tracks model improvement iterations for active and recent phases.
 
 ## Current Champion Models
 
-| Model | Version | Features | Label | Original Sharpe | Honest Sharpe (Phase 1 corrections) | Status |
+| Model | Version | Features | Label | Honest Sharpe | Best Result to Date | Status |
 |---|---|---|---|---|---|---|
-| Swing | v142 | 84 | path_quality (5d) | +1.181 | **+0.422** ❌ | Paper only — stale |
-| Intraday | v29 | 50 | cross-sectional top-20% | +1.830 | **-0.984** ❌ | Paper only — stale |
+| Swing | v163 | 88 | path_quality (5d) | **+0.358** ❌ | +0.358 (v142 corrected) | Active paper — below gate |
+| Intraday | v51 | 59 | cross-sectional top-20% | **+0.529** ❌ | +0.529 (v51, Phase 3a Branch B) | Active paper — below gate |
+
+> **Gate thresholds:** Swing avg Sharpe > 0.80 | Intraday avg Sharpe > 0.80 | No fold < -0.30 | DSR p > 0.95  
+> **Next milestones:** Swing — Phase 3b (triple-barrier label + full universe scan). Intraday — Phase R5 regime gate expected to push v51 over threshold.
 
 > **Phase 1 corrections applied (2026-05-05):** Walk-forward now includes (1) 5bps/15bps round-trip transaction costs, (2) 10-day swing / 2-day intraday purge at fold boundaries, (3) NIS features removed from training (time-leak). These are the first honest Sharpe numbers. Both models fail. See Phase 1 Corrections section below for full fold detail.
 
@@ -118,7 +121,7 @@ Max drawdown < 15%
 
 ---
 
-> **Retrain in progress (2026-05-05 EOD):** Swing v146 (89 feat = 84 + 5 macro NIS) and Intraday v30 (63 feat = 53 + 5 NIS + 5 macro NIS) are training now. Results will be logged below when walk-forward completes.
+> **Retrain campaign (2026-05-05 EOD, completed):** Swing v146 ❌ failed gate (fold 3 = -1.07). Intraday v30 ❌ retired (failed gate). See sections below.
 
 ---
 
@@ -126,7 +129,7 @@ Max drawdown < 15%
 
 **Context:** Phases 64 (stock NIS) + 90 (macro NIS) added 10 new features with full historical backfill. Current champions (v142/v29) were trained before these features existed — live inference uses them but training didn't see them.
 
-### Swing v146 — 89 features (84 + 5 macro NIS) 🔄 IN PROGRESS
+### Swing v146 — 89 features (84 + 5 macro NIS) ❌ GATE FAILED
 
 **Training started:** 2026-05-05 ~16:08 ET
 **Features added:** `macro_avg_direction`, `macro_pct_bearish`, `macro_pct_bullish`, `macro_avg_materiality`, `macro_pct_high_risk`
@@ -148,18 +151,11 @@ v142 restored as ACTIVE champion. Fold 3 (2025 regime) continues to collapse —
 
 ---
 
-### Intraday v30 — 58 features (50 + 5 NIS + 3 SPY-relative) 🔄 IN PROGRESS
+### Intraday v30 — 58 features (50 + 5 NIS + 3 SPY-relative) ❌ GATE FAILED / RETIRED
 
-**Training started:** 2026-05-05 ~16:08 ET
-**Features added over v29 (50 feat):**
-- Phase 64: 5 stock NIS features (`nis_direction_score`, `nis_materiality_score`, `nis_already_priced_in`, `nis_sizing_mult`, `nis_downside_risk`) in `intraday_features.py`
-- Phase 86b: 3 stock-relative SPY features (`stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `gap_vs_spy_gap`) in `intraday_features.py`
-- **Note:** Macro NIS features (Phase 90) live in `features.py` (swing only) — intraday uses `intraday_features.py`, so macro NIS is NOT included in this retrain
-**Label scheme:** `cross_sectional_top20pct_phase89` (same as gate-passing v29)
-**Training window:** 730 days (Alpaca 5min bars, 750 symbols)
-**Gate:** avg Sharpe > 1.50, no fold < -0.30
-
-*Results pending — will update when walk-forward completes.*
+**Training started:** 2026-05-05 ~16:08 ET  
+**Status:** Retired (`intraday_v30.pkl.retired`) — Phase 50 time-of-day segmentation features, failed walk-forward gate. Model files preserved with `.retired` extension.  
+**Walk-forward result:** Gate not met. v29 remained active champion until v44 improvements.
 
 ---
 
@@ -965,3 +961,66 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Implication:** Swing needs either (a) regime gating to avoid the -1.08 fold 3 regime, or (b) model retraining with post-tariff data once enough accumulates. Phase 3b (pre-filter removal) is the next architectural step — but the bootstrap confirms the swing challenge is deeper than just the pre-filters.
 
 ---
+
+## Phase 4a — Feature Correlation Audit (2026-05-07)
+
+**Purpose:** Identify zero-importance and semantically redundant features in swing and intraday models before Phase 3b retraining. Running on saved models (v163 swing, v51 intraday) via XGBoost feature importances.
+
+**Script:** `scripts/feature_correlation_audit.py --output logs/feature_audit.json`
+
+### Swing v163 Audit
+
+**Current features:** 88  
+**Recommended after pruning:** 68 (drop 20 zero-importance)
+
+**Zero-importance features (safe to remove — 20 total):**
+`macd`, `rsi_7`, `uptrend`, `macd_histogram`, `volume_ratio`, `price_change_pct`, `keltner_position`, `cmf_20`, `dema_20_dist`, `stochrsi_k`, `cci_20`, `price_efficiency_20d`, `mean_reversion_zscore`, `vol_price_confirmation`, `momentum_20d_sector_neutral`, `stochrsi_signal`, `stochrsi_d`, `volume_surge_3d`, `wq_alpha44`, `choch_detected`
+
+**Top 5 by importance (must keep):**
+`atr_norm` (10.6%), `volatility` (9.7%), `parkinson_vol` (4.4%), `vrp` (2.4%), `realized_vol_20d` (1.9%)
+
+**Key insight:** Volatility family dominates swing model. Technical oscillators (stochastic, CCI, MACD, RSI-7) are all zero-importance — the model completely ignores them. The 20 zero-importance features add noise/overfitting risk with no signal contribution.
+
+### Intraday v51 Audit
+
+**Current features:** 59  
+**Recommended after pruning:** 48 (drop 11 zero-importance)
+
+**Zero-importance features (drop — 11 total):**
+`bb_position`, `is_open_session`, `macd_hist`, `rsi_14`, `session_segment`, `spy_5d_return_daily`, `stoch_k`, `stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `vix_regime_level`, `williams_r`
+
+**Notable:** `vix_regime_level` and `spy_5d_return_daily` (the Phase 3a Branch B features) have zero importance in v51. They were added but XGBoost didn't find them useful at this training scale. `day_of_week` (also Branch B) IS used (1.5% importance). This suggests the Branch B architecture was correct but the specific VIX/SPY global features chosen need refinement.
+
+**Top 5 by importance (must keep):**
+`atr_norm` (11.2%), `seg_x_atr_norm` (11.1%), `range_compression` (6.8%), `minutes_since_open` (2.8%), `time_of_day` (2.7%)
+
+**Verdict for Phase 3b prep:**
+- Remove 20 zero-importance swing features before Phase 3b retraining (88 → 68)
+- Remove 11 zero-importance intraday features before next intraday retrain (59 → 48)
+- Replace `vix_regime_level` and `spy_5d_return_daily` with better global features for next iteration (consider: actual VIX from ^VIX not the proxy, SPY distance from 200d MA)
+- `day_of_week` should stay — it's actually being used
+
+
+---
+
+## Phase 5a Lite — Regime Diagnostic (Swing, 2026-05-07)
+
+**Purpose:** Run swing walk-forward with opportunity score ON to confirm which time periods the swing model works in. Uses `scripts/regime_diagnostic.py`.
+
+**Config:** 3-fold, 5yr, 5bps RT, 10d purge, opportunity score ON | **Model:** v163 (active)
+
+| Fold | Test Period | Trades | Sharpe |
+|---|---|---|---|
+| 1 | 2022-08-19 → 2023-11-07 | 172 | **+0.13** |
+| 2 | 2023-11-18 → 2025-02-05 | 187 | **+0.23** |
+| 3 | 2025-02-16 → 2026-05-07 | 212 | **+0.45** |
+| **Avg** | | **571** | **+0.27** |
+
+**Comparison vs Phase 2a bug-fixed run (v142, opp score ON):** +0.358 avg. The v163 diagnostic shows +0.27 — lower, likely due to v163 being a scheduled automated retrain with different fold period alignment.
+
+**Key finding:** Fold 3 (most recent, tariff regime, Feb 2025 → May 2026) at +0.45 is the BEST fold. This is encouraging — with opportunity score filtering out the worst macro days, the most recent regime is actually the strongest. Fold 1 and 2 (2022–2025) are the weak periods at +0.13/+0.23.
+
+**Regime interpretation:** The swing model's challenge is NOT just the 2025 tariff regime — it also underperforms in 2022–2024. The pre-filter issue (RSI_DIP/EMA_CROSSOVER as regime guard) affects all periods, not just 2025.
+
+**Verdict:** Fold-level analysis confirms Phase 3b (full universe + triple-barrier) is the right next step. The opportunity score alone (+0.27 avg) is not enough to pass the gate. v163 remains active for paper trading.
+

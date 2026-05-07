@@ -72,7 +72,7 @@ def run_diagnostic(n_folds: int = 3, output: Optional[str] = None):
     all_folds: List[FoldResult] = report.folds
     print(f"\nFolds completed: {len(all_folds)}")
     for f in all_folds:
-        print(f"  Fold {f.fold}: {f.test_start} → {f.test_end}  "
+        print(f"  Fold {f.fold}: {f.test_start} -> {f.test_end}  "
               f"trades={f.trades}  Sharpe={f.sharpe:+.2f}")
 
     avg_sharpe = np.mean([f.sharpe for f in all_folds])
