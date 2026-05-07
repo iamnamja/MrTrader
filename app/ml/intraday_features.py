@@ -308,6 +308,32 @@ def compute_intraday_features(
         feats["regime_vix_pct60d"] = 0.5
         feats["regime_spy_ma20_dist"] = 0.0
 
+    # ── Branch B global features (NOT cross-sectionally normalized) ───────
+    # These are identical across all symbols on a given day, so cs_normalize
+    # zeros them out. They are excluded from Branch A normalization and
+    # restored after cs_normalize in both training and inference.
+    # Phase 3a (MASTER_BACKLOG): allows model to learn absolute regime state.
+    if spy_daily_bars is not None and len(spy_daily_bars) >= 20:
+        spy_d_closes = spy_daily_bars["close"].values.astype(float)
+        feats["vix_regime_level"] = feats.get("regime_vix_proxy", 20.0)
+        feats["spy_5d_return_daily"] = (
+            float((spy_d_closes[-1] / spy_d_closes[-6] - 1.0) * 100.0)
+            if len(spy_d_closes) >= 6 else 0.0
+        )
+    else:
+        feats["vix_regime_level"] = 20.0
+        feats["spy_5d_return_daily"] = 0.0
+    try:
+        if as_of_date is not None:
+            import datetime as _dt
+            _d = as_of_date if isinstance(as_of_date, _dt.date) else as_of_date.date()
+            feats["day_of_week"] = float(_d.weekday())
+        else:
+            last_ts = bars.index[-1]
+            feats["day_of_week"] = float(last_ts.weekday())
+    except Exception:
+        feats["day_of_week"] = 2.0  # Wednesday as neutral default
+
     # ── Session timing ────────────────────────────────────────────────────
     # Use last bar's timestamp for actual time-of-day; fall back to bar count.
     try:
@@ -663,7 +689,17 @@ FEATURE_NAMES = [
     # "nis_sizing_mult", "nis_downside_risk",
     # Phase 86b: stock-relative SPY features (vary per-symbol → survive cs_normalize)
     "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
-    # NOTE: regime_vix_proxy, regime_vix_pct60d, regime_spy_ma20_dist removed —
-    # market-wide features identical across all symbols → zeroed by cs_normalize.
-    # Regime gating handled by dedicated Regime Model (Phase R3+).
+    # NOTE: regime_vix_proxy, regime_vix_pct60d, regime_spy_ma20_dist excluded —
+    # identical across all symbols within a day → zeroed by cs_normalize.
+    # Phase 3a: Branch B global features below bypass cs_normalize (see BRANCH_B_FEATURES).
+    # They must be listed LAST so their column indices are predictable.
+    "vix_regime_level",       # VIX proxy (realized vol) — market-wide, daily
+    "spy_5d_return_daily",    # SPY 5-day % return — market direction context
+    "day_of_week",            # 0=Mon … 4=Fri — session character
 ]
+
+# Branch B: global features that should NOT be cross-sectionally normalized.
+# Identical across symbols on a given day → cs_normalize zeros them.
+# Phase 3a fix: save before cs_normalize, restore after.
+# Must match the last len(BRANCH_B_FEATURES) columns of FEATURE_NAMES.
+BRANCH_B_FEATURES = ["vix_regime_level", "spy_5d_return_daily", "day_of_week"]

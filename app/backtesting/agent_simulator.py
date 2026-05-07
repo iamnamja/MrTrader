@@ -210,7 +210,9 @@ class AgentSimulator:
             _spy_closes = spy_prices
 
         _vix_closes: Optional[pd.Series] = None
-        _vix_df = symbols_data.get("^VIX") or symbols_data.get("VIX")
+        _vix_df = symbols_data.get("^VIX")
+        if _vix_df is None:
+            _vix_df = symbols_data.get("VIX")
         if _vix_df is not None and "close" in _vix_df.columns:
             _vix_closes = _vix_df["close"]
 

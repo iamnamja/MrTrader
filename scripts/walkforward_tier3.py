@@ -450,9 +450,15 @@ def run_swing_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}")
         t_fold = time.time()
-        # Point-in-time filter: only use symbols that were in the index at fold train start
+        # Point-in-time filter: only use symbols that were in the index at fold train start.
+        # Synthetic symbols (^VIX, VIX, SPY) bypass the filter — they're needed for
+        # regime gates and opportunity score regardless of index membership.
         pit_members = set(_members_at("sp100", tr_start))
-        fold_symbols_data = {s: d for s, d in symbols_data.items() if s in pit_members}
+        _synthetic = {"^VIX", "VIX", "SPY"}
+        fold_symbols_data = {
+            s: d for s, d in symbols_data.items()
+            if s in pit_members or s in _synthetic
+        }
         sim = AgentSimulator(
             model=model,
             atr_stop_mult=atr_stop_mult,

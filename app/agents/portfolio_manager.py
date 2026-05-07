@@ -20,7 +20,8 @@ from zoneinfo import ZoneInfo
 from app.agents.base import BaseAgent
 from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
-from app.ml.cs_normalize import cs_normalize
+from app.ml.cs_normalize import cs_normalize, cs_normalize_branch_a
+from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FEATURE_NAMES as _INTRADAY_FEATURE_NAMES
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
 from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
@@ -1633,7 +1634,12 @@ class PortfolioManager(BaseAgent):
         else:
             X = np.array([list(features_by_symbol[s].values()) for s in symbols])
         X = np.nan_to_num(X, nan=0.0)
-        X = cs_normalize(X)
+        # Phase 3a: Branch B global features (vix_regime_level, spy_5d_return_daily,
+        # day_of_week) must bypass cs_normalize — they're identical across symbols
+        # on a given day and would be zeroed out by cross-sectional z-scoring.
+        _model_fns = getattr(self.intraday_model, "feature_names", None) or _INTRADAY_FEATURE_NAMES
+        _b2_cols = [_model_fns.index(f) for f in _INTRADAY_BRANCH_B if f in _model_fns]
+        X = cs_normalize_branch_a(X, _b2_cols)
 
         try:
             _, probabilities = self.intraday_model.predict(X)
