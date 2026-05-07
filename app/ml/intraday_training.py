@@ -674,8 +674,17 @@ class IntradayModelTrainer:
                         (day_rets >= threshold) & (day_rets >= CS_ABSOLUTE_HURDLE)
                     ).astype(np.int8)
 
-            # Cross-sectional normalization applied regardless of label scheme
+            # Cross-sectional normalization: Branch A (stock-specific) only.
+            # Branch B (global market features) are identical across symbols on
+            # the same day — cs_normalize would zero them out. Save and restore.
+            from app.ml.intraday_features import BRANCH_B_FEATURES, FEATURE_NAMES as _FN
+            _branch_b_idx = [
+                _FN.index(f) for f in BRANCH_B_FEATURES if f in _FN
+            ]
+            _branch_b_saved = X[:, _branch_b_idx].copy() if _branch_b_idx else None
             X = cs_normalize_by_group(X, days_ord)
+            if _branch_b_idx and _branch_b_saved is not None:
+                X[:, _branch_b_idx] = _branch_b_saved
             return X, labels
 
         X_train, y_train = _apply_labels(X_train_parts, raw_train_parts)

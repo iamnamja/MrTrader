@@ -97,7 +97,7 @@ class ReadinessChecker:
     def _check_kill_switch(self) -> CheckResult:
         try:
             from app.live_trading.kill_switch import kill_switch
-            active = kill_switch.is_active()
+            active = kill_switch.is_active
             return CheckResult(
                 "kill_switch_inactive", not active, active,
                 "Kill switch is inactive — trading can proceed" if not active
@@ -116,8 +116,8 @@ class ReadinessChecker:
     def _check_redis_connection(self) -> CheckResult:
         try:
             rq = get_redis_queue()
-            rq.ping()
-            return CheckResult("redis_connected", True, True, "Redis reachable")
+            ok = rq.health_check()
+            return CheckResult("redis_connected", ok, ok, "Redis reachable" if ok else "Redis unreachable")
         except Exception as e:
             return CheckResult("redis_connected", False, None, f"Redis check failed: {e}")
 
@@ -229,7 +229,7 @@ class ReadinessChecker:
 
     def _check_ml_model_exists(self) -> CheckResult:
         try:
-            from app.agents.portfolio_manager import PortfolioManagerAgent
+            from app.agents.portfolio_manager import PortfolioManager as PortfolioManagerAgent
             agent = PortfolioManagerAgent()
             has_model = hasattr(agent, "model") and agent.model is not None
             return CheckResult(

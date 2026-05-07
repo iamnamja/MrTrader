@@ -33,7 +33,8 @@ from app.agents.risk_rules import (
     validate_portfolio_heat,
 )
 from app.ml.intraday_features import compute_intraday_features
-from app.ml.cs_normalize import cs_normalize
+from app.ml.cs_normalize import cs_normalize_branch_a
+from app.ml.intraday_features import BRANCH_B_FEATURES as _BRANCH_B, FEATURE_NAMES as _INTRADAY_FN
 
 logger = logging.getLogger(__name__)
 
@@ -522,7 +523,9 @@ class IntradayAgentSimulator:
             else:
                 X = np.array([list(sym_feats[s].values()) for s in sym_list])
             X = np.nan_to_num(X, nan=0.0)
-            X = cs_normalize(X)
+            _fns = model_feat_names or _INTRADAY_FN
+            _b2 = [_fns.index(f) for f in _BRANCH_B if f in _fns and _fns.index(f) < X.shape[1]]
+            X = cs_normalize_branch_a(X, _b2)
             _, probas = self.model.predict(X)
         except Exception as exc:
             logger.debug("IntradayAgentSimulator PM score failed: %s", exc)

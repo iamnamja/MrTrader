@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-05  
-**Status:** Paper trading only. Live deployment blocked until Phase 1+2 complete.  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. See `docs/llm_review_synthesis.md` for full analysis.
+**Last updated:** 2026-05-07  
+**Status:** Paper trading only. Both models fail honest walk-forward gate (swing avg +0.422, intraday avg -0.984 with Phase 1+2 corrections applied). Phase 3 architecture repair in progress.  
+**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2 now complete. Phase 3 active. See `docs/llm_review_synthesis.md` for full analysis.
 
 ---
 
@@ -116,7 +116,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Fix the structural design flaws before adding anything new.*
 
-### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday ⬜ HIGH
+### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday 🔄 IN PROGRESS (2026-05-07)
 **Why:** Cross-sectional normalization zeros out any feature constant across symbols on a given day (VIX, SPY level, breadth, dispersion). The model is completely blind to absolute market state. Even though XGBoost sees `spy_session_return`, it gets zeroed after normalization because all symbols see the same SPY return.  
 **What:**
 - Split intraday features into:
@@ -140,6 +140,8 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - **Step 3:** PM takes top N by P(+1) from full universe daily, apply min probability threshold
 **Note:** This is a 2–3 week change. Do not start until Phase 1+2 are complete.  
 **Files:** `app/ml/training.py` (label computation), `app/agents/portfolio_manager.py` (scan logic)
+
+> ⚠️ **Naive removal attempted 2026-05-06 (ML_EXPERIMENT_LOG "Phase 3a"): FAILED.** Simply removing the RSI/EMA gates with existing v142 model produced avg Sharpe -0.731 (vs baseline +0.422). Fold 3 collapsed to 26 trades at 3.9% win rate / -2.54 Sharpe. The pre-filters were acting as regime guards. The phased approach above (Step 1+2+3 together) is required — don't retry naive removal.
 
 ### 3c. NIS as PM Gate Layer (Not Model Feature) ⬜ MEDIUM
 **Why:** NIS has insufficient history to be a model feature. But it has real-time value as a trade filter.  

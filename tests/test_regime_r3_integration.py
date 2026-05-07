@@ -171,19 +171,31 @@ class TestScheduleRegimeReevalJobs:
     def test_registers_job_for_fomc_event(self):
         from app.agents.premarket import PremarketIntelligence
         from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt, date as _date
         ET = ZoneInfo("America/New_York")
         pi = PremarketIntelligence()
         mock_scheduler = MagicMock()
 
+        # Fix "today" and "now" so 14:00 event is always in the future.
+        fixed_date = _date(2026, 1, 15)
+        fixed_now = _dt(2026, 1, 15, 9, 0, 0, tzinfo=ET)
+
         mock_evt = MagicMock()
         mock_evt.event_type = "FOMC"
-        mock_evt.time_str = "23:00"  # far-future time today so run_dt > now
-        mock_evt.date_str = date.today().isoformat()
+        mock_evt.time_str = "14:00"
+        mock_evt.date_str = fixed_date.isoformat()
 
         mock_ctx = MagicMock()
         mock_ctx.events_today = [mock_evt]
 
-        with patch("app.calendars.macro.MacroCalendar") as MockCal:
+        mock_datetime = MagicMock(wraps=_dt)
+        mock_datetime.now.return_value = fixed_now
+        mock_date = MagicMock(wraps=_date)
+        mock_date.today.return_value = fixed_date
+
+        with patch("app.calendars.macro.MacroCalendar") as MockCal, \
+             patch("app.agents.premarket.datetime", mock_datetime), \
+             patch("app.agents.premarket.date", mock_date):
             MockCal.return_value.get_context.return_value = mock_ctx
             pi._schedule_regime_reeval_jobs(mock_scheduler)
 

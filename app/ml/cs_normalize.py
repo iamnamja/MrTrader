@@ -21,6 +21,25 @@ def cs_normalize(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return (X - mean) / (std + eps)
 
 
+def cs_normalize_branch_a(
+    X: np.ndarray, branch_b_cols: list, eps: float = 1e-8
+) -> np.ndarray:
+    """Cross-sectional normalize Branch A features only, preserving Branch B.
+
+    Branch B columns (global market state) are identical across symbols on a
+    given day — cs_normalize would zero them. This function saves them before
+    normalization and restores them after.
+
+    branch_b_cols: list of column indices corresponding to BRANCH_B_FEATURES.
+    """
+    if len(X) < 2 or not branch_b_cols:
+        return cs_normalize(X, eps=eps)
+    saved = X[:, branch_b_cols].copy()
+    X_norm = cs_normalize(X, eps=eps)
+    X_norm[:, branch_b_cols] = saved
+    return X_norm
+
+
 def cs_normalize_by_group(
     X: np.ndarray, group_ids: np.ndarray, eps: float = 1e-8
 ) -> np.ndarray:
