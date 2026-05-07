@@ -1023,4 +1023,3 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Regime interpretation:** The swing model's challenge is NOT just the 2025 tariff regime — it also underperforms in 2022–2024. The pre-filter issue (RSI_DIP/EMA_CROSSOVER as regime guard) affects all periods, not just 2025.
 
 **Verdict:** Fold-level analysis confirms Phase 3b (full universe + triple-barrier) is the right next step. The opportunity score alone (+0.27 avg) is not enough to pass the gate. v163 remains active for paper trading.
-

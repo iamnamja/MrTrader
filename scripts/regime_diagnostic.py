@@ -63,9 +63,9 @@ def run_diagnostic(n_folds: int = 3, output: Optional[str] = None):
     # Run walk-forward and collect trade-level detail
     report = run_swing_walkforward(
         n_folds=n_folds,
-        swing_cost_bps=5,
+        transaction_cost_pct=0.0005,  # 5bps
         purge_days=10,
-        collect_trade_detail=True,  # request per-trade VIX/SPY context
+        use_opportunity_score=True,
     )
 
     # Aggregate fold results
