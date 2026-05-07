@@ -33,7 +33,7 @@ from app.agents.risk_rules import (
     validate_portfolio_heat,
 )
 from app.ml.intraday_features import compute_intraday_features
-from app.ml.cs_normalize import cs_normalize, cs_normalize_branch_a
+from app.ml.cs_normalize import cs_normalize_branch_a
 from app.ml.intraday_features import BRANCH_B_FEATURES as _BRANCH_B, FEATURE_NAMES as _INTRADAY_FN
 
 logger = logging.getLogger(__name__)
