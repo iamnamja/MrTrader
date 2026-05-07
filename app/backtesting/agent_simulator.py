@@ -448,6 +448,7 @@ class AgentSimulator:
                 symbol, bars_up_to_day,
                 check_earnings=False,
                 check_regime=False,
+                backtest_mode=True,
             )
             closes = bars_up_to_day["close"]
             close = float(closes.iloc[-1])

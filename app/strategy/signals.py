@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
+_backtest_logger = logging.getLogger(__name__ + ".backtest")
 
 # ── Strategy parameters (module-level defaults / backtest constants) ──────────
 RSI_PERIOD = 14
@@ -100,6 +101,7 @@ def generate_signal(
     check_regime: bool = True,
     ml_score: Optional[float] = None,
     db=None,
+    backtest_mode: bool = False,
 ) -> SignalResult:
     """
     Compute a trading signal from an OHLCV DataFrame of daily bars.
@@ -246,7 +248,8 @@ def generate_signal(
         "momentum_ok": momentum_ok,
         "signal_type": signal_type,
     }
-    logger.info(
+    _sig_logger = _backtest_logger if backtest_mode else logger
+    _sig_logger.info(
         "%s: BUY signal [%s]  price=%.2f  stop=%.2f  target=%.2f  RSI=%.1f",
         symbol, signal_type, price, stop, target, rsi_now,
     )
