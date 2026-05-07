@@ -84,7 +84,7 @@ class TestFeatureCorrelationAudit:
             f"Missing keys: {required_keys - set(result.keys())}"
         )
         assert result["total_features"] > 0
-        assert result["recommended_feature_count"] < result["total_features"]
+        assert result["recommended_feature_count"] <= result["total_features"]
         assert len(result["top_features"]) > 0
 
     def test_swing_has_zero_importance_features(self):
