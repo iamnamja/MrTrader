@@ -147,7 +147,7 @@ class WalkForwardReport:
         print(f"  Avg win rate:  {self.avg_win_rate:.1%}")
         print(f"  Total trades:  {self.total_trades}")
         dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
-        dsr_sig = "✅ significant" if dsr_p > 0.95 else "❌ not significant"
+        dsr_sig = "[SIG] significant" if dsr_p > 0.95 else "[FAIL] not significant"
         print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}  (gate: p > 0.95)")
         print()
         if self.gate_passed():
@@ -596,9 +596,14 @@ def run_intraday_walkforward(
 
     logger.info("Intraday data loaded: %d symbols", len(symbols_data))
 
-    # Fold boundaries — split the test period into n_folds equal segments
+    # Fold boundaries — split the test period into n_folds equal segments.
+    # Exclude synthetic/daily symbols (VIX, SPY daily) from fold date computation —
+    # these are daily bars stored as "^VIX" / "SPY" and have different timestamps
+    # than the 5-min intraday cache, which would shift fold boundaries incorrectly.
+    _intraday_syms = {s for s in symbols_data if s not in ("^VIX", "VIX", "SPY")}
     all_days_sorted = sorted({
-        d for df in symbols_data.values()
+        d for s, df in symbols_data.items()
+        if s in _intraday_syms
         for d in pd.to_datetime(df.index).date
     })
     if not all_days_sorted:
