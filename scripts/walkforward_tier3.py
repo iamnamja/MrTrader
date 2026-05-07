@@ -147,7 +147,7 @@ class WalkForwardReport:
         print(f"  Avg win rate:  {self.avg_win_rate:.1%}")
         print(f"  Total trades:  {self.total_trades}")
         dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
-        dsr_sig = "✅ significant" if dsr_p > 0.95 else "❌ not significant"
+        dsr_sig = "[PASS] significant" if dsr_p > 0.95 else "[FAIL] not significant"
         print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}  (gate: p > 0.95)")
         print()
         if self.gate_passed():

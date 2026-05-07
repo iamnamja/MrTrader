@@ -826,3 +826,65 @@ The fundamental problem is fold 2: a 5-month period of extreme macro dislocation
 3. **Longer patience** — as paper trading accumulates more post-tariff data (Oct 2025+), the training window naturally shifts toward the current regime. By mid-2026, 730d training will include 2025+ data only.
 
 **Decision:** Pause intraday ML campaign. Current champion v44 stays active. Intraday improvement resumes after Phase R5 is deployed and 90 days of regime-gated data is available for R6 retrain (~August 2026).
+
+---
+
+## Phase 2a Bug Fix — Swing VIX Opportunity Score (2026-05-07)
+
+**Context:** Phase 2a showed "zero impact" from PM opportunity score on swing — identical trade counts with/without the gate. Root cause was two bugs preventing the score from ever computing correctly.
+
+**Bug 1 — Pandas `or` ambiguity (`agent_simulator.py`):**
+```python
+# Old (raises ValueError on non-empty DataFrame):
+_vix_closes = symbols_data.get("^VIX") or symbols_data.get("VIX")
+# Fixed:
+_vix_df = symbols_data.get("^VIX")
+if _vix_df is None:
+    _vix_df = symbols_data.get("VIX")
+if _vix_df is not None and "close" in _vix_df.columns:
+    _vix_closes = _vix_df["close"]
+```
+
+**Bug 2 — PIT filter stripping `^VIX`/`SPY` (`walkforward_tier3.py`):**
+The PIT filter excluded `^VIX` and `SPY` from `fold_symbols_data` since they're not S&P 100 members. Fixed with `_synthetic = {"^VIX", "VIX", "SPY"}` bypass.
+
+**Combined effect:** Both bugs made `_vix_closes = None`, forcing `vix_score=1.0` and `vix_trend=1.0` always — minimum score was ~0.55, never below the 0.35 block threshold. Opportunity score never triggered.
+
+**Corrected walk-forward (Swing v142, 5bps, 10d purge, with bugs fixed):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| 1 | 2022-08-18 → 2023-11-06 | 186 | 44.6% | **+0.29** | 4.5% |
+| 2 | 2023-11-17 → 2025-02-04 | 194 | 41.2% | **+0.31** | 5.3% |
+| 3 | 2025-02-15 → 2026-05-06 | 219 | 39.7% | **+0.47** | 3.1% |
+| **Avg** | | **599** | **41.9%** | **+0.358** | | ❌ GATE FAILED |
+
+**Key finding:** Even with the VIX bug fixed, the opportunity score is still not gating enough entries. Average Sharpe +0.358 vs gate threshold 0.80. Fold 3 improved to +0.47 (from -0.23 without opportunity score?) but is still below gate. The swing model's core challenge is the RSI_DIP/EMA_CROSSOVER pre-filters behaving as regime guards — not the opportunity score.
+
+**Verdict:** Opportunity score was broken but fixing it didn't recover the model to gate. The +0.358 avg Sharpe is the new honest baseline for swing v142 with all Phase 1+2 corrections applied.
+
+---
+
+## Phase 3a — Branch A/B cs_normalize Split (Intraday, 2026-05-07)
+
+**Context:** Phase 86 showed that market-wide features (VIX level, SPY return) get zeroed by `cs_normalize` (cross-sectional z-score reduces identical values across all symbols to zero on a given day). This is why Phase 86 failed. Branch A/B split preserves these global market-state features through normalization.
+
+**Architecture:**
+- **Branch A features** (56): stock-specific features — normalized with `cs_normalize` as usual
+- **Branch B features** (3): global market-state features — saved before cs_normalize, restored after
+  - `vix_regime_level` — absolute VIX level (not relative to other stocks)
+  - `spy_5d_return_daily` — SPY 5-day return as % (absolute momentum signal)
+  - `day_of_week` — 0=Mon, 4=Fri (day-of-week effect bypassed normalization)
+
+**Code changes:**
+- `app/ml/intraday_features.py`: Added 3 Branch B features to FEATURE_NAMES (56 → 59), added `BRANCH_B_FEATURES` list
+- `app/ml/cs_normalize.py`: Added `cs_normalize_branch_a(X, branch_b_cols)` — save/restore wrapper
+- `app/ml/intraday_training.py`: Branch B save/restore around `cs_normalize_by_group`
+- `app/agents/portfolio_manager.py`: Uses `cs_normalize_branch_a` for intraday inference
+- `app/backtesting/intraday_agent_simulator.py`: Uses `cs_normalize_branch_a` in `_pm_score`
+
+**Intraday retrain v44 → v51 (Branch B features):** *RUNNING as of 2026-05-07 00:00 ET — will update with results when walk-forward completes.*
+
+**Walk-forward result:** *Pending — target: avg Sharpe > 1.0 (honest gate), no fold < -0.30*
+
+---
