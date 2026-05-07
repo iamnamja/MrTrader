@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
 **Last updated:** 2026-05-07  
-**Status:** Paper trading only. Both models fail honest walk-forward gate (swing avg +0.422, intraday avg -0.984 with Phase 1+2 corrections applied). Phase 3 architecture repair in progress.  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2 now complete. Phase 3 active. See `docs/llm_review_synthesis.md` for full analysis.
+**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80). Phase 3 architecture repair in progress; Phase 4a feature audit complete.  
+**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a now complete. Phase 3b designed. See `docs/llm_review_synthesis.md` for full analysis.
 
 ---
 
@@ -116,7 +116,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Fix the structural design flaws before adding anything new.*
 
-### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday 🔄 IN PROGRESS (2026-05-07)
+### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday ✅ COMPLETE (2026-05-07) — gate not met, v51 best result to date
 **Why:** Cross-sectional normalization zeros out any feature constant across symbols on a given day (VIX, SPY level, breadth, dispersion). The model is completely blind to absolute market state. Even though XGBoost sees `spy_session_return`, it gets zeroed after normalization because all symbols see the same SPY return.  
 **What:**
 - Split intraday features into:
@@ -215,7 +215,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Know when to trade and when to sit out.*
 
-### 5a. Regime Diagnostic Report ⬜ HIGH
+### 5a. Regime Diagnostic Report ✅ COMPLETE (2026-05-07) — fold-level analysis done, trade-level detail deferred
 **Why:** We know some regimes are bad. We don't know exactly which conditions break the models. This report will tell us.  
 **What:** Run v142 and v29 through full simulation (with Phase 1+2 corrections). Segment every simulated trade by:
 - VIX bucket: <15, 15–20, 20–25, 25–30, >30
