@@ -24,7 +24,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Stop making decisions on numbers we can't trust.*
 
-### 1a. Transaction Costs in Walk-Forward ⬜ HIGH PRIORITY
+### 1a. Transaction Costs in Walk-Forward ✅ COMPLETE (2026-05-05/06)
 **Why:** Every Sharpe number reported to date is gross of costs. For intraday this is material.  
 **What:**
 - Swing: 5bps round trip (3bps half-spread + 2bps fees @ $0.005/share on ~$100 stock)
@@ -34,7 +34,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Deliverable:** Net Sharpe numbers we can actually trust. Expected: swing drops ~0.1–0.2, intraday drops ~0.3–0.5.  
 **Files:** `scripts/walkforward_tier3.py`, `app/backtesting/intraday_agent_simulator.py`
 
-### 1b. Purge + Embargo Between Walk-Forward Folds ⬜ HIGH PRIORITY
+### 1b. Purge + Embargo Between Walk-Forward Folds ✅ COMPLETE (2026-05-05/06)
 **Why:** Train/test boundary allows labels computed on test-window data to contaminate training (e.g., a 5-day label computed starting the last train day extends into test).  
 **What:**
 - Swing: 10-day purge (drop the last 10 days of training data before test window)
@@ -43,7 +43,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `scripts/walkforward_tier3.py` fold boundary logic  
 **Deliverable:** Cleaner fold splits. Probably drops Sharpe slightly — that's the more honest number.
 
-### 1c. Remove NIS Features From Training Pipeline ⬜ URGENT
+### 1c. Remove NIS Features From Training Pipeline ✅ COMPLETE (2026-05-05/06)
 **Why:** ~80% NaN in training rows. XGBoost learns `NaN = 2021–2024 regime`, `non-NaN = 2025`. This is inadvertent time encoding, not sentiment signal. Destroys out-of-sample validity.  
 **What:**
 - Remove `nis_direction_score`, `nis_materiality_score`, `nis_already_priced_in`, `nis_sizing_mult`, `nis_downside_risk` from swing training feature set
@@ -53,7 +53,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `app/ml/training.py` (swing feature list), `app/ml/intraday_trainer.py` (intraday feature list)  
 **Deliverable:** Cleaner model without time-leak. Swing drops from ~89 → ~79 features, intraday from 61 → 56 features.
 
-### 1d. Bootstrap Walk-Forward to Quantify Selection Bias ⬜ MEDIUM
+### 1d. Bootstrap Walk-Forward to Quantify Selection Bias ✅ COMPLETE (2026-05-06)
 **Why:** We've tried ~15 model variants. Picking the best Sharpe inflates the result. Need to know if the original +1.181 / +1.830 were in the tail of a noise distribution.  
 **What:**
 - Resample fold split dates 200× for v142 and v29 (perturb fold boundaries by ±30 days)
@@ -62,7 +62,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - If original result is in top 10% of distribution → confirmed selection bias  
 **Deliverable:** Distribution of Sharpes per model. If median < 0.5 for swing or < 1.0 for intraday, we know the reported numbers were lucky.
 
-### 1e. Implement Deflated Sharpe Ratio Reporting ⬜ LOW (but important)
+### 1e. Implement Deflated Sharpe Ratio Reporting ✅ COMPLETE (2026-05-05/06)
 **Why:** Raw Sharpe inflated by number of trials. Deflated Sharpe (DSR) corrects for this.  
 **What:**
 - Implement DSR formula: `DSR = Φ((SR - SR*) × √(T-1) / √(1 - γ₃×SR + (γ₄-1)/4 × SR²))`
@@ -78,7 +78,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Make the walk-forward simulate what actually trades.*
 
-### 2a. Wire PM Opportunity Score Into Walk-Forward ⬜ HIGH PRIORITY
+### 2a. Wire PM Opportunity Score Into Walk-Forward ✅ COMPLETE (2026-05-06) — results below
 **Why:** The opportunity score suppresses trades during high-VIX / SPY-below-trend regimes. This is the primary defense against the Apr–Oct 2025 collapse. But the walk-forward doesn't use it — meaning we're promoting models on simulated performance that includes days the live system would have sat out.  
 **What:**
 - In walk-forward fold simulation, load SPY/VIX daily bars for each test day
@@ -89,12 +89,12 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `scripts/walkforward_tier3.py`, `app/agents/portfolio_manager.py` (opportunity score logic)  
 **Deliverable:** Know if the opportunity score actually rescues the bad fold. If Apr–Oct 2025 Sharpe improves significantly with score ON → it's a real defense worth keeping. If not → regime is deeper than the score catches.
 
-### 2b. Wire Earnings Blackout Into Walk-Forward ⬜ MEDIUM
+### 2b. Wire Earnings Blackout Into Walk-Forward ✅ COMPLETE (2026-05-06)
 **Why:** Earnings blackouts block real trades. Simulated trades through earnings events inflate results.  
 **What:** Load Finnhub earnings calendar historically. In fold simulation, skip any symbol within earnings blackout window (intraday: ±1d before / 3d after; swing: 3d before).  
 **Files:** `scripts/walkforward_tier3.py`
 
-### 2c. Cross-Sectional Dispersion Gate for Intraday ⬜ HIGH PRIORITY
+### 2c. Cross-Sectional Dispersion Gate for Intraday ✅ COMPLETE (2026-05-06) — results below
 **Why:** The intraday ranking model has no valid premise when all stocks move together (macro-dominated days). Cross-sectional dispersion is the key missing input. On low-dispersion days, "top 20%" winners are random noise.  
 **What:**
 - For each simulated intraday day, compute `std(all_symbol_2h_returns)` from the historical data
