@@ -28,6 +28,7 @@ from app.database.session import get_session
 from app.ml.cs_normalize import cs_normalize_by_group
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
+from app.ml.retrain_config import USE_NIS_FEATURES as _USE_NIS_FEATURES
 from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
@@ -78,16 +79,10 @@ _BASE_PRUNED: frozenset = frozenset([
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
-# NIS data only exists from May 2025 — ~80% of training rows have NaN, so XGBoost
-# learns NaN = pre-2025 regime rather than learning sentiment quality. This is an
-# inadvertent time-proxy that inflates walk-forward results on 2025 folds.
-#
-# Infrastructure + backfill data are fully preserved (NewsSignalCache, MacroSignalCache,
-# backfill_stock_nis_history.py). Re-enable by removing from _NIS_PRUNED_WHILE_SPARSE
-# once stock-level NIS is backfilled 2+ years (scripts/backfill_stock_nis_history.py).
-# Macro NIS requires similar 2+ year backfill via backfill_macro_nis_llm.py.
-#
-# NIS is still used at inference time via PM gate layer (portfolio_manager.py).
+# Controlled by USE_NIS_FEATURES in retrain_config.py (False = excluded, default).
+# Infrastructure fully preserved — re-enable by setting USE_NIS_FEATURES=True after
+# ≥2yr backfill via scripts/backfill_stock_nis_history.py + backfill_macro_nis_llm.py.
+# NIS still used at inference time via PM gate layer (portfolio_manager.py).
 _NIS_PRUNED_WHILE_SPARSE: frozenset = frozenset([
     "nis_direction_score", "nis_materiality_score", "nis_already_priced_in",
     "nis_sizing_mult", "nis_downside_risk",
@@ -95,7 +90,9 @@ _NIS_PRUNED_WHILE_SPARSE: frozenset = frozenset([
     "macro_avg_materiality", "macro_pct_high_risk",
 ])
 
-PRUNED_FEATURES: frozenset = _BASE_PRUNED | _NIS_PRUNED_WHILE_SPARSE
+PRUNED_FEATURES: frozenset = (
+    _BASE_PRUNED if _USE_NIS_FEATURES else _BASE_PRUNED | _NIS_PRUNED_WHILE_SPARSE
+)
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):

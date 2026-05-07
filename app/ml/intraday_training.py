@@ -56,8 +56,8 @@ ATR_MULT_TARGET = 0.8    # Phase 47-3: compressed from 1.2 → closer target for
 ATR_MULT_STOP = 0.4      # Phase 47-3: compressed from 0.6 → tighter stop, maintains ~2:1 R:R
 ATR_MIN_TARGET = 0.003   # floor: never require less than 0.3%
 MIN_ABSOLUTE_MOVE = 0.003  # Phase 87A: 0.30% minimum to cover commissions + spread
-MIN_REALIZED_R = 0.35      # Phase MIN_R experiment: tried 0.35 — incompatible with cs_normalize
-USE_REALIZED_R_LABELS = False  # realized-R labels fail with cs_normalize (AUC ~0.55) — keep cross-sectional
+# Source of truth in retrain_config.py — imported here for backward compat
+from app.ml.retrain_config import USE_REALIZED_R_LABELS, MIN_REALIZED_R  # noqa: E402
 
 ENTRY_OFFSETS = [12]  # single scan at bar 12 (~60 min post-open); v30 proved multi-window hurts
 ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%

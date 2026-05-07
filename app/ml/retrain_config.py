@@ -55,3 +55,21 @@ INTRADAY_GATE = dict(
     min_avg_sharpe=1.50,        # intraday gate is stricter than swing (Sharpe > 1.5)
     min_fold_sharpe=-0.30,      # no single fold below this floor
 )
+
+# ── Feature flags ─────────────────────────────────────────────────────────────
+# USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
+#   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025
+#   regime). XGBoost learns the time index, not the sentiment. AUC inflated on 2025 folds.
+#   True: re-enable only after ≥2yr backfill via scripts/backfill_stock_nis_history.py
+#   and scripts/backfill_macro_nis_llm.py. NIS still used at PM gate layer regardless.
+#   Why: same pattern as USE_REALIZED_R_LABELS — code/infra preserved, behavior gated.
+USE_NIS_FEATURES: bool = False
+
+# USE_REALIZED_R_LABELS: switch intraday labeling from cross-sectional top-20%
+#   to absolute realized-R threshold. Failed walk-forward gate (avg Sharpe -4.514,
+#   AUC ~0.55). Structurally incompatible with cs_normalize. Keep False.
+USE_REALIZED_R_LABELS: bool = False
+
+# MIN_REALIZED_R: threshold for realized-R labeling (only applies when
+#   USE_REALIZED_R_LABELS=True). 0.35 was tried — gate failed.
+MIN_REALIZED_R: float = 0.35
