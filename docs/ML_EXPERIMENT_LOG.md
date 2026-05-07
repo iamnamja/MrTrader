@@ -750,6 +750,79 @@ Gate: avg Sharpe > 1.50, no fold < -0.30.
 
 **Current champion:** Intraday v44 (64 features, avg Sharpe TBD on current window). v29 re-validated at -0.327.
 
-**Remaining sequence:**
-1. **MIN_REALIZED_R tuning** — Switch to realized-R label scheme (v38 base), lower threshold 0.50 → 0.35. Phase 87 showed v38 structurally healthier (all folds positive, +0.675 avg on old window) but undertrades (524 vs 750) due to strict threshold.
-2. **Shorter training window** — If still failing, try 365d rolling window. Hypothesis: 730d includes 2022-23 bull data that teaches patterns incompatible with 2025 tariff/vol regime.
+**All experiments complete — all failed. See shorter window result + campaign conclusion below.**
+
+---
+
+## MIN_REALIZED_R Tuning — realized-R labels, threshold 0.35 ❌ GATE FAILED (2026-05-06)
+
+**Model:** Intraday v48 (56 features, realized-R label scheme)
+**Change:** `USE_REALIZED_R_LABELS = True`, `MIN_REALIZED_R = 0.35`
+**Label logic:** `(best_return / atr_target_pct >= 0.35) AND (best_return >= 0.30%)`. Zero positives allowed on bad days.
+
+**Walk-forward results (3 folds, 730d window, 711 symbols):**
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | Oct 2024 – Apr 2025 | 244 | -3.22 | ❌ |
+| 2 | Apr 2025 – Oct 2025 | 239 | -6.34 | ❌ |
+| 3 | Oct 2025 – Apr 2026 | 244 | -3.98 | ❌ |
+| **Avg** | | **727** | **-4.514** | ❌ GATE FAILED |
+
+**OOS AUC: 0.5503** (vs v46 cross-sectional: 0.627). Near-random — model has almost no predictive power with realized-R labels.
+
+**Top 5 features (v48):** daily_parkinson_vol (4.6%), spy_rsi_14 (4.5%), spy_session_return (4.3%), daily_vol_percentile (4.1%), range_vs_20d_avg (4.1%). Feature importances are flat and market-wide, not stock-specific.
+
+**Root cause:** Realized-R outcome is an absolute threshold. After `cs_normalize`, all features are expressed as relative rankings within each day's cross-section. The model must predict "will this stock hit its absolute ATR target?" using only relative features — a structurally mismatched problem. AUC near 0.55 confirms no predictive signal. Cross-sectional labels (top-20%) are well-matched to cs_normalize — both are relative. Realized-R labels require predicting absolute outcomes from relative inputs.
+
+**Verdict:** ❌ GATE FAILED — v48 not deployed. v44 restored as champion. Realized-R labels are fundamentally incompatible with cs_normalize architecture. Cross-sectional labels remain the correct choice. Next: shorter training window (365d) with cross-sectional labels.
+
+---
+
+## Shorter Training Window — 365d ❌ GATE FAILED (2026-05-06)
+
+**Model:** Intraday v50 (56 features, cross-sectional labels, 365d training window vs 730d baseline)
+**Hypothesis:** 730d includes Apr 2024–Apr 2025 data (pre-tariff bull run) that teaches patterns incompatible with the Apr 2025 tariff regime. Training on only 365d (Apr 2025–Apr 2026) gives a model that learned in the current regime.
+
+**Walk-forward results (3 folds, 730d gate window, 694 symbols):**
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | Oct 2024 – Apr 2025 | 237 | -3.62 | ❌ |
+| 2 | Apr 2025 – Oct 2025 | 244 | -1.47 | ❌ |
+| 3 | Oct 2025 – Apr 2026 | 244 | -1.81 | ❌ |
+| **Avg** | | **725** | **-2.300** | ❌ GATE FAILED |
+
+**Fold 2 improved** (-1.47 vs -2.33 for v46 730d) — tariff period model fits better with recent training data.
+**Fold 1 degraded** (-3.62 vs -1.15 for v46) — the walk-forward evaluates fold 1 by training on Apr–Oct 2024 (pre-tariff), a period outside the 365d model's training window. The model never learned pre-tariff patterns.
+
+**Root cause:** The 3-fold expanding walk-forward (730d gate window) tests generalization across all 3 regimes. A 365d model specializes in the recent regime but loses generalization to older periods. The gate correctly identifies this: if the market reverts to pre-2025 conditions, a 365d-only model fails. `retrain_config.py` reverted to `days=730`.
+
+**Verdict:** ❌ GATE FAILED — v50 not deployed. v44 restored as champion.
+
+---
+
+## 2026-05-06 Intraday Campaign Conclusion
+
+**All three planned experiments failed the walk-forward gate:**
+
+| Experiment | Model | Avg Sharpe | Gate |
+|---|---|---|---|
+| Phase 86b (stock-relative SPY features) | v46 | -1.649 | ❌ |
+| MIN_REALIZED_R=0.35 (realized-R labels) | v48 | -4.514 | ❌ |
+| Shorter window (365d vs 730d) | v50 | -2.300 | ❌ |
+| **Current champion (baseline)** | v44 | TBD | — |
+
+**Why all experiments fail:** The 3-fold walk-forward tests Oct 2024–Apr 2026, which spans:
+- Fold 1 (Oct 2024–Apr 2025): pre-tariff to tariff onset — models that learn post-tariff patterns fail here
+- Fold 2 (Apr 2025–Oct 2025): peak tariff shock — consistently the worst fold across all models
+- Fold 3 (Oct 2025–Apr 2026): post-tariff recovery — generally the best fold
+
+The fundamental problem is fold 2: a 5-month period of extreme macro dislocation. No feature or label tweak helps because the market's volatility structure changed (ATR expanded, mean reversion strengthened). The model's patterns are learned from a different regime.
+
+**What actually fixes this:**
+1. **Phase R5 (regime gate)** — regime model blocks intraday scans on RISK_OFF days, which includes most of fold 2's tariff shock period. The stock model only runs when the regime model allows. This decouples macro risk from stock selection signal.
+2. **Phase R6 (regime as feature)** — after 90 days of R4 data, `regime_score` enters the stock model as an explicit feature. XGBoost learns to be conservative when regime_score is low.
+3. **Longer patience** — as paper trading accumulates more post-tariff data (Oct 2025+), the training window naturally shifts toward the current regime. By mid-2026, 730d training will include 2025+ data only.
+
+**Decision:** Pause intraday ML campaign. Current champion v44 stays active. Intraday improvement resumes after Phase R5 is deployed and 90 days of regime-gated data is available for R6 retrain (~August 2026).
