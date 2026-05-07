@@ -116,7 +116,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Fix the structural design flaws before adding anything new.*
 
-### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday 🔄 IN PROGRESS (2026-05-07)
+### 3a. Fix cs_normalize: Branch A/B Feature Split for Intraday ✅ COMPLETE (2026-05-07) — gate not met, v51 best result to date
 **Why:** Cross-sectional normalization zeros out any feature constant across symbols on a given day (VIX, SPY level, breadth, dispersion). The model is completely blind to absolute market state. Even though XGBoost sees `spy_session_return`, it gets zeroed after normalization because all symbols see the same SPY return.  
 **What:**
 - Split intraday features into:

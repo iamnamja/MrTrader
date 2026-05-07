@@ -906,6 +906,62 @@ FROZEN_HPO_PARAMS = {
 
 Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week`) did not appear in top 5. Their effect is subtle — they modulate existing patterns rather than dominating signal.
 
-**Walk-forward result:** *Running as of 2026-05-07 05:19 ET — will update when complete.*
+### Intraday v51 Walk-Forward Results (2026-05-07 00:07 ET)
+
+**Config:** 3-fold, 15bps RT cost, 2-day purge | **Gate:** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95
+
+| Fold | Test Period | Trades | Win% | Sharpe | Gate |
+|---|---|---|---|---|---|
+| 1 | 2024-10-28 → 2025-04-24 | 244 | 50.0% | **+0.46** | ✅ |
+| 2 | 2025-04-29 → 2025-10-21 | 245 | 53.9% | **+0.24** | ✅ |
+| 3 | 2025-10-24 → 2026-04-21 | 246 | 50.4% | **+0.88** | ✅ |
+| **Avg** | | **735** | **51.4%** | **+0.529** | ❌ GATE FAILED |
+
+**Gate check:**
+- Avg Sharpe: 0.529 < 0.80 ❌
+- Min fold: 0.24 > -0.30 ✅
+- DSR p=0.000 < 0.95 ❌
+
+**Verdict:** ❌ GATE NOT MET — Branch B features improved all folds vs v29 baseline (-0.984) and all folds are positive, but avg Sharpe 0.529 is below gate threshold. v44 remains active champion.
+
+**Comparison vs baselines:**
+| Version | Avg Sharpe | Notes |
+|---|---|---|
+| v29 (no costs/purge) | +1.830 | Inflated — no corrections |
+| v29 (Phase 1 corrections) | -0.984 | Honest baseline |
+| v44 (Phase 2c dispersion gate) | -1.816 | Worse than v29 |
+| **v51 (Branch B + HPO)** | **+0.529** | Best honest result to date |
+
+**Key finding:** Branch B features (vix_regime_level, spy_5d_return_daily, day_of_week) combined with full Optuna HPO dramatically improved all three folds. Fold 3 (Oct 2025–Apr 2026 recent regime) at +0.88 is approaching gate. Fold 2 (tariff shock) at +0.24 is the remaining bottleneck. The regime gate (Phase R5) — blocking intraday in RISK_OFF — would likely save fold 2.
+
+**Next step:** Continue as-is until Phase R5 (regime gate) is deployed; expect v51 + regime gate to pass the intraday threshold.
+
+---
+
+## Swing v162 Bootstrap Walk-Forward (2026-05-07 00:07 ET)
+
+**Purpose:** Estimate Sharpe distribution of swing model across 20 perturbed-date walk-forward runs to gauge robustness. Tests whether +0.358 corrected baseline is lucky or structural.
+
+**Config:** 20 iterations, swing v162 (most recent automated retrain), 5bps RT, 10d purge, 3-fold
+
+**Distribution:**
+| Metric | Value |
+|---|---|
+| Mean Sharpe | -0.084 |
+| Median Sharpe | -0.112 |
+| Std | 0.069 |
+| P5 / P95 | -0.175 / +0.027 |
+| % positive | 20.0% |
+
+**Sample fold results (last iteration):**
+| Fold | Sharpe |
+|---|---|
+| 1 | +0.37 |
+| 2 | +0.54 |
+| 3 | **-1.08** |
+
+**Verdict:** ❌ Swing model is not robust. Only 20% of bootstrap runs are positive. Fold 3 (most recent OOS period) at -1.08 dominates — the 2025 tariff/macro regime change is genuinely destroying the model's edge. The +0.358 corrected average from the single run appears to be a favorable draw.
+
+**Implication:** Swing needs either (a) regime gating to avoid the -1.08 fold 3 regime, or (b) model retraining with post-tariff data once enough accumulates. Phase 3b (pre-filter removal) is the next architectural step — but the bootstrap confirms the swing challenge is deeper than just the pre-filters.
 
 ---
