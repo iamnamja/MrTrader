@@ -965,3 +965,42 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Implication:** Swing needs either (a) regime gating to avoid the -1.08 fold 3 regime, or (b) model retraining with post-tariff data once enough accumulates. Phase 3b (pre-filter removal) is the next architectural step — but the bootstrap confirms the swing challenge is deeper than just the pre-filters.
 
 ---
+
+## Phase 4a — Feature Correlation Audit (2026-05-07)
+
+**Purpose:** Identify zero-importance and semantically redundant features in swing and intraday models before Phase 3b retraining. Running on saved models (v163 swing, v51 intraday) via XGBoost feature importances.
+
+**Script:** `scripts/feature_correlation_audit.py --output logs/feature_audit.json`
+
+### Swing v163 Audit
+
+**Current features:** 88  
+**Recommended after pruning:** 68 (drop 20 zero-importance)
+
+**Zero-importance features (safe to remove — 20 total):**
+`macd`, `rsi_7`, `uptrend`, `macd_histogram`, `volume_ratio`, `price_change_pct`, `keltner_position`, `cmf_20`, `dema_20_dist`, `stochrsi_k`, `cci_20`, `price_efficiency_20d`, `mean_reversion_zscore`, `vol_price_confirmation`, `momentum_20d_sector_neutral`, `stochrsi_signal`, `stochrsi_d`, `volume_surge_3d`, `wq_alpha44`, `choch_detected`
+
+**Top 5 by importance (must keep):**
+`atr_norm` (10.6%), `volatility` (9.7%), `parkinson_vol` (4.4%), `vrp` (2.4%), `realized_vol_20d` (1.9%)
+
+**Key insight:** Volatility family dominates swing model. Technical oscillators (stochastic, CCI, MACD, RSI-7) are all zero-importance — the model completely ignores them. The 20 zero-importance features add noise/overfitting risk with no signal contribution.
+
+### Intraday v51 Audit
+
+**Current features:** 59  
+**Recommended after pruning:** 48 (drop 11 zero-importance)
+
+**Zero-importance features (drop — 11 total):**
+`bb_position`, `is_open_session`, `macd_hist`, `rsi_14`, `session_segment`, `spy_5d_return_daily`, `stoch_k`, `stock_vs_spy_5d_return`, `stock_vs_spy_mom_ratio`, `vix_regime_level`, `williams_r`
+
+**Notable:** `vix_regime_level` and `spy_5d_return_daily` (the Phase 3a Branch B features) have zero importance in v51. They were added but XGBoost didn't find them useful at this training scale. `day_of_week` (also Branch B) IS used (1.5% importance). This suggests the Branch B architecture was correct but the specific VIX/SPY global features chosen need refinement.
+
+**Top 5 by importance (must keep):**
+`atr_norm` (11.2%), `seg_x_atr_norm` (11.1%), `range_compression` (6.8%), `minutes_since_open` (2.8%), `time_of_day` (2.7%)
+
+**Verdict for Phase 3b prep:**
+- Remove 20 zero-importance swing features before Phase 3b retraining (88 → 68)
+- Remove 11 zero-importance intraday features before next intraday retrain (59 → 48)
+- Replace `vix_regime_level` and `spy_5d_return_daily` with better global features for next iteration (consider: actual VIX from ^VIX not the proxy, SPY distance from 200d MA)
+- `day_of_week` should stay — it's actually being used
+

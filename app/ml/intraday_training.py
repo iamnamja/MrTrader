@@ -64,7 +64,18 @@ ATR_MAX_TARGET = 0.025   # ceiling: never require more than 2.5%
 
 # Phase 87: frozen HPO params (set from thorough 100-trial search; reuse on every retrain)
 # None = run HPO to find initial params; once found, set these to freeze.
-FROZEN_HPO_PARAMS: Optional[dict] = None  # type: ignore[assignment]
+FROZEN_HPO_PARAMS: Optional[dict] = {
+    # v51 params from 100-trial Optuna HPO (2026-05-07); HPO CV AUC=0.6643, OOS AUC=0.6230
+    "n_estimators": 754,
+    "max_depth": 7,
+    "learning_rate": 0.01290,
+    "subsample": 0.9745,
+    "colsample_bytree": 0.4080,
+    "min_child_weight": 10,
+    "gamma": 0.4530,
+    "reg_alpha": 0.9664,
+    "reg_lambda": 0.6601,
+}
 
 # Phase 87: ensemble seeds (3 XGBoost models blended by average probability)
 ENSEMBLE_SEEDS = [42, 123, 777]

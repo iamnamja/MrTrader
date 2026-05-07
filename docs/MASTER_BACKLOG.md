@@ -127,7 +127,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `app/ml/intraday_trainer.py`  
 **Deliverable:** Model can learn "top 20% momentum + VIX > 25 → avoid". Currently impossible.
 
-### 3b. Remove Swing RSI_DIP / EMA_CROSSOVER Pre-Filters ⬜ HIGH (complex, plan carefully)
+### 3b. Remove Swing RSI_DIP / EMA_CROSSOVER Pre-Filters 📋 DESIGNED (2026-05-07) — see docs/phase_3b_design_spec.md
 **Why:** All three LLMs flag this. The ML model only scores candidates that pass rule-based pre-filters. It learns "which RSI dips don't fail" — not "what makes a good swing trade." This caps the alpha ceiling at whatever the rules can pre-select.  
 **What (phased approach — don't rush this):**
 - **Step 1:** Score the full 430-symbol universe daily (instead of only RSI_DIP/EMA_CROSSOVER candidates). Keep pre-filters as signal features, not hard gates.
@@ -183,7 +183,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 
 *Fewer, better-validated features. Stop adding, start pruning.*
 
-### 4a. Feature Correlation Clustering + Pruning ⬜ HIGH
+### 4a. Feature Correlation Clustering + Pruning ✅ COMPLETE (2026-05-07) — audit done, pruning deferred to Phase 3b retrain
 **Why:** The swing model has ~79 features (after NIS removal). Many are redundant (multiple RSI variants, multiple momentum horizons, multiple stochastic oscillators). Redundant features don't add information — they add overfitting risk.  
 **What:**
 - Compute Spearman correlation matrix across all training rows
