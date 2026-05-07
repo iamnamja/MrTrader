@@ -125,6 +125,8 @@ class AgentSimulator:
         pm_abstention_spy_5d: bool = False,     # Phase 55: abstain if SPY 5d return <= 0 (negative momentum)
         use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
         no_prefilters: bool = False,             # Phase 3a: bypass RSI/EMA20/50 trader pre-filters
+        earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
+        swing_blackout_days_before: int = 3,     # Phase 2b: skip new entries N days before earnings
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -144,6 +146,8 @@ class AgentSimulator:
         self.pm_abstention_spy_5d = pm_abstention_spy_5d
         self.use_opportunity_score = use_opportunity_score
         self.no_prefilters = no_prefilters
+        self.earnings_blackout = earnings_blackout or {}
+        self.swing_blackout_days_before = swing_blackout_days_before
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -586,6 +590,17 @@ class AgentSimulator:
 
             if sym in portfolio.positions:
                 continue  # already holding
+
+            # Phase 2b: earnings blackout — skip if within N days of earnings
+            if self.earnings_blackout and sym in self.earnings_blackout:
+                _in_blackout = False
+                for _e_date in self.earnings_blackout[sym]:
+                    _delta = (_e_date - day).days
+                    if 0 <= _delta <= self.swing_blackout_days_before:
+                        _in_blackout = True
+                        break
+                if _in_blackout:
+                    continue
 
             df = symbols_data.get(sym)
             if df is None:

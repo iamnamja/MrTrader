@@ -111,6 +111,9 @@ class IntradayAgentSimulator:
         use_opportunity_score: bool = False,    # Phase 2a: continuous PM opportunity score gate
         use_dispersion_gate: bool = False,      # Phase 2c: skip low cross-sectional dispersion days
         dispersion_threshold: float = 0.5,     # Phase 2c: skip if dispersion < threshold × median
+        earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
+        intraday_blackout_days_before: int = 1,  # Phase 2b: skip entry N days before earnings
+        intraday_blackout_days_after: int = 3,   # Phase 2b: skip entry N days after earnings
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -124,6 +127,9 @@ class IntradayAgentSimulator:
         self.use_opportunity_score = use_opportunity_score
         self.use_dispersion_gate = use_dispersion_gate
         self.dispersion_threshold = dispersion_threshold
+        self.earnings_blackout = earnings_blackout or {}
+        self.intraday_blackout_days_before = intraday_blackout_days_before
+        self.intraday_blackout_days_after = intraday_blackout_days_after
         # Phase 51: scan_offsets controls how many entry windows per day.
         # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
         self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
@@ -416,6 +422,17 @@ class IntradayAgentSimulator:
                             continue
                     except Exception:
                         pass
+
+                # Phase 2b: earnings blackout — skip entry if within window of earnings
+                if self.earnings_blackout and sym in self.earnings_blackout:
+                    _in_blackout = False
+                    for _e_date in self.earnings_blackout[sym]:
+                        _delta = (_e_date - day).days
+                        if -self.intraday_blackout_days_after <= _delta <= self.intraday_blackout_days_before:
+                            _in_blackout = True
+                            break
+                    if _in_blackout:
+                        continue
 
                 entry_price = sym_entry_price[sym]
                 prior_close, prior_high, prior_low = sym_prior.get(sym, (entry_price, entry_price, entry_price))

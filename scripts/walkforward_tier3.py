@@ -250,6 +250,102 @@ def _load_model(model_name: str, version: Optional[int] = None):
     return m, ver
 
 
+# ── Earnings calendar pre-fetch (Phase 2b) ────────────────────────────────────
+
+def _fetch_earnings_calendar(
+    symbols: List[str],
+    start_date: date,
+    end_date: date,
+) -> Dict[str, set]:
+    """Pre-fetch historical earnings dates for all symbols using yfinance.
+
+    Returns dict of symbol → set of datetime.date when earnings were reported.
+    Earnings within the simulation window are included. Symbols with no data
+    get an empty set (no blackout applied — fail-open).
+
+    Takes ~2-3 min for 700 symbols. Call once before the sim, not per-fold.
+    """
+    import yfinance as yf
+    cal: Dict[str, set] = {}
+    logger.info("Pre-fetching earnings calendar for %d symbols (yfinance)...", len(symbols))
+    ok, fail = 0, 0
+    for sym in symbols:
+        try:
+            ed = yf.Ticker(sym).earnings_dates
+            if ed is not None and len(ed) > 0:
+                dates: set = set()
+                for idx in ed.index:
+                    d = idx.date() if hasattr(idx, "date") else idx
+                    if start_date <= d <= end_date:
+                        dates.add(d)
+                cal[sym] = dates
+                ok += 1
+            else:
+                cal[sym] = set()
+                ok += 1
+        except Exception:
+            cal[sym] = set()
+            fail += 1
+    logger.info("Earnings calendar: %d ok, %d failed (fail-open for failures)", ok, fail)
+    return cal
+
+
+# ── Bootstrap walk-forward (Phase 1d) ─────────────────────────────────────────
+
+def _bootstrap_folds(
+    run_fn,
+    n_bootstrap: int = 100,
+    perturb_days: int = 30,
+    **kwargs,
+) -> Dict:
+    """Run the walk-forward n_bootstrap times with ±perturb_days randomised fold offsets.
+
+    Returns dict with Sharpe distribution statistics for reporting.
+    """
+    sharpes: List[float] = []
+    rng = np.random.default_rng(42)
+    _subheader(f"Bootstrap walk-forward: {n_bootstrap} iterations × ±{perturb_days}d perturbation")
+    for i in range(n_bootstrap):
+        jitter = int(rng.integers(-perturb_days, perturb_days + 1))
+        try:
+            if "total_years" in kwargs:
+                kw = dict(kwargs, total_years=kwargs["total_years"] + jitter / 365)
+            elif "total_days" in kwargs:
+                kw = dict(kwargs, total_days=max(180, kwargs["total_days"] + jitter))
+            else:
+                kw = kwargs
+            report = run_fn(**kw)
+            if report.folds:
+                sharpes.append(report.avg_sharpe)
+        except Exception as exc:
+            logger.debug("Bootstrap iter %d failed: %s", i, exc)
+    if not sharpes:
+        return {}
+    arr = np.array(sharpes)
+    result = {
+        "n": len(arr),
+        "mean": float(np.mean(arr)),
+        "median": float(np.median(arr)),
+        "std": float(np.std(arr)),
+        "p5": float(np.percentile(arr, 5)),
+        "p25": float(np.percentile(arr, 25)),
+        "p75": float(np.percentile(arr, 75)),
+        "p95": float(np.percentile(arr, 95)),
+        "pct_positive": float(np.mean(arr > 0)),
+    }
+    print(f"\n  Bootstrap Sharpe distribution ({len(arr)} iters):")
+    print(f"    Mean:   {result['mean']:+.3f}   Median: {result['median']:+.3f}")
+    print(f"    Std:    {result['std']:.3f}")
+    print(f"    P5/P95: {result['p5']:+.3f} / {result['p95']:+.3f}")
+    print(f"    % positive: {result['pct_positive']:.1%}")
+    sig = result["pct_positive"] >= 0.75
+    if sig:
+        _ok(f"Bootstrap passes: {result['pct_positive']:.1%} of iterations positive")
+    else:
+        _warn(f"Bootstrap low confidence: only {result['pct_positive']:.1%} positive")
+    return result
+
+
 # ── Swing walk-forward ─────────────────────────────────────────────────────────
 
 def run_swing_walkforward(
@@ -268,6 +364,7 @@ def run_swing_walkforward(
     use_opportunity_score: bool = False,
     no_prefilters: bool = False,
     train_years: Optional[int] = None,  # Phase 3b: rolling window (None = expanding)
+    earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -367,6 +464,7 @@ def run_swing_walkforward(
             transaction_cost_pct=transaction_cost_pct,
             use_opportunity_score=use_opportunity_score,
             no_prefilters=no_prefilters,
+            earnings_blackout=earnings_blackout,
         )
         result = sim.run(
             fold_symbols_data,
@@ -419,6 +517,7 @@ def run_intraday_walkforward(
     purge_days: int = 2,
     use_opportunity_score: bool = False,
     use_dispersion_gate: bool = False,
+    earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -538,6 +637,7 @@ def run_intraday_walkforward(
             transaction_cost_pct=transaction_cost_pct,
             use_opportunity_score=use_opportunity_score,
             use_dispersion_gate=use_dispersion_gate,
+            earnings_blackout=earnings_blackout,
         )
         result = sim.run(
             fold_symbols_data,
@@ -631,6 +731,13 @@ def main() -> int:
                         help="Phase 3b: rolling training window per fold — limit each fold's "
                              "training data to the N most recent years before train_end "
                              "(None = expanding window). Use 2 to exclude 2021-2022 bull regime.")
+    parser.add_argument("--earnings-blackout", action="store_true", default=False,
+                        help="Phase 2b: skip entries within earnings blackout window "
+                             "(swing: 3d before; intraday: 1d before / 3d after). "
+                             "Pre-fetches calendar via yfinance — adds ~2-3 min for 700 symbols.")
+    parser.add_argument("--bootstrap", type=int, default=0, metavar="N",
+                        help="Phase 1d: run N bootstrap iterations with ±30d fold perturbation "
+                             "to quantify selection bias. 0 = disabled. 100 recommended.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -661,9 +768,26 @@ def main() -> int:
     swing_ver = args.swing_model_version if args.swing_model_version > 0 else None
     intraday_ver = args.intraday_model_version if args.intraday_model_version > 0 else None
 
+    # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
+    earnings_cal: Optional[Dict[str, set]] = None
+    if args.earnings_blackout:
+        from datetime import datetime as _dt
+        _end = _dt.now().date()
+        _start = _end - timedelta(days=max(args.years * 365, args.days) + 30)
+        _syms = symbols or []
+        if not _syms:
+            # Default to SP100 + Russell1000 union if no explicit symbols
+            try:
+                from app.utils.constants import SP_100_TICKERS, RUSSELL_1000_TICKERS
+                _syms = list(set(SP_100_TICKERS) | set(RUSSELL_1000_TICKERS))
+            except Exception:
+                _syms = []
+        if _syms:
+            earnings_cal = _fetch_earnings_calendar(_syms, _start, _end)
+
     if args.model in ("swing", "both"):
         t0 = time.time()
-        swing_report = run_swing_walkforward(
+        _swing_kwargs = dict(
             n_folds=args.folds,
             total_years=args.years,
             symbols=symbols,
@@ -674,14 +798,18 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             pm_abstention_spy_5d=args.pm_abstention_spy_5d,
             model_version=swing_ver,
-            transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
+            transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,
             purge_days=args.swing_purge_days,
             use_opportunity_score=args.pm_opportunity_score,
             no_prefilters=args.no_prefilters,
             train_years=args.swing_train_years,
+            earnings_blackout=earnings_cal,
         )
+        swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
+        if args.bootstrap > 0:
+            _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
         if not swing_report.gate_passed():
             passed = False
         if args.record_results and swing_report.folds:
@@ -697,7 +825,7 @@ def main() -> int:
     if args.model in ("intraday", "both"):
         t0 = time.time()
         intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
-        intraday_report = run_intraday_walkforward(
+        _intraday_kwargs = dict(
             n_folds=args.folds,
             total_days=args.days,
             symbols=symbols,
@@ -706,13 +834,17 @@ def main() -> int:
             pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
             scan_offsets=intraday_scan_offsets,
             model_version=intraday_ver,
-            transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,  # arg is round-trip; simulator applies per-side
+            transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,
             purge_days=args.intraday_purge_days,
             use_opportunity_score=args.pm_opportunity_score,
             use_dispersion_gate=args.dispersion_gate,
+            earnings_blackout=earnings_cal,
         )
+        intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
+        if args.bootstrap > 0:
+            _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
         if not intraday_report.gate_passed():
             passed = False
         if args.record_results and intraday_report.folds:
