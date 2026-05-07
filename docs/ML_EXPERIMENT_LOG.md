@@ -883,8 +883,29 @@ The PIT filter excluded `^VIX` and `SPY` from `fold_symbols_data` since they're 
 - `app/agents/portfolio_manager.py`: Uses `cs_normalize_branch_a` for intraday inference
 - `app/backtesting/intraday_agent_simulator.py`: Uses `cs_normalize_branch_a` in `_pm_score`
 
-**Intraday retrain v44 → v51 (Branch B features):** *RUNNING as of 2026-05-07 00:00 ET — will update with results when walk-forward completes.*
+### Intraday v51 Training Results (2026-05-07 00:03 ET)
 
-**Walk-forward result:** *Pending — target: avg Sharpe > 1.0 (honest gate), no fold < -0.30*
+**Model:** Intraday v51 (59 features = 56 Branch A + 3 Branch B)
+**Training time:** 3245.9s (54 min) — 100-trial Optuna HPO × 3-fold CV on 276k train rows
+**Dataset:** 715 symbols, 730d, 276,213 train / 60,486 test rows
+**Class balance:** pos=51,697 / neg=224,516 (scale_pos_weight=4.34)
+**HPO CV AUC:** 0.6643 (above 0.65 threshold ✅)
+**OOS AUC:** 0.6230
+**Ensemble:** 3-seed XGBoost + LightGBM blend
+
+**Frozen HPO params (use these next time to skip 54-min HPO):**
+```python
+FROZEN_HPO_PARAMS = {
+    'n_estimators': 754, 'max_depth': 7, 'learning_rate': 0.01290,
+    'subsample': 0.9745, 'colsample_bytree': 0.4080, 'min_child_weight': 10,
+    'gamma': 0.4530, 'reg_alpha': 0.9664, 'reg_lambda': 0.6601
+}
+```
+
+**Top 5 features:** `atr_norm` (11.2%), `seg_x_atr_norm` (11.0%), `range_compression` (6.8%), `minutes_since_open` (2.8%), `time_of_day` (2.7%)
+
+Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week`) did not appear in top 5. Their effect is subtle — they modulate existing patterns rather than dominating signal.
+
+**Walk-forward result:** *Running as of 2026-05-07 05:19 ET — will update when complete.*
 
 ---
