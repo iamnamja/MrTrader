@@ -2789,6 +2789,13 @@ function ExecutionCell({ rmStatus, rmReason, traderStatus, traderReason }: {
         </span>
       )
     }
+    if (traderStatus === 'DUPLICATE_HELD') {
+      return (
+        <span style={{ color: C.muted, fontSize: 11 }} title={traderReason ?? 'Symbol already held'}>
+          Already held
+        </span>
+      )
+    }
     if (traderStatus === 'QUALITY_REJECTED' || traderStatus === 'DISCARDED') {
       return (
         <span style={{ color: C.red, fontSize: 11 }} title={traderReason ?? ''}>

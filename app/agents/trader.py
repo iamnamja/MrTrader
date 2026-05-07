@@ -509,13 +509,50 @@ class Trader(BaseAgent):
         trade_type = proposal.get("trade_type", "swing")
 
         if symbol in self.active_positions:
-            self.logger.debug("%s: already in active_positions — skipping duplicate entry", symbol)
+            self.logger.info("%s: already in active_positions — skipping duplicate entry", symbol)
             self.approved_symbols.pop(symbol, None)
+            # Fix 1b: write final status so UI shows reason instead of "Queued"
+            proposal_uuid = proposal.get("proposal_uuid")
+            if proposal_uuid:
+                try:
+                    from app.database.session import get_session
+                    from app.database.models import ProposalLog
+                    _db = get_session()
+                    try:
+                        for _row in _db.query(ProposalLog).filter(
+                            ProposalLog.proposal_uuid == proposal_uuid
+                        ).all():
+                            _row.trader_status = "DUPLICATE_HELD"
+                            _row.trader_reason = "Symbol already in active_positions"
+                            _row.trader_decided_at = datetime.now(ET)
+                        _db.commit()
+                    finally:
+                        _db.close()
+                except Exception as _e:
+                    self.logger.debug("Could not write DUPLICATE_HELD status: %s", _e)
             return
 
         if symbol in self._pending_limit_orders:
-            self.logger.debug("%s: limit order already pending — skipping duplicate entry", symbol)
+            self.logger.info("%s: limit order already pending — skipping duplicate entry", symbol)
             self.approved_symbols.pop(symbol, None)
+            proposal_uuid = proposal.get("proposal_uuid")
+            if proposal_uuid:
+                try:
+                    from app.database.session import get_session
+                    from app.database.models import ProposalLog
+                    _db = get_session()
+                    try:
+                        for _row in _db.query(ProposalLog).filter(
+                            ProposalLog.proposal_uuid == proposal_uuid
+                        ).all():
+                            _row.trader_status = "DUPLICATE_HELD"
+                            _row.trader_reason = "Limit order already pending for symbol"
+                            _row.trader_decided_at = datetime.now(ET)
+                        _db.commit()
+                    finally:
+                        _db.close()
+                except Exception as _e:
+                    self.logger.debug("Could not write DUPLICATE_HELD status: %s", _e)
             return
 
         if symbol in self._daily_discarded_symbols:
@@ -1739,7 +1776,18 @@ class Trader(BaseAgent):
             if pos.get("trade_type") == "intraday"
         ]
 
+        from app.integrations import get_alpaca_client
+        alpaca = get_alpaca_client()
+
+        # Fix 2: fetch live Alpaca positions once; use it to distinguish real vs stale DB rows
+        try:
+            alpaca_positions = {p["symbol"] for p in (alpaca.get_positions() or [])}
+        except Exception as exc:
+            self.logger.warning("force_close: could not fetch Alpaca positions — assuming all real: %s", exc)
+            alpaca_positions = None  # None = unknown; proceed conservatively
+
         # Also check DB for intraday trades not yet in in-memory state (e.g. set via manual DB update)
+        stale_ghost_symbols: list = []
         try:
             from app.database.db import SessionLocal
             from app.database.models import Trade
@@ -1751,25 +1799,42 @@ class Trader(BaseAgent):
                 ).all()
                 for t in db_intraday:
                     if t.symbol not in intraday_symbols:
-                        self.logger.warning(
-                            "force_close: %s in DB as intraday ACTIVE but not in active_positions — adding",
-                            t.symbol,
-                        )
-                        intraday_symbols.append(t.symbol)
-                        # Seed a minimal in-memory entry so _execute_exit can close it
-                        if t.symbol not in self.active_positions:
-                            self.active_positions[t.symbol] = {
-                                "trade_type": "intraday",
-                                "entry_price": float(t.entry_price or 0),
-                                "stop_price": float(t.stop_price or 0),
-                                "target_price": float(t.target_price or 0),
-                                "shares": int(t.quantity or 0),
-                                "trade_id": t.id,
-                            }
+                        # Fix 2: if Alpaca has no position for this symbol, it's a stale ghost — mark it, don't trade it
+                        if alpaca_positions is not None and t.symbol not in alpaca_positions:
+                            self.logger.warning(
+                                "force_close: %s is ACTIVE intraday in DB but NOT in Alpaca — marking RECONCILE_GHOST",
+                                t.symbol,
+                            )
+                            stale_ghost_symbols.append(t.symbol)
+                            t.status = "RECONCILE_GHOST"
+                            t.exit_reason = "force_close_ghost_no_alpaca_position"
+                        else:
+                            self.logger.warning(
+                                "force_close: %s in DB as intraday ACTIVE but not in active_positions — adding",
+                                t.symbol,
+                            )
+                            intraday_symbols.append(t.symbol)
+                            # Seed a minimal in-memory entry so _execute_exit can close it
+                            if t.symbol not in self.active_positions:
+                                self.active_positions[t.symbol] = {
+                                    "trade_type": "intraday",
+                                    "entry_price": float(t.entry_price or 0),
+                                    "stop_price": float(t.stop_price or 0),
+                                    "target_price": float(t.target_price or 0),
+                                    "shares": int(t.quantity or 0),
+                                    "trade_id": t.id,
+                                }
+                db.commit()
             finally:
                 db.close()
         except Exception as exc:
             self.logger.warning("force_close: DB check failed: %s", exc)
+
+        if stale_ghost_symbols:
+            self.logger.warning(
+                "force_close: marked %d stale ghost(s) as RECONCILE_GHOST (no Alpaca position): %s",
+                len(stale_ghost_symbols), stale_ghost_symbols,
+            )
 
         if not intraday_symbols:
             return
@@ -1778,9 +1843,6 @@ class Trader(BaseAgent):
             "3:45 PM force-close: closing %d intraday position(s): %s",
             len(intraday_symbols), intraday_symbols,
         )
-
-        from app.integrations import get_alpaca_client
-        alpaca = get_alpaca_client()
 
         for symbol in intraday_symbols:
             try:

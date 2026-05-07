@@ -92,7 +92,7 @@ class PremarketIntelligence:
             # Persist snapshot so the API can serve it after a server restart
             try:
                 from app.database.decision_audit import persist_nis_macro_snapshot
-                persist_nis_macro_snapshot(nis_ctx)
+                persist_nis_macro_snapshot(nis_ctx, trigger_source="premarket")
             except Exception:
                 pass
             # Back-fill legacy _macro_flags for backwards-compat
