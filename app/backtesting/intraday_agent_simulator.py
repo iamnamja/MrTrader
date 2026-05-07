@@ -524,7 +524,7 @@ class IntradayAgentSimulator:
                 X = np.array([list(sym_feats[s].values()) for s in sym_list])
             X = np.nan_to_num(X, nan=0.0)
             _fns = model_feat_names or _INTRADAY_FN
-            _b2 = [_fns.index(f) for f in _BRANCH_B if f in _fns]
+            _b2 = [_fns.index(f) for f in _BRANCH_B if f in _fns and _fns.index(f) < X.shape[1]]
             X = cs_normalize_branch_a(X, _b2)
             _, probas = self.model.predict(X)
         except Exception as exc:

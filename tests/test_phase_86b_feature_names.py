@@ -20,7 +20,8 @@ class TestFeatureNamesAuthoritative:
 
     def test_feature_names_count(self):
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 56, f"Expected 56 features, got {len(FEATURE_NAMES)}"
+        # 56 Branch A + 3 Branch B (vix_regime_level, spy_5d_return_daily, day_of_week) = 59
+        assert len(FEATURE_NAMES) == 59, f"Expected 59 features (56+3 Branch B), got {len(FEATURE_NAMES)}"
 
     def test_daily_vol_regime_included(self):
         """daily_vol_regime is stock-specific (not market-wide) — should stay."""
