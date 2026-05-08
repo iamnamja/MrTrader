@@ -612,14 +612,16 @@ class PremarketIntelligence:
 
     def get_regime_context(self) -> Optional[dict]:
         """
-        Return the latest regime score for today from regime_snapshots.
-        Returns None if no row exists yet (before first premarket run).
+        Return the latest regime score from regime_snapshots.
+        Prefers today's row; falls back to most recent historical row (marked stale).
+        Returns None only if no row has ever been written.
         """
         try:
             from app.database.session import get_session
             from app.database.models import RegimeSnapshot
             today = date.today()
             with get_session() as session:
+                # Prefer today's row
                 row = (
                     session.query(RegimeSnapshot)
                     .filter(
@@ -629,8 +631,17 @@ class PremarketIntelligence:
                     .order_by(RegimeSnapshot.snapshot_time.desc())
                     .first()
                 )
+                # Fall back to most recent row from any date
+                if row is None:
+                    row = (
+                        session.query(RegimeSnapshot)
+                        .filter(RegimeSnapshot.snapshot_trigger != "backfill")
+                        .order_by(RegimeSnapshot.snapshot_time.desc())
+                        .first()
+                    )
                 if row is None:
                     return None
+
                 age_hours = (
                     (datetime.now(ET).replace(tzinfo=None) - row.snapshot_time).total_seconds() / 3600
                     if row.snapshot_time else 99
@@ -639,10 +650,24 @@ class PremarketIntelligence:
                     "regime_score": row.regime_score,
                     "regime_label": row.regime_label,
                     "trigger": row.snapshot_trigger,
+                    "snapshot_date": row.snapshot_date.isoformat() if row.snapshot_date else None,
                     "snapshot_time": row.snapshot_time.isoformat() if row.snapshot_time else None,
                     "age_hours": round(age_hours, 2),
+                    "is_today": row.snapshot_date == today,
+                    "features": {
+                        "vix_level": row.vix_level,
+                        "vix_pct_1y": row.vix_pct_1y,
+                        "spy_1d_return": row.spy_1d_return,
+                        "spy_5d_return": row.spy_5d_return,
+                        "spy_20d_return": row.spy_20d_return,
+                        "spy_ma20_dist": row.spy_ma20_dist,
+                        "spy_ma50_dist": row.spy_ma50_dist,
+                        "days_to_fomc": row.days_to_fomc,
+                        "days_to_cpi": row.days_to_cpi,
+                        "breadth_pct_ma50": row.breadth_pct_ma50,
+                    },
                 }
-                # Warn if score is stale during market hours
+                # Apply 20% haircut on stale scores during market hours
                 now_et = datetime.now(ET)
                 if 9 <= now_et.hour < 16 and age_hours > 4:
                     logger.warning(

@@ -104,15 +104,15 @@ class TestRegimeModel:
         rm = RegimeModel()
         # Don't call load() — model stays None
         result = rm.score(as_of_date=date(2025, 1, 2))
-        assert result["regime_label"] == "NEUTRAL"
+        assert result["regime_label"] == "UNKNOWN"
         assert result["regime_score"] == 0.5
         assert result["version"] == "legacy_fallback"
 
     def test_label_from_score(self):
         from app.ml.regime_model import _label_from_score
         assert _label_from_score(0.20) == "RISK_OFF"
-        assert _label_from_score(0.35) == "NEUTRAL"
-        assert _label_from_score(0.50) == "NEUTRAL"
+        assert _label_from_score(0.35) == "RISK_CAUTION"
+        assert _label_from_score(0.50) == "RISK_CAUTION"
         assert _label_from_score(0.65) == "RISK_ON"
         assert _label_from_score(0.90) == "RISK_ON"
 

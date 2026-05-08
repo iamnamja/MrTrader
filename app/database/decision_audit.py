@@ -27,6 +27,9 @@ def write_decision(
     top_features: Optional[dict] = None,
     price_at_decision: Optional[float] = None,
     direction: Optional[str] = None,   # 'BUY' | 'SELL'
+    regime_sizing_mult: Optional[float] = None,
+    regime_label: Optional[str] = None,
+    regime_score: Optional[float] = None,
 ) -> None:
     """
     Persist one PM decision row.  Fails silently — never blocks trading.
@@ -65,6 +68,13 @@ def write_decision(
 
         if top_features:
             row.top_features = top_features
+
+        if regime_sizing_mult is not None:
+            row.regime_sizing_mult = regime_sizing_mult
+        if regime_label is not None:
+            row.regime_label_at_decision = regime_label
+        if regime_score is not None:
+            row.regime_score_at_decision = regime_score
 
         with get_session() as db:
             db.add(row)

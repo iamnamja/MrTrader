@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
 
+    # Regime-aware position sizing multipliers (Phase regime-sizing)
+    # Override via .env: REGIME_SIZING_RISK_ON=1.0, etc.
+    regime_sizing_risk_on: float = 1.0       # score >= regime_risk_on_threshold
+    regime_sizing_risk_caution: float = 0.6  # regime_risk_off_threshold <= score < regime_risk_on_threshold
+    regime_sizing_risk_off: float = 0.3      # score < regime_risk_off_threshold
+    regime_sizing_unknown: float = 1.0       # UNKNOWN label or no model (conservative: full size until model is stable)
+    regime_risk_on_threshold: float = 0.65
+    regime_risk_off_threshold: float = 0.35
+
     # Application
     log_level: str = "INFO"
     debug: bool = False

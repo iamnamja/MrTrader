@@ -379,10 +379,12 @@ class FeatureEngineer:
         features["price_above_ema20"] = 1.0 if current_price > ema_20 else 0.0
         features["price_above_ema50"] = 1.0 if current_price > ema_50 else 0.0
         features["price_above_ema200"] = 1.0 if current_price > ema_200 else 0.0
-        # Distance from 200-day MA — institutional trend filter
+        # Distance from EMAs — lets the model learn proximity, not just above/below
         features["dist_from_ema200"] = (
             float((current_price - ema_200) / ema_200) if ema_200 > 0 else 0.0
         )
+        features["ema20_dist"] = float((current_price - ema_20) / ema_20) if ema_20 > 0 else 0.0
+        features["ema50_dist"] = float((current_price - ema_50) / ema_50) if ema_50 > 0 else 0.0
 
         # ── 4. Price change ───────────────────────────────────────────────────
         prev_close = prices[-2] if len(prices) > 1 else current_price
