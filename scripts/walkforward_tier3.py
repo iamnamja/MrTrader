@@ -160,6 +160,10 @@ class FoldResult:
     # WF-4: regime stratification
     regime_sharpes: dict = field(default_factory=dict)
     regime_diversity: int = 0
+    # WF-5a: abstention tracking
+    opp_score_abstain_days: int = 0
+    earnings_blackout_days: int = 0
+    macro_gate_days: int = 0
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
@@ -481,6 +485,7 @@ def run_swing_walkforward(
     no_prefilters: bool = False,
     train_years: Optional[int] = None,  # Phase 3b: rolling window (None = expanding)
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
+    macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -601,6 +606,7 @@ def run_swing_walkforward(
             use_opportunity_score=use_opportunity_score,
             no_prefilters=no_prefilters,
             earnings_blackout=earnings_blackout,
+            macro_blocked_dates=macro_blocked_dates,
         )
         result = sim.run(
             fold_symbols_data,
@@ -665,6 +671,7 @@ def run_intraday_walkforward(
     use_opportunity_score: bool = False,
     use_dispersion_gate: bool = False,
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
+    macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -790,6 +797,7 @@ def run_intraday_walkforward(
             use_opportunity_score=use_opportunity_score,
             use_dispersion_gate=use_dispersion_gate,
             earnings_blackout=earnings_blackout,
+            macro_blocked_dates=macro_blocked_dates,
         )
         result = sim.run(
             fold_symbols_data,
@@ -967,12 +975,20 @@ def main() -> int:
     parser.add_argument("--intraday-embargo-days", type=int, default=None,
                         help="WF-1: Trading days to skip after test_end before next fold trains "
                              "(defaults to --intraday-purge-days if not set)")
-    parser.add_argument("--pm-opportunity-score", action="store_true", default=False,
-                        help="Phase 2a: apply PM continuous opportunity score gate in simulation "
-                             "(score<0.35=skip, 0.35-0.65=cap at 2 candidates). Downloads VIX.")
-    parser.add_argument("--dispersion-gate", action="store_true", default=False,
-                        help="Phase 2c: skip intraday entries on days where cross-sectional return "
-                             "dispersion < 0.5x rolling 60-day median (macro-dominated days)")
+    parser.add_argument("--pm-opportunity-score", action="store_true", default=True,
+                        help="WF-5a: apply PM continuous opportunity score gate in simulation "
+                             "(score<0.35=skip, 0.35-0.65=cap at 2 candidates). On by default. "
+                             "Use --no-pm-opportunity-score to disable.")
+    parser.add_argument("--no-pm-opportunity-score", dest="pm_opportunity_score",
+                        action="store_false",
+                        help="WF-5a: disable the PM opportunity score gate.")
+    parser.add_argument("--dispersion-gate", action="store_true", default=True,
+                        help="WF-5a: skip intraday entries on days where cross-sectional return "
+                             "dispersion < 0.5x rolling 60-day median. On by default. "
+                             "Use --no-dispersion-gate to disable.")
+    parser.add_argument("--no-dispersion-gate", dest="dispersion_gate",
+                        action="store_false",
+                        help="WF-5a: disable the dispersion gate.")
     parser.add_argument("--no-prefilters", action="store_true", default=False,
                         help="Phase 3a: bypass RSI 40-70 and EMA20/50 trader pre-filters in swing. "
                              "Lets ML model score the full universe without rule-based entry gates.")
@@ -980,10 +996,19 @@ def main() -> int:
                         help="Phase 3b: rolling training window per fold — limit each fold's "
                              "training data to the N most recent years before train_end "
                              "(None = expanding window). Use 2 to exclude 2021-2022 bull regime.")
-    parser.add_argument("--earnings-blackout", action="store_true", default=False,
-                        help="Phase 2b: skip entries within earnings blackout window "
-                             "(swing: 3d before; intraday: 1d before / 3d after). "
-                             "Pre-fetches calendar via yfinance — adds ~2-3 min for 700 symbols.")
+    parser.add_argument("--earnings-blackout", action="store_true", default=True,
+                        help="WF-5a: skip entries within earnings blackout window "
+                             "(swing: 3d before; intraday: 1d before / 3d after). On by default. "
+                             "Use --no-earnings-blackout to disable.")
+    parser.add_argument("--no-earnings-blackout", dest="earnings_blackout",
+                        action="store_false",
+                        help="WF-5a: disable the earnings blackout gate.")
+    parser.add_argument("--macro-gate", action="store_true", default=True,
+                        help="WF-5a: block entries on FOMC/NFP/CPI/GDP days. On by default. "
+                             "Use --no-macro-gate to disable.")
+    parser.add_argument("--no-macro-gate", dest="macro_gate",
+                        action="store_false",
+                        help="WF-5a: disable the macro event gate.")
     parser.add_argument("--bootstrap", type=int, default=0, metavar="N",
                         help="Phase 1d: run N bootstrap iterations with ±30d fold perturbation "
                              "to quantify selection bias. 0 = disabled. 100 recommended.")
@@ -1027,6 +1052,20 @@ def main() -> int:
     swing_ver = args.swing_model_version if args.swing_model_version > 0 else None
     intraday_ver = args.intraday_model_version if args.intraday_model_version > 0 else None
 
+    # WF-5a: pre-fetch macro event blocked dates once for the full WF range
+    macro_blocked_dates: Optional[set] = None
+    if args.macro_gate:
+        from datetime import datetime as _dt2
+        _wf_end = _dt2.now().date()
+        _wf_start = _wf_end - timedelta(days=max(args.years * 365, args.days) + 30)
+        try:
+            from scripts.walkforward.macro_calendar import load_macro_blocked_dates
+            macro_blocked_dates = load_macro_blocked_dates(_wf_start, _wf_end)
+            _ok(f"Macro gate: {len(macro_blocked_dates)} blocked dates loaded "
+                f"({_wf_start} → {_wf_end})")
+        except Exception as _me:
+            _warn(f"Macro gate calendar fetch failed: {_me} — macro gate disabled for this run")
+
     # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
@@ -1064,6 +1103,7 @@ def main() -> int:
             no_prefilters=args.no_prefilters,
             train_years=args.swing_train_years,
             earnings_blackout=earnings_cal,
+            macro_blocked_dates=macro_blocked_dates,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()
@@ -1102,6 +1142,7 @@ def main() -> int:
             use_dispersion_gate=args.dispersion_gate,
             earnings_blackout=earnings_cal,
             embargo_days=args.intraday_embargo_days,
+            macro_blocked_dates=macro_blocked_dates,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print()

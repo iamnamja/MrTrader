@@ -127,6 +127,7 @@ class AgentSimulator:
         no_prefilters: bool = False,             # Phase 3a: bypass RSI/EMA20/50 trader pre-filters
         earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
         swing_blackout_days_before: int = 3,     # Phase 2b: skip new entries N days before earnings
+        macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -148,6 +149,7 @@ class AgentSimulator:
         self.no_prefilters = no_prefilters
         self.earnings_blackout = earnings_blackout or {}
         self.swing_blackout_days_before = swing_blackout_days_before
+        self.macro_blocked_dates: set = macro_blocked_dates or set()
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -331,6 +333,11 @@ class AgentSimulator:
                             logger.debug("Opp score %.2f on %s — capping candidates at 2", opp_score, day)
                 except Exception:
                     pass
+
+            # WF-5a: macro event gate — block new entries on FOMC/NFP/CPI/GDP days
+            if not _skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
+                _skip_entries = True
+                logger.debug("Macro gate blocked entries on %s", day)
 
             # 5. Trader signal + RM rules + entry
             if proposals and not _skip_entries:
