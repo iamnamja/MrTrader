@@ -752,9 +752,13 @@ def run_intraday_walkforward(
 
     logger.info("Intraday data loaded: %d symbols", len(symbols_data))
 
-    # Fold boundaries — split the test period into n_folds equal segments
+    # Fold boundaries — split the test period into n_folds equal segments.
+    # Exclude daily-bar overlay symbols (^VIX, SPY) which may span 3y and would
+    # inflate all_days_sorted far beyond the intraday data window.
+    _daily_overlay_keys = {"^VIX", "SPY"}
     all_days_sorted = sorted({
-        d for df in symbols_data.values()
+        d for sym, df in symbols_data.items()
+        if sym not in _daily_overlay_keys
         for d in pd.to_datetime(df.index).date
     })
     if not all_days_sorted:
