@@ -474,7 +474,7 @@ class AgentSimulator:
 
             # Long-term trend: price above EMA-200
             ema200 = float(closes.ewm(span=200, adjust=False).mean().iloc[-1])
-            if close <= ema200:
+            if not self.no_prefilters and close <= ema200:
                 return False, 0.0, 0.0
 
             # Near-term trend: price above EMA-20 and EMA-50

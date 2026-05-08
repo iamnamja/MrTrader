@@ -73,9 +73,18 @@ class TestSwingTraderGate:
         assert target > 0.0
 
     def test_downtrend_blocked_by_ema200(self):
-        """Falling price → below EMA-200 → blocked."""
+        """Falling price → below EMA-200 → blocked (with prefilters on)."""
         ok, _, _ = self._call(_bars(220, trend=-0.002))
         assert ok is False
+
+    def test_downtrend_allowed_when_no_prefilters(self):
+        """no_prefilters=True bypasses EMA-200 filter — model decides entry."""
+        from app.backtesting.agent_simulator import AgentSimulator
+        sim = AgentSimulator(model=MagicMock(), no_prefilters=True)
+        with patch("app.backtesting.agent_simulator.generate_signal", return_value=_mock_signal()):
+            ok, _, _ = sim._trader_signal("AAPL", _bars(220, trend=-0.002))
+        # With no_prefilters, EMA200 and RSI gates bypassed; volume passes → True
+        assert ok is True
 
     def test_low_volume_blocked(self):
         """Volume at 50% of avg → blocked."""
