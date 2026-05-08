@@ -130,6 +130,133 @@ interface ReconcRow {
   per_symbol_json?: Array<{ symbol: string; live_pnl: number; live_trades: number; live_win_rate: number }>
 }
 
+// ── Phase 2d: Live-vs-Sim P&L shortfall widget ───────────────────────────────
+type LiveVsSimRow = {
+  trade_id: number; symbol: string; trade_type: string
+  closed_at: string | null; live_pnl: number; predicted_pnl: number; shortfall: number
+}
+type LiveVsSimResp = {
+  days: number; n_trades: number; total_live_pnl: number
+  total_predicted_pnl: number; total_shortfall: number; trades: LiveVsSimRow[]
+}
+
+function LiveVsSimWidget() {
+  const [data, setData] = useState<LiveVsSimResp | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.liveVsSim(30)
+      .then((d: unknown) => setData(d as LiveVsSimResp))
+      .catch((e: unknown) => setErr(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  return (
+    <div style={s.card}>
+      <div style={s.cardTitle}>Live vs Sim P&L (30d)</div>
+      {loading && <div style={{ color: C.muted, fontSize: 12 }}>Loading…</div>}
+      {err && <div style={{ color: C.red, fontSize: 12 }}>{err}</div>}
+      {!loading && !err && data && data.n_trades === 0 && (
+        <div style={{ color: C.muted, fontSize: 12, textAlign: 'center', padding: 16 }}>
+          No trades with sim_predicted_pnl yet — data populates as Phase 2d-wired trades close.
+        </div>
+      )}
+      {!loading && !err && data && data.n_trades > 0 && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+            <div style={s.kpi}>
+              <div style={{ fontSize: 10, color: C.muted }}>Live P&L</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: clr(data.total_live_pnl) }}>{fmt$(data.total_live_pnl)}</div>
+            </div>
+            <div style={s.kpi}>
+              <div style={{ fontSize: 10, color: C.muted }}>Predicted P&L</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.muted }}>{fmt$(data.total_predicted_pnl)}</div>
+            </div>
+            <div style={s.kpi}>
+              <div style={{ fontSize: 10, color: C.muted }}>Shortfall</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: clr(data.total_shortfall) }}>{fmt$(data.total_shortfall)}</div>
+              <div style={{ fontSize: 10, color: C.muted }}>{data.n_trades} trades</div>
+            </div>
+          </div>
+          <div style={{ overflowY: 'auto', maxHeight: 200 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>{['Symbol','Type','Closed','Live','Predicted','Shortfall'].map(h => (
+                  <th key={h} style={s.th}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {data.trades.slice(0, 30).map(r => (
+                  <tr key={r.trade_id}>
+                    <td style={s.td}>{r.symbol}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{r.trade_type}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{r.closed_at ? fmtTs(r.closed_at) : '—'}</td>
+                    <td style={{ ...s.td, color: clr(r.live_pnl) }}>{fmt$(r.live_pnl)}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{fmt$(r.predicted_pnl)}</td>
+                    <td style={{ ...s.td, color: clr(r.shortfall) }}>{fmt$(r.shortfall)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Phase 3d: Vol-Targeting visibility widget ─────────────────────────────────
+function VolTargetingWidget() {
+  const [rows, setRows] = useState<(DecisionAuditRow & { vol_targeting_mult?: number | null })[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.decisionAuditRecent(200)
+      .then((d: unknown) => {
+        const j = d as { decisions?: (DecisionAuditRow & { vol_targeting_mult?: number | null })[] }
+        const all = j.decisions ?? []
+        setRows(all.filter(r => r.vol_targeting_mult != null))
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  return (
+    <div style={s.card}>
+      <div style={s.cardTitle}>Vol-Targeting Sizing (Phase 3d)</div>
+      {loading && <div style={{ color: C.muted, fontSize: 12 }}>Loading…</div>}
+      {!loading && rows.length === 0 && (
+        <div style={{ color: C.muted, fontSize: 12, textAlign: 'center', padding: 16 }}>
+          Feature disabled — enable <code>vol_targeting_enabled=true</code> in .env to activate.
+        </div>
+      )}
+      {!loading && rows.length > 0 && (
+        <div style={{ overflowY: 'auto', maxHeight: 200 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>{['Symbol','Strategy','Score','Vol ×','Regime'].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 20).map(r => (
+                <tr key={r.id}>
+                  <td style={s.td}>{r.symbol}</td>
+                  <td style={{ ...s.td, color: C.muted }}>{r.strategy}</td>
+                  <td style={{ ...s.td, color: clr(r.model_score ?? 0) }}>{r.model_score?.toFixed(3) ?? '—'}</td>
+                  <td style={{ ...s.td, color: C.accent }}>×{(r.vol_targeting_mult ?? 1).toFixed(3)}</td>
+                  <td style={{ ...s.td, color: C.muted }}>{(r as unknown as { regime_label?: string }).regime_label ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WfReconciliationWidget() {
   const [swing, setSwing] = useState<ReconcRow | null>(null)
   const [intraday, setIntraday] = useState<ReconcRow | null>(null)
@@ -686,13 +813,14 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
         </div>
       </div>
 
-      {/* WF-6 Reconciliation */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
+      {/* WF-6 Reconciliation + Live-vs-Sim */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <WfReconciliationWidget />
-        <div style={{ ...s.card, opacity: 0.3, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <span style={{ color: C.muted, fontSize: 12 }}>WF-6 trend chart (coming soon)</span>
-        </div>
+        <LiveVsSimWidget />
       </div>
+
+      {/* Phase 3d Vol-Targeting */}
+      <VolTargetingWidget />
     </div>
   )
 }

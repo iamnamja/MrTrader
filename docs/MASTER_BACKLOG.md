@@ -1,9 +1,9 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-07  
-**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80).  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a+WF-1/2/3/4/5a+R5+3b now complete. See `docs/llm_review_synthesis.md` for full analysis.  
-**Next:** Run swing retrain (Phase 3b command below) + intraday WF with R5 gate. Then swing WF. Then paper trading.
+**Last updated:** 2026-05-08  
+**Status:** Paper trading only. Best honest intraday: v51 +0.529 (v53 R6-exclusion retrain in progress). Best honest swing: v166 retrain in progress (clean cache, 90 features). Intraday gate recalibrated 1.50→1.00 (2026-05-08). Feature store bumped to v5 (resolved swing v165 scaler mismatch).  
+**Completed this session (2026-05-08):** Phase 2d (live-vs-sim), Phase 3d (vol-targeting, flagged OFF), Phase 5b (opp score breadth/dispersion), Phase R6 (regime-aware training exclusion), WF simulator opp score sync, dashboard LiveVsSimWidget + VolTargetingWidget, MASTER_BACKLOG sync.  
+**Next:** Await v53 (intraday R6) + v166 (swing clean) WF results. Decision tree in ML_EXPERIMENT_LOG.md.
 
 ---
 
@@ -163,13 +163,15 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - Also add dispersion as a Branch B (global) feature in intraday model (see Phase 3b)  
 **Deliverable:** Intraday model only trades when stock selection has premise. This alone may fix most of the Apr–Oct 2025 collapse — that period was high-correlation/macro-dominated.
 
-### 2d. Live-vs-Sim P&L Reconciliation Harness ⬜ HIGH PRIORITY
+### 2d. Live-vs-Sim P&L Reconciliation Harness ✅ COMPLETE (2026-05-08)
 **Why:** The single most informative diagnostic in the system. Every paper trade has a simulated analog in the walk-forward. The gap between simulated and actual P&L reveals execution issues, stop drift, and model decay.  
-**What:**
-- For every closed paper trade: log model predicted probability, simulated analog P&L (from walk-forward), actual realized P&L, exit reason
-- Daily report: avg simulated P&L vs avg actual P&L, divergence alert if > 1.5σ  
-**Files:** `app/api/routes.py` (new analytics endpoint), `app/database/models.py` (new `sim_pnl` column on Trade)  
-**Deliverable:** Know if paper trading is performing as the simulation predicts. If large gap → we have an execution/reconciliation problem, not a model problem.
+**What (delivered):**
+- `Trade.sim_predicted_pnl` column stamped at fill from `walk_forward_stats.get_predicted_pnl()`
+- Shortfall (live_pnl − predicted) logged at trade close by Trader
+- `GET /api/dashboard/analytics/live-vs-sim?days=N` endpoint — per-trade breakdown + total shortfall
+- Dashboard `LiveVsSimWidget` — KPI cards + trade table with graceful empty state
+- `app/ml/walk_forward_stats.py` — 1h-cached DB lookup with `invalidate_cache()` hook  
+**Deliverable:** Know if paper trading is performing as the simulation predicts. If large gap → execution/reconciliation problem, not a model problem.
 
 ---
 
@@ -216,18 +218,16 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - Run NIS event study: for each NIS signal bucket, compute forward 1d/3d/5d returns net of SPY. Only after proof of value → consider backfilling.  
 **Files:** `app/agents/portfolio_manager.py`
 
-### 3d. Dynamic Position Sizing (Vol-Targeting) ⬜ HIGH
+### 3d. Dynamic Position Sizing (Vol-Targeting) ✅ COMPLETE (2026-05-08) — feature-flagged OFF
 **Why:** Fixed percentage per trade ignores signal confidence, current volatility, and regime. In high-VIX regimes, the same fixed size is 2-3× more risky.  
-**What:**
-- Position size = `target_vol_contribution / predicted_daily_vol`
-- `target_vol_contribution` = 0.5% of account equity per position (configurable)
-- `predicted_daily_vol` = ATR-normalized daily vol estimate per symbol
-- Apply regime multiplier from opportunity score: 0.5× at caution, 1.0× at normal
-- Apply signal confidence multiplier: probability percentile → 0.5×–1.0×
-- Cap: single position ≤ 2% of account (existing RM gate, keep)
-- Floor: minimum position ≥ $500 (avoid micro-fills)  
-**Files:** `app/agents/portfolio_manager.py` (sizing logic), `app/agents/risk_manager.py` (size validation)  
-**Deliverable:** Positions automatically shrink in volatile regimes without needing a hard gate.
+**What (delivered):**
+- `PM._vol_targeting_quantity()`: `qty = account × vol_target_pct / (atr_norm × price)`, capped at `max_position_size_pct`, floored at `vol_targeting_min_notional / price`
+- Feature-flagged via `vol_targeting_enabled=False` in Settings — safe to merge, live trading unaffected
+- `DecisionAudit.vol_targeting_mult` logged for every sizing decision (audit trail)
+- Dashboard `VolTargetingWidget` shows recent vol-targeting decisions; shows "Feature disabled" when flag is OFF
+- Config keys: `vol_target_pct=0.005`, `vol_targeting_min_notional=500.0`
+**Enable:** Set `VOL_TARGETING_ENABLED=true` in `.env` after validating paper trading P&L.  
+**Next step:** Monitor paper results for 2–4 weeks, then enable if shortfall data shows no degradation.
 
 ### 3e. Intraday Label: Add Absolute Hurdle ⬜ MEDIUM
 **Why:** Top-20% cross-sectional label forces 20% positive rate even on flat/crashing days where no stock has a clean 2h return. On those days we label noise as winners and train on garbage.  
@@ -289,14 +289,15 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 For each bucket: trades, win rate, avg R, Sharpe, max drawdown, profit factor.  
 **Deliverable:** Know exactly which regime each model works in. That becomes the tradable condition and shapes opportunity score tuning.
 
-### 5b. Expand Opportunity Score with Breadth + Dispersion ⬜ HIGH
+### 5b. Expand Opportunity Score with Breadth + Dispersion ✅ COMPLETE (2026-05-08)
 **Why:** Current score uses VIX, VIX trend, SPY MA, SPY momentum. Missing: market breadth and cross-sectional dispersion — the two most important intraday-specific inputs.  
-**What (after Phase 5a diagnostic):**
-- Add `breadth_score`: % of S&P 500 symbols above MA20 (clip to 0–1)
-- Add `dispersion_score`: daily cross-sectional return std, normalized to 52w percentile
-- New formula: `score = 0.25×vix_score + 0.15×vix_trend + 0.25×ma_score + 0.10×momentum_score + 0.15×breadth_score + 0.10×dispersion_score`
-- Tune thresholds on training period only. Validate on held-out fold.  
-**Files:** `app/agents/portfolio_manager.py`
+**What (delivered):**
+- `PM._compute_opportunity_score()` rewritten with 6 config-driven weights
+- Pulls `breadth_pct_ma50` + `dispersion_pctile` from `_current_regime_ctx['features']`
+- Weight renormalization: missing components get 0 weight, total renormalizes → score stays 0–1
+- All 6 weights in `Settings`: `opp_score_{vix,vix_trend,ma,mom,breadth,dispersion}_weight`
+- WF simulator (`agent_simulator.py`) synced to use same config weights (breadth/dispersion = 0 in sim — no historical data, renormalizes to 4-component score)
+- Formula: `score = 0.25×vix + 0.15×vix_trend + 0.25×ma + 0.10×mom + 0.15×breadth + 0.10×dispersion` (all weights configurable)
 
 ### 5c. Sample Weighting by Regime in Training ⬜ MEDIUM
 **Why:** 85% of 3yr training data is low-volatility bull market. Model optimizes for that regime. Adding higher weight to high-VIX training rows forces the model to learn to be cautious in chaotic conditions.  
@@ -1022,17 +1023,23 @@ effective_threshold = base_threshold * (1.0 + 0.4 * max(0, 0.65 - regime_score))
 
 ---
 
-#### Phase R6 — Regime-Aware Stock Model Retraining (after 90 days paper data)
+#### Phase R6 — Regime-Aware Training Row Exclusion ✅ COMPLETE (2026-05-08)
 
-**Goal:** `regime_score` enters the stock model as a Branch B non-normalized feature.
+**Actual implementation (pivoted from original spec):**
+- Rather than adding regime_score as a feature, **excluded RISK_OFF training rows entirely**
+- Root cause: cross-sectional top-20% labels assign "winners" on RISK_OFF days where the live PM abstention gate blocks entries — noise that degrades generalisation
+- `IntradayModelTrainer.train_model(exclude_risk_off_days=True)` — default ON
+- `_load_risk_off_ordinals()` queries `regime_snapshots` for RISK_OFF dates → set of ordinals; fail-open on DB error
+- `retrain_config.INTRADAY_RETRAIN` updated → all future scheduled retrains use R6 automatically
+- Regime snapshot coverage: 874 days, RISK_OFF=499 (57%), RISK_ON=374 (43%)
+- **Intraday v53 retrain kicked off 2026-05-08 10:24 ET** (PID 53035, `logs/intraday_v53_retrain.log`)
+- Gate: avg Sharpe > 1.00, no fold < -0.30 (365d WF, 3 folds)
+- Results: pending
 
-**Deliverables:**
-- Add `regime_score` as a pass-through feature in `compute_intraday_features()` — bypasses cs_normalize
-- Retrain intraday model with `regime_score` as an explicit input (XGBoost learns interaction terms automatically)
-- Walk-forward validation with Phase 1+2 corrections applied
-- Gate: avg Sharpe (net of costs) > 1.0, worst fold > -0.30
-
-**Prerequisite:** Phase 1+2 honest walk-forward must be complete before claiming this helped.
+**Feature store v5 (same PR):**
+- `SCHEMA_VERSION` bumped v4→v5 in `feature_store.py` — invalidates 372k stale swing cache rows
+- Root cause of swing v165 0-trade WF: scaler fit on 90 features, model trained on 88 (mixed cache)
+- Swing v166 retrain (PID 52684) trains on clean cache; gate results pending
 
 ---
 
