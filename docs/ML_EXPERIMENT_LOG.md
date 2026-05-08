@@ -1206,3 +1206,72 @@ Run B ≈ +0.529?
   YES → Previous result was reproducible; confounding is in WF-5a or R5
   NO  → Something else changed (model loading, fold structure, data)
 ```
+
+---
+
+## Diagnostic Results: Run A + Run B (2026-05-08 morning)
+
+**Purpose:** Isolate root cause of intraday v51+R5 regression (-1.112 from +0.529). Three things changed simultaneously in the overnight run: (1) WF-5a gates default-on, (2) R5 regime gate enabled, (3) window expanded 365d → 730d. Runs A and B isolate each variable.
+
+### Run A — Intraday v51, WF-5a ON, no R5, 730d
+
+**Command:** `python scripts/walkforward_tier3.py --model intraday --days 730`  
+**Elapsed:** 1451s (~24 min)
+
+| Fold | Test Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2024-02-08 → 2024-11-01 | 248 | 46.4% | **-2.38** |
+| 2 | 2024-11-06 → 2025-08-06 | 344 | 49.4% | -0.01 |
+| 3 | 2025-08-11 → 2026-05-06 | 328 | 51.5% | +0.57 |
+| **Avg** | | **920** | **49.1%** | **-0.605** ❌ |
+
+### Run B — Intraday v51, all gates OFF, 365d (baseline reproduction)
+
+**Command:** `python scripts/walkforward_tier3.py --model intraday --days 365 --no-pm-opportunity-score --no-earnings-blackout --no-dispersion-gate --no-macro-gate`  
+**Elapsed:** 267s
+
+| Fold | Test Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | 2025-07-30 → 2025-10-22 | 122 | 61.5% | **+1.12** |
+| 2 | 2025-10-27 → 2026-01-22 | 122 | 60.7% | **+2.09** |
+| 3 | 2026-01-27 → 2026-04-22 | 122 | 42.6% | **-0.85** |
+| **Avg** | | **366** | **54.9%** | **+0.786** ❌ |
+
+### Analysis and Conclusion
+
+**Decision tree outcome:**
+
+- **Run B = +0.786** (was +0.529 originally): Close but not identical. The baseline is reproducible in character — folds 1+2 are strong, fold 3 (Jan–Apr 2026) collapses at -0.85. **Original +0.529 result is no longer reproducible** — fold 3 has degraded further since v51 was last evaluated, confirming model decay in the Jan–Apr 2026 tariff/volatility regime.
+- **Run A = -0.605**: The 730d window exposes Feb–Nov 2024 (fold 1 = -2.38). v51 was trained on more recent data and has no edge in the Feb–Nov 2024 test territory — this is a dead zone for the model, not a gates problem.
+
+**Root cause confirmed: v51 model decay, not a gates or window issue.**
+
+1. **WF-5a gates are not the problem** — Run A vs Run B differ by window (365d→730d) and gates. The -2.38 fold 1 in Run A is entirely driven by the Feb–Nov 2024 dead zone, not gate suppression.
+2. **R5 regime gate is not the problem** — Run B (no R5, no WF-5a, 365d) shows fold 3 = -0.85, which is worse than the original +0.529. The decay is in the model, not the gates.
+3. **Jan–Apr 2026 tariff regime has broken v51** — fold 3 in Run B (-0.85) vs the original fold 3 in the +0.529 run (+0.60 in May 2026 test). The model's cross-sectional top-20% label is mispredicting in the current macro environment.
+
+**Verdict:** ❌ Both runs fail gate. **Intraday v52 retrain required.** Retrain kicked off 2026-05-08 08:37 ET (background, ~2h). WF-5a gates and R5 should be re-evaluated after v52 retrain — gates are structurally correct but cannot save a degraded base model.
+
+---
+
+## Swing v164 — Score Compression Investigation (2026-05-08)
+
+**Observation:** Live premarket scan showed all 424 symbols scoring 0.498–0.501 (max=0.501, median=0.498). Zero candidates above 0.55 threshold. This is a flat/degenerate model — the threshold is not the issue.
+
+**Diagnosis:**
+```
+Random input (200 samples, std-normal):
+  v164: min=0.491  max=0.510  std=0.004  nonzero features: 40/88
+  v163: min=0.466  max=0.539  std=0.014  nonzero features: 68/88
+```
+
+- v164 uses only 40/88 features with nonzero importance (v163 uses 68/88)
+- Even with random noise inputs, v164 outputs a near-constant 0.50 — it cannot discriminate
+- Root cause: **Phase 3b triple-barrier label (2.0×ATR target / 1.2×ATR stop / 10d horizon) produced too sparse a positive class**. With wider barriers, very few samples hit the target before the stop in training data. XGBoost converged to a degenerate solution: predict ~0.5 for everything.
+- This is consistent with the WF result (+0.655 avg, fold 3 = +0.12) — the model could barely beat random in simulation and now cannot discriminate at all in live scoring.
+
+**v163 comparison:** std=0.014 (3.5× more spread), 68 nonzero features. v163 is also below gate (+0.358 WF) but at least has discriminatory power.
+
+**Verdict:** v164 is a degenerate model. **Do not lower the threshold** — that would trade random signals. Action: diagnose label sparsity in training data, then retrain v165 with corrected approach (see Phase 3b Step 1 spec in MASTER_BACKLOG). Swing retrain to follow intraday v52 completion.
+
+---

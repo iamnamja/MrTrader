@@ -162,10 +162,9 @@ class RegimeModel:
                     snapshot_trigger=trigger,
                     regime_score=score,
                     regime_label=label,
-                    risk_off_threshold=RISK_OFF_THRESHOLD,
-                    risk_on_threshold=RISK_ON_THRESHOLD,
-                    model_version=f"regime_v{self._version}",
-                    **{k: feats.get(k) for k in self._feature_names if hasattr(RegimeSnapshot, k)},
+                    model_version=self._version,
+                    **{k: (None if isinstance(feats.get(k), float) and feats.get(k) != feats.get(k) else feats.get(k))
+                       for k in self._feature_names if hasattr(RegimeSnapshot, k)},
                 )
                 session.add(row)
                 session.commit()
