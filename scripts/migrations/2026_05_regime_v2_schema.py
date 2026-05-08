@@ -1,6 +1,6 @@
 """Regime V2 schema migration — adds new feature/probability columns to regime_snapshots.
 
-Idempotent: checks PRAGMA table_info before each ADD COLUMN.
+Idempotent: checks information_schema before each ADD COLUMN (PostgreSQL-compatible).
 Run once before deploying regime v2 code.
 
 Usage:
@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
+import sqlalchemy as sa
 from app.database.session import get_session, init_db
 
 NEW_COLUMNS = [
@@ -34,24 +35,40 @@ NEW_COLUMNS = [
     ("prob_risk_off",             "FLOAT"),
     ("prob_risk_caution",         "FLOAT"),
     ("prob_risk_on",              "FLOAT"),
-    # Rule-based training label (0=RISK_OFF, 1=RISK_CAUTION, 2=RISK_ON)
+    # Rule-based training label
     ("regime_label_rule",         "VARCHAR(15)"),
 ]
+
+
+def _existing_columns(db) -> set:
+    """Return set of existing column names in regime_snapshots (PostgreSQL + SQLite compat)."""
+    url = str(db.bind.engine.url) if hasattr(db, "bind") else ""
+    try:
+        # PostgreSQL
+        result = db.execute(sa.text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'regime_snapshots'"
+        ))
+        return {row[0] for row in result.fetchall()}
+    except Exception:
+        pass
+    try:
+        # SQLite fallback
+        result = db.execute(sa.text("PRAGMA table_info(regime_snapshots)"))
+        return {row[1] for row in result.fetchall()}
+    except Exception:
+        return set()
 
 
 def run():
     init_db()
     with get_session() as db:
-        result = db.execute(__import__("sqlalchemy").text(
-            "PRAGMA table_info(regime_snapshots)"
-        ))
-        existing_cols = {row[1] for row in result.fetchall()}
+        existing_cols = _existing_columns(db)
 
-    added = []
-    with get_session() as db:
+        added = []
         for col_name, col_type in NEW_COLUMNS:
             if col_name not in existing_cols:
-                db.execute(__import__("sqlalchemy").text(
+                db.execute(sa.text(
                     f"ALTER TABLE regime_snapshots ADD COLUMN {col_name} {col_type} NULL"
                 ))
                 added.append(col_name)
