@@ -1077,6 +1077,13 @@ class Trader(BaseAgent):
 
             db.flush()
 
+            # Phase 2d: stamp walk-forward predicted P&L at entry (non-fatal)
+            try:
+                from app.ml.walk_forward_stats import get_predicted_pnl as _wf_pnl
+                trade.sim_predicted_pnl = _wf_pnl(trade_type, db_session=db)
+            except Exception as _wf_err:
+                self.logger.debug("sim_predicted_pnl lookup failed (non-fatal): %s", _wf_err)
+
             db_order = Order(
                 trade_id=trade.id,
                 order_type="ENTRY",
@@ -1692,6 +1699,21 @@ class Trader(BaseAgent):
                 ))
 
             db.commit()
+
+            # Phase 2d: log live-vs-sim shortfall at close (non-fatal)
+            try:
+                if trade_id and pnl is not None:
+                    _trade_type_2d = pos.get("trade_type", "swing")
+                    from app.ml.walk_forward_stats import get_predicted_pnl as _wf_pnl2
+                    _predicted = _wf_pnl2(_trade_type_2d)
+                    if _predicted is not None:
+                        _shortfall = round(pnl - _predicted * (pos.get("quantity", qty) or qty), 4)
+                        self.logger.info(
+                            "2d shortfall %s trade#%d: live_pnl=%.2f predicted_per_share=%.4f shortfall=%.2f",
+                            symbol, trade_id, pnl, _predicted, _shortfall,
+                        )
+            except Exception as _sf_err:
+                self.logger.debug("shortfall log failed (non-fatal): %s", _sf_err)
 
             trade_type = self.active_positions.get(symbol, {}).get("trade_type", "swing")
             self.active_positions.pop(symbol, None)

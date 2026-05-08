@@ -34,6 +34,8 @@ class Trade(Base):
     exit_reason = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     closed_at = Column(DateTime, nullable=True)
+    # Phase 2d: live-vs-sim reconciliation — WF-predicted P&L at trade entry
+    sim_predicted_pnl = Column(Float, nullable=True)   # expected $ P&L from walk-forward fold stats
 
     # Relationships
     orders = relationship("Order", back_populates="trade")
@@ -334,6 +336,8 @@ class DecisionAudit(Base):
     regime_sizing_mult = Column(Float, nullable=True)        # multiplier applied due to regime (1.0/0.6/0.3/0.5)
     regime_label_at_decision = Column(String(15), nullable=True)  # RISK_ON|RISK_CAUTION|RISK_OFF|UNKNOWN
     regime_score_at_decision = Column(Float, nullable=True)  # raw score [0,1] at decision time
+    # Phase 3d: volatility-targeting sizing
+    vol_targeting_mult = Column(Float, nullable=True)        # qty_after_vol_target / qty_before (ratio)
     # Back-filled by EOD script (gate_outcomes_backfill job)
     outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered (APPROVED trades)
     outcome_4h_pct = Column(Float, nullable=True)       # counterfactual: price change 4h after decision

@@ -30,6 +30,7 @@ def write_decision(
     regime_sizing_mult: Optional[float] = None,
     regime_label: Optional[str] = None,
     regime_score: Optional[float] = None,
+    vol_targeting_mult: Optional[float] = None,
 ) -> None:
     """
     Persist one PM decision row.  Fails silently — never blocks trading.
@@ -75,6 +76,8 @@ def write_decision(
             row.regime_label_at_decision = regime_label
         if regime_score is not None:
             row.regime_score_at_decision = regime_score
+        if vol_targeting_mult is not None:
+            row.vol_targeting_mult = vol_targeting_mult
 
         with get_session() as db:
             db.add(row)
