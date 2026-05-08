@@ -101,6 +101,7 @@ def run_swing(dry_run: bool) -> bool:
         version = trainer.train_model(
             fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"],
             exclude_risk_off_days=SWING_RETRAIN.get("exclude_risk_off_days", False),
+            use_union_label=SWING_RETRAIN.get("use_union_label", False),
         )
         logger.info("Swing v%d trained — running walk-forward gate...", version)
     except Exception as e:

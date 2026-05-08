@@ -33,6 +33,7 @@ SWING_RETRAIN: dict = dict(
     walk_forward_folds=5,       # Phase 88: 5 folds (was 3) — one bad regime can't tank avg
     walk_forward_years=6,       # Phase 88: 6yr window → ~14mo per fold test
     exclude_risk_off_days=True,  # Phase R6b/88: down-weight (0.3×) not exclude RISK_OFF
+    use_union_label=True,        # Phase 90: union of 5d + 15d ATR label (captures slow grind)
 )
 
 # Gate thresholds matching the manual training gates (docs/ML_EXPERIMENT_LOG.md)
