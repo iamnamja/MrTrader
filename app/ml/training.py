@@ -38,6 +38,7 @@ MODEL_DIR = "app/ml/models"
 # Rolling window config
 WINDOW_DAYS = 63        # ~1 quarter of features (enough for MACD, ATR, momentum)
 FORWARD_DAYS = 5        # Phase 25: 5-day forward (aligns with observed 2-3 bar avg hold)
+FORWARD_DAYS_LONG = 15  # Phase 90: 15-day union label — captures slow-grind momentum
 # STEP_DAYS = FORWARD_DAYS keeps windows non-overlapping (no label leakage).
 STEP_DAYS = 5           # non-overlapping forward windows → cleaner labels
 TEST_FRACTION = 0.25    # most recent 25% of windows = test set
@@ -146,6 +147,7 @@ def _process_symbol_windows_worker(
     fundamentals_history: Optional[list] = None,  # Phase 89a: sorted (date_str, {...}) list
     sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted (date_str, close)}
     regime_v2_map: Optional[Dict] = None,  # Phase 88: {date: {vix_term_ratio, ...}}
+    use_union_label: bool = False,  # Phase 90: OR(5d, 15d ATR) label
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -392,6 +394,23 @@ def _process_symbol_windows_worker(
         if not feature_names:
             feature_names = list(features.keys())
 
+        # Phase 90: union label — OR(5d, 15d ATR) to capture slow-grind momentum moves.
+        # 15d threshold = 1.5x ATR (same multiplier as primary 5d target).
+        # Only applied when use_union_label=True and label is binary (not regression/float).
+        if use_union_label and isinstance(label, int) and label == 0:
+            long_future_idx = w_end_idx + FORWARD_DAYS_LONG
+            if long_future_idx < len(all_dates):
+                long_future_date = all_dates[long_future_idx]
+                long_bar = df.loc[idx == long_future_date, "close"]
+                if len(long_bar) > 0:
+                    try:
+                        long_ret = (float(long_bar.iloc[0]) - entry_price) / entry_price
+                        target_pct_15d, _ = _atr_label_thresholds(window_df, entry_price)
+                        if long_ret >= target_pct_15d:
+                            label = 1  # slow-grind winner promoted to positive
+                    except Exception:
+                        pass
+
         avg_vol = float(window_df["volume"].mean()) if "volume" in window_df.columns else 1e6
         X_rows.append(list(features.values()))
         y_vals.append(label)
@@ -486,6 +505,7 @@ class ModelTrainer:
         years: Optional[int] = None,
         fetch_fundamentals: bool = True,
         exclude_risk_off_days: bool = False,
+        use_union_label: bool = False,  # Phase 90: OR(5d, 15d) label captures slow grind
     ) -> int:
         """
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
@@ -493,6 +513,7 @@ class ModelTrainer:
         """
         symbols = symbols or SP_500_TICKERS
         years = years or settings.historical_data_years
+        self._use_union_label = use_union_label  # Phase 90: accessible to _windows_to_matrix
 
         logger.info(
             "Starting swing training — %d symbols, %d years, provider=%s",
@@ -1311,6 +1332,9 @@ class ModelTrainer:
         # Phase 88: load regime V2 scalar features map {date: {vix_term_ratio, ...}}
         _regime_v2_map = self._load_regime_v2_features_map()
 
+        # Phase 90: union label flag — stored by train_model; read here for _sym_args closure
+        _use_union_label = getattr(self, "_use_union_label", False)
+
         # Phase 89b: load sector ETF history for PIT sector_momentum override
         _sector_etf_bars: Dict[str, list] = {}
         _etf_hist_path = Path("data/sector_etf/sector_etf_history.parquet")
@@ -1350,6 +1374,7 @@ class ModelTrainer:
                 _fund_hist_by_symbol.get(symbol),
                 _sector_etf_bars if _sector_etf_bars else None,
                 _regime_v2_map if _regime_v2_map else None,
+                _use_union_label,
             )
 
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
