@@ -1275,3 +1275,35 @@ Random input (200 samples, std-normal):
 **Verdict:** v164 is a degenerate model. **Do not lower the threshold** — that would trade random signals. Action: diagnose label sparsity in training data, then retrain v165 with corrected approach (see Phase 3b Step 1 spec in MASTER_BACKLOG). Swing retrain to follow intraday v52 completion.
 
 ---
+
+---
+
+## Phase R6 — Regime-Aware Training Row Exclusion (2026-05-08)
+
+**Hypothesis:** Cross-sectional top-20% labels assign "winners" on RISK_OFF days (high VIX, below SPY MA). On these days the PM abstention gate blocks live entries, so the model learns patterns it will never trade — noise that hurts generalisation. Excluding RISK_OFF training rows aligns the training distribution with the live execution distribution.
+
+**Root cause of v52 failure:**
+- v52 trained identically to v51 (same features, frozen HPO params, cross-sectional labels)
+- WF folds: -1.29, +0.17, -1.62 (avg -0.913) vs v51's +0.46, +0.24, +0.88 (avg +0.529)
+- Difference is entirely the 365d WF window splitting into shorter test segments — both failing folds land in high-vol / tariff-shock periods where the model's cross-sectional labels were noise
+
+**Regime snapshot coverage:** 874 days in DB (2023-01-02 → 2026-05-08)
+- RISK_OFF: 499 days (57%) — the tariff shock / high-VIX regime covers the majority
+- RISK_ON: 374 days (43%)
+
+**Implementation (Phase R6):**
+- `IntradayModelTrainer.train_model(exclude_risk_off_days=True)` — new param, default ON
+- `_load_risk_off_ordinals()` — queries `regime_snapshots` for all RISK_OFF dates, returns set of `date.toordinal()` values
+- Filtering applied to train rows only (test rows kept intact for honest evaluation)
+- `retrain_config.INTRADAY_RETRAIN` updated to include `exclude_risk_off_days=True`
+- Log line: `"Phase R6: excluded N RISK_OFF training rows (before → after; X% removed)"`
+
+**Expected effect:** ~57% of training rows removed. Model trains only on RISK_ON/RISK_CAUTION days — the regime when live entries actually occur. Positive class should be less noisy (high-VIX days inflate false positives in cross-sectional scheme).
+
+**v53 retrain kicked off:** 2026-05-08 ~10:30 ET (background)
+**Gate:** avg Sharpe > 1.00, no fold < -0.30 (365d WF window, 3 folds)
+
+### v53 Walk-Forward Results
+
+*(To be filled after retrain completes)*
+

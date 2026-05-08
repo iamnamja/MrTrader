@@ -117,6 +117,7 @@ class IntradayModelTrainer:
         force_refresh: bool = False,
         use_ranker: bool = False,
         top_n_by_liquidity: Optional[int] = None,
+        exclude_risk_off_days: bool = True,  # Phase R6: drop training rows from RISK_OFF regime days
     ) -> int:
         """
         Full pipeline: fetch/cache 5-min bars → label → features → train → save.
@@ -190,6 +191,30 @@ class IntradayModelTrainer:
 
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after labelling.")
+
+        # ── 2b. Phase R6: drop training rows from RISK_OFF regime days ────────
+        # Cross-sectional labels assign "winners" even on bad-regime days, teaching
+        # the model patterns that don't generalise to live trading (where the PM
+        # abstention gate blocks entry on RISK_OFF days). Removing these rows at
+        # train time aligns the training distribution with the live trading distribution.
+        # Test rows are kept intact so evaluation reflects the full date range.
+        if exclude_risk_off_days and len(raw_train) > 0:
+            risk_off_ordinals = self._load_risk_off_ordinals()
+            if risk_off_ordinals:
+                day_ords = raw_train[:, 0]
+                keep_mask = ~np.isin(day_ords, list(risk_off_ordinals))
+                n_before = len(X_train)
+                X_train = X_train[keep_mask]
+                y_train = y_train[keep_mask]
+                raw_train = raw_train[keep_mask]
+                n_after = len(X_train)
+                logger.info(
+                    "Phase R6: excluded %d RISK_OFF training rows (%d → %d; %.1f%% removed)",
+                    n_before - n_after, n_before, n_after,
+                    (n_before - n_after) / max(n_before, 1) * 100,
+                )
+            else:
+                logger.warning("Phase R6: no RISK_OFF dates found in DB — training on all days")
 
         # ── 3. Train ──────────────────────────────────────────────────────────
         n_neg = int((y_train == 0).sum())
@@ -519,6 +544,25 @@ class IntradayModelTrainer:
             except (KeyError, TypeError):
                 pass
         return result
+
+    def _load_risk_off_ordinals(self) -> set:
+        """Phase R6: return set of day ordinals (date.toordinal()) classified RISK_OFF."""
+        try:
+            from app.database.session import SessionLocal
+            from app.database.models import RegimeSnapshot
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(RegimeSnapshot.snapshot_date)
+                    .filter(RegimeSnapshot.regime_label == "RISK_OFF")
+                    .all()
+                )
+                return {r.snapshot_date.toordinal() for r in rows}
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("_load_risk_off_ordinals failed (non-fatal): %s", exc)
+            return set()
 
     def _fetch_spy(
         self, start: datetime, end: datetime, force_refresh: bool

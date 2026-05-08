@@ -89,4 +89,6 @@ export const api = {
   reconciliationLatest: (strategy: string) => get(`/api/dashboard/reconciliation/latest?strategy=${strategy}`),
   reconciliationHistory: (strategy: string, limit = 20) => get(`/api/dashboard/reconciliation/history?strategy=${strategy}&limit=${limit}`),
   reconciliationRun: (strategy: string) => post(`/api/dashboard/reconciliation/run?strategy=${strategy}`),
+  // Phase 2d: live-vs-sim P&L shortfall
+  liveVsSim: (days = 30) => get(`/api/dashboard/analytics/live-vs-sim?days=${days}`),
 }

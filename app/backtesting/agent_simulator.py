@@ -324,7 +324,19 @@ class AgentSimulator:
                                 vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
                                 vix_5d_avg = float(vix_hist.tail(5).mean()) if len(vix_hist) >= 5 else vix_level
                                 vix_trend = float(np.clip(1.0 - (vix_level - vix_5d_avg) / 5.0, 0.0, 1.0))
-                        opp_score = 0.35 * vix_score + 0.20 * vix_trend + 0.30 * ma_score + 0.15 * mom_score
+                        # Phase 5b sync: use config-driven weights (matches live PM).
+                        # breadth/dispersion unavailable in historical simulation → weight=0,
+                        # renormalize remaining 4 components (same logic as live PM).
+                        from app.config import settings as _s
+                        _w_vix = _s.opp_score_vix_weight
+                        _w_vt = _s.opp_score_vix_trend_weight
+                        _w_ma = _s.opp_score_ma_weight
+                        _w_mom = _s.opp_score_mom_weight
+                        _w_total = _w_vix + _w_vt + _w_ma + _w_mom or 1.0
+                        opp_score = (
+                            _w_vix * vix_score + _w_vt * vix_trend
+                            + _w_ma * ma_score + _w_mom * mom_score
+                        ) / _w_total
                         if opp_score < 0.35:
                             _skip_entries = True
                             logger.debug("Opp score %.2f < 0.35 on %s — skipping entries", opp_score, day)
