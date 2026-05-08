@@ -149,7 +149,17 @@ class TestReconciliationApiShape:
     def client(self):
         from fastapi.testclient import TestClient
         from app.main import app
-        return TestClient(app)
+        from app.database.models import WfLiveReconciliation
+        from unittest.mock import MagicMock, patch
+
+        mock_db = MagicMock()
+        # latest returns no_data shape
+        mock_db.query.return_value.filter.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        # history returns empty list
+        mock_db.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
+
+        with patch("app.api.routes.get_session", return_value=mock_db):
+            yield TestClient(app)
 
     def test_reconciliation_latest_swing_returns_200_or_no_data(self, client):
         resp = client.get("/api/dashboard/reconciliation/latest?strategy=swing")
