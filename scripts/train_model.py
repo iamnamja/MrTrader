@@ -248,13 +248,28 @@ def run_rolling_pipeline(
     two_stage: bool = False,
     three_stage: bool = False,
     multi_window: bool = False,
+    tb_target_mult: float | None = None,
+    tb_stop_mult: float | None = None,
+    forward_days: int | None = None,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
     Produces honest out-of-sample metrics via time-based train/test split.
     """
-    from app.ml.training import ModelTrainer, WINDOW_DAYS, FORWARD_DAYS, TEST_FRACTION
+    import app.ml.training as _training_module
+    from app.ml.training import ModelTrainer, WINDOW_DAYS, TEST_FRACTION
 
+    # Phase 3b: apply ATR multiplier + forward-day overrides before training
+    if tb_target_mult is not None:
+        _training_module.ATR_MULT_TARGET = tb_target_mult
+    if tb_stop_mult is not None:
+        _training_module.ATR_MULT_STOP = tb_stop_mult
+    if forward_days is not None:
+        _training_module.FORWARD_DAYS = forward_days
+        _training_module.STEP_DAYS = forward_days
+        _training_module.EMBARGO_WINDOWS = max(1, round(forward_days / forward_days))
+
+    FORWARD_DAYS = _training_module.FORWARD_DAYS
     stage_label = " [three-stage]" if three_stage else (" [two-stage]" if two_stage else "")
     header(3, 6, "Building rolling-window feature matrix")
     info(f"Window: {WINDOW_DAYS} trading days  |  Forward: {FORWARD_DAYS} days  "
@@ -536,7 +551,22 @@ def main():
     parser.add_argument(
         "--label-scheme", default="atr",
         choices=["atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank", "percentile_rank", "path_quality"],
-        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar 1.5x ATR target / 0.5x ATR stop simulation (Phase 33).",
+        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar ATR-scaled target/stop simulation.",
+    )
+    parser.add_argument(
+        "--tb-target-mult", type=float, default=None,
+        help="Phase 3b: override ATR_MULT_TARGET for triple_barrier labeling (default: 1.5). "
+             "Use 2.0 for Phase 3b full-universe retrain.",
+    )
+    parser.add_argument(
+        "--tb-stop-mult", type=float, default=None,
+        help="Phase 3b: override ATR_MULT_STOP for triple_barrier labeling (default: 0.5). "
+             "Use 1.2 for Phase 3b full-universe retrain.",
+    )
+    parser.add_argument(
+        "--forward-days", type=int, default=None,
+        help="Phase 3b: override FORWARD_DAYS for labeling (default: 5 trading days). "
+             "Use 10 for Phase 3b wider time barrier.",
     )
     parser.add_argument(
         "--top-features", type=int, default=0,
@@ -638,6 +668,9 @@ def main():
         two_stage=args.two_stage,
         three_stage=args.three_stage,
         multi_window=args.multi_window,
+        tb_target_mult=getattr(args, "tb_target_mult", None),
+        tb_stop_mult=getattr(args, "tb_stop_mult", None),
+        forward_days=getattr(args, "forward_days", None),
     )
     phase_times["train_pipeline"] = time.time() - _t
 
