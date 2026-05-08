@@ -330,6 +330,10 @@ class DecisionAudit(Base):
     price_at_decision = Column(Float, nullable=True)
     # Intended direction (BUY/SELL) — needed to compute signed counterfactual P&L
     direction = Column(String(5), nullable=True)
+    # Regime-aware sizing (Phase regime-sizing)
+    regime_sizing_mult = Column(Float, nullable=True)        # multiplier applied due to regime (1.0/0.6/0.3/0.5)
+    regime_label_at_decision = Column(String(15), nullable=True)  # RISK_ON|RISK_CAUTION|RISK_OFF|UNKNOWN
+    regime_score_at_decision = Column(Float, nullable=True)  # raw score [0,1] at decision time
     # Back-filled by EOD script (gate_outcomes_backfill job)
     outcome_pnl_pct = Column(Float, nullable=True)      # realized P&L % if entered (APPROVED trades)
     outcome_4h_pct = Column(Float, nullable=True)       # counterfactual: price change 4h after decision
@@ -744,3 +748,47 @@ class RegimeModelVersion(Base):
     brier_score = Column(Float, nullable=True)
     notes = Column(Text, nullable=True)
     model_path = Column(String(255), nullable=True)
+
+
+class WfLiveReconciliation(Base):
+    """Walk-forward predicted vs live realized performance comparison.
+
+    One row per (strategy, date range) comparison run. Computed on demand
+    via POST /api/reconciliation/run or scheduled weekly.
+    Enables WF-6: implementation shortfall tracking over time.
+    """
+    __tablename__ = "wf_live_reconciliation"
+
+    id = Column(Integer, primary_key=True, index=True)
+    computed_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    strategy = Column(String(20), nullable=False, index=True)   # 'swing' | 'intraday'
+    range_start = Column(Date, nullable=False)
+    range_end = Column(Date, nullable=False)
+    trigger = Column(String(30), nullable=False, default="manual")  # 'manual' | 'scheduled' | 'api'
+
+    # Walk-forward predicted metrics
+    wf_predicted_sharpe = Column(Float, nullable=True)
+    wf_predicted_win_rate = Column(Float, nullable=True)
+    wf_predicted_trades = Column(Integer, nullable=True)
+    wf_model_version = Column(Integer, nullable=True)
+
+    # Live realized metrics (from Trade table, closed trades in date range)
+    live_sharpe = Column(Float, nullable=True)
+    live_win_rate = Column(Float, nullable=True)
+    live_total_return_pct = Column(Float, nullable=True)
+    live_max_drawdown_pct = Column(Float, nullable=True)
+    live_trade_count = Column(Integer, nullable=True)
+    live_profit_factor = Column(Float, nullable=True)
+    live_avg_hold_days = Column(Float, nullable=True)
+
+    # Implementation shortfall
+    shortfall_sharpe = Column(Float, nullable=True)   # live_sharpe - wf_predicted_sharpe
+    shortfall_pct = Column(Float, nullable=True)      # shortfall as % of wf_predicted (signed)
+
+    # Per-symbol breakdown [{symbol, live_pnl_pct, live_trades, live_win_rate}, ...]
+    per_symbol_json = Column(JSON, nullable=True)
+
+    # Status for async computation
+    status = Column(String(20), nullable=False, default="pending")  # 'pending'|'complete'|'error'
+    error_detail = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)

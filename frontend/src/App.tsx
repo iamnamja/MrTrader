@@ -107,6 +107,169 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
   )
 }
 
+// ── WF-6 Reconciliation Widget ────────────────────────────────────────────────
+interface ReconcRow {
+  id: number
+  strategy: string
+  range_start: string
+  range_end: string
+  computed_at: string
+  status: string
+  live_sharpe: number | null
+  live_win_rate: number | null
+  live_trade_count: number | null
+  live_profit_factor: number | null
+  live_total_return_pct: number | null
+  live_max_drawdown_pct: number | null
+  live_avg_hold_days: number | null
+  wf_predicted_sharpe: number | null
+  wf_predicted_win_rate: number | null
+  wf_model_version: number | null
+  shortfall_sharpe: number | null
+  shortfall_pct: number | null
+  per_symbol_json?: Array<{ symbol: string; live_pnl: number; live_trades: number; live_win_rate: number }>
+}
+
+function WfReconciliationWidget() {
+  const [swing, setSwing] = useState<ReconcRow | null>(null)
+  const [intraday, setIntraday] = useState<ReconcRow | null>(null)
+  const [running, setRunning] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'swing' | 'intraday'>('swing')
+
+  const fetchLatest = () => {
+    api.reconciliationLatest('swing')
+      .then((d: unknown) => { const r = d as ReconcRow; r.status !== 'no_data' ? setSwing(r) : setSwing(null) })
+      .catch(() => {})
+    api.reconciliationLatest('intraday')
+      .then((d: unknown) => { const r = d as ReconcRow; r.status !== 'no_data' ? setIntraday(r) : setIntraday(null) })
+      .catch(() => {})
+  }
+
+  useEffect(() => { fetchLatest() }, [])
+
+  const runReconciliation = async (strategy: string) => {
+    setRunning(strategy)
+    try {
+      await api.reconciliationRun(strategy)
+      fetchLatest()
+    } catch { /* ignore */ }
+    finally { setRunning(null) }
+  }
+
+  const row = activeTab === 'swing' ? swing : intraday
+
+  const shortfallColor = (v: number | null) => {
+    if (v == null) return C.muted
+    if (v > 0.2) return C.green
+    if (v < -0.3) return C.red
+    return C.yellow
+  }
+
+  return (
+    <div style={s.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={s.cardTitle}>WF-6 Live vs Predicted</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['swing', 'intraday'] as const).map(t => (
+            <button key={t} onClick={() => setActiveTab(t)} style={{
+              fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer',
+              background: activeTab === t ? C.blue + '33' : 'transparent',
+              border: `1px solid ${activeTab === t ? C.blue : C.border}`,
+              color: activeTab === t ? C.blue : C.muted,
+            }}>{t}</button>
+          ))}
+          <button
+            onClick={() => runReconciliation(activeTab)}
+            disabled={running !== null}
+            style={{
+              fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: running ? 'not-allowed' : 'pointer',
+              background: C.accent + '22', border: `1px solid ${C.accent}55`, color: C.accent,
+            }}
+          >{running === activeTab ? '...' : 'Run'}</button>
+        </div>
+      </div>
+
+      {!row ? (
+        <div style={{ color: C.muted, fontSize: 12, textAlign: 'center', padding: 20 }}>
+          No data — click Run to compute
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+            {row.range_start} → {row.range_end}
+            {' · '}v{row.wf_model_version ?? '?'}
+            {' · '}computed {fmtTs(row.computed_at)}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
+            <div style={{ ...s.kpi }}>
+              <div style={{ fontSize: 10, color: C.muted }}>Live Sharpe</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: (row.live_sharpe ?? 0) >= 0 ? C.green : C.red }}>
+                {row.live_sharpe != null ? row.live_sharpe.toFixed(3) : '—'}
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                WF: {row.wf_predicted_sharpe != null ? row.wf_predicted_sharpe.toFixed(3) : '—'}
+              </div>
+            </div>
+            <div style={{ ...s.kpi }}>
+              <div style={{ fontSize: 10, color: C.muted }}>Shortfall</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: shortfallColor(row.shortfall_sharpe) }}>
+                {row.shortfall_sharpe != null ? (row.shortfall_sharpe >= 0 ? '+' : '') + row.shortfall_sharpe.toFixed(3) : '—'}
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                {row.shortfall_pct != null ? (row.shortfall_pct >= 0 ? '+' : '') + row.shortfall_pct.toFixed(1) + '%' : ''}
+              </div>
+            </div>
+            <div style={{ ...s.kpi }}>
+              <div style={{ fontSize: 10, color: C.muted }}>Win Rate</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>
+                {row.live_win_rate != null ? (row.live_win_rate * 100).toFixed(1) + '%' : '—'}
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                WF: {row.wf_predicted_win_rate != null ? (row.wf_predicted_win_rate * 100).toFixed(1) + '%' : '—'}
+              </div>
+            </div>
+            <div style={{ ...s.kpi }}>
+              <div style={{ fontSize: 10, color: C.muted }}>Trades · PF · Avg Hold</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+                {row.live_trade_count ?? '—'} trades
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                PF {row.live_profit_factor?.toFixed(2) ?? '—'} · {row.live_avg_hold_days?.toFixed(1) ?? '—'}d
+              </div>
+            </div>
+          </div>
+          {row.per_symbol_json && row.per_symbol_json.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Top symbols</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Symbol', 'PnL', 'Trades', 'Win%'].map(h => (
+                      <th key={h} style={s.th}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {row.per_symbol_json.slice(0, 5).map(sym => (
+                    <tr key={sym.symbol}>
+                      <td style={s.td}>{sym.symbol}</td>
+                      <td style={{ ...s.td, color: sym.live_pnl >= 0 ? C.green : C.red }}>
+                        {fmt$(sym.live_pnl)}
+                      </td>
+                      <td style={s.td}>{sym.live_trades}</td>
+                      <td style={s.td}>{(sym.live_win_rate * 100).toFixed(0)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ── Macro Widget ──────────────────────────────────────────────────────────────
 function MacroWidget() {
   const [regime, setRegime] = useState<RegimeDetail | null>(null)
@@ -194,14 +357,30 @@ function MacroWidget() {
 }
 
 // ── Regime Model Widget (Phase R4) ───────────────────────────────────────────
+interface RegimeFeatures {
+  vix_level: number | null
+  vix_pct_1y: number | null
+  spy_1d_return: number | null
+  spy_5d_return: number | null
+  spy_20d_return: number | null
+  spy_ma20_dist: number | null
+  spy_ma50_dist: number | null
+  days_to_fomc: number | null
+  days_to_cpi: number | null
+  breadth_pct_ma50: number | null
+}
+
 interface RegimeCurrent {
   regime_score: number | null
   regime_label: string | null
   trigger: string | null
+  snapshot_date: string | null
   snapshot_time: string | null
   age_hours: number | null
+  is_today?: boolean
   stale?: boolean
   message?: string
+  features?: RegimeFeatures
 }
 
 function RegimeModelWidget() {
@@ -290,11 +469,37 @@ function RegimeModelWidget() {
           {/* Meta */}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: C.muted }}>
             <span>trigger: {ctx.trigger ?? '—'}</span>
-            <span>{ageLabel(ctx.snapshot_time, ctx.age_hours)}</span>
+            <span style={{ color: ctx.is_today === false ? C.yellow : C.muted }}>
+              {ctx.is_today === false ? `stale · ${ctx.snapshot_date}` : ageLabel(ctx.snapshot_time, ctx.age_hours)}
+            </span>
           </div>
           <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
-            RISK_OFF &lt;35 · NEUTRAL 35–65 · RISK_ON &gt;65
+            RISK_OFF &lt;35 · RISK_CAUTION 35–65 · RISK_ON &gt;65
           </div>
+
+          {/* Raw feature grid */}
+          {ctx.features && (
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px', fontSize: 10 }}>
+              {ctx.features.vix_level != null && (
+                <><span style={{ color: C.muted }}>VIX</span><span style={{ color: ctx.features.vix_level > 25 ? C.red : ctx.features.vix_level > 18 ? C.yellow : C.green, textAlign: 'right' }}>{ctx.features.vix_level.toFixed(1)}</span></>
+              )}
+              {ctx.features.spy_1d_return != null && (
+                <><span style={{ color: C.muted }}>SPY 1d</span><span style={{ color: ctx.features.spy_1d_return >= 0 ? C.green : C.red, textAlign: 'right' }}>{(ctx.features.spy_1d_return * 100).toFixed(2)}%</span></>
+              )}
+              {ctx.features.spy_5d_return != null && (
+                <><span style={{ color: C.muted }}>SPY 5d</span><span style={{ color: ctx.features.spy_5d_return >= 0 ? C.green : C.red, textAlign: 'right' }}>{(ctx.features.spy_5d_return * 100).toFixed(2)}%</span></>
+              )}
+              {ctx.features.spy_ma20_dist != null && (
+                <><span style={{ color: C.muted }}>vs MA20</span><span style={{ color: ctx.features.spy_ma20_dist >= 0 ? C.green : C.red, textAlign: 'right' }}>{(ctx.features.spy_ma20_dist * 100).toFixed(1)}%</span></>
+              )}
+              {ctx.features.days_to_fomc != null && (
+                <><span style={{ color: C.muted }}>FOMC in</span><span style={{ color: C.muted, textAlign: 'right' }}>{ctx.features.days_to_fomc.toFixed(0)}d</span></>
+              )}
+              {ctx.features.days_to_cpi != null && (
+                <><span style={{ color: C.muted }}>CPI in</span><span style={{ color: ctx.features.days_to_cpi <= 1 ? C.yellow : C.muted, textAlign: 'right' }}>{ctx.features.days_to_cpi.toFixed(0)}d</span></>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -478,6 +683,14 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
           <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
             <DecisionsTable rows={decisions.slice(0, 50)} />
           </div>
+        </div>
+      </div>
+
+      {/* WF-6 Reconciliation */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
+        <WfReconciliationWidget />
+        <div style={{ ...s.card, opacity: 0.3, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: C.muted, fontSize: 12 }}>WF-6 trend chart (coming soon)</span>
         </div>
       </div>
     </div>

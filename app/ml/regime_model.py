@@ -27,7 +27,7 @@ def _label_from_score(score: float) -> str:
         return "RISK_OFF"
     if score >= RISK_ON_THRESHOLD:
         return "RISK_ON"
-    return "NEUTRAL"
+    return "RISK_CAUTION"
 
 
 class RegimeModel:
@@ -172,10 +172,10 @@ class RegimeModel:
             logger.error("Failed to persist regime snapshot: %s", exc)
 
     def _legacy_fallback(self, as_of_date: Optional[date], trigger: str) -> dict:
-        logger.warning("Regime model not loaded — returning NEUTRAL (legacy fallback)")
+        logger.warning("Regime model not loaded — returning UNKNOWN (legacy fallback)")
         return {
             "regime_score": 0.5,
-            "regime_label": "NEUTRAL",
+            "regime_label": "UNKNOWN",
             "version": "legacy_fallback",
             "trigger": trigger,
             "cached": False,

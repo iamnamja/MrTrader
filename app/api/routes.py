@@ -1107,12 +1107,17 @@ async def get_model_versions(limit: int = 10):
 
 @router.get("/regime/current")
 async def get_regime_current():
-    """Return latest regime model score for today from regime_snapshots."""
+    """Return latest regime model score from regime_snapshots (today's row or last-known fallback)."""
     try:
         from app.agents.premarket import premarket_intel
         ctx = await asyncio.to_thread(premarket_intel.get_regime_context)
         if ctx is None:
-            return {"regime_score": None, "regime_label": None, "trigger": None, "message": "No regime score for today yet"}
+            return {
+                "regime_score": None, "regime_label": "UNKNOWN",
+                "trigger": None, "is_today": False,
+                "message": "No regime score available — model not yet run",
+                "features": {},
+            }
         return ctx
     except Exception as exc:
         logger.error("regime/current error: %s", exc)
@@ -1315,3 +1320,137 @@ async def get_swing_proposals(days: int = 3, limit: int = 200):
 async def get_intra_proposals(days: int = 3, limit: int = 200):
     """Intraday proposals — reads from unified proposal_log. Kept for backward compatibility."""
     return await get_proposal_log(days=days, limit=limit, strategy="intraday")
+
+
+# ─── WF-6 Reconciliation ─────────────────────────────────────────────────────
+
+@router.post("/reconciliation/run")
+async def run_reconciliation(
+    strategy: str = "swing",
+    range_start: str = "",
+    range_end: str = "",
+):
+    """Trigger a WF-6 live vs walk-forward reconciliation run.
+
+    strategy: 'swing' | 'intraday'
+    range_start / range_end: YYYY-MM-DD (default: trailing 90 days)
+    """
+    from app.analytics.wf_reconciliation import run_reconciliation as _run
+    import asyncio
+
+    if strategy not in ("swing", "intraday"):
+        raise HTTPException(status_code=400, detail="strategy must be 'swing' or 'intraday'")
+
+    try:
+        start = date.fromisoformat(range_start) if range_start else None
+        end = date.fromisoformat(range_end) if range_end else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {exc}")
+
+    row = await asyncio.to_thread(_run, strategy, start, end, "api")
+    return {
+        "id": row.id,
+        "strategy": row.strategy,
+        "range_start": row.range_start.isoformat(),
+        "range_end": row.range_end.isoformat(),
+        "status": row.status,
+        "live_sharpe": row.live_sharpe,
+        "live_win_rate": row.live_win_rate,
+        "live_trade_count": row.live_trade_count,
+        "live_profit_factor": row.live_profit_factor,
+        "live_total_return_pct": row.live_total_return_pct,
+        "live_max_drawdown_pct": row.live_max_drawdown_pct,
+        "live_avg_hold_days": row.live_avg_hold_days,
+        "wf_predicted_sharpe": row.wf_predicted_sharpe,
+        "wf_predicted_win_rate": row.wf_predicted_win_rate,
+        "wf_model_version": row.wf_model_version,
+        "shortfall_sharpe": row.shortfall_sharpe,
+        "shortfall_pct": row.shortfall_pct,
+        "computed_at": row.computed_at.isoformat() if row.computed_at else None,
+        "error_detail": row.error_detail,
+    }
+
+
+@router.get("/reconciliation/latest")
+async def get_reconciliation_latest(strategy: str = "swing"):
+    """Return the most recent completed reconciliation row for a strategy."""
+    if strategy not in ("swing", "intraday"):
+        raise HTTPException(status_code=400, detail="strategy must be 'swing' or 'intraday'")
+
+    db = get_session()
+    try:
+        from app.database.models import WfLiveReconciliation
+        row = (
+            db.query(WfLiveReconciliation)
+            .filter(
+                WfLiveReconciliation.strategy == strategy,
+                WfLiveReconciliation.status == "complete",
+            )
+            .order_by(WfLiveReconciliation.computed_at.desc())
+            .first()
+        )
+        if row is None:
+            return {"strategy": strategy, "status": "no_data"}
+        return {
+            "id": row.id,
+            "strategy": row.strategy,
+            "range_start": row.range_start.isoformat(),
+            "range_end": row.range_end.isoformat(),
+            "computed_at": row.computed_at.isoformat() if row.computed_at else None,
+            "live_sharpe": row.live_sharpe,
+            "live_win_rate": row.live_win_rate,
+            "live_trade_count": row.live_trade_count,
+            "live_profit_factor": row.live_profit_factor,
+            "live_total_return_pct": row.live_total_return_pct,
+            "live_max_drawdown_pct": row.live_max_drawdown_pct,
+            "live_avg_hold_days": row.live_avg_hold_days,
+            "wf_predicted_sharpe": row.wf_predicted_sharpe,
+            "wf_predicted_win_rate": row.wf_predicted_win_rate,
+            "wf_model_version": row.wf_model_version,
+            "shortfall_sharpe": row.shortfall_sharpe,
+            "shortfall_pct": row.shortfall_pct,
+            "per_symbol_json": row.per_symbol_json,
+        }
+    except Exception as exc:
+        logger.error("reconciliation/latest error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.get("/reconciliation/history")
+async def get_reconciliation_history(strategy: str = "swing", limit: int = 20):
+    """Return reconciliation history for trend analysis (newest first)."""
+    if strategy not in ("swing", "intraday"):
+        raise HTTPException(status_code=400, detail="strategy must be 'swing' or 'intraday'")
+
+    db = get_session()
+    try:
+        from app.database.models import WfLiveReconciliation
+        rows = (
+            db.query(WfLiveReconciliation)
+            .filter(WfLiveReconciliation.strategy == strategy)
+            .order_by(WfLiveReconciliation.computed_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "computed_at": r.computed_at.isoformat() if r.computed_at else None,
+                "range_start": r.range_start.isoformat(),
+                "range_end": r.range_end.isoformat(),
+                "status": r.status,
+                "live_sharpe": r.live_sharpe,
+                "wf_predicted_sharpe": r.wf_predicted_sharpe,
+                "shortfall_sharpe": r.shortfall_sharpe,
+                "shortfall_pct": r.shortfall_pct,
+                "live_trade_count": r.live_trade_count,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.error("reconciliation/history error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()

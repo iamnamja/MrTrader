@@ -608,6 +608,10 @@ def main():
         "--multi-window", action="store_true",
         help="Train ensemble of 63d + 126d window models and blend predictions",
     )
+    parser.add_argument(
+        "--no-prefilters", action="store_true", default=False,
+        help="Phase 3b: bypass RSI/EMA-20/50 hard gates in simulator — use as ML features instead",
+    )
     args = parser.parse_args()
 
     symbols = args.symbols or RUSSELL_1000_TICKERS
@@ -637,6 +641,8 @@ def main():
         print("  Two-stage     : yes (fundamental quality + technical timing)")
     if args.multi_window:
         print("  Multi-window  : yes (63d + 126d ensemble)")
+    if args.no_prefilters:
+        print("  No-prefilters : yes (RSI/EMA-20/50 gates bypassed — Phase 3b)")
     print(f"  Dry run       : {'yes -- model will NOT be saved' if args.dry_run else 'no'}")
     print(f"{BOLD}{'=' * 60}{RESET}")
 

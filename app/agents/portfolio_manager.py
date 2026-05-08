@@ -1547,6 +1547,13 @@ class PortfolioManager(BaseAgent):
         except Exception as exc:
             self.logger.debug("Macro calendar check failed: %s", exc)
 
+        # Refresh regime context so sizing uses fresh data (not hours-stale premarket snapshot)
+        try:
+            from app.agents.premarket import premarket_intel
+            self._current_regime_ctx = premarket_intel.get_regime_context()
+        except Exception as _exc:
+            self.logger.debug("Regime context refresh failed: %s", _exc)
+
         # ── SPY intraday regime gate ───────────────────────────────────────────
         # Fetch once per scan; gate entries and adjust confidence/size.
         spy_pct = await asyncio.to_thread(self._get_spy_day_pct)
@@ -1981,6 +1988,14 @@ class PortfolioManager(BaseAgent):
             # Apply SPY caution sizing multiplier (0.5× in down-market caution mode)
             if intraday_size_mult != 1.0:
                 quantity = max(1, int(quantity * intraday_size_mult))
+            # Regime-aware sizing: scale by regime score (RISK_OFF → 0.3×, RISK_CAUTION → 0.6×)
+            _regime_mult, _regime_lbl, _regime_score = self._regime_sizing_multiplier()
+            if _regime_mult != 1.0:
+                quantity = max(1, int(quantity * _regime_mult))
+                self.logger.info(
+                    "Regime sizing intraday %s: %.1f× (%s score=%.2f)",
+                    symbol, _regime_mult, _regime_lbl, _regime_score or 0,
+                )
             # Use ATR-based stops matching the backtester: 0.4x / 0.8x prior-day range.
             # Fall back to fixed pct if prior range unavailable.
             prior_range = prior_ranges_by_symbol.get(symbol)
@@ -2629,6 +2644,14 @@ class PortfolioManager(BaseAgent):
             quantity = self._calculate_quantity(
                 price, account_value, trade_type="swing", confidence=float(confidence)
             )
+            # Regime-aware sizing: scale by regime score (RISK_OFF → 0.3×, RISK_CAUTION → 0.6×)
+            _regime_mult, _regime_lbl, _regime_score = self._regime_sizing_multiplier()
+            if _regime_mult != 1.0:
+                quantity = max(1, int(quantity * _regime_mult))
+                self.logger.info(
+                    "Regime sizing swing %s: %.1f× (%s score=%.2f)",
+                    symbol, _regime_mult, _regime_lbl, _regime_score or 0,
+                )
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
@@ -2711,6 +2734,7 @@ class PortfolioManager(BaseAgent):
             # Phase 61: Decision audit — record every enter decision
             try:
                 from app.database.decision_audit import write_decision
+                _rm, _rl, _rs = self._regime_sizing_multiplier()
                 write_decision(
                     symbol, "swing", "enter",
                     model_score=float(confidence),
@@ -2718,6 +2742,9 @@ class PortfolioManager(BaseAgent):
                     news_signal=news_sig,
                     macro_context=macro_ctx,
                     top_features=self._top_features_for(symbol, "swing"),
+                    regime_sizing_mult=_rm,
+                    regime_label=_rl,
+                    regime_score=_rs,
                 )
             except Exception:
                 pass
@@ -2892,6 +2919,29 @@ class PortfolioManager(BaseAgent):
 
         qty = int(position_dollars / price)
         return max(qty, 1)
+
+    # ─── Regime Sizing ────────────────────────────────────────────────────────
+
+    def _regime_sizing_multiplier(self) -> tuple:
+        """Return (multiplier, label, score) based on current regime context.
+
+        Multipliers are config-driven (REGIME_SIZING_* in .env).
+        Returns full size (1.0) when regime model is not yet available so
+        early paper trading days are not penalised before the model warms up.
+        """
+        from app.config import settings
+        ctx = self._current_regime_ctx
+        if ctx is None:
+            return (settings.regime_sizing_unknown, "UNKNOWN", None)
+        score = ctx.get("regime_score")
+        label = ctx.get("regime_label", "UNKNOWN")
+        if score is None or label == "UNKNOWN":
+            return (settings.regime_sizing_unknown, "UNKNOWN", score)
+        if score >= settings.regime_risk_on_threshold:
+            return (settings.regime_sizing_risk_on, "RISK_ON", score)
+        if score < settings.regime_risk_off_threshold:
+            return (settings.regime_sizing_risk_off, "RISK_OFF", score)
+        return (settings.regime_sizing_risk_caution, "RISK_CAUTION", score)
 
     # ─── Retraining ───────────────────────────────────────────────────────────
 

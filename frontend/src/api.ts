@@ -85,4 +85,8 @@ export const api = {
   regimeCurrent: () => get('/api/dashboard/regime/current'),
   regimeHistory: (days = 30) => get(`/api/dashboard/regime/history?days=${days}`),
   regimeAnalytics: (days = 30) => get(`/api/dashboard/regime/analytics?days=${days}`),
+  // WF-6 Reconciliation
+  reconciliationLatest: (strategy: string) => get(`/api/dashboard/reconciliation/latest?strategy=${strategy}`),
+  reconciliationHistory: (strategy: string, limit = 20) => get(`/api/dashboard/reconciliation/history?strategy=${strategy}&limit=${limit}`),
+  reconciliationRun: (strategy: string) => post(`/api/dashboard/reconciliation/run?strategy=${strategy}`),
 }
