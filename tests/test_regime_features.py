@@ -160,16 +160,21 @@ class TestRegimeCalendarFeatures:
 # ── NIS features ──────────────────────────────────────────────────────────────
 
 class TestRegimeNisFeatures:
+    def _make_session_ctx(self, row):
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = row
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        return mock_ctx
+
     def test_nis_risk_maps_correctly(self):
         builder = RegimeFeatureBuilder()
         mock_row = MagicMock()
         mock_row.overall_risk = "HIGH"
         mock_row.global_sizing_factor = 0.7
 
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_row
-
-        with patch("app.database.session.get_session", return_value=mock_db):
+        with patch("app.database.session.get_session", return_value=self._make_session_ctx(mock_row)):
             feats: dict = {k: float("nan") for k in REGIME_FEATURE_NAMES}
             builder._add_nis_features(feats, date(2025, 10, 1))
 
@@ -182,10 +187,7 @@ class TestRegimeNisFeatures:
         mock_row.overall_risk = "MEDIUM"
         mock_row.global_sizing_factor = 0.85
 
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_row
-
-        with patch("app.database.session.get_session", return_value=mock_db):
+        with patch("app.database.session.get_session", return_value=self._make_session_ctx(mock_row)):
             feats = {k: float("nan") for k in REGIME_FEATURE_NAMES}
             builder._add_nis_features(feats, date(2025, 10, 1))
 
@@ -193,10 +195,8 @@ class TestRegimeNisFeatures:
 
     def test_nis_missing_row_stays_nan(self):
         builder = RegimeFeatureBuilder()
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
 
-        with patch("app.database.session.get_session", return_value=mock_db):
+        with patch("app.database.session.get_session", return_value=self._make_session_ctx(None)):
             feats = {k: float("nan") for k in REGIME_FEATURE_NAMES}
             builder._add_nis_features(feats, date(2023, 6, 1))
 

@@ -38,34 +38,34 @@ class TestSwingTrainerR6Exclusion:
                 for i in window_indices]
 
     def test_load_risk_off_dates_returns_set_on_db_error(self):
-        """Fail-open: returns empty set when DB unavailable."""
+        """Fail-open: returns empty dict when DB unavailable."""
         from app.ml.training import ModelTrainer
         trainer = ModelTrainer.__new__(ModelTrainer)
-        # Patch at the point of use inside the method (imported locally)
         with patch("app.database.session.get_session", side_effect=Exception("no db")):
-            with patch("app.ml.training.get_session", side_effect=Exception("no db")):
-                result = trainer._load_risk_off_dates()
-        assert isinstance(result, set)
+            result = trainer._load_regime_weight_map()
+        assert isinstance(result, dict)
         assert len(result) == 0
 
     def test_load_risk_off_dates_returns_dates(self):
-        """Returns set of date objects from DB query."""
+        """Returns dict with RISK_OFF=0.0, RISK_CAUTION=0.5, RISK_ON=1.0."""
         from app.ml.training import ModelTrainer
         from datetime import date
         trainer = ModelTrainer.__new__(ModelTrainer)
-        mock_rows = [MagicMock(snapshot_date=date(2025, 4, 7)),
-                     MagicMock(snapshot_date=date(2025, 4, 8))]
+        rows = [
+            (date(2025, 4, 7), "RISK_OFF"),
+            (date(2025, 4, 8), "RISK_CAUTION"),
+            (date(2025, 4, 9), "RISK_ON"),
+        ]
         mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.all.return_value = mock_rows
+        mock_db.query.return_value.all.return_value = rows
         mock_ctx = MagicMock()
         mock_ctx.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.__exit__ = MagicMock(return_value=False)
-        # Patch inside the method's local import scope
         with patch("app.database.session.get_session", return_value=mock_ctx):
-            with patch("app.ml.training.get_session", return_value=mock_ctx):
-                result = trainer._load_risk_off_dates()
-        assert date(2025, 4, 7) in result
-        assert date(2025, 4, 8) in result
+            result = trainer._load_regime_weight_map()
+        assert result[date(2025, 4, 7)] == 0.0
+        assert result[date(2025, 4, 8)] == 0.5
+        assert result[date(2025, 4, 9)] == 1.0
 
     def test_train_model_signature_has_exclude_param(self):
         """train_model accepts exclude_risk_off_days kwarg."""

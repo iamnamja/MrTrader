@@ -729,7 +729,25 @@ class RegimeSnapshot(Base):
     is_nfp_day = Column(Float, nullable=True)
     nis_risk_numeric = Column(Float, nullable=True)   # NULL pre-May-2025 — expected
     nis_sizing_factor = Column(Float, nullable=True)  # NULL pre-May-2025 — expected
-    breadth_pct_ma50 = Column(Float, nullable=True)   # NULL until Phase R2 breadth data
+    breadth_pct_ma50 = Column(Float, nullable=True)   # legacy; superseded by breadth_rsp_spy_ratio_20d
+
+    # Regime V2 features (Phase R7)
+    vix_5d_change = Column(Float, nullable=True)
+    vix_term_ratio = Column(Float, nullable=True)     # VIX/VIX3M; <1=contango, >1=backwardation
+    spy_50d_return = Column(Float, nullable=True)
+    spy_above_ma50 = Column(Float, nullable=True)     # 1.0 if SPY > 50d MA
+    spy_above_ma200 = Column(Float, nullable=True)    # 1.0 if SPY > 200d MA
+    breadth_rsp_spy_ratio_20d = Column(Float, nullable=True)  # equal-weight breadth proxy
+    credit_hyg_ief_5d = Column(Float, nullable=True)          # HYG vs IEF 5d rel return
+    credit_hyg_ief_20d = Column(Float, nullable=True)         # HYG vs IEF 20d rel return
+    sector_dispersion_20d = Column(Float, nullable=True)      # std of 9-sector 20d returns
+    sector_leader_lag_20d = Column(Float, nullable=True)      # max - min sector 20d return
+    # Multinomial model output probabilities
+    prob_risk_off = Column(Float, nullable=True)
+    prob_risk_caution = Column(Float, nullable=True)
+    prob_risk_on = Column(Float, nullable=True)
+    # Rule-based 3-class label used as training target (0=RISK_OFF,1=CAUTION,2=RISK_ON)
+    regime_label_rule = Column(String(15), nullable=True)
 
     error_detail = Column(Text, nullable=True)        # non-NULL if scoring failed
 

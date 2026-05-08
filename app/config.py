@@ -66,8 +66,25 @@ class Settings(BaseSettings):
     regime_sizing_risk_caution: float = 0.6  # regime_risk_off_threshold <= score < regime_risk_on_threshold
     regime_sizing_risk_off: float = 0.3      # score < regime_risk_off_threshold
     regime_sizing_unknown: float = 1.0       # UNKNOWN label or no model (conservative: full size until model is stable)
-    regime_risk_on_threshold: float = 0.65
-    regime_risk_off_threshold: float = 0.35
+    regime_risk_on_threshold: float = 0.60   # V2: was 0.65
+    regime_risk_off_threshold: float = 0.30  # V2: was 0.35
+
+    # Phase 3d: Volatility-targeting position sizing
+    # When enabled, sizes each position to contribute a fixed % of account equity in daily vol.
+    # quantity = floor(account * vol_target_pct / (atr_norm * price))
+    # Bounded above by max_position_size_pct, below by vol_targeting_min_notional.
+    vol_targeting_enabled: bool = False
+    vol_target_pct: float = 0.005          # 0.5% of account equity in vol per position
+    vol_targeting_min_notional: float = 500.0  # never size below $500
+
+    # Phase 5b: Opportunity score weights (must sum to 1.0)
+    # New weights include breadth and dispersion inputs.
+    opp_score_vix_weight: float = 0.25
+    opp_score_vix_trend_weight: float = 0.15
+    opp_score_ma_weight: float = 0.25
+    opp_score_mom_weight: float = 0.10
+    opp_score_breadth_weight: float = 0.15
+    opp_score_dispersion_weight: float = 0.10
 
     # Phase 3d: Volatility-targeting position sizing
     # When enabled, sizes each position to contribute a fixed % of account equity in daily vol.

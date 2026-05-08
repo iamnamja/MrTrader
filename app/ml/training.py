@@ -504,21 +504,28 @@ class ModelTrainer:
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after rolling windows.")
 
+        _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(X_train) > 0:
-            risk_off_dates = self._load_risk_off_dates()
-            if risk_off_dates:
+            weight_map = self._load_regime_weight_map()
+            if weight_map:
                 all_dates = self._last_all_dates
-                keep_mask = np.array([
-                    all_dates[m["window_idx"]] not in risk_off_dates
-                    for m in meta_train
-                ])
+                multipliers = np.array(
+                    [weight_map.get(all_dates[m["window_idx"]], 1.0) for m in meta_train],
+                    dtype=np.float32,
+                )
+                keep_mask = multipliers > 0.0
                 before = len(X_train)
                 X_train = X_train[keep_mask]
                 y_train = y_train[keep_mask]
                 meta_train = [m for m, k in zip(meta_train, keep_mask) if k]
+                _regime_sw_multiplier = multipliers[keep_mask]
+                n_caution = int(((_regime_sw_multiplier > 0) & (_regime_sw_multiplier < 1)).sum())
                 logger.info(
-                    "Phase R6: excluded %d/%d swing training rows on RISK_OFF days",
-                    before - len(X_train), before,
+                    "Phase R6/R7: excluded %d RISK_OFF rows, %d RISK_CAUTION rows "
+                    "down-weighted 0.5x (%d → %d; %.1f%% removed)",
+                    before - len(X_train), n_caution,
+                    before, len(X_train),
+                    (before - len(X_train)) / max(before, 1) * 100,
                 )
 
         logger.info(
@@ -575,6 +582,11 @@ class ModelTrainer:
 
             # Build multi-factor sample weights
             sample_weight = self._build_sample_weights(meta_train)
+            # Phase R6/R7: apply regime multiplier (RISK_CAUTION=0.5×, RISK_OFF already excluded)
+            if sample_weight is not None:
+                sample_weight = sample_weight * _regime_sw_multiplier
+            elif np.any(_regime_sw_multiplier != 1.0):
+                sample_weight = _regime_sw_multiplier.copy()
 
             # LightGBM-based models use class_weight instead of scale_pos_weight
             if self.model.model_type in ("lgbm", "lgbm_ensemble"):
@@ -1425,19 +1437,33 @@ class ModelTrainer:
             all_scores = np.ones(len(feature_names))
             return X_train, X_test, feature_names, all_scores
 
-    def _load_risk_off_dates(self) -> set:
-        """Return set of date objects that were RISK_OFF regime days. Fail-open."""
+    def _load_regime_weight_map(self) -> dict:
+        """Phase R6/R7: return {date: sample_weight_multiplier}.
+
+        RISK_OFF     → 0.0 (exclude from training)
+        RISK_CAUTION → 0.5 (down-weight; model still sees these days)
+        RISK_ON / UNKNOWN → 1.0 (full weight)
+        Fail-open: returns empty dict if DB unavailable.
+        """
         try:
             from app.database.session import get_session
             from app.database.models import RegimeSnapshot
             with get_session() as db:
-                rows = db.query(RegimeSnapshot.snapshot_date).filter(
-                    RegimeSnapshot.regime_label == "RISK_OFF"
+                rows = db.query(
+                    RegimeSnapshot.snapshot_date, RegimeSnapshot.regime_label
                 ).all()
-            return {r.snapshot_date for r in rows}
+            result = {}
+            for d, lbl in rows:
+                if lbl == "RISK_OFF":
+                    result[d] = 0.0
+                elif lbl == "RISK_CAUTION":
+                    result[d] = 0.5
+                else:
+                    result[d] = 1.0
+            return result
         except Exception as exc:
-            logger.warning("R6 swing: could not load RISK_OFF dates (fail-open): %s", exc)
-            return set()
+            logger.warning("R6/R7 swing: could not load regime weight map (fail-open): %s", exc)
+            return {}
 
     def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
         """Build multi-factor sample weights from per-sample metadata."""

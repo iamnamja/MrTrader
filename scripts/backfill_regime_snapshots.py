@@ -1,19 +1,22 @@
-"""Phase R1 — Backfill regime_snapshots table.
+"""Phase R1/R7 — Backfill regime_snapshots table.
 
-Iterates trading days from START_DATE to today, computes raw regime features
+Iterates trading days from START_DATE to yesterday, computes V2 regime features
 for each, and writes a row to regime_snapshots with:
   - snapshot_trigger = 'backfill'
   - model_version = NULL  (no trained model yet)
   - regime_score = NULL
   - regime_label = 'UNKNOWN'
+  - regime_label_rule = V2 rule-based label (RISK_OFF/RISK_CAUTION/RISK_ON)
   - all raw feature columns populated
 
-This provides the training dataset for Phase R2 (regime model training).
+R7: Uses RegimeFeatureBuilder.fetch_all_prefetched() to batch-download all 15
+tickers in one yfinance call (SPY, RSP, ^VIX, ^VIX3M, HYG, IEF, sector ETFs).
 
 Usage:
     python scripts/backfill_regime_snapshots.py
-    python scripts/backfill_regime_snapshots.py --start 2024-01-01
+    python scripts/backfill_regime_snapshots.py --start 2018-01-01
     python scripts/backfill_regime_snapshots.py --dry-run
+    python scripts/backfill_regime_snapshots.py --rewrite   # overwrite existing rows
 """
 from __future__ import annotations
 
@@ -22,8 +25,6 @@ import logging
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-
-import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -34,13 +35,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-START_DATE_DEFAULT = date(2023, 1, 1)
+START_DATE_DEFAULT = date(2018, 1, 1)
 
 
 def _is_trading_day(d: date) -> bool:
-    """Rough check — excludes weekends. Holidays may still slip through
-    but regime_features.build() returns NaN-heavy rows which is acceptable."""
-    return d.weekday() < 5  # Mon-Fri
+    return d.weekday() < 5
 
 
 def _trading_days_between(start: date, end: date) -> list[date]:
@@ -53,8 +52,12 @@ def _trading_days_between(start: date, end: date) -> list[date]:
     return days
 
 
-def _upsert_snapshot(db, snap_cls, feats: dict, d: date) -> None:
-    """Insert a new backfill row, or skip if one already exists for this date+trigger."""
+def _label_name(label_int: int) -> str:
+    return {0: "RISK_OFF", 1: "RISK_CAUTION", 2: "RISK_ON"}.get(label_int, "UNKNOWN")
+
+
+def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
+    """Insert or update a backfill row. Returns True if written."""
     existing = (
         db.query(snap_cls)
         .filter(
@@ -63,71 +66,65 @@ def _upsert_snapshot(db, snap_cls, feats: dict, d: date) -> None:
         )
         .first()
     )
-    if existing is not None:
-        return  # idempotent
+    if existing is not None and not rewrite:
+        return False
 
-    row = snap_cls(
-        snapshot_date=d,
-        snapshot_trigger="backfill",
-        regime_label="UNKNOWN",
-        **{k: (None if (v != v) else v) for k, v in feats.items()},  # NaN → None for DB
-    )
-    db.add(row)
+    clean = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in feats.items()}
+
+    if existing is not None:
+        for k, v in clean.items():
+            if hasattr(existing, k):
+                setattr(existing, k, v)
+        if hasattr(existing, "regime_label_rule") and "regime_label_rule" in clean:
+            existing.regime_label_rule = clean["regime_label_rule"]
+    else:
+        row = snap_cls(
+            snapshot_date=d,
+            snapshot_trigger="backfill",
+            regime_label="UNKNOWN",
+            **{k: v for k, v in clean.items() if hasattr(snap_cls, k)},
+        )
+        db.add(row)
+    return True
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backfill regime_snapshots table")
+    parser = argparse.ArgumentParser(description="Backfill regime_snapshots table (V2)")
     parser.add_argument("--start", default=START_DATE_DEFAULT.isoformat(),
-                        help="Start date YYYY-MM-DD (default 2023-01-01)")
+                        help="Start date YYYY-MM-DD (default 2018-01-01)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print features without writing to DB")
+    parser.add_argument("--rewrite", action="store_true",
+                        help="Overwrite existing backfill rows (re-compute all features)")
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
-    end = date.today() - timedelta(days=1)  # yesterday (today's data may be incomplete)
+    end = date.today() - timedelta(days=1)
 
-    logger.info("Backfill range: %s → %s", start, end)
+    logger.info("Backfill range: %s → %s  rewrite=%s", start, end, args.rewrite)
 
     trading_days = _trading_days_between(start, end)
     logger.info("Trading days to process: %d", len(trading_days))
 
-    from app.database.session import init_db, get_session
-    from app.database.models import RegimeSnapshot
-    from app.ml.regime_features import RegimeFeatureBuilder
-
-    if not args.dry_run:
-        init_db()
+    from app.ml.regime_features import RegimeFeatureBuilder, label_regime_day, label_name
 
     builder = RegimeFeatureBuilder()
 
-    # Pre-fetch full SPY and VIX history once to avoid 750 individual downloads
-    logger.info("Pre-fetching SPY history (%d calendar days)...", (end - start).days + 60)
-    import yfinance as yf
-    spy_full = yf.download(
-        "SPY",
-        start=(start - timedelta(days=365)).isoformat(),  # extra year for MA200
-        end=(end + timedelta(days=1)).isoformat(),
-        progress=False,
-        auto_adjust=True,
+    # Batch-fetch all 15 tickers (SPY, RSP, ^VIX, ^VIX3M, HYG, IEF, 9 sector ETFs)
+    # Extra year of history before start for MA200 and rolling windows
+    fetch_start = start - timedelta(days=400)
+    fetch_end = end + timedelta(days=1)
+    logger.info("Batch-fetching all regime tickers from %s to %s...", fetch_start, fetch_end)
+    prefetched = builder.fetch_all_prefetched(fetch_start, fetch_end)
+    logger.info(
+        "Prefetch complete: %d tickers loaded",
+        sum(1 for v in prefetched.values() if v is not None and not v.empty),
     )
-    if isinstance(spy_full.columns, pd.MultiIndex):
-        spy_full.columns = spy_full.columns.get_level_values(0)
-    spy_full.columns = [c.lower() for c in spy_full.columns]
-    logger.info("SPY: %d rows fetched", len(spy_full))
 
-    logger.info("Pre-fetching VIX history...")
-    vix_full = yf.download(
-        "^VIX",
-        start=(start - timedelta(days=365)).isoformat(),
-        end=(end + timedelta(days=1)).isoformat(),
-        progress=False,
-        auto_adjust=True,
-    )
-    if isinstance(vix_full.columns, pd.MultiIndex):
-        vix_full.columns = vix_full.columns.get_level_values(0)
-    vix_full.columns = [c.lower() for c in vix_full.columns]
-    vix_series = vix_full["close"]
-    logger.info("VIX: %d rows fetched", len(vix_series))
+    if not args.dry_run:
+        from app.database.session import init_db, get_session
+        from app.database.models import RegimeSnapshot
+        init_db()
 
     ok = 0
     skipped = 0
@@ -137,36 +134,41 @@ def main() -> None:
     try:
         for i, d in enumerate(trading_days):
             try:
-                # Slice pre-fetched data up to d (PIT-correct)
-                spy_slice = spy_full[spy_full.index.date <= d]
-                vix_slice = vix_series[vix_series.index.date <= d]
-
-                if spy_slice.empty or vix_slice.empty:
+                feats = builder.build(as_of_date=d, _prefetched=prefetched)
+                if feats is None:
                     skipped += 1
                     continue
 
-                feats = builder.build(
-                    as_of_date=d,
-                    _spy_df=spy_slice,
-                    _vix_df=vix_slice,
-                )
+                # Attach V2 rule label
+                label_int = label_regime_day(feats)
+                feats["regime_label_rule"] = label_name(label_int)
 
                 if args.dry_run:
-                    if i < 3 or d >= end - timedelta(days=7):
+                    if i < 5 or d >= end - timedelta(days=7):
                         logger.info(
-                            "[DRY RUN] %s  vix=%.1f  spy_ma20=%.3f  days_to_fomc=%.0f",
+                            "[DRY RUN] %s  vix=%.1f  vix_term=%.3f  credit_20d=%.4f  "
+                            "breadth_20d=%.4f  label=%s",
                             d,
                             feats.get("vix_level") or float("nan"),
-                            feats.get("spy_ma20_dist") or float("nan"),
-                            feats.get("days_to_fomc") or float("nan"),
+                            feats.get("vix_term_ratio") or float("nan"),
+                            feats.get("credit_hyg_ief_20d") or float("nan"),
+                            feats.get("breadth_rsp_spy_ratio_20d") or float("nan"),
+                            feats.get("regime_label_rule", "?"),
                         )
                     ok += 1
                 else:
-                    _upsert_snapshot(db, RegimeSnapshot, feats, d)
-                    ok += 1
-                    if (i + 1) % 50 == 0:
+                    written = _upsert_snapshot(db, RegimeSnapshot, feats, d, args.rewrite)
+                    if written:
+                        ok += 1
+                    else:
+                        skipped += 1
+
+                    if (i + 1) % 100 == 0:
                         db.commit()
-                        logger.info("Progress: %d / %d  (committed)", i + 1, len(trading_days))
+                        logger.info(
+                            "Progress: %d / %d  ok=%d skipped=%d errors=%d",
+                            i + 1, len(trading_days), ok, skipped, errors,
+                        )
 
             except Exception as exc:
                 errors += 1
@@ -182,19 +184,19 @@ def main() -> None:
     logger.info("Done. ok=%d  skipped=%d  errors=%d", ok, skipped, errors)
 
     if not args.dry_run:
-        # Verify row count
+        from app.database.session import get_session
+        from app.database.models import RegimeSnapshot
         db2 = get_session()
         try:
-            count = db2.query(RegimeSnapshot).filter(
+            total = db2.query(RegimeSnapshot).filter(
                 RegimeSnapshot.snapshot_trigger == "backfill"
             ).count()
-            logger.info("regime_snapshots backfill rows: %d", count)
-            if count < 500:
-                logger.warning(
-                    "Gate check: expected >= 750 rows, got %d — re-check date range", count
-                )
+            logger.info("Total backfill rows in regime_snapshots: %d", total)
+            gate = 1500  # expect ~2000 rows from 2018
+            if total < gate:
+                logger.warning("Gate: expected >= %d rows, got %d", gate, total)
             else:
-                logger.info("Gate check PASSED: >= 500 backfill rows in regime_snapshots")
+                logger.info("Gate PASSED: >= %d backfill rows", gate)
         finally:
             db2.close()
 
