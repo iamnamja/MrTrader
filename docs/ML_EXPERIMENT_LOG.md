@@ -1115,3 +1115,94 @@ python scripts/train_model.py \
 ```
 
 **Next steps:** Run retrain + WF. If avg Sharpe > 0.80 → promote to paper trading. If 0.60–0.79 → Phase 86b (stock-relative features). If < 0.60 → gates too aggressive, tune thresholds.
+
+---
+
+## Walk-Forward Results: Phase 3b Swing v164 + Intraday v51+R5 (2026-05-07 overnight)
+
+### Swing v164 — Phase 3b Triple-Barrier WF ❌ GATE FAILED
+
+**Config:** 3-fold, 5yr, no-prefilters, WF-5a gates default-on (opp score + earnings blackout + macro gate), 5bps RT  
+**Model:** v164 (triple_barrier label, 2.0×ATR target / 1.2×ATR stop / 10d time barrier, 88 features)  
+**Training AUC:** 0.549 — MODEL DRIFT ALERT (below 0.65 threshold)
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Status |
+|---|---|---|---|---|---|---|
+| 1 | 2022-08-19 → 2023-11-07 | 209 | 45.9% | **+0.86** | 0.93 | ✅ |
+| 2 | 2023-11-18 → 2025-02-05 | 320 | 45.9% | **+0.98** | 1.37 | ✅ |
+| 3 | 2025-02-16 → 2026-05-07 | 280 | 42.5% | **+0.12** | 0.08 | ❌ |
+| **Avg** | | **809** | **44.8%** | **+0.655** | **0.79** | **❌ FAIL** |
+
+**Gate detail:**
+- avg_sharpe: 0.655 < 0.80 ❌
+- min_fold_sharpe: +0.12 > -0.30 ✅
+- DSR: z=-28.788, p=0.000 < 0.95 ❌
+- avg_calmar: 0.79 > 0.30 ✅
+
+**Key observation:** Fold 3 (Feb 2025 → May 2026 — tariff/high-vol period) collapsed to +0.12. Same pattern as v163 (+0.45) and before. The triple-barrier label change (wider barriers, longer time window) did NOT fix fold-3 weakness. Top features were structural (downtrend, choch_detected, price_above_ema50) — the model learned pattern-matching but not alpha.
+
+**Verdict:** ❌ GATE FAILED. v164 not promoted. v163 remains active swing champion. The fold-3 collapse is a systematic issue that wider ATR barriers alone cannot fix. Phase 3b label change is insufficient without also removing the RSI/EMA pre-filters (full Step 1 of Phase 3b spec).
+
+---
+
+### Intraday v51 + R5 Regime Gate ❌ GATE FAILED (regression)
+
+**Config:** 3-fold, 730-day window (2yr), WF-5a gates default-on + `--regime-gate` (R5-A/B/C), 15bps RT  
+**Model:** v51 (59 features, Phase 3a Branch B, previous best +0.529)  
+**Regime map:** 556 dates tagged
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Status |
+|---|---|---|---|---|---|---|
+| 1 | 2024-02-08 → 2024-11-01 | 235 | 44.7% | **-3.30** | -1.22 | ❌ |
+| 2 | 2024-11-06 → 2025-08-06 | 266 | 48.5% | **-0.15** | -0.05 | ❌ |
+| 3 | 2025-08-11 → 2026-05-07 | 257 | 50.6% | **+0.11** | 0.39 | ✅ |
+| **Avg** | | **758** | **47.9%** | **-1.112** | **-0.29** | **❌ FAIL** |
+
+**Gate detail:**
+- avg_sharpe: -1.112 < 0.80 ❌
+- min_fold_sharpe: -3.30 < -0.30 ❌
+- DSR: z=-62.347, p=0.000 < 0.95 ❌
+- avg_calmar: -0.293 < 0.30 ❌
+
+**Critical observation — this is a REGRESSION vs previous v51 result (+0.529):**
+
+Two confounding changes were applied simultaneously:
+1. **WF-5a gates now default-on**: opp score + earnings blackout + dispersion gate + macro gate all active in WF for the first time. These gates suppress trades that previous WF counted as wins.
+2. **R5 regime gate**: R5-A/B/C blocking additional days in the new fold periods.
+3. **Different fold periods**: Previous v51 WF covered Jul 2025–Apr 2026 (most recent 9 months). This run covers Feb 2024–May 2026 (2 years). Fold 1 (Feb–Nov 2024) is **new test territory** that was never in any previous v51 WF.
+
+**Root cause of fold 1 -3.30:** Cannot isolate yet. Candidates:
+- The 2024 period (before tariff shock) may have been a regime where v51 genuinely underperforms (low-vol, different cross-sectional dispersion patterns)
+- WF-5a gates + R5 in combination may be removing too many Feb–Nov 2024 trading days, leaving only the worst remaining days
+- The R5-B dispersion gate (40% threshold) may be miscalibrated for the 2024 regime
+
+**Verdict:** ❌ GATE FAILED. Cannot attribute failure to R5 specifically without isolating. **Immediate next step: re-run intraday WF WITHOUT R5 flag but WITH WF-5a gates, on the same 730-day window**, to measure WF-5a impact alone. Then re-enable R5 to measure R5's delta.
+
+---
+
+## Diagnostic Re-Run Plan (morning)
+
+**Goal:** Isolate which change caused the intraday regression.
+
+**Run A — Intraday v51, WF-5a ON, no R5, 730d:**
+```bash
+python scripts/walkforward_tier3.py --model intraday
+```
+(All WF-5a gates on by default; no --regime-gate)
+
+**Run B — Intraday v51, no WF-5a, no R5, 365d (baseline comparison):**
+```bash
+python scripts/walkforward_tier3.py --model intraday --days 365 \
+  --no-pm-opportunity-score --no-earnings-blackout --no-dispersion-gate --no-macro-gate
+```
+
+**Decision tree:**
+```
+Run A avg Sharpe > 0.40?
+  YES → WF-5a is not the main problem; R5 is over-gating. Tune R5 thresholds.
+  NO  → WF-5a gates + 2yr window are suppressing genuine alpha. Investigate gate calibration.
+
+Run B ≈ +0.529?
+  YES → Previous result was reproducible; confounding is in WF-5a or R5
+  NO  → Something else changed (model loading, fold structure, data)
+```

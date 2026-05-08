@@ -17,30 +17,40 @@
 | 2 | **WF-5a** — fidelity gates default-on | WF framework | ✅ Done (PR #170) |
 | 3 | **Phase R5** — intraday regime gate | Gate (no retrain) | ✅ Done (PR #171) |
 | 4 | **Phase 3b** — triple-barrier label config | Training prep | ✅ Done (PR #172) |
-| 5 | **Swing retrain** (3b command) | Training | ⏳ Run manually overnight |
-| 6 | **Intraday WF** (with R5 + WF-5a) | Walk-forward | ⏳ Run after step 5 starts |
-| 7 | **Swing WF** | Walk-forward | ⏳ Run after step 5 completes |
-| 8 | **Document + merge** | Housekeeping | ⏳ After WF results |
-| 9 | Paper trading | Live | After gate passes |
-| 10 | **WF-5b** (portfolio-level) | WF framework | 🔜 After 30+ paper days |
+| 5 | **Swing retrain v164** | Training | ✅ Done — AUC 0.549 (weak) |
+| 6 | **Intraday WF v51+R5** | Walk-forward | ✅ Done — avg **-1.112** ❌ FAILED |
+| 7 | **Swing WF v164** | Walk-forward | ✅ Done — avg **+0.655** ❌ FAILED |
+| 8 | **Diagnose regression** | Analysis | 🔴 BLOCKING — see below |
+| 9 | **Intraday diagnostic re-runs** | Walk-forward | ⏳ Next |
+| 10 | Paper trading | Live | After gate passes |
+| 11 | **WF-5b** (portfolio-level) | WF framework | 🔜 After 30+ paper days |
 
-**Swing retrain command (run in terminal, ~2-3h):**
+### 🔴 Overnight Results — Both Models Failed
+
+**Swing v164 (Phase 3b triple-barrier):** avg +0.655 ❌
+- Fold 1: +0.86 ✅ | Fold 2: +0.98 ✅ | Fold 3: +0.12 ❌
+- Same fold-3 collapse as v163. Triple-barrier label change didn't fix it.
+- AUC 0.549 (drift alert). v164 NOT promoted. v163 remains active.
+
+**Intraday v51+R5:** avg -1.112 ❌ (regression from +0.529)
+- Fold 1: -3.30 ❌ | Fold 2: -0.15 ❌ | Fold 3: +0.11 ✅
+- Fold 1 covers Feb–Nov 2024 — new test period not in any prior v51 WF
+- Two simultaneous changes (WF-5a gates + R5 + 730d window vs prior 365d) prevent root-cause isolation
+
+### Next: Diagnostic Isolations (run in sequence)
+
+**Run A — v51, WF-5a ON, no R5, 730d** (isolate WF-5a impact):
 ```bash
-python scripts/train_model.py \
-  --label-scheme triple_barrier \
-  --tb-target-mult 2.0 --tb-stop-mult 1.2 --forward-days 10 \
-  --no-fundamentals --workers 8
+python scripts/walkforward_tier3.py --model intraday
 ```
 
-**Intraday WF command (can run in parallel with retrain):**
+**Run B — v51, all gates OFF, 365d** (reproduce prior +0.529 baseline):
 ```bash
-python scripts/walkforward_tier3.py --model intraday --regime-gate
+python scripts/walkforward_tier3.py --model intraday --days 365 \
+  --no-pm-opportunity-score --no-earnings-blackout --no-dispersion-gate --no-macro-gate
 ```
 
-**Swing WF command (run after retrain completes):**
-```bash
-python scripts/walkforward_tier3.py --model swing --no-prefilters
-```
+**Decision:** If Run B ≈ +0.529 → gates are suppressing alpha, calibrate WF-5a thresholds. If Run A OK → R5 is over-gating, tune R5 thresholds. See `ML_EXPERIMENT_LOG.md` for full decision tree.
 
 **WF-5 scope decision:** WF-5 split into 5a (wire existing gates per-fold, easy) and 5b (portfolio-level simulation, deferred). WF-5b needs live reconciliation data first to know which effects actually matter.
 
