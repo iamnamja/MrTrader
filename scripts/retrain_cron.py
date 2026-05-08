@@ -114,6 +114,7 @@ def run_swing(dry_run: bool) -> bool:
             total_years=SWING_RETRAIN["walk_forward_years"],
             model_version=version,
             use_opportunity_score=True,
+            no_prefilters=True,  # Phase 89: let model score full universe, no RSI/EMA gates
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe

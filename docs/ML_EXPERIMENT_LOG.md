@@ -1361,11 +1361,72 @@ This is also why swing v166 fold 3 collapsed (-0.29): RISK_OFF contamination in 
 - RISK_OFF down-weight from 0.0 (exclude) to 0.3× (soft penalty) — restores calibration data for fold-2 stress events
 - Detailed plan: docs/IMPROVEMENT_PLAN_PHASES_88_92.md
 
-**v170 retrain kicked off:** 2026-05-08
-**v57 retrain kicked off:** 2026-05-08
+**v170 retrain kicked off:** 2026-05-08 (pre-Phase 88 merge, 3-fold gate, retired)
+**v172 retrain completed:** 2026-05-08 (first full Phase 88 5-fold run)
+**v58 retrain kicked off:** 2026-05-08
 
-### v170 Walk-Forward Results (Swing)
-*(To be filled)*
+### v172 Walk-Forward Results (Swing) — ❌ GATE FAILED
 
-### v57 Walk-Forward Results (Intraday)
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Trades | Sharpe | Gate |
+|---|---|---|---|
+| 1 (~2022-02→2023-02, bear/pivot) | 117 | **-1.87** | ❌ |
+| 2 (~2023-02→2024-02, AI rally) | 100 | **-0.15** | ❌ |
+| 3 (~2024-02→2025-02, low-vol grind) | 198 | **+1.43** | ✅ |
+| 4 (~2025-02→2025-10, tariff shock) | 128 | **-0.40** | ❌ |
+| 5 (~2025-10→2026-05, recent) | 198 | **-0.22** | ❌ |
+| **Average** | — | **-0.243** | ❌ |
+
+**Analysis:**
+- ✅ **Fold 3 (low-vol grind) is now +1.43** — Phase 88 regime features fixed the original problem fold
+- ❌ **Fold 1 (2022 bear) is -1.87** — new problem: 5-fold window extends into 2022 bear market, a regime the model was never trained on (was RISK_OFF=0.0 excluded; now 0.3× but insufficient)
+- Fold 2 (AI rally) marginally negative (-0.15) — improved vs prior but still weak
+- Root cause: model lacks trend/momentum features to distinguish bear trends from range-bound corrections
+- **Next step:** Phase 89 (trend-persistence features: Aroon, ADX-rising, Hurst, drawdown_from_high) should specifically address fold 1 and 2
+
+v171 restored as ACTIVE (prev champion).
+
+### v58 Walk-Forward Results (Intraday) — ❌ GATE FAILED
+
+**Gate:** avg Sharpe ≥ 1.00, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | 2024-08-28→2024-12-19 | 160 | **-3.87** | ❌ |
+| 2 | 2024-12-24→2025-04-22 | 160 | **-0.61** | ❌ |
+| 3 | 2025-04-25→2025-08-19 | 160 | **-1.93** | ❌ |
+| 4 | 2025-08-22→2025-12-15 | 160 | **-0.17** | ❌ |
+| 5 | 2025-12-18→2026-04-15 | 160 | **-1.19** | ❌ |
+| **Average** | — | — | **-1.556** | ❌ |
+
+**Analysis:**
+- Phase 88 changes (RISK_OFF 0.3×, 5 folds) regressed intraday significantly
+- RISK_OFF=0.3× adds volatile days back into training, potentially introducing noise
+- 5-fold gate extends test coverage to Aug 2024, exposing periods previously untested
+- All folds negative — fundamental signal degradation, not just fold count
+- **Next step:** Phase 91 (hybrid label + microstructure features) is the intraday fix path; Phase 89 swing improvements applied first
+
+v51 restored as ACTIVE.
+
+---
+
+## Phase 89 — Trend-Persistence Features in Swing (2026-05-08)
+
+**Motivation:** Phase 88 fixed fold 3 (low-vol grind, +1.43) but exposed fold 1 (2022 bear market, -1.87) and fold 2 (AI rally, -0.15). Root cause: RSI/MACD/Stoch features are mean-reversion biased — model can't distinguish "RSI=70 in a downtrend" from "RSI=70 before reversal". Trend-quality signals needed.
+
+**Changes (features.py):**
+- Add `_aroon()` helper: Aroon Up/Down(25) in [0,1], Aroon Oscillator
+- Add `_hurst_exponent()` helper: [0,1] via R/S analysis
+- New features: `aroon_up_25`, `aroon_down_25`, `aroon_oscillator_25`
+- New features: `adx_rising` (bool), `adx_14_pct` (ADX/100)
+- New features: `pct_closes_above_ema20` — % of last 20 closes above their EMA-20 (trend persistence)
+- New features: `drawdown_from_20d_high` — how far from 20-day peak (negative, bear signal)
+- New features: `hurst_exponent_60d` — trending vs mean-reverting per name
+- New features: `volatility_adj_dist_52wk_high` — vol-normalized distance from 52wk high
+- WF gate now uses `no_prefilters=True` — evaluates model on full universe, no RSI/EMA gates
+
+**v173 retrain kicked off:** 2026-05-08
+
+### v173 Walk-Forward Results (Swing)
 *(To be filled)*

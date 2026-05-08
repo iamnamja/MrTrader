@@ -219,6 +219,32 @@ def _stochastic_k(highs, lows, closes, period=14):
     return float(np.clip((closes[-1] - lo) / (h - lo) * 100.0, 0.0, 100.0))
 
 
+def _aroon(highs, lows, period=25):
+    """Aroon Up/Down in [0,1]. Up near 1 = recent high, Down near 1 = recent low."""
+    if len(highs) < period + 1:
+        return 0.5, 0.5
+    h = highs[-(period + 1):]
+    lo = lows[-(period + 1):]
+    aroon_up = float((period - (len(h) - 1 - np.argmax(h))) / period)
+    aroon_down = float((period - (len(lo) - 1 - np.argmin(lo))) / period)
+    return float(np.clip(aroon_up, 0.0, 1.0)), float(np.clip(aroon_down, 0.0, 1.0))
+
+
+def _hurst_exponent(prices, max_lag=20):
+    """Hurst exponent via R/S analysis. ~0.5=random, >0.5=trending, <0.5=mean-reverting."""
+    if len(prices) < max_lag * 2:
+        return 0.5
+    try:
+        lags = range(2, max_lag)
+        tau = [float(np.std(np.subtract(prices[lag:], prices[:-lag]))) for lag in lags]
+        if min(tau) <= 0:
+            return 0.5
+        poly = np.polyfit(np.log(list(lags)), np.log(tau), 1)
+        return float(np.clip(poly[0], 0.0, 1.0))
+    except Exception:
+        return 0.5
+
+
 def _adx(highs, lows, closes, period=14):
     """
     Average Directional Index in [0, 100].
@@ -1466,5 +1492,69 @@ class FeatureEngineer:
             for ri_k in ("rsi_x_vix_regime", "momentum20_x_vix_bucket", "adx_x_spy_trend",
                          "rsi_x_spy_trend", "vol_pct_x_vix_bucket", "adx_x_vix_bucket"):
                 features.setdefault(ri_k, 0.0)
+
+        # ── Phase 89 — Trend-persistence features ────────────────────────────
+        # Aroon, ADX-rising, Hurst, pct_above_ema20, drawdown, vol-adj 52wk dist.
+        # These replace mean-reversion bias with trend-quality signals — critical for
+        # fold 1 (2022 bear) and fold 2 (2023 AI rally) where RSI/MACD were misleading.
+        try:
+            # Aroon(25): Up=1 means 25-period high was just set (strong trend)
+            _aroon_up, _aroon_down = _aroon(highs, lows, period=25)
+            features["aroon_up_25"] = _aroon_up
+            features["aroon_down_25"] = _aroon_down
+            features["aroon_oscillator_25"] = float(np.clip(_aroon_up - _aroon_down, -1.0, 1.0))
+
+            # ADX rising: is trend strength increasing over the last 5 bars?
+            if len(prices) >= 25 and len(highs) >= 25:
+                _adx_now_89 = _adx(highs, lows, prices, period=14)
+                _adx_5ago_89 = _adx(highs[:-5], lows[:-5], prices[:-5], period=14) if len(prices) > 19 else _adx_now_89
+                features["adx_rising"] = float(_adx_now_89 > _adx_5ago_89)
+                features["adx_14_pct"] = float(np.clip(_adx_now_89 / 100.0, 0.0, 1.0))
+            else:
+                features["adx_rising"] = 0.5
+                features["adx_14_pct"] = 0.0
+
+            # % of last 20 closes above their EMA-20 value — trend persistence proxy
+            if len(prices) >= 20:
+                _alpha_ema20 = 2.0 / 21.0
+                _ema20_series = np.zeros(len(prices))
+                _ema20_series[0] = prices[0]
+                for _i in range(1, len(prices)):
+                    _ema20_series[_i] = _alpha_ema20 * prices[_i] + (1 - _alpha_ema20) * _ema20_series[_i - 1]
+                _last20_above = np.sum(prices[-20:] > _ema20_series[-20:]) / 20.0
+                features["pct_closes_above_ema20"] = float(_last20_above)
+            else:
+                features["pct_closes_above_ema20"] = 0.5
+
+            # Drawdown from 20-day high — how far are we from the peak?
+            if len(prices) >= 20:
+                _peak20 = float(np.max(highs[-20:]))
+                _dd_from_20d = float(np.clip((prices[-1] - _peak20) / max(_peak20, 1e-9), -1.0, 0.0))
+                features["drawdown_from_20d_high"] = _dd_from_20d
+            else:
+                features["drawdown_from_20d_high"] = 0.0
+
+            # Hurst exponent (60d): >0.5 = trending, <0.5 = mean-reverting
+            if len(prices) >= 60:
+                features["hurst_exponent_60d"] = _hurst_exponent(prices[-60:], max_lag=20)
+            else:
+                features["hurst_exponent_60d"] = 0.5
+
+            # Volatility-adjusted distance from 52-week high
+            if len(prices) >= 252 and len(highs) >= 252:
+                _high_52w = float(np.max(highs[-252:]))
+                _rets_20 = np.diff(np.log(prices[-21:] + 1e-9)) if len(prices) >= 21 else np.array([0.01])
+                _vol_20d = float(np.std(_rets_20) * np.sqrt(252)) if len(_rets_20) > 1 else 0.01
+                _dist_52w = float((prices[-1] - _high_52w) / max(_high_52w, 1e-9))
+                features["volatility_adj_dist_52wk_high"] = float(np.clip(_dist_52w / max(_vol_20d, 0.01), -5.0, 0.0))
+            else:
+                features["volatility_adj_dist_52wk_high"] = 0.0
+
+        except Exception:
+            for _p89_k in ("aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
+                           "adx_rising", "adx_14_pct", "pct_closes_above_ema20",
+                           "drawdown_from_20d_high", "hurst_exponent_60d",
+                           "volatility_adj_dist_52wk_high"):
+                features.setdefault(_p89_k, 0.5)
 
         return features
