@@ -164,7 +164,6 @@ def download_data(
     symbols: List[str], years: int, provider: str = "polygon"
 ) -> dict:
     import pandas as pd
-    from datetime import date as date_type
     header(2, 6, f"Downloading {years}-year history for {len(symbols)} symbols  [provider={provider}]")
 
     end_dt = datetime.now().date()
@@ -248,13 +247,28 @@ def run_rolling_pipeline(
     two_stage: bool = False,
     three_stage: bool = False,
     multi_window: bool = False,
+    tb_target_mult: float | None = None,
+    tb_stop_mult: float | None = None,
+    forward_days: int | None = None,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
     Produces honest out-of-sample metrics via time-based train/test split.
     """
-    from app.ml.training import ModelTrainer, WINDOW_DAYS, FORWARD_DAYS, TEST_FRACTION
+    import app.ml.training as _training_module
+    from app.ml.training import ModelTrainer, WINDOW_DAYS, TEST_FRACTION
 
+    # Phase 3b: apply ATR multiplier + forward-day overrides before training
+    if tb_target_mult is not None:
+        _training_module.ATR_MULT_TARGET = tb_target_mult
+    if tb_stop_mult is not None:
+        _training_module.ATR_MULT_STOP = tb_stop_mult
+    if forward_days is not None:
+        _training_module.FORWARD_DAYS = forward_days
+        _training_module.STEP_DAYS = forward_days
+        _training_module.EMBARGO_WINDOWS = max(1, round(forward_days / forward_days))
+
+    FORWARD_DAYS = _training_module.FORWARD_DAYS
     stage_label = " [three-stage]" if three_stage else (" [two-stage]" if two_stage else "")
     header(3, 6, "Building rolling-window feature matrix")
     info(f"Window: {WINDOW_DAYS} trading days  |  Forward: {FORWARD_DAYS} days  "
@@ -472,7 +486,7 @@ def run_rolling_pipeline(
 
     if multi_window and hasattr(trainer, "_mw_trainers") and trainer._mw_trainers:
         # Save each window model separately; primary path = first window
-        import pickle, json
+        import json
         paths = []
         for w, sub in trainer._mw_trainers:
             p = sub.model.save(str(MODEL_DIR), version, model_name=f"swing_w{w}")
@@ -535,8 +549,27 @@ def main():
     )
     parser.add_argument(
         "--label-scheme", default="atr",
-        choices=["atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative", "atr_and_sector", "return_regression", "return_blend", "lambdarank", "percentile_rank", "path_quality"],
-        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar 1.5x ATR target / 0.5x ATR stop simulation (Phase 33).",
+        choices=[
+            "atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative",
+            "atr_and_sector", "return_regression", "return_blend", "lambdarank",
+            "percentile_rank", "path_quality",
+        ],
+        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar ATR-scaled target/stop.",
+    )
+    parser.add_argument(
+        "--tb-target-mult", type=float, default=None,
+        help="Phase 3b: override ATR_MULT_TARGET for triple_barrier labeling (default: 1.5). "
+             "Use 2.0 for Phase 3b full-universe retrain.",
+    )
+    parser.add_argument(
+        "--tb-stop-mult", type=float, default=None,
+        help="Phase 3b: override ATR_MULT_STOP for triple_barrier labeling (default: 0.5). "
+             "Use 1.2 for Phase 3b full-universe retrain.",
+    )
+    parser.add_argument(
+        "--forward-days", type=int, default=None,
+        help="Phase 3b: override FORWARD_DAYS for labeling (default: 5 trading days). "
+             "Use 10 for Phase 3b wider time barrier.",
     )
     parser.add_argument(
         "--top-features", type=int, default=0,
@@ -569,7 +602,7 @@ def main():
     )
     parser.add_argument(
         "--three-stage", action="store_true",
-        help="Use three-stage model tuned for 10d horizon: Stage 1 quality (0.20), Stage 2 catalyst (0.40), Stage 3 timing (0.40)",
+        help="Use three-stage model: Stage 1 quality (0.20), Stage 2 catalyst (0.40), Stage 3 timing (0.40)",
     )
     parser.add_argument(
         "--multi-window", action="store_true",
@@ -599,11 +632,11 @@ def main():
         print(f"  Walk-fwd folds: {args.walk_forward}")
     print(f"  Threshold     : {args.threshold}")
     if args.three_stage:
-        print(f"  Three-stage   : yes (quality 20% + catalyst 40% + timing 40%)")
+        print("  Three-stage   : yes (quality 20% + catalyst 40% + timing 40%)")
     elif args.two_stage:
-        print(f"  Two-stage     : yes (fundamental quality + technical timing)")
+        print("  Two-stage     : yes (fundamental quality + technical timing)")
     if args.multi_window:
-        print(f"  Multi-window  : yes (63d + 126d ensemble)")
+        print("  Multi-window  : yes (63d + 126d ensemble)")
     print(f"  Dry run       : {'yes -- model will NOT be saved' if args.dry_run else 'no'}")
     print(f"{BOLD}{'=' * 60}{RESET}")
 
@@ -638,6 +671,9 @@ def main():
         two_stage=args.two_stage,
         three_stage=args.three_stage,
         multi_window=args.multi_window,
+        tb_target_mult=getattr(args, "tb_target_mult", None),
+        tb_stop_mult=getattr(args, "tb_stop_mult", None),
+        forward_days=getattr(args, "forward_days", None),
     )
     phase_times["train_pipeline"] = time.time() - _t
 

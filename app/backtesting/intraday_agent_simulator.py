@@ -115,6 +115,13 @@ class IntradayAgentSimulator:
         earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
         intraday_blackout_days_before: int = 1,  # Phase 2b: skip entry N days before earnings
         intraday_blackout_days_after: int = 3,   # Phase 2b: skip entry N days after earnings
+        macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+        # Phase R5: regime gates (no retrain)
+        use_regime_gate: bool = False,  # R5-A: block VIX-spike + SPY-downtrend days
+        regime_map: Optional[dict] = None,  # R5-A: {date: label} from WF-4 regime.py
+        r5b_dispersion_threshold: float = 0.4,  # R5-B: block if dispersion < threshold × 60d median
+        r5c_vix_threshold: float = 35.0,  # R5-C: block if VIX > this AND SPY 5d return < -5%
+        r5c_spy_drawdown: float = -0.05,  # R5-C: SPY 5d return threshold
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -131,6 +138,13 @@ class IntradayAgentSimulator:
         self.earnings_blackout = earnings_blackout or {}
         self.intraday_blackout_days_before = intraday_blackout_days_before
         self.intraday_blackout_days_after = intraday_blackout_days_after
+        self.macro_blocked_dates: set = macro_blocked_dates or set()
+        # Phase R5: regime gates
+        self.use_regime_gate = use_regime_gate
+        self.regime_map: dict = regime_map or {}
+        self.r5b_dispersion_threshold = r5b_dispersion_threshold
+        self.r5c_vix_threshold = r5c_vix_threshold
+        self.r5c_spy_drawdown = r5c_spy_drawdown
         # Phase 51: scan_offsets controls how many entry windows per day.
         # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
         self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
@@ -249,13 +263,19 @@ class IntradayAgentSimulator:
                 try:
                     if self.pm_abstention_vix > 0 and _vix_closes is not None:
                         _vix_idx = pd.DatetimeIndex(_vix_closes.index)
-                        _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else np.array([d.date() for d in _vix_idx])
+                        _vix_dates = (
+                            _vix_idx.date if hasattr(_vix_idx, "date")
+                            else np.array([d.date() for d in _vix_idx])
+                        )
                         _vix_hist = _vix_closes.iloc[_vix_dates <= day]
                         if len(_vix_hist) > 0 and float(_vix_hist.iloc[-1]) >= self.pm_abstention_vix:
                             skip_entries = True
                     if not skip_entries and self.pm_abstention_spy_ma_days > 0 and _spy_daily_closes is not None:
                         _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
-                        _spy_dates = _spy_idx.date if hasattr(_spy_idx, "date") else np.array([d.date() for d in _spy_idx])
+                        _spy_dates = (
+                            _spy_idx.date if hasattr(_spy_idx, "date")
+                            else np.array([d.date() for d in _spy_idx])
+                        )
                         _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
                         if len(_spy_hist) >= self.pm_abstention_spy_ma_days:
                             _spy_ma = float(_spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
@@ -279,7 +299,10 @@ class IntradayAgentSimulator:
                         vix_score, vix_trend = 1.0, 1.0
                         if _vix_closes is not None:
                             _vix_idx2 = pd.DatetimeIndex(_vix_closes.index)
-                            _vix_dates2 = _vix_idx2.date if hasattr(_vix_idx2, "date") else np.array([d.date() for d in _vix_idx2])
+                            _vix_dates2 = (
+                                _vix_idx2.date if hasattr(_vix_idx2, "date")
+                                else np.array([d.date() for d in _vix_idx2])
+                            )
                             _vix_hist2 = _vix_closes.iloc[_vix_dates2 <= day]
                             if len(_vix_hist2) > 0:
                                 vix_level = float(_vix_hist2.iloc[-1])
@@ -305,12 +328,66 @@ class IntradayAgentSimulator:
                             logger.debug("Dispersion gate on %s: %.4f < %.2f×%.4f",
                                          day, today_disp, self.dispersion_threshold, median_disp)
 
+            # WF-5a: macro event gate — block new entries on FOMC/NFP/CPI/GDP days
+            if not skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
+                skip_entries = True
+                logger.debug("Macro gate blocked intraday entries on %s", day)
+
+            # Phase R5: regime gates (no retrain)
+            if not skip_entries and self.use_regime_gate:
+                # R5-A: block VIX-spike + SPY downtrend (label ends with "D..." = below 50d MA)
+                label = self.regime_map.get(day, "")
+                if label and label.startswith("4") and "D" in label:
+                    skip_entries = True
+                    logger.debug("R5-A regime gate on %s: label=%s (VIX4 + SPY downtrend)", day, label)
+
+                # R5-B: tighter dispersion floor (40% of 60d median, vs existing 50%)
+                if not skip_entries and _daily_dispersion:
+                    today_disp = _daily_dispersion.get(day)
+                    if today_disp is not None:
+                        past_days = sorted(d for d in _daily_dispersion if d < day)
+                        if len(past_days) >= 20:
+                            window = past_days[-60:]
+                            median_disp = float(np.median([_daily_dispersion[d] for d in window]))
+                            if median_disp > 0 and today_disp < self.r5b_dispersion_threshold * median_disp:
+                                skip_entries = True
+                                logger.debug("R5-B dispersion gate on %s: %.4f < %.2f×%.4f",
+                                             day, today_disp, self.r5b_dispersion_threshold, median_disp)
+
+                # R5-C: VIX spike + SPY drawdown
+                if not skip_entries and _vix_closes is not None and _spy_daily_closes is not None:
+                    try:
+                        _vix_idx = pd.DatetimeIndex(_vix_closes.index)
+                        _vix_dates = (
+                            _vix_idx.date if hasattr(_vix_idx, "date")
+                            else np.array([d.date() for d in _vix_idx])
+                        )
+                        _vix_hist = _vix_closes.iloc[_vix_dates <= day]
+                        _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
+                        _spy_dates = (
+                            _spy_idx.date if hasattr(_spy_idx, "date")
+                            else np.array([d.date() for d in _spy_idx])
+                        )
+                        _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
+                        if len(_vix_hist) > 0 and len(_spy_hist) >= 6:
+                            vix_today = float(_vix_hist.iloc[-1])
+                            spy_5d_ret = float(_spy_hist.iloc[-1]) / float(_spy_hist.iloc[-6]) - 1.0
+                            if vix_today > self.r5c_vix_threshold and spy_5d_ret < self.r5c_spy_drawdown:
+                                skip_entries = True
+                                logger.debug("R5-C gate on %s: VIX=%.1f SPY5d=%.3f", day, vix_today, spy_5d_ret)
+                    except Exception:
+                        pass
+
             spy_day = self._get_day_bars(spy_data, day) if spy_data is not None else None
             # Phase 86: SPY daily bars strictly before today (no lookahead)
             spy_daily_as_of = None
             if spy_daily_data is not None:
                 spy_d_idx = pd.DatetimeIndex(spy_daily_data.index)
-                spy_d_dates = spy_d_idx.normalize().date if hasattr(spy_d_idx.normalize(), "date") else np.array([d2.date() for d2 in spy_d_idx.normalize()])
+                spy_d_norm = spy_d_idx.normalize()
+                spy_d_dates = (
+                    spy_d_norm.date if hasattr(spy_d_norm, "date")
+                    else np.array([d2.date() for d2 in spy_d_norm])
+                )
                 spy_daily_as_of = spy_daily_data.iloc[spy_d_dates < day]
                 if len(spy_daily_as_of) == 0:
                     spy_daily_as_of = None

@@ -1,8 +1,58 @@
 # MrTrader — Master Backlog & Roadmap
 
 **Last updated:** 2026-05-07  
-**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80). Phase 3 architecture repair in progress; Phase 4a feature audit complete.  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a now complete. Phase 3b designed. See `docs/llm_review_synthesis.md` for full analysis.
+**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80).  
+**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a+WF-1/2/3/4/5a+R5+3b now complete. See `docs/llm_review_synthesis.md` for full analysis.  
+**Next:** Run swing retrain (Phase 3b command below) + intraday WF with R5 gate. Then swing WF. Then paper trading.
+
+---
+
+## Active Execution Plan (agreed 2026-05-07)
+
+**Rule:** Document → implement → test → merge before moving to next phase.
+
+| Step | Phase | Type | Status |
+|---|---|---|---|
+| 1 | **WF-4** — regime-stratified folds | WF framework | ✅ Done (PR #169) |
+| 2 | **WF-5a** — fidelity gates default-on | WF framework | ✅ Done (PR #170) |
+| 3 | **Phase R5** — intraday regime gate | Gate (no retrain) | ✅ Done (PR #171) |
+| 4 | **Phase 3b** — triple-barrier label config | Training prep | ✅ Done (PR #172) |
+| 5 | **Swing retrain v164** | Training | ✅ Done — AUC 0.549 (weak) |
+| 6 | **Intraday WF v51+R5** | Walk-forward | ✅ Done — avg **-1.112** ❌ FAILED |
+| 7 | **Swing WF v164** | Walk-forward | ✅ Done — avg **+0.655** ❌ FAILED |
+| 8 | **Diagnose regression** | Analysis | 🔴 BLOCKING — see below |
+| 9 | **Intraday diagnostic re-runs** | Walk-forward | ⏳ Next |
+| 10 | Paper trading | Live | After gate passes |
+| 11 | **WF-5b** (portfolio-level) | WF framework | 🔜 After 30+ paper days |
+
+### 🔴 Overnight Results — Both Models Failed
+
+**Swing v164 (Phase 3b triple-barrier):** avg +0.655 ❌
+- Fold 1: +0.86 ✅ | Fold 2: +0.98 ✅ | Fold 3: +0.12 ❌
+- Same fold-3 collapse as v163. Triple-barrier label change didn't fix it.
+- AUC 0.549 (drift alert). v164 NOT promoted. v163 remains active.
+
+**Intraday v51+R5:** avg -1.112 ❌ (regression from +0.529)
+- Fold 1: -3.30 ❌ | Fold 2: -0.15 ❌ | Fold 3: +0.11 ✅
+- Fold 1 covers Feb–Nov 2024 — new test period not in any prior v51 WF
+- Two simultaneous changes (WF-5a gates + R5 + 730d window vs prior 365d) prevent root-cause isolation
+
+### Next: Diagnostic Isolations (run in sequence)
+
+**Run A — v51, WF-5a ON, no R5, 730d** (isolate WF-5a impact):
+```bash
+python scripts/walkforward_tier3.py --model intraday
+```
+
+**Run B — v51, all gates OFF, 365d** (reproduce prior +0.529 baseline):
+```bash
+python scripts/walkforward_tier3.py --model intraday --days 365 \
+  --no-pm-opportunity-score --no-earnings-blackout --no-dispersion-gate --no-macro-gate
+```
+
+**Decision:** If Run B ≈ +0.529 → gates are suppressing alpha, calibrate WF-5a thresholds. If Run A OK → R5 is over-gating, tune R5 thresholds. See `ML_EXPERIMENT_LOG.md` for full decision tree.
+
+**WF-5 scope decision:** WF-5 split into 5a (wire existing gates per-fold, easy) and 5b (portfolio-level simulation, deferred). WF-5b needs live reconciliation data first to know which effects actually matter.
 
 ---
 
@@ -34,6 +84,10 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Deliverable:** Net Sharpe numbers we can actually trust. Expected: swing drops ~0.1–0.2, intraday drops ~0.3–0.5.  
 **Files:** `scripts/walkforward_tier3.py`, `app/backtesting/intraday_agent_simulator.py`
 
+### 1b. Purge + Embargo + Multi-Metric Gate (WF-1) ✅ COMPLETE (2026-05-07)
+**What:** Extended 1b with post-test embargo (both sides of test window now clean). Added profit_factor, calmar_ratio, k_ratio metrics to FoldResult. Gate now requires avg_PF >= 1.10 AND avg_Calmar >= 0.30 in addition to Sharpe + DSR. 31 unit tests. PR #166.  
+**Files:** `scripts/walkforward_tier3.py`, `tests/test_wf1_embargo_metrics.py`
+
 ### 1b. Purge + Embargo Between Walk-Forward Folds ✅ COMPLETE (2026-05-05/06)
 **Why:** Train/test boundary allows labels computed on test-window data to contaminate training (e.g., a 5-day label computed starting the last train day extends into test).  
 **What:**
@@ -52,6 +106,13 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - **Keep NIS as a PM gate/overlay** (see Phase 3c below)  
 **Files:** `app/ml/training.py` (swing feature list), `app/ml/intraday_trainer.py` (intraday feature list)  
 **Deliverable:** Cleaner model without time-leak. Swing drops from ~89 → ~79 features, intraday from 61 → 56 features.
+
+### 1f. Pluggable Walk-Forward Engine (WF-2) ✅ COMPLETE (2026-05-07)
+**What:** Refactored `walkforward_tier3.py` into `scripts/walkforward/` package: `FoldEngine` (strategy-agnostic), `gates.py`, `cost_models.py`, `strategies/swing.py`, `strategies/intraday.py`. `walkforward_tier3.py` unchanged for full backwards compat. 21 unit tests. PR #167.
+
+### 1g. Combinatorial Purged K-Fold (WF-3) ✅ COMPLETE (2026-05-07)
+**What:** Implemented CPCV (Lopez de Prado AFML Ch. 12) in `scripts/walkforward/cpcv.py`. C(k,paths) independent test paths; CPCVResult reports full Sharpe distribution. New gate: pct_positive >= 75%, P5 >= -0.30. CLI: `--cpcv --cpcv-k 6 --cpcv-paths 2`. 18 unit tests. PR #168.  
+**Note:** CPCV with k=6 runs 15 fold combinations (~4h for swing). Use as final promotion gate before live trading.
 
 ### 1d. Bootstrap Walk-Forward to Quantify Selection Bias ✅ COMPLETE (2026-05-06)
 **Why:** We've tried ~15 model variants. Picking the best Sharpe inflates the result. Need to know if the original +1.181 / +1.830 were in the tail of a noise distribution.  

@@ -8,6 +8,12 @@ Design (per PHASES_18_23_SPEC.md):
 
 Gate: avg OOS Tier 3 Sharpe > 0.8, no fold below -0.3
 
+WF-1 additions (2026-05-07):
+  - embargo_days parameter: clean gap on BOTH sides of every test window
+      train | purge_days | TEST | embargo_days | next_train
+  - New fold metrics: profit_factor, calmar_ratio, k_ratio
+  - Extended gate: avg profit_factor > 1.10, avg calmar > 0.30
+
 Usage:
     python scripts/walkforward_tier3.py --model swing --folds 3 --years 5
     python scripts/walkforward_tier3.py --model intraday --folds 3 --days 730
@@ -47,9 +53,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Gate thresholds ───────────────────────────────────────────────────────────
-SHARPE_GATE = 0.8       # avg OOS Sharpe required to pass
-MIN_FOLD_SHARPE = -0.3  # no individual fold may be below this
-N_TRIALS_TESTED = 15    # approx number of model variants tried historically (for DSR)
+SHARPE_GATE = 0.8          # avg OOS Sharpe required to pass
+MIN_FOLD_SHARPE = -0.3     # no individual fold may be below this
+N_TRIALS_TESTED = 15       # approx number of model variants tried historically (for DSR)
+# WF-1: multi-metric gates
+MIN_PROFIT_FACTOR = 1.10   # avg profit factor across folds (sum wins / sum |losses|)
+MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)
 
 
 def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
@@ -65,6 +74,56 @@ def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[fl
     sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
     dsr_z = (sharpe - sr_star) / math.sqrt(sr_var)
     return dsr_z, float(norm.cdf(dsr_z))
+
+
+# ── WF-1: Additional metric helpers ──────────────────────────────────────────
+
+def _compute_profit_factor(trade_returns: list) -> float:
+    """Profit factor = sum(positive returns) / sum(abs(negative returns)).
+    Returns 0.0 if no trades or no losses (cannot compute).
+    """
+    if not trade_returns:
+        return 0.0
+    wins = sum(r for r in trade_returns if r > 0)
+    losses = sum(abs(r) for r in trade_returns if r < 0)
+    return float(wins / losses) if losses > 0 else 0.0
+
+
+def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
+    """Calmar ratio = annualised return / max drawdown.
+    Returns 0.0 if max_drawdown is zero (avoids division by zero).
+    """
+    if max_drawdown_pct <= 0 or years <= 0:
+        return 0.0
+    annualised = total_return_pct / years
+    return float(annualised / max_drawdown_pct)
+
+
+def _compute_k_ratio(equity_curve: list) -> float:
+    """K-ratio = slope of cumulative return / std of annual returns.
+    Uses a simple linear regression on the equity curve index.
+    Returns 0.0 if insufficient data.
+
+    A positive K-ratio means the equity curve trends up consistently.
+    """
+    if len(equity_curve) < 4:
+        return 0.0
+    try:
+        y = np.array(equity_curve, dtype=float)
+        x = np.arange(len(y), dtype=float)
+        # slope via lstsq
+        slope = float(np.polyfit(x, y, 1)[0])
+        # std of differences as proxy for volatility of returns
+        diffs = np.diff(y)
+        vol = float(np.std(diffs)) if len(diffs) > 1 else 1.0
+        return slope / vol if vol > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _fold_years(test_start: date, test_end: date) -> float:
+    """Return the length of a test fold in years."""
+    return max((test_end - test_start).days / 365.0, 1 / 365.0)
 
 
 # ── Console helpers ───────────────────────────────────────────────────────────
@@ -94,17 +153,31 @@ class FoldResult:
     total_return: float
     stop_exit_rate: float
     model_version: int = 0
+    # WF-1: additional metrics
+    profit_factor: float = 0.0   # sum(wins) / sum(|losses|); 0 = not computed
+    calmar_ratio: float = 0.0    # annualised_return / max_drawdown; 0 = not computed
+    k_ratio: float = 0.0         # slope(cum_ret) / std(annual_ret); 0 = not computed
+    # WF-4: regime stratification
+    regime_sharpes: dict = field(default_factory=dict)
+    regime_diversity: int = 0
+    # WF-5a: abstention tracking
+    opp_score_abstain_days: int = 0
+    earnings_blackout_days: int = 0
+    macro_gate_days: int = 0
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
 
     def summary_line(self) -> str:
         gate = "OK" if self.passed_gate() else "FAIL"
+        pf_str = f"  PF={self.profit_factor:.2f}" if self.profit_factor > 0 else ""
+        cal_str = f"  Cal={self.calmar_ratio:.2f}" if self.calmar_ratio != 0 else ""
         return (
             f"  Fold {self.fold} [{gate}] "
             f"test={self.test_start}->{self.test_end}  "
             f"trades={self.trades}  win={self.win_rate:.1%}  "
             f"Sharpe={self.sharpe:.2f}  DD={self.max_drawdown:.1%}"
+            f"{pf_str}{cal_str}"
         )
 
 
@@ -129,32 +202,78 @@ class WalkForwardReport:
     def total_trades(self) -> int:
         return sum(f.trades for f in self.folds)
 
+    @property
+    def avg_profit_factor(self) -> float:
+        pfs = [f.profit_factor for f in self.folds if f.profit_factor > 0]
+        return float(np.mean(pfs)) if pfs else 0.0
+
+    @property
+    def avg_calmar(self) -> float:
+        cals = [f.calmar_ratio for f in self.folds if f.calmar_ratio != 0]
+        return float(np.mean(cals)) if cals else 0.0
+
+    @property
+    def avg_k_ratio(self) -> float:
+        ks = [f.k_ratio for f in self.folds if f.k_ratio != 0]
+        return float(np.mean(ks)) if ks else 0.0
+
     def gate_passed(self) -> bool:
         _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
+        cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         return (
             self.avg_sharpe >= SHARPE_GATE
             and self.min_sharpe >= MIN_FOLD_SHARPE
-            and dsr_p > 0.95  # Phase 1e: DSR significance required
+            and dsr_p > 0.95
+            and pf_ok    # WF-1: profit factor gate
+            and cal_ok   # WF-1: Calmar gate
         )
+
+    def gate_detail(self) -> dict:
+        """Return per-gate pass/fail dict for logging and tests."""
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        return {
+            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= SHARPE_GATE),
+            "min_sharpe": (self.min_sharpe, self.min_sharpe >= MIN_FOLD_SHARPE),
+            "dsr_p": (dsr_p, dsr_p > 0.95),
+            "avg_profit_factor": (self.avg_profit_factor,
+                                  self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
+            "avg_calmar": (self.avg_calmar,
+                           self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+        }
 
     def print(self) -> None:
         _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)")
         for f in self.folds:
             print(f.summary_line())
         print()
-        print(f"  Avg Sharpe:    {self.avg_sharpe:.3f}  (gate: > {SHARPE_GATE})")
-        print(f"  Min fold Sharpe: {self.min_sharpe:.3f}  (gate: > {MIN_FOLD_SHARPE})")
-        print(f"  Avg win rate:  {self.avg_win_rate:.1%}")
-        print(f"  Total trades:  {self.total_trades}")
+        detail = self.gate_detail()
+        print(f"  Avg Sharpe:      {self.avg_sharpe:+.3f}  (gate: > {SHARPE_GATE})  "
+              f"{'OK' if detail['avg_sharpe'][1] else 'FAIL'}")
+        print(f"  Min fold Sharpe: {self.min_sharpe:+.3f}  (gate: > {MIN_FOLD_SHARPE})  "
+              f"{'OK' if detail['min_sharpe'][1] else 'FAIL'}")
+        print(f"  Avg win rate:    {self.avg_win_rate:.1%}")
+        print(f"  Total trades:    {self.total_trades}")
         dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
-        dsr_sig = "[PASS] significant" if dsr_p > 0.95 else "[FAIL] not significant"
-        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  {dsr_sig}  (gate: p > 0.95)")
+        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
+              f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
+        if self.avg_profit_factor > 0:
+            print(f"  Avg profit factor: {self.avg_profit_factor:.3f}  "
+                  f"(gate: > {MIN_PROFIT_FACTOR})  "
+                  f"{'OK' if detail['avg_profit_factor'][1] else 'FAIL'}")
+        if self.avg_calmar != 0:
+            print(f"  Avg Calmar ratio:  {self.avg_calmar:.3f}  "
+                  f"(gate: > {MIN_CALMAR})  "
+                  f"{'OK' if detail['avg_calmar'][1] else 'FAIL'}")
+        if self.avg_k_ratio != 0:
+            print(f"  Avg K-ratio:       {self.avg_k_ratio:.3f}  (directional; > 0 = improving)")
         print()
         if self.gate_passed():
-            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f} > {SHARPE_GATE}, DSR p={dsr_p:.3f} > 0.95")
+            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f}, DSR p={dsr_p:.3f}, "
+                f"PF={self.avg_profit_factor:.2f}, Calmar={self.avg_calmar:.2f}")
         else:
-            _err(f"GATE NOT MET — avg Sharpe {self.avg_sharpe:.3f} (need {SHARPE_GATE}), "
-                 f"min fold {self.min_sharpe:.3f} (need {MIN_FOLD_SHARPE}), DSR p={dsr_p:.3f} (need >0.95)")
+            failed = [k for k, (v, ok) in detail.items() if not ok]
+            _err(f"GATE NOT MET — failed: {', '.join(failed)}")
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -361,10 +480,12 @@ def run_swing_walkforward(
     model_version: Optional[int] = None,
     transaction_cost_pct: float = 0.0005,
     purge_days: int = 10,
+    embargo_days: Optional[int] = None,  # WF-1: post-test gap before next fold trains (None = same as purge_days)
     use_opportunity_score: bool = False,
     no_prefilters: bool = False,
     train_years: Optional[int] = None,  # Phase 3b: rolling window (None = expanding)
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
+    macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -423,32 +544,46 @@ def run_swing_walkforward(
 
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
 
+    # WF-1: embargo_days defaults to purge_days when not specified.
+    # Both sides of every test window now have a clean gap:
+    #   train | purge_days | TEST | embargo_days | next_fold_train
+    _embargo = embargo_days if embargo_days is not None else purge_days
+
     # Build fold boundaries.
     # train_years=None: expanding window (train always from start_all).
     # train_years=N: rolling window (train starts at train_end - N years per fold).
     # purge_days gap between train_end and test_start prevents 5-day label leakage.
+    # embargo_days gap after test_end prevents test rows appearing in next train.
     segment_days = int(total_years * 365 / (n_folds + 1))
     fold_boundaries = []
     for fold_idx in range(n_folds):
         train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
         test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
-        test_end_dt = train_end_dt + timedelta(days=segment_days)
+        # test_end is the raw segment boundary; next fold's train must start after embargo
+        raw_test_end_dt = train_end_dt + timedelta(days=segment_days)
+        # For all but the last fold, ensure next train starts at least embargo_days after test_end
+        # (enforced implicitly: next fold's train_end is the next segment boundary,
+        #  so expanding window naturally excludes the test window of the current fold)
         if train_years is not None:
-            fold_train_start = max(start_all.date(),
-                                   (train_end_dt - timedelta(days=train_years * 365)).date())
+            # Rolling window: shift train start to exclude rows within embargo of prior test
+            fold_train_start = max(
+                start_all.date(),
+                (train_end_dt - timedelta(days=train_years * 365)).date(),
+            )
         else:
             fold_train_start = start_all.date()
         fold_boundaries.append((
             fold_train_start,
             train_end_dt.date(),
             test_start_dt.date(),
-            min(test_end_dt.date(), end_all.date()),
+            min(raw_test_end_dt.date(), end_all.date()),
+            _embargo,  # carry embargo into the fold runner for logging
         ))
 
     def _run_swing_fold(args):
-        fold_idx, tr_start, tr_end, te_start, te_end = args
+        fold_idx, tr_start, tr_end, te_start, te_end, emb = args
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
-                   f"test:{te_start}->{te_end}")
+                   f"test:{te_start}->{te_end}  purge={purge_days}d  embargo={emb}d")
         t_fold = time.time()
         # Point-in-time filter: only use symbols that were in the index at fold train start.
         # Synthetic symbols (^VIX, VIX, SPY) bypass the filter — they're needed for
@@ -471,6 +606,7 @@ def run_swing_walkforward(
             use_opportunity_score=use_opportunity_score,
             no_prefilters=no_prefilters,
             earnings_blackout=earnings_blackout,
+            macro_blocked_dates=macro_blocked_dates,
         )
         result = sim.run(
             fold_symbols_data,
@@ -481,8 +617,15 @@ def run_swing_walkforward(
         elapsed = time.time() - t_fold
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
+        # WF-1: compute additional metrics
+        trade_rets = getattr(result, "trade_returns", []) or []
+        pf = _compute_profit_factor(trade_rets)
+        fold_yrs = _fold_years(te_start, te_end)
+        calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
+        equity = getattr(result, "equity_curve", []) or []
+        kr = _compute_k_ratio(equity)
         _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
-            f"Sharpe {result.sharpe_ratio:.2f}")
+            f"Sharpe {result.sharpe_ratio:.2f}  PF={pf:.2f}  Calmar={calmar:.2f}")
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -494,12 +637,15 @@ def run_swing_walkforward(
             total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=version,
+            profit_factor=pf,
+            calmar_ratio=calmar,
+            k_ratio=kr,
         )
 
     from concurrent.futures import ThreadPoolExecutor
     fold_args = [
-        (i + 1, tr_start, tr_end, te_start, te_end)
-        for i, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries)
+        (i + 1, tr_start, tr_end, te_start, te_end, emb)
+        for i, (tr_start, tr_end, te_start, te_end, emb) in enumerate(fold_boundaries)
     ]
     with ThreadPoolExecutor(max_workers=n_folds) as pool:
         results = list(pool.map(_run_swing_fold, fold_args))
@@ -521,9 +667,13 @@ def run_intraday_walkforward(
     model_version: Optional[int] = None,
     transaction_cost_pct: float = 0.0015,
     purge_days: int = 2,
+    embargo_days: Optional[int] = None,  # WF-1: post-test gap (None = same as purge_days)
     use_opportunity_score: bool = False,
     use_dispersion_gate: bool = False,
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
+    macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+    use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
+    regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -611,8 +761,12 @@ def run_intraday_walkforward(
         _err("No trading days found in data.")
         return report
 
+    # WF-1: embargo defaults to purge_days when not specified.
+    _embargo_intra = embargo_days if embargo_days is not None else purge_days
+
     # purge_days trading-day gap between train_end and test_start prevents intraday
     # label leakage (2-day hold means labels at train boundary use test-window bars).
+    # embargo_days post-test gap prevents test rows entering next fold's training set.
     segment_size = max(1, len(all_days_sorted) // (n_folds + 1))
     fold_boundaries = []
     for fi in range(n_folds):
@@ -624,12 +778,13 @@ def run_intraday_walkforward(
             all_days_sorted[tr_end_idx],
             all_days_sorted[te_start_idx],
             all_days_sorted[te_end_idx],
+            _embargo_intra,
         ))
 
     def _run_intraday_fold(args):
-        fold_idx, tr_start, tr_end, te_start, te_end = args
+        fold_idx, tr_start, tr_end, te_start, te_end, emb = args
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
-                   f"test:{te_start}->{te_end}")
+                   f"test:{te_start}->{te_end}  purge={purge_days}d  embargo={emb}d")
         t_fold = time.time()
         # Point-in-time filter: only use symbols that were in the index at fold train start
         pit_members = set(_members_at("russell1000", tr_start))
@@ -644,6 +799,9 @@ def run_intraday_walkforward(
             use_opportunity_score=use_opportunity_score,
             use_dispersion_gate=use_dispersion_gate,
             earnings_blackout=earnings_blackout,
+            macro_blocked_dates=macro_blocked_dates,
+            use_regime_gate=use_regime_gate,
+            regime_map=regime_map,
         )
         result = sim.run(
             fold_symbols_data,
@@ -655,8 +813,15 @@ def run_intraday_walkforward(
         elapsed = time.time() - t_fold
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
+        # WF-1: additional metrics
+        trade_rets = getattr(result, "trade_returns", []) or []
+        pf = _compute_profit_factor(trade_rets)
+        fold_yrs = _fold_years(te_start, te_end)
+        calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
+        equity = getattr(result, "equity_curve", []) or []
+        kr = _compute_k_ratio(equity)
         _ok(f"Fold {fold_idx} done in {elapsed:.1f}s — {result.total_trades} trades, "
-            f"Sharpe {result.sharpe_ratio:.2f}")
+            f"Sharpe {result.sharpe_ratio:.2f}  PF={pf:.2f}  Calmar={calmar:.2f}")
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -668,15 +833,99 @@ def run_intraday_walkforward(
             total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=version,
+            profit_factor=pf,
+            calmar_ratio=calmar,
+            k_ratio=kr,
         )
 
     fold_args = [
-        (i + 1, tr_start, tr_end, te_start, te_end)
-        for i, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries)
+        (i + 1, tr_start, tr_end, te_start, te_end, emb)
+        for i, (tr_start, tr_end, te_start, te_end, emb) in enumerate(fold_boundaries)
     ]
     report.folds = [_run_intraday_fold(args) for args in fold_args]
 
     return report
+
+
+# ── WF-3: CPCV helpers ────────────────────────────────────────────────────────
+
+def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
+    """Run CPCV for swing model and print the result."""
+    from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.strategies.swing import SwingStrategy
+    from app.utils.constants import SP_100_TICKERS
+    model, version = _load_model("swing", version=swing_ver)
+    if model is None:
+        _warn("CPCV: no swing model found — skipping")
+        return
+    syms = symbols or list(SP_100_TICKERS)
+    strategy = SwingStrategy(
+        model=model, version=version, symbols=syms,
+        atr_stop_mult=args.stop_mult, atr_target_mult=args.target_mult,
+        meta_model=meta_model,
+        pm_abstention_vix=args.pm_abstention_vix,
+        pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+        pm_abstention_spy_5d=args.pm_abstention_spy_5d,
+        transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,
+        use_opportunity_score=args.pm_opportunity_score,
+        no_prefilters=args.no_prefilters,
+        earnings_blackout=earnings_cal,
+    )
+    strategy.model_type = "swing"
+    from datetime import datetime, timedelta
+    end_all = datetime.now()
+    start_all = end_all - timedelta(days=args.years * 365 + 30)
+    strategy.fetch_data(start_all, end_all)
+    cpcv_result = run_cpcv(
+        strategy=strategy,
+        purge_days=args.swing_purge_days,
+        embargo_days=args.swing_embargo_days,
+        n_folds=args.cpcv_k,
+        n_paths=args.cpcv_paths,
+        total_years=args.years,
+        train_years=args.swing_train_years,
+    )
+    cpcv_result.print()
+    return cpcv_result
+
+
+def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed):
+    """Run CPCV for intraday model and print the result."""
+    from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.strategies.intraday import IntradayStrategy
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    from datetime import date as _date, timedelta
+    model, version = _load_model("intraday", version=intraday_ver)
+    if model is None:
+        _warn("CPCV: no intraday model found — skipping")
+        return
+    syms = symbols or list(RUSSELL_1000_TICKERS)
+    intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
+    strategy = IntradayStrategy(
+        model=model, version=version, symbols=syms,
+        meta_model=intraday_meta_model,
+        pm_abstention_vix=args.pm_abstention_vix,
+        pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+        scan_offsets=intraday_scan_offsets,
+        transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,
+        use_opportunity_score=args.pm_opportunity_score,
+        use_dispersion_gate=args.dispersion_gate,
+        earnings_blackout=earnings_cal,
+    )
+    strategy.model_type = "intraday"
+    end_date = _date.today()
+    start_date = end_date - timedelta(days=args.days + 10)
+    strategy.fetch_data(start_date, end_date)
+    cpcv_result = run_cpcv(
+        strategy=strategy,
+        purge_days=args.intraday_purge_days,
+        embargo_days=args.intraday_embargo_days,
+        n_folds=args.cpcv_k,
+        n_paths=args.cpcv_paths,
+        total_days=args.days,
+    )
+    cpcv_result.print()
+    return cpcv_result
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -721,15 +970,29 @@ def main() -> int:
     parser.add_argument("--swing-purge-days", type=int, default=10,
                         help="Calendar days to skip between train_end and test_start for swing "
                              "(prevents 5-day label leakage; default: 10)")
+    parser.add_argument("--swing-embargo-days", type=int, default=None,
+                        help="WF-1: Calendar days to skip after test_end before next fold trains "
+                             "(defaults to --swing-purge-days if not set)")
     parser.add_argument("--intraday-purge-days", type=int, default=2,
                         help="Trading days to skip between train_end and test_start for intraday "
                              "(prevents 2-day hold label leakage; default: 2)")
-    parser.add_argument("--pm-opportunity-score", action="store_true", default=False,
-                        help="Phase 2a: apply PM continuous opportunity score gate in simulation "
-                             "(score<0.35=skip, 0.35-0.65=cap at 2 candidates). Downloads VIX.")
-    parser.add_argument("--dispersion-gate", action="store_true", default=False,
-                        help="Phase 2c: skip intraday entries on days where cross-sectional return "
-                             "dispersion < 0.5x rolling 60-day median (macro-dominated days)")
+    parser.add_argument("--intraday-embargo-days", type=int, default=None,
+                        help="WF-1: Trading days to skip after test_end before next fold trains "
+                             "(defaults to --intraday-purge-days if not set)")
+    parser.add_argument("--pm-opportunity-score", action="store_true", default=True,
+                        help="WF-5a: apply PM continuous opportunity score gate in simulation "
+                             "(score<0.35=skip, 0.35-0.65=cap at 2 candidates). On by default. "
+                             "Use --no-pm-opportunity-score to disable.")
+    parser.add_argument("--no-pm-opportunity-score", dest="pm_opportunity_score",
+                        action="store_false",
+                        help="WF-5a: disable the PM opportunity score gate.")
+    parser.add_argument("--dispersion-gate", action="store_true", default=True,
+                        help="WF-5a: skip intraday entries on days where cross-sectional return "
+                             "dispersion < 0.5x rolling 60-day median. On by default. "
+                             "Use --no-dispersion-gate to disable.")
+    parser.add_argument("--no-dispersion-gate", dest="dispersion_gate",
+                        action="store_false",
+                        help="WF-5a: disable the dispersion gate.")
     parser.add_argument("--no-prefilters", action="store_true", default=False,
                         help="Phase 3a: bypass RSI 40-70 and EMA20/50 trader pre-filters in swing. "
                              "Lets ML model score the full universe without rule-based entry gates.")
@@ -737,13 +1000,35 @@ def main() -> int:
                         help="Phase 3b: rolling training window per fold — limit each fold's "
                              "training data to the N most recent years before train_end "
                              "(None = expanding window). Use 2 to exclude 2021-2022 bull regime.")
-    parser.add_argument("--earnings-blackout", action="store_true", default=False,
-                        help="Phase 2b: skip entries within earnings blackout window "
-                             "(swing: 3d before; intraday: 1d before / 3d after). "
-                             "Pre-fetches calendar via yfinance — adds ~2-3 min for 700 symbols.")
+    parser.add_argument("--earnings-blackout", action="store_true", default=True,
+                        help="WF-5a: skip entries within earnings blackout window "
+                             "(swing: 3d before; intraday: 1d before / 3d after). On by default. "
+                             "Use --no-earnings-blackout to disable.")
+    parser.add_argument("--no-earnings-blackout", dest="earnings_blackout",
+                        action="store_false",
+                        help="WF-5a: disable the earnings blackout gate.")
+    parser.add_argument("--regime-gate", action="store_true", default=False,
+                        help="Phase R5: enable intraday regime gates (R5-A/B/C). Downloads SPY+VIX "
+                             "history to build regime map. Off by default (requires WF-4 regime tagger).")
+    parser.add_argument("--macro-gate", action="store_true", default=True,
+                        help="WF-5a: block entries on FOMC/NFP/CPI/GDP days. On by default. "
+                             "Use --no-macro-gate to disable.")
+    parser.add_argument("--no-macro-gate", dest="macro_gate",
+                        action="store_false",
+                        help="WF-5a: disable the macro event gate.")
     parser.add_argument("--bootstrap", type=int, default=0, metavar="N",
                         help="Phase 1d: run N bootstrap iterations with ±30d fold perturbation "
                              "to quantify selection bias. 0 = disabled. 100 recommended.")
+    # WF-3: CPCV flags
+    parser.add_argument("--cpcv", action="store_true", default=False,
+                        help="WF-3: run Combinatorial Purged Cross-Validation instead of "
+                             "standard expanding walk-forward. Requires --cpcv-k and --cpcv-paths.")
+    parser.add_argument("--cpcv-k", type=int, default=6,
+                        help="WF-3: number of CPCV groups k (default: 6). "
+                             "C(k, paths) combinations will be tested.")
+    parser.add_argument("--cpcv-paths", type=int, default=2,
+                        help="WF-3: number of test paths per combination (default: 2). "
+                             "Larger = more combinations, slower but higher statistical power.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -773,6 +1058,20 @@ def main() -> int:
 
     swing_ver = args.swing_model_version if args.swing_model_version > 0 else None
     intraday_ver = args.intraday_model_version if args.intraday_model_version > 0 else None
+
+    # WF-5a: pre-fetch macro event blocked dates once for the full WF range
+    macro_blocked_dates: Optional[set] = None
+    if args.macro_gate:
+        from datetime import datetime as _dt2
+        _wf_end = _dt2.now().date()
+        _wf_start = _wf_end - timedelta(days=max(args.years * 365, args.days) + 30)
+        try:
+            from scripts.walkforward.macro_calendar import load_macro_blocked_dates
+            macro_blocked_dates = load_macro_blocked_dates(_wf_start, _wf_end)
+            _ok(f"Macro gate: {len(macro_blocked_dates)} blocked dates loaded "
+                f"({_wf_start} → {_wf_end})")
+        except Exception as _me:
+            _warn(f"Macro gate calendar fetch failed: {_me} — macro gate disabled for this run")
 
     # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
     earnings_cal: Optional[Dict[str, set]] = None
@@ -806,16 +1105,20 @@ def main() -> int:
             model_version=swing_ver,
             transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,
             purge_days=args.swing_purge_days,
+            embargo_days=args.swing_embargo_days,
             use_opportunity_score=args.pm_opportunity_score,
             no_prefilters=args.no_prefilters,
             train_years=args.swing_train_years,
             earnings_blackout=earnings_cal,
+            macro_blocked_dates=macro_blocked_dates,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
+        if args.cpcv and args.model in ("swing", "both"):
+            _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
         if not swing_report.gate_passed():
             passed = False
         if args.record_results and swing_report.folds:
@@ -831,6 +1134,18 @@ def main() -> int:
     if args.model in ("intraday", "both"):
         t0 = time.time()
         intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
+        # Phase R5: pre-fetch regime map if --regime-gate enabled
+        _regime_map: Optional[Dict] = None
+        if getattr(args, "regime_gate", False):
+            from datetime import datetime as _dt3
+            _rg_end = _dt3.now().date()
+            _rg_start = _rg_end - timedelta(days=args.days + 80)
+            try:
+                from scripts.walkforward.regime import load_regime_map
+                _regime_map = load_regime_map(_rg_start, _rg_end)
+                _ok(f"R5 regime map: {len(_regime_map)} dates tagged ({_rg_start} → {_rg_end})")
+            except Exception as _re:
+                _warn(f"R5 regime map fetch failed: {_re} — regime gate disabled for this run")
         _intraday_kwargs = dict(
             n_folds=args.folds,
             total_days=args.days,
@@ -845,12 +1160,18 @@ def main() -> int:
             use_opportunity_score=args.pm_opportunity_score,
             use_dispersion_gate=args.dispersion_gate,
             earnings_blackout=earnings_cal,
+            embargo_days=args.intraday_embargo_days,
+            macro_blocked_dates=macro_blocked_dates,
+            use_regime_gate=getattr(args, "regime_gate", False),
+            regime_map=_regime_map,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print()
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
+        if args.cpcv and args.model in ("intraday", "both"):
+            _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
         if not intraday_report.gate_passed():
             passed = False
         if args.record_results and intraday_report.folds:

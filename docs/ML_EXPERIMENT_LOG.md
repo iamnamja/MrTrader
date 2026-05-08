@@ -1023,3 +1023,186 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Regime interpretation:** The swing model's challenge is NOT just the 2025 tariff regime — it also underperforms in 2022–2024. The pre-filter issue (RSI_DIP/EMA_CROSSOVER as regime guard) affects all periods, not just 2025.
 
 **Verdict:** Fold-level analysis confirms Phase 3b (full universe + triple-barrier) is the right next step. The opportunity score alone (+0.27 avg) is not enough to pass the gate. v163 remains active for paper trading.
+
+
+
+---
+
+## Infrastructure: Walk-Forward Hardening WF-1/2/3 (2026-05-07)
+
+**Type:** Infrastructure improvement (no model retrain)
+
+### WF-1 — Embargo + Multi-Metric Gate (PR #166)
+- Added `embargo_days` post-test gap: `train | purge_days | TEST | embargo_days | next_fold_train`
+- Extended FoldResult with `profit_factor`, `calmar_ratio`, `k_ratio`
+- New gate thresholds: avg_profit_factor >= 1.10, avg_calmar >= 0.30
+- 31 unit tests in `tests/test_wf1_embargo_metrics.py`
+
+### WF-2 — Pluggable Engine Architecture (PR #167)
+- New `scripts/walkforward/` package: `FoldEngine`, `gates.py`, `cost_models.py`, strategy classes
+- `FoldEngine` allows Day Trading and future strategies without modifying existing code
+- `walkforward_tier3.py` kept as full implementation (100% backwards compat)
+- 21 unit tests in `tests/test_wf2_pluggable_engine.py`
+
+### WF-3 — Combinatorial Purged K-Fold (PR #168)
+- `scripts/walkforward/cpcv.py`: C(k,paths) independent test paths, Sharpe distribution
+- `CPCVResult`: mean/std/P5/P95 Sharpe, pct_positive, avg_PF, avg_Calmar
+- CPCV gate: mean >= 0.80, P5 >= -0.30, pct_positive >= 75%, DSR p > 0.95
+- CLI: `python scripts/walkforward_tier3.py --cpcv --cpcv-k 6 --cpcv-paths 2`
+- 18 unit tests in `tests/test_wf3_cpcv.py`
+
+**Impact:** Walk-forward is now statistically honest and extensible. Next model promotion must pass:
+1. Standard 3-fold gate (fast, for development)
+2. CPCV C(6,2)=15 paths gate (overnight run, before paper trading promotion)
+
+---
+
+## Infrastructure: Walk-Forward Hardening WF-4/5a + Phase R5 + Phase 3b (2026-05-07)
+
+**Type:** Infrastructure improvement + training configuration (no model retrain yet)
+
+### WF-4 — Regime-Stratified Fold Construction (PR #169)
+- New `scripts/walkforward/regime.py`: VIX quartile (1-4) × SPY trend (U/D) × momentum (P/N) tagger → up to 16 labels
+- `FoldEngine` gains `regime_map` parameter + `_check_fold_diversity()`: logs per-fold regime distribution, warns when test window is regime-homogeneous (< 2 distinct labels)
+- `FoldResult` gains `regime_sharpes: dict[str, float]` and `regime_diversity: int` fields
+- `WalkForwardReport.worst_regime_sharpe` gate: must be ≥ -0.5 when regime data present; skipped (passes) when absent
+- 24 unit tests in `tests/test_wf4_regime_stratified.py`
+
+### WF-5a — Simulation Fidelity: Per-Fold Gates (PR #170)
+- `--pm-opportunity-score`, `--earnings-blackout`, `--dispersion-gate` now **default True** (matching live PM)
+- New `--macro-gate` (default True): blocks entries on FOMC/NFP/CPI/GDP dates
+- New `scripts/walkforward/macro_calendar.py`: Finnhub fetch + hard-coded FOMC fallback (2020-2026)
+- `AgentSimulator` and `IntradayAgentSimulator` gain `macro_blocked_dates` parameter
+- `FoldResult` gains `opp_score_abstain_days`, `earnings_blackout_days`, `macro_gate_days` abstention fields
+- 20 unit tests in `tests/test_wf5a_simulation_fidelity.py`
+
+**Expected impact:** WF Sharpe will drop slightly vs previous runs (gates suppress trades that live PM would suppress). Numbers are now comparable to what paper trading will show.
+
+### Phase R5 — Intraday Regime Gate (PR #171)
+- Three new gates in `IntradayAgentSimulator` (off by default, enable with `--regime-gate`):
+  - R5-A: block days where VIX quartile=4 AND SPY below 50d MA (macro-dominated)
+  - R5-B: tighten dispersion floor to 40% of 60d median (was 50% in existing dispersion gate)
+  - R5-C: block VIX > 35 AND SPY 5d return < -5%
+- `run_intraday_walkforward()` gains `use_regime_gate` and `regime_map` parameters
+- Regime map pre-fetched from WF-4 `regime.py` (~30s overhead)
+- 25 unit tests in `tests/test_phase_r5_regime_gate.py`
+
+**Expected WF impact (v51 with R5):**
+| Fold | Current (v51) | Expected with R5 | Notes |
+|---|---|---|---|
+| 1 | +0.33 | +0.30–+0.45 | Low-vol melt-up days suppressed |
+| 2 | +0.24 | +0.45–+0.70 | Tariff shock macro days abstained |
+| 3 | +0.85 | +0.75–+0.90 | Slight trade reduction |
+| **Avg** | **+0.529** | **~0.50–0.68** | Gate target: 0.80 |
+
+**WF run command:**
+```bash
+python scripts/walkforward_tier3.py --model intraday --regime-gate
+```
+
+### Phase 3b — Triple-Barrier Label Config (PR #172)
+- New constants: `TB_PHASE3B_TARGET_MULT=2.0`, `TB_PHASE3B_STOP_MULT=1.2`, `TB_PHASE3B_FORWARD_DAYS=10`
+- New `train_model.py` CLI flags: `--tb-target-mult`, `--tb-stop-mult`, `--forward-days`
+- `run_rolling_pipeline()` applies module-level overrides before trainer init
+- 15 unit tests in `tests/test_phase_3b_triple_barrier.py`
+
+**Swing retrain command (run manually — ~2-3h):**
+```bash
+python scripts/train_model.py \
+  --label-scheme triple_barrier \
+  --tb-target-mult 2.0 --tb-stop-mult 1.2 --forward-days 10 \
+  --no-fundamentals --workers 8
+```
+
+**Next steps:** Run retrain + WF. If avg Sharpe > 0.80 → promote to paper trading. If 0.60–0.79 → Phase 86b (stock-relative features). If < 0.60 → gates too aggressive, tune thresholds.
+
+---
+
+## Walk-Forward Results: Phase 3b Swing v164 + Intraday v51+R5 (2026-05-07 overnight)
+
+### Swing v164 — Phase 3b Triple-Barrier WF ❌ GATE FAILED
+
+**Config:** 3-fold, 5yr, no-prefilters, WF-5a gates default-on (opp score + earnings blackout + macro gate), 5bps RT  
+**Model:** v164 (triple_barrier label, 2.0×ATR target / 1.2×ATR stop / 10d time barrier, 88 features)  
+**Training AUC:** 0.549 — MODEL DRIFT ALERT (below 0.65 threshold)
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Status |
+|---|---|---|---|---|---|---|
+| 1 | 2022-08-19 → 2023-11-07 | 209 | 45.9% | **+0.86** | 0.93 | ✅ |
+| 2 | 2023-11-18 → 2025-02-05 | 320 | 45.9% | **+0.98** | 1.37 | ✅ |
+| 3 | 2025-02-16 → 2026-05-07 | 280 | 42.5% | **+0.12** | 0.08 | ❌ |
+| **Avg** | | **809** | **44.8%** | **+0.655** | **0.79** | **❌ FAIL** |
+
+**Gate detail:**
+- avg_sharpe: 0.655 < 0.80 ❌
+- min_fold_sharpe: +0.12 > -0.30 ✅
+- DSR: z=-28.788, p=0.000 < 0.95 ❌
+- avg_calmar: 0.79 > 0.30 ✅
+
+**Key observation:** Fold 3 (Feb 2025 → May 2026 — tariff/high-vol period) collapsed to +0.12. Same pattern as v163 (+0.45) and before. The triple-barrier label change (wider barriers, longer time window) did NOT fix fold-3 weakness. Top features were structural (downtrend, choch_detected, price_above_ema50) — the model learned pattern-matching but not alpha.
+
+**Verdict:** ❌ GATE FAILED. v164 not promoted. v163 remains active swing champion. The fold-3 collapse is a systematic issue that wider ATR barriers alone cannot fix. Phase 3b label change is insufficient without also removing the RSI/EMA pre-filters (full Step 1 of Phase 3b spec).
+
+---
+
+### Intraday v51 + R5 Regime Gate ❌ GATE FAILED (regression)
+
+**Config:** 3-fold, 730-day window (2yr), WF-5a gates default-on + `--regime-gate` (R5-A/B/C), 15bps RT  
+**Model:** v51 (59 features, Phase 3a Branch B, previous best +0.529)  
+**Regime map:** 556 dates tagged
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Status |
+|---|---|---|---|---|---|---|
+| 1 | 2024-02-08 → 2024-11-01 | 235 | 44.7% | **-3.30** | -1.22 | ❌ |
+| 2 | 2024-11-06 → 2025-08-06 | 266 | 48.5% | **-0.15** | -0.05 | ❌ |
+| 3 | 2025-08-11 → 2026-05-07 | 257 | 50.6% | **+0.11** | 0.39 | ✅ |
+| **Avg** | | **758** | **47.9%** | **-1.112** | **-0.29** | **❌ FAIL** |
+
+**Gate detail:**
+- avg_sharpe: -1.112 < 0.80 ❌
+- min_fold_sharpe: -3.30 < -0.30 ❌
+- DSR: z=-62.347, p=0.000 < 0.95 ❌
+- avg_calmar: -0.293 < 0.30 ❌
+
+**Critical observation — this is a REGRESSION vs previous v51 result (+0.529):**
+
+Two confounding changes were applied simultaneously:
+1. **WF-5a gates now default-on**: opp score + earnings blackout + dispersion gate + macro gate all active in WF for the first time. These gates suppress trades that previous WF counted as wins.
+2. **R5 regime gate**: R5-A/B/C blocking additional days in the new fold periods.
+3. **Different fold periods**: Previous v51 WF covered Jul 2025–Apr 2026 (most recent 9 months). This run covers Feb 2024–May 2026 (2 years). Fold 1 (Feb–Nov 2024) is **new test territory** that was never in any previous v51 WF.
+
+**Root cause of fold 1 -3.30:** Cannot isolate yet. Candidates:
+- The 2024 period (before tariff shock) may have been a regime where v51 genuinely underperforms (low-vol, different cross-sectional dispersion patterns)
+- WF-5a gates + R5 in combination may be removing too many Feb–Nov 2024 trading days, leaving only the worst remaining days
+- The R5-B dispersion gate (40% threshold) may be miscalibrated for the 2024 regime
+
+**Verdict:** ❌ GATE FAILED. Cannot attribute failure to R5 specifically without isolating. **Immediate next step: re-run intraday WF WITHOUT R5 flag but WITH WF-5a gates, on the same 730-day window**, to measure WF-5a impact alone. Then re-enable R5 to measure R5's delta.
+
+---
+
+## Diagnostic Re-Run Plan (morning)
+
+**Goal:** Isolate which change caused the intraday regression.
+
+**Run A — Intraday v51, WF-5a ON, no R5, 730d:**
+```bash
+python scripts/walkforward_tier3.py --model intraday
+```
+(All WF-5a gates on by default; no --regime-gate)
+
+**Run B — Intraday v51, no WF-5a, no R5, 365d (baseline comparison):**
+```bash
+python scripts/walkforward_tier3.py --model intraday --days 365 \
+  --no-pm-opportunity-score --no-earnings-blackout --no-dispersion-gate --no-macro-gate
+```
+
+**Decision tree:**
+```
+Run A avg Sharpe > 0.40?
+  YES → WF-5a is not the main problem; R5 is over-gating. Tune R5 thresholds.
+  NO  → WF-5a gates + 2yr window are suppressing genuine alpha. Investigate gate calibration.
+
+Run B ≈ +0.529?
+  YES → Previous result was reproducible; confounding is in WF-5a or R5
+  NO  → Something else changed (model loading, fold structure, data)
+```
