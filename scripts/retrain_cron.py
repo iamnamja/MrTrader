@@ -111,6 +111,7 @@ def run_swing(dry_run: bool) -> bool:
         from scripts.walkforward_tier3 import run_swing_walkforward
         wf = run_swing_walkforward(
             n_folds=SWING_RETRAIN["walk_forward_folds"],
+            total_years=SWING_RETRAIN["walk_forward_years"],
             model_version=version,
             use_opportunity_score=True,
         )
