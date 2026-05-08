@@ -163,7 +163,7 @@ def run_intraday(dry_run: bool) -> bool:
 
     try:
         from scripts.walkforward_tier3 import run_intraday_walkforward
-        wf = run_intraday_walkforward(n_folds=3, model_version=version)
+        wf = run_intraday_walkforward(n_folds=3, model_version=version, total_days=365)
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
         gate_ok = (avg_sh >= INTRADAY_GATE["min_avg_sharpe"] and
