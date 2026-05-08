@@ -832,6 +832,87 @@ def run_intraday_walkforward(
     return report
 
 
+# ── WF-3: CPCV helpers ────────────────────────────────────────────────────────
+
+def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
+    """Run CPCV for swing model and print the result."""
+    from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.strategies.swing import SwingStrategy
+    from app.utils.constants import SP_100_TICKERS
+    model, version = _load_model("swing", version=swing_ver)
+    if model is None:
+        _warn("CPCV: no swing model found — skipping")
+        return
+    syms = symbols or list(SP_100_TICKERS)
+    strategy = SwingStrategy(
+        model=model, version=version, symbols=syms,
+        atr_stop_mult=args.stop_mult, atr_target_mult=args.target_mult,
+        meta_model=meta_model,
+        pm_abstention_vix=args.pm_abstention_vix,
+        pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+        pm_abstention_spy_5d=args.pm_abstention_spy_5d,
+        transaction_cost_pct=args.swing_cost_bps / 10_000 / 2,
+        use_opportunity_score=args.pm_opportunity_score,
+        no_prefilters=args.no_prefilters,
+        earnings_blackout=earnings_cal,
+    )
+    strategy.model_type = "swing"
+    from datetime import datetime, timedelta
+    end_all = datetime.now()
+    start_all = end_all - timedelta(days=args.years * 365 + 30)
+    strategy.fetch_data(start_all, end_all)
+    cpcv_result = run_cpcv(
+        strategy=strategy,
+        purge_days=args.swing_purge_days,
+        embargo_days=args.swing_embargo_days,
+        n_folds=args.cpcv_k,
+        n_paths=args.cpcv_paths,
+        total_years=args.years,
+        train_years=args.swing_train_years,
+    )
+    cpcv_result.print()
+    return cpcv_result
+
+
+def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed):
+    """Run CPCV for intraday model and print the result."""
+    from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.strategies.intraday import IntradayStrategy
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    from datetime import date as _date, timedelta
+    model, version = _load_model("intraday", version=intraday_ver)
+    if model is None:
+        _warn("CPCV: no intraday model found — skipping")
+        return
+    syms = symbols or list(RUSSELL_1000_TICKERS)
+    intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
+    strategy = IntradayStrategy(
+        model=model, version=version, symbols=syms,
+        meta_model=intraday_meta_model,
+        pm_abstention_vix=args.pm_abstention_vix,
+        pm_abstention_spy_ma_days=args.pm_abstention_spy_ma_days,
+        scan_offsets=intraday_scan_offsets,
+        transaction_cost_pct=args.intraday_cost_bps / 10_000 / 2,
+        use_opportunity_score=args.pm_opportunity_score,
+        use_dispersion_gate=args.dispersion_gate,
+        earnings_blackout=earnings_cal,
+    )
+    strategy.model_type = "intraday"
+    end_date = _date.today()
+    start_date = end_date - timedelta(days=args.days + 10)
+    strategy.fetch_data(start_date, end_date)
+    cpcv_result = run_cpcv(
+        strategy=strategy,
+        purge_days=args.intraday_purge_days,
+        embargo_days=args.intraday_embargo_days,
+        n_folds=args.cpcv_k,
+        n_paths=args.cpcv_paths,
+        total_days=args.days,
+    )
+    cpcv_result.print()
+    return cpcv_result
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -903,6 +984,16 @@ def main() -> int:
     parser.add_argument("--bootstrap", type=int, default=0, metavar="N",
                         help="Phase 1d: run N bootstrap iterations with ±30d fold perturbation "
                              "to quantify selection bias. 0 = disabled. 100 recommended.")
+    # WF-3: CPCV flags
+    parser.add_argument("--cpcv", action="store_true", default=False,
+                        help="WF-3: run Combinatorial Purged Cross-Validation instead of "
+                             "standard expanding walk-forward. Requires --cpcv-k and --cpcv-paths.")
+    parser.add_argument("--cpcv-k", type=int, default=6,
+                        help="WF-3: number of CPCV groups k (default: 6). "
+                             "C(k, paths) combinations will be tested.")
+    parser.add_argument("--cpcv-paths", type=int, default=2,
+                        help="WF-3: number of test paths per combination (default: 2). "
+                             "Larger = more combinations, slower but higher statistical power.")
     args = parser.parse_args()
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
@@ -976,6 +1067,8 @@ def main() -> int:
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
+        if args.cpcv and args.model in ("swing", "both"):
+            _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
         if not swing_report.gate_passed():
             passed = False
         if args.record_results and swing_report.folds:
@@ -1012,6 +1105,8 @@ def main() -> int:
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
+        if args.cpcv and args.model in ("intraday", "both"):
+            _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
         if not intraday_report.gate_passed():
             passed = False
         if args.record_results and intraday_report.folds:
