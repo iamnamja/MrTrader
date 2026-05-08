@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
-from typing import List
+from typing import Dict, List, Optional
 
 import numpy as np
 from scipy.stats import norm
@@ -19,6 +19,7 @@ MIN_FOLD_SHARPE = -0.3
 N_TRIALS_TESTED = 15
 MIN_PROFIT_FACTOR = 1.10
 MIN_CALMAR = 0.30
+MIN_WORST_REGIME_SHARPE = -0.5
 
 
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
@@ -92,6 +93,8 @@ class FoldResult:
     profit_factor: float = 0.0
     calmar_ratio: float = 0.0
     k_ratio: float = 0.0
+    regime_sharpes: Dict[str, float] = field(default_factory=dict)
+    regime_diversity: int = 0
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
@@ -145,20 +148,32 @@ class WalkForwardReport:
         ks = [f.k_ratio for f in self.folds if f.k_ratio != 0]
         return float(np.mean(ks)) if ks else 0.0
 
+    @property
+    def worst_regime_sharpe(self) -> Optional[float]:
+        """Minimum per-regime Sharpe across all folds. None if no regime data collected."""
+        all_regime_sharpes: List[float] = []
+        for f in self.folds:
+            all_regime_sharpes.extend(f.regime_sharpes.values())
+        return float(min(all_regime_sharpes)) if all_regime_sharpes else None
+
     def gate_passed(self) -> bool:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        wrs = self.worst_regime_sharpe
+        regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.avg_sharpe >= SHARPE_GATE
             and self.min_sharpe >= MIN_FOLD_SHARPE
             and dsr_p > 0.95
             and pf_ok
             and cal_ok
+            and regime_ok
         )
 
     def gate_detail(self) -> dict:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        wrs = self.worst_regime_sharpe
         return {
             "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= SHARPE_GATE),
             "min_sharpe": (self.min_sharpe, self.min_sharpe >= MIN_FOLD_SHARPE),
@@ -167,6 +182,7 @@ class WalkForwardReport:
                                   self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
             "avg_calmar": (self.avg_calmar,
                            self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+            "worst_regime_sharpe": (wrs, wrs is None or wrs >= MIN_WORST_REGIME_SHARPE),
         }
 
     def print(self) -> None:

@@ -157,6 +157,9 @@ class FoldResult:
     profit_factor: float = 0.0   # sum(wins) / sum(|losses|); 0 = not computed
     calmar_ratio: float = 0.0    # annualised_return / max_drawdown; 0 = not computed
     k_ratio: float = 0.0         # slope(cum_ret) / std(annual_ret); 0 = not computed
+    # WF-4: regime stratification
+    regime_sharpes: dict = field(default_factory=dict)
+    regime_diversity: int = 0
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
