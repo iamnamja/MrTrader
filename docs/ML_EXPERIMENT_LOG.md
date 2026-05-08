@@ -1433,6 +1433,20 @@ v51 restored as ACTIVE.
 
 ---
 
+## Phase 90 — Multi-Horizon Union Label ❌ REVERTED (2026-05-08)
+
+**Motivation:** Fix horizon mismatch — 5-day label misses 10-30 day slow-grind alpha (2024 AI rally). Promote label=0→1 when 15d return hits ATR target even if 5d did not.
+
+**v174 result:** AUC = 0.5031 OOS (random). Gate FAILED (0 trades in all 5 WF folds).
+
+**Root cause:** Union label promotes ~30-40% of samples to label=1 (vs ~20% baseline). But 5-day features cannot predict 15-day outcomes — the extra positives are noise from the model's perspective. XGBoost learns to output probabilities near the base rate (~0.30), all below MIN_CONFIDENCE=0.40 → zero proposals → zero trades.
+
+**Lesson:** Multi-horizon label requires multi-horizon features (e.g., 15-day momentum, earnings distance, sector rotation indicators). Cannot add a 15-day label on top of 5-day features. Alternative: train a separate 15-day head and blend probabilities at inference.
+
+**Decision:** Reverted `use_union_label=True → False` in retrain_config.py. Keep Phase 89 trend features. Retrain v175 as Phase 89 features + standard 5d label.
+
+---
+
 ## Phase 91 — Intraday Hybrid Label + Microstructure Features (2026-05-08)
 
 **Motivation:** Phase 88 intraday v58 gate failed badly (avg Sharpe -1.556, all 5 folds negative). Root causes identified: (1) Top-20% cross-sectional label is noisy on chop days — arbitrary small differences label winners, (2) Missing first-hour microstructure features that differ between real trending bars and noise bars.

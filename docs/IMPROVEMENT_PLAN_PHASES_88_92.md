@@ -112,7 +112,7 @@ This splits the problematic 2023–2025 window across folds 2 and 3, preventing 
 | Phase | Status | Version | Avg Sharpe | Notes |
 |---|---|---|---|---|
 | 88 | ❌ gate failed | v172/v58 | -0.243 / -1.556 | Fixed fold 3 swing (+1.43) but fold 1 (2022 bear) now -1.87; intraday all negative |
-| 89 | ✅ gate passed | v173 | WF running | Trend features merged; v173 ACTIVE; WF Sharpes pending |
-| 90 | ✅ merged | v174 | — | PR #186 merged 2026-05-08; retrain pending |
-| 91 | 🔄 PR open | v59 | — | PR #187 open; hybrid label + dispersion gate + 4 microstructure features |
-| 92 | ⏳ pending | v175 | — | — |
+| 89 | ✅ gate passed | v173 | WF buggy (0 trades) | Trend features good; EMA200 WF bug (fixed in #188) invalidated gate |
+| 90 | ❌ reverted | v174 | 0.000 (0 trades) | Union label AUC=0.50 OOS; 5d features can't predict 15d outcomes |
+| 91 | ✅ merged | v59 (retraining) | — | PR #187 merged; hybrid label + dispersion gate + 4 microstructure features |
+| 92 | 🔄 retrain | v175 | — | Phase 89 features only (no union label); retrain with EMA200 WF fix |
