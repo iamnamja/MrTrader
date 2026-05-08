@@ -1054,3 +1054,64 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Impact:** Walk-forward is now statistically honest and extensible. Next model promotion must pass:
 1. Standard 3-fold gate (fast, for development)
 2. CPCV C(6,2)=15 paths gate (overnight run, before paper trading promotion)
+
+---
+
+## Infrastructure: Walk-Forward Hardening WF-4/5a + Phase R5 + Phase 3b (2026-05-07)
+
+**Type:** Infrastructure improvement + training configuration (no model retrain yet)
+
+### WF-4 — Regime-Stratified Fold Construction (PR #169)
+- New `scripts/walkforward/regime.py`: VIX quartile (1-4) × SPY trend (U/D) × momentum (P/N) tagger → up to 16 labels
+- `FoldEngine` gains `regime_map` parameter + `_check_fold_diversity()`: logs per-fold regime distribution, warns when test window is regime-homogeneous (< 2 distinct labels)
+- `FoldResult` gains `regime_sharpes: dict[str, float]` and `regime_diversity: int` fields
+- `WalkForwardReport.worst_regime_sharpe` gate: must be ≥ -0.5 when regime data present; skipped (passes) when absent
+- 24 unit tests in `tests/test_wf4_regime_stratified.py`
+
+### WF-5a — Simulation Fidelity: Per-Fold Gates (PR #170)
+- `--pm-opportunity-score`, `--earnings-blackout`, `--dispersion-gate` now **default True** (matching live PM)
+- New `--macro-gate` (default True): blocks entries on FOMC/NFP/CPI/GDP dates
+- New `scripts/walkforward/macro_calendar.py`: Finnhub fetch + hard-coded FOMC fallback (2020-2026)
+- `AgentSimulator` and `IntradayAgentSimulator` gain `macro_blocked_dates` parameter
+- `FoldResult` gains `opp_score_abstain_days`, `earnings_blackout_days`, `macro_gate_days` abstention fields
+- 20 unit tests in `tests/test_wf5a_simulation_fidelity.py`
+
+**Expected impact:** WF Sharpe will drop slightly vs previous runs (gates suppress trades that live PM would suppress). Numbers are now comparable to what paper trading will show.
+
+### Phase R5 — Intraday Regime Gate (PR #171)
+- Three new gates in `IntradayAgentSimulator` (off by default, enable with `--regime-gate`):
+  - R5-A: block days where VIX quartile=4 AND SPY below 50d MA (macro-dominated)
+  - R5-B: tighten dispersion floor to 40% of 60d median (was 50% in existing dispersion gate)
+  - R5-C: block VIX > 35 AND SPY 5d return < -5%
+- `run_intraday_walkforward()` gains `use_regime_gate` and `regime_map` parameters
+- Regime map pre-fetched from WF-4 `regime.py` (~30s overhead)
+- 25 unit tests in `tests/test_phase_r5_regime_gate.py`
+
+**Expected WF impact (v51 with R5):**
+| Fold | Current (v51) | Expected with R5 | Notes |
+|---|---|---|---|
+| 1 | +0.33 | +0.30–+0.45 | Low-vol melt-up days suppressed |
+| 2 | +0.24 | +0.45–+0.70 | Tariff shock macro days abstained |
+| 3 | +0.85 | +0.75–+0.90 | Slight trade reduction |
+| **Avg** | **+0.529** | **~0.50–0.68** | Gate target: 0.80 |
+
+**WF run command:**
+```bash
+python scripts/walkforward_tier3.py --model intraday --regime-gate
+```
+
+### Phase 3b — Triple-Barrier Label Config (PR #172)
+- New constants: `TB_PHASE3B_TARGET_MULT=2.0`, `TB_PHASE3B_STOP_MULT=1.2`, `TB_PHASE3B_FORWARD_DAYS=10`
+- New `train_model.py` CLI flags: `--tb-target-mult`, `--tb-stop-mult`, `--forward-days`
+- `run_rolling_pipeline()` applies module-level overrides before trainer init
+- 15 unit tests in `tests/test_phase_3b_triple_barrier.py`
+
+**Swing retrain command (run manually — ~2-3h):**
+```bash
+python scripts/train_model.py \
+  --label-scheme triple_barrier \
+  --tb-target-mult 2.0 --tb-stop-mult 1.2 --forward-days 10 \
+  --no-fundamentals --workers 8
+```
+
+**Next steps:** Run retrain + WF. If avg Sharpe > 0.80 → promote to paper trading. If 0.60–0.79 → Phase 86b (stock-relative features). If < 0.60 → gates too aggressive, tune thresholds.
