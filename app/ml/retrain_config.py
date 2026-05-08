@@ -30,9 +30,9 @@ SWING_RETRAIN: dict = dict(
     hpo_trials=20,
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
     n_workers=8,
-    walk_forward_folds=3,       # run gate check before promoting
-    walk_forward_years=5,       # total history for WF evaluation (must match training window)
-    exclude_risk_off_days=True,  # Phase R6b: drop training windows on RISK_OFF regime days
+    walk_forward_folds=5,       # Phase 88: 5 folds (was 3) — one bad regime can't tank avg
+    walk_forward_years=6,       # Phase 88: 6yr window → ~14mo per fold test
+    exclude_risk_off_days=True,  # Phase R6b/88: down-weight (0.3×) not exclude RISK_OFF
 )
 
 # Gate thresholds matching the manual training gates (docs/ML_EXPERIMENT_LOG.md)
@@ -51,7 +51,8 @@ INTRADAY_RETRAIN: dict = dict(
     fetch_spy=True,
     use_ranker=False,
     top_n_by_liquidity=None,    # None = full Russell 1000 universe
-    exclude_risk_off_days=True,  # Phase R6: drop training rows from RISK_OFF regime days
+    exclude_risk_off_days=True,  # Phase R6/88: down-weight (0.3×) not exclude RISK_OFF
+    wf_folds=5,                  # Phase 88: 5 folds (was 3)
 )
 
 INTRADAY_GATE = dict(

@@ -166,7 +166,8 @@ def run_intraday(dry_run: bool) -> bool:
 
     try:
         from scripts.walkforward_tier3 import run_intraday_walkforward
-        wf = run_intraday_walkforward(n_folds=3, model_version=version,
+        wf = run_intraday_walkforward(n_folds=INTRADAY_RETRAIN["wf_folds"],
+                                      model_version=version,
                                       total_days=INTRADAY_RETRAIN["days"],
                                       use_opportunity_score=True)
         avg_sh = wf.avg_sharpe

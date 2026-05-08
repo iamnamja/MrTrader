@@ -1346,3 +1346,26 @@ This is also why swing v166 fold 3 collapsed (-0.29): RISK_OFF contamination in 
 *(To be filled after retrain completes)*
 
 
+
+---
+
+## Phase 88 — 5 Folds + Regime Features in Swing/Intraday (2026-05-08)
+
+**Motivation:** Persistent fold 2 collapse (Sharpe ~0.3) across v167/168/169. Root cause: mean-reversion biased features, regime context pruned, 3-fold gate too aggressive (one bad regime tanks the average), RISK_OFF exclusion removes training data needed for fold-2 stress events.
+
+**Changes:**
+- `walk_forward_folds=5`, `walk_forward_years=6` in SWING_RETRAIN
+- Intraday WF also moved to 5 folds, `n_folds=INTRADAY_RETRAIN["wf_folds"]`
+- Remove `regime_score`, `vix_regime_bucket`, `vix_level` from `_BASE_PRUNED` in training.py
+- Add 6 regime V2 scalars as per-symbol features: `vix_term_ratio`, `breadth_rsp_spy_ratio_20d`, `credit_hyg_ief_20d`, `sector_dispersion_20d`, `spy_above_ma50`, `spy_above_ma200`
+- RISK_OFF down-weight from 0.0 (exclude) to 0.3× (soft penalty) — restores calibration data for fold-2 stress events
+- Detailed plan: docs/IMPROVEMENT_PLAN_PHASES_88_92.md
+
+**v170 retrain kicked off:** 2026-05-08
+**v57 retrain kicked off:** 2026-05-08
+
+### v170 Walk-Forward Results (Swing)
+*(To be filled)*
+
+### v57 Walk-Forward Results (Intraday)
+*(To be filled)*
