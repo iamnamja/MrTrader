@@ -123,6 +123,8 @@ class PortfolioManager(BaseAgent):
         self._eod_order_cleanup_run_today: bool = False
         # Adaptive intraday universe — top-N candidates from 9:45 scan reused for later windows
         self._morning_intraday_candidates: List[str] = []
+        # NIS post-event refresh tracking: set of event IDs already refreshed today
+        self._nis_refreshed_event_ids: set = set()
         # SPY % at time of last intraday scan (for adaptive re-scan trigger)
         self._last_scan_spy_pct: float = 0.0
         # Monotonic timestamp of last adaptive re-scan (prevents back-to-back triggers)
@@ -340,6 +342,7 @@ class PortfolioManager(BaseAgent):
                     self._last_scan_spy_pct = 0.0
                     self._last_adaptive_scan_at = 0.0
                     self._last_intraday_features = {}
+                    self._nis_refreshed_event_ids = set()
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
@@ -494,6 +497,12 @@ class PortfolioManager(BaseAgent):
                             )
                     except Exception as _adp_exc:
                         self.logger.debug("Adaptive re-scan check failed: %s", _adp_exc)
+
+                # ── NIS post-event refresh: re-fetch after each calendar event releases ──
+                # Fires 3 minutes after each event's scheduled time so Finnhub actuals
+                # are available. Uses event ID to ensure each event triggers exactly once.
+                if is_weekday:
+                    await self._maybe_refresh_nis_post_event(now)
 
                 # ── 09:30–16:00: 30-minute position review + reeval drain ─────
                 market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
@@ -706,6 +715,67 @@ class PortfolioManager(BaseAgent):
             self.logger.debug("Heartbeat upsert failed: %s", exc)
         finally:
             db.close()
+
+    async def _maybe_refresh_nis_post_event(self, now: datetime) -> None:
+        """
+        Re-fetch NIS macro context 3 minutes after each calendar event releases.
+
+        Finnhub populates actuals within ~1-2 min of release. Waiting 3 min gives
+        it time to settle, then we invalidate the day cache and rebuild so the
+        updated risk level / sizing factor is visible to all downstream gates.
+        Each event fires exactly once per day (tracked by event ID).
+        """
+        POST_EVENT_DELAY_MINUTES = 3
+        try:
+            from app.news.sources.finnhub_source import fetch_economic_calendar
+            from app.news.intelligence_service import nis
+            from datetime import timezone
+
+            events = fetch_economic_calendar(days_ahead=0, min_impact="medium")
+            for evt in events:
+                evt_id = evt.get("id")
+                if not evt_id or evt_id in self._nis_refreshed_event_ids:
+                    continue
+                evt_dt = evt.get("event_time")
+                if evt_dt is None:
+                    continue
+                # Convert to ET for display, compare in UTC
+                now_utc = now.astimezone(timezone.utc)
+                elapsed_min = (now_utc - evt_dt).total_seconds() / 60
+                if POST_EVENT_DELAY_MINUTES <= elapsed_min < POST_EVENT_DELAY_MINUTES + 5:
+                    self._nis_refreshed_event_ids.add(evt_id)
+                    self.logger.info(
+                        "NIS post-event refresh triggered: %s released %.1f min ago — invalidating cache",
+                        evt.get("event_type"), elapsed_min,
+                    )
+                    nis.invalidate_macro_cache()
+                    ctx = await asyncio.to_thread(nis.get_macro_context)
+                    # Persist updated snapshot for API and audit trail
+                    try:
+                        from app.database.decision_audit import persist_nis_macro_snapshot
+                        await asyncio.to_thread(
+                            persist_nis_macro_snapshot, ctx,
+                            "post_event",
+                            evt.get("event_type"),
+                            evt.get("event_name"),
+                        )
+                    except Exception:
+                        pass
+                    await self.log_decision("NIS_POST_EVENT_REFRESH", reasoning={
+                        "event_type": evt.get("event_type"),
+                        "event_name": evt.get("event_name"),
+                        "elapsed_minutes": round(elapsed_min, 1),
+                        "new_risk": ctx.overall_risk,
+                        "new_sizing": ctx.global_sizing_factor,
+                        "block_entries": ctx.block_new_entries,
+                        "rationale": ctx.rationale,
+                    })
+                    self.logger.info(
+                        "NIS post-event refresh complete: risk=%s sizing=%.2f block=%s",
+                        ctx.overall_risk, ctx.global_sizing_factor, ctx.block_new_entries,
+                    )
+        except Exception as exc:
+            self.logger.debug("NIS post-event refresh check failed (non-fatal): %s", exc)
 
     async def _prefetch_earnings_calendar(self):
         """
@@ -1145,8 +1215,19 @@ class PortfolioManager(BaseAgent):
             boost = min(0.05, max(0.0, upside * 0.15)) if upside > 0.10 else 0.0
             boosted_probs.append(float(prob) + boost)
 
+        # Fix 1a: exclude symbols already held so PM never re-proposes open positions
+        from app.database.session import get_session as _gs
+        from app.database.models import Trade as _Trade
+        _hdb = _gs()
+        try:
+            _held = {t.symbol for t in _hdb.query(_Trade).filter_by(status="ACTIVE").all()}
+        finally:
+            _hdb.close()
+        if _held:
+            self.logger.info("Pre-market scan: excluding %d already-held symbol(s): %s", len(_held), sorted(_held))
+
         ranked = sorted(zip(symbols, boosted_probs), key=lambda x: x[1], reverse=True)
-        selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf][:top_n]
+        selected = [(sym, prob) for sym, prob in ranked if prob >= min_conf and sym not in _held][:top_n]
 
         swing_top5 = [(s, round(p, 3)) for s, p in ranked[:5]]
         self.logger.info(

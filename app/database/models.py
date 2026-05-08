@@ -610,6 +610,34 @@ class NisMacroSnapshot(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class NisMacroHistory(Base):
+    """Full lineage of every NIS macro context evaluation during a trading day.
+
+    nis_macro_snapshots holds only the latest state for the day (for the UI / API).
+    This table records every refresh so we can replay what the system believed at
+    any point in time — premarket baseline plus each post-event re-evaluation.
+
+    trigger_source values:
+      'premarket'         — 09:00 ET premarket routine
+      'post_event'        — fired 3 min after a calendar event released
+      'manual'            — operator-triggered via API
+    """
+    __tablename__ = "nis_macro_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    as_of = Column(DateTime, nullable=False, index=True)
+    trigger_source = Column(String(30), nullable=False, default="premarket")  # premarket | post_event | manual
+    trigger_event_type = Column(String(30), nullable=True)   # e.g. NFP, FOMC — set when trigger_source=post_event
+    trigger_event_name = Column(String(200), nullable=True)  # human-readable Finnhub event name
+    overall_risk = Column(String(10), nullable=False)
+    block_new_entries = Column(Boolean, nullable=False, default=False)
+    global_sizing_factor = Column(Float, nullable=False, default=1.0)
+    rationale = Column(Text, nullable=True)
+    events_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ScanAbstention(Base):
     """Scan-level gate abstentions — entire intraday scan skipped due to a market gate.
 

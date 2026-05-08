@@ -108,16 +108,23 @@ def write_scan_abstention(
         logger.debug("scan_abstention write failed (non-fatal): %s", exc)
 
 
-def persist_nis_macro_snapshot(macro_context) -> None:
-    """Upsert today's NIS macro context to nis_macro_snapshots.
+def persist_nis_macro_snapshot(
+    macro_context,
+    trigger_source: str = "premarket",
+    trigger_event_type: str | None = None,
+    trigger_event_name: str | None = None,
+) -> None:
+    """Upsert today's NIS macro context to nis_macro_snapshots AND append a history row.
 
-    Called by premarket routine after NIS macro loads.  Uses snapshot_date as
-    the unique key so re-runs on the same day overwrite (UPSERT via delete+insert).
+    nis_macro_snapshots — one row per day (latest state, used by UI/API).
+    nis_macro_history   — append-only full lineage of every evaluation; never overwritten.
+
+    trigger_source: 'premarket' | 'post_event' | 'manual'
     Fails silently — never blocks trading.
     """
     try:
         from app.database.session import get_session
-        from app.database.models import NisMacroSnapshot
+        from app.database.models import NisMacroSnapshot, NisMacroHistory
 
         today = datetime.now(timezone.utc).date()
         as_of = getattr(macro_context, "as_of", datetime.now(timezone.utc))
@@ -134,8 +141,10 @@ def persist_nis_macro_snapshot(macro_context) -> None:
                 "rationale": getattr(e, "rationale", None),
                 "already_priced_in": getattr(e, "already_priced_in", False),
             })
+        rationale = getattr(macro_context, "rationale", None)
 
         with get_session() as db:
+            # Upsert latest snapshot (UI/API always reads this)
             existing = db.query(NisMacroSnapshot).filter(
                 NisMacroSnapshot.snapshot_date == today
             ).first()
@@ -144,7 +153,7 @@ def persist_nis_macro_snapshot(macro_context) -> None:
                 existing.overall_risk = macro_context.overall_risk
                 existing.block_new_entries = macro_context.block_new_entries
                 existing.global_sizing_factor = macro_context.global_sizing_factor
-                existing.rationale = getattr(macro_context, "rationale", None)
+                existing.rationale = rationale
                 existing.events_json = events
             else:
                 db.add(NisMacroSnapshot(
@@ -153,9 +162,23 @@ def persist_nis_macro_snapshot(macro_context) -> None:
                     overall_risk=macro_context.overall_risk,
                     block_new_entries=macro_context.block_new_entries,
                     global_sizing_factor=macro_context.global_sizing_factor,
-                    rationale=getattr(macro_context, "rationale", None),
+                    rationale=rationale,
                     events_json=events,
                 ))
+
+            # Always append a history row for full lineage
+            db.add(NisMacroHistory(
+                snapshot_date=today,
+                as_of=as_of,
+                trigger_source=trigger_source,
+                trigger_event_type=trigger_event_type,
+                trigger_event_name=trigger_event_name,
+                overall_risk=macro_context.overall_risk,
+                block_new_entries=macro_context.block_new_entries,
+                global_sizing_factor=macro_context.global_sizing_factor,
+                rationale=rationale,
+                events_json=events,
+            ))
             db.commit()
     except Exception as exc:
         logger.debug("nis_macro_snapshot write failed (non-fatal): %s", exc)
