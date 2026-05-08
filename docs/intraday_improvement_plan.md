@@ -1,7 +1,7 @@
 # Intraday Model Improvement Plan — Phases 81–83
 
 **Created:** 2026-05-01  
-**Status:** Phase 85 ✅ | Phase 86 ❌ REVERTED | Phase 87 ✅ | Phase 3a ✅ | Phase R5 📋 NEXT  
+**Status:** Phase 85 ✅ | Phase 86 ❌ REVERTED | Phase 87 ✅ | Phase 3a ✅ | Phase R5 ✅ COMPLETE  
 **Champion model:** v51 (59 features = 56 Branch A + 3 Branch B; best honest result +0.529 avg Sharpe)  
 **Gate requirement (updated):** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 (honest gate with costs + purge)  
 **Next:** Phase R5 — regime gate in simulator (no retrain). Runs in parallel while swing 3b trains.
@@ -370,8 +370,8 @@ ls app/ml/models/intraday_v*.*
 
 ## Phase R5 — Regime Gate in Simulator (No Retrain)
 
-**Status:** 📋 NEXT  
-**Branch:** `feat/phase-r5-intraday-regime-gate`  
+**Status:** ✅ COMPLETE (2026-05-07)  
+**Branch:** `feat/phase-r5-intraday-regime-gate` → merged via PR #171  
 **Prerequisite:** WF-4 + WF-5a complete (regime tagger available)  
 **No retrain required** — gate applied at PM/simulator level only.
 

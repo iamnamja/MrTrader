@@ -2,7 +2,8 @@
 
 **Last updated:** 2026-05-07  
 **Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80).  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a+WF-1/2/3 now complete. See `docs/llm_review_synthesis.md` for full analysis.
+**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a+WF-1/2/3/4/5a+R5+3b now complete. See `docs/llm_review_synthesis.md` for full analysis.  
+**Next:** Run swing retrain (Phase 3b command below) + intraday WF with R5 gate. Then swing WF. Then paper trading.
 
 ---
 
@@ -10,17 +11,36 @@
 
 **Rule:** Document → implement → test → merge before moving to next phase.
 
-| Step | Phase | Type | ETA |
+| Step | Phase | Type | Status |
 |---|---|---|---|
-| 1 | **WF-4** | WF framework | Tonight |
-| 2 | **WF-5a** | WF framework | Tonight |
-| 3 | **Phase 3b** (swing) + **Phase R5** (intraday) | Model + gate | In parallel |
-| 4 | **Swing retrain** | Training | Hours (background) |
-| 5 | **Intraday WF** (with R5) | Walk-forward | While swing trains |
-| 6 | **Swing WF** | Walk-forward | After training |
-| 7 | **Document + test + merge** | Housekeeping | Per phase |
-| 8 | Paper trading | Live | After gate passes |
-| 9 | **WF-5b** (portfolio-level) | WF framework | After 30+ paper days |
+| 1 | **WF-4** — regime-stratified folds | WF framework | ✅ Done (PR #169) |
+| 2 | **WF-5a** — fidelity gates default-on | WF framework | ✅ Done (PR #170) |
+| 3 | **Phase R5** — intraday regime gate | Gate (no retrain) | ✅ Done (PR #171) |
+| 4 | **Phase 3b** — triple-barrier label config | Training prep | ✅ Done (PR #172) |
+| 5 | **Swing retrain** (3b command) | Training | ⏳ Run manually overnight |
+| 6 | **Intraday WF** (with R5 + WF-5a) | Walk-forward | ⏳ Run after step 5 starts |
+| 7 | **Swing WF** | Walk-forward | ⏳ Run after step 5 completes |
+| 8 | **Document + merge** | Housekeeping | ⏳ After WF results |
+| 9 | Paper trading | Live | After gate passes |
+| 10 | **WF-5b** (portfolio-level) | WF framework | 🔜 After 30+ paper days |
+
+**Swing retrain command (run in terminal, ~2-3h):**
+```bash
+python scripts/train_model.py \
+  --label-scheme triple_barrier \
+  --tb-target-mult 2.0 --tb-stop-mult 1.2 --forward-days 10 \
+  --no-fundamentals --workers 8
+```
+
+**Intraday WF command (can run in parallel with retrain):**
+```bash
+python scripts/walkforward_tier3.py --model intraday --regime-gate
+```
+
+**Swing WF command (run after retrain completes):**
+```bash
+python scripts/walkforward_tier3.py --model swing --no-prefilters
+```
 
 **WF-5 scope decision:** WF-5 split into 5a (wire existing gates per-fold, easy) and 5b (portfolio-level simulation, deferred). WF-5b needs live reconciliation data first to know which effects actually matter.
 
