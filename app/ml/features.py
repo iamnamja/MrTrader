@@ -224,9 +224,9 @@ def _aroon(highs, lows, period=25):
     if len(highs) < period + 1:
         return 0.5, 0.5
     h = highs[-(period + 1):]
-    l = lows[-(period + 1):]
+    lo = lows[-(period + 1):]
     aroon_up = float((period - (len(h) - 1 - np.argmax(h))) / period)
-    aroon_down = float((period - (len(l) - 1 - np.argmin(l))) / period)
+    aroon_down = float((period - (len(lo) - 1 - np.argmin(lo))) / period)
     return float(np.clip(aroon_up, 0.0, 1.0)), float(np.clip(aroon_down, 0.0, 1.0))
 
 
