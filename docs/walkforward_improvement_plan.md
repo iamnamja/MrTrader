@@ -1,6 +1,6 @@
 # Walk-Forward Improvement Plan
 
-**Status:** WF-1 ✅ | WF-2 ✅ | WF-3 ✅ | WF-4 📋 NEXT | WF-5a 📋 | WF-5b 🔜 deferred  
+**Status:** WF-1 ✅ | WF-2 ✅ | WF-3 ✅ | WF-4 ✅ | WF-5a ✅ | WF-5b 🔜 deferred  
 **Last updated:** 2026-05-07  
 **Owner:** Engineering  
 **Scope:** Swing + Intraday today; extensible to Day Trading and future strategies
@@ -202,8 +202,8 @@ CPCV is the final promotion gate before live trading.
 
 ### WF-4 — Regime-Stratified Fold Construction
 
-**Status:** 📋 NEXT  
-**Branch:** `feat/wf4-regime-stratified`
+**Status:** ✅ COMPLETE (2026-05-07)  
+**Branch:** `feat/wf4-regime-stratified` → merged via PR #169
 
 **Why:** Without regime labelling, a 3-fold or 6-fold CPCV split can accidentally put all low-vol
 melt-up days in fold 1, making fold 1 look structurally weak rather than regime-specific. A model
@@ -239,8 +239,8 @@ Regime stratification ensures each fold has a representative mix.
 
 ### WF-5a — Simulation Fidelity: Per-Fold Gates (Easy)
 
-**Status:** 📋 NEXT (after WF-4)  
-**Branch:** `feat/wf5a-simulation-fidelity`
+**Status:** ✅ COMPLETE (2026-05-07)  
+**Branch:** `feat/wf5a-simulation-fidelity` → merged via PR #170
 
 **Why:** The current WF already has `--pm-opportunity-score`, `--earnings-blackout`, and
 `--dispersion-gate` CLI flags, but they are opt-in. The live system always applies them.
