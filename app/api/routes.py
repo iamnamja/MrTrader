@@ -974,6 +974,60 @@ async def get_daily_summary(days: int = 30):
         return {"rows": [], "count": 0}
 
 
+@router.get("/analytics/live-vs-sim")
+async def get_live_vs_sim(days: int = 30):
+    """Phase 2d: per-trade live P&L vs walk-forward predicted P&L, with shortfall summary."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import Trade
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        db = get_session()
+        try:
+            rows = (
+                db.query(Trade)
+                .filter(
+                    Trade.status == "CLOSED",
+                    Trade.sim_predicted_pnl.isnot(None),
+                    Trade.closed_at >= cutoff,
+                )
+                .order_by(Trade.closed_at.desc())
+                .all()
+            )
+            trades = []
+            total_live = 0.0
+            total_pred = 0.0
+            for t in rows:
+                qty = t.quantity or 1
+                pred_dollar = (t.sim_predicted_pnl or 0.0) * qty
+                live_dollar = t.pnl or 0.0
+                shortfall = live_dollar - pred_dollar
+                trades.append({
+                    "trade_id": t.id,
+                    "symbol": t.symbol,
+                    "trade_type": t.trade_type,
+                    "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                    "live_pnl": round(live_dollar, 2),
+                    "predicted_pnl": round(pred_dollar, 2),
+                    "shortfall": round(shortfall, 2),
+                })
+                total_live += live_dollar
+                total_pred += pred_dollar
+            return {
+                "days": days,
+                "n_trades": len(trades),
+                "total_live_pnl": round(total_live, 2),
+                "total_predicted_pnl": round(total_pred, 2),
+                "total_shortfall": round(total_live - total_pred, 2),
+                "trades": trades,
+            }
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.error("live-vs-sim error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/analytics/portfolio-heat")
 async def get_portfolio_heat():
     """Return current portfolio heat (total risk as % of account value)."""

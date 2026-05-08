@@ -1293,14 +1293,20 @@ class PortfolioManager(BaseAgent):
 
     def _compute_opportunity_score(self) -> tuple:
         """
-        Phase 88: Replace binary VIX/SPY gates with a continuous 0.0–1.0 day
-        opportunity score. Returns (score, vix, spy_close, spy_ma20, spy_5d_ret).
+        Phase 88 + 5b: Continuous 0.0–1.0 day opportunity score.
+        Returns (score, vix, spy_close, spy_ma20, spy_5d_ret).
 
-        Score components:
-          - vix_score:   drops as VIX rises (0 at VIX=15 → 1 at VIX=35 → clamped)
-          - vix_trend:   penalty if VIX is spiking vs its 5-day avg
-          - ma_score:    1.0 if SPY above MA20, 0.4 if below (not binary block)
-          - mom_score:   SPY 5d momentum, clamped 0–1
+        Score components (Phase 5b adds breadth + dispersion):
+          - vix_score:      drops as VIX rises (0 at VIX=35, 1 at VIX=15)
+          - vix_trend:      penalty if VIX is spiking vs its 5-day avg
+          - ma_score:       1.0 if SPY above MA20, 0.4 if below
+          - mom_score:      SPY 5d momentum, clamped 0–1
+          - breadth_score:  % of universe above MA50 from latest regime snapshot
+          - dispersion_score: cross-sectional return dispersion from regime snapshot
+
+        Weights are config-driven (opp_score_* in Settings). When breadth or
+        dispersion data is unavailable, their weights are redistributed to the
+        remaining components so the score always spans 0–1.
 
         Caller maps score → max_candidates:
           ≥ 0.65 → normal (TOP_N_INTRADAY)
@@ -1308,6 +1314,7 @@ class PortfolioManager(BaseAgent):
           < 0.35 → skip (0)
         """
         try:
+            from app.config import settings as _s
             import yfinance as yf
             import pandas as pd
             spy = yf.download("SPY", period="40d", progress=False, auto_adjust=True)
@@ -1327,7 +1334,7 @@ class PortfolioManager(BaseAgent):
             vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
 
             # VIX trend: penalty if VIX spiking vs 5-day avg
-            vix_5d_avg = vix_level  # fallback if can't fetch VIX history
+            vix_5d_avg = vix_level
             try:
                 vix_hist = yf.download("^VIX", period="10d", progress=False, auto_adjust=True)
                 if isinstance(vix_hist.columns, pd.MultiIndex):
@@ -1345,7 +1352,49 @@ class PortfolioManager(BaseAgent):
             # SPY 5d momentum: 0.5 at flat, 1.0 at +2%, 0.0 at -2%
             mom_score = float(np.clip(0.5 + spy_5d_ret * 25.0, 0.0, 1.0))
 
-            score = 0.35 * vix_score + 0.20 * vix_trend + 0.30 * ma_score + 0.15 * mom_score
+            # Phase 5b: breadth + dispersion from regime context (fail-neutral = 0.5)
+            breadth_score: Optional[float] = None
+            dispersion_score: Optional[float] = None
+            try:
+                ctx_feats = (self._current_regime_ctx or {}).get("features", {})
+                raw_breadth = ctx_feats.get("breadth_pct_ma50")
+                if raw_breadth is not None:
+                    # breadth_pct_ma50 is stored as fraction 0–1
+                    breadth_score = float(np.clip(raw_breadth, 0.0, 1.0))
+                raw_disp = ctx_feats.get("dispersion_pctile")
+                if raw_disp is not None:
+                    dispersion_score = float(np.clip(raw_disp, 0.0, 1.0))
+            except Exception:
+                pass
+
+            # Build weighted sum, redistributing missing-component weights
+            w_vix = _s.opp_score_vix_weight
+            w_vix_trend = _s.opp_score_vix_trend_weight
+            w_ma = _s.opp_score_ma_weight
+            w_mom = _s.opp_score_mom_weight
+            w_breadth = _s.opp_score_breadth_weight if breadth_score is not None else 0.0
+            w_disp = _s.opp_score_dispersion_weight if dispersion_score is not None else 0.0
+
+            w_total = w_vix + w_vix_trend + w_ma + w_mom + w_breadth + w_disp
+            if w_total <= 0:
+                w_total = 1.0
+
+            score = (
+                w_vix * vix_score
+                + w_vix_trend * vix_trend
+                + w_ma * ma_score
+                + w_mom * mom_score
+                + w_breadth * (breadth_score or 0.5)
+                + w_disp * (dispersion_score or 0.5)
+            ) / w_total
+
+            self.logger.debug(
+                "Opp score=%.3f vix=%.2f vix_trend=%.2f ma=%.2f mom=%.2f "
+                "breadth=%s disp=%s",
+                score, vix_score, vix_trend, ma_score, mom_score,
+                f"{breadth_score:.2f}" if breadth_score is not None else "N/A",
+                f"{dispersion_score:.2f}" if dispersion_score is not None else "N/A",
+            )
             return score, vix_level, spy_close, spy_ma20, spy_5d_ret
         except Exception as exc:
             self.logger.warning("Opportunity score check failed (%s) — failing open", exc)
@@ -1996,6 +2045,19 @@ class PortfolioManager(BaseAgent):
                     "Regime sizing intraday %s: %.1f× (%s score=%.2f)",
                     symbol, _regime_mult, _regime_lbl, _regime_score or 0,
                 )
+            # Phase 3d: vol-targeting sizing (overrides quantity when enabled)
+            from app.config import settings as _settings
+            _intra_vt_mult = 1.0
+            if _settings.vol_targeting_enabled:
+                _atr_norm = features_by_symbol.get(symbol, {}).get("atr_norm", 0.0)
+                quantity, _intra_vt_mult = self._vol_targeting_quantity(
+                    price, account_value, quantity, _atr_norm
+                )
+                if _intra_vt_mult != 1.0:
+                    self.logger.info(
+                        "Vol-targeting intraday %s: qty=%d mult=%.2f (atr_norm=%.4f)",
+                        symbol, quantity, _intra_vt_mult, _atr_norm,
+                    )
             # Use ATR-based stops matching the backtester: 0.4x / 0.8x prior-day range.
             # Fall back to fixed pct if prior range unavailable.
             prior_range = prior_ranges_by_symbol.get(symbol)
@@ -2099,6 +2161,10 @@ class PortfolioManager(BaseAgent):
                     symbol, "intraday", "enter",
                     model_score=float(confidence),
                     top_features=self._top_features_for(symbol, "intraday"),
+                    regime_sizing_mult=_regime_mult,
+                    regime_label=_regime_lbl,
+                    regime_score=_regime_score,
+                    vol_targeting_mult=_intra_vt_mult if _intra_vt_mult != 1.0 else None,
                 )
             except Exception:
                 pass
@@ -2274,7 +2340,7 @@ class PortfolioManager(BaseAgent):
             from app.agents.performance_monitor import performance_monitor
             held_scores = [info["score"] for info in scores.values()]
             cycle_decisions: Dict[str, int] = {"EXIT": 0, "HOLD": 0, "EXTEND_TARGET": 0}
-            for sym, info in scores.items():
+            for _, info in scores.items():
                 sc = info["score"]
                 if sc < exit_threshold:
                     cycle_decisions["EXIT"] += 1
@@ -2652,6 +2718,19 @@ class PortfolioManager(BaseAgent):
                     "Regime sizing swing %s: %.1f× (%s score=%.2f)",
                     symbol, _regime_mult, _regime_lbl, _regime_score or 0,
                 )
+            # Phase 3d: vol-targeting sizing (overrides quantity when enabled)
+            from app.config import settings as _cfg
+            _swing_vt_mult = 1.0
+            if _cfg.vol_targeting_enabled:
+                _atr_norm_sw = (self._last_swing_features or {}).get(symbol, {}).get("atr_norm", 0.0)
+                quantity, _swing_vt_mult = self._vol_targeting_quantity(
+                    price, account_value, quantity, _atr_norm_sw
+                )
+                if _swing_vt_mult != 1.0:
+                    self.logger.info(
+                        "Vol-targeting swing %s: qty=%d mult=%.2f (atr_norm=%.4f)",
+                        symbol, quantity, _swing_vt_mult, _atr_norm_sw,
+                    )
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
@@ -2745,6 +2824,7 @@ class PortfolioManager(BaseAgent):
                     regime_sizing_mult=_rm,
                     regime_label=_rl,
                     regime_score=_rs,
+                    vol_targeting_mult=_swing_vt_mult if _swing_vt_mult != 1.0 else None,
                 )
             except Exception:
                 pass
@@ -2919,6 +2999,49 @@ class PortfolioManager(BaseAgent):
 
         qty = int(position_dollars / price)
         return max(qty, 1)
+
+    # ─── Vol-Targeting Sizing (Phase 3d) ─────────────────────────────────────
+
+    def _vol_targeting_quantity(
+        self,
+        price: float,
+        account_value: float,
+        base_quantity: int,
+        atr_norm: float,
+    ) -> tuple:
+        """Return (adjusted_qty, vol_targeting_mult) using ATR-based vol targeting.
+
+        Sizes the position so that one average daily move (ATR) contributes
+        vol_target_pct of account equity in P&L.  Bounded by max_position_size_pct
+        ceiling and vol_targeting_min_notional floor.
+
+        Returns (base_quantity, 1.0) on any error so live trading never blocks.
+        """
+        from app.config import settings
+        try:
+            if price <= 0 or atr_norm <= 0:
+                return base_quantity, 1.0
+
+            atr_per_share = atr_norm * price            # $ daily move per share
+            target_vol_dollar = account_value * settings.vol_target_pct
+            raw_qty = int(target_vol_dollar / atr_per_share)
+
+            # Ceiling: never exceed max_position_size_pct of account
+            max_qty = max(1, int(account_value * settings.max_position_size_pct / price))
+            qty = min(raw_qty, max_qty)
+
+            # Floor: ensure minimum notional, but don't exceed ceiling
+            if qty * price < settings.vol_targeting_min_notional:
+                floor_qty = max(1, int(settings.vol_targeting_min_notional / price))
+                qty = min(floor_qty, max_qty)
+
+            qty = max(1, qty)
+            mult = round(qty / max(base_quantity, 1), 4)
+            return qty, mult
+
+        except Exception as exc:
+            self.logger.debug("vol_targeting_quantity failed (non-fatal): %s", exc)
+            return base_quantity, 1.0
 
     # ─── Regime Sizing ────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 """
 Tests for intraday gate enforcement fixes:
-- INTRADAY_GATE threshold is 1.50, not 0.80
+- INTRADAY_GATE threshold is 1.00 (recalibrated from 1.50 in Phase 3d/5b/2d)
 - Fallback loader requires .gate_passed sentinel
 - Sentinel is written when gate passes, not when it fails
 """
@@ -15,12 +15,12 @@ class TestIntradayGateThreshold:
     def test_intraday_gate_is_stricter_than_swing(self):
         from app.ml.retrain_config import INTRADAY_GATE, SWING_GATE
         assert INTRADAY_GATE["min_avg_sharpe"] > SWING_GATE["min_avg_sharpe"], (
-            "Intraday gate must be stricter than swing (1.50 vs 0.80)"
+            "Intraday gate must be stricter than swing (1.00 vs 0.80)"
         )
 
     def test_intraday_gate_threshold_is_1_5(self):
         from app.ml.retrain_config import INTRADAY_GATE
-        assert INTRADAY_GATE["min_avg_sharpe"] == 1.50
+        assert INTRADAY_GATE["min_avg_sharpe"] == 1.00
 
     def test_swing_gate_threshold_is_0_8(self):
         from app.ml.retrain_config import SWING_GATE
