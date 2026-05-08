@@ -1,9 +1,25 @@
 # Walk-Forward Improvement Plan
 
-**Status:** WF-1 ✅ COMPLETE | WF-2 ✅ COMPLETE | WF-3 ✅ COMPLETE  
+**Status:** WF-1 ✅ | WF-2 ✅ | WF-3 ✅ | WF-4 📋 NEXT | WF-5a 📋 | WF-5b 🔜 deferred  
 **Last updated:** 2026-05-07  
 **Owner:** Engineering  
 **Scope:** Swing + Intraday today; extensible to Day Trading and future strategies
+
+### Agreed execution order (2026-05-07)
+
+```
+WF-4  →  WF-5a  →  Phase 3b (swing retrain) + Phase R5 (intraday gate)
+      →  Swing retrain  →  WF run (swing + intraday)
+      →  Document → Test → Merge
+      →  Paper trading  →  WF-5b (portfolio-level, informed by live data)  →  WF-6
+```
+
+**Scope decisions locked:**
+- WF-5 split into 5a (easy: wire existing gates per-fold) and 5b (hard: portfolio-level simulation)
+- WF-5b deferred until 30+ paper trading days exist — live reconciliation data (WF-6) is needed
+  to know which portfolio-level effects actually matter before building them
+- Phase 3b = swing full-universe + triple-barrier labels (phased approach per MASTER_BACKLOG 3b)
+- Phase R5 = intraday regime gate in simulator (no retrain); runs in parallel while swing trains
 
 ---
 
@@ -184,18 +200,92 @@ CPCV is the final promotion gate before live trading.
 
 ## Future Phases
 
-### WF-4 — Regime-Stratified Testing (planned)
+### WF-4 — Regime-Stratified Fold Construction
 
-- Tag every trading day with regime label: VIX quartile × SPY trend × momentum
-- Ensure each CPCV fold has minimum regime diversity
-- Report per-regime Sharpe breakdown
-- Additional gate: worst-regime Sharpe > -0.5
+**Status:** 📋 NEXT  
+**Branch:** `feat/wf4-regime-stratified`
 
-### WF-5 — Full Strategy Simulation Fidelity (planned)
+**Why:** Without regime labelling, a 3-fold or 6-fold CPCV split can accidentally put all low-vol
+melt-up days in fold 1, making fold 1 look structurally weak rather than regime-specific. A model
+that works in every regime except low-vol will still fail the min_fold gate even if it's good.
+Regime stratification ensures each fold has a representative mix.
 
-- PM opportunity score, macro gate, earnings blackout all correctly simulated per fold
-- Portfolio-level Sharpe (correlation budget, max N positions, sector limits)
-- Vol-targeting position sizing to match live behavior
+**What to build:**
+
+1. **Daily regime tagger** (`scripts/walkforward/regime.py`):
+   - Label = VIX quartile (1–4) × SPY trend (above/below 50d MA) × momentum (SPY 20d return > 0)
+   - Results in up to 8 regime buckets per day
+   - Persist as `{date: regime_label}` dict; loaded once per WF run from SPY/VIX history
+
+2. **Fold diversity check** in `FoldEngine._build_calendar_folds` and `_build_trading_day_folds`:
+   - After building boundaries, assert each fold's test window contains ≥ 2 distinct regime labels
+   - Log regime distribution per fold (% days in each bucket)
+   - Warn (don't fail) if a fold is regime-homogeneous — let the result speak for itself
+
+3. **Per-regime Sharpe breakdown** in `WalkForwardReport.print()`:
+   - For each fold, split trades by regime label, report Sharpe per bucket
+   - New `FoldResult.regime_sharpes: dict[str, float]` field
+
+4. **New gate:** `worst_regime_sharpe > -0.5` (report-level, across all regimes seen)
+
+**Files:**
+- `scripts/walkforward/regime.py` (new)
+- `scripts/walkforward/engine.py` (diversity check)
+- `scripts/walkforward/gates.py` (new field + gate)
+- `tests/test_wf4_regime_stratified.py` (new)
+
+**Performance note:** Regime tagging adds ~30s per WF run (SPY/VIX download once, tag all days).
+
+
+### WF-5a — Simulation Fidelity: Per-Fold Gates (Easy)
+
+**Status:** 📋 NEXT (after WF-4)  
+**Branch:** `feat/wf5a-simulation-fidelity`
+
+**Why:** The current WF already has `--pm-opportunity-score`, `--earnings-blackout`, and
+`--dispersion-gate` CLI flags, but they are opt-in. The live system always applies them.
+This gap means WF Sharpe is systematically optimistic on days when the live system would abstain.
+
+**What to build:**
+
+1. **Make per-fold gates the default** in `run_swing_walkforward` and `run_intraday_walkforward`:
+   - `use_opportunity_score=True` by default (was False)
+   - `earnings_blackout` pre-fetched automatically (was manual CLI flag)
+   - Intraday: `use_dispersion_gate=True` by default
+
+2. **Macro event gate per fold** (`--macro-gate` flag, on by default):
+   - Fetch Finnhub economic calendar for the full WF date range once
+   - In each fold simulation, block entries within ±15 min of FOMC/NFP/CPI (same as live PM)
+   - Adds ~1 min per WF run (one calendar fetch)
+
+3. **Report: abstention rate per fold**:
+   - Log how many candidate days each gate suppressed per fold
+   - Adds to `FoldResult`: `opp_score_abstain_days`, `earnings_blackout_days`, `macro_gate_days`
+   - Shows in `WalkForwardReport.print()` so you can see if a fold's weak Sharpe is gate-driven
+
+**Files:**
+- `scripts/walkforward/gates.py` (new FoldResult fields)
+- `scripts/walkforward/strategies/swing.py` (default kwargs)
+- `scripts/walkforward/strategies/intraday.py` (default kwargs)
+- `scripts/walkforward_tier3.py` (default arg changes + macro gate fetch)
+- `tests/test_wf5a_simulation_fidelity.py` (new)
+
+**Expected impact:** WF Sharpe drops slightly (gates suppress some trades). The number is now
+comparable to what live paper trading will show.
+
+
+### WF-5b — Portfolio-Level Simulation (Deferred)
+
+**Status:** 🔜 DEFERRED — needs 30+ paper trading days first  
+**Why deferred:** We don't know which portfolio-level effects are the dominant error term until
+live vs. WF reconciliation data exists (WF-6). Building a sophisticated portfolio simulator before
+that data exists risks building the wrong thing. Deliver WF-5a, get the model to paper trading,
+collect live data, then build WF-5b targeted at the actual discrepancies.
+
+**Scope when ready:**
+- Max N positions enforced per fold (currently unlimited in simulation)
+- Correlation budget: cap sector concentration (>2 positions in same GICS sector → block)
+- Vol-targeting position sizing: size = target_vol / predicted_daily_vol (Phase 3d)
 - After this, WF Sharpe should closely predict live paper Sharpe
 
 ### WF-6 — Live Reconciliation Bridge (planned, needs 30+ paper trading days)

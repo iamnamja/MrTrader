@@ -1,8 +1,28 @@
 # MrTrader — Master Backlog & Roadmap
 
 **Last updated:** 2026-05-07  
-**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80). Phase 3 architecture repair in progress; Phase 4a feature audit complete.  
-**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a now complete. Phase 3b designed. See `docs/llm_review_synthesis.md` for full analysis.
+**Status:** Paper trading only. Best honest results: swing avg +0.358 (v163, Phase 2a corrected), intraday avg +0.529 (v51, Phase 3a Branch B). Both below gate (0.80).  
+**Decision:** Based on multi-LLM review (Claude + ChatGPT + Gemini, 2026-05-05), we are pausing model iteration and fixing statistical foundation + simulation realism first. Phase 1+2+3a+4a+WF-1/2/3 now complete. See `docs/llm_review_synthesis.md` for full analysis.
+
+---
+
+## Active Execution Plan (agreed 2026-05-07)
+
+**Rule:** Document → implement → test → merge before moving to next phase.
+
+| Step | Phase | Type | ETA |
+|---|---|---|---|
+| 1 | **WF-4** | WF framework | Tonight |
+| 2 | **WF-5a** | WF framework | Tonight |
+| 3 | **Phase 3b** (swing) + **Phase R5** (intraday) | Model + gate | In parallel |
+| 4 | **Swing retrain** | Training | Hours (background) |
+| 5 | **Intraday WF** (with R5) | Walk-forward | While swing trains |
+| 6 | **Swing WF** | Walk-forward | After training |
+| 7 | **Document + test + merge** | Housekeeping | Per phase |
+| 8 | Paper trading | Live | After gate passes |
+| 9 | **WF-5b** (portfolio-level) | WF framework | After 30+ paper days |
+
+**WF-5 scope decision:** WF-5 split into 5a (wire existing gates per-fold, easy) and 5b (portfolio-level simulation, deferred). WF-5b needs live reconciliation data first to know which effects actually matter.
 
 ---
 

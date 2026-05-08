@@ -1,10 +1,26 @@
 # Intraday Model Improvement Plan — Phases 81–83
 
 **Created:** 2026-05-01  
-**Status:** Phase 85 ✅ DONE | Phase 86 ❌ REVERTED | Phase 87 ✅ DONE (v51, OOS AUC=0.6230) | Phase 3a ✅ DONE (Branch B, v51 WF +0.529)  
+**Status:** Phase 85 ✅ | Phase 86 ❌ REVERTED | Phase 87 ✅ | Phase 3a ✅ | Phase R5 📋 NEXT  
 **Champion model:** v51 (59 features = 56 Branch A + 3 Branch B; best honest result +0.529 avg Sharpe)  
 **Gate requirement (updated):** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 (honest gate with costs + purge)  
-**Next:** Phase R5 (regime gate) expected to push fold 2 (tariff shock) from +0.24 to positive, crossing gate.
+**Next:** Phase R5 — regime gate in simulator (no retrain). Runs in parallel while swing 3b trains.
+
+### Agreed execution plan (2026-05-07)
+
+```
+WF-4 → WF-5a  (walk-forward framework hardening, both strategies)
+  ↓
+Phase R5 (intraday regime gate — no retrain)   +   Phase 3b (swing retrain, parallel)
+  ↓
+Kick off swing training (hours)
+While training: run intraday WF with R5 gate (~40 min)
+When swing done: run swing WF (~50 min)
+  ↓
+Document → Test → Merge both
+  ↓
+Paper trading → WF-5b (portfolio-level) informed by 30+ days of live data
+```
 
 ---
 
@@ -349,6 +365,79 @@ python scripts/train_intraday.py --version 31
 # Verify rollback state at any time
 ls app/ml/models/intraday_v*.* 
 ```
+
+---
+
+## Phase R5 — Regime Gate in Simulator (No Retrain)
+
+**Status:** 📋 NEXT  
+**Branch:** `feat/phase-r5-intraday-regime-gate`  
+**Prerequisite:** WF-4 + WF-5a complete (regime tagger available)  
+**No retrain required** — gate applied at PM/simulator level only.
+
+### Problem
+
+v51's fold 2 (tariff shock period) comes in at +0.24 — dragging avg Sharpe below the 0.80 gate.
+The tariff shock was a macro-dominated regime: high cross-sectional correlation, compressed
+stock-specific alpha, SPY gaps that invalidated ORB-derived features. The model kept trading
+when it should have abstained.
+
+### Gate Logic
+
+Apply in `IntradayAgentSimulator.run()` before the candidate loop on each simulated day:
+
+**Gate R5-A — Regime classification block:**
+```python
+regime = regime_tagger.label(date)  # from WF-4 regime.py
+if regime in HIGH_CORRELATION_REGIMES:  # VIX spike + SPY below 50d MA
+    logger.info("Regime gate R5-A: macro-dominated day, skipping intraday scan")
+    continue  # abstain for this date
+```
+
+**Gate R5-B — Realised cross-sectional dispersion floor:**
+```python
+cs_dispersion = std(all_symbol_2h_returns_this_day)
+rolling_median_dispersion = median(cs_dispersion, last_60_trading_days)
+if cs_dispersion < 0.4 * rolling_median_dispersion:
+    logger.info("Regime gate R5-B: dispersion %.4f < 40pct median, skipping", cs_dispersion)
+    continue
+```
+Note: dispersion gate (60% threshold) already exists as `--dispersion-gate` flag. R5-B tightens
+the threshold to 40% and makes it default-on in the simulator.
+
+**Gate R5-C — VIX spike abstention:**
+```python
+if vix_today > 35 and spy_5d_return < -0.05:
+    logger.info("Regime gate R5-C: VIX spike + SPY drawdown, skipping")
+    continue
+```
+
+### Files
+- `app/backtesting/intraday_agent_simulator.py` — add R5-A/B/C gates
+- `scripts/walkforward/strategies/intraday.py` — pass regime_tagger into simulator
+- `scripts/walkforward/regime.py` — shared tagger from WF-4
+- `tests/test_phase_r5_regime_gate.py` (new)
+
+### Expected WF Result
+| Fold | Current (v51) | Expected with R5 | Regime removed |
+|---|---|---|---|
+| 1 | +0.33 | +0.30–+0.45 | Low-vol melt-up days suppressed |
+| 2 | +0.24 | +0.45–+0.70 | Tariff shock macro days abstained |
+| 3 | +0.85 | +0.75–+0.90 | Slight trade reduction but higher quality |
+| **Avg** | **+0.529** | **~0.50–0.68** | |
+
+Gate target: avg > 0.80. R5 alone may not cross it — but combined with WF-5a (which removes
+optimistic trades from the simulation), the honest number may be closer than it appears.
+If still below 0.80 after R5 + WF-5a: Phase 86b (stock-relative features retrain) is next.
+
+### Decision Rule After R5 WF Run
+```
+Avg Sharpe > 0.80 AND no fold < -0.30?
+    YES → Gate passed. Merge, promote v51 to paper trading.
+    NO, avg 0.60–0.79 → Proceed to Phase 86b (stock-relative features retrain).
+    NO, avg < 0.60 → R5 gates too aggressive (removing good trades). Tune thresholds, re-run.
+```
+
 
 ---
 
