@@ -1023,3 +1023,34 @@ Note: Branch B features (`vix_regime_level`, `spy_5d_return_daily`, `day_of_week
 **Regime interpretation:** The swing model's challenge is NOT just the 2025 tariff regime — it also underperforms in 2022–2024. The pre-filter issue (RSI_DIP/EMA_CROSSOVER as regime guard) affects all periods, not just 2025.
 
 **Verdict:** Fold-level analysis confirms Phase 3b (full universe + triple-barrier) is the right next step. The opportunity score alone (+0.27 avg) is not enough to pass the gate. v163 remains active for paper trading.
+
+
+
+---
+
+## Infrastructure: Walk-Forward Hardening WF-1/2/3 (2026-05-07)
+
+**Type:** Infrastructure improvement (no model retrain)
+
+### WF-1 — Embargo + Multi-Metric Gate (PR #166)
+- Added `embargo_days` post-test gap: `train | purge_days | TEST | embargo_days | next_fold_train`
+- Extended FoldResult with `profit_factor`, `calmar_ratio`, `k_ratio`
+- New gate thresholds: avg_profit_factor >= 1.10, avg_calmar >= 0.30
+- 31 unit tests in `tests/test_wf1_embargo_metrics.py`
+
+### WF-2 — Pluggable Engine Architecture (PR #167)
+- New `scripts/walkforward/` package: `FoldEngine`, `gates.py`, `cost_models.py`, strategy classes
+- `FoldEngine` allows Day Trading and future strategies without modifying existing code
+- `walkforward_tier3.py` kept as full implementation (100% backwards compat)
+- 21 unit tests in `tests/test_wf2_pluggable_engine.py`
+
+### WF-3 — Combinatorial Purged K-Fold (PR #168)
+- `scripts/walkforward/cpcv.py`: C(k,paths) independent test paths, Sharpe distribution
+- `CPCVResult`: mean/std/P5/P95 Sharpe, pct_positive, avg_PF, avg_Calmar
+- CPCV gate: mean >= 0.80, P5 >= -0.30, pct_positive >= 75%, DSR p > 0.95
+- CLI: `python scripts/walkforward_tier3.py --cpcv --cpcv-k 6 --cpcv-paths 2`
+- 18 unit tests in `tests/test_wf3_cpcv.py`
+
+**Impact:** Walk-forward is now statistically honest and extensible. Next model promotion must pass:
+1. Standard 3-fold gate (fast, for development)
+2. CPCV C(6,2)=15 paths gate (overnight run, before paper trading promotion)

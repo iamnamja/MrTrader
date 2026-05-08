@@ -34,6 +34,10 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Deliverable:** Net Sharpe numbers we can actually trust. Expected: swing drops ~0.1–0.2, intraday drops ~0.3–0.5.  
 **Files:** `scripts/walkforward_tier3.py`, `app/backtesting/intraday_agent_simulator.py`
 
+### 1b. Purge + Embargo + Multi-Metric Gate (WF-1) ✅ COMPLETE (2026-05-07)
+**What:** Extended 1b with post-test embargo (both sides of test window now clean). Added profit_factor, calmar_ratio, k_ratio metrics to FoldResult. Gate now requires avg_PF >= 1.10 AND avg_Calmar >= 0.30 in addition to Sharpe + DSR. 31 unit tests. PR #166.  
+**Files:** `scripts/walkforward_tier3.py`, `tests/test_wf1_embargo_metrics.py`
+
 ### 1b. Purge + Embargo Between Walk-Forward Folds ✅ COMPLETE (2026-05-05/06)
 **Why:** Train/test boundary allows labels computed on test-window data to contaminate training (e.g., a 5-day label computed starting the last train day extends into test).  
 **What:**
@@ -52,6 +56,13 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - **Keep NIS as a PM gate/overlay** (see Phase 3c below)  
 **Files:** `app/ml/training.py` (swing feature list), `app/ml/intraday_trainer.py` (intraday feature list)  
 **Deliverable:** Cleaner model without time-leak. Swing drops from ~89 → ~79 features, intraday from 61 → 56 features.
+
+### 1f. Pluggable Walk-Forward Engine (WF-2) ✅ COMPLETE (2026-05-07)
+**What:** Refactored `walkforward_tier3.py` into `scripts/walkforward/` package: `FoldEngine` (strategy-agnostic), `gates.py`, `cost_models.py`, `strategies/swing.py`, `strategies/intraday.py`. `walkforward_tier3.py` unchanged for full backwards compat. 21 unit tests. PR #167.
+
+### 1g. Combinatorial Purged K-Fold (WF-3) ✅ COMPLETE (2026-05-07)
+**What:** Implemented CPCV (Lopez de Prado AFML Ch. 12) in `scripts/walkforward/cpcv.py`. C(k,paths) independent test paths; CPCVResult reports full Sharpe distribution. New gate: pct_positive >= 75%, P5 >= -0.30. CLI: `--cpcv --cpcv-k 6 --cpcv-paths 2`. 18 unit tests. PR #168.  
+**Note:** CPCV with k=6 runs 15 fold combinations (~4h for swing). Use as final promotion gate before live trading.
 
 ### 1d. Bootstrap Walk-Forward to Quantify Selection Bias ✅ COMPLETE (2026-05-06)
 **Why:** We've tried ~15 model variants. Picking the best Sharpe inflates the result. Need to know if the original +1.181 / +1.830 were in the tail of a noise distribution.  
