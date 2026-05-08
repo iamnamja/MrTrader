@@ -99,7 +99,8 @@ def run_swing(dry_run: bool) -> bool:
     )
     try:
         version = trainer.train_model(
-            fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"]
+            fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"],
+            exclude_risk_off_days=SWING_RETRAIN.get("exclude_risk_off_days", False),
         )
         logger.info("Swing v%d trained — running walk-forward gate...", version)
     except Exception as e:
@@ -111,6 +112,7 @@ def run_swing(dry_run: bool) -> bool:
         wf = run_swing_walkforward(
             n_folds=SWING_RETRAIN["walk_forward_folds"],
             model_version=version,
+            use_opportunity_score=True,
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
@@ -163,7 +165,8 @@ def run_intraday(dry_run: bool) -> bool:
 
     try:
         from scripts.walkforward_tier3 import run_intraday_walkforward
-        wf = run_intraday_walkforward(n_folds=3, model_version=version, total_days=365)
+        wf = run_intraday_walkforward(n_folds=3, model_version=version, total_days=365,
+                                      use_opportunity_score=True)
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
         gate_ok = (avg_sh >= INTRADAY_GATE["min_avg_sharpe"] and

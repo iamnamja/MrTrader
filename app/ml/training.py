@@ -477,6 +477,7 @@ class ModelTrainer:
         symbols: Optional[List[str]] = None,
         years: Optional[int] = None,
         fetch_fundamentals: bool = True,
+        exclude_risk_off_days: bool = False,
     ) -> int:
         """
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
@@ -502,6 +503,23 @@ class ModelTrainer:
         )
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after rolling windows.")
+
+        if exclude_risk_off_days and len(X_train) > 0:
+            risk_off_dates = self._load_risk_off_dates()
+            if risk_off_dates:
+                all_dates = self._last_all_dates
+                keep_mask = np.array([
+                    all_dates[m["window_idx"]] not in risk_off_dates
+                    for m in meta_train
+                ])
+                before = len(X_train)
+                X_train = X_train[keep_mask]
+                y_train = y_train[keep_mask]
+                meta_train = [m for m, k in zip(meta_train, keep_mask) if k]
+                logger.info(
+                    "Phase R6: excluded %d/%d swing training rows on RISK_OFF days",
+                    before - len(X_train), before,
+                )
 
         logger.info(
             "Train: %d samples | Test: %d samples | Features: %d",
@@ -732,6 +750,7 @@ class ModelTrainer:
             X_test = cs_normalize_by_group(X_test, test_window_ids)
 
         feature_names = self._last_feature_names
+        self._last_all_dates = all_dates
         return X_train, y_train, X_test, y_test, feature_names, meta_train
 
     def _compute_cs_thresholds(
@@ -1156,6 +1175,7 @@ class ModelTrainer:
     ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
         X_rows, y_vals, meta_rows = [], [], []
         self._last_feature_names: List[str] = []
+        self._last_all_dates: list = []
 
         # Pre-compute cross-sectional thresholds (serial — needs all symbols per window)
         cs_thresholds: Dict[int, Any] = {}
@@ -1404,6 +1424,20 @@ class ModelTrainer:
             logger.warning("Feature selection failed, using all: %s", exc)
             all_scores = np.ones(len(feature_names))
             return X_train, X_test, feature_names, all_scores
+
+    def _load_risk_off_dates(self) -> set:
+        """Return set of date objects that were RISK_OFF regime days. Fail-open."""
+        try:
+            from app.database.session import get_session
+            from app.database.models import RegimeSnapshot
+            with get_session() as db:
+                rows = db.query(RegimeSnapshot.snapshot_date).filter(
+                    RegimeSnapshot.regime_label == "RISK_OFF"
+                ).all()
+            return {r.snapshot_date for r in rows}
+        except Exception as exc:
+            logger.warning("R6 swing: could not load RISK_OFF dates (fail-open): %s", exc)
+            return set()
 
     def _build_sample_weights(self, meta: List[dict]) -> Optional[np.ndarray]:
         """Build multi-factor sample weights from per-sample metadata."""

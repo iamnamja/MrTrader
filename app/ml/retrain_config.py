@@ -31,6 +31,7 @@ SWING_RETRAIN: dict = dict(
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
     n_workers=8,
     walk_forward_folds=3,       # run gate check before promoting
+    exclude_risk_off_days=True,  # Phase R6b: drop training windows on RISK_OFF regime days
 )
 
 # Gate thresholds matching the manual training gates (docs/ML_EXPERIMENT_LOG.md)

@@ -1305,5 +1305,44 @@ Random input (200 samples, std-normal):
 
 ### v53 Walk-Forward Results
 
+**Result: ❌ FAILED gate** — avg Sharpe -1.391 (folds: -0.85, -1.11, -2.21)
+
+**Root cause of v53 failure (Phase R6b diagnosis):**
+The WF simulator called from `retrain_cron.py` did NOT pass `use_opportunity_score=True`. This means:
+- Model trained on RISK_ON/RISK_CAUTION rows only (R6 exclusion applied)
+- WF evaluation covered ALL days including RISK_OFF
+- Model was penalized on days it would never trade live → artificially bad fold Sharpes
+- The training/evaluation distribution mismatch is the same as not applying R6 at all
+
+This is also why swing v166 fold 3 collapsed (-0.29): RISK_OFF contamination in training labels, no regime gate in WF evaluation.
+
+---
+
+## Phase R6b — Gate-Aware WF Evaluation (2026-05-08)
+
+**Fix:** Pass `use_opportunity_score=True` to both WF runners in `retrain_cron.py`. When enabled, the WF simulator applies the PM opportunity score gate — days where VIX is high / SPY below MA score below the entry threshold and are skipped, matching live PM behavior.
+
+**Additional fix for swing:** Add R6 exclusion to `ModelTrainer.train_model(exclude_risk_off_days=True)`:
+- `_load_risk_off_dates()` queries `regime_snapshots` for RISK_OFF dates → returns `set[date]`
+- After `_build_rolling_matrix()`, filter training rows where `all_dates[meta["window_idx"]]` is RISK_OFF
+- `SWING_RETRAIN` config updated: `exclude_risk_off_days=True`
+- `_last_all_dates` stored on trainer after `_build_rolling_matrix` for lookup
+
+**Changes (2026-05-08):**
+- `scripts/retrain_cron.py`: `run_swing_walkforward(..., use_opportunity_score=True)` + `run_intraday_walkforward(..., use_opportunity_score=True)`
+- `app/ml/training.py`: `train_model(exclude_risk_off_days=False)` + `_load_risk_off_dates()` helper + `_last_all_dates` stored on trainer
+- `app/ml/retrain_config.py`: `SWING_RETRAIN["exclude_risk_off_days"] = True`
+- Tests: `tests/test_phase_r6b_wf_gate_aware.py` (9 tests)
+
+**v54 retrain kicked off:** 2026-05-08 (background) — intraday, R6 + gate-aware WF
+**v167 retrain kicked off:** 2026-05-08 (background) — swing, R6 exclusion + gate-aware WF
+
+### v54 Walk-Forward Results
+
 *(To be filled after retrain completes)*
+
+### v167 Walk-Forward Results
+
+*(To be filled after retrain completes)*
+
 
