@@ -95,6 +95,10 @@ class FoldResult:
     k_ratio: float = 0.0
     regime_sharpes: Dict[str, float] = field(default_factory=dict)
     regime_diversity: int = 0
+    # WF-5a: abstention tracking
+    opp_score_abstain_days: int = 0
+    earnings_blackout_days: int = 0
+    macro_gate_days: int = 0
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
