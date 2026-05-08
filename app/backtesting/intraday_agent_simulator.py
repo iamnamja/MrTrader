@@ -115,6 +115,7 @@ class IntradayAgentSimulator:
         earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
         intraday_blackout_days_before: int = 1,  # Phase 2b: skip entry N days before earnings
         intraday_blackout_days_after: int = 3,   # Phase 2b: skip entry N days after earnings
+        macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -131,6 +132,7 @@ class IntradayAgentSimulator:
         self.earnings_blackout = earnings_blackout or {}
         self.intraday_blackout_days_before = intraday_blackout_days_before
         self.intraday_blackout_days_after = intraday_blackout_days_after
+        self.macro_blocked_dates: set = macro_blocked_dates or set()
         # Phase 51: scan_offsets controls how many entry windows per day.
         # Default [12] = single-scan (v29/v30 baseline). [12, 18, 24] = multi-scan.
         self.scan_offsets: List[int] = sorted(scan_offsets) if scan_offsets else [FEATURE_BARS]
@@ -304,6 +306,11 @@ class IntradayAgentSimulator:
                             skip_entries = True
                             logger.debug("Dispersion gate on %s: %.4f < %.2f×%.4f",
                                          day, today_disp, self.dispersion_threshold, median_disp)
+
+            # WF-5a: macro event gate — block new entries on FOMC/NFP/CPI/GDP days
+            if not skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
+                skip_entries = True
+                logger.debug("Macro gate blocked intraday entries on %s", day)
 
             spy_day = self._get_day_bars(spy_data, day) if spy_data is not None else None
             # Phase 86: SPY daily bars strictly before today (no lookahead)
