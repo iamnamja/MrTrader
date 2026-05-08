@@ -43,9 +43,9 @@ class TestBranchBDefinition:
 
     def test_feature_count_increased_by_three(self):
         from app.ml.intraday_features import FEATURE_NAMES
-        # Was 56 features before Phase 3a; now 59
-        assert len(FEATURE_NAMES) == 59, (
-            f"Expected 59 features (56 Branch A + 3 Branch B). Got {len(FEATURE_NAMES)}"
+        # Was 56 before Phase 3a (59), +4 Phase 91 microstructure = 63
+        assert len(FEATURE_NAMES) == 63, (
+            f"Expected 63 features (60 Branch A + 3 Branch B + 4 Phase 91). Got {len(FEATURE_NAMES)}"
         )
 
 

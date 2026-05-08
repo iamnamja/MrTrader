@@ -1429,4 +1429,25 @@ v51 restored as ACTIVE.
 **v173 retrain kicked off:** 2026-05-08
 
 ### v173 Walk-Forward Results (Swing)
-*(To be filled)*
+*(To be filled — retrain in progress)*
+
+---
+
+## Phase 91 — Intraday Hybrid Label + Microstructure Features (2026-05-08)
+
+**Motivation:** Phase 88 intraday v58 gate failed badly (avg Sharpe -1.556, all 5 folds negative). Root causes identified: (1) Top-20% cross-sectional label is noisy on chop days — arbitrary small differences label winners, (2) Missing first-hour microstructure features that differ between real trending bars and noise bars.
+
+**Changes (intraday_training.py):**
+- **Hybrid label:** `label=1` iff top-20% AND realized-R ≥ 0.5× ATR_target AND return ≥ 0.003. Intersection removes chop-day noise: stocks that made the top-20% cut purely by being "least bad" in a flat day are excluded.
+- **Per-day dispersion gate:** Drop training days where universe return std < rolling 60-day median. On compressed-dispersion days the label is uninformative — top-20% threshold collapses near zero. Only applied to training; test set kept intact for eval.
+
+**Changes (intraday_features.py — 4 new features):**
+- `vwap_slope_to_bar12`: VWAP slope from bar 0 to bar 12 (60 min), normalized by open price. Captures early momentum commitment.
+- `first_30min_volume_ratio`: First 30 min volume / session total. High early volume = institutional conviction.
+- `spy_5min_return_bar12`: SPY cumulative return at bar 12. Separates stock alpha from market beta over first hour.
+- `vix_5min_change`: High-low range expansion proxy for vol acceleration in first hour.
+
+**FEATURE_NAMES count:** 63 (was 59: +4 Phase 91 microstructure)
+
+**v59 retrain to be kicked off after PR merge.**
+
