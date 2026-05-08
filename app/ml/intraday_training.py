@@ -212,11 +212,12 @@ class IntradayModelTrainer:
                 raw_train = raw_train[keep_mask]
                 _regime_sw_multiplier = weights[keep_mask]
                 n_after = len(X_train)
-                n_caution = int(((_regime_sw_multiplier > 0) & (_regime_sw_multiplier < 1)).sum())
+                n_risk_off = int((_regime_sw_multiplier < 0.4).sum())
+                n_caution = int(((_regime_sw_multiplier >= 0.4) & (_regime_sw_multiplier < 1)).sum())
                 logger.info(
-                    "Phase R6/R7: excluded %d RISK_OFF rows, %d RISK_CAUTION rows "
+                    "Phase R6/88: %d RISK_OFF rows down-weighted 0.3x, %d RISK_CAUTION rows "
                     "down-weighted 0.5x (%d → %d; %.1f%% removed)",
-                    n_before - n_after, n_caution, n_before, n_after,
+                    n_risk_off, n_caution, n_before, n_after,
                     (n_before - n_after) / max(n_before, 1) * 100,
                 )
             else:
@@ -556,7 +557,7 @@ class IntradayModelTrainer:
     def _load_regime_weight_ordinals(self) -> dict:
         """Phase R6/R7: return {day_ordinal: sample_weight_multiplier}.
 
-        RISK_OFF  → 0.0 (exclude)
+        RISK_OFF  → 0.3 (down-weight; Phase 88: was 0.0 exclude)
         RISK_CAUTION → 0.5 (down-weight)
         RISK_ON / UNKNOWN → 1.0 (full weight)
         Fail-open: returns empty dict if DB unavailable.
@@ -571,7 +572,7 @@ class IntradayModelTrainer:
             result = {}
             for d, lbl in rows:
                 if lbl == "RISK_OFF":
-                    result[d.toordinal()] = 0.0
+                    result[d.toordinal()] = 0.3  # Phase 88: down-weight not exclude
                 elif lbl == "RISK_CAUTION":
                     result[d.toordinal()] = 0.5
                 else:

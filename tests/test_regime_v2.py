@@ -183,7 +183,7 @@ class TestRegimeWeightMap:
         with patch("app.database.session.get_session", return_value=mock_session):
             weight_map = trainer._load_regime_weight_map()
 
-        assert weight_map[date(2024, 1, 2)] == 0.0   # RISK_OFF
+        assert weight_map[date(2024, 1, 2)] == 0.3   # RISK_OFF — Phase 88: 0.3 not exclude
         assert weight_map[date(2024, 1, 3)] == 0.5   # RISK_CAUTION
         assert weight_map[date(2024, 1, 4)] == 1.0   # RISK_ON
 

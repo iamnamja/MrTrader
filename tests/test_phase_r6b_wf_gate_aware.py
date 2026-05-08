@@ -47,7 +47,7 @@ class TestSwingTrainerR6Exclusion:
         assert len(result) == 0
 
     def test_load_risk_off_dates_returns_dates(self):
-        """Returns dict with RISK_OFF=0.0, RISK_CAUTION=0.5, RISK_ON=1.0."""
+        """Returns dict with RISK_OFF=0.3, RISK_CAUTION=0.5, RISK_ON=1.0 (Phase 88: 0.3 not exclude)."""
         from app.ml.training import ModelTrainer
         from datetime import date
         trainer = ModelTrainer.__new__(ModelTrainer)
@@ -63,7 +63,7 @@ class TestSwingTrainerR6Exclusion:
         mock_ctx.__exit__ = MagicMock(return_value=False)
         with patch("app.database.session.get_session", return_value=mock_ctx):
             result = trainer._load_regime_weight_map()
-        assert result[date(2025, 4, 7)] == 0.0
+        assert result[date(2025, 4, 7)] == 0.3  # Phase 88: down-weight not exclude
         assert result[date(2025, 4, 8)] == 0.5
         assert result[date(2025, 4, 9)] == 1.0
 

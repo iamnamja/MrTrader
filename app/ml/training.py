@@ -70,7 +70,7 @@ _BASE_PRUNED: frozenset = frozenset([
     # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
     "earnings_proximity_days", "insider_score", "earnings_surprise",
     # sector_momentum / sector_momentum_5d un-pruned when sector_etf_history.parquet is present
-    "regime_score", "vix_level", "vix_regime_bucket", "vix_fear_spike",
+    "vix_fear_spike",
     "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
     "rs_vs_spy_5d", "rs_vs_spy_10d", "rs_vs_spy_60d", "fmp_surprise_1q",
@@ -145,6 +145,7 @@ def _process_symbol_windows_worker(
     progress_queue=None,       # multiprocessing.Queue for progress reporting
     fundamentals_history: Optional[list] = None,  # Phase 89a: sorted (date_str, {...}) list
     sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted (date_str, close)}
+    regime_v2_map: Optional[Dict] = None,  # Phase 88: {date: {vix_term_ratio, ...}}
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -379,6 +380,13 @@ def _process_symbol_windows_worker(
                     features["momentum_5d_sector_neutral"] = (
                         features.get("momentum_5d", 0.0) - features["sector_momentum_5d"]
                     )
+
+        # Phase 88: inject regime V2 scalars (date-level, same for all symbols on a given day)
+        if regime_v2_map:
+            rv2 = regime_v2_map.get(w_end_date) or regime_v2_map.get(str(w_end_date)) or {}
+            for k in ("vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+                      "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200"):
+                features[k] = rv2.get(k, 0.5)
 
         features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
         if not feature_names:
@@ -1173,7 +1181,26 @@ class ModelTrainer:
                 "vix_regime_bucket": features.get("vix_regime_bucket", 0.5),
             })
 
-        return X_rows, y_vals, meta_rows, to_cache, feature_names
+        return X_rows, y_vals, meta_rows, to_cache, feature_names  # type: ignore[return-value]
+
+    def _load_regime_v2_features_map(self) -> dict:
+        """Phase 88: return {date: {vix_term_ratio, breadth_rsp_spy_ratio_20d, credit_hyg_ief_20d,
+        sector_dispersion_20d, spy_above_ma50, spy_above_ma200}} from regime_snapshots."""
+        cols = ("vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+                "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200")
+        try:
+            from app.database.session import get_session
+            from app.database.models import RegimeSnapshot
+            with get_session() as db:
+                rows = db.query(RegimeSnapshot).all()
+            result = {}
+            for row in rows:
+                result[row.snapshot_date] = {c: getattr(row, c, 0.5) or 0.5 for c in cols}
+            logger.info("Phase 88: loaded regime V2 feature map for %d dates", len(result))
+            return result
+        except Exception as exc:
+            logger.warning("Phase 88: could not load regime V2 feature map (fail-open): %s", exc)
+            return {}
 
     def _windows_to_matrix(
         self,
@@ -1281,6 +1308,9 @@ class ModelTrainer:
             except Exception as _exc:
                 logger.warning("Phase 89a: could not load fundamentals_history.parquet — %s", _exc)
 
+        # Phase 88: load regime V2 scalar features map {date: {vix_term_ratio, ...}}
+        _regime_v2_map = self._load_regime_v2_features_map()
+
         # Phase 89b: load sector ETF history for PIT sector_momentum override
         _sector_etf_bars: Dict[str, list] = {}
         _etf_hist_path = Path("data/sector_etf/sector_etf_history.parquet")
@@ -1319,6 +1349,7 @@ class ModelTrainer:
                 _progress_q,
                 _fund_hist_by_symbol.get(symbol),
                 _sector_etf_bars if _sector_etf_bars else None,
+                _regime_v2_map if _regime_v2_map else None,
             )
 
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
@@ -1455,7 +1486,7 @@ class ModelTrainer:
             result = {}
             for d, lbl in rows:
                 if lbl == "RISK_OFF":
-                    result[d] = 0.0
+                    result[d] = 0.3  # Phase 88: down-weight not exclude
                 elif lbl == "RISK_CAUTION":
                     result[d] = 0.5
                 else:
