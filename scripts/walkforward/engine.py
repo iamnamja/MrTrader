@@ -18,7 +18,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 from scripts.walkforward.gates import WalkForwardReport
 
@@ -34,11 +34,13 @@ class FoldEngine:
         purge_days: int = 10,
         embargo_days: Optional[int] = None,
         parallel: bool = True,
+        regime_map: Optional[Dict] = None,
     ):
         self.strategy = strategy
         self.purge_days = purge_days
         self.embargo_days = embargo_days if embargo_days is not None else purge_days
         self.parallel = parallel
+        self.regime_map: Dict = regime_map or {}
 
     def run(
         self,
@@ -68,6 +70,10 @@ class FoldEngine:
             )
 
         report = WalkForwardReport(model_type=getattr(self.strategy, "model_type", "unknown"))
+
+        # Regime diversity check (warns only; never blocks fold construction)
+        if self.regime_map:
+            self._check_fold_diversity(fold_boundaries, n_folds)
 
         def _run_one(args):
             idx, tr_start, tr_end, te_start, te_end = args
@@ -115,6 +121,39 @@ class FoldEngine:
                 min(test_end_dt.date(), end_all.date()),
             ))
         return fold_boundaries
+
+    def _check_fold_diversity(self, fold_boundaries, n_folds: int) -> None:
+        """Log regime distribution per fold test window. Warns if < 2 distinct regime labels."""
+        from datetime import date as _date, timedelta as _td
+        from scripts.walkforward.regime import regime_diversity, label_days
+
+        for i, (_, _, te_start, te_end) in enumerate(fold_boundaries):
+            # Enumerate calendar days in test window
+            if hasattr(te_start, "date"):
+                te_start = te_start.date()
+            if hasattr(te_end, "date"):
+                te_end = te_end.date()
+            days = []
+            d = te_start
+            while d <= te_end:
+                days.append(d)
+                d += _td(days=1)
+            n_regimes = regime_diversity(days, self.regime_map)
+            from collections import Counter
+            from scripts.walkforward.regime import label_days as _ldays
+            counts = Counter(_ldays(days, self.regime_map))
+            counts.pop("UNK", None)
+            logger.info(
+                "Fold %d/%d regime diversity: %d distinct labels — %s",
+                i + 1, n_folds, n_regimes,
+                dict(sorted(counts.items())),
+            )
+            if n_regimes < 2:
+                logger.warning(
+                    "Fold %d/%d test window is regime-homogeneous (%d label). "
+                    "Weak fold Sharpe may be regime-specific, not a model failure.",
+                    i + 1, n_folds, n_regimes,
+                )
 
     def _build_trading_day_folds(self, n_folds, all_days_sorted):
         """Build fold boundaries using trading days (intraday)."""
