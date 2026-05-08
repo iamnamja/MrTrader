@@ -127,8 +127,8 @@ class TestRegimeSizingConfig:
 
     def test_thresholds_consistent_with_labels(self):
         from app.config import settings
-        from app.ml.regime_model import _label_from_score
+        from app.ml.regime_training import label_from_score
 
-        assert _label_from_score(settings.regime_risk_on_threshold) == "RISK_ON"
-        assert _label_from_score(settings.regime_risk_off_threshold) == "RISK_CAUTION"
-        assert _label_from_score(settings.regime_risk_off_threshold - 0.01) == "RISK_OFF"
+        assert label_from_score(settings.regime_risk_on_threshold) == "RISK_ON"
+        assert label_from_score(settings.regime_risk_off_threshold) == "RISK_CAUTION"
+        assert label_from_score(settings.regime_risk_off_threshold - 0.01) == "RISK_OFF"

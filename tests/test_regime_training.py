@@ -11,31 +11,44 @@ import pytest
 # ── Label function ────────────────────────────────────────────────────────────
 
 class TestLabelRegimeDay:
+    """V2 label tests — delegates to regime_features.label_regime_day."""
+
+    def _row(self, **kwargs):
+        base = {
+            "vix_level": 18.0, "vix_pct_1y": 0.40, "vix_term_ratio": 0.95,
+            "spy_ma50_dist": 0.03, "spy_ma200_dist": 0.05,
+            "credit_hyg_ief_20d": 0.002, "breadth_rsp_spy_ratio_20d": 0.01,
+            "spy_20d_return": 0.03,
+        }
+        base.update(kwargs)
+        return base
+
     def test_favorable_day(self):
-        from app.ml.regime_training import label_regime_day
-        assert label_regime_day(vix_level=15.0, spy_1d_return=0.005, spy_ma20_dist=0.01) == 1
+        from app.ml.regime_features import label_regime_day
+        assert label_regime_day(self._row()) == 2  # RISK_ON clean tape
 
     def test_high_vix_hostile(self):
-        from app.ml.regime_training import label_regime_day
-        assert label_regime_day(vix_level=25.0, spy_1d_return=0.005, spy_ma20_dist=0.01) == 0
+        from app.ml.regime_features import label_regime_day
+        assert label_regime_day(self._row(vix_level=35.0)) == 0  # RISK_OFF
 
     def test_negative_return_hostile(self):
-        from app.ml.regime_training import label_regime_day
-        assert label_regime_day(vix_level=15.0, spy_1d_return=-0.01, spy_ma20_dist=0.01) == 0
+        from app.ml.regime_features import label_regime_day
+        # Broken MAs → RISK_OFF
+        assert label_regime_day(self._row(spy_ma50_dist=-0.06, spy_ma200_dist=-0.02)) == 0
 
     def test_below_ma20_hostile(self):
-        from app.ml.regime_training import label_regime_day
-        assert label_regime_day(vix_level=15.0, spy_1d_return=0.005, spy_ma20_dist=-0.02) == 0
+        from app.ml.regime_features import label_regime_day
+        # Below MA50 → RISK_CAUTION (not full RISK_OFF unless also below MA200)
+        assert label_regime_day(self._row(spy_ma50_dist=-0.02, spy_ma200_dist=0.01)) == 1
 
-    def test_vix_exactly_20_is_hostile(self):
-        from app.ml.regime_training import label_regime_day
-        # vix_level < 20.0 strict
-        assert label_regime_day(vix_level=20.0, spy_1d_return=0.005, spy_ma20_dist=0.01) == 0
+    def test_vix_exactly_20_is_caution(self):
+        from app.ml.regime_features import label_regime_day
+        # vix==20 fails RISK_ON (needs vix<20); not RISK_OFF either → RISK_CAUTION
+        assert label_regime_day(self._row(vix_level=20.0)) == 1
 
-    def test_zero_return_is_hostile(self):
-        from app.ml.regime_training import label_regime_day
-        # spy_1d_return > 0 strict
-        assert label_regime_day(vix_level=15.0, spy_1d_return=0.0, spy_ma20_dist=0.01) == 0
+    def test_credit_stress_is_risk_off(self):
+        from app.ml.regime_features import label_regime_day
+        assert label_regime_day(self._row(credit_hyg_ief_20d=-0.05)) == 0
 
 
 # ── Trainer dataset loading ───────────────────────────────────────────────────
@@ -73,27 +86,29 @@ class TestRegimeModelTrainer:
         results = trainer.walk_forward(df)
         assert len(results) == 3
 
-    def test_train_final_returns_xgb_iso_tuple(self):
+    def test_train_final_returns_xgb_temperature_tuple(self):
         from app.ml.regime_training import RegimeModelTrainer
         from xgboost import XGBClassifier
-        from sklearn.isotonic import IsotonicRegression
         trainer = RegimeModelTrainer()
         df = self._make_df(200)
-        xgb, iso = trainer.train_final(df)
+        df["label"] = np.random.randint(0, 3, len(df))  # 3-class labels
+        xgb, temperature = trainer.train_final(df)
         assert isinstance(xgb, XGBClassifier)
-        assert isinstance(iso, IsotonicRegression)
+        assert isinstance(temperature, float)
+        assert temperature > 0.0
 
-    def test_fold_auc_is_float(self):
+    def test_fold_metrics_are_floats(self):
         from app.ml.regime_training import RegimeModelTrainer
 
         trainer = RegimeModelTrainer()
-        df = self._make_df(1100)  # ~3 years of trading days to span all folds
+        df = self._make_df(1100)
+        df["label"] = np.random.randint(0, 3, len(df))
         results = trainer.walk_forward(df)
-        valid_folds = [r for r in results if r["auc"] is not None]
+        valid_folds = [r for r in results if r["log_loss"] is not None]
         assert len(valid_folds) >= 1
         for r in valid_folds:
-            assert 0.0 <= r["auc"] <= 1.0
-            assert 0.0 <= r["brier"] <= 1.0
+            assert r["log_loss"] >= 0.0
+            assert 0.0 <= r["macro_f1"] <= 1.0
 
 
 # ── RegimeModel singleton ─────────────────────────────────────────────────────
@@ -109,12 +124,12 @@ class TestRegimeModel:
         assert result["version"] == "legacy_fallback"
 
     def test_label_from_score(self):
-        from app.ml.regime_model import _label_from_score
-        assert _label_from_score(0.20) == "RISK_OFF"
-        assert _label_from_score(0.35) == "RISK_CAUTION"
-        assert _label_from_score(0.50) == "RISK_CAUTION"
-        assert _label_from_score(0.65) == "RISK_ON"
-        assert _label_from_score(0.90) == "RISK_ON"
+        from app.ml.regime_training import label_from_score
+        assert label_from_score(0.20) == "RISK_OFF"
+        assert label_from_score(0.35) == "RISK_CAUTION"
+        assert label_from_score(0.50) == "RISK_CAUTION"
+        assert label_from_score(0.65) == "RISK_ON"
+        assert label_from_score(0.90) == "RISK_ON"
 
     def test_cache_returns_cached_flag(self, tmp_path):
         """Second call within TTL returns cached=True."""
@@ -176,5 +191,5 @@ class TestGateThresholds:
 
     def test_risk_thresholds(self):
         from app.ml.regime_model import RISK_OFF_THRESHOLD, RISK_ON_THRESHOLD
-        assert RISK_OFF_THRESHOLD == 0.35
-        assert RISK_ON_THRESHOLD == 0.65
+        assert RISK_OFF_THRESHOLD == 0.30
+        assert RISK_ON_THRESHOLD == 0.60

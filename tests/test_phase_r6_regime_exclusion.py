@@ -14,20 +14,18 @@ def _make_trainer():
 
 
 class TestLoadRiskOffOrdinals:
-    def test_returns_set_of_ordinals(self):
+    def test_returns_dict_of_ordinals(self):
         trainer = _make_trainer()
-        mock_row = MagicMock()
-        mock_row.snapshot_date = date(2025, 4, 1)
-        with patch("app.ml.intraday_training.IntradayModelTrainer._load_risk_off_ordinals",
-                   return_value={date(2025, 4, 1).toordinal()}):
-            result = trainer._load_risk_off_ordinals()
-        assert isinstance(result, set)
+        with patch("app.ml.intraday_training.IntradayModelTrainer._load_regime_weight_ordinals",
+                   return_value={date(2025, 4, 1).toordinal(): 0.0}):
+            result = trainer._load_regime_weight_ordinals()
+        assert isinstance(result, dict)
 
-    def test_returns_empty_set_on_db_error(self):
+    def test_returns_empty_dict_on_db_error(self):
         trainer = _make_trainer()
-        with patch("app.database.session.SessionLocal", side_effect=Exception("DB down")):
-            result = trainer._load_risk_off_ordinals()
-        assert result == set()
+        with patch("app.database.session.get_session", side_effect=Exception("DB down")):
+            result = trainer._load_regime_weight_ordinals()
+        assert result == {}
 
 
 class TestRiskOffExclusion:

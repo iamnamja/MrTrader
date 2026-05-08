@@ -1,7 +1,9 @@
-"""Phase R2 — Regime model singleton.
+"""Phase R7 — Regime V2 model singleton.
 
-Loads the latest regime_model_v*.pkl on startup, exposes score() for PM scans.
-Falls back to legacy opportunity score if model not loaded.
+V2: XGBoost multi:softprob + temperature scaling.
+Score = 0.5*P(CAUTION) + 1.0*P(RISK_ON)  →  continuous [0,1].
+Label = argmax(probs) → RISK_OFF | RISK_CAUTION | RISK_ON.
+Backwards-compatible: score() returns the same dict shape as V1.
 """
 from __future__ import annotations
 
@@ -12,22 +14,17 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).parent / "models"
 
-RISK_OFF_THRESHOLD = 0.35
-RISK_ON_THRESHOLD = 0.65
+# Score thresholds for label derivation when only score is available (legacy path)
+RISK_OFF_THRESHOLD = 0.30
+RISK_ON_THRESHOLD = 0.60
 
-_CACHE_TTL_SECONDS = 300  # 5-minute cache
-
-
-def _label_from_score(score: float) -> str:
-    if score < RISK_OFF_THRESHOLD:
-        return "RISK_OFF"
-    if score >= RISK_ON_THRESHOLD:
-        return "RISK_ON"
-    return "RISK_CAUTION"
+_CACHE_TTL_SECONDS = 300
 
 
 class RegimeModel:
@@ -44,16 +41,18 @@ class RegimeModel:
 
     def __init__(self) -> None:
         self._xgb_model = None
-        self._iso_model = None
-        self._feature_names: list[str] = []
+        self._temperature: float = 1.0        # V2: temperature scaling
+        self._iso_model = None                # V1 compat only
+        self._model_version: int = 1          # 1 or 2
+        self._feature_names: list = []
         self._version: Optional[str] = None
         self._cache_score: Optional[float] = None
         self._cache_label: Optional[str] = None
+        self._cache_probs: Optional[list] = None
         self._cache_ts: float = 0.0
         self._cache_date: Optional[date] = None
 
     def load(self, path: Optional[Path] = None) -> bool:
-        """Load model from disk. If path is None, picks latest regime_model_v*.pkl."""
         if path is None:
             candidates = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
             if not candidates:
@@ -65,10 +64,18 @@ class RegimeModel:
             with open(path, "rb") as f:
                 payload = pickle.load(f)
             self._xgb_model = payload["xgb_model"]
-            self._iso_model = payload["iso_model"]
             self._feature_names = payload["feature_names"]
-            self._version = payload.get("version", "unknown")
-            logger.info("Regime model loaded: v%s from %s", self._version, path.name)
+            self._version = str(payload.get("version", "unknown"))
+            self._model_version = int(payload.get("model_version", 1))
+
+            if self._model_version >= 2:
+                self._temperature = float(payload.get("temperature", 1.0))
+                self._iso_model = None
+                logger.info("Regime model V2 loaded: v%s T=%.3f from %s",
+                            self._version, self._temperature, path.name)
+            else:
+                self._iso_model = payload.get("iso_model")
+                logger.info("Regime model V1 loaded: v%s from %s", self._version, path.name)
             return True
         except Exception as exc:
             logger.error("Failed to load regime model from %s: %s", path, exc)
@@ -84,6 +91,7 @@ class RegimeModel:
         trigger: str = "manual",
         _spy_df=None,
         _vix_df=None,
+        _prefetched: Optional[dict] = None,
     ) -> dict:
         """Score regime for as_of_date. Writes to regime_snapshots. Returns dict."""
         if not self.loaded:
@@ -92,56 +100,100 @@ class RegimeModel:
         if as_of_date is None:
             as_of_date = date.today()
 
-        # Check cache (same date, within TTL)
         now_ts = time.monotonic()
         if (
             self._cache_date == as_of_date
             and self._cache_score is not None
             and (now_ts - self._cache_ts) < _CACHE_TTL_SECONDS
         ):
-            return {
+            result = {
                 "regime_score": self._cache_score,
                 "regime_label": self._cache_label,
                 "version": f"regime_v{self._version}",
                 "trigger": trigger,
                 "cached": True,
             }
+            if self._cache_probs is not None:
+                result["prob_risk_off"] = self._cache_probs[0]
+                result["prob_risk_caution"] = self._cache_probs[1]
+                result["prob_risk_on"] = self._cache_probs[2]
+            return result
 
         try:
             from app.ml.regime_features import RegimeFeatureBuilder
             builder = RegimeFeatureBuilder()
-            feats = builder.build(as_of_date, _spy_df=_spy_df, _vix_df=_vix_df)
+            feats = builder.build(
+                as_of_date,
+                _spy_df=_spy_df,
+                _vix_df=_vix_df,
+                _prefetched=_prefetched,
+            )
         except Exception as exc:
             logger.error("RegimeFeatureBuilder.build failed: %s — using legacy fallback", exc)
             return self._legacy_fallback(as_of_date, trigger)
 
         if feats is None:
-            logger.warning("RegimeFeatureBuilder returned None for %s — using legacy fallback", as_of_date)
             return self._legacy_fallback(as_of_date, trigger)
 
         import numpy as np
         X = np.array([[feats.get(f, 0.0) for f in self._feature_names]])
-        raw = self._xgb_model.predict_proba(X)[0, 1]
-        proba = float(self._iso_model.predict([raw])[0])
-        label = _label_from_score(proba)
 
-        # Update cache
-        self._cache_score = proba
+        if self._model_version >= 2:
+            probs, score, label = self._score_v2(X)
+        else:
+            probs, score, label = self._score_v1(X)
+
+        self._cache_score = score
         self._cache_label = label
+        self._cache_probs = probs
         self._cache_ts = now_ts
         self._cache_date = as_of_date
 
-        # Write to regime_snapshots
-        self._persist_snapshot(as_of_date, trigger, proba, label, feats)
+        self._persist_snapshot(as_of_date, trigger, score, label, feats, probs)
 
         return {
-            "regime_score": round(proba, 4),
+            "regime_score": round(score, 4),
             "regime_label": label,
+            "prob_risk_off": round(probs[0], 4),
+            "prob_risk_caution": round(probs[1], 4),
+            "prob_risk_on": round(probs[2], 4),
             "version": f"regime_v{self._version}",
             "trigger": trigger,
             "cached": False,
             "features": feats,
         }
+
+    def _score_v2(self, X: np.ndarray) -> tuple:
+        """V2: temperature-scaled multiclass. Returns (probs_list, score, label)."""
+        from scipy.special import softmax as _softmax
+        import xgboost as xgb_lib
+        raw_logits = self._xgb_model.get_booster().predict(
+            xgb_lib.DMatrix(X), output_margin=True
+        )  # shape (1, 3)
+        scaled = raw_logits / self._temperature
+        probs = _softmax(scaled, axis=1)[0]  # (3,)
+        score = float(0.5 * probs[1] + 1.0 * probs[2])
+        label_idx = int(np.argmax(probs))
+        label = ["RISK_OFF", "RISK_CAUTION", "RISK_ON"][label_idx]
+        return [float(probs[0]), float(probs[1]), float(probs[2])], score, label
+
+    def _score_v1(self, X: np.ndarray) -> tuple:
+        """V1: isotonic-calibrated binary. Returns (probs_list, score, label)."""
+        raw = self._xgb_model.predict_proba(X)[0, 1]
+        score = float(self._iso_model.predict([raw])[0]) if self._iso_model else float(raw)
+        label = self._label_from_score_v1(score)
+        # No class probabilities in V1 — synthesize approximate values
+        p_on = score
+        p_off = 1.0 - score
+        return [p_off, 0.0, p_on], score, label
+
+    @staticmethod
+    def _label_from_score_v1(score: float) -> str:
+        if score < 0.35:
+            return "RISK_OFF"
+        if score >= 0.65:
+            return "RISK_ON"
+        return "RISK_CAUTION"
 
     def _persist_snapshot(
         self,
@@ -150,6 +202,7 @@ class RegimeModel:
         score: float,
         label: str,
         feats: dict,
+        probs: list,
     ) -> None:
         try:
             from app.database.session import get_session
@@ -162,8 +215,12 @@ class RegimeModel:
                     snapshot_trigger=trigger,
                     regime_score=score,
                     regime_label=label,
-                    model_version=self._version,
-                    **{k: (None if isinstance(feats.get(k), float) and feats.get(k) != feats.get(k) else feats.get(k))
+                    model_version=int(self._version) if self._version and self._version.isdigit() else None,
+                    prob_risk_off=probs[0],
+                    prob_risk_caution=probs[1],
+                    prob_risk_on=probs[2],
+                    **{k: (None if isinstance(feats.get(k), float) and feats.get(k) != feats.get(k)
+                           else feats.get(k))
                        for k in self._feature_names if hasattr(RegimeSnapshot, k)},
                 )
                 session.add(row)
@@ -176,6 +233,9 @@ class RegimeModel:
         return {
             "regime_score": 0.5,
             "regime_label": "UNKNOWN",
+            "prob_risk_off": None,
+            "prob_risk_caution": None,
+            "prob_risk_on": None,
             "version": "legacy_fallback",
             "trigger": trigger,
             "cached": False,
@@ -184,5 +244,6 @@ class RegimeModel:
     def invalidate_cache(self) -> None:
         self._cache_score = None
         self._cache_label = None
+        self._cache_probs = None
         self._cache_ts = 0.0
         self._cache_date = None

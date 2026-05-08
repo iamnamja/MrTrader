@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     regime_sizing_risk_caution: float = 0.6  # regime_risk_off_threshold <= score < regime_risk_on_threshold
     regime_sizing_risk_off: float = 0.3      # score < regime_risk_off_threshold
     regime_sizing_unknown: float = 1.0       # UNKNOWN label or no model (conservative: full size until model is stable)
-    regime_risk_on_threshold: float = 0.65
-    regime_risk_off_threshold: float = 0.35
+    regime_risk_on_threshold: float = 0.60   # V2: was 0.65
+    regime_risk_off_threshold: float = 0.30  # V2: was 0.35
 
     # Phase 3d: Volatility-targeting position sizing
     # When enabled, sizes each position to contribute a fixed % of account equity in daily vol.

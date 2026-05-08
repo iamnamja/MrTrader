@@ -192,29 +192,35 @@ class IntradayModelTrainer:
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after labelling.")
 
-        # ── 2b. Phase R6: drop training rows from RISK_OFF regime days ────────
-        # Cross-sectional labels assign "winners" even on bad-regime days, teaching
-        # the model patterns that don't generalise to live trading (where the PM
-        # abstention gate blocks entry on RISK_OFF days). Removing these rows at
-        # train time aligns the training distribution with the live trading distribution.
-        # Test rows are kept intact so evaluation reflects the full date range.
+        # ── 2b. Phase R6/R7: proportional regime weighting ───────────────────
+        # RISK_OFF rows excluded; RISK_CAUTION rows down-weighted 0.5x.
+        # This aligns training distribution with live execution (PM opp gate
+        # blocks RISK_OFF entries; CAUTION entries use reduced sizing).
+        _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(raw_train) > 0:
-            risk_off_ordinals = self._load_risk_off_ordinals()
-            if risk_off_ordinals:
+            regime_weight_map = self._load_regime_weight_ordinals()
+            if regime_weight_map:
                 day_ords = raw_train[:, 0]
-                keep_mask = ~np.isin(day_ords, list(risk_off_ordinals))
+                weights = np.array(
+                    [regime_weight_map.get(int(o), 1.0) for o in day_ords],
+                    dtype=np.float32,
+                )
+                keep_mask = weights > 0.0
                 n_before = len(X_train)
                 X_train = X_train[keep_mask]
                 y_train = y_train[keep_mask]
                 raw_train = raw_train[keep_mask]
+                _regime_sw_multiplier = weights[keep_mask]
                 n_after = len(X_train)
+                n_caution = int(((_regime_sw_multiplier > 0) & (_regime_sw_multiplier < 1)).sum())
                 logger.info(
-                    "Phase R6: excluded %d RISK_OFF training rows (%d → %d; %.1f%% removed)",
-                    n_before - n_after, n_before, n_after,
+                    "Phase R6/R7: excluded %d RISK_OFF rows, %d RISK_CAUTION rows "
+                    "down-weighted 0.5x (%d → %d; %.1f%% removed)",
+                    n_before - n_after, n_caution, n_before, n_after,
                     (n_before - n_after) / max(n_before, 1) * 100,
                 )
             else:
-                logger.warning("Phase R6: no RISK_OFF dates found in DB — training on all days")
+                logger.warning("Phase R6/R7: no regime data in DB — training on all days")
 
         # ── 3. Train ──────────────────────────────────────────────────────────
         n_neg = int((y_train == 0).sum())
@@ -228,7 +234,9 @@ class IntradayModelTrainer:
             day_ords = raw_train[:, 0]
             max_ord = day_ords.max()
             half_life = 180.0
-            sample_weight = np.exp((day_ords - max_ord) * np.log(2) / half_life).astype(np.float32)
+            recency_w = np.exp((day_ords - max_ord) * np.log(2) / half_life).astype(np.float32)
+            # Multiply by regime weight (1.0 for RISK_ON, 0.5 for RISK_CAUTION)
+            sample_weight = recency_w * _regime_sw_multiplier
             sample_weight /= sample_weight.mean()  # normalise to mean=1
             logger.info("Sample weights: min=%.3f  max=%.3f", sample_weight.min(), sample_weight.max())
 
@@ -545,24 +553,33 @@ class IntradayModelTrainer:
                 pass
         return result
 
-    def _load_risk_off_ordinals(self) -> set:
-        """Phase R6: return set of day ordinals (date.toordinal()) classified RISK_OFF."""
+    def _load_regime_weight_ordinals(self) -> dict:
+        """Phase R6/R7: return {day_ordinal: sample_weight_multiplier}.
+
+        RISK_OFF  → 0.0 (exclude)
+        RISK_CAUTION → 0.5 (down-weight)
+        RISK_ON / UNKNOWN → 1.0 (full weight)
+        Fail-open: returns empty dict if DB unavailable.
+        """
         try:
-            from app.database.session import SessionLocal
+            from app.database.session import get_session
             from app.database.models import RegimeSnapshot
-            db = SessionLocal()
-            try:
-                rows = (
-                    db.query(RegimeSnapshot.snapshot_date)
-                    .filter(RegimeSnapshot.regime_label == "RISK_OFF")
-                    .all()
-                )
-                return {r.snapshot_date.toordinal() for r in rows}
-            finally:
-                db.close()
+            with get_session() as db:
+                rows = db.query(
+                    RegimeSnapshot.snapshot_date, RegimeSnapshot.regime_label
+                ).all()
+            result = {}
+            for d, lbl in rows:
+                if lbl == "RISK_OFF":
+                    result[d.toordinal()] = 0.0
+                elif lbl == "RISK_CAUTION":
+                    result[d.toordinal()] = 0.5
+                else:
+                    result[d.toordinal()] = 1.0
+            return result
         except Exception as exc:
-            logger.warning("_load_risk_off_ordinals failed (non-fatal): %s", exc)
-            return set()
+            logger.warning("_load_regime_weight_ordinals failed (non-fatal): %s", exc)
+            return {}
 
     def _fetch_spy(
         self, start: datetime, end: datetime, force_refresh: bool
