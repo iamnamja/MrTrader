@@ -24,7 +24,6 @@ from app.ml.regime_features import (
     REGIME_FEATURE_NAMES,
     RegimeFeatureBuilder,
     label_regime_day,
-    label_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,7 +141,6 @@ class RegimeModelTrainer:
         """Train XGBoost multiclass + temperature scaling. Returns (xgb, temperature)."""
         n = len(X)
         n_train = int(n * 0.8)
-        rng = np.random.RandomState(42)
         # Time-sorted split to avoid leakage (data arrives sorted by date)
         X_tr, X_cal = X[:n_train], X[n_train:]
         y_tr, y_cal = y[:n_train], y[n_train:]
@@ -195,8 +193,10 @@ class RegimeModelTrainer:
             if len(train_df) < 100 or len(test_df) < 20:
                 logger.warning("Fold %d: insufficient data (train=%d, test=%d)",
                                fold_idx, len(train_df), len(test_df))
-                results.append({"fold": fold_idx, "log_loss": None, "macro_f1": None,
-                                 "n_train": len(train_df), "n_test": len(test_df)})
+                results.append({
+                    "fold": fold_idx, "log_loss": None, "macro_f1": None,
+                    "n_train": len(train_df), "n_test": len(test_df),
+                })
                 continue
 
             X_train = train_df[REGIME_FEATURE_NAMES].values.astype(float)
