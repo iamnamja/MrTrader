@@ -152,13 +152,15 @@ class TestFeatureNamesConstant:
         )
 
     def test_feature_names_count(self):
-        """FEATURE_NAMES count: 59 features. Phase 86b removed 3 market-wide regime proxy features
+        """FEATURE_NAMES count: 63 features. Phase 86b removed 3 market-wide regime proxy features
         (regime_vix_proxy/pct60d/spy_ma20_dist) that cs_normalize zeros out — confirmed in Item 3.
         Phase 3a added 3 Branch B global features (vix_regime_level, spy_5d_return_daily,
-        day_of_week) that bypass cs_normalize to preserve market-state signal."""
+        day_of_week) that bypass cs_normalize to preserve market-state signal.
+        Phase 91 added 4 microstructure features (vwap_slope_to_bar12, first_30min_volume_ratio,
+        spy_5min_return_bar12, vix_5min_change)."""
         from app.ml.intraday_features import FEATURE_NAMES
-        assert len(FEATURE_NAMES) == 59, (
-            f"Expected 59 features (56 Branch A + 3 Branch B added in Phase 3a), got {len(FEATURE_NAMES)}"
+        assert len(FEATURE_NAMES) == 63, (
+            f"Expected 63 features (60 Branch A + 3 Branch B, +4 Phase 91 microstructure), got {len(FEATURE_NAMES)}"
         )
 
     def test_phase_47_5_features_present(self):

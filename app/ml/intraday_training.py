@@ -717,7 +717,7 @@ class IntradayModelTrainer:
 
         CS_ABSOLUTE_HURDLE = 0.0030  # used by both schemes
 
-        def _apply_labels(X_parts, raw_parts):
+        def _apply_labels(X_parts, raw_parts, apply_dispersion_gate=False):
             if not X_parts:
                 return np.array([]), np.array([])
             X = np.vstack(X_parts)
@@ -734,18 +734,60 @@ class IntradayModelTrainer:
                     (realized_r >= MIN_REALIZED_R) & (raw_returns >= CS_ABSOLUTE_HURDLE)
                 ).astype(np.int8)
             else:
-                # Cross-sectional top-20% labels with absolute hurdle (Phase 89).
-                # Prevents labeling "least bad" stocks as winners on down days.
+                # Phase 91: hybrid label — top-20% AND realized-R > 0.5x ATR.
+                # Intersection removes chop-day label noise: a stock must be both
+                # a cross-sectional winner AND show meaningful absolute return.
+                # realized_r = raw_return / atr_target_pct; threshold = 0.50.
+                HYBRID_REALIZED_R_MIN = 0.50
                 labels = np.zeros(len(raw_returns), dtype=np.int8)
                 for day_val in np.unique(days_ord):
                     mask = days_ord == day_val
                     day_rets = raw_returns[mask]
+                    day_atrs = atr_targets[mask]
                     if mask.sum() < 2:
                         continue
                     threshold = np.percentile(day_rets, 80)  # top 20%
+                    realized_r_day = day_rets / np.maximum(day_atrs, 1e-8)
                     labels[mask] = (
-                        (day_rets >= threshold) & (day_rets >= CS_ABSOLUTE_HURDLE)
+                        (day_rets >= threshold)
+                        & (realized_r_day >= HYBRID_REALIZED_R_MIN)
+                        & (day_rets >= CS_ABSOLUTE_HURDLE)
                     ).astype(np.int8)
+
+            # Phase 91: per-day dispersion gate — drop low-dispersion days from training.
+            # On chop days the universe return spread collapses; top-20% label is
+            # arbitrary noise (tiny differences separate winners from losers).
+            # Gate: drop training days where daily std(returns) < rolling 60-day median.
+            # Applied only to training rows; test rows always kept for eval integrity.
+            if apply_dispersion_gate:
+                unique_days_sorted = np.array(sorted(set(days_ord.tolist())))
+                if len(unique_days_sorted) > 10:
+                    daily_std = np.array([
+                        float(raw_returns[days_ord == d].std()) if (days_ord == d).sum() > 1 else 0.0
+                        for d in unique_days_sorted
+                    ])
+                    window = min(60, len(daily_std))
+                    rolling_median = np.array([
+                        float(np.median(daily_std[max(0, i - window): i + 1]))
+                        for i in range(len(daily_std))
+                    ])
+                    day_to_dispersion_ok = {
+                        d: (daily_std[i] >= rolling_median[i])
+                        for i, d in enumerate(unique_days_sorted)
+                    }
+                    dispersion_mask = np.array([
+                        day_to_dispersion_ok.get(d, True) for d in days_ord
+                    ], dtype=bool)
+                    n_before = len(X)
+                    X = X[dispersion_mask]
+                    labels = labels[dispersion_mask]
+                    days_ord = days_ord[dispersion_mask]
+                    n_dropped = n_before - len(X)
+                    if n_dropped > 0:
+                        logger.info(
+                            "Dispersion gate: dropped %d rows (%.1f%% of training data) from low-dispersion days",
+                            n_dropped, 100.0 * n_dropped / n_before,
+                        )
 
             # Cross-sectional normalization: Branch A (stock-specific) only.
             # Branch B (global market features) are identical across symbols on
@@ -760,8 +802,8 @@ class IntradayModelTrainer:
                 X[:, _branch_b_idx] = _branch_b_saved
             return X, labels
 
-        X_train, y_train = _apply_labels(X_train_parts, raw_train_parts)
-        X_test, y_test = _apply_labels(X_test_parts, raw_test_parts)
+        X_train, y_train = _apply_labels(X_train_parts, raw_train_parts, apply_dispersion_gate=True)
+        X_test, y_test = _apply_labels(X_test_parts, raw_test_parts, apply_dispersion_gate=False)
 
         # Keep raw_train for sample-weight computation in caller
         raw_train = np.concatenate(raw_train_parts) if raw_train_parts else np.array([])

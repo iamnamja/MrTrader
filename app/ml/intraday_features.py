@@ -462,6 +462,65 @@ def compute_intraday_features(
             spy_gap_pct = 0.0
     feats["gap_vs_spy_gap"] = float(stock_gap_pct - spy_gap_pct)
 
+    # ── Phase 91: microstructure features (bar 12 = 60 min post-open) ──────────
+    # vwap_slope_to_bar12: normalized slope of VWAP from open to bar 12
+    try:
+        bar12 = min(12, len(bars) - 1)
+        if bar12 >= 2:
+            vwap_at_bar12 = (
+                cum_tp_vol[bar12] / cum_vol[bar12]
+                if cum_vol[bar12] > 0 else closes[bar12]
+            )
+            vwap_at_open = (
+                cum_tp_vol[0] / cum_vol[0]
+                if cum_vol[0] > 0 else closes[0]
+            )
+            feats["vwap_slope_to_bar12"] = float(
+                (vwap_at_bar12 - vwap_at_open) / (vwap_at_open + 1e-8)
+            )
+        else:
+            feats["vwap_slope_to_bar12"] = 0.0
+    except Exception:
+        feats["vwap_slope_to_bar12"] = 0.0
+
+    # first_30min_volume_ratio: first 6 bars (30 min) volume / total session volume
+    try:
+        n30 = min(6, len(volumes))
+        total_vol = float(volumes.sum())
+        feats["first_30min_volume_ratio"] = float(volumes[:n30].sum() / (total_vol + 1e-8))
+    except Exception:
+        feats["first_30min_volume_ratio"] = 0.2
+
+    # spy_5min_return_bar12: SPY return from open to bar 12
+    try:
+        if spy_bars is not None and len(spy_bars) >= 2:
+            spy_closes = spy_bars["close"].values.astype(float)
+            spy_opens = spy_bars["open"].values.astype(float)
+            b12 = min(12, len(spy_closes) - 1)
+            feats["spy_5min_return_bar12"] = float(
+                (spy_closes[b12] - spy_opens[0]) / (spy_opens[0] + 1e-8)
+            )
+        else:
+            feats["spy_5min_return_bar12"] = 0.0
+    except Exception:
+        feats["spy_5min_return_bar12"] = 0.0
+
+    # vix_5min_change: change in stock's realized-vol proxy over first 12 bars
+    # (true VIX 5-min not available; use high-low range expansion as proxy)
+    try:
+        b12 = min(12, len(bars))
+        if b12 >= 4:
+            early_hl = float((highs[:b12 // 2].max() - lows[:b12 // 2].min()))
+            late_hl = float((highs[b12 // 2:b12].max() - lows[b12 // 2:b12].min()))
+            mid_price = float(closes[b12 - 1])
+            feats["vix_5min_change"] = float(
+                (late_hl - early_hl) / (mid_price + 1e-8)
+            )
+        else:
+            feats["vix_5min_change"] = 0.0
+    except Exception:
+        feats["vix_5min_change"] = 0.0
+
     # ── NIS features (Phase 64b) ─────────────────────────────────────────────
     # Point-in-time daily NIS signal — same lookup as swing model.
     # Intraday entries are short-hold (< 1 session) but news context still
@@ -691,6 +750,9 @@ FEATURE_NAMES = [
     "stock_vs_spy_5d_return", "stock_vs_spy_mom_ratio", "gap_vs_spy_gap",
     # NOTE: regime_vix_proxy, regime_vix_pct60d, regime_spy_ma20_dist excluded —
     # identical across all symbols within a day → zeroed by cs_normalize.
+    # Phase 91: microstructure features at bar 12 (60 min post-open)
+    "vwap_slope_to_bar12", "first_30min_volume_ratio",
+    "spy_5min_return_bar12", "vix_5min_change",
     # Phase 3a: Branch B global features below bypass cs_normalize (see BRANCH_B_FEATURES).
     # They must be listed LAST so their column indices are predictable.
     "vix_regime_level",       # VIX proxy (realized vol) — market-wide, daily
