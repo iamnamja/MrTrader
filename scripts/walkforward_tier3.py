@@ -672,6 +672,8 @@ def run_intraday_walkforward(
     use_dispersion_gate: bool = False,
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
     macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+    use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
+    regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -798,6 +800,8 @@ def run_intraday_walkforward(
             use_dispersion_gate=use_dispersion_gate,
             earnings_blackout=earnings_blackout,
             macro_blocked_dates=macro_blocked_dates,
+            use_regime_gate=use_regime_gate,
+            regime_map=regime_map,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1003,6 +1007,9 @@ def main() -> int:
     parser.add_argument("--no-earnings-blackout", dest="earnings_blackout",
                         action="store_false",
                         help="WF-5a: disable the earnings blackout gate.")
+    parser.add_argument("--regime-gate", action="store_true", default=False,
+                        help="Phase R5: enable intraday regime gates (R5-A/B/C). Downloads SPY+VIX "
+                             "history to build regime map. Off by default (requires WF-4 regime tagger).")
     parser.add_argument("--macro-gate", action="store_true", default=True,
                         help="WF-5a: block entries on FOMC/NFP/CPI/GDP days. On by default. "
                              "Use --no-macro-gate to disable.")
@@ -1127,6 +1134,18 @@ def main() -> int:
     if args.model in ("intraday", "both"):
         t0 = time.time()
         intraday_scan_offsets = [12, 18, 24] if args.intraday_multi_scan else None
+        # Phase R5: pre-fetch regime map if --regime-gate enabled
+        _regime_map: Optional[Dict] = None
+        if getattr(args, "regime_gate", False):
+            from datetime import datetime as _dt3
+            _rg_end = _dt3.now().date()
+            _rg_start = _rg_end - timedelta(days=args.days + 80)
+            try:
+                from scripts.walkforward.regime import load_regime_map
+                _regime_map = load_regime_map(_rg_start, _rg_end)
+                _ok(f"R5 regime map: {len(_regime_map)} dates tagged ({_rg_start} → {_rg_end})")
+            except Exception as _re:
+                _warn(f"R5 regime map fetch failed: {_re} — regime gate disabled for this run")
         _intraday_kwargs = dict(
             n_folds=args.folds,
             total_days=args.days,
@@ -1143,6 +1162,8 @@ def main() -> int:
             earnings_blackout=earnings_cal,
             embargo_days=args.intraday_embargo_days,
             macro_blocked_dates=macro_blocked_dates,
+            use_regime_gate=getattr(args, "regime_gate", False),
+            regime_map=_regime_map,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print()
