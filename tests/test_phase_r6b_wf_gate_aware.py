@@ -60,8 +60,10 @@ class TestSwingTrainerR6Exclusion:
         mock_ctx = MagicMock()
         mock_ctx.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.__exit__ = MagicMock(return_value=False)
-        with patch("app.ml.training.get_session", return_value=mock_ctx):
-            result = trainer._load_risk_off_dates()
+        # Patch inside the method's local import scope
+        with patch("app.database.session.get_session", return_value=mock_ctx):
+            with patch("app.ml.training.get_session", return_value=mock_ctx):
+                result = trainer._load_risk_off_dates()
         assert date(2025, 4, 7) in result
         assert date(2025, 4, 8) in result
 
