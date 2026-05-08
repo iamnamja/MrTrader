@@ -49,7 +49,7 @@ INTRADAY_RETRAIN: dict = dict(
     fetch_spy=True,
     use_ranker=False,
     top_n_by_liquidity=None,    # None = full Russell 1000 universe
-    exclude_risk_off_days=True, # Phase R6: drop training rows from RISK_OFF regime days
+    exclude_risk_off_days=True,  # Phase R6: drop training rows from RISK_OFF regime days
 )
 
 INTRADAY_GATE = dict(

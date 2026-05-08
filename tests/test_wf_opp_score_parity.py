@@ -71,18 +71,17 @@ class TestSimulatorUsesConfigWeights:
 
     def test_simulator_imports_settings(self):
         """Confirm the simulator now imports settings (not hardcoded)."""
-        import inspect
-        import ast, pathlib
-        src = pathlib.Path("c:/Projects/MrTrader/app/backtesting/agent_simulator.py").read_text()
-        # Check the hardcoded formula is gone
-        assert "0.35 * vix_score" not in src
-        assert "0.20 * vix_trend" not in src
-        # Check config-driven formula is present
-        assert "opp_score_vix_weight" in src
-        assert "w_total" in src
+        import pathlib
+        src = pathlib.Path(__file__).parent.parent / "app/backtesting/agent_simulator.py"
+        text = src.read_text()
+        assert "0.35 * vix_score" not in text
+        assert "0.20 * vix_trend" not in text
+        assert "opp_score_vix_weight" in text
+        assert "w_total" in text
 
     def test_breadth_dispersion_excluded_in_sim(self):
         """Simulator comment/code confirms breadth/dispersion weights are zeroed."""
         import pathlib
-        src = pathlib.Path("c:/Projects/MrTrader/app/backtesting/agent_simulator.py").read_text()
-        assert "breadth" in src.lower() or "w_breadth" in src or "dispersion" in src.lower()
+        src = pathlib.Path(__file__).parent.parent / "app/backtesting/agent_simulator.py"
+        text = src.read_text()
+        assert "breadth" in text.lower() or "w_breadth" in text or "dispersion" in text.lower()
