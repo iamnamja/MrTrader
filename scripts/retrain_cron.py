@@ -158,7 +158,8 @@ def run_intraday(dry_run: bool) -> bool:
 
     trainer = IntradayModelTrainer()
     try:
-        version = trainer.train_model(**INTRADAY_RETRAIN)
+        train_kwargs = {k: v for k, v in INTRADAY_RETRAIN.items() if k != "wf_folds"}
+        version = trainer.train_model(**train_kwargs)
         logger.info("Intraday v%d trained — running walk-forward gate...", version)
     except Exception as e:
         logger.error("Intraday training failed: %s", e, exc_info=True)
