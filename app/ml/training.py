@@ -143,8 +143,8 @@ def _process_symbol_windows_worker(
     label_scheme: str,
     symbol_cache: dict,        # {date_isoformat: features_dict} — pre-loaded from FeatureStore
     progress_queue=None,       # multiprocessing.Queue for progress reporting
-    fundamentals_history: Optional[list] = None,  # Phase 89a: sorted list of (date_str, {profit_margin, revenue_growth, debt_to_equity})
-    sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted list of (date_str, close)}
+    fundamentals_history: Optional[list] = None,  # Phase 89a: sorted (date_str, {...}) list
+    sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted (date_str, close)}
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -528,7 +528,9 @@ class ModelTrainer:
                 mi_scores = None
 
         # Optional HPO — tune XGBoost params before final training
-        if self.hpo_trials > 0 and self.model.model_type in ("xgboost", "ensemble", "lgbm_ensemble", "xgboost_regressor"):
+        if self.hpo_trials > 0 and self.model.model_type in (
+            "xgboost", "ensemble", "lgbm_ensemble", "xgboost_regressor"
+        ):
             logger.info("Running Optuna HPO (%d trials)...", self.hpo_trials)
             best_params = self._tune_hyperparams(X_train, y_train, n_trials=self.hpo_trials)
             self.model.model.set_params(**best_params)
@@ -872,7 +874,10 @@ class ModelTrainer:
             label = None
             outcome_return = 0.0
 
-            if self.label_scheme in ("cross_sectional", "sector_relative", "return_regression", "return_blend", "lambdarank", "percentile_rank"):
+            if self.label_scheme in (
+                "cross_sectional", "sector_relative", "return_regression",
+                "return_blend", "lambdarank", "percentile_rank"
+            ):
                 future_idx = w_end_idx + FORWARD_DAYS
                 if future_idx >= len(all_dates):
                     continue
@@ -1154,7 +1159,9 @@ class ModelTrainer:
 
         # Pre-compute cross-sectional thresholds (serial — needs all symbols per window)
         cs_thresholds: Dict[int, Any] = {}
-        if self.label_scheme in ("cross_sectional", "sector_relative", "atr_and_sector", "return_blend", "percentile_rank"):
+        if self.label_scheme in (
+            "cross_sectional", "sector_relative", "atr_and_sector", "return_blend", "percentile_rank"
+        ):
             logger.info("Pre-computing %s thresholds for %d windows...", self.label_scheme, len(window_starts))
             cs_thresholds = self._compute_cs_thresholds(symbols_data, all_dates, window_starts)
             logger.info("%s thresholds ready (%d windows)", self.label_scheme, len(cs_thresholds))
@@ -1170,7 +1177,8 @@ class ModelTrainer:
         import hashlib as _hashlib
         _ckpt_dir = Path(MODEL_DIR) / "checkpoints"
         _ckpt_dir.mkdir(parents=True, exist_ok=True)
-        _cfg_key = _hashlib.md5(f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}".encode()).hexdigest()[:8]
+        _cfg_str = f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}"
+        _cfg_key = _hashlib.md5(_cfg_str.encode()).hexdigest()[:8]
         _ckpt_path = _ckpt_dir / f"swing_checkpoint_{_cfg_key}.pkl"
         _completed_symbols: set = set()
 

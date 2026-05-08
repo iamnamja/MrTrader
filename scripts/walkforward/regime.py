@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 # ── public API ────────────────────────────────────────────────────────────────
+
 
 def load_regime_map(
     start: date,
@@ -38,7 +39,6 @@ def load_regime_map(
     try:
         import yfinance as yf
         import pandas as pd
-        import numpy as np
     except ImportError as e:
         logger.warning("yfinance/pandas/numpy not available: %s — returning empty regime map", e)
         return {}

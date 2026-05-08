@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date
 from typing import Set
 
 logger = logging.getLogger(__name__)

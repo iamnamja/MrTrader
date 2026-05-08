@@ -24,16 +24,13 @@ from __future__ import annotations
 import itertools
 import logging
 from dataclasses import dataclass, field
-from datetime import date
 from typing import List, Optional
 
 import numpy as np
 
 from scripts.walkforward.gates import (
-    FoldResult, WalkForwardReport, WalkForwardReport,
     SHARPE_GATE, MIN_FOLD_SHARPE, MIN_PROFIT_FACTOR, MIN_CALMAR,
     N_TRIALS_TESTED, deflated_sharpe_ratio,
-    compute_profit_factor, compute_calmar, compute_k_ratio,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,8 +81,9 @@ class CPCVResult:
         return float(np.mean(cals)) if cals else 0.0
 
     def gate_passed(self) -> bool:
-        _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED,
-                                          max(self.n_combinations, 1))
+        _, dsr_p = deflated_sharpe_ratio(
+            self.mean_sharpe, N_TRIALS_TESTED, max(self.n_combinations, 1)
+        )
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         return (
@@ -98,8 +96,9 @@ class CPCVResult:
         )
 
     def gate_detail(self) -> dict:
-        _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED,
-                                          max(self.n_combinations, 1))
+        _, dsr_p = deflated_sharpe_ratio(
+            self.mean_sharpe, N_TRIALS_TESTED, max(self.n_combinations, 1)
+        )
         return {
             "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= SHARPE_GATE),
             "p5_sharpe": (self.p5_sharpe, self.p5_sharpe >= MIN_FOLD_SHARPE),

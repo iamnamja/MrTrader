@@ -61,7 +61,6 @@ class FoldEngine:
                 n_folds, start_all, end_all, total_years, train_years
             )
         else:
-            from datetime import date as _date
             end_date = end_all.date()
             start_date = end_date - timedelta(days=total_days + 10)
             self.strategy.fetch_data(start_date, end_date)
@@ -124,8 +123,8 @@ class FoldEngine:
 
     def _check_fold_diversity(self, fold_boundaries, n_folds: int) -> None:
         """Log regime distribution per fold test window. Warns if < 2 distinct regime labels."""
-        from datetime import date as _date, timedelta as _td
-        from scripts.walkforward.regime import regime_diversity, label_days
+        from datetime import timedelta as _td
+        from scripts.walkforward.regime import regime_diversity
 
         for i, (_, _, te_start, te_end) in enumerate(fold_boundaries):
             # Enumerate calendar days in test window

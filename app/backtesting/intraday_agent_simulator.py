@@ -117,11 +117,11 @@ class IntradayAgentSimulator:
         intraday_blackout_days_after: int = 3,   # Phase 2b: skip entry N days after earnings
         macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
         # Phase R5: regime gates (no retrain)
-        use_regime_gate: bool = False,         # R5-A: block VIX-spike + SPY-downtrend days
-        regime_map: Optional[dict] = None,     # R5-A: {date: label} from WF-4 regime.py
-        r5b_dispersion_threshold: float = 0.4, # R5-B: block if dispersion < threshold × 60d median
-        r5c_vix_threshold: float = 35.0,       # R5-C: block if VIX > this AND SPY 5d return < -5%
-        r5c_spy_drawdown: float = -0.05,       # R5-C: SPY 5d return threshold
+        use_regime_gate: bool = False,  # R5-A: block VIX-spike + SPY-downtrend days
+        regime_map: Optional[dict] = None,  # R5-A: {date: label} from WF-4 regime.py
+        r5b_dispersion_threshold: float = 0.4,  # R5-B: block if dispersion < threshold × 60d median
+        r5c_vix_threshold: float = 35.0,  # R5-C: block if VIX > this AND SPY 5d return < -5%
+        r5c_spy_drawdown: float = -0.05,  # R5-C: SPY 5d return threshold
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -263,13 +263,19 @@ class IntradayAgentSimulator:
                 try:
                     if self.pm_abstention_vix > 0 and _vix_closes is not None:
                         _vix_idx = pd.DatetimeIndex(_vix_closes.index)
-                        _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else np.array([d.date() for d in _vix_idx])
+                        _vix_dates = (
+                            _vix_idx.date if hasattr(_vix_idx, "date")
+                            else np.array([d.date() for d in _vix_idx])
+                        )
                         _vix_hist = _vix_closes.iloc[_vix_dates <= day]
                         if len(_vix_hist) > 0 and float(_vix_hist.iloc[-1]) >= self.pm_abstention_vix:
                             skip_entries = True
                     if not skip_entries and self.pm_abstention_spy_ma_days > 0 and _spy_daily_closes is not None:
                         _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
-                        _spy_dates = _spy_idx.date if hasattr(_spy_idx, "date") else np.array([d.date() for d in _spy_idx])
+                        _spy_dates = (
+                            _spy_idx.date if hasattr(_spy_idx, "date")
+                            else np.array([d.date() for d in _spy_idx])
+                        )
                         _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
                         if len(_spy_hist) >= self.pm_abstention_spy_ma_days:
                             _spy_ma = float(_spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
@@ -293,7 +299,10 @@ class IntradayAgentSimulator:
                         vix_score, vix_trend = 1.0, 1.0
                         if _vix_closes is not None:
                             _vix_idx2 = pd.DatetimeIndex(_vix_closes.index)
-                            _vix_dates2 = _vix_idx2.date if hasattr(_vix_idx2, "date") else np.array([d.date() for d in _vix_idx2])
+                            _vix_dates2 = (
+                                _vix_idx2.date if hasattr(_vix_idx2, "date")
+                                else np.array([d.date() for d in _vix_idx2])
+                            )
                             _vix_hist2 = _vix_closes.iloc[_vix_dates2 <= day]
                             if len(_vix_hist2) > 0:
                                 vix_level = float(_vix_hist2.iloc[-1])
@@ -349,10 +358,16 @@ class IntradayAgentSimulator:
                 if not skip_entries and _vix_closes is not None and _spy_daily_closes is not None:
                     try:
                         _vix_idx = pd.DatetimeIndex(_vix_closes.index)
-                        _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else np.array([d.date() for d in _vix_idx])
+                        _vix_dates = (
+                            _vix_idx.date if hasattr(_vix_idx, "date")
+                            else np.array([d.date() for d in _vix_idx])
+                        )
                         _vix_hist = _vix_closes.iloc[_vix_dates <= day]
                         _spy_idx = pd.DatetimeIndex(_spy_daily_closes.index)
-                        _spy_dates = _spy_idx.date if hasattr(_spy_idx, "date") else np.array([d.date() for d in _spy_idx])
+                        _spy_dates = (
+                            _spy_idx.date if hasattr(_spy_idx, "date")
+                            else np.array([d.date() for d in _spy_idx])
+                        )
                         _spy_hist = _spy_daily_closes.iloc[_spy_dates <= day]
                         if len(_vix_hist) > 0 and len(_spy_hist) >= 6:
                             vix_today = float(_vix_hist.iloc[-1])
@@ -368,7 +383,11 @@ class IntradayAgentSimulator:
             spy_daily_as_of = None
             if spy_daily_data is not None:
                 spy_d_idx = pd.DatetimeIndex(spy_daily_data.index)
-                spy_d_dates = spy_d_idx.normalize().date if hasattr(spy_d_idx.normalize(), "date") else np.array([d2.date() for d2 in spy_d_idx.normalize()])
+                spy_d_norm = spy_d_idx.normalize()
+                spy_d_dates = (
+                    spy_d_norm.date if hasattr(spy_d_norm, "date")
+                    else np.array([d2.date() for d2 in spy_d_norm])
+                )
                 spy_daily_as_of = spy_daily_data.iloc[spy_d_dates < day]
                 if len(spy_daily_as_of) == 0:
                     spy_daily_as_of = None

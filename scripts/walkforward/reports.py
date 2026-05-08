@@ -9,10 +9,10 @@ if TYPE_CHECKING:
     from scripts.walkforward.gates import WalkForwardReport
 
 
-def _ok(msg):   print(f"  \033[32mOK\033[0m  {msg}")
+def _ok(msg): print(f"  \033[32mOK\033[0m  {msg}")
 def _warn(msg): print(f"  \033[33mWARN\033[0m  {msg}")
-def _err(msg):  print(f"  \033[31mFAIL\033[0m  {msg}")
-def _header(msg):    print(f"\n{'='*62}\n  {msg}\n{'='*62}")
+def _err(msg): print(f"  \033[31mFAIL\033[0m  {msg}")
+def _header(msg): print(f"\n{'='*62}\n  {msg}\n{'='*62}")
 
 
 def print_report(report: "WalkForwardReport") -> None:
