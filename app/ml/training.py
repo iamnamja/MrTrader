@@ -54,6 +54,13 @@ ATR_MULT_STOP = 0.5       # stop  = 0.5x the stock's 14-day ATR
 ATR_MIN_TARGET = 0.015    # floor: never require less than 1.5% move
 ATR_MAX_TARGET = 0.08     # ceiling: never require more than 8% move
 
+# Phase 3b: triple-barrier label with wider barriers (full-universe retrain)
+# Upper: 2.0×ATR, Lower: 1.2×ATR, Time: 10 calendar days
+# Use with label_scheme="triple_barrier" --tb-target-mult 2.0 --tb-stop-mult 1.2 --forward-days 10
+TB_PHASE3B_TARGET_MULT = 2.0
+TB_PHASE3B_STOP_MULT = 1.2
+TB_PHASE3B_FORWARD_DAYS = 10
+
 # Phase 43 — features with zero importance in v110 (55 features never used in any split).
 # Removing them reduces overfitting surface without changing the signal.
 _BASE_PRUNED: frozenset = frozenset([
