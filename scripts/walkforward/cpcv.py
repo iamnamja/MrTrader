@@ -151,6 +151,7 @@ def run_cpcv(
     total_years: Optional[int] = None,
     total_days: Optional[int] = None,
     train_years: Optional[int] = None,
+    allow_sacred_holdout: bool = False,  # P0
 ) -> CPCVResult:
     """
     Run Combinatorial Purged Cross-Validation.
@@ -158,6 +159,15 @@ def run_cpcv(
     strategy must already have data fetched (strategy.fetch_data called).
     """
     from scripts.walkforward.engine import FoldEngine
+    from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout
+
+    # P0: hard guard against using sacred holdout data in CPCV runs.
+    from datetime import datetime as _dt_now
+    _assert_holdout(
+        _dt_now.now().date(),
+        allow_sacred_holdout=allow_sacred_holdout,
+        context="cpcv.run_cpcv",
+    )
 
     _embargo = embargo_days if embargo_days is not None else purge_days
     engine = FoldEngine(strategy=strategy, purge_days=purge_days, embargo_days=_embargo,

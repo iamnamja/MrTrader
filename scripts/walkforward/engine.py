@@ -48,12 +48,21 @@ class FoldEngine:
         total_years: Optional[int] = None,
         total_days: Optional[int] = None,
         train_years: Optional[int] = None,
+        allow_sacred_holdout: bool = False,  # P0
     ) -> WalkForwardReport:
         """Run the walk-forward. Exactly one of total_years or total_days must be given."""
         if total_years is None and total_days is None:
             raise ValueError("Provide either total_years or total_days.")
 
         end_all = datetime.now()
+
+        # P0: hard guard against using sacred holdout data in WF runs.
+        from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout
+        _assert_holdout(
+            end_all.date(),
+            allow_sacred_holdout=allow_sacred_holdout,
+            context="FoldEngine.run",
+        )
         if total_years is not None:
             start_all = end_all - timedelta(days=total_years * 365 + 30)
             self.strategy.fetch_data(start_all, end_all)

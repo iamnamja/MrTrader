@@ -888,6 +888,7 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         n_paths=args.cpcv_paths,
         total_years=args.years,
         train_years=args.swing_train_years,
+        allow_sacred_holdout=args.allow_sacred_holdout,
     )
     cpcv_result.print()
     return cpcv_result
@@ -927,6 +928,7 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
         n_folds=args.cpcv_k,
         n_paths=args.cpcv_paths,
         total_days=args.days,
+        allow_sacred_holdout=args.allow_sacred_holdout,
     )
     cpcv_result.print()
     return cpcv_result
@@ -1033,7 +1035,21 @@ def main() -> int:
     parser.add_argument("--cpcv-paths", type=int, default=2,
                         help="WF-3: number of test paths per combination (default: 2). "
                              "Larger = more combinations, slower but higher statistical power.")
+    # P0: sacred holdout bypass (one-shot promotion run only)
+    parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
+                        help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
+                             "single, final promotion-candidate evaluation. Logs a banner "
+                             "warning. See app/ml/retrain_config.py.")
     args = parser.parse_args()
+
+    # P0: hard guard against using sacred holdout data in development WF runs.
+    from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout_wf
+    _wf_end_today = date.today()
+    _assert_holdout_wf(
+        _wf_end_today,
+        allow_sacred_holdout=args.allow_sacred_holdout,
+        context="walkforward_tier3.main",
+    )
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
     passed = True
