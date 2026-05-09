@@ -719,10 +719,10 @@ class IntradayModelTrainer:
 
         def _apply_labels(X_parts, raw_parts, apply_dispersion_gate=False):
             if not X_parts:
-                return np.array([]), np.array([])
+                return np.array([]), np.array([]), np.array([])
             X = np.vstack(X_parts)
             raws = np.concatenate(raw_parts)   # shape (N, 3): [day_ordinal, return, atr_target_pct]
-            days_ord = raws[:, 0]
+            days_ord = raws[:, 0].copy()
             raw_returns = raws[:, 1]
             atr_targets = raws[:, 2]
 
@@ -782,6 +782,7 @@ class IntradayModelTrainer:
                     X = X[dispersion_mask]
                     labels = labels[dispersion_mask]
                     days_ord = days_ord[dispersion_mask]
+                    raws = raws[dispersion_mask]
                     n_dropped = n_before - len(X)
                     if n_dropped > 0:
                         logger.info(
@@ -800,13 +801,10 @@ class IntradayModelTrainer:
             X = cs_normalize_by_group(X, days_ord)
             if _branch_b_idx and _branch_b_saved is not None:
                 X[:, _branch_b_idx] = _branch_b_saved
-            return X, labels
+            return X, labels, raws
 
-        X_train, y_train = _apply_labels(X_train_parts, raw_train_parts, apply_dispersion_gate=True)
-        X_test, y_test = _apply_labels(X_test_parts, raw_test_parts, apply_dispersion_gate=False)
-
-        # Keep raw_train for sample-weight computation in caller
-        raw_train = np.concatenate(raw_train_parts) if raw_train_parts else np.array([])
+        X_train, y_train, raw_train = _apply_labels(X_train_parts, raw_train_parts, apply_dispersion_gate=True)
+        X_test, y_test, _ = _apply_labels(X_test_parts, raw_test_parts, apply_dispersion_gate=False)
         return X_train, y_train, X_test, y_test, feature_names, raw_train
 
     # ── Evaluation ────────────────────────────────────────────────────────────
