@@ -343,6 +343,7 @@ class FeatureEngineer:
         as_of_date: Optional["date"] = None,
         vix_value: Optional[float] = None,
         vix_history: Optional["pd.Series"] = None,
+        macro_history: Optional["pd.DataFrame"] = None,
     ) -> Optional[Dict[str, float]]:
         """
         Compute features for a single stock.
@@ -1556,5 +1557,101 @@ class FeatureEngineer:
                            "drawdown_from_20d_high", "hurst_exponent_60d",
                            "volatility_adj_dist_52wk_high"):
                 features.setdefault(_p89_k, 0.5)
+
+        # ── Phase 92 — Regime features wired into live inference ────────────
+        # Six features previously injected only at training time from
+        # regime_snapshots; now computed from macro_history.parquet so live
+        # inference matches training and they can be un-pruned.
+        #
+        # Defaults (used when data is missing) match the training fallback:
+        #   spy_above_ma50/200 → 0.5, vix_term_ratio → 1.0,
+        #   breadth/credit → 0.0, sector_dispersion_20d → 0.05.
+        _regime_defaults = {
+            "spy_above_ma50": 0.5,
+            "spy_above_ma200": 0.5,
+            "vix_term_ratio": 1.0,
+            "breadth_rsp_spy_ratio_20d": 0.0,
+            "credit_hyg_ief_20d": 0.0,
+            "sector_dispersion_20d": 0.05,
+        }
+        try:
+            _mh = macro_history
+            if _mh is None:
+                # Live inference: load on demand
+                try:
+                    from app.data.macro_history import load_macro_history
+                    _mh = load_macro_history()
+                except Exception as _mh_exc:
+                    logger.debug("macro_history load failed: %s", _mh_exc)
+                    _mh = None
+
+            if _mh is not None and len(_mh) > 0 and "date" in _mh.columns:
+                if as_of_date is not None:
+                    _aod_str = pd.Timestamp(as_of_date).strftime("%Y-%m-%d")
+                    _mh = _mh[_mh["date"] <= _aod_str]
+
+                if len(_mh) > 0:
+                    # SPY MA flags (use last 250 rows for efficiency)
+                    if "spy" in _mh.columns:
+                        _spy = _mh["spy"].dropna().to_numpy(dtype=float)
+                        if len(_spy) >= 50:
+                            _spy_ma50 = float(np.mean(_spy[-50:]))
+                            features["spy_above_ma50"] = 1.0 if _spy[-1] >= _spy_ma50 else 0.0
+                        if len(_spy) >= 200:
+                            _spy_ma200 = float(np.mean(_spy[-200:]))
+                            features["spy_above_ma200"] = 1.0 if _spy[-1] >= _spy_ma200 else 0.0
+
+                    # VIX term ratio
+                    if "vix" in _mh.columns and "vix3m" in _mh.columns:
+                        _last = _mh.dropna(subset=["vix", "vix3m"]).tail(1)
+                        if not _last.empty:
+                            _v = float(_last["vix"].iloc[0])
+                            _v3 = float(_last["vix3m"].iloc[0])
+                            if _v3 > 0:
+                                features["vix_term_ratio"] = float(np.clip(_v / _v3, 0.5, 2.0))
+
+                    # Breadth: RSP 20d − SPY 20d
+                    if "rsp" in _mh.columns and "spy" in _mh.columns:
+                        _rsp = _mh["rsp"].dropna().to_numpy(dtype=float)
+                        _spy_b = _mh["spy"].dropna().to_numpy(dtype=float)
+                        if len(_rsp) >= 21 and len(_spy_b) >= 21 and _rsp[-21] > 0 and _spy_b[-21] > 0:
+                            _rsp_ret = (_rsp[-1] - _rsp[-21]) / _rsp[-21]
+                            _spy_ret = (_spy_b[-1] - _spy_b[-21]) / _spy_b[-21]
+                            features["breadth_rsp_spy_ratio_20d"] = float(_rsp_ret - _spy_ret)
+
+                    # Credit: HYG 20d − IEF 20d
+                    if "hyg" in _mh.columns and "ief" in _mh.columns:
+                        _hyg = _mh["hyg"].dropna().to_numpy(dtype=float)
+                        _ief = _mh["ief"].dropna().to_numpy(dtype=float)
+                        if len(_hyg) >= 21 and len(_ief) >= 21 and _hyg[-21] > 0 and _ief[-21] > 0:
+                            _hyg_ret = (_hyg[-1] - _hyg[-21]) / _hyg[-21]
+                            _ief_ret = (_ief[-1] - _ief[-21]) / _ief[-21]
+                            features["credit_hyg_ief_20d"] = float(_hyg_ret - _ief_ret)
+
+            # Sector dispersion: std of 11 sector ETF 20d returns
+            try:
+                from pathlib import Path as _Path
+                _etf_path = _Path("data/sector_etf/sector_etf_history.parquet")
+                if _etf_path.exists():
+                    _ef = pd.read_parquet(_etf_path)
+                    if as_of_date is not None:
+                        _aod_str2 = pd.Timestamp(as_of_date).strftime("%Y-%m-%d")
+                        _ef = _ef[_ef["date"] <= _aod_str2]
+                    _rets = []
+                    for _etf, _grp in _ef.groupby("etf"):
+                        _grp_sorted = _grp.sort_values("date").tail(21)
+                        if len(_grp_sorted) >= 21:
+                            _c = _grp_sorted["close"].to_numpy(dtype=float)
+                            if _c[0] > 0:
+                                _rets.append((_c[-1] - _c[0]) / _c[0])
+                    if len(_rets) >= 4:
+                        features["sector_dispersion_20d"] = float(np.std(_rets))
+            except Exception as _disp_exc:
+                logger.debug("sector_dispersion_20d compute failed: %s", _disp_exc)
+        except Exception as _reg_exc:
+            logger.debug("Phase 92 regime features failed: %s", _reg_exc)
+
+        for _rk, _rv in _regime_defaults.items():
+            features.setdefault(_rk, _rv)
 
         return features

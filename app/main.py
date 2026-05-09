@@ -301,6 +301,29 @@ async def startup_event():
 
     asyncio.create_task(_warm_cache())
 
+    # Phase 92 — refresh macro + sector ETF history in the background so
+    # live inference always has up-to-date regime features. Non-blocking.
+    async def _refresh_market_data():
+        try:
+            import asyncio as _aio
+            def _do_refresh():
+                try:
+                    from app.data.macro_history import update_macro_history
+                    update_macro_history()
+                except Exception as e:
+                    logger.warning("Macro history refresh failed: %s", e)
+                try:
+                    from scripts.backfill_sector_etf_history import update_sector_etf_history_incremental
+                    update_sector_etf_history_incremental()
+                except Exception as e:
+                    logger.warning("Sector ETF refresh failed: %s", e)
+            await _aio.to_thread(_do_refresh)
+            logger.info("OK Market data (macro + sector ETF) refreshed")
+        except Exception as e:
+            logger.warning("Market data refresh skipped: %s", e)
+
+    asyncio.create_task(_refresh_market_data())
+
     logger.info("MrTrader application started successfully")
 
 
