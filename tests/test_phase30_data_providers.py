@@ -272,5 +272,6 @@ class TestModelTrainerIntegration:
                             symbols=[f"SYM{i:02d}" for i in range(12)],
                             years=3,
                             fetch_fundamentals=False,
+                            allow_sacred_holdout=True,  # unit test: data is fully mocked
                         )
         assert version == 99
