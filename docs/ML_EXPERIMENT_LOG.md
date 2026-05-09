@@ -1630,3 +1630,20 @@ All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (86
 - Probability of gate pass: <10%. This is a diagnostic, not expected to ship.
 
 **v179 retrain kicked off:** 2026-05-09
+
+---
+
+## Live Paper Trading Status — Intraday v51 (2026-05-08 observation)
+
+**Operational issues observed:**
+1. **Ghost position**: Trade#1 "GHOST" in DB but not in Alpaca — reconciliation broken
+2. **DB module error**: `force_close` failing with `No module named 'app.database.db'` — EOD force-close can't verify DB state
+3. **Limit orders not filling**: System generates BUY signals for TSLA/MSFT but all limit orders cancelled unfilled at EOD — likely limit prices set too conservatively for intraday entries
+4. **Position PnL appears anomalous**: TSLA/NVDA/MSFT shown with round entry prices ($200/$110/$100) suggesting possible test positions, not real paper fills
+
+**Implication**: v51's live paper performance is not measurable from logs — orders aren't executing. The +0.529 honest Sharpe from WF is the only performance signal we have for intraday.
+
+**Action items for morning review:**
+- Investigate `app.database.db` import error in force_close (wrong module path)
+- Check ghost position cleanup mechanism
+- Review limit order price calculation for intraday entries (may be too far from market)
