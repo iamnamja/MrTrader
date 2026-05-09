@@ -250,6 +250,7 @@ def run_rolling_pipeline(
     tb_target_mult: float | None = None,
     tb_stop_mult: float | None = None,
     forward_days: int | None = None,
+    allow_sacred_holdout: bool = False,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
@@ -289,6 +290,7 @@ def run_rolling_pipeline(
         three_stage=three_stage,
         multi_window=multi_window,
     )
+    trainer._allow_sacred_holdout = allow_sacred_holdout
 
     # Regime score
     try:
@@ -303,7 +305,7 @@ def run_rolling_pipeline(
     t0 = time.time()
     t_step = time.time()
     X_train, y_train, X_test, y_test, feature_names, meta_train = trainer._build_rolling_matrix(
-        symbols_data, fetch_fundamentals=fetch_fundamentals
+        symbols_data, fetch_fundamentals=fetch_fundamentals,
     )
     t_matrix = time.time() - t_step
 
@@ -612,6 +614,10 @@ def main():
         "--no-prefilters", action="store_true", default=False,
         help="Phase 3b: bypass RSI/EMA-20/50 hard gates in simulator — use as ML features instead",
     )
+    parser.add_argument(
+        "--allow-sacred-holdout", action="store_true", default=False,
+        help="Bypass sacred holdout guard (development retrains only — not for final promotion)",
+    )
     args = parser.parse_args()
 
     symbols = args.symbols or RUSSELL_1000_TICKERS
@@ -680,6 +686,7 @@ def main():
         tb_target_mult=getattr(args, "tb_target_mult", None),
         tb_stop_mult=getattr(args, "tb_stop_mult", None),
         forward_days=getattr(args, "forward_days", None),
+        allow_sacred_holdout=getattr(args, "allow_sacred_holdout", False),
     )
     phase_times["train_pipeline"] = time.time() - _t
 

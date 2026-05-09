@@ -102,3 +102,7 @@ results/
 # Claude Code internal state
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+.claude/state/model_meta_cache.json
+.claude/state/overnight_jobs.json
+.claude/state/last_morning_cursor.txt
+.claude/worktrees/
