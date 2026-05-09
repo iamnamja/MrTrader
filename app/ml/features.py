@@ -524,6 +524,32 @@ class FeatureEngineer:
                 "earnings_proximity_days": 90.0,
             })
 
+        # ── 17b. Phase 93: FMP quarterly fundamentals override ───────────────
+        # When the FMP parquet is present, replace EDGAR-derived (or zero)
+        # fundamentals with PIT-correct quarterly values. Computes PE/PB from
+        # the most recent close in `bars` (which is the as_of_date close).
+        try:
+            from app.ml.retrain_config import USE_FMP_FUNDAMENTALS as _UF
+        except Exception:
+            _UF = True
+        if _UF:
+            try:
+                from app.data.fmp_fundamentals import (
+                    FMP_PATH as _FMP_PATH,
+                    get_fundamentals_as_of as _fmp_lookup,
+                )
+                if _FMP_PATH.exists():
+                    _close_now = float(bars["close"].iloc[-1]) if len(bars) else 0.0
+                    _aod = as_of_date if as_of_date is not None else \
+                        (bars.index[-1].date() if hasattr(bars.index[-1], "date") else None)
+                    if _aod is not None:
+                        snap = _fmp_lookup(symbol, _aod, latest_close=_close_now)
+                        if snap:
+                            for _k, _v in snap.items():
+                                features[_k] = _v
+            except Exception as _exc:
+                logger.debug("FMP fundamentals lookup skipped for %s: %s", symbol, _exc)
+
         # ── 18. Sector ETF momentum ───────────────────────────────────────────
         if fetch_fundamentals and sector:
             try:

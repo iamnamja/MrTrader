@@ -1804,3 +1804,52 @@ and DSR p-value for each model.
 
 **Verdict:** ✅ Infrastructure complete. CPCV baseline runs pending
 (user-triggered).
+
+---
+
+## Phase 93 — FMP Quarterly Fundamentals Store — 2026-05-09
+
+**Goal:** Replace EDGAR annual fundamentals (currently `fundamentals_history.parquet`)
+with a strictly richer FMP-based quarterly store. Quarterly cadence yields ~4×
+more PIT snapshots per symbol over the same lookback, includes margin family
+(gross / operating / FCF) and FCF-derived metrics, and supplies the EPS / BVPS
+needed to un-prune `pe_ratio` and `pb_ratio` (which EDGAR could not deliver
+with point-in-time price).
+
+**Module:** `app/data/fmp_fundamentals.py`
+- Parquet at `data/fundamentals/fmp_fundamentals_history.parquet` (separate
+  from EDGAR — both coexist during transition).
+- `as_of_date = filingDate` (PIT-safe: first date the data was knowable).
+- PE / PB are **not** stored — computed on demand from the as_of-date close
+  via `get_fundamentals_as_of(symbol, as_of_date, latest_close=…)` /
+  `lookup_pit_from_index(...)`. Storing PE at filing time would yield wrong
+  values for any later training window.
+- `backfill_fmp_fundamentals(symbols, workers=4)` — full backfill, rate-limited
+  to ~6.7 req/s/worker (3 endpoints/symbol).
+- `update_fmp_fundamentals_incremental(symbols)` — re-fetches only symbols whose
+  latest stored filing is >45 days old.
+
+**Integration:**
+- `app/ml/training.py` loads the FMP parquet alongside EDGAR. Subprocess workers
+  receive a per-symbol PIT index; FMP values OVERRIDE EDGAR where present, and
+  the worker writes computed PE/PB into the feature row using the window-end close.
+- `app/ml/features.py` `engineer_features()` performs the same FMP-overrides-EDGAR
+  step at live inference time.
+- `_BASE_PRUNED` still lists `pe_ratio` / `pb_ratio`, but `_resolve_pruned_features()`
+  (master process) and the worker's local `_effective_pruned` strip both names
+  whenever the FMP parquet is present and `USE_FMP_FUNDAMENTALS=True`.
+- `app/ml/retrain_config.py`: `USE_FMP_FUNDAMENTALS=True` (toggle for A/B vs
+  EDGAR-only baseline) and `FMP_QUARTERLY_LOOKBACK_QUARTERS=40`.
+
+**Backfill command (run before next swing retrain):**
+```
+python scripts/backfill_fmp_fundamentals.py --workers 4
+```
+Estimated runtime: ~5 min for 400 SP500 symbols.
+
+**Tests:** `tests/test_fmp_fundamentals.py` — 14 tests covering schema, PIT
+semantics, PE/PB computation, YoY growth join, incremental dedupe, missing
+symbol/parquet, rate-limit enforcement, and worker fast-path index lookup.
+
+**Verdict:** 🔄 Infrastructure complete. Backfill + walk-forward A/B vs the
+EDGAR baseline pending (user-triggered).

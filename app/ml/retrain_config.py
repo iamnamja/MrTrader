@@ -97,6 +97,18 @@ INTRADAY_GATE = dict(
 #   Why: same pattern as USE_REALIZED_R_LABELS — code/infra preserved, behavior gated.
 USE_NIS_FEATURES: bool = False
 
+# ── Phase 93: FMP quarterly fundamentals ─────────────────────────────────────
+# When True and data/fundamentals/fmp_fundamentals_history.parquet exists,
+# training/inference loads PIT-correct quarterly fundamentals from FMP and
+# OVERRIDES any value sourced from the older EDGAR annual parquet. Falls back
+# to EDGAR (or zeros) when the FMP parquet is absent. Toggle False to A/B vs
+# the EDGAR-only baseline without removing the parquet.
+USE_FMP_FUNDAMENTALS: bool = True
+
+# Quarters of history to fetch per symbol during full backfill.
+# 40q ≈ 10y; 100q is FMP standard plan max.
+FMP_QUARTERLY_LOOKBACK_QUARTERS: int = 40
+
 # USE_REALIZED_R_LABELS: switch intraday labeling from cross-sectional top-20%
 #   to absolute realized-R threshold. Failed walk-forward gate (avg Sharpe -4.514,
 #   AUC ~0.55). Structurally incompatible with cs_normalize. Keep False.

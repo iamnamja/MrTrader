@@ -72,6 +72,10 @@ TB_PHASE3B_FORWARD_DAYS = 10
 # Removing them reduces overfitting surface without changing the signal.
 _BASE_PRUNED: frozenset = frozenset([
     "price_above_ema200", "dist_from_ema200", "rs_vs_spy", "sentiment",
+    # pe_ratio / pb_ratio un-pruned in Phase 93 when fmp_fundamentals_history.parquet is present
+    # (computed PIT-correct as price / (eps_diluted * 4) and price / bvps in worker).
+    # See _resolve_pruned_features() below — these names are stripped from the
+    # pruned set at runtime when the FMP parquet exists and USE_FMP_FUNDAMENTALS=True.
     "pe_ratio", "pb_ratio",
     # profit_margin / revenue_growth / debt_to_equity un-pruned in Phase 89a when
     # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
@@ -129,6 +133,27 @@ PRUNED_FEATURES: frozenset = (
 )
 
 
+def _resolve_pruned_features() -> frozenset:
+    """Phase 93: when FMP parquet exists + flag is on, restore pe_ratio/pb_ratio.
+
+    Called whenever PRUNED_FEATURES is consulted in a hot path that has access
+    to disk state (i.e. NOT in subprocess workers — the master process owns
+    feature naming). Returns a fresh frozenset each call to remain stable to
+    file-system / config changes between training runs.
+    """
+    base = PRUNED_FEATURES
+    try:
+        from app.ml.retrain_config import USE_FMP_FUNDAMENTALS as _UF
+    except Exception:
+        _UF = True
+    if not _UF:
+        return base
+    fmp_path = Path("data/fundamentals/fmp_fundamentals_history.parquet")
+    if not fmp_path.exists():
+        return base
+    return frozenset(f for f in base if f not in {"pe_ratio", "pb_ratio"})
+
+
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):
     """
     Compute ATR-adaptive target and stop percentages for labeling.
@@ -176,6 +201,7 @@ def _process_symbol_windows_worker(
     use_union_label: bool = False,  # Phase 90: OR(5d, 15d ATR) label
     abs_hurdle: float = 0.0,        # Option C: optional absolute-return floor for cross-sectional label
     macro_history: Optional[pd.DataFrame] = None,  # Phase 92: regime feature source
+    fmp_fundamentals_history: Optional[list] = None,  # Phase 93: FMP quarterly PIT (date_str, fields)
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -189,6 +215,14 @@ def _process_symbol_windows_worker(
 
     fe = FeatureEngineer()
     df = pd.read_parquet(_io.BytesIO(df_bytes))
+
+    # Phase 93: resolve effective pruned set ONCE per worker call. If FMP
+    # fundamentals were passed, we can keep pe_ratio / pb_ratio (computed PIT).
+    _effective_pruned = PRUNED_FEATURES
+    if fmp_fundamentals_history:
+        _effective_pruned = frozenset(
+            f for f in PRUNED_FEATURES if f not in {"pe_ratio", "pb_ratio"}
+        )
 
     X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
     idx = df.index.date
@@ -385,6 +419,22 @@ def _process_symbol_windows_worker(
                 features["revenue_growth"] = pit["revenue_growth"]
                 features["debt_to_equity"] = pit["debt_to_equity"]
 
+        # Phase 93: FMP quarterly fundamentals — strictly richer than EDGAR.
+        # Overrides EDGAR values when present and additionally fills in
+        # PE/PB (computed from window-end close) and margin family.
+        if fmp_fundamentals_history and features:
+            try:
+                from app.data.fmp_fundamentals import lookup_pit_from_index
+                _close_now = float(window_df["close"].iloc[-1]) if len(window_df) else 0.0
+                fmp_pit = lookup_pit_from_index(
+                    fmp_fundamentals_history, w_end_date, latest_close=_close_now,
+                )
+                if fmp_pit is not None:
+                    for _k, _v in fmp_pit.items():
+                        features[_k] = _v
+            except Exception:
+                pass
+
         # Phase 89b: override sector_momentum / sector_momentum_5d with PIT ETF bars
         if sector_etf_bars and features:
             from app.ml.fundamental_fetcher import SECTOR_ETF_MAP
@@ -423,7 +473,7 @@ def _process_symbol_windows_worker(
                       "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200"):
                 features[k] = rv2.get(k, 0.5)
 
-        features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
+        features = {k: v for k, v in features.items() if k not in _effective_pruned}
         if not feature_names:
             feature_names = list(features.keys())
 
@@ -1377,7 +1427,7 @@ class ModelTrainer:
             if features is None:
                 continue
 
-            features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
+            features = {k: v for k, v in features.items() if k not in _resolve_pruned_features()}
             if not feature_names:
                 feature_names = list(features.keys())
 
@@ -1520,6 +1570,30 @@ class ModelTrainer:
             except Exception as _exc:
                 logger.warning("Phase 89a: could not load fundamentals_history.parquet — %s", _exc)
 
+        # Phase 93: load FMP quarterly fundamentals (overrides EDGAR where present).
+        # See app/data/fmp_fundamentals.py for the schema and PIT design.
+        _fmp_fund_by_symbol: Dict[str, list] = {}
+        try:
+            from app.ml.retrain_config import USE_FMP_FUNDAMENTALS as _USE_FMP
+        except Exception:
+            _USE_FMP = True
+        if _USE_FMP:
+            _fmp_path = Path("data/fundamentals/fmp_fundamentals_history.parquet")
+            if _fmp_path.exists():
+                try:
+                    from app.data.fmp_fundamentals import (
+                        load_fmp_fundamentals as _load_fmp,
+                        build_fmp_lookup_index as _build_fmp_idx,
+                    )
+                    _fmp_df = _load_fmp()
+                    _fmp_fund_by_symbol = _build_fmp_idx(_fmp_df)
+                    logger.info(
+                        "Phase 93: loaded FMP quarterly fundamentals for %d symbols (%d rows)",
+                        len(_fmp_fund_by_symbol), len(_fmp_df),
+                    )
+                except Exception as _exc:
+                    logger.warning("Phase 93: could not load fmp_fundamentals_history.parquet — %s", _exc)
+
         # Phase 88: load regime V2 scalar features map {date: {vix_term_ratio, ...}}
         _regime_v2_map = self._load_regime_v2_features_map()
 
@@ -1584,6 +1658,7 @@ class ModelTrainer:
                 _use_union_label,
                 getattr(self, "_label_abs_hurdle", 0.0),
                 _macro_history_df,
+                _fmp_fund_by_symbol.get(symbol),
             )
 
         # Maps row-length → first sym_names seen for that length. Used after
@@ -2263,7 +2338,7 @@ class ModelTrainer:
             )
             if features is None:
                 continue
-            features = {k: v for k, v in features.items() if k not in PRUNED_FEATURES}
+            features = {k: v for k, v in features.items() if k not in _resolve_pruned_features()}
             if feature_names is None:
                 feature_names = list(features.keys())
             X_rows.append(list(features.values()))
