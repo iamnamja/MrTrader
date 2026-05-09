@@ -222,13 +222,19 @@ class TestStartupReconciler:
         assert result["orphaned_orders"] == []
 
     def test_detects_ghost_position(self, db_session):
+        from datetime import timedelta
         from app.startup_reconciler import reconcile
+        from app.database.models import Trade
         from tests.conftest import make_trade
-        # Create two active trades in DB — GHOST will be absent from Alpaca, OTHER will be present
-        make_trade(db_session, symbol="GHOST", status="ACTIVE")
-        make_trade(db_session, symbol="OTHER", status="ACTIVE")
+        # Create two active trades — GHOST absent from Alpaca, OTHER present.
+        # Set created_at far in the past so they clear the 5-minute age guard.
+        ghost = make_trade(db_session, symbol="GHOST", status="ACTIVE")
+        other = make_trade(db_session, symbol="OTHER", status="ACTIVE")
+        old_ts = datetime.utcnow() - timedelta(minutes=30)
+        ghost.created_at = old_ts
+        other.created_at = old_ts
         db_session.commit()
-        # Alpaca has OTHER but not GHOST — ghost detection fires because Alpaca returned >0 positions
+        # Alpaca has OTHER but not GHOST — ghost detection should fire.
         mock_alpaca = MagicMock()
         mock_alpaca.get_positions.return_value = [{"symbol": "OTHER", "qty": "10", "avg_entry_price": "100"}]
         with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
@@ -236,17 +242,34 @@ class TestStartupReconciler:
         assert len(result["ghost_positions"]) == 1
         assert result["ghost_positions"][0]["symbol"] == "GHOST"
 
-    def test_ghost_detection_skipped_when_alpaca_empty(self, db_session):
+    def test_ghost_detection_skipped_for_recent_trade_on_empty_alpaca(self, db_session):
         from app.startup_reconciler import reconcile
         from tests.conftest import make_trade
-        # Single ACTIVE trade in DB + Alpaca returns 0 positions = likely API error, skip ghost
-        make_trade(db_session, symbol="REALPOS", status="ACTIVE")
+        # A VERY RECENT trade (just entered) should NOT be marked ghost even if Alpaca returns [].
+        # This protects market orders whose fills haven't propagated yet.
+        make_trade(db_session, symbol="NEWPOS", status="ACTIVE")  # created_at = now
         db_session.commit()
         mock_alpaca = MagicMock()
         mock_alpaca.get_positions.return_value = []
         with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
             result = reconcile(mock_alpaca, db_session)
-        assert len(result["ghost_positions"]) == 0
+        assert len(result["ghost_positions"]) == 0  # too new — age guard protects it
+
+    def test_ghost_detection_fires_for_old_trade_on_empty_alpaca(self, db_session):
+        from datetime import timedelta
+        from app.startup_reconciler import reconcile
+        from tests.conftest import make_trade
+        # An OLD trade absent from Alpaca on an empty-positions response IS a ghost.
+        # This is the case where the user closed the only position externally.
+        old = make_trade(db_session, symbol="OLDPOS", status="ACTIVE")
+        old.created_at = datetime.utcnow() - timedelta(minutes=30)
+        db_session.commit()
+        mock_alpaca = MagicMock()
+        mock_alpaca.get_positions.return_value = []
+        with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
+            result = reconcile(mock_alpaca, db_session)
+        assert len(result["ghost_positions"]) == 1
+        assert result["ghost_positions"][0]["symbol"] == "OLDPOS"
 
     def test_detects_orphaned_order(self, db_session):
         from app.startup_reconciler import reconcile

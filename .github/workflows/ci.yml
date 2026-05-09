@@ -40,6 +40,22 @@ jobs:
             --extend-ignore=E203,W503,E501 \
             --exclude=app/database/migrations/
 
+      - name: Guard stale app.database.db imports
+        run: |
+          # app/database/db.py is the shim — no other file should import from it.
+          # Any new "from app.database.db" reference in app/ or tests/ means someone
+          # added a stale import instead of using app.database.session directly.
+          STALE=$(grep -rn "from app\.database\.db" app/ tests/ \
+            --include="*.py" \
+            --exclude="app/database/db.py" \
+            || true)
+          if [ -n "$STALE" ]; then
+            echo "ERROR: Stale 'from app.database.db' import found. Use app.database.session instead."
+            echo "$STALE"
+            exit 1
+          fi
+          echo "No stale app.database.db imports found."
+
       - name: mypy (advisory)
         run: |
           mypy app/ \

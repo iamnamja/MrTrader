@@ -108,8 +108,11 @@ class Trader(BaseAgent):
             self.logger.warning("Reconciliation: could not fetch Alpaca positions: %s", exc)
             return
 
-        if not raw_positions:
+        # Note: empty raw_positions is a *valid* response — we still need to run
+        # ghost detection (DB ACTIVE trades that have no Alpaca counterpart).
+        if raw_positions is None:
             return
+        raw_positions = raw_positions or []
 
         db = get_session()
         try:
@@ -118,6 +121,13 @@ class Trader(BaseAgent):
             self.logger.warning("Reconciliation: DB query failed: %s", exc)
             db.close()
             return
+
+        # Build the symbol set Alpaca currently holds — used for ghost detection below.
+        alpaca_symbols = {
+            (p.get("symbol") or "").upper()
+            for p in raw_positions
+            if p.get("symbol")
+        }
 
         for pos in raw_positions:
             symbol = pos.get("symbol")
@@ -262,6 +272,53 @@ class Trader(BaseAgent):
             except Exception as exc:
                 db.rollback()
                 self.logger.error("Reconciliation failed for %s: %s", symbol, exc)
+
+        # ── Ghost detection: ACTIVE in DB but NOT in Alpaca ──────────────────
+        # Symmetrical with the "untracked" branch above. Protects against newly
+        # placed market orders whose fills haven't yet propagated to Alpaca by
+        # requiring the trade to be at least `reconcile.ghost_min_age_minutes`
+        # old (default 5 min).
+        try:
+            from app.database.agent_config import get_agent_config
+            from app.database.models import AuditLog
+            try:
+                ghost_min_age_minutes = int(get_agent_config(db, "reconcile.ghost_min_age_minutes") or 5)
+            except Exception:
+                ghost_min_age_minutes = 5
+            from datetime import timedelta
+            ghost_cutoff = datetime.utcnow() - timedelta(minutes=ghost_min_age_minutes)
+
+            for symbol, trade in db_active.items():
+                if symbol.upper() in alpaca_symbols:
+                    continue
+                age_anchor = trade.created_at or datetime.utcnow()
+                if age_anchor > ghost_cutoff:
+                    continue  # too new — Alpaca fill may not have propagated
+                self.logger.warning(
+                    "GHOST POSITION: Trade#%d %s ACTIVE in DB but not in Alpaca "
+                    "(Alpaca has %d position(s); trade older than %d min) — marking RECONCILE_GHOST",
+                    trade.id, symbol, len(alpaca_symbols), ghost_min_age_minutes,
+                )
+                trade.status = "RECONCILE_GHOST"
+                db.add(AuditLog(
+                    action="RECONCILE_GHOST_POSITION",
+                    details={
+                        "trade_id": trade.id,
+                        "symbol": symbol,
+                        "reason": "Active in DB but no matching Alpaca position (periodic reconcile)",
+                        "alpaca_position_count": len(alpaca_symbols),
+                        "ghost_min_age_minutes": ghost_min_age_minutes,
+                        "detected_at": datetime.utcnow().isoformat(),
+                        "source": "trader._reconcile_positions",
+                    },
+                    timestamp=datetime.utcnow(),
+                ))
+                # Drop in-memory state so exit logic stops watching it
+                self.active_positions.pop(symbol, None)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            self.logger.error("Ghost detection in _reconcile_positions failed: %s", exc)
 
         db.close()
 
@@ -798,13 +855,13 @@ class Trader(BaseAgent):
         pending_trade_id = pending_trade
 
         if trade_type == "swing":
-            # Use limit order 0.3% below ask for better execution
-            limit_offset = 0.003
+            # Use limit order ~10bps below ask for better execution (configurable)
+            limit_offset = 0.001
             try:
                 from app.database.agent_config import get_agent_config
                 _db = get_session()
                 try:
-                    limit_offset = float(get_agent_config(_db, "strategy.limit_order_offset_pct") or 0.003)
+                    limit_offset = float(get_agent_config(_db, "strategy.limit_order_offset_pct") or 0.001)
                 finally:
                     _db.close()
             except Exception:
@@ -839,6 +896,8 @@ class Trader(BaseAgent):
                 "result": result,
                 "proposal": proposal,
                 "queued_at": datetime.now(ET),
+                "requote_count": 0,
+                "escalated": False,
             }
             self._pending_limit_orders[symbol] = pending_entry
             # Phase 78b: persist to DB so a restart can reload this entry
@@ -973,6 +1032,8 @@ class Trader(BaseAgent):
             row.atr = getattr(result, "atr", None)
             row.trade_type = pending.get("proposal", {}).get("trade_type", "swing")
             row.signal_type = getattr(result, "signal_type", None)
+            row.requote_count = int(pending.get("requote_count", 0) or 0)
+            row.escalated = bool(pending.get("escalated", False))
             db.commit()
         except Exception as exc:
             db.rollback()
@@ -1026,6 +1087,8 @@ class Trader(BaseAgent):
                     "result": _FakeResult(),
                     "proposal": {"trade_type": row.trade_type},
                     "queued_at": row.created_at,
+                    "requote_count": int(getattr(row, "requote_count", 0) or 0),
+                    "escalated": bool(getattr(row, "escalated", False) or False),
                 }
                 self.logger.info(
                     "Reloaded pending limit order for %s (order=%s) from DB",
@@ -1049,6 +1112,17 @@ class Trader(BaseAgent):
         pending_trade_id: int | None = None,
     ):
         """Promote a PENDING_FILL trade to ACTIVE and record the fill details."""
+        # Guard: reject placeholder/test order IDs that should never reach production.
+        # Real Alpaca order IDs are UUIDs (e.g. "3ee1153a-a426-43c3-...").
+        # IDs starting with "order-" are test fixtures from conftest.py / scripts.
+        if order_id and str(order_id).startswith("order-"):
+            self.logger.error(
+                "_record_entry blocked for %s: fake order_id '%s' (starts with 'order-'). "
+                "This indicates a test fixture leaked into production. Aborting.",
+                symbol, order_id,
+            )
+            return
+
         trade_type = proposal.get("trade_type", "swing")
         signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
         db = get_session()
@@ -1168,15 +1242,46 @@ class Trader(BaseAgent):
 
     async def _poll_pending_limit_orders(self, alpaca) -> None:
         """
-        Check fill status of pending swing limit orders.
-        - Filled → record entry, move to active_positions
-        - EOD or market closed → cancel unfilled orders
+        Check fill status of pending swing limit orders with a state machine:
+          WAITING   → still fresh, no drift
+          REQUOTE   → age > requote_age OR drift > requote_drift_bps
+          ESCALATE  → past eod_escalation cutoff: cancel + place marketable limit
+          CANCEL    → past cancel cutoff: cancel and give up
+          FILLED / EXPIRED → handled inline as before
         """
         if not self._pending_limit_orders:
             return
 
+        # Single config read per poll (not per symbol)
+        from app.database.agent_config import get_agent_config
+        from app.database.session import SessionLocal
+        offset_pct = 0.001
+        requote_age_min = 30
+        requote_drift_bps = 20.0
+        max_requotes = 3
+        esc_hour = 15
+        esc_minute = 15
+        cancel_hour = 15
+        cancel_minute = 45
+        try:
+            _db = SessionLocal()
+            try:
+                offset_pct = float(get_agent_config(_db, "strategy.limit_order_offset_pct") or 0.001)
+                requote_age_min = int(get_agent_config(_db, "strategy.limit_order_requote_age_minutes") or 30)
+                requote_drift_bps = float(get_agent_config(_db, "strategy.limit_order_requote_drift_bps") or 20)
+                max_requotes = int(get_agent_config(_db, "strategy.limit_order_max_requotes") or 3)
+                esc_hour = int(get_agent_config(_db, "strategy.limit_order_eod_escalation_hour") or 15)
+                esc_minute = int(get_agent_config(_db, "strategy.limit_order_eod_escalation_minute") or 15)
+                cancel_hour = int(get_agent_config(_db, "strategy.limit_order_cancel_hour") or 15)
+                cancel_minute = int(get_agent_config(_db, "strategy.limit_order_cancel_minute") or 45)
+            finally:
+                _db.close()
+        except Exception as _cfg_exc:
+            self.logger.debug("Limit-order config read failed (using defaults): %s", _cfg_exc)
+
         now = datetime.now(ET)
-        cancel_unfilled = now.hour >= 15 and now.minute >= 45  # 3:45 PM ET cutoff
+        past_cancel_cutoff = (now.hour > cancel_hour) or (now.hour == cancel_hour and now.minute >= cancel_minute)
+        past_escalation_cutoff = (now.hour > esc_hour) or (now.hour == esc_hour and now.minute >= esc_minute)
 
         for symbol in list(self._pending_limit_orders.keys()):
             pending = self._pending_limit_orders[symbol]
@@ -1190,6 +1295,7 @@ class Trader(BaseAgent):
                 filled_qty = int(status.get("filled_qty") or 0)
                 filled_price = status.get("filled_avg_price")
 
+                # ── FILLED / PARTIALLY_FILLED ─────────────────────────────────
                 if order_status in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
                     filled_price = float(filled_price)
                     intended = pending["intended_price"]
@@ -1227,21 +1333,153 @@ class Trader(BaseAgent):
                         "LIMIT FILLED %s x%d @ $%.4f (slip=%.1fbps)",
                         symbol, filled_qty, filled_price, slippage_bps,
                     )
+                    continue
 
-                elif order_status in ("canceled", "expired", "rejected"):
+                # ── EXPIRED / CANCELED / REJECTED (externally) ────────────────
+                if order_status in ("canceled", "expired", "rejected"):
                     del self._pending_limit_orders[symbol]
                     self._delete_pending_limit_db(symbol)
                     self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info("Limit order %s for %s cancelled/expired — removing", order_id, symbol)
+                    continue
 
-                elif cancel_unfilled:
-                    alpaca.cancel_order(order_id)
+                # ── CANCEL cutoff: hard EOD cancel ────────────────────────────
+                if past_cancel_cutoff:
+                    try:
+                        alpaca.cancel_order(order_id)
+                    except Exception as _cx:
+                        self.logger.warning("EOD cancel failed for %s: %s", symbol, _cx)
                     del self._pending_limit_orders[symbol]
                     self._delete_pending_limit_db(symbol)
                     self._cancel_pending_fill(pending.get("trade_id"))
                     self.logger.info(
                         "EOD: cancelled unfilled limit order for %s (order=%s)", symbol, order_id
                     )
+                    await self.log_decision("LIMIT_EOD_CANCEL", reasoning={
+                        "symbol": symbol, "order_id": order_id,
+                        "limit_price": pending.get("limit_price"),
+                        "requote_count": int(pending.get("requote_count", 0) or 0),
+                        "escalated": bool(pending.get("escalated", False)),
+                    })
+                    continue
+
+                # ── ESCALATE: past escalation cutoff and not yet escalated ────
+                already_escalated = bool(pending.get("escalated", False))
+                if past_escalation_cutoff and not already_escalated:
+                    quote = alpaca.get_quote(symbol)
+                    if not quote or quote.get("ask", 0) <= 0:
+                        self.logger.warning(
+                            "Escalation skipped for %s — no quote available", symbol,
+                        )
+                    else:
+                        try:
+                            alpaca.cancel_order(order_id)
+                        except Exception as _cx:
+                            self.logger.warning("Escalation cancel failed for %s: %s", symbol, _cx)
+                        ask = float(quote["ask"])
+                        new_limit = round(ask * (1 + 0.0005), 2)  # 5bps THROUGH ask (marketable)
+                        try:
+                            new_order = alpaca.place_limit_order(
+                                symbol, pending["shares"], "buy", new_limit,
+                            )
+                            new_order_id = new_order.get("order_id")
+                            old_limit = pending["limit_price"]
+                            pending["order_id"] = new_order_id
+                            pending["limit_price"] = new_limit
+                            pending["intended_price"] = ask
+                            pending["queued_at"] = datetime.now(ET)
+                            pending["escalated"] = True
+                            self._update_pending_fill_order_id(pending.get("trade_id"), new_order_id)
+                            self._save_pending_limit_db(symbol, pending, pending["result"])
+                            self.logger.info(
+                                "LIMIT ESCALATED %s: ask=%.4f new_limit=%.4f (was=%.4f) order=%s",
+                                symbol, ask, new_limit, old_limit, new_order_id,
+                            )
+                            await self.log_decision("LIMIT_EOD_ESCALATION", reasoning={
+                                "symbol": symbol,
+                                "old_order_id": order_id,
+                                "new_order_id": new_order_id,
+                                "old_limit": old_limit,
+                                "new_limit": new_limit,
+                                "ask": ask,
+                                "requote_count": int(pending.get("requote_count", 0) or 0),
+                            })
+                        except Exception as _ex:
+                            self.logger.error("Escalation place_limit_order failed for %s: %s", symbol, _ex)
+                    continue
+
+                # ── REQUOTE check: drift OR age ───────────────────────────────
+                queued_at = pending.get("queued_at")
+                age_minutes = 0.0
+                if queued_at is not None:
+                    try:
+                        # queued_at may be naive (from DB) or tz-aware (from in-memory)
+                        if queued_at.tzinfo is None:
+                            age_minutes = (now.replace(tzinfo=None) - queued_at).total_seconds() / 60.0
+                        else:
+                            age_minutes = (now - queued_at).total_seconds() / 60.0
+                    except Exception:
+                        age_minutes = 0.0
+
+                requote_count = int(pending.get("requote_count", 0) or 0)
+                age_trigger = age_minutes >= requote_age_min
+                drift_bps = 0.0
+                drift_trigger = False
+                fresh_ask = None
+                if requote_count < max_requotes and not already_escalated:
+                    quote = alpaca.get_quote(symbol)
+                    if quote and quote.get("ask", 0) > 0:
+                        fresh_ask = float(quote["ask"])
+                        old_limit = float(pending["limit_price"])
+                        if old_limit > 0:
+                            drift_bps = (fresh_ask - old_limit) / old_limit * 10000.0
+                        drift_trigger = drift_bps >= requote_drift_bps
+
+                if requote_count < max_requotes and not already_escalated and (age_trigger or drift_trigger):
+                    if fresh_ask is None:
+                        # Could not get a quote — skip this cycle
+                        continue
+                    try:
+                        alpaca.cancel_order(order_id)
+                    except Exception as _cx:
+                        self.logger.warning("Re-quote cancel failed for %s: %s", symbol, _cx)
+                    new_limit = round(fresh_ask * (1 - offset_pct), 2)
+                    try:
+                        new_order = alpaca.place_limit_order(
+                            symbol, pending["shares"], "buy", new_limit,
+                        )
+                        new_order_id = new_order.get("order_id")
+                        old_limit = pending["limit_price"]
+                        pending["order_id"] = new_order_id
+                        pending["limit_price"] = new_limit
+                        pending["intended_price"] = fresh_ask
+                        pending["queued_at"] = datetime.now(ET)
+                        pending["requote_count"] = requote_count + 1
+                        self._update_pending_fill_order_id(pending.get("trade_id"), new_order_id)
+                        self._save_pending_limit_db(symbol, pending, pending["result"])
+                        self.logger.info(
+                            "LIMIT REQUOTE %s #%d: ask=%.4f new_limit=%.4f (was=%.4f) "
+                            "age=%.1fm drift=%.1fbps order=%s",
+                            symbol, requote_count + 1, fresh_ask, new_limit, old_limit,
+                            age_minutes, drift_bps, new_order_id,
+                        )
+                        await self.log_decision("LIMIT_REQUOTE", reasoning={
+                            "symbol": symbol,
+                            "old_order_id": order_id,
+                            "new_order_id": new_order_id,
+                            "old_limit": old_limit,
+                            "new_limit": new_limit,
+                            "ask": fresh_ask,
+                            "age_minutes": round(age_minutes, 1),
+                            "drift_bps": round(drift_bps, 1),
+                            "requote_count": requote_count + 1,
+                            "trigger": "age" if age_trigger else "drift",
+                        })
+                    except Exception as _ex:
+                        self.logger.error("Re-quote place_limit_order failed for %s: %s", symbol, _ex)
+                    continue
+
+                # else: WAITING — nothing to do this poll
 
             except Exception as exc:
                 self.logger.error("Error polling limit order for %s: %s", symbol, exc)
@@ -1811,7 +2049,7 @@ class Trader(BaseAgent):
         # Also check DB for intraday trades not yet in in-memory state (e.g. set via manual DB update)
         stale_ghost_symbols: list = []
         try:
-            from app.database.db import SessionLocal
+            from app.database.session import SessionLocal
             from app.database.models import Trade
             db = SessionLocal()
             try:

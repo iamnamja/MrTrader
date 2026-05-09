@@ -58,7 +58,7 @@ def _fetch_from_db(trade_type: str, db_session=None) -> Optional[float]:
 
     close_session = False
     if db_session is None:
-        from app.database.db import SessionLocal
+        from app.database.session import SessionLocal
         db_session = SessionLocal()
         close_session = True
 

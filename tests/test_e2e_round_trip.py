@@ -98,7 +98,7 @@ def _make_bars(price: float = 200.0, n: int = 250):
 
 
 def _make_alpaca(symbol: str = "TSLA", fill_price: float = 200.0):
-    order_id = f"order-{uuid.uuid4().hex[:8]}"
+    order_id = str(uuid.uuid4())  # UUID format matching real Alpaca order IDs
     alpaca = MagicMock()
     alpaca.get_account.return_value = {
         "equity": 20_000.0, "portfolio_value": 20_000.0,
