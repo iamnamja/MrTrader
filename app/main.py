@@ -306,6 +306,7 @@ async def startup_event():
     async def _refresh_market_data():
         try:
             import asyncio as _aio
+
             def _do_refresh():
                 try:
                     from app.data.macro_history import update_macro_history
