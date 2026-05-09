@@ -74,6 +74,12 @@ _BASE_PRUNED: frozenset = frozenset([
     "vix_fear_spike",
     "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
+    # Phase 88 V2 regime features: injected during training from regime_snapshots DB,
+    # but NOT computed by engineer_features() at inference. Training/inference mismatch
+    # (0.5 in training → 0.0 at inference) shifts all probabilities below min_confidence.
+    # Phase 92 plan: wire these into live engineer_features() before removing from pruned.
+    "vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+    "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200",
     "rs_vs_spy_5d", "rs_vs_spy_10d", "rs_vs_spy_60d", "fmp_surprise_1q",
     "fmp_surprise_2q_avg", "fmp_days_since_earnings", "fmp_analyst_upgrades_30d",
     "fmp_analyst_downgrades_30d", "fmp_analyst_momentum_30d", "fmp_inst_ownership_pct",
