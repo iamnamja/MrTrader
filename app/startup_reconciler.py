@@ -61,7 +61,6 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         return result
 
     active_trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
-    n_active_db = len(active_trades)
     n_alpaca_positions = len(alpaca_positions)
 
     # ── 1. Ghost positions ─────────────────────────────────────────────────────
