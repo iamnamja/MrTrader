@@ -105,3 +105,89 @@ USE_REALIZED_R_LABELS: bool = False
 # MIN_REALIZED_R: threshold for realized-R labeling (only applies when
 #   USE_REALIZED_R_LABELS=True). 0.35 was tried — gate failed.
 MIN_REALIZED_R: float = 0.35
+
+
+# ── P0: Sacred holdout enforcement ────────────────────────────────────────────
+# SACRED_HOLDOUT_START defines the boundary date — data ON or AFTER this date is
+# RESERVED for the single, final promotion-candidate evaluation. It must NEVER
+# be touched during development, tuning, walk-forward, CPCV, or any iterative
+# experiment. Doing so reintroduces selection bias and invalidates every honest
+# baseline number we have.
+#
+# Enforcement (defense in depth — guard fires at multiple layers):
+#   1. ModelTrainer.train_model() before fetching bars
+#   2. ModelTrainer._build_rolling_matrix() on the assembled date spine
+#   3. scripts/walkforward_tier3.py main() before kicking off any folds
+#   4. scripts/walkforward/cpcv.py run_cpcv() when computing end_all
+#   5. scripts/walkforward/engine.py FoldEngine.run() when computing end_all
+#
+# Bypass: pass `allow_sacred_holdout=True` (Python) or `--allow-sacred-holdout`
+# (CLI). Bypass logs a prominent banner warning. Use ONLY for the final
+# promotion candidate run, ONCE. Do not develop with this flag set.
+#
+# Date format is ISO (YYYY-MM-DD). Boundary is INCLUSIVE: end_date == this date
+# is rejected (the holdout day itself is sacred).
+SACRED_HOLDOUT_START: str = "2025-11-09"
+
+
+def _parse_sacred_holdout_start():
+    from datetime import date as _date
+    y, m, d = SACRED_HOLDOUT_START.split("-")
+    return _date(int(y), int(m), int(d))
+
+
+def assert_no_sacred_holdout(end_date, *, allow_sacred_holdout: bool = False,
+                             context: str = "training") -> None:
+    """Hard-fail guard: reject any run whose data window reaches the sacred holdout.
+
+    Raises RuntimeError if `end_date >= SACRED_HOLDOUT_START` and bypass not set.
+    Logs a prominent banner warning if bypass IS set.
+
+    Args:
+        end_date: a `datetime.date`, `datetime.datetime`, pandas Timestamp,
+                  or ISO date string representing the END of the data window.
+        allow_sacred_holdout: explicit bypass for the one-shot promotion run.
+        context: free-text label included in error/warning messages
+                 ("training", "walk-forward", "cpcv", etc.).
+    """
+    import logging as _logging
+    from datetime import date as _date, datetime as _datetime
+
+    if end_date is None:
+        return  # nothing to check
+
+    # Coerce input → date
+    if isinstance(end_date, str):
+        end_d = _date.fromisoformat(end_date[:10])
+    elif isinstance(end_date, _datetime):
+        end_d = end_date.date()
+    elif isinstance(end_date, _date):
+        end_d = end_date
+    else:
+        # pandas.Timestamp and similar — has .date()
+        end_d = end_date.date() if hasattr(end_date, "date") else end_date
+
+    boundary = _parse_sacred_holdout_start()
+    if end_d < boundary:
+        return  # safe — entirely before holdout
+
+    if allow_sacred_holdout:
+        log = _logging.getLogger(__name__)
+        banner = "=" * 72
+        log.warning(banner)
+        log.warning("SACRED HOLDOUT BYPASS ACTIVE — context=%s", context)
+        log.warning("end_date=%s reaches/exceeds SACRED_HOLDOUT_START=%s",
+                    end_d.isoformat(), boundary.isoformat())
+        log.warning("This must ONLY be the final, one-shot promotion-candidate run.")
+        log.warning("If this is anything else, ABORT NOW.")
+        log.warning(banner)
+        return
+
+    raise RuntimeError(
+        f"SACRED HOLDOUT VIOLATION ({context}): end_date={end_d.isoformat()} "
+        f"reaches or exceeds SACRED_HOLDOUT_START={boundary.isoformat()}. "
+        f"Data on/after this date is reserved for the single, final "
+        f"promotion-candidate evaluation. To intentionally bypass for that "
+        f"one-shot run, pass allow_sacred_holdout=True (or --allow-sacred-holdout). "
+        f"See app/ml/retrain_config.py for details."
+    )

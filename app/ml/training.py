@@ -33,6 +33,7 @@ from app.ml.retrain_config import (
     LABEL_HORIZON_DAYS as _CFG_LABEL_HORIZON_DAYS,
     LABEL_ABS_HURDLE_5D as _CFG_LABEL_ABS_HURDLE_5D,
     REGIME_SPLIT_VIX_THRESHOLD as _CFG_REGIME_SPLIT_VIX_THRESHOLD,
+    assert_no_sacred_holdout as _assert_no_sacred_holdout,
 )
 from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
 
@@ -539,6 +540,7 @@ class ModelTrainer:
         fetch_fundamentals: bool = True,
         exclude_risk_off_days: bool = False,
         use_union_label: bool = False,  # Phase 90: OR(5d, 15d) label captures slow grind
+        allow_sacred_holdout: bool = False,  # P0: explicit bypass for one-shot promotion run
     ) -> int:
         """
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
@@ -577,9 +579,19 @@ class ModelTrainer:
         end_dt = date.today()
         start_dt = end_dt - timedelta(days=365 * years + FORWARD_DAYS + 30)
 
+        # P0: hard guard — block any training that would touch sacred holdout data.
+        _assert_no_sacred_holdout(
+            end_dt,
+            allow_sacred_holdout=allow_sacred_holdout,
+            context="ModelTrainer.train_model",
+        )
+
         symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         if not symbols_data:
             raise RuntimeError("No historical data fetched.")
+
+        # Stash bypass flag for _build_rolling_matrix's secondary guard.
+        self._allow_sacred_holdout = allow_sacred_holdout
 
         X_train, y_train, X_test, y_test, feature_names, meta_train = self._build_rolling_matrix(
             symbols_data, fetch_fundamentals=fetch_fundamentals
@@ -898,6 +910,16 @@ class ModelTrainer:
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
             logger.warning("Not enough common dates for rolling windows")
             return np.array([]), np.array([]), np.array([]), np.array([]), [], []
+
+        # P0: secondary guard — verify no row in the assembled date spine
+        # crosses the sacred holdout boundary. Defense in depth: even if a
+        # caller bypasses train_model() and calls _build_rolling_matrix
+        # directly, the guard still fires.
+        _assert_no_sacred_holdout(
+            max(all_dates),
+            allow_sacred_holdout=getattr(self, "_allow_sacred_holdout", False),
+            context="ModelTrainer._build_rolling_matrix",
+        )
 
         # Window start indices (step by STEP_DAYS)
         window_starts = list(range(0, len(all_dates) - WINDOW_DAYS - FORWARD_DAYS, STEP_DAYS))

@@ -176,6 +176,7 @@ class TestCombinationsCount:
             n_folds=4,
             n_paths=1,
             total_days=500,
+            allow_sacred_holdout=True,  # unit test: strategy is mocked
         )
         from math import comb
         assert result.n_combinations == comb(4, 1)
@@ -200,6 +201,7 @@ class TestCPCVEmptyGuard:
             n_folds=6,
             n_paths=2,
             total_days=365,
+            allow_sacred_holdout=True,  # unit test: strategy is mocked
         )
         assert result.n_combinations == 0
         assert result.path_sharpes == []

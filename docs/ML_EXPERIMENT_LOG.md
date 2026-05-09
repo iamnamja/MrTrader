@@ -1751,3 +1751,56 @@ python scripts/train_model.py --no-fundamentals --workers 8 --years 6 \
 **v180 (10d label) retrain kicked off:** 2026-05-09
 
 **Verdict:** 🔄 Pending retrain + WF gate run.
+
+---
+
+## P0 — Sacred holdout enforcement + CPCV baseline (2026-05-09)
+
+**Hypothesis:** None. P0 is measurement, not experimentation. The goal is
+to (a) make every prior bias-amplifying mistake structurally impossible and
+(b) capture the first honest, unbiased baseline numbers for the current
+champions.
+
+**What was built:**
+- `app/ml/retrain_config.py`: added `SACRED_HOLDOUT_START = "2025-11-09"`
+  and `assert_no_sacred_holdout()` helper.
+- Guards wired at five layers: `ModelTrainer.train_model`,
+  `ModelTrainer._build_rolling_matrix`, `walkforward_tier3.main`,
+  `cpcv.run_cpcv`, `engine.FoldEngine.run`.
+- CLI flag `--allow-sacred-holdout` for the eventual one-shot promotion run
+  (logs a banner WARNING when used).
+- `scripts/parse_cpcv_results.py`: pulls headline metrics from a
+  walkforward_tier3 CPCV log (text or JSON output).
+- Tests: `tests/test_p0_sacred_holdout.py` (boundary inclusivity, bypass
+  logging, ModelTrainer integration, CLI integration).
+- Doc: `docs/ML_ARCHITECTURE_ROADMAP.md` §2 (principles), §9 (baseline
+  results table — TBD until runs complete), and "P0 implementation notes"
+  section.
+
+**Commands to reproduce baselines (run by user — ~4h each):**
+
+```bash
+# v171 swing baseline
+python scripts/walkforward_tier3.py --model swing --years 6 \
+  --swing-train-years 6 --cpcv --cpcv-k 6 --cpcv-paths 2 \
+  --swing-cost-bps 5 \
+  2>&1 | tee logs/p0_v171_cpcv_baseline.log
+
+# v51 intraday baseline (gates off — matches the honest +0.529 config)
+python scripts/walkforward_tier3.py --model intraday --days 365 \
+  --cpcv --cpcv-k 6 --cpcv-paths 2 \
+  --intraday-cost-bps 15 --no-pm-opportunity-score \
+  --no-earnings-blackout --no-dispersion-gate --no-macro-gate \
+  2>&1 | tee logs/p0_v51_cpcv_baseline.log
+
+# Parse
+python scripts/parse_cpcv_results.py logs/p0_v171_cpcv_baseline.log
+python scripts/parse_cpcv_results.py logs/p0_v51_cpcv_baseline.log
+```
+
+After both runs complete, fill in the §9 results table in
+`docs/ML_ARCHITECTURE_ROADMAP.md` with mean Sharpe, P5, P95, pct_positive,
+and DSR p-value for each model.
+
+**Verdict:** ✅ Infrastructure complete. CPCV baseline runs pending
+(user-triggered).
