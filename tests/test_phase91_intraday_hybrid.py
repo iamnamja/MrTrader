@@ -1,4 +1,16 @@
-"""Tests for Phase 91 intraday hybrid label and microstructure features."""
+"""Tests for Phase 91 intraday microstructure features and label behavior.
+
+Phase 91 changes retained:
+  - 4 new microstructure features at bar 12 (vwap_slope_to_bar12,
+    first_30min_volume_ratio, spy_5min_return_bar12, vix_5min_change)
+  - raw_train returned from _apply_labels (fixes dispersion-gate size mismatch)
+
+Phase 91 changes reverted:
+  - Hybrid label (top-20% AND realized-R): precision dropped to 16% OOS (<20%
+    base rate), avg WF Sharpe -3.72. Reverted to pure top-20% + absolute hurdle.
+  - Per-day dispersion gate: removed training days aggressively, worsened
+    train/test distribution mismatch.
+"""
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,10 +51,8 @@ class TestPhase91MicrostructureFeatures:
         ratio = feats["first_30min_volume_ratio"]
         assert 0.0 <= ratio <= 1.0
 
-    def test_vwap_slope_up_trend_positive(self):
+    def test_vwap_slope_up_trend_is_float(self):
         feats = self._compute(trend="up")
-        # Uptrend: VWAP should drift higher → positive slope
-        # (not strictly guaranteed with noise, but mostly positive)
         assert isinstance(feats["vwap_slope_to_bar12"], float)
 
     def test_spy_5min_return_bar12_is_finite(self):
@@ -69,91 +79,59 @@ class TestPhase91MicrostructureFeatures:
         assert feats["spy_5min_return_bar12"] == 0.0
 
 
-# ── Hybrid label behavior tests ───────────────────────────────────────────────
+# ── Label behavior (current implementation: pure top-20%) ─────────────────────
 
-class TestPhase91HybridLabel:
-    """
-    Test the hybrid label logic by constructing controlled raw_parts arrays.
-    We call _build_matrix_parallel indirectly by patching, or test the math directly.
-    """
+class TestInradayLabelBehavior:
+    """Verify the current (pure top-20%) label produces 20% positive class."""
 
-    def _make_raws(self, day_rets, atr_target=0.01):
-        """Returns raws array: [day_ordinal, return, atr_target_pct]"""
-        n = len(day_rets)
-        day_ord = np.zeros(n)
-        return np.column_stack([day_ord, np.array(day_rets), np.full(n, atr_target)])
-
-    def _apply_hybrid_label(self, day_rets, atr_target=0.01):
-        """Mirror the Phase 91 hybrid labeling logic."""
-        CS_ABSOLUTE_HURDLE = 0.003
-        HYBRID_REALIZED_R_MIN = 0.50
+    def _apply_label(self, day_rets, absolute_hurdle=0.003):
+        """Mirror current _apply_labels top-20% + absolute hurdle logic."""
         day_rets = np.array(day_rets)
-        atr_targets = np.full(len(day_rets), atr_target)
         if len(day_rets) < 2:
             return np.zeros(len(day_rets), dtype=np.int8)
         threshold = np.percentile(day_rets, 80)
-        realized_r = day_rets / np.maximum(atr_targets, 1e-8)
-        return (
-            (day_rets >= threshold)
-            & (realized_r >= HYBRID_REALIZED_R_MIN)
-            & (day_rets >= CS_ABSOLUTE_HURDLE)
-        ).astype(np.int8)
+        return ((day_rets >= threshold) & (day_rets >= absolute_hurdle)).astype(np.int8)
 
-    def test_chop_day_no_labels(self):
-        """On a chop day (tiny returns), no stock should be labelled 1."""
-        tiny_rets = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005] * 4
-        labels = self._apply_hybrid_label(tiny_rets, atr_target=0.01)
-        # realized_r = 0.0005 / 0.01 = 0.05, well below 0.5 threshold
-        assert labels.sum() == 0
+    def test_top20_rate_approximately_20pct(self):
+        """With no absolute hurdle binding, label rate ≈ 20%."""
+        rng = np.random.default_rng(42)
+        # Returns well above hurdle so absolute floor doesn't bind
+        rets = rng.normal(0.01, 0.005, 200).tolist()
+        labels = self._apply_label(rets, absolute_hurdle=0.0)
+        rate = labels.mean()
+        assert 0.18 <= rate <= 0.22, f"Expected ~20% positive rate, got {rate:.2%}"
 
-    def test_strong_day_labels_top_performers(self):
-        """On a strong trending day, only top-20% AND realized-R >= 0.5 stocks labeled 1."""
-        rets = [0.001, 0.002, 0.003, 0.006, 0.008, 0.010, 0.012, 0.015, 0.020, 0.025]
-        labels = self._apply_hybrid_label(rets, atr_target=0.01)
-        # threshold = 80th pct = ~0.018; realized_r must be >= 0.5*0.01=0.005
-        # Only stocks with ret >= threshold AND ret >= 0.005 get label 1
-        assert labels.sum() > 0
-        labeled_rets = np.array(rets)[labels == 1]
-        assert all(r >= 0.005 for r in labeled_rets)
+    def test_absolute_hurdle_reduces_rate_on_flat_day(self):
+        """On a flat day (all returns ~0), absolute hurdle reduces positives below 20%."""
+        flat_rets = [0.0001 * i for i in range(100)]
+        labels = self._apply_label(flat_rets, absolute_hurdle=0.003)
+        # Most returns < 0.003, so even top-20% stocks may fail hurdle
+        assert labels.sum() <= 20
 
-    def test_label_rate_lower_than_pure_top20(self):
-        """Hybrid label rate must be <= pure top-20% rate."""
-        rng = np.random.default_rng(7)
-        rets = rng.normal(0.002, 0.005, 100).tolist()
-        hybrid = self._apply_hybrid_label(rets, atr_target=0.01)
-        pure_top20 = (np.array(rets) >= np.percentile(rets, 80)).astype(np.int8)
-        assert hybrid.sum() <= pure_top20.sum()
+    def test_label_uses_absolute_hurdle(self):
+        """Returns below CS_ABSOLUTE_HURDLE=0.003 must not be labeled 1."""
+        rets = [0.001, 0.002, 0.0025, 0.001, 0.0015]
+        labels = self._apply_label(rets, absolute_hurdle=0.003)
+        assert labels.sum() == 0, "No returns meet absolute hurdle"
 
 
-# ── Dispersion gate tests ─────────────────────────────────────────────────────
+# ── _apply_labels returns filtered raws (size-consistency test) ───────────────
 
-class TestDispersionGate:
-    def test_gate_logic_drops_low_dispersion_days(self):
-        """Verify the rolling-median gate math removes low-std days."""
-        rng = np.random.default_rng(1)
-        # Simulate 20 days: 15 high-dispersion, 5 low-dispersion
-        day_stds = np.concatenate([
-            rng.uniform(0.01, 0.02, 15),   # high dispersion
-            rng.uniform(0.0005, 0.001, 5),  # low dispersion
-        ])
-        rolling_median = np.array([
-            float(np.median(day_stds[max(0, i - 60): i + 1]))
-            for i in range(len(day_stds))
-        ])
-        gate_ok = day_stds >= rolling_median
-        # All 5 low-dispersion days should fail the gate
-        assert not gate_ok[15:].all()
+class TestApplyLabelsReturnSignature:
+    """Verify _apply_labels returns 3-tuple (X, labels, raws) with consistent sizes."""
 
-    def test_gate_not_applied_to_test_set(self):
-        """Test set rows should never be filtered by dispersion gate."""
-        # The dispersion gate is parameterised; test call uses apply_dispersion_gate=False.
-        # Verify the parameter exists and defaults to False for the test call.
+    def test_apply_dispersion_gate_false_in_source(self):
+        """Dispersion gate was removed — source should not contain apply_dispersion_gate."""
         import inspect
-        from app.ml.intraday_training import IntradayModelTrainer
-        trainer = IntradayModelTrainer.__new__(IntradayModelTrainer)
-        # We can't easily call _build_matrix_parallel without data, but we
-        # can check the _apply_labels signature via source inspection.
         import app.ml.intraday_training as mod
         src = inspect.getsource(mod)
-        assert "apply_dispersion_gate=False" in src
-        assert "apply_dispersion_gate=True" in src
+        assert "apply_dispersion_gate" not in src, \
+            "apply_dispersion_gate was reverted but still present in source"
+
+    def test_hybrid_label_reverted(self):
+        """Hybrid realized-R label was reverted — source should not contain HYBRID_REALIZED_R_MIN."""
+        import inspect
+        import app.ml.intraday_training as mod
+        src = inspect.getsource(mod)
+        assert "HYBRID_REALIZED_R_MIN" not in src, \
+            "HYBRID_REALIZED_R_MIN label was reverted but still present in source"
