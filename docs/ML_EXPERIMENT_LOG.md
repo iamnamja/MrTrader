@@ -1463,5 +1463,42 @@ v51 restored as ACTIVE.
 
 **FEATURE_NAMES count:** 63 (was 59: +4 Phase 91 microstructure)
 
-**v59 retrain to be kicked off after PR merge.**
+### v59 Walk-Forward Results (Intraday) — ❌ GATE FAILED
+
+**Gate:** avg Sharpe ≥ 1.00, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | — | 160 | **-3.87** | ❌ |
+| 2 | — | 160 | **-0.61** | ❌ |
+| 3 | — | 160 | **-1.93** | ❌ |
+| 4 | — | 160 | **-0.17** | ❌ |
+| 5 | — | 160 | **-1.19** | ❌ |
+| **Average** | — | — | **-3.722** | ❌ |
+
+**Root cause:** Hybrid label (top-20% AND realized-R ≥ 0.5× ATR) dropped positive class to 10-12% (below learnable rate). OOS precision = 16.35% — worse than 20% base rate. Dispersion gate removed ~40% of training days, creating train/test distribution mismatch.
+
+**Decision:** Revert both hybrid label and dispersion gate. Keep 4 new microstructure features (Phase 91 retained changes). Retrain v60 as pure top-20% + CS_ABSOLUTE_HURDLE + 4 new microstructure features (63 total).
+
+---
+
+## Phase 92 — Swing: Phase 89 + V2 Fix + EMA200 WF Fix Validation (2026-05-08)
+
+**Motivation:** v173-v176 all produced 0 trades in WF due to cascading bugs:
+1. **EMA200 not gated by `no_prefilters`** — fixed in PR #188 (commit ef49371)
+2. **Phase 90 union label** — reverted (v174, AUC=0.50 OOS)
+3. **V2 regime features training/inference mismatch** — V2 features added to training from DB but engineer_features() returns 0.0 at inference, shifting all probs below MIN_CONFIDENCE=0.40; pruned from training (commit 934cf3e)
+4. **v176 corrupted state** — btitxkdue task loaded OLD code before V2 prune commit, resulting in scaler fitted on 102 features but meta feature_names containing only 93 names; scaler mismatch → 0 trades
+
+**Changes for v177:**
+- V2 regime features pruned from swing training (committed to main)
+- EMA200 WF bug fixed
+- Phase 89 trend features intact
+- Phase 90 union label reverted
+- Fresh retrain with aligned code
+
+**v177 retrain kicked off:** 2026-05-08
+
+### v177 Walk-Forward Results (Swing)
+*(To be filled — retrain in progress)*
 
