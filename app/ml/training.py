@@ -28,7 +28,12 @@ from app.database.session import get_session
 from app.ml.cs_normalize import cs_normalize_by_group
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
-from app.ml.retrain_config import USE_NIS_FEATURES as _USE_NIS_FEATURES
+from app.ml.retrain_config import (
+    USE_NIS_FEATURES as _USE_NIS_FEATURES,
+    LABEL_HORIZON_DAYS as _CFG_LABEL_HORIZON_DAYS,
+    LABEL_ABS_HURDLE_5D as _CFG_LABEL_ABS_HURDLE_5D,
+    REGIME_SPLIT_VIX_THRESHOLD as _CFG_REGIME_SPLIT_VIX_THRESHOLD,
+)
 from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
@@ -74,12 +79,9 @@ _BASE_PRUNED: frozenset = frozenset([
     "vix_fear_spike",
     "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
-    # Phase 88 V2 regime features: injected during training from regime_snapshots DB,
-    # but NOT computed by engineer_features() at inference. Training/inference mismatch
-    # (0.5 in training → 0.0 at inference) shifts all probabilities below min_confidence.
-    # Phase 92 plan: wire these into live engineer_features() before removing from pruned.
-    "vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
-    "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200",
+    # Phase 92: vix_term_ratio, breadth_rsp_spy_ratio_20d, credit_hyg_ief_20d,
+    # sector_dispersion_20d, spy_above_ma50, spy_above_ma200 are now wired into
+    # live engineer_features() via macro_history.parquet — un-pruned.
     "rs_vs_spy_5d", "rs_vs_spy_10d", "rs_vs_spy_60d", "fmp_surprise_1q",
     "fmp_surprise_2q_avg", "fmp_days_since_earnings", "fmp_analyst_upgrades_30d",
     "fmp_analyst_downgrades_30d", "fmp_analyst_momentum_30d", "fmp_inst_ownership_pct",
@@ -171,6 +173,8 @@ def _process_symbol_windows_worker(
     sector_etf_bars: Optional[Dict[str, list]] = None,  # Phase 89b: {etf: sorted (date_str, close)}
     regime_v2_map: Optional[Dict] = None,  # Phase 88: {date: {vix_term_ratio, ...}}
     use_union_label: bool = False,  # Phase 90: OR(5d, 15d ATR) label
+    abs_hurdle: float = 0.0,        # Option C: optional absolute-return floor for cross-sectional label
+    macro_history: Optional[pd.DataFrame] = None,  # Phase 92: regime feature source
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -238,6 +242,10 @@ def _process_symbol_windows_worker(
                     label = 1 if sharpe_ret >= w_thr else 0
                 else:
                     label = 1 if stock_ret >= window_thresh else 0
+                # Option C: optional absolute-return floor on top of top-20% cut.
+                # Prevents labeling "least-bad" stocks as winners on flat days.
+                if label == 1 and abs_hurdle > 0.0 and stock_ret < abs_hurdle:
+                    label = 0
             elif label_scheme == "percentile_rank":
                 thresholds_pair = cs_thresholds.get(w_start_idx)
                 if thresholds_pair is None:
@@ -351,6 +359,7 @@ def _process_symbol_windows_worker(
                     fetch_fundamentals=fetch_fundamentals,
                     as_of_date=w_end_date,
                     vix_history=vix_history,
+                    macro_history=macro_history,
                 )
             except Exception:
                 continue
@@ -444,6 +453,7 @@ def _process_symbol_windows_worker(
             "avg_volume": avg_vol,
             "sector": sector,
             "vix_regime_bucket": features.get("vix_regime_bucket", 0.5),
+            "vix_level": features.get("vix_level", 18.0),  # Option B: per-row VIX for regime split
         })
 
     if progress_queue is not None:
@@ -537,6 +547,27 @@ class ModelTrainer:
         symbols = symbols or SP_500_TICKERS
         years = years or settings.historical_data_years
         self._use_union_label = use_union_label  # Phase 90: accessible to _windows_to_matrix
+
+        # Option C: apply LABEL_HORIZON_DAYS from retrain_config (default 5).
+        # Mutates module globals so all downstream label / window code uses the
+        # configured horizon. Mirrors the --forward-days CLI override.
+        global FORWARD_DAYS, STEP_DAYS, EMBARGO_WINDOWS
+        if _CFG_LABEL_HORIZON_DAYS and _CFG_LABEL_HORIZON_DAYS != FORWARD_DAYS:
+            new_h = int(_CFG_LABEL_HORIZON_DAYS)
+            logger.info("Option C: overriding FORWARD_DAYS=%d -> %d (LABEL_HORIZON_DAYS)",
+                        FORWARD_DAYS, new_h)
+            FORWARD_DAYS = new_h
+            STEP_DAYS = new_h          # keep windows non-overlapping
+            EMBARGO_WINDOWS = max(1, round(FORWARD_DAYS / STEP_DAYS))
+
+        # Option C: scale absolute hurdle linearly with horizon.
+        # 5d:0.003 → 10d:0.006 → 15d:0.009.  Stored on self for worker plumbing.
+        if _CFG_LABEL_ABS_HURDLE_5D and _CFG_LABEL_ABS_HURDLE_5D > 0.0:
+            self._label_abs_hurdle = float(_CFG_LABEL_ABS_HURDLE_5D) * (FORWARD_DAYS / 5.0)
+            logger.info("Option C: cross-sectional label abs hurdle = %.4f (%.4f scaled by %dd horizon)",
+                        self._label_abs_hurdle, _CFG_LABEL_ABS_HURDLE_5D, FORWARD_DAYS)
+        else:
+            self._label_abs_hurdle = 0.0
 
         logger.info(
             "Starting swing training — %d symbols, %d years, provider=%s",
@@ -647,6 +678,22 @@ class ModelTrainer:
                     self.model._lgbm_model.set_params(class_weight={0: 1.0, 1: float(spw)})
                 spw = None  # don't pass as XGBoost param
 
+        # ── Option B: regime-split path ──────────────────────────────────────
+        # When REGIME_SPLIT_VIX_THRESHOLD > 0, fit two separate models — one on
+        # rows with VIX < threshold (calm) and one on VIX >= threshold (shock).
+        # Models share the same feature set (same PRUNED_FEATURES) and the same
+        # version number; saved as swing_lowvix_v{N}.pkl + swing_highvix_v{N}.pkl.
+        if (_CFG_REGIME_SPLIT_VIX_THRESHOLD and _CFG_REGIME_SPLIT_VIX_THRESHOLD > 0.0
+                and self.label_scheme != "lambdarank"):
+            return self._train_regime_split(
+                X_train, y_train, X_test, y_test, feature_names, meta_train,
+                sample_weight=sample_weight,
+                mi_scores=mi_scores,
+                spw=spw,
+                years=years,
+                vix_threshold=float(_CFG_REGIME_SPLIT_VIX_THRESHOLD),
+            )
+
         # Use test set as validation for early stopping (avoids overfitting on noisy data)
         self.model.train(
             X_train, y_train, feature_names,
@@ -687,6 +734,105 @@ class ModelTrainer:
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
         self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
 
+        return version
+
+    # ── Option B: regime-split helper ────────────────────────────────────────
+
+    def _train_regime_split(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        feature_names: List[str],
+        meta_train: List[dict],
+        sample_weight: Optional[np.ndarray],
+        mi_scores: Optional[np.ndarray],
+        spw: Optional[float],
+        years: int,
+        vix_threshold: float,
+    ) -> int:
+        """
+        Option B: train two regime-specialized swing models sharing one version.
+
+        Partitions training rows by VIX level (per-row feature meta["vix_level"]):
+          - low-vix subset:  VIX < threshold   → swing_lowvix_v{N}.pkl
+          - high-vix subset: VIX >= threshold  → swing_highvix_v{N}.pkl
+
+        Both models use identical feature columns. Inference selects via current VIX.
+        DB row stores the low-vix model_path; sidecar high-vix file lives next to it.
+        """
+        from app.ml.model import PortfolioSelectorModel
+
+        vix_per_row = np.array(
+            [m.get("vix_level", 18.0) for m in meta_train], dtype=np.float32,
+        )
+        low_mask = vix_per_row < vix_threshold
+        high_mask = ~low_mask
+
+        n_low, n_high = int(low_mask.sum()), int(high_mask.sum())
+        logger.info(
+            "Option B regime split @ VIX=%.1f → low=%d rows, high=%d rows (of %d)",
+            vix_threshold, n_low, n_high, len(X_train),
+        )
+        if n_low < 200 or n_high < 200:
+            raise RuntimeError(
+                f"Regime split degenerate: low={n_low} high={n_high} "
+                f"(need ≥200 each). Check threshold or expand history."
+            )
+
+        def _split_sw(mask):
+            return None if sample_weight is None else sample_weight[mask]
+
+        # Build a held-out validation set per regime by re-using X_test if any rows
+        # match that regime; otherwise pass the full X_test (early stopping is
+        # robust to mild distribution mismatch).
+        def _fit_regime(mask, name: str) -> PortfolioSelectorModel:
+            sub = PortfolioSelectorModel(model_type=self.model.model_type)
+            sub.train(
+                X_train[mask], y_train[mask], feature_names,
+                scale_pos_weight=spw,
+                X_val=X_test, y_val=y_test,
+                early_stopping_rounds=30,
+                sample_weight=_split_sw(mask),
+                feature_weights=mi_scores,
+            )
+            if len(X_test) > 0:
+                sub.tune_threshold(X_test, y_test)
+            logger.info("Option B: %s sub-model trained (%d rows)", name, int(mask.sum()))
+            return sub
+
+        low_model = _fit_regime(low_mask, "lowvix")
+        high_model = _fit_regime(high_mask, "highvix")
+
+        # Save both with the same version number, namespaced model_names.
+        version = self._next_version("swing")
+        low_path = low_model.save(self.model_dir, version, model_name="swing_lowvix")
+        high_path = high_model.save(self.model_dir, version, model_name="swing_highvix")
+        logger.info("Option B saved: low=%s high=%s", low_path, high_path)
+
+        # Set self.model to the low-vix model so downstream evaluation works
+        # (regime selection at live inference is in PortfolioSelectorModel.load).
+        self.model = low_model
+        metrics = self._evaluate(X_test, y_test, threshold=self.prediction_threshold) or {}
+        metrics["regime_split"] = True
+        metrics["regime_split_vix_threshold"] = vix_threshold
+        metrics["regime_split_n_low"] = n_low
+        metrics["regime_split_n_high"] = n_high
+        metrics["regime_split_high_path"] = high_path
+
+        # Walk-forward over the unified set (single-model proxy — full per-regime
+        # WF would require splitting in the WF loop too; deferred to the gate run).
+        if self.walk_forward_folds > 0:
+            wf_metrics = self._walk_forward_cv(
+                np.vstack([X_train, X_test]),
+                np.concatenate([y_train, y_test]),
+                feature_names,
+                n_folds=self.walk_forward_folds,
+            )
+            metrics.update(wf_metrics)
+
+        self._record_version(version, len(X_train), len(X_test), low_path, years, metrics)
         return version
 
     # ── Data fetching ─────────────────────────────────────────────────────────
@@ -1358,6 +1504,22 @@ class ModelTrainer:
         # Phase 90: union label flag — stored by train_model; read here for _sym_args closure
         _use_union_label = getattr(self, "_use_union_label", False)
 
+        # Phase 92: load macro history once for PIT regime features (SPY MAs,
+        # VIX term, breadth, credit). Filtered per-window inside engineer_features.
+        _macro_history_df = None
+        try:
+            from app.data.macro_history import load_macro_history
+            _macro_history_df = load_macro_history()
+            if _macro_history_df is None or _macro_history_df.empty:
+                logger.warning("Phase 92: macro_history.parquet empty/missing — regime features will use defaults")
+                _macro_history_df = None
+            else:
+                logger.info("Phase 92: loaded macro_history (%d rows, %s → %s)",
+                            len(_macro_history_df),
+                            _macro_history_df["date"].min(), _macro_history_df["date"].max())
+        except Exception as _exc:
+            logger.warning("Phase 92: failed to load macro_history — %s", _exc)
+
         # Phase 89b: load sector ETF history for PIT sector_momentum override
         _sector_etf_bars: Dict[str, list] = {}
         _etf_hist_path = Path("data/sector_etf/sector_etf_history.parquet")
@@ -1398,6 +1560,8 @@ class ModelTrainer:
                 _sector_etf_bars if _sector_etf_bars else None,
                 _regime_v2_map if _regime_v2_map else None,
                 _use_union_label,
+                getattr(self, "_label_abs_hurdle", 0.0),
+                _macro_history_df,
             )
 
         # Maps row-length → first sym_names seen for that length. Used after

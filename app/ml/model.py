@@ -438,6 +438,64 @@ class PortfolioSelectorModel:
         self.version = version
         logger.info("Model v%d loaded from %s", version, directory)
 
+        # ── Option B: regime-split sidecar detection ─────────────────────────
+        # If this model was trained as the low-vix half of a regime-split run,
+        # a sibling swing_highvix_v{N}.pkl will exist next to it. Auto-load it
+        # so predict_with_vix() can route between the two.
+        self._highvix_sibling = None
+        self._regime_split_threshold = None
+        try:
+            if model_name == "swing" or model_name == "swing_lowvix":
+                sibling_path = Path(directory) / f"swing_highvix_v{version}.pkl"
+                if sibling_path.exists():
+                    sib = PortfolioSelectorModel(model_type=self.model_type)
+                    sib.load(directory, version, model_name="swing_highvix")
+                    self._highvix_sibling = sib
+                    # Pull threshold from DB metrics if available; default 20.0
+                    self._regime_split_threshold = 20.0
+                    try:
+                        from app.database.session import get_session
+                        from app.database.models import ModelVersion
+                        import json as _json
+                        with get_session() as _db:
+                            mv = _db.query(ModelVersion).filter_by(
+                                model_name="swing", version=version
+                            ).first()
+                            if mv and mv.performance:
+                                perf = (_json.loads(mv.performance)
+                                        if isinstance(mv.performance, str) else mv.performance)
+                                self._regime_split_threshold = float(
+                                    perf.get("regime_split_vix_threshold", 20.0)
+                                )
+                    except Exception:
+                        pass
+                    logger.info(
+                        "Regime-split detected: high-vix sibling loaded (threshold=%.1f)",
+                        self._regime_split_threshold,
+                    )
+        except Exception as exc:
+            logger.warning("Regime-split sibling load failed (continuing single-model): %s", exc)
+
+    def predict_with_vix(
+        self,
+        X: np.ndarray,
+        vix_level: Optional[float],
+        threshold: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Option B: route prediction to the regime-appropriate sub-model.
+
+        If no sibling was loaded (regime-split disabled), falls back to predict().
+        If vix_level is None, conservatively uses the high-vix model (more cautious).
+        """
+        sibling = getattr(self, "_highvix_sibling", None)
+        thresh = getattr(self, "_regime_split_threshold", None)
+        if sibling is None or thresh is None:
+            return self.predict(X, threshold=threshold)
+        if vix_level is None or vix_level >= thresh:
+            return sibling.predict(X, threshold=threshold)
+        return self.predict(X, threshold=threshold)
+
     def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
         """Return sorted (feature, importance) pairs, or None if unavailable."""
         if not self.is_trained or not hasattr(self.model, "feature_importances_"):

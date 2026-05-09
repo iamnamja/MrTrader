@@ -1,9 +1,15 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-08  
-**Status:** Paper trading only. Best honest intraday: v51 +0.529 (v53 R6-exclusion retrain in progress). Best honest swing: v166 retrain in progress (clean cache, 90 features). Intraday gate recalibrated 1.50→1.00 (2026-05-08). Feature store bumped to v5 (resolved swing v165 scaler mismatch).  
-**Completed this session (2026-05-08):** Phase 2d (live-vs-sim), Phase 3d (vol-targeting, flagged OFF), Phase 5b (opp score breadth/dispersion), Phase R6 (regime-aware training exclusion), WF simulator opp score sync, dashboard LiveVsSimWidget + VolTargetingWidget, MASTER_BACKLOG sync.  
-**Next:** Await v53 (intraday R6) + v166 (swing clean) WF results. Decision tree in ML_EXPERIMENT_LOG.md.
+**Last updated:** 2026-05-09  
+**Status:** Paper trading only. Best honest intraday: v51 +0.529. Best honest swing: v171 (-0.632 avg, +0.67 fold5) — accepted as champion. Live trading fully operational after P0-P3 fixes (PRs #189, #190).  
+**Completed this session (2026-05-09):**
+- **P0**: Fixed `app.database.db` import crash in `force_close` + CI guard
+- **P1**: Limit order lifecycle redesign — adaptive re-quoting (30min/20bps), EOD escalation at 3:15PM, 8 new configurable agent_config keys
+- **P2**: Unified reconciliation — fixed ghost-position guard in startup_reconciler, added ghost detection to per-cycle `_reconcile_positions`, age guard protects fresh fills
+- **P3**: Production invariant on fake order IDs, test isolation verified
+- **ML Option A**: v171 accepted as swing champion
+- **ML Options B+C**: Infrastructure built — regime-split training + configurable label horizon. v180 (10d label) training in progress.
+**Next:** Await v180 WF results. If fold 3 improves → extend to 15d. Run Option B (regime split, VIX threshold 20). See ML_EXPERIMENT_LOG.md for decision tree.
 
 ---
 

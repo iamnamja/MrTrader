@@ -1179,12 +1179,27 @@ class PortfolioManager(BaseAgent):
         X = cs_normalize(X)
 
         try:
-            _, probabilities = self.model.predict(X)
-            self.logger.info(
-                "Model v%s scored %d symbols — max=%.3f median=%.3f min=%.3f",
-                model_ver, len(probabilities),
-                max(probabilities), float(np.median(probabilities)), min(probabilities),
-            )
+            # Option B: regime-aware routing if model was trained with regime split.
+            # Falls back to plain predict() if no high-vix sibling is loaded.
+            if getattr(self.model, "_highvix_sibling", None) is not None:
+                try:
+                    _vix_now = self._fetch_vix_level()
+                except Exception:
+                    _vix_now = None
+                _, probabilities = self.model.predict_with_vix(X, vix_level=_vix_now)
+                self.logger.info(
+                    "Model v%s [regime-split, VIX=%s] scored %d symbols — max=%.3f median=%.3f min=%.3f",
+                    model_ver, ("%.1f" % _vix_now) if _vix_now else "?",
+                    len(probabilities),
+                    max(probabilities), float(np.median(probabilities)), min(probabilities),
+                )
+            else:
+                _, probabilities = self.model.predict(X)
+                self.logger.info(
+                    "Model v%s scored %d symbols — max=%.3f median=%.3f min=%.3f",
+                    model_ver, len(probabilities),
+                    max(probabilities), float(np.median(probabilities)), min(probabilities),
+                )
         except Exception as e:
             self.logger.error("Model prediction failed: %s", e, exc_info=True)
             await self.log_decision("SELECTION_SKIPPED", reasoning={
