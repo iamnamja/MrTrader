@@ -1562,3 +1562,194 @@ All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (86
 - Consider: reduce WF folds to 3 (less test data per fold, less variance in estimation)
 - Defer intraday improvement until swing model stabilizes
 
+
+---
+
+## v171 Baseline 5-Fold WF (2026-05-09)
+
+**Purpose:** Compare pre-Phase-89 baseline against v178 (Phase 89) on identical 5-fold setup.
+
+| Fold | Period | Trades | Sharpe |
+|---|---|---|---|
+| 1 | Apr 2021→Apr 2022 | 325 | -0.57 |
+| 2 | May 2022→May 2023 | 127 | -0.82 |
+| 3 | May 2023→May 2024 | 214 | -1.08 |
+| 4 | May 2024→May 2025 | 109 | -1.36 |
+| 5 | May 2025→May 2026 | 260 | **+0.67** |
+| **Avg** | — | — | **-0.632** |
+
+**v178 (Phase 89) comparison:**
+
+| Fold | v171 Sharpe | v178 Sharpe | Delta |
+|---|---|---|---|
+| 1 (2021-2022) | -0.57 | +0.17 | v178 +0.74 |
+| 2 (2022 bear) | -0.82 | -0.80 | tied |
+| 3 (AI rally) | -1.08 | -1.42 | v171 +0.34 |
+| 4 (2024-2025) | -1.36 | -1.33 | tied |
+| 5 (recent) | **+0.67** | -0.28 | **v171 +0.95** |
+| **Avg** | **-0.632** | **-0.731** | **v171 +0.099** |
+
+**Key findings:**
+1. Phase 89 trend features are net negative (-0.099 avg Sharpe regression)
+2. Phase 89 helps fold 1 (COVID recovery, continuation signals work) but destroys fold 5 (most recent, most deployment-relevant): +0.67 → -0.28
+3. **Both models fail the 5-fold gate** — this is not a Phase 89 problem; it's structural
+4. The 5-fold gate covers 2021-2023 where the model fundamentally struggles (no analog in training for Fed pivot dynamics)
+5. Fold 5 (+0.67 for v171) shows the model HAS real signal in the most recent regime
+
+**Opus 4.7 analysis conclusion:** Phase 89 suffers from feature redundancy (3 correlated trend signals added on top of existing momentum features, diluting XGBoost split selection). Mean-reversion features (RSI/MACD/Stoch) create conflicting signals in low-vol trend regimes (AI rally 2023-2024). **Pruning is the right move, not addition.**
+
+---
+
+## v179 — Diagnostic: Prune Mean-Reversion + Phase 89 Revert (2026-05-09)
+
+**Hypothesis:** RSI/MACD/Stoch teach the model to avoid "overbought" stocks that continue higher in persistent uptrends (AI rally, Mag-7 dominance). Removing them forces reliance on momentum/ATR/volume signals that are agnostic to mean-reversion bias.
+
+**Changes (training.py — feature pruning via _BASE_PRUNED):**
+
+*Phase 89 reverted (feature redundancy, net negative):*
+- `adx_14_pct`, `adx_rising`, `aroon_up_25`, `aroon_down_25`, `aroon_oscillator_25`
+- `drawdown_from_20d_high`, `hurst_exponent_60d`, `pct_closes_above_ema20`, `volatility_adj_dist_52wk_high`
+
+*Mean-reversion features pruned (conflicting signals in trend regimes):*
+- `rsi_14`, `rsi_7`, `rsi_x_vix_regime`
+- `macd`, `macd_signal`, `macd_histogram`
+- `stoch_k`, `stochrsi_k`, `stochrsi_d`, `stochrsi_signal`
+- `bb_position`, `mean_reversion_zscore`
+
+**Feature count:** 161 raw → 81 active (was 102). Clean momentum/volume/price-structure set.
+
+**Key remaining features:** momentum_20d/60d/5d, ATR, EMA distances, price_above_ema20/50, volume percentile/regime, ADX (trend strength), WQ alphas, sector momentum, VIX regime bucket.
+
+**Retained for review (borderline oscillators):** `williams_r_14`, `cci_20` — may function as trend signals in practice, left for morning review.
+
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30, 5 folds.
+
+**Diagnostic expectations (Opus 4.7):**
+- Fold 3 (AI rally): hypothesis test — expects -0.0 to +0.5 (vs -1.08 baseline). If no improvement, AI-rally failure is deeper than mean-reversion bias.
+- Fold 5 (recent): expects +0.3 to +0.7 (preserving v171's +0.67 without Phase 89 noise)
+- Probability of gate pass: <10%. This is a diagnostic, not expected to ship.
+
+**v179 retrain kicked off:** 2026-05-09
+
+**v179 Walk-Forward Results (5 folds):**
+
+| Fold | Test Period | Trades | Sharpe | v171 Baseline | Delta | Gate |
+|---|---|---|---|---|---|---|
+| 1 | Apr 2021 → Apr 2022 | 359 | **-0.78** | -0.57 | -0.21 worse | ❌ |
+| 2 | May 2022 → May 2023 | 127 | **-1.00** | -0.82 | -0.18 worse | ❌ |
+| 3 | May 2023 → May 2024 | 163 | **-1.31** | -1.08 | -0.23 worse | ❌ |
+| 4 | May 2024 → May 2025 | 237 | **-0.09** | -1.36 | **+1.27 better** | ❌ |
+| 5 | May 2025 → May 2026 | 261 | **+0.09** | +0.67 | -0.58 worse | ❌ |
+| **Avg** | | **1147** | **-0.617** | **-0.632** | +0.015 net | ❌ GATE FAILED |
+
+**Verdict:** ❌ GATE FAILED. v171 restored as active champion. Branch feat/v179-prune-mean-reversion NOT merged (diagnostic only).
+
+**Key findings:**
+
+1. **Fold 3 hypothesis FAILED**: AI rally failure is NOT caused by RSI/MACD mean-reversion bias. Without those features, fold 3 got WORSE (-1.08 → -1.31). The root cause of fold 3 failure is deeper — likely label window mismatch, insufficient training coverage of the AI rally regime, or the rally's breadth-vs-concentration dynamics that XGBoost can't capture from price/volume alone.
+
+2. **Fold 4 dramatically improved** (+1.27 delta): Mean-reversion features ARE harmful for the tariff-shock/high-volatility period (May 2024–May 2025). RSI/MACD/Stoch likely generating false signals in sharp drawdown-and-recovery sequences.
+
+3. **Fold 5 significantly worse** (-0.58 delta): Mean-reversion features ARE beneficial in the most recent period (May 2025–May 2026). Removing them regressed from +0.67 to +0.09.
+
+4. **Net wash**: Mean-reversion pruning is regime-dependent — helps in vol shock, hurts in calm trending regimes. No single pruning strategy improves all folds simultaneously. The avg barely changes (-0.632 → -0.617, delta +0.015).
+
+5. **Fundamental issue**: Folds 1-4 (2021–2025) are ALL negative. Only fold 5 (most recent 12 months) shows positive signal. This suggests either: (a) the label construction is drift-sensitive and only works in recent data distribution, or (b) the swing trading style is regime-specific and 2021–2025 was a hostile environment for it.
+
+**Next options (morning decision needed):**
+- **(A) Accept v171 (+0.632 avg, +0.67 fold5) — focus on operational issues (live trading) and intraday instead**
+- **(B) Regime-conditional feature sets — different `_BASE_PRUNED` per VIX bucket, trained separately**
+- **(C) Investigate label window — try 10d or 15d holding vs current 5d to see if fold 3 improves**
+- **(D) Regime-specific training — train only on recent 2 years (folds 4+5) to match current market structure**
+
+---
+
+## Live Paper Trading Status — Intraday v51 (2026-05-08 observation)
+
+**Operational issues observed:**
+1. **Ghost position**: Trade#1 "GHOST" in DB but not in Alpaca — reconciliation broken
+2. **DB module error**: `force_close` failing with `No module named 'app.database.db'` — EOD force-close can't verify DB state
+3. **Limit orders not filling**: System generates BUY signals for TSLA/MSFT but all limit orders cancelled unfilled at EOD — likely limit prices set too conservatively for intraday entries
+4. **Position PnL appears anomalous**: TSLA/NVDA/MSFT shown with round entry prices ($200/$110/$100) suggesting possible test positions, not real paper fills
+
+**Implication**: v51's live paper performance is not measurable from logs — orders aren't executing. The +0.529 honest Sharpe from WF is the only performance signal we have for intraday.
+
+**Action items for morning review:**
+- Investigate `app.database.db` import error in force_close (wrong module path)
+- Check ghost position cleanup mechanism
+- Review limit order price calculation for intraday entries (may be too far from market)
+
+---
+
+## ML Options A/B/C Campaign — 2026-05-09
+
+Following the morning v179 diagnostic failure, the following campaign was agreed:
+
+### Option A — Accept v171 as swing champion ✅
+
+**Decision:** v171 accepted as the current best swing model (avg -0.632, fold5 +0.67).
+**Rationale:** No diagnostic has improved on it. Live trading fixes (P0-P3) are higher priority than further swing experimentation. v171 continues in paper trading.
+**Status:** v171 remains active in `app/ml/models/`. No changes needed.
+
+---
+
+### Option B — Regime-Split Training (2026-05-09)
+
+**Hypothesis:** Train two models: one for HIGH-VIX regime (VIX ≥ 20), one for LOW-VIX regime (VIX < 20). Select at inference time based on current VIX. v179 showed mean-reversion features help in low-VIX (fold 5) and hurt in high-VIX (fold 4) — regime-specific models can exploit this.
+
+**Implementation (2026-05-09):**
+- `app/ml/retrain_config.py`: added `REGIME_SPLIT_VIX_THRESHOLD: float = 0.0` (disabled by default; set to 20.0 to enable)
+- `app/ml/training.py`: added `_train_regime_split()` method that trains a low-VIX and high-VIX sub-model on filtered training rows
+- `app/ml/model.py`: `PortfolioSelectorModel.load()` auto-loads high-VIX sibling; new `predict_with_vix(X, vix_level)` selects sub-model
+- `app/agents/portfolio_manager.py`: scoring path calls `predict_with_vix()` if sibling is present
+- Tests: `tests/test_ml_options_bc.py::TestRegimeSplit` (4 tests, all pass)
+
+**Training command (when ready to run):**
+```
+# Edit retrain_config.py: set REGIME_SPLIT_VIX_THRESHOLD = 20.0
+python -c "from app.ml.training import ModelTrainer; ModelTrainer(model_type='xgboost', hpo_trials=20, n_workers=8, walk_forward_folds=5).train_model(fetch_fundamentals=False)"
+```
+
+**Known risks:**
+- Historical VIX in training rows uses point-in-time of feature build (not bar date) — regime labels may not be historically accurate
+- Walk-forward gate still uses `predict(X)` not `predict_with_vix` — measures low-VIX model only
+- Both sub-models share same `PRUNED_FEATURES` set — regime-specific pruning is a future enhancement
+
+**Verdict:** 🔄 Infrastructure built. Pending retrain + WF gate run.
+
+---
+
+### Option C — Label Window Experiment (2026-05-09)
+
+**Hypothesis:** The 5-day label is too short for a swing strategy in persistent-trend regimes (AI rally, 2023-2024). A 10d or 15d window captures more of the thesis.
+
+**Implementation (2026-05-09):**
+- `app/ml/retrain_config.py`: added `LABEL_HORIZON_DAYS: int = 5` and `LABEL_ABS_HURDLE_5D: float = 0.0`
+- `app/ml/training.py`: `train_model()` overrides global `FORWARD_DAYS` from config; absolute hurdle scales linearly with horizon (if enabled)
+- Tests: `tests/test_ml_options_bc.py::TestLabelHorizon` (4 tests, all pass)
+
+**Training commands:**
+
+10-day label (v180):
+```bash
+python scripts/train_model.py --no-fundamentals --workers 8 --years 6 \
+  --label-scheme cross_sectional --walk-forward 5 --hpo-trials 20 \
+  --forward-days 10
+```
+
+15-day label (v181):
+```bash
+python scripts/train_model.py --no-fundamentals --workers 8 --years 6 \
+  --label-scheme cross_sectional --walk-forward 5 --hpo-trials 20 \
+  --forward-days 15
+```
+
+**Gate expectations:**
+- If fold 3 (AI rally) improves vs v171 (-1.08): label horizon IS part of the problem → extend
+- If fold 3 stays negative: label horizon is NOT the root cause → look deeper (regime-specific training data)
+- Expected to take ~3 hours per run with --workers 8
+
+**v180 (10d label) retrain kicked off:** 2026-05-09
+
+**Verdict:** 🔄 Pending retrain + WF gate run.
+

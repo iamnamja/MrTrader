@@ -36,6 +36,33 @@ SWING_RETRAIN: dict = dict(
     use_union_label=False,       # Phase 90 REVERTED: union label collapsed AUC to 0.50 OOS (5d features can't predict 15d outcome)
 )
 
+# ── Option C (label horizon) ─────────────────────────────────────────────────
+# LABEL_HORIZON_DAYS: forward-return horizon for the swing label (default 5).
+# Hypothesis C: 5d label is too noisy in trending regimes (AI rally 2023-24
+# played out over 10-15 days). Larger horizon = thesis has time to develop.
+#
+# When != 5, training.py mutates module-level FORWARD_DAYS / STEP_DAYS /
+# EMBARGO_WINDOWS at train_model entry. Set via env or by editing here.
+#
+# LABEL_ABS_HURDLE: optional ADDITIONAL absolute-return floor for cross-sectional
+# label (in addition to the top-20% Sharpe-normalized cut). Currently swing has
+# NO absolute hurdle; this is a new opt-in gate. Scales linearly with horizon
+# (5d:0.003 → 10d:0.006 → 15d:0.009). Set to 0.0 to disable.
+LABEL_HORIZON_DAYS: int = 5
+LABEL_ABS_HURDLE_5D: float = 0.0  # 0.0 = disabled (default). 0.003 = 0.3% per 5d.
+
+# ── Option B (regime-split training) ─────────────────────────────────────────
+# REGIME_SPLIT_VIX_THRESHOLD: when > 0, train two separate models — one fit on
+# rows where VIX < threshold (calm/trending) and one on VIX >= threshold
+# (shock/volatile). Inference selects model based on current VIX level.
+#
+# Hypothesis B: fold 4 (tariff shock, high VIX) and fold 3 (AI rally, low VIX)
+# need opposite mean-reversion vs momentum biases. A single model cannot serve
+# both. Default 20.0 (S&P long-run median ~19). Range [15, 30] per spec.
+#
+# 0.0 = disabled (single-model path, current behaviour).
+REGIME_SPLIT_VIX_THRESHOLD: float = 0.0
+
 # Gate thresholds matching the manual training gates (docs/ML_EXPERIMENT_LOG.md)
 SWING_GATE = dict(
     min_avg_sharpe=0.80,        # avg Sharpe across all folds must exceed this
