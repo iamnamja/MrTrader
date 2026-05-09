@@ -1499,6 +1499,42 @@ v51 restored as ACTIVE.
 
 **v177 retrain kicked off:** 2026-05-08
 
-### v177 Walk-Forward Results (Swing)
+### v177 Walk-Forward Results (Swing) — ❌ 0 TRADES (same root cause)
+
+All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (865 entries with 152 features, pre-Phase-89) caused `feature_names` to be set to 93 names on the first symbol's cache hit, while X rows from recomputed symbols had 102 features. After inhomogeneous-row filtering, scaler was fitted on 102 columns but meta saved 93 feature_names → inference builds 93-vector, scaler raises ValueError, caught silently → 0 proposals.
+
+**Fix (commit 812e7a7):**
+- Added `_all_sym_names_by_len` dict in worker aggregation loop to track feature_names by row length
+- After inhomogeneous-row filtering, corrects `_last_feature_names` to match `target_len` rows
+- Deleted 865 stale 152-feature cache entries from feature_store.db
+
+**v178 retrain kicked off with fix:** 2026-05-08
+
+### v178 Walk-Forward Results (Swing)
 *(To be filled — retrain in progress)*
+
+---
+
+## Intraday v60 — ❌ GATE FAILED (2026-05-08)
+
+**Gate:** avg Sharpe ≥ 1.00, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Trades | Sharpe |
+|---|---|---|
+| 1 | 160 | **-4.06** |
+| 2 | 160 | **-0.53** |
+| 3 | 161 | **-1.24** |
+| 4 | 160 | **-0.60** |
+| 5 | 161 | **-1.99** |
+| **Avg** | — | **-1.685** |
+
+**Changes vs v59:** Reverted hybrid label + dispersion gate. Pure top-20% + CS_ABSOLUTE_HURDLE. Added 4 Phase 91 microstructure features (63 total).
+
+**Analysis:** The intraday model is consistently negative across all 5 WF folds regardless of label scheme. The signal-to-noise ratio of the cross-sectional top-20% label + bar-12 features is insufficient. Key hypothesis: the model is learning noise — on most days, the "top-20% winners" at bar 12 are not systematically predictable, just rank-ordered noise.
+
+**Next steps for intraday:**
+- Investigate whether v51 (the current active champion, +0.529 honest Sharpe) continues to outperform v60 in live paper trading
+- Consider: stricter entry conditions (higher vol percentile threshold, momentum filter pre-scan)
+- Consider: reduce WF folds to 3 (less test data per fold, less variance in estimation)
+- Defer intraday improvement until swing model stabilizes
 
