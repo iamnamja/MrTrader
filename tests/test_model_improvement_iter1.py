@@ -79,7 +79,9 @@ class TestSwingEmbargo:
         """train end + EMBARGO_WINDOWS steps should be < test start index."""
         from app.ml.training import EMBARGO_WINDOWS, STEP_DAYS, TEST_FRACTION
 
-        window_starts = list(range(0, 500, 10))  # simulate 50 windows
+        # Use STEP_DAYS as the window step so the gap math is consistent
+        # regardless of test-ordering pollution to the module constant.
+        window_starts = list(range(0, STEP_DAYS * 100, STEP_DAYS))
         split_idx = max(1, int(len(window_starts) * (1 - TEST_FRACTION)))
         embargo_start = min(split_idx + EMBARGO_WINDOWS, len(window_starts))
         test_window_starts = window_starts[embargo_start:]
