@@ -47,7 +47,7 @@ jobs:
           # added a stale import instead of using app.database.session directly.
           STALE=$(grep -rn "from app\.database\.db" app/ tests/ \
             --include="*.py" \
-            --exclude="app/database/db.py" \
+            | grep -v "app/database/db.py" \
             || true)
           if [ -n "$STALE" ]; then
             echo "ERROR: Stale 'from app.database.db' import found. Use app.database.session instead."
