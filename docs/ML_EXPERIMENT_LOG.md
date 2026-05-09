@@ -1463,5 +1463,187 @@ v51 restored as ACTIVE.
 
 **FEATURE_NAMES count:** 63 (was 59: +4 Phase 91 microstructure)
 
-**v59 retrain to be kicked off after PR merge.**
+### v59 Walk-Forward Results (Intraday) — ❌ GATE FAILED
 
+**Gate:** avg Sharpe ≥ 1.00, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | — | 160 | **-3.87** | ❌ |
+| 2 | — | 160 | **-0.61** | ❌ |
+| 3 | — | 160 | **-1.93** | ❌ |
+| 4 | — | 160 | **-0.17** | ❌ |
+| 5 | — | 160 | **-1.19** | ❌ |
+| **Average** | — | — | **-3.722** | ❌ |
+
+**Root cause:** Hybrid label (top-20% AND realized-R ≥ 0.5× ATR) dropped positive class to 10-12% (below learnable rate). OOS precision = 16.35% — worse than 20% base rate. Dispersion gate removed ~40% of training days, creating train/test distribution mismatch.
+
+**Decision:** Revert both hybrid label and dispersion gate. Keep 4 new microstructure features (Phase 91 retained changes). Retrain v60 as pure top-20% + CS_ABSOLUTE_HURDLE + 4 new microstructure features (63 total).
+
+---
+
+## Phase 92 — Swing: Phase 89 + V2 Fix + EMA200 WF Fix Validation (2026-05-08)
+
+**Motivation:** v173-v176 all produced 0 trades in WF due to cascading bugs:
+1. **EMA200 not gated by `no_prefilters`** — fixed in PR #188 (commit ef49371)
+2. **Phase 90 union label** — reverted (v174, AUC=0.50 OOS)
+3. **V2 regime features training/inference mismatch** — V2 features added to training from DB but engineer_features() returns 0.0 at inference, shifting all probs below MIN_CONFIDENCE=0.40; pruned from training (commit 934cf3e)
+4. **v176 corrupted state** — btitxkdue task loaded OLD code before V2 prune commit, resulting in scaler fitted on 102 features but meta feature_names containing only 93 names; scaler mismatch → 0 trades
+
+**Changes for v177:**
+- V2 regime features pruned from swing training (committed to main)
+- EMA200 WF bug fixed
+- Phase 89 trend features intact
+- Phase 90 union label reverted
+- Fresh retrain with aligned code
+
+**v177 retrain kicked off:** 2026-05-08
+
+### v177 Walk-Forward Results (Swing) — ❌ 0 TRADES (same root cause)
+
+All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (865 entries with 152 features, pre-Phase-89) caused `feature_names` to be set to 93 names on the first symbol's cache hit, while X rows from recomputed symbols had 102 features. After inhomogeneous-row filtering, scaler was fitted on 102 columns but meta saved 93 feature_names → inference builds 93-vector, scaler raises ValueError, caught silently → 0 proposals.
+
+**Fix (commit 812e7a7):**
+- Added `_all_sym_names_by_len` dict in worker aggregation loop to track feature_names by row length
+- After inhomogeneous-row filtering, corrects `_last_feature_names` to match `target_len` rows
+- Deleted 865 stale 152-feature cache entries from feature_store.db
+
+**v178 retrain kicked off with fix:** 2026-05-08
+
+### v178 Walk-Forward Results (Swing) — ❌ GATE FAILED
+
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | 2021-04-19→2022-04-09 | 373 | **+0.17** | ✅ |
+| 2 | 2022-05-20→2023-05-09 | 118 | **-0.80** | ❌ |
+| 3 | 2023-05-20→2024-05-08 | 138 | **-1.42** | ❌ |
+| 4 | 2024-05-19→2025-05-08 | 100 | **-1.33** | ❌ |
+| 5 | 2025-05-19→2026-05-08 | 256 | **-0.28** | ❌ |
+| **Average** | — | — | **-0.731** | ❌ |
+
+**Good news:** Feature_names fix worked — real trades in every fold. No more 0-trade 0-Sharpe artifact.
+
+**Bad news:** Phase 89 trend features are hurting, not helping. Folds 2–4 all negative.
+
+**Analysis:**
+- Fold 2 (2022 bear + early 2023 recovery): -0.80 — trend features biased toward trend-following in a volatile bear
+- Fold 3 (2023 AI rally, May 2023→May 2024): -1.42 — WORST. The AI rally was slow grind-up; trend features with RSI/MACD still present may have created conflicting signals
+- Fold 4 (2024→2025, tariff shock): -1.33 — volatile market, trend features fail
+- Fold 5 (2025→2026): -0.28 — closest to passing; trend features slightly less harmful in more recent data
+
+**Hypothesis:** Phase 89 added trend features but did NOT remove the mean-reversion bias (RSI/MACD/Stoch/Bollinger still in the feature set). The model now has BOTH trend and mean-reversion signals — conflicting, noisy. The solution from the original plan was to also remove RSI_DIP / EMA_CROSSOVER as hard pre-filters (done via no_prefilters=True) AND "remove RSI_DIP and EMA_CROSSOVER as hard pre-filters (let model decide)". But the features themselves are still there. The issue may be feature count dilution — 102 features with conflicting signals vs pre-Phase-89 93 features.
+
+**Next step:** Compare v178 (Phase 89 features) against v171 baseline (no Phase 89) on same 5-fold WF to isolate Phase 89 impact. If v171 scores better, Phase 89 features are net negative and should be reverted.
+
+---
+
+## Intraday v60 — ❌ GATE FAILED (2026-05-08)
+
+**Gate:** avg Sharpe ≥ 1.00, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Trades | Sharpe |
+|---|---|---|
+| 1 | 160 | **-4.06** |
+| 2 | 160 | **-0.53** |
+| 3 | 161 | **-1.24** |
+| 4 | 160 | **-0.60** |
+| 5 | 161 | **-1.99** |
+| **Avg** | — | **-1.685** |
+
+**Changes vs v59:** Reverted hybrid label + dispersion gate. Pure top-20% + CS_ABSOLUTE_HURDLE. Added 4 Phase 91 microstructure features (63 total).
+
+**Analysis:** The intraday model is consistently negative across all 5 WF folds regardless of label scheme. The signal-to-noise ratio of the cross-sectional top-20% label + bar-12 features is insufficient. Key hypothesis: the model is learning noise — on most days, the "top-20% winners" at bar 12 are not systematically predictable, just rank-ordered noise.
+
+**Next steps for intraday:**
+- Investigate whether v51 (the current active champion, +0.529 honest Sharpe) continues to outperform v60 in live paper trading
+- Consider: stricter entry conditions (higher vol percentile threshold, momentum filter pre-scan)
+- Consider: reduce WF folds to 3 (less test data per fold, less variance in estimation)
+- Defer intraday improvement until swing model stabilizes
+
+
+---
+
+## v171 Baseline 5-Fold WF (2026-05-09)
+
+**Purpose:** Compare pre-Phase-89 baseline against v178 (Phase 89) on identical 5-fold setup.
+
+| Fold | Period | Trades | Sharpe |
+|---|---|---|---|
+| 1 | Apr 2021→Apr 2022 | 325 | -0.57 |
+| 2 | May 2022→May 2023 | 127 | -0.82 |
+| 3 | May 2023→May 2024 | 214 | -1.08 |
+| 4 | May 2024→May 2025 | 109 | -1.36 |
+| 5 | May 2025→May 2026 | 260 | **+0.67** |
+| **Avg** | — | — | **-0.632** |
+
+**v178 (Phase 89) comparison:**
+
+| Fold | v171 Sharpe | v178 Sharpe | Delta |
+|---|---|---|---|
+| 1 (2021-2022) | -0.57 | +0.17 | v178 +0.74 |
+| 2 (2022 bear) | -0.82 | -0.80 | tied |
+| 3 (AI rally) | -1.08 | -1.42 | v171 +0.34 |
+| 4 (2024-2025) | -1.36 | -1.33 | tied |
+| 5 (recent) | **+0.67** | -0.28 | **v171 +0.95** |
+| **Avg** | **-0.632** | **-0.731** | **v171 +0.099** |
+
+**Key findings:**
+1. Phase 89 trend features are net negative (-0.099 avg Sharpe regression)
+2. Phase 89 helps fold 1 (COVID recovery, continuation signals work) but destroys fold 5 (most recent, most deployment-relevant): +0.67 → -0.28
+3. **Both models fail the 5-fold gate** — this is not a Phase 89 problem; it's structural
+4. The 5-fold gate covers 2021-2023 where the model fundamentally struggles (no analog in training for Fed pivot dynamics)
+5. Fold 5 (+0.67 for v171) shows the model HAS real signal in the most recent regime
+
+**Opus 4.7 analysis conclusion:** Phase 89 suffers from feature redundancy (3 correlated trend signals added on top of existing momentum features, diluting XGBoost split selection). Mean-reversion features (RSI/MACD/Stoch) create conflicting signals in low-vol trend regimes (AI rally 2023-2024). **Pruning is the right move, not addition.**
+
+---
+
+## v179 — Diagnostic: Prune Mean-Reversion + Phase 89 Revert (2026-05-09)
+
+**Hypothesis:** RSI/MACD/Stoch teach the model to avoid "overbought" stocks that continue higher in persistent uptrends (AI rally, Mag-7 dominance). Removing them forces reliance on momentum/ATR/volume signals that are agnostic to mean-reversion bias.
+
+**Changes (training.py — feature pruning via _BASE_PRUNED):**
+
+*Phase 89 reverted (feature redundancy, net negative):*
+- `adx_14_pct`, `adx_rising`, `aroon_up_25`, `aroon_down_25`, `aroon_oscillator_25`
+- `drawdown_from_20d_high`, `hurst_exponent_60d`, `pct_closes_above_ema20`, `volatility_adj_dist_52wk_high`
+
+*Mean-reversion features pruned (conflicting signals in trend regimes):*
+- `rsi_14`, `rsi_7`, `rsi_x_vix_regime`
+- `macd`, `macd_signal`, `macd_histogram`
+- `stoch_k`, `stochrsi_k`, `stochrsi_d`, `stochrsi_signal`
+- `bb_position`, `mean_reversion_zscore`
+
+**Feature count:** 161 raw → 81 active (was 102). Clean momentum/volume/price-structure set.
+
+**Key remaining features:** momentum_20d/60d/5d, ATR, EMA distances, price_above_ema20/50, volume percentile/regime, ADX (trend strength), WQ alphas, sector momentum, VIX regime bucket.
+
+**Retained for review (borderline oscillators):** `williams_r_14`, `cci_20` — may function as trend signals in practice, left for morning review.
+
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30, 5 folds.
+
+**Diagnostic expectations (Opus 4.7):**
+- Fold 3 (AI rally): hypothesis test — expects -0.0 to +0.5 (vs -1.08 baseline). If no improvement, AI-rally failure is deeper than mean-reversion bias.
+- Fold 5 (recent): expects +0.3 to +0.7 (preserving v171's +0.67 without Phase 89 noise)
+- Probability of gate pass: <10%. This is a diagnostic, not expected to ship.
+
+**v179 retrain kicked off:** 2026-05-09
+
+---
+
+## Live Paper Trading Status — Intraday v51 (2026-05-08 observation)
+
+**Operational issues observed:**
+1. **Ghost position**: Trade#1 "GHOST" in DB but not in Alpaca — reconciliation broken
+2. **DB module error**: `force_close` failing with `No module named 'app.database.db'` — EOD force-close can't verify DB state
+3. **Limit orders not filling**: System generates BUY signals for TSLA/MSFT but all limit orders cancelled unfilled at EOD — likely limit prices set too conservatively for intraday entries
+4. **Position PnL appears anomalous**: TSLA/NVDA/MSFT shown with round entry prices ($200/$110/$100) suggesting possible test positions, not real paper fills
+
+**Implication**: v51's live paper performance is not measurable from logs — orders aren't executing. The +0.529 honest Sharpe from WF is the only performance signal we have for intraday.
+
+**Action items for morning review:**
+- Investigate `app.database.db` import error in force_close (wrong module path)
+- Check ghost position cleanup mechanism
+- Review limit order price calculation for intraday entries (may be too far from market)

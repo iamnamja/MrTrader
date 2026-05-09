@@ -90,6 +90,23 @@ _BASE_PRUNED: frozenset = frozenset([
     "vol_expansion", "days_to_opex", "near_opex", "beta_252d", "beta_deviation",
     "earnings_drift_signal", "earnings_pead_strength", "adx_x_spy_trend",
     "rsi_x_spy_trend",
+    # v179 diagnostic experiment: prune mean-reversion features that create conflicting
+    # signals with momentum in low-vol trend regimes (AI rally 2023-2024, fold 3).
+    # Hypothesis: RSI/MACD teach the model to avoid "overbought" stocks that continue
+    # higher during persistent uptrends. Pruning forces reliance on momentum/ATR only.
+    # Results in ML_EXPERIMENT_LOG.md §v179. Re-enable individually if fold 3 stays broken.
+    "rsi_14", "rsi_7", "rsi_x_vix_regime",
+    "macd", "macd_signal", "macd_histogram",
+    "stoch_k", "stochrsi_k", "stochrsi_d", "stochrsi_signal",
+    "bb_position", "mean_reversion_zscore",
+    # Phase 89 trend features reverted: v178 showed net negative vs v171 baseline
+    # (-0.731 vs -0.632 avg 5-fold Sharpe). Fold 5 (most recent, +0.67 in v171)
+    # dropped to -0.28 — feature redundancy diluted XGBoost split selection.
+    # Code preserved in features.py; pruned here for clean reversion.
+    "adx_14_pct", "adx_rising",
+    "aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
+    "drawdown_from_20d_high", "hurst_exponent_60d",
+    "pct_closes_above_ema20", "volatility_adj_dist_52wk_high",
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
@@ -1383,6 +1400,10 @@ class ModelTrainer:
                 _use_union_label,
             )
 
+        # Maps row-length → first sym_names seen for that length. Used after
+        # inhomogeneous-row filtering to pick the correct feature_names list.
+        _all_sym_names_by_len: Dict[int, List[str]] = {}
+
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
         with multiprocessing.Manager() as _mgr:
             _progress_q = _mgr.Queue()
@@ -1413,6 +1434,10 @@ class ModelTrainer:
                         pending_cache.extend(sym_cache)
                         if not self._last_feature_names and sym_names:
                             self._last_feature_names = sym_names
+                        # Collect all (names, row_len) pairs so we can pick the right
+                        # feature_names after inhomogeneous-row filtering (see below).
+                        if sym_names and sym_X:
+                            _all_sym_names_by_len.setdefault(len(sym_X[0]), sym_names)
                     except Exception as exc:
                         logger.warning("Symbol %s failed: %s", futures[future], exc)
                     else:
@@ -1446,7 +1471,11 @@ class ModelTrainer:
                 logger.warning("Feature store batch write failed: %s", exc)
 
         # Filter to consistent feature length (stale cache entries may have
-        # different lengths if features were added/removed between runs)
+        # different lengths if features were added/removed between runs).
+        # Also fix _last_feature_names to match the target length — without this,
+        # a stale cache hit on the first symbol sets feature_names to the old count
+        # while X rows from recomputed symbols have the new count, causing a
+        # scaler/meta mismatch that silently produces 0 trades at WF inference.
         if X_rows:
             lengths = [len(r) for r in X_rows]
             target_len = max(set(lengths), key=lengths.count)
@@ -1458,6 +1487,13 @@ class ModelTrainer:
                 filtered = [(x, y, m) for x, y, m in zip(X_rows, y_vals, meta_rows) if len(x) == target_len]
                 X_rows, y_vals, meta_rows = zip(*filtered) if filtered else ([], [], [])
                 X_rows, y_vals, meta_rows = list(X_rows), list(y_vals), list(meta_rows)
+            # Ensure feature_names matches target_len — stale cache can set it wrong.
+            if len(self._last_feature_names) != target_len and target_len in _all_sym_names_by_len:
+                logger.warning(
+                    "feature_names length mismatch (%d vs target %d) — correcting from same-length symbol",
+                    len(self._last_feature_names), target_len,
+                )
+                self._last_feature_names = _all_sym_names_by_len[target_len]
 
         return np.array(X_rows), np.array(y_vals), meta_rows
 

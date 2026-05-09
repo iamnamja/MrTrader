@@ -42,52 +42,77 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         "orphaned_orders": [],
     }
 
-    # Fetch Alpaca state once — used by all checks below
+    # Fetch Alpaca state once — used by all checks below.
+    # NOTE: An exception (or None return) here means the API call FAILED and we
+    # cannot trust any state — bail out entirely. A successful call that returns
+    # an empty list is a *valid* response meaning "no positions" and MUST be
+    # trusted; otherwise we'd never detect a ghost when the user closes the only
+    # remaining position outside MrTrader.
+    api_call_ok = True
     try:
-        alpaca_positions: Dict[str, Any] = {p["symbol"]: p for p in alpaca.get_positions()}
+        raw_positions = alpaca.get_positions()
+        if raw_positions is None:
+            api_call_ok = False
+            logger.error("Could not fetch Alpaca positions — get_positions() returned None; reconciliation skipped")
+            return result
+        alpaca_positions: Dict[str, Any] = {p["symbol"]: p for p in raw_positions}
     except Exception as exc:
         logger.error("Could not fetch Alpaca positions — reconciliation skipped: %s", exc)
         return result
 
     active_trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
-    n_active_db = len(active_trades)
     n_alpaca_positions = len(alpaca_positions)
 
-    # ── Fix 2: Guard against empty/truncated Alpaca response ─────────────────────
-    # If Alpaca returns 0 positions but we have ACTIVE trades in DB, it's almost
-    # certainly an API error. Marking everything as ghost would cause a flood of
-    # duplicate synthetic records on the next restart. Skip ghost detection entirely.
-    api_trustworthy = not (n_alpaca_positions == 0 and n_active_db > 0)
-    if not api_trustworthy:
-        logger.warning(
-            "Reconciliation: Alpaca returned 0 positions but DB has %d ACTIVE trade(s) — "
-            "skipping ghost detection to avoid false positives (likely API error)",
-            n_active_db,
-        )
-
     # ── 1. Ghost positions ─────────────────────────────────────────────────────
-    if api_trustworthy:
+    # A ghost = ACTIVE in DB but NOT in Alpaca, AND old enough that we know it
+    # isn't a brand-new market order whose fill hasn't propagated yet.
+    # We trust any successful Alpaca response — including an empty list — because
+    # the previous "skip if 0 positions" guard caused ghosts to persist forever
+    # when the user externally closed the only open position.
+    if api_call_ok:
         try:
+            # Read ghost minimum age from agent_config (default 5 minutes).
+            try:
+                from app.database.agent_config import get_agent_config
+                ghost_min_age_minutes = int(get_agent_config(db_session, "reconcile.ghost_min_age_minutes") or 5)
+            except Exception:
+                ghost_min_age_minutes = 5
+            ghost_cutoff = datetime.utcnow() - timedelta(minutes=ghost_min_age_minutes)
+
             for trade in active_trades:
-                if trade.symbol not in alpaca_positions:
-                    logger.warning(
-                        "GHOST POSITION: Trade#%d %s is ACTIVE in DB but not in Alpaca",
+                if trade.symbol in alpaca_positions:
+                    continue
+                # Protect very recent trades whose fills may not have populated yet
+                trade_age_anchor = trade.created_at or datetime.utcnow()
+                if trade_age_anchor > ghost_cutoff:
+                    logger.info(
+                        "Skipping ghost check for Trade#%d %s — too recent (%.1f min old, threshold %d min)",
                         trade.id, trade.symbol,
+                        (datetime.utcnow() - trade_age_anchor).total_seconds() / 60.0,
+                        ghost_min_age_minutes,
                     )
-                    result["ghost_positions"].append({
+                    continue
+                logger.warning(
+                    "GHOST POSITION: Trade#%d %s is ACTIVE in DB but not in Alpaca "
+                    "(Alpaca returned %d position(s); trade older than %d min)",
+                    trade.id, trade.symbol, n_alpaca_positions, ghost_min_age_minutes,
+                )
+                result["ghost_positions"].append({
+                    "trade_id": trade.id, "symbol": trade.symbol,
+                    "entry_price": trade.entry_price, "quantity": trade.quantity,
+                })
+                trade.status = "RECONCILE_GHOST"
+                db_session.add(AuditLog(
+                    action="RECONCILE_GHOST_POSITION",
+                    details={
                         "trade_id": trade.id, "symbol": trade.symbol,
-                        "entry_price": trade.entry_price, "quantity": trade.quantity,
-                    })
-                    trade.status = "RECONCILE_GHOST"
-                    db_session.add(AuditLog(
-                        action="RECONCILE_GHOST_POSITION",
-                        details={
-                            "trade_id": trade.id, "symbol": trade.symbol,
-                            "reason": "Active in DB but no matching Alpaca position on startup",
-                            "detected_at": datetime.utcnow().isoformat(),
-                        },
-                        timestamp=datetime.utcnow(),
-                    ))
+                        "reason": "Active in DB but no matching Alpaca position on startup",
+                        "alpaca_position_count": n_alpaca_positions,
+                        "ghost_min_age_minutes": ghost_min_age_minutes,
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                    timestamp=datetime.utcnow(),
+                ))
 
             # Close stale RECONCILE_GHOST records for symbols no longer in Alpaca.
             # Without this, old ghost rows accumulate across restarts and block the
