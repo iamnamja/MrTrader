@@ -155,3 +155,28 @@ parsed.
 - Logs go to `logs/p0_v171_cpcv_baseline.log` and
   `logs/p0_v51_cpcv_baseline.log`. `scripts/parse_cpcv_results.py` extracts
   the headline numbers (also supports `--json` for downstream tooling).
+
+---
+
+## §10 Phase 93 — FMP Quarterly Fundamentals (data layer)
+
+**Status:** Infrastructure complete (2026-05-09). Backfill pending.
+
+Replaces `data/fundamentals/fundamentals_history.parquet` (EDGAR annual)
+with `data/fundamentals/fmp_fundamentals_history.parquet` (FMP quarterly).
+
+**What it un-prunes from `_BASE_PRUNED`:** `pe_ratio`, `pb_ratio` —
+computed PIT-correct as `price / (eps_diluted * 4)` and `price / bvps`
+using the window-end close (subprocess-safe, no API calls in workers).
+
+**What it newly provides:** `gross_margin`, `operating_margin`, `fcf_margin`
+on a quarterly cadence (~4× more PIT snapshots than the annual EDGAR store).
+Also overrides `profit_margin`, `revenue_growth` (now true YoY same-quarter),
+and `debt_to_equity` with quarterly values.
+
+**Transition policy:** EDGAR loader and parquet remain in place. FMP
+overrides EDGAR where present. Toggle off via `USE_FMP_FUNDAMENTALS=False`
+in `app/ml/retrain_config.py` to A/B against the EDGAR baseline.
+
+See `app/data/fmp_fundamentals.py` for full design rationale (PIT, PE/PB
+computation, transition policy).
