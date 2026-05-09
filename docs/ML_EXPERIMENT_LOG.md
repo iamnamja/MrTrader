@@ -1562,3 +1562,71 @@ All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (86
 - Consider: reduce WF folds to 3 (less test data per fold, less variance in estimation)
 - Defer intraday improvement until swing model stabilizes
 
+
+---
+
+## v171 Baseline 5-Fold WF (2026-05-09)
+
+**Purpose:** Compare pre-Phase-89 baseline against v178 (Phase 89) on identical 5-fold setup.
+
+| Fold | Period | Trades | Sharpe |
+|---|---|---|---|
+| 1 | Apr 2021→Apr 2022 | 325 | -0.57 |
+| 2 | May 2022→May 2023 | 127 | -0.82 |
+| 3 | May 2023→May 2024 | 214 | -1.08 |
+| 4 | May 2024→May 2025 | 109 | -1.36 |
+| 5 | May 2025→May 2026 | 260 | **+0.67** |
+| **Avg** | — | — | **-0.632** |
+
+**v178 (Phase 89) comparison:**
+
+| Fold | v171 Sharpe | v178 Sharpe | Delta |
+|---|---|---|---|
+| 1 (2021-2022) | -0.57 | +0.17 | v178 +0.74 |
+| 2 (2022 bear) | -0.82 | -0.80 | tied |
+| 3 (AI rally) | -1.08 | -1.42 | v171 +0.34 |
+| 4 (2024-2025) | -1.36 | -1.33 | tied |
+| 5 (recent) | **+0.67** | -0.28 | **v171 +0.95** |
+| **Avg** | **-0.632** | **-0.731** | **v171 +0.099** |
+
+**Key findings:**
+1. Phase 89 trend features are net negative (-0.099 avg Sharpe regression)
+2. Phase 89 helps fold 1 (COVID recovery, continuation signals work) but destroys fold 5 (most recent, most deployment-relevant): +0.67 → -0.28
+3. **Both models fail the 5-fold gate** — this is not a Phase 89 problem; it's structural
+4. The 5-fold gate covers 2021-2023 where the model fundamentally struggles (no analog in training for Fed pivot dynamics)
+5. Fold 5 (+0.67 for v171) shows the model HAS real signal in the most recent regime
+
+**Opus 4.7 analysis conclusion:** Phase 89 suffers from feature redundancy (3 correlated trend signals added on top of existing momentum features, diluting XGBoost split selection). Mean-reversion features (RSI/MACD/Stoch) create conflicting signals in low-vol trend regimes (AI rally 2023-2024). **Pruning is the right move, not addition.**
+
+---
+
+## v179 — Diagnostic: Prune Mean-Reversion + Phase 89 Revert (2026-05-09)
+
+**Hypothesis:** RSI/MACD/Stoch teach the model to avoid "overbought" stocks that continue higher in persistent uptrends (AI rally, Mag-7 dominance). Removing them forces reliance on momentum/ATR/volume signals that are agnostic to mean-reversion bias.
+
+**Changes (training.py — feature pruning via _BASE_PRUNED):**
+
+*Phase 89 reverted (feature redundancy, net negative):*
+- `adx_14_pct`, `adx_rising`, `aroon_up_25`, `aroon_down_25`, `aroon_oscillator_25`
+- `drawdown_from_20d_high`, `hurst_exponent_60d`, `pct_closes_above_ema20`, `volatility_adj_dist_52wk_high`
+
+*Mean-reversion features pruned (conflicting signals in trend regimes):*
+- `rsi_14`, `rsi_7`, `rsi_x_vix_regime`
+- `macd`, `macd_signal`, `macd_histogram`
+- `stoch_k`, `stochrsi_k`, `stochrsi_d`, `stochrsi_signal`
+- `bb_position`, `mean_reversion_zscore`
+
+**Feature count:** 161 raw → 81 active (was 102). Clean momentum/volume/price-structure set.
+
+**Key remaining features:** momentum_20d/60d/5d, ATR, EMA distances, price_above_ema20/50, volume percentile/regime, ADX (trend strength), WQ alphas, sector momentum, VIX regime bucket.
+
+**Retained for review (borderline oscillators):** `williams_r_14`, `cci_20` — may function as trend signals in practice, left for morning review.
+
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30, 5 folds.
+
+**Diagnostic expectations (Opus 4.7):**
+- Fold 3 (AI rally): hypothesis test — expects -0.0 to +0.5 (vs -1.08 baseline). If no improvement, AI-rally failure is deeper than mean-reversion bias.
+- Fold 5 (recent): expects +0.3 to +0.7 (preserving v171's +0.67 without Phase 89 noise)
+- Probability of gate pass: <10%. This is a diagnostic, not expected to ship.
+
+**v179 retrain kicked off:** 2026-05-09
