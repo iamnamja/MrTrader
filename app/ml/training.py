@@ -92,6 +92,23 @@ _BASE_PRUNED: frozenset = frozenset([
     "vol_expansion", "days_to_opex", "near_opex", "beta_252d", "beta_deviation",
     "earnings_drift_signal", "earnings_pead_strength", "adx_x_spy_trend",
     "rsi_x_spy_trend",
+    # v179 diagnostic experiment: prune mean-reversion features that create conflicting
+    # signals with momentum in low-vol trend regimes (AI rally 2023-2024, fold 3).
+    # Hypothesis: RSI/MACD teach the model to avoid "overbought" stocks that continue
+    # higher during persistent uptrends. Pruning forces reliance on momentum/ATR only.
+    # Results in ML_EXPERIMENT_LOG.md §v179. Re-enable individually if fold 3 stays broken.
+    "rsi_14", "rsi_7", "rsi_x_vix_regime",
+    "macd", "macd_signal", "macd_histogram",
+    "stoch_k", "stochrsi_k", "stochrsi_d", "stochrsi_signal",
+    "bb_position", "mean_reversion_zscore",
+    # Phase 89 trend features reverted: v178 showed net negative vs v171 baseline
+    # (-0.731 vs -0.632 avg 5-fold Sharpe). Fold 5 (most recent, +0.67 in v171)
+    # dropped to -0.28 — feature redundancy diluted XGBoost split selection.
+    # Code preserved in features.py; pruned here for clean reversion.
+    "adx_14_pct", "adx_rising",
+    "aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
+    "drawdown_from_20d_high", "hurst_exponent_60d",
+    "pct_closes_above_ema20", "volatility_adj_dist_52wk_high",
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.

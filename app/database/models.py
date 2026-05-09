@@ -362,6 +362,9 @@ class PendingLimitOrder(Base):
     trade_type = Column(String(20), nullable=False, default="swing")
     signal_type = Column(String(30), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # Phase: limit-order lifecycle redesign — re-quote + EOD escalation tracking
+    requote_count = Column(Integer, nullable=True, default=0)
+    escalated = Column(Boolean, nullable=True, default=False)
 
 
 class SwingProposalLog(Base):

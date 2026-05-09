@@ -1661,7 +1661,6 @@ All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (86
 - **(B) Regime-conditional feature sets — different `_BASE_PRUNED` per VIX bucket, trained separately**
 - **(C) Investigate label window — try 10d or 15d holding vs current 5d to see if fold 3 improves**
 - **(D) Regime-specific training — train only on recent 2 years (folds 4+5) to match current market structure**
-
 ---
 
 ## Live Paper Trading Status — Intraday v51 (2026-05-08 observation)
@@ -1752,4 +1751,3 @@ python scripts/train_model.py --no-fundamentals --workers 8 --years 6 \
 **v180 (10d label) retrain kicked off:** 2026-05-09
 
 **Verdict:** 🔄 Pending retrain + WF gate run.
-
