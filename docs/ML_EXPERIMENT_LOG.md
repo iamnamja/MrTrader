@@ -1510,8 +1510,32 @@ All 5 folds: 0 trades. Root cause not fully fixed: stale feature store cache (86
 
 **v178 retrain kicked off with fix:** 2026-05-08
 
-### v178 Walk-Forward Results (Swing)
-*(To be filled — retrain in progress)*
+### v178 Walk-Forward Results (Swing) — ❌ GATE FAILED
+
+**Gate:** avg Sharpe ≥ 0.80, no fold < -0.30 | **Result:** FAILED
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | 2021-04-19→2022-04-09 | 373 | **+0.17** | ✅ |
+| 2 | 2022-05-20→2023-05-09 | 118 | **-0.80** | ❌ |
+| 3 | 2023-05-20→2024-05-08 | 138 | **-1.42** | ❌ |
+| 4 | 2024-05-19→2025-05-08 | 100 | **-1.33** | ❌ |
+| 5 | 2025-05-19→2026-05-08 | 256 | **-0.28** | ❌ |
+| **Average** | — | — | **-0.731** | ❌ |
+
+**Good news:** Feature_names fix worked — real trades in every fold. No more 0-trade 0-Sharpe artifact.
+
+**Bad news:** Phase 89 trend features are hurting, not helping. Folds 2–4 all negative.
+
+**Analysis:**
+- Fold 2 (2022 bear + early 2023 recovery): -0.80 — trend features biased toward trend-following in a volatile bear
+- Fold 3 (2023 AI rally, May 2023→May 2024): -1.42 — WORST. The AI rally was slow grind-up; trend features with RSI/MACD still present may have created conflicting signals
+- Fold 4 (2024→2025, tariff shock): -1.33 — volatile market, trend features fail
+- Fold 5 (2025→2026): -0.28 — closest to passing; trend features slightly less harmful in more recent data
+
+**Hypothesis:** Phase 89 added trend features but did NOT remove the mean-reversion bias (RSI/MACD/Stoch/Bollinger still in the feature set). The model now has BOTH trend and mean-reversion signals — conflicting, noisy. The solution from the original plan was to also remove RSI_DIP / EMA_CROSSOVER as hard pre-filters (done via no_prefilters=True) AND "remove RSI_DIP and EMA_CROSSOVER as hard pre-filters (let model decide)". But the features themselves are still there. The issue may be feature count dilution — 102 features with conflicting signals vs pre-Phase-89 93 features.
+
+**Next step:** Compare v178 (Phase 89 features) against v171 baseline (no Phase 89) on same 5-fold WF to isolate Phase 89 impact. If v171 scores better, Phase 89 features are net negative and should be reverted.
 
 ---
 
