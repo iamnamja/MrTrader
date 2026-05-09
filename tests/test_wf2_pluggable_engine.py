@@ -168,7 +168,7 @@ class TestFoldEngineDelegation:
         mock_strategy.run_fold.side_effect = make_fold
 
         engine = FoldEngine(strategy=mock_strategy, purge_days=10, embargo_days=5)
-        report = engine.run(n_folds=3, total_years=5)
+        report = engine.run(n_folds=3, total_years=5, allow_sacred_holdout=True)  # unit test: strategy is mocked
 
         assert mock_strategy.fetch_data.call_count == 1
         assert mock_strategy.run_fold.call_count == 3
