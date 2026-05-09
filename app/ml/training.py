@@ -1383,6 +1383,10 @@ class ModelTrainer:
                 _use_union_label,
             )
 
+        # Maps row-length → first sym_names seen for that length. Used after
+        # inhomogeneous-row filtering to pick the correct feature_names list.
+        _all_sym_names_by_len: Dict[int, List[str]] = {}
+
         # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
         with multiprocessing.Manager() as _mgr:
             _progress_q = _mgr.Queue()
@@ -1413,6 +1417,10 @@ class ModelTrainer:
                         pending_cache.extend(sym_cache)
                         if not self._last_feature_names and sym_names:
                             self._last_feature_names = sym_names
+                        # Collect all (names, row_len) pairs so we can pick the right
+                        # feature_names after inhomogeneous-row filtering (see below).
+                        if sym_names and sym_X:
+                            _all_sym_names_by_len.setdefault(len(sym_X[0]), sym_names)
                     except Exception as exc:
                         logger.warning("Symbol %s failed: %s", futures[future], exc)
                     else:
@@ -1446,7 +1454,11 @@ class ModelTrainer:
                 logger.warning("Feature store batch write failed: %s", exc)
 
         # Filter to consistent feature length (stale cache entries may have
-        # different lengths if features were added/removed between runs)
+        # different lengths if features were added/removed between runs).
+        # Also fix _last_feature_names to match the target length — without this,
+        # a stale cache hit on the first symbol sets feature_names to the old count
+        # while X rows from recomputed symbols have the new count, causing a
+        # scaler/meta mismatch that silently produces 0 trades at WF inference.
         if X_rows:
             lengths = [len(r) for r in X_rows]
             target_len = max(set(lengths), key=lengths.count)
@@ -1458,6 +1470,13 @@ class ModelTrainer:
                 filtered = [(x, y, m) for x, y, m in zip(X_rows, y_vals, meta_rows) if len(x) == target_len]
                 X_rows, y_vals, meta_rows = zip(*filtered) if filtered else ([], [], [])
                 X_rows, y_vals, meta_rows = list(X_rows), list(y_vals), list(meta_rows)
+            # Ensure feature_names matches target_len — stale cache can set it wrong.
+            if len(self._last_feature_names) != target_len and target_len in _all_sym_names_by_len:
+                logger.warning(
+                    "feature_names length mismatch (%d vs target %d) — correcting from same-length symbol",
+                    len(self._last_feature_names), target_len,
+                )
+                self._last_feature_names = _all_sym_names_by_len[target_len]
 
         return np.array(X_rows), np.array(y_vals), meta_rows
 
