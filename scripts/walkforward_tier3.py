@@ -487,6 +487,7 @@ def run_swing_walkforward(
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
     macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
     benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
+    wf_max_symbols: Optional[int] = None,  # cap universe to top-N by avg dollar volume
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -552,6 +553,25 @@ def run_swing_walkforward(
             logger.warning("VIX download failed — opportunity score will use defaults: %s", exc)
 
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
+
+    # Speed-up: cap to top-N symbols by average dollar volume (price × volume).
+    if wf_max_symbols and wf_max_symbols < len(symbols_data):
+        _synthetic = {"^VIX", "SPY"}
+        _ranked = []
+        for sym, df in symbols_data.items():
+            if sym in _synthetic:
+                continue
+            if "close" in df.columns and "volume" in df.columns:
+                avg_dv = (df["close"] * df["volume"]).mean()
+            else:
+                avg_dv = 0.0
+            _ranked.append((avg_dv, sym))
+        _ranked.sort(reverse=True)
+        _keep = {sym for _, sym in _ranked[:wf_max_symbols]} | _synthetic
+        _before = len(symbols_data)
+        symbols_data = {s: d for s, d in symbols_data.items() if s in _keep}
+        logger.info("--wf-max-symbols %d: trimmed %d → %d symbols by avg dollar volume",
+                    wf_max_symbols, _before, len(symbols_data))
 
     # WF-1: embargo_days defaults to purge_days when not specified.
     # Both sides of every test window now have a clean gap:
@@ -1056,6 +1076,10 @@ def main() -> int:
                         help="P1: block new entries on days where PIT composite regime score < "
                              "BENIGN_REGIME_THRESHOLD (from macro_history.parquet). "
                              "Off by default. Adds ~1s to setup time.")
+    parser.add_argument("--wf-max-symbols", type=int, default=0, metavar="N",
+                        help="Speed-up: cap the swing WF universe to the top-N symbols by "
+                             "average dollar volume. 0 = use all (default). "
+                             "300 gives ~2-3x speedup with negligible Sharpe impact.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -1168,6 +1192,7 @@ def main() -> int:
             earnings_blackout=earnings_cal,
             macro_blocked_dates=macro_blocked_dates,
             benign_blocked_dates=benign_blocked_dates,
+            wf_max_symbols=args.wf_max_symbols if args.wf_max_symbols > 0 else None,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()
