@@ -134,12 +134,8 @@ def _fetch_symbol_history(symbol: str) -> list[dict]:
 
 
 def run(workers: int = 4, dry_run: bool = False) -> None:
-    from app.utils.constants import SP_100_TICKERS
-    try:
-        from app.utils.constants import SP_500_TICKERS
-        symbols = list(SP_500_TICKERS)
-    except ImportError:
-        symbols = list(SP_100_TICKERS)
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    symbols = list(RUSSELL_1000_TICKERS)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 

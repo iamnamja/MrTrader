@@ -96,11 +96,11 @@ def update_ticker(symbol: str, body: TickerPatch, db: Session = Depends(get_db))
 
 
 @router.post("/bulk", status_code=200)
-def bulk_load_sp500(db: Session = Depends(get_db)):
-    """Seed watchlist from the SP_500_TICKERS list."""
-    from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
+def bulk_load_r1k(db: Session = Depends(get_db)):
+    """Seed watchlist from the RUSSELL_1000_TICKERS list (training universe)."""
+    from app.utils.constants import RUSSELL_1000_TICKERS, SECTOR_MAP
     added, skipped = [], []
-    for sym in SP_500_TICKERS:
+    for sym in RUSSELL_1000_TICKERS:
         existing = db.query(WatchlistTicker).filter(WatchlistTicker.symbol == sym).first()
         if existing:
             skipped.append(sym)

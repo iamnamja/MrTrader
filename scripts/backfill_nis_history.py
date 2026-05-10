@@ -186,8 +186,8 @@ def main():
     if args.symbols:
         universe = args.symbols
     else:
-        from app.utils.constants import SP_500_TICKERS
-        universe = list(SP_500_TICKERS)
+        from app.utils.constants import RUSSELL_1000_TICKERS
+        universe = list(RUSSELL_1000_TICKERS)
 
     trading_days = _past_trading_days(args.days)
     logger.info(

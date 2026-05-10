@@ -31,12 +31,8 @@ logger = logging.getLogger("fmp_fundamentals_backfill")
 
 def _resolve_symbols(arg_value) -> list[str]:
     if not arg_value or arg_value == ["all"]:
-        try:
-            from app.utils.constants import SP_500_TICKERS
-            return list(SP_500_TICKERS)
-        except ImportError:
-            from app.utils.constants import SP_100_TICKERS
-            return list(SP_100_TICKERS)
+        from app.utils.constants import RUSSELL_1000_TICKERS
+        return list(RUSSELL_1000_TICKERS)
     return list(arg_value)
 
 

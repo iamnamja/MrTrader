@@ -497,15 +497,23 @@ def run_swing_walkforward(
         _err("No swing model found — retrain first.")
         return report
 
-    from app.utils.constants import SP_100_TICKERS
-    from app.data.universe_history import members_at as _members_at
-    symbols = symbols or list(SP_100_TICKERS)
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    from app.data.universe_history import members_at as _members_at, pit_union as _pit_union, historical_trade_symbols as _hist_syms
+    symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     # Download full history
     end_all = datetime.now()
     start_all = end_all - timedelta(days=total_years * 365 + 30)
     _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
                f"{len(symbols)} symbols | model v{version}")
+
+    # WF-A2: augment download seed with symbols that appeared in the feature store
+    # across the full backtest window (combats survivorship bias for delisted names).
+    extra_seed = _hist_syms(start_all.date(), end_all.date(), trade_type="swing")
+    if extra_seed:
+        pre_len = len(symbols)
+        symbols = sorted(set(symbols) | set(extra_seed))
+        logger.info("WF-A2: augmented download seed %d → %d (+%d historical)", pre_len, len(symbols), len(symbols) - pre_len)
 
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
@@ -589,7 +597,11 @@ def run_swing_walkforward(
         # Point-in-time filter: only use symbols that were in the index at fold train start.
         # Synthetic symbols (^VIX, VIX, SPY) bypass the filter — they're needed for
         # regime gates and opportunity score regardless of index membership.
-        pit_members = set(_members_at("sp100", tr_start))
+        # WF-A2/A3: PIT filter using Russell 1000 (matches training universe).
+        # pit_union() captures members at both fold endpoints (catches mid-fold adds/removes)
+        # plus DB-sourced historical names for survivorship-bias correction.
+        extra = _hist_syms(tr_start, te_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in symbols_data.items()
@@ -861,12 +873,12 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     """Run CPCV for swing model and print the result."""
     from scripts.walkforward.cpcv import run_cpcv
     from scripts.walkforward.strategies.swing import SwingStrategy
-    from app.utils.constants import SP_100_TICKERS
+    from app.utils.constants import RUSSELL_1000_TICKERS
     model, version = _load_model("swing", version=swing_ver)
     if model is None:
         _warn("CPCV: no swing model found — skipping")
         return
-    syms = symbols or list(SP_100_TICKERS)
+    syms = symbols or list(RUSSELL_1000_TICKERS)
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
         atr_stop_mult=args.stop_mult, atr_target_mult=args.target_mult,
@@ -1127,8 +1139,8 @@ def main() -> int:
         if not _syms:
             # Default to SP100 + Russell1000 union if no explicit symbols
             try:
-                from app.utils.constants import SP_100_TICKERS, RUSSELL_1000_TICKERS
-                _syms = list(set(SP_100_TICKERS) | set(RUSSELL_1000_TICKERS))
+                from app.utils.constants import RUSSELL_1000_TICKERS
+                _syms = list(RUSSELL_1000_TICKERS)
             except Exception:
                 _syms = []
         if _syms:
