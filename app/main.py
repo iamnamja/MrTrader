@@ -174,7 +174,18 @@ async def startup_event():
         f"  python: {py_ver}  port: {settings.port}\n"
         "═" * 72
     )
-    logger.info(banner)
+    # Print directly to stdout (bypasses all logging handlers — avoids N-handler
+    # duplication when uvicorn pre-populates the root logger with multiple handlers).
+    print(banner, flush=True)
+    # Also write to file handler directly so it appears in the dated log file.
+    for _h in logging.getLogger().handlers:
+        if type(_h).__name__ == "_DailyFileHandler":
+            import sys as _sys
+            _h.emit(logging.makeLogRecord({
+                "levelno": logging.INFO, "levelname": "INFO",
+                "name": __name__, "msg": banner, "args": (),
+            }))
+            break
 
     # Initialize database
     try:
