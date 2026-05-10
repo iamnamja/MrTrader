@@ -490,6 +490,13 @@ def _process_symbol_windows_worker(
                         features.get("momentum_5d", 0.0) - features["sector_momentum_5d"]
                     )
 
+        # Always ensure sector-neutral keys exist (0.0 when ETF data unavailable)
+        # Prevents inhomogeneous rows when some symbols lack sector ETF coverage.
+        if features:
+            for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
+                       "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
+                features.setdefault(_k, 0.0)
+
         # Phase 88: inject regime V2 scalars (date-level, same for all symbols on a given day)
         if regime_v2_map:
             rv2 = regime_v2_map.get(w_end_date) or regime_v2_map.get(str(w_end_date)) or {}
