@@ -36,5 +36,38 @@
     "additionalDirectories": [
       "C:\\Users\\kimmi\\.claude\\projects\\c--Projects-MrTrader\\memory"
     ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash c:/Projects/MrTrader/.claude/hooks/session_context.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash c:/Projects/MrTrader/.claude/hooks/block_push_to_main.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash c:/Projects/MrTrader/.claude/hooks/check_ml_documented.sh"
+          }
+        ]
+      }
+    ]
   }
 }
