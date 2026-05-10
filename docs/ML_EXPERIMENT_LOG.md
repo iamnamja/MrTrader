@@ -2120,4 +2120,4 @@ Expected positive label rate: ~30–35%. Expected drop in AUC vs cross-sectional
 is normal — triple-barrier AUC is inherently harder (absolute prediction vs relative ranking).
 A model with AUC 0.56 on triple-barrier labels and Sharpe > 0.80 in WF is deployable.
 
-**Full test suite status:** 775 passed, 0 failed (including 13 new ts_normalize tests).
+**Full test suite status:** 1771 passed, 0 failed (including 13 new ts_normalize tests).
