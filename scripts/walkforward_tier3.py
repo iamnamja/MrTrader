@@ -498,7 +498,7 @@ def run_swing_walkforward(
         return report
 
     from app.utils.constants import RUSSELL_1000_TICKERS
-    from app.data.universe_history import members_at as _members_at, pit_union as _pit_union, historical_trade_symbols as _hist_syms
+    from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     # Download full history

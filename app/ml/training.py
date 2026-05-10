@@ -34,7 +34,7 @@ from app.ml.retrain_config import (
     REGIME_SPLIT_VIX_THRESHOLD as _CFG_REGIME_SPLIT_VIX_THRESHOLD,
     assert_no_sacred_holdout as _assert_no_sacred_holdout,
 )
-from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS, SECTOR_MAP
+from app.utils.constants import RUSSELL_1000_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
 
