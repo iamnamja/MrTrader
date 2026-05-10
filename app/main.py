@@ -90,18 +90,26 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console handler (already added by uvicorn; just apply our format)
-    plain_stream_handlers = [h for h in root.handlers if type(h) is logging.StreamHandler]
-    if not plain_stream_handlers:
+    # Console handler — apply our format to all stream handlers already on the
+    # root logger (uvicorn adds its own before we run). Add one only if none
+    # exist yet. Use isinstance check (not type equality) to catch subclasses.
+    stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                       and not isinstance(h, logging.FileHandler)]
+    if not stream_handlers:
         ch = logging.StreamHandler()
         ch.setFormatter(fmt)
         root.addHandler(ch)
     else:
-        for h in plain_stream_handlers:
+        for h in stream_handlers:
             h.setFormatter(fmt)
 
-    # Daily file handler — logs/mrtrader_YYYY-MM-DD.log, rotates at midnight
-    root.addHandler(_DailyFileHandler(log_dir, fmt))
+    # Daily file handler — logs/mrtrader_YYYY-MM-DD.log, rotates at midnight.
+    # Guard against duplicate handlers when the module is re-imported (e.g.
+    # uvicorn --reload reloads app.main on each file save; the root logger
+    # singleton persists across reloads but the class object is redefined, so
+    # isinstance() would not match old instances — use class name instead).
+    if not any(type(h).__name__ == "_DailyFileHandler" for h in root.handlers):
+        root.addHandler(_DailyFileHandler(log_dir, fmt))
 
 
 def _git_info() -> tuple[str, str]:
@@ -253,25 +261,35 @@ async def startup_event():
         orchestrator.register_agent("trader", trader)
         await orchestrator.start()
 
-        # Log active model versions from DB
+        # Log active model versions from DB.
+        # Retry up to 3× with a short sleep — the connection pool may not be
+        # fully warm when this runs immediately after orchestrator.start().
         try:
+            import time as _time
             from app.database.session import get_session
             from app.database.models import ModelVersion
-            _db = get_session()
-            try:
-                for _name in ("swing", "intraday"):
-                    _row = (
-                        _db.query(ModelVersion)
-                        .filter_by(model_name=_name, status="ACTIVE")
-                        .order_by(ModelVersion.version.desc())
-                        .first()
-                    )
-                    if _row:
-                        logger.info("Active model: %s v%d (path=%s)", _name, _row.version, _row.model_path)
+            for _attempt in range(3):
+                _db = get_session()
+                try:
+                    for _name in ("swing", "intraday"):
+                        _row = (
+                            _db.query(ModelVersion)
+                            .filter_by(model_name=_name, status="ACTIVE")
+                            .order_by(ModelVersion.version.desc())
+                            .first()
+                        )
+                        if _row:
+                            logger.info("Active model: %s v%d (path=%s)",
+                                        _name, _row.version, _row.model_path)
+                        else:
+                            if _attempt < 2:
+                                break  # retry outer loop
+                            logger.warning("Active model: %s — NONE found in DB", _name)
                     else:
-                        logger.warning("Active model: %s — NONE found in DB", _name)
-            finally:
-                _db.close()
+                        break  # all models logged successfully — no retry needed
+                finally:
+                    _db.close()
+                _time.sleep(0.5)
         except Exception as _e:
             logger.warning("Could not log model versions: %s", _e)
 
