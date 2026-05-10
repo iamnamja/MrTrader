@@ -103,7 +103,8 @@ jobs:
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=58
+            --cov-fail-under=58 \
+            --cov-config=pytest.ini
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
