@@ -1194,7 +1194,7 @@ class PortfolioManager(BaseAgent):
         else:
             X = np.array([list(features_by_symbol[s].values()) for s in symbols])
         X = np.nan_to_num(X)
-        X = cs_normalize(X)
+        X = self._normalize_for_inference(X, symbols, self.model)
 
         try:
             # Option B: regime-aware routing if model was trained with regime split.
@@ -2270,6 +2270,7 @@ class PortfolioManager(BaseAgent):
                         x = [list(feats.values())]
                     import numpy as np
                     x = np.nan_to_num(x)
+                    x = self._normalize_for_inference(x, [trade.symbol], self.model)
                     _, probs = self.model.predict(x)
                     results[trade.symbol] = {
                         "score": float(probs[0]),
@@ -2461,7 +2462,7 @@ class PortfolioManager(BaseAgent):
         else:
             X = np.array([list(features_by_symbol[s].values()) for s in symbols])
         X = np.nan_to_num(X)
-        X = cs_normalize(X)
+        X = self._normalize_for_inference(X, symbols, self.model)
 
         try:
             _, probabilities = self.model.predict(X)
@@ -2522,6 +2523,7 @@ class PortfolioManager(BaseAgent):
                         x = [list(feats.values())]
                     import numpy as np
                     x = np.nan_to_num(x)
+                    x = self._normalize_for_inference(x, [symbol], self.model)
                     _, probs = self.model.predict(x)
                     return float(probs[0])
 
@@ -2614,6 +2616,7 @@ class PortfolioManager(BaseAgent):
                     import numpy as np
                     x = [[feats.get(f, 0.0) for f in fn]] if fn else [list(feats.values())]
                     x = np.nan_to_num(x)
+                    x = self._normalize_for_inference(x, [sym], self.model)
                     _, probs = self.model.predict(x)
                     return float(probs[0])
 
@@ -3267,6 +3270,47 @@ class PortfolioManager(BaseAgent):
             get_reusable_executor().shutdown(wait=False, kill_workers=True)
         except Exception:
             pass
+
+    # ─── Normalization ────────────────────────────────────────────────────────
+
+    def _normalize_for_inference(
+        self,
+        X: np.ndarray,
+        symbols: list,
+        model,
+    ) -> np.ndarray:
+        """Normalize feature matrix for inference.
+
+        Fix 2: if the model carries a TSNormalizerState (trained with rolling
+        time-series normalization), use it. Each symbol gets its live feature
+        row normalized against its trailing history in the state.
+
+        Falls back to cs_normalize for models trained before Fix 2 (v184 and
+        earlier), which used cross-sectional normalization. This ensures
+        backwards compatibility during the v184→v185 transition.
+        """
+        ts_state = getattr(model, "_ts_norm_state", None)
+        if ts_state is not None:
+            try:
+                from app.ml.ts_normalize import transform as _ts_transform
+                import datetime as _dt
+                _sym_arr = np.array(symbols)
+                # All symbols share the same inference window (today).
+                _wid_arr = np.full(len(symbols), _dt.date.today().toordinal(), dtype=int)
+                X_norm, keep = _ts_transform(X, _sym_arr, _wid_arr, ts_state)
+                if keep.all():
+                    return X_norm
+                # Partial keep (new symbols with no history): fill gaps with cs_normalize
+                X_out = X_norm.copy()
+                if not keep.all():
+                    X_out[~keep] = cs_normalize(X[~keep]) if keep.sum() > 0 else X[~keep]
+                return X_out
+            except Exception as exc:
+                self.logger.warning(
+                    "TSNormalizerState transform failed, falling back to cs_normalize: %s", exc
+                )
+        # Legacy path: cross-sectional normalization (pre-Fix-2 models)
+        return cs_normalize(X)
 
     # ─── Model Loading ────────────────────────────────────────────────────────
 

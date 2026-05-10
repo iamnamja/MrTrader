@@ -35,7 +35,7 @@ _DEFAULT_DB = "app/ml/models/feature_store.db"
 
 # Bump this whenever engineer_features() gains or loses columns.
 # Mismatch → cache auto-cleared on startup.
-SCHEMA_VERSION = "v6"  # v6: Phase 89-93 features (FMP, sector ETF, macro regime); prune-set v179
+SCHEMA_VERSION = "v7"  # v7: Fix 2 — vix_fear_spike, vix_percentile_1y, spy_trend_63d un-pruned; triple-barrier label default
 
 
 class FeatureStore:
