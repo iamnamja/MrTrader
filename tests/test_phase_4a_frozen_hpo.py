@@ -75,7 +75,10 @@ class TestFeatureCorrelationAudit:
     def test_audit_model_returns_expected_structure(self):
         """Smoke test: audit_model runs and returns valid result dict for swing."""
         from scripts.feature_correlation_audit import audit_model, SWING_SEMANTIC_GROUPS
-        result = audit_model("swing", SWING_SEMANTIC_GROUPS)
+        try:
+            result = audit_model("swing", SWING_SEMANTIC_GROUPS)
+        except FileNotFoundError:
+            pytest.skip("No swing model pkl on this machine")
         required_keys = {
             "version", "total_features", "zero_importance",
             "drop_candidates", "recommended_feature_count", "top_features",
@@ -90,7 +93,10 @@ class TestFeatureCorrelationAudit:
     def test_swing_has_zero_importance_features(self):
         """Swing models should have some zero-importance features (XGBoost pruning is expected)."""
         from scripts.feature_correlation_audit import audit_model, SWING_SEMANTIC_GROUPS
-        result = audit_model("swing", SWING_SEMANTIC_GROUPS)
+        try:
+            result = audit_model("swing", SWING_SEMANTIC_GROUPS)
+        except FileNotFoundError:
+            pytest.skip("No swing model pkl on this machine")
         # Any real swing model should have at least some zero-importance features —
         # XGBoost routinely ignores weak features via regularization.
         # We don't assert a specific count because it changes with each retrain.
