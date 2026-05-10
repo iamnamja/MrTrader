@@ -566,13 +566,13 @@ def main():
         help="Model architecture (default: xgboost)",
     )
     parser.add_argument(
-        "--label-scheme", default="atr",
+        "--label-scheme", default="triple_barrier",
         choices=[
             "atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative",
             "atr_and_sector", "return_regression", "return_blend", "lambdarank",
             "percentile_rank", "path_quality",
         ],
-        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar ATR-scaled target/stop.",
+        help="Labeling scheme (default: triple_barrier). triple_barrier = bar-by-bar ATR-scaled target/stop, aligned with live trading rule.",
     )
     parser.add_argument(
         "--tb-target-mult", type=float, default=None,

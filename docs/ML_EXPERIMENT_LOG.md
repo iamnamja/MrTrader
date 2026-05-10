@@ -1978,3 +1978,146 @@ python scripts/train_model.py --no-fundamentals --workers 8 --allow-sacred-holdo
 
 **Expected:** AUC should recover toward v181 baseline (~0.65+) if cache poisoning was
 the root cause. If still low, deeper investigation needed (label informativeness, etc.).
+
+**v185 — BLOCKED by Phase 89b schema mismatch (2026-05-09):**
+Hard-fail guard fired: `57619/127360 rows (45.2%) have wrong length [87] vs expected 91`.  
+Root cause: Phase 89b sector ETF features (`sector_momentum_5d`, `momentum_20d_sector_neutral`,
+`momentum_60d_sector_neutral`, `momentum_5d_sector_neutral`) conditionally injected AFTER the
+prune step — symbols without sector ETF coverage get 87 keys, those with coverage get 91.  
+Fix: added `setdefault(0.0)` for all 4 keys unconditionally after the Phase 89b block.  
+Committed to `fix/training-pipeline-audit`. Cache manually cleared (127,848 → 0 entries).
+
+---
+
+## Fix 2 + Fix B — Label/Normalization Redesign + DSR Correction — 2026-05-09
+
+**Background:** Second Opus 4.7 audit (acting as world-class quant) identified two structural
+issues more fundamental than the cache poisoning: (1) label/trading-rule misalignment, and
+(2) DSR N_TRIALS drastically underestimated. These were implemented alongside the v185 pipeline
+fixes in the same branch.
+
+### Fix B — DSR N_TRIALS_TESTED: 15 → 200
+
+**Problem:** `scripts/bootstrap_sharpe.py` computed DSR assuming only 15 model variants were
+ever tested. The actual count across this project is 184+ variants (v1–v184, plus intraday
+variants). DSR is logarithmic in N_TRIALS, but the gap between 15 and 200 is large:
+- At N=15: required Sharpe (sr_star) ≈ 1.74σ
+- At N=200: required Sharpe (sr_star) ≈ 2.55σ
+
+This means every historical DSR result in this log underestimated the selection bias penalty.
+The "borderline" intraday v29 p=0.807 would be far more damning at N=200.
+
+**Fix:** Updated all three defaults in `scripts/bootstrap_sharpe.py`:
+- Line 102: `n_trials_tested: int = 15` → `200`
+- Line 175: `n_trials_tested: int = 15` → `200`
+- Line 342: `--n-trials` default `15` → `200`
+
+**Impact:** All future DSR runs will correctly penalize for ~200 tested variants. Gate: DSR p > 0.95.
+
+---
+
+### Fix 2 — Triple-Barrier Label + Rolling Time-Series Normalization
+
+**Problem (label/trading-rule misalignment):**
+The model was trained with a **cross-sectional top-20% Sharpe label** — a stock is labeled 1
+if it ranks in the top quintile of peers by Sharpe-normalized 5-day return. But the trading rule
+executes an **ATR triple-barrier exit**: each position independently hits a 1.5×ATR target OR
+0.5×ATR stop OR times out at 5 days. These are fundamentally different optimization targets:
+- Training optimizes: "which stocks outperform peers?"
+- Inference optimizes: "will this stock hit its ATR target before its stop?"
+
+**Problem (cross-sectional normalization destroys macro signal):**
+`cs_normalize_by_group` z-scores features cross-sectionally (all symbols at same window date).
+Macro/regime features (VIX, SPY MA, breadth, credit spread) are identical across all symbols
+on the same date → std = 0 → z-score = 0. These features are zeroed out entirely. With triple-
+barrier labels (absolute), macro context is essential signal — "VIX is elevated vs recent history"
+should influence the model. Cross-sectional normalization makes this impossible.
+
+**The two must change together:** Triple-barrier labels are absolute (each stock independent),
+so cross-sectional ranking no longer makes sense as normalization. Rolling time-series z-scoring
+(each feature z-scored against that symbol's own trailing NORM_LOOKBACK=20 windows) is coherent
+with absolute labels.
+
+**Implementation:**
+
+1. **New module: `app/ml/ts_normalize.py`**
+   - `TSNormalizerState`: dataclass holding per-symbol rolling history (max 20 windows) and
+     frozen end-of-train `last_stats` for inference fallback. Includes `feature_names_hash`
+     for integrity checking at inference load time.
+   - `fit_transform_train(X, symbols, window_ids, feature_names)` → `(X_norm, keep_mask, state)`
+     - Processes rows in ascending (symbol, window_idx) order
+     - Each row normalized against trailing ≤20 prior rows of same symbol (no look-ahead)
+     - Rows with < MIN_WARMUP=8 prior windows flagged keep_mask=False (cold-start drop)
+     - Constant features (std < 1e-8) produce 0.0 output, not inf/nan
+     - ~5% of train rows dropped (8 windows × ~84 symbols / total ≈ 670 rows)
+   - `transform(X, symbols, window_ids, state)` → `(X_norm, keep_mask)`
+     - Extends history with each val/test row before normalizing the next
+     - Falls back to `state.last_stats` for unseen symbols at inference
+   - `save_state / load_state`: pickle serialization
+   - `assert_state_compatible`: raises ValueError on feature-name hash mismatch at load
+
+2. **`app/ml/training.py` — `_build_rolling_matrix`:**
+   - Replaced `cs_normalize_by_group` block with `fit_transform_train` + `transform` sequence
+   - Dropped cold-start rows from `y_train`/`meta_train` symmetrically with `keep_mask`
+   - State stored in `self._ts_norm_state`
+
+3. **`app/ml/training.py` — after `model.save()`:**
+   - TSNormalizerState persisted to `app/ml/models/swing_norm_v{version}.pkl`
+   - **Inference must load this file** before prediction — without it, live features are
+     normalized against an empty history and predictions are garbage.
+
+4. **`app/ml/training.py` — meta_rows:**
+   - Added `"symbol": symbol` key to both meta_row construction sites (lines ~548, ~1565)
+   - Required for `_sym_train = np.array([m["symbol"] for m in meta_train])` in TS normalize
+
+5. **`app/ml/training.py` — `ModelTrainer.__init__`:**
+   - `label_scheme` default: `"cross_sectional"` → `"triple_barrier"`
+   - `prediction_threshold` default: `0.35` → `0.50` (centered for absolute label)
+
+6. **`app/ml/retrain_config.py` — `SWING_RETRAIN`:**
+   - Added `label_scheme="triple_barrier"` explicitly for self-documentation
+
+7. **`scripts/train_model.py` — `--label-scheme`:**
+   - Default: `"atr"` → `"triple_barrier"`
+
+8. **`app/ml/training.py` — `_BASE_PRUNED`:**
+   - Removed `"vix_fear_spike"`, `"vix_percentile_1y"`, `"spy_trend_63d"` from pruned set
+   - Under TS-normalization, these macro features carry real signal (not zeroed by cross-sectional)
+
+9. **`tests/test_ts_normalize.py` (new, 13 tests):**
+   - Cold-start exclusion, output shape, constant-feature handling, no-lookahead proof,
+     fallback for unseen symbols at inference, pickle round-trip, feature hash mismatch detection
+
+**Label balance expectation:** With 1.5×ATR target / 0.5×ATR stop / 5-day horizon on US large-cap:
+~30–35% positive labels (hits target before stop). `scale_pos_weight ≈ 2.0` auto-computed at
+training.py lines 773–776 — no code change required.
+
+**What does NOT change:**
+- Walk-forward fold structure, EMBARGO_WINDOWS, WINDOW_DAYS=63, FORWARD_DAYS=5, STEP_DAYS=5
+- Feature engineering (engineer_features)
+- HPO trial budget, Optuna search space
+- Gate thresholds (swing > 0.80 avg Sharpe, no fold < -0.30)
+- Intraday model: untouched — Fix 2 is swing-only
+- FeatureStore schema, SCHEMA_VERSION (no new features added)
+
+**CRITICAL — Inference blocker:**  
+The TSNormalizerState must be loaded from `swing_norm_v{N}.pkl` before calling `model.predict`.
+This is not yet wired into the live inference path (`app/agents/portfolio_manager.py` or
+`PortfolioSelectorModel.predict`). **Do not promote v185 to live trading until the inference
+loader is updated.** The normalization state is saved alongside the model on every retrain.
+
+**Next: Retrain v185** on clean cache (0 entries) with all fixes applied:
+- Phase 89b schema fix (setdefault for sector-neutral keys)
+- Fix 2 (triple-barrier label + TS normalization)
+- Fix B (DSR N_TRIALS=200)
+
+```bash
+python scripts/train_model.py --no-fundamentals --workers 8 --allow-sacred-holdout
+```
+
+**Gate:** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 at N=200.
+Expected positive label rate: ~30–35%. Expected drop in AUC vs cross-sectional baseline
+is normal — triple-barrier AUC is inherently harder (absolute prediction vs relative ranking).
+A model with AUC 0.56 on triple-barrier labels and Sharpe > 0.80 in WF is deployable.
+
+**Full test suite status:** 775 passed, 0 failed (including 13 new ts_normalize tests).

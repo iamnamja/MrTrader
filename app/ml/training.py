@@ -81,8 +81,10 @@ _BASE_PRUNED: frozenset = frozenset([
     # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
     "earnings_proximity_days", "insider_score", "earnings_surprise",
     # sector_momentum / sector_momentum_5d un-pruned when sector_etf_history.parquet is present
-    "vix_fear_spike",
-    "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
+    # vix_fear_spike, vix_percentile_1y, spy_trend_63d: re-enabled in Fix 2.
+    # Under TS-normalization + triple-barrier labels these carry real macro signal;
+    # cs_normalize zeroed them (all symbols same value → std=0). Un-pruned here.
+    "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
     # Phase 92: vix_term_ratio, breadth_rsp_spy_ratio_20d, credit_hyg_ief_20d,
     # sector_dispersion_20d, spy_above_ma50, spy_above_ma200 are now wired into
@@ -544,6 +546,7 @@ def _process_symbol_windows_worker(
         y_vals.append(label)
         meta_rows.append({
             "window_idx": w_start_idx,
+            "symbol": symbol,
             "outcome_return": outcome_return,
             "vol_percentile": features.get("vol_percentile_52w", 0.5),
             "avg_volume": avg_vol,
@@ -575,12 +578,12 @@ class ModelTrainer:
         provider: str = "polygon",
         use_feature_store: bool = True,
         model_type: str = "xgboost",
-        label_scheme: str = "cross_sectional",
+        label_scheme: str = "triple_barrier",
         top_n_features: Optional[int] = None,
         n_workers: int = 0,
         hpo_trials: int = 0,
         walk_forward_folds: int = 0,
-        prediction_threshold: float = 0.35,
+        prediction_threshold: float = 0.50,
         two_stage: bool = False,
         three_stage: bool = False,
         multi_window: bool = False,
@@ -869,6 +872,15 @@ class ModelTrainer:
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
         self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
 
+        # Persist TS normalizer state for inference parity (Fix 2).
+        # Must be loaded before prediction — without this, live features are
+        # normalized against an empty history and predictions are garbage.
+        if hasattr(self, "_ts_norm_state"):
+            from app.ml.ts_normalize import save_state as _ts_save
+            _norm_path = str(Path(self.model_dir) / f"swing_norm_v{version}.pkl")
+            _ts_save(self._ts_norm_state, _norm_path)
+            logger.info("TSNormalizerState saved to %s", _norm_path)
+
         return version
 
     # ── Option B: regime-split helper ────────────────────────────────────────
@@ -1119,16 +1131,35 @@ class ModelTrainer:
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
-        # Cross-sectional normalization: z-score each feature within each window
-        # (across all symbols at the same point in time) to remove regime/sector bias.
-        if len(X_train) > 0 and len(meta_train) > 0:
-            train_window_ids = np.array([m["window_idx"] for m in meta_train])
-            X_train = cs_normalize_by_group(X_train, train_window_ids)
-        if len(X_test) > 0 and len(meta_test) > 0:
-            test_window_ids = np.array([m["window_idx"] for m in meta_test])
-            X_test = cs_normalize_by_group(X_test, test_window_ids)
-
+        # Fix 2: Rolling time-series normalization replaces cross-sectional normalization.
+        # Each (symbol, feature) is z-scored against that symbol's trailing NORM_LOOKBACK
+        # windows. Preserves macro/regime signal (VIX, SPY MA, breadth) that cs_normalize
+        # destroys (identical cross-sectional values → std=0 → zeroed out).
+        # Required for triple-barrier labels which are absolute, not cross-sectional.
         feature_names = self._last_feature_names
+        if len(X_train) > 0 and len(meta_train) > 0:
+            from app.ml.ts_normalize import fit_transform_train as _ts_fit
+            _sym_train = np.array([m["symbol"] for m in meta_train])
+            _wid_train = np.array([m["window_idx"] for m in meta_train])
+            X_train, _keep_train, self._ts_norm_state = _ts_fit(
+                X_train, _sym_train, _wid_train, feature_names
+            )
+            if not np.all(_keep_train):
+                y_train = y_train[_keep_train]
+                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
+        else:
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            self._ts_norm_state = _TSState()
+
+        if len(X_test) > 0 and len(meta_test) > 0:
+            from app.ml.ts_normalize import transform as _ts_transform
+            _sym_test = np.array([m["symbol"] for m in meta_test])
+            _wid_test = np.array([m["window_idx"] for m in meta_test])
+            X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
+            if not np.all(_keep_test):
+                y_test = y_test[_keep_test]
+                meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
+
         self._last_all_dates = all_dates
         return X_train, y_train, X_test, y_test, feature_names, meta_train
 
@@ -1533,6 +1564,7 @@ class ModelTrainer:
             y_vals.append(label)
             meta_rows.append({
                 "window_idx": w_start_idx,
+                "symbol": symbol,
                 "outcome_return": outcome_return,
                 "vol_percentile": features.get("vol_percentile_52w", 0.5),
                 "avg_volume": avg_vol,

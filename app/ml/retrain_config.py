@@ -27,6 +27,7 @@ RETRAIN_WEEKDAY: int = 2  # Wednesday
 # HPO: 20 trials per weekly retrain (~3 min extra, finds slightly better params)
 SWING_RETRAIN: dict = dict(
     model_type="xgboost",
+    label_scheme="triple_barrier",    # Fix 2: aligned with ATR exit rule; was "cross_sectional"
     hpo_trials=20,
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
     n_workers=8,
