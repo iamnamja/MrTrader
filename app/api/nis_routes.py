@@ -250,7 +250,7 @@ def get_recent_decisions(
                         "outcome_pnl_pct": r.outcome_pnl_pct,
                         "vol_targeting_mult": r.vol_targeting_mult,
                         "regime_sizing_mult": r.regime_sizing_mult,
-                        "regime_label": r.regime_label,
+                        "regime_label": r.regime_label_at_decision,
                     }
                     for r in rows
                 ],
