@@ -33,8 +33,9 @@ def test_sacred_holdout_constant_defined():
     parsed = _parse_sacred_holdout_start()
     assert isinstance(parsed, date)
     # Anchored to the value the roadmap committed to
-    assert SACRED_HOLDOUT_START == "2025-11-09"
-    assert parsed == date(2025, 11, 9)
+    # 2026-11-09: reset after 2025-11-09 boundary was exhausted by v182–v185 retrains
+    assert SACRED_HOLDOUT_START == "2026-11-09"
+    assert parsed == date(2026, 11, 9)
 
 
 # ── 2. Boundary is inclusive ─────────────────────────────────────────────────
@@ -91,14 +92,19 @@ def test_bypass_off_by_default():
 # ── 5. Input coercion (str / datetime / pandas Timestamp) ───────────────────
 
 def test_guard_accepts_iso_string():
+    # 2026-01-01 is now before the 2026-11-09 holdout → safe
+    assert_no_sacred_holdout("2026-01-01")
+    # 2026-11-09 and beyond must be rejected
     with pytest.raises(RuntimeError):
-        assert_no_sacred_holdout("2026-01-01")
+        assert_no_sacred_holdout("2026-11-09")
     assert_no_sacred_holdout("2024-01-01")
 
 
 def test_guard_accepts_datetime():
+    # 2026-01-01 is now before the 2026-11-09 holdout → safe
+    assert_no_sacred_holdout(datetime(2026, 1, 1, 12, 0, 0))
     with pytest.raises(RuntimeError):
-        assert_no_sacred_holdout(datetime(2026, 1, 1, 12, 0, 0))
+        assert_no_sacred_holdout(datetime(2026, 11, 9, 0, 0, 0))
 
 
 def test_guard_accepts_none_silently():
