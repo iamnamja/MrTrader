@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -73,6 +72,7 @@ def _fetch_symbol_history(symbol: str) -> list[dict]:
     def _income_entries(tag: str) -> list[dict]:
         """Annual income statement items (spanning ~12 months)."""
         entries = _annual_entries(tag)
+
         def _span(e):
             try:
                 from datetime import datetime as _dt
