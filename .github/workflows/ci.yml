@@ -99,7 +99,8 @@ jobs:
         run: |
           pytest tests/ \
             --ignore=tests/test_strategy_regression.py \
-            -v --tb=short -q \
+            --tb=short -q \
+            --durations=20 \
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml \
