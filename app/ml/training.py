@@ -222,13 +222,20 @@ def _process_symbol_windows_worker(
     fe = FeatureEngineer()
     df = pd.read_parquet(_io.BytesIO(df_bytes))
 
-    # Phase 93: resolve effective pruned set ONCE per worker call. If FMP
-    # fundamentals were passed, we can keep pe_ratio / pb_ratio (computed PIT).
+    # Phase 93: resolve effective pruned set ONCE per worker call.
+    # Un-prune pe_ratio/pb_ratio whenever the FMP parquet is in use globally
+    # (not just for this symbol) — ensures all symbols have the same feature schema.
+    # Symbols without FMP coverage get 0.0 defaults; schema is always consistent.
     _effective_pruned = PRUNED_FEATURES
-    if fmp_fundamentals_history:
-        _effective_pruned = frozenset(
-            f for f in PRUNED_FEATURES if f not in {"pe_ratio", "pb_ratio"}
-        )
+    try:
+        from app.ml.retrain_config import USE_FMP_FUNDAMENTALS as _UF_W
+        from pathlib import Path as _PW
+        if _UF_W and _PW("data/fundamentals/fmp_fundamentals_history.parquet").exists():
+            _effective_pruned = frozenset(
+                f for f in PRUNED_FEATURES if f not in {"pe_ratio", "pb_ratio"}
+            )
+    except Exception:
+        pass
 
     X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
     idx = df.index.date
@@ -400,6 +407,7 @@ def _process_symbol_windows_worker(
         if features is not None and feature_names and len(features) != len(feature_names):
             features = None  # stale schema — recompute
 
+        freshly_computed = features is None
         if features is None:
             try:
                 # Use PIT regime score for this window (eliminates train/serve skew).
@@ -416,9 +424,6 @@ def _process_symbol_windows_worker(
                 )
             except Exception:
                 continue
-            if features:
-                to_cache.append((symbol, w_end_date, features))
-
         if not features:
             continue
 
@@ -445,6 +450,11 @@ def _process_symbol_windows_worker(
             "revenue_growth": 0.0, "debt_to_equity": 0.0,
             "gross_margin": 0.0, "operating_margin": 0.0, "fcf_margin": 0.0,
         }
+        if features:
+            # Always inject schema defaults so all symbols have the same keys.
+            # Symbols without FMP coverage get 0.0; those with FMP data get real values below.
+            for _k, _default in _FMP_SCHEMA.items():
+                features.setdefault(_k, _default)
         if fmp_fundamentals_history is not None and features:
             try:
                 from app.data.fmp_fundamentals import lookup_pit_from_index
@@ -497,6 +507,10 @@ def _process_symbol_windows_worker(
             for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
                        "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
                 features.setdefault(_k, 0.0)
+            # Cache AFTER setdefault so every cached entry has all 94 keys.
+            # Regime V2, EDGAR, FMP are always reapplied on cache read (fresh data).
+            if freshly_computed:
+                to_cache.append((symbol, w_end_date, dict(features)))
 
         # Phase 88: inject regime V2 scalars (date-level, same for all symbols on a given day)
         if regime_v2_map:
@@ -1144,6 +1158,7 @@ class ModelTrainer:
                 X_train, _sym_train, _wid_train, feature_names
             )
             if not np.all(_keep_train):
+                X_train = X_train[_keep_train]
                 y_train = y_train[_keep_train]
                 meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
         else:
@@ -1156,6 +1171,7 @@ class ModelTrainer:
             _wid_test = np.array([m["window_idx"] for m in meta_test])
             X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
             if not np.all(_keep_test):
+                X_test = X_test[_keep_test]
                 y_test = y_test[_keep_test]
                 meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
 
@@ -1539,6 +1555,7 @@ class ModelTrainer:
                 if features is not None and feature_names and len(features) != len(feature_names):
                     features = None
 
+            _inst_freshly_computed = features is None
             if features is None:
                 features = self.feature_engineer.engineer_features(
                     symbol, window_df,
@@ -1548,11 +1565,16 @@ class ModelTrainer:
                     as_of_date=w_end_date,
                     vix_history=vix_history,
                 )
-                if features is not None:
-                    to_cache.append((symbol, w_end_date, features))
 
             if features is None:
                 continue
+
+            # Ensure sector-neutral keys exist regardless of cache hit/miss
+            for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
+                       "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
+                features.setdefault(_k, 0.0)
+            if _inst_freshly_computed:
+                to_cache.append((symbol, w_end_date, dict(features)))
 
             features = {k: v for k, v in features.items() if k not in _resolve_pruned_features()}
             if not feature_names:
