@@ -2242,3 +2242,22 @@ Six fixes committed:
 2. **Expand swing universe to Russell 1000** — ~10× more cross-sectional training samples. More data for TS normalization to find signal. (Opus Recommendation 1)
 3. **Feature pruning** — correlation-cluster pruning ~94 → ~30 features. Reduce noise for sparse folds. (Opus Recommendation 3)
 4. The DSR gate cannot be met without avg Sharpe improvement — focus on the pre-filter removal first as highest expected impact.
+
+---
+
+## WF-A1 — Walk-Forward Pipeline Alignment (TS Norm + VIX Routing) — 2026-05-10
+
+**Context:** Multi-LLM audit revealed that the walk-forward simulator was using `cs_normalize` always, while the live PM uses per-symbol TS normalization (`swing_norm_vN.pkl`) for v185+ models. Additionally `model.predict()` was called directly, bypassing `predict_with_vix` regime routing. `regime_score` was hardcoded to 0.5. These three bugs mean v186's +0.644 walk-forward Sharpe was measured against a **different inference path than live trading**.
+
+**Changes (Phase WF-A1):**
+- `agent_simulator.py`: new `_normalize_for_inference(X, symbols, day)` — loads `swing_norm_vN.pkl` via `ts_normalize.transform`, falls back to `cs_normalize` for legacy pre-v185 models with INFO log
+- `agent_simulator.py`: new `_vix_at(vix_history, day)` — extracts last VIX close ≤ day (refactored from inline logic)
+- `agent_simulator.py`: `_pm_score` now calls `predict_with_vix(X, vix_level=vix_now)` instead of `predict(X)`
+- `agent_simulator.py`: `regime_score_history` constructor arg — PIT daily regime scores passed per-fold (WF-C1 hook, neutral 0.5 default when absent)
+- Key design note: `window_id = day.toordinal()` (not `date.today()`) so each sim day accumulates its own TS trailing history correctly
+
+**Tests:** 7 new tests in `tests/backtesting/test_agent_simulator_normalization.py` — all passing
+
+**Backward compatibility:** Pre-v185 models (no `_ts_norm_state`) fall through to `cs_normalize` — identical to pre-fix behavior. Single INFO log per run.
+
+**Next:** Re-run v186 walk-forward with fixed simulator to get first honest Sharpe reading. Gate results from v186 and all prior models are invalidated.
