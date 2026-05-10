@@ -139,7 +139,7 @@ BENIGN_REGIME_THRESHOLD: float = 0.5
 # Verified against app/ml/features.py output — names must match exactly.
 BENIGN_SWING_FEATURES: tuple = (
     # Momentum (8)
-    "rsi_14", "macd_hist", "momentum_5d", "momentum_20d", "momentum_60d",
+    "rsi_14", "macd_histogram", "momentum_5d", "momentum_20d", "momentum_60d",
     "momentum_252d_ex1m", "price_change_pct", "consecutive_days",
     # Trend (7)
     "price_above_ema20", "price_above_ema50", "ema20_dist", "ema50_dist",

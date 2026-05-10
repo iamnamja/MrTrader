@@ -1923,13 +1923,58 @@ per training window.
 - ~21% of trading days (2018-2026) have composite_score < 0.5 (adverse regime)
 - Extended adverse periods: Mar-Dec 2022, Q4 2018, Mar-Apr 2020, early 2025
 
-**Next step: Train v182 with `--benign-model --allow-sacred-holdout` and run CPCV.**
+**v182 Training Result (2026-05-09):**
 
-```bash
-python scripts/train_model.py --model swing --benign-model --no-fundamentals --workers 8
-python scripts/walkforward_tier3.py --model swing --cpcv --swing-model-version 182 --benign-gate
+```
+python scripts/train_model.py --benign-model --no-fundamentals --workers 8 --allow-sacred-holdout
 ```
 
-**Expected outcome:** Training on ~79% of days (favorable regime) should substantially
-improve OOS Sharpe vs v181 baseline (+0.12 CPCV mean). Hypothesis: removing adverse-regime
-training rows eliminates the noise that causes the model to mis-calibrate on bear market patterns.
+- **AUC: 0.527** — below 0.65 gate threshold; "Weak signal, do not trade live"
+- Training time: 568s (~9.5 min) with 8 workers
+- MODEL DRIFT ALERT fired
+- **Decision: do NOT promote v182. v181 remains ACTIVE.**
+- Known issue during training: `macd_hist` mismatch (correct name is `macd_histogram`).
+  Fixed in `retrain_config.py` BENIGN_SWING_FEATURES post-training.
+
+**Analysis:** Regime-filtered training on ~79% of favorable-regime windows produced
+a near-random classifier (AUC 0.527). Hypothesis not confirmed by in-sample metric.
+Possible causes: (1) feature keep-list reduced from 35→34 features due to macd_hist
+mismatch; (2) regime filtering may be too aggressive, removing too many training samples
+and reducing generalization; (3) regime score not informative enough as a training filter.
+
+**v183 Training Result (2026-05-09):**
+- **AUC: 0.553** — still below 0.65 threshold; macd_histogram fix recovered 0.026 AUC vs v182
+- **Decision: do NOT promote v183. Benign-filter training approach not viable at this AUC.**
+
+**v184 Training Result (2026-05-09):**
+- Standard training (all windows, no benign filter, full features, `--allow-sacred-holdout`)
+- **AUC: 0.510** — WORSE than v181; confirms AUC collapse is systemic, not filter-related
+- v184 log showed: `Inhomogeneous feature rows: 69741/127360 rows (54%) dropped`
+- Root cause analysis (Opus 4.7 deep audit, 2026-05-09): **FeatureStore cache poisoned**
+  — cache keyed only by `(symbol, as_of_date)`, not schema version. Entries from pre-v179
+  pruning (with RSI/MACD/Stoch) mixed with post-v179 entries (without those features).
+  Majority-wins filter threw away 46% of training data in a **non-random** way (symbols
+  lacking FMP/sector coverage dropped), biasing training toward post-2022 large-caps.
+
+**Training pipeline fixes applied (2026-05-09) — branch: fix/training-pipeline-audit:**
+1. `feature_store.py`: Bumped SCHEMA_VERSION v5 → v6 → auto-clears poisoned cache
+2. `training.py`: FMP key injection now uses a fixed 8-key schema with 0.0 defaults
+   (eliminates FMP-coverage-dependent row length divergence)
+3. `training.py`: Inhomogeneous rows >10% now raises RuntimeError (not silently dropped)
+4. `training.py`: Separate val set carved from newest 20% of train windows for early
+   stopping and threshold tuning; X_test now ONLY used for final AUC evaluation
+5. `training.py`: Regime score map always built; workers use PIT score per window
+   (eliminates `regime_score=0.5` hardcode → train/serve skew fixed)
+6. `training.py`: Checkpoint key now includes PRUNED_FEATURES hash + SCHEMA_VERSION
+   (prevents cross-run checkpoint reuse when schema changes)
+7. Old poisoned checkpoints deleted.
+
+**Next step: Retrain v185 on clean cache to get the true baseline AUC.**
+
+```bash
+git checkout fix/training-pipeline-audit
+python scripts/train_model.py --no-fundamentals --workers 8 --allow-sacred-holdout
+```
+
+**Expected:** AUC should recover toward v181 baseline (~0.65+) if cache poisoning was
+the root cause. If still low, deeper investigation needed (label informativeness, etc.).

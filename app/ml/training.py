@@ -391,17 +391,23 @@ def _process_symbol_windows_worker(
             if pit_score is None or pit_score < benign_threshold:
                 continue  # pre-2018 or adverse regime — do not train on this window
 
-        # Cache read from pre-loaded dict (no SQLite in subprocess)
+        # Cache read from pre-loaded dict (no SQLite in subprocess).
+        # Validate length against established schema — even on the FIRST window
+        # (feature_names empty), reject if cache has a different count than the
+        # first recomputed row, which is set immediately after this block.
         features = symbol_cache.get(str(w_end_date))
         if features is not None and feature_names and len(features) != len(feature_names):
-            features = None
+            features = None  # stale schema — recompute
 
         if features is None:
             try:
+                # Use PIT regime score for this window (eliminates train/serve skew).
+                # Falls back to regime_score (caller-supplied scalar or None → 0.5 in features.py).
+                _pit_regime = (regime_score_map or {}).get(w_end_date) if regime_score_map else regime_score
                 features = fe.engineer_features(
                     symbol, window_df,
                     sector=sector,
-                    regime_score=regime_score,
+                    regime_score=_pit_regime,
                     fetch_fundamentals=fetch_fundamentals,
                     as_of_date=w_end_date,
                     vix_history=vix_history,
@@ -431,20 +437,27 @@ def _process_symbol_windows_worker(
                 features["debt_to_equity"] = pit["debt_to_equity"]
 
         # Phase 93: FMP quarterly fundamentals — strictly richer than EDGAR.
-        # Overrides EDGAR values when present and additionally fills in
-        # PE/PB (computed from window-end close) and margin family.
-        if fmp_fundamentals_history and features:
+        # Always inject all 8 FMP keys (0.0 when no PIT data) to keep every row
+        # at the same length regardless of FMP coverage. Schema must stay fixed.
+        _FMP_SCHEMA = {
+            "pe_ratio": 0.0, "pb_ratio": 0.0, "profit_margin": 0.0,
+            "revenue_growth": 0.0, "debt_to_equity": 0.0,
+            "gross_margin": 0.0, "operating_margin": 0.0, "fcf_margin": 0.0,
+        }
+        if fmp_fundamentals_history is not None and features:
             try:
                 from app.data.fmp_fundamentals import lookup_pit_from_index
                 _close_now = float(window_df["close"].iloc[-1]) if len(window_df) else 0.0
                 fmp_pit = lookup_pit_from_index(
                     fmp_fundamentals_history, w_end_date, latest_close=_close_now,
                 )
-                if fmp_pit is not None:
-                    for _k, _v in fmp_pit.items():
-                        features[_k] = _v
+                # Inject all 8 keys — use PIT value when available, else 0.0
+                fmp_values = fmp_pit if fmp_pit is not None else {}
+                for _k, _default in _FMP_SCHEMA.items():
+                    features[_k] = fmp_values.get(_k, _default)
             except Exception:
-                pass
+                for _k, _default in _FMP_SCHEMA.items():
+                    features.setdefault(_k, _default)
 
         # Phase 89b: override sector_momentum / sector_momentum_5d with PIT ETF bars
         if sector_etf_bars and features:
@@ -476,6 +489,13 @@ def _process_symbol_windows_worker(
                     features["momentum_5d_sector_neutral"] = (
                         features.get("momentum_5d", 0.0) - features["sector_momentum_5d"]
                     )
+
+        # Always ensure sector-neutral keys exist (0.0 when ETF data unavailable)
+        # Prevents inhomogeneous rows when some symbols lack sector ETF coverage.
+        if features:
+            for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
+                       "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
+                features.setdefault(_k, 0.0)
 
         # Phase 88: inject regime V2 scalars (date-level, same for all symbols on a given day)
         if regime_v2_map:
@@ -786,24 +806,41 @@ class ModelTrainer:
                 vix_threshold=float(_CFG_REGIME_SPLIT_VIX_THRESHOLD),
             )
 
-        # Use test set as validation for early stopping (avoids overfitting on noisy data)
+        # Carve an internal validation slice from the NEWEST 20% of training windows.
+        # This prevents X_test from being touched during early stopping or threshold
+        # tuning — X_test is reserved strictly for the final OOS AUC evaluation.
+        X_fit, y_fit, sample_weight_fit = X_train, y_train, sample_weight
+        X_val_es, y_val_es = X_test, y_test  # fallback if split fails
+        if len(meta_train) > 0:
+            _widx = np.array([m["window_idx"] for m in meta_train])
+            _val_thresh = np.percentile(_widx, 80)  # newest 20% of train windows
+            _val_mask = _widx >= _val_thresh
+            if _val_mask.sum() > 10 and (~_val_mask).sum() > 10:
+                X_val_es, y_val_es = X_train[_val_mask], y_train[_val_mask]
+                X_fit, y_fit = X_train[~_val_mask], y_train[~_val_mask]
+                sample_weight_fit = sample_weight[~_val_mask] if sample_weight is not None else None
+                logger.info(
+                    "Train/val/test split: fit=%d rows, val_es=%d rows, test=%d rows",
+                    len(X_fit), len(X_val_es), len(X_test),
+                )
+
         self.model.train(
-            X_train, y_train, feature_names,
+            X_fit, y_fit, feature_names,
             scale_pos_weight=spw if self.label_scheme != "lambdarank" else None,
-            X_val=X_test, y_val=y_test,
+            X_val=X_val_es, y_val=y_val_es,
             early_stopping_rounds=30,
-            sample_weight=sample_weight,
+            sample_weight=sample_weight_fit,
             feature_weights=mi_scores,
             groups=train_groups,
             val_groups=val_groups,
         )
 
-        # Tune prediction threshold on validation set
-        if len(X_test) > 0:
-            tuned_t = self.model.tune_threshold(X_test, y_test)
-            logger.info("Prediction threshold tuned to %.2f", tuned_t)
+        # Tune prediction threshold on val set (not test — test is untouched)
+        if len(X_val_es) > 0:
+            tuned_t = self.model.tune_threshold(X_val_es, y_val_es)
+            logger.info("Prediction threshold tuned to %.2f (on val set)", tuned_t)
 
-        # Evaluate on held-out test set
+        # Evaluate on held-out test set — first and only time X_test is used
         metrics = self._evaluate(X_test, y_test, threshold=self.prediction_threshold)
         logger.info("Out-of-sample metrics: %s", metrics)
 
@@ -1021,36 +1058,37 @@ class ModelTrainer:
         embargo_start = min(split_idx + EMBARGO_WINDOWS, len(window_starts))
         test_window_starts = window_starts[embargo_start:]
 
-        # Keep regime_score=0.5 as a neutral placeholder for the scalar feature.
-        # The 5 macro components (spy_above_ma50, vix_term_ratio, etc.) are already
-        # injected PIT-correctly via macro_history in engineer_features(). The
-        # composite scalar is used only for the P1 BenignFilter row-exclusion logic
-        # (see regime_score_map below) — not as a training feature.
-        regime_score = 0.5
-
-        # P1: Build PIT regime score map for BenignModel training filter.
+        # Build PIT regime score map — used for two purposes:
+        # 1. Inject correct per-window composite regime_score into engineer_features()
+        #    (eliminates the train/serve skew from the old hardcoded 0.5 placeholder)
+        # 2. BenignModel row-exclusion filter (when _benign_enabled=True)
         _benign_enabled = getattr(self, "_benign_enabled", False)
         _benign_threshold = getattr(self, "_benign_threshold", 0.5)
         _regime_score_map: Dict = {}
-        if _benign_enabled:
-            try:
-                from app.ml.regime_score_pit import build_regime_score_map
-                _regime_score_map = build_regime_score_map()
-                if _regime_score_map:
-                    favorable = sum(1 for s in _regime_score_map.values() if s >= _benign_threshold)
-                    logger.info(
-                        "P1 BenignFilter: regime map has %d days, %d (%.0f%%) favorable (>= %.2f)",
-                        len(_regime_score_map), favorable,
-                        100 * favorable / len(_regime_score_map), _benign_threshold,
-                    )
-                else:
-                    logger.warning("P1 BenignFilter: empty regime map — filter disabled")
+        try:
+            from app.ml.regime_score_pit import build_regime_score_map
+            _regime_score_map = build_regime_score_map()
+            if _regime_score_map:
+                favorable = sum(1 for s in _regime_score_map.values() if s >= _benign_threshold)
+                logger.info(
+                    "Regime score map: %d days, %d (%.0f%%) favorable (score >= %.2f)",
+                    len(_regime_score_map), favorable,
+                    100 * favorable / len(_regime_score_map), _benign_threshold,
+                )
+                if _benign_enabled and not favorable:
+                    logger.warning("P1 BenignFilter: no favorable days in regime map — filter disabled")
                     _benign_enabled = False
-            except Exception as _exc:
-                logger.warning("P1 BenignFilter: failed to build regime map (%s) — filter disabled", _exc)
-                _benign_enabled = False
+            else:
+                logger.warning("Regime score map empty — regime_score feature will use 0.5 fallback")
+                if _benign_enabled:
+                    _benign_enabled = False
+        except Exception as _exc:
+            logger.warning("Could not build regime score map (%s) — regime_score=0.5 fallback", _exc)
         # Cache on self so _build_rolling_matrix can access without re-building
         self._regime_score_map_cache = _regime_score_map
+        # regime_score is now per-window (looked up in worker from _regime_score_map);
+        # pass sentinel None so workers know to use the map rather than a fixed scalar.
+        regime_score = None
 
         # Pre-fetch fundamentals once per symbol to warm the cache.
         # The rolling loop calls engineer_features ~20x per symbol; without this
@@ -1561,9 +1599,12 @@ class ModelTrainer:
         _benign_threshold = getattr(self, "_benign_threshold", 0.5)
         _benign_keeplist = getattr(self, "_benign_keeplist", None)
         _regime_score_map: Dict = getattr(self, "_regime_score_map_cache", {})
+        from app.ml.feature_store import SCHEMA_VERSION as _FS_VERSION
+        _pruned_hash = _hashlib.md5(str(sorted(PRUNED_FEATURES)).encode()).hexdigest()[:8]
         _cfg_str = (
             f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}"
             f":benign={_benign_enabled}:thresh={_benign_threshold}"
+            f":pruned={_pruned_hash}:schema={_FS_VERSION}"
         )
         _cfg_key = _hashlib.md5(_cfg_str.encode()).hexdigest()[:8]
         _ckpt_path = _ckpt_dir / f"swing_checkpoint_{_cfg_key}.pkl"
@@ -1725,8 +1766,9 @@ class ModelTrainer:
                 getattr(self, "_label_abs_hurdle", 0.0),
                 _macro_history_df,
                 _fmp_fund_by_symbol.get(symbol),
-                # P1: BenignModel filter args
-                _regime_score_map if _benign_enabled else None,
+                # Regime score map — always passed for PIT regime_score lookup;
+                # also used for benign-filter row exclusion when _benign_enabled=True.
+                _regime_score_map if _regime_score_map else None,
                 _benign_enabled,
                 _benign_threshold,
                 _benign_keeplist,
@@ -1812,9 +1854,25 @@ class ModelTrainer:
             lengths = [len(r) for r in X_rows]
             target_len = max(set(lengths), key=lengths.count)
             if len(set(lengths)) > 1:
+                n_bad = sum(1 for ln in lengths if ln != target_len)
+                bad_pct = n_bad / len(lengths)
+                if bad_pct > 0.10:
+                    # >10% rows have wrong length — this is a schema bug, not noise.
+                    # Most likely cause: stale FeatureStore cache (bump SCHEMA_VERSION
+                    # in feature_store.py to force a clear) or FMP key count mismatch.
+                    bad_lengths = sorted(set(ln for ln in lengths if ln != target_len))
+                    raise RuntimeError(
+                        f"Inhomogeneous feature rows: {n_bad}/{len(lengths)} rows "
+                        f"({bad_pct:.1%}) have wrong length {bad_lengths} vs expected "
+                        f"{target_len}. This indicates a schema mismatch — likely a "
+                        f"stale FeatureStore cache. Bump SCHEMA_VERSION in feature_store.py "
+                        f"to clear the cache, then retrain."
+                    )
                 logger.warning(
-                    "Inhomogeneous feature rows detected — keeping only len=%d (%d/%d rows)",
-                    target_len, lengths.count(target_len), len(lengths),
+                    "Inhomogeneous feature rows detected — dropping %d/%d rows (%.1f%%) "
+                    "with len != %d (lengths seen: %s)",
+                    n_bad, len(lengths), bad_pct * 100, target_len,
+                    sorted(set(lengths)),
                 )
                 filtered = [(x, y, m) for x, y, m in zip(X_rows, y_vals, meta_rows) if len(x) == target_len]
                 X_rows, y_vals, meta_rows = zip(*filtered) if filtered else ([], [], [])
