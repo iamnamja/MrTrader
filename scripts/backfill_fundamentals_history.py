@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -73,6 +72,7 @@ def _fetch_symbol_history(symbol: str) -> list[dict]:
     def _income_entries(tag: str) -> list[dict]:
         """Annual income statement items (spanning ~12 months)."""
         entries = _annual_entries(tag)
+
         def _span(e):
             try:
                 from datetime import datetime as _dt
@@ -134,12 +134,8 @@ def _fetch_symbol_history(symbol: str) -> list[dict]:
 
 
 def run(workers: int = 4, dry_run: bool = False) -> None:
-    from app.utils.constants import SP_100_TICKERS
-    try:
-        from app.utils.constants import SP_500_TICKERS
-        symbols = list(SP_500_TICKERS)
-    except ImportError:
-        symbols = list(SP_100_TICKERS)
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    symbols = list(RUSSELL_1000_TICKERS)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 

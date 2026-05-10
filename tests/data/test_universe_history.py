@@ -16,13 +16,6 @@ def _clear_cache():
     invalidate_cache()
 
 
-def _make_members_at(mapping: dict):
-    """Return a members_at stub that returns mapping[as_of] by nearest key lookup."""
-    def _stub(index, as_of):
-        return mapping.get(as_of, [])
-    return _stub
-
-
 def test_pit_union_combines_start_and_end():
     start = date(2022, 1, 1)
     end = date(2022, 6, 30)

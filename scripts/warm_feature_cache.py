@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.ml.feature_store import FeatureStore  # noqa: E402
 from app.ml.features import FeatureEngineer  # noqa: E402
-from app.utils.constants import SP_500_TICKERS, SECTOR_MAP  # noqa: E402
+from app.utils.constants import RUSSELL_1000_TICKERS, SECTOR_MAP  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ def main():
                         help="Symbols to warm (default: full SP500 universe)")
     args = parser.parse_args()
 
-    symbols = args.symbols or SP_500_TICKERS
+    symbols = args.symbols or RUSSELL_1000_TICKERS
     warm(symbols, args.years)
 
 

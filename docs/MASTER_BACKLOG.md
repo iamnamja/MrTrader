@@ -1,15 +1,16 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-09  
-**Status:** Paper trading only. Best honest intraday: v51 +0.529. Best honest swing: v171 (-0.632 avg, +0.67 fold5) — accepted as champion. Live trading fully operational after P0-P3 fixes (PRs #189, #190).  
-**Completed this session (2026-05-09):**
-- **P0**: Fixed `app.database.db` import crash in `force_close` + CI guard
-- **P1**: Limit order lifecycle redesign — adaptive re-quoting (30min/20bps), EOD escalation at 3:15PM, 8 new configurable agent_config keys
-- **P2**: Unified reconciliation — fixed ghost-position guard in startup_reconciler, added ghost detection to per-cycle `_reconcile_positions`, age guard protects fresh fills
-- **P3**: Production invariant on fake order IDs, test isolation verified
-- **ML Option A**: v171 accepted as swing champion
-- **ML Options B+C**: Infrastructure built — regime-split training + configurable label horizon. v180 (10d label) training in progress.
-**Next:** Await v180 WF results. If fold 3 improves → extend to 15d. Run Option B (regime split, VIX threshold 20). See ML_EXPERIMENT_LOG.md for decision tree.
+**Last updated:** 2026-05-10  
+**Status:** Paper trading only. Best honest intraday: v51 +0.529. Best honest swing: v186 (training 2026-05-10, results pending). Live trading fully operational.  
+**Completed this session (2026-05-10):**
+- **WF-A1** (PR #198 ✅): AgentSimulator alignment — TS norm state, `predict_with_vix`, PIT `regime_score_history`. 7 tests.
+- **Startup/logging/settings** (PR #198 ✅): `dictConfig` replaces handler fan-out (70x banner duplication fixed); `lifespan` replaces deprecated `@app.on_event`; `INITIAL_CAPITAL` scrub in `config.py` + `__main__.py`
+- **WF-A2/A3** (PR #199/200 ✅): Full Russell 1000 universe alignment across 13 system components. Training, PM live, walk-forward swing (seed + fold filter), CPCV, backfill scripts all now use `RUSSELL_1000_TICKERS`. `pit_union()` + `historical_trade_symbols()` helpers added for survivorship-bias correction.
+- **Universe audit (Opus 4.7)**: Confirmed R2K deferred (no PIT data, yfinance unreliable, below Alpaca liquidity). Next data task: rebuild `russell1000_membership.parquet` with all 750 tickers + real PIT dates.
+**Next:** 
+- Run `POST /api/watchlist/bulk` on prod to reseed DB with R1K (one-time manual action)
+- Rebuild `russell1000_membership.parquet` (P0 data task)
+- Await v186 WF results (triple-barrier + TS norm). See ML_EXPERIMENT_LOG.md.
 
 ---
 
@@ -196,7 +197,7 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `app/ml/intraday_trainer.py`  
 **Deliverable:** Model can learn "top 20% momentum + VIX > 25 → avoid". Currently impossible.
 
-### 3b. Triple-Barrier Label + TS Normalization ✅ COMPLETE (2026-05-09/10) — v185 training in progress
+### 3b. Triple-Barrier Label + TS Normalization ✅ COMPLETE (2026-05-09/10) — v186 training (swing_v186 active paper)
 
 **Why:** Two structural issues identified in Opus 4.7 quant audit (2026-05-09):
 1. Label/trading-rule mismatch: model trained on cross-sectional top-20% Sharpe, but trades use ATR triple-barrier exit — different optimization targets
@@ -213,9 +214,33 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 - `app/ml/retrain_config.py`: `SWING_RETRAIN` now explicitly sets `label_scheme="triple_barrier"`
 - 1771 tests pass, 0 failures
 
-**v185 training status:** In progress (2026-05-10). Clean cache (0 entries). Results pending.
+**v186 training status:** Completed (2026-05-10). swing_v186 active on paper. WF results pending.
 
-> ⚠️ **RSI_DIP/EMA_CROSSOVER pre-filter removal:** Still deferred. The triple-barrier label change (Step 2 of original plan) is now done. Step 1 (full universe scan) and Step 3 (PM routing) remain for a future phase once v185 walk-forward results are in.
+> ⚠️ **RSI_DIP/EMA_CROSSOVER pre-filter removal:** Still deferred. The triple-barrier label change (Step 2 of original plan) is now done. Step 1 (full universe scan) and Step 3 (PM routing) remain for a future phase once v186 walk-forward results are in.
+
+### WF-A: Walk-Forward Alignment Fixes ✅ COMPLETE (2026-05-10) — PRs #198, #199, #200
+
+**Why:** Three simulator-level bugs invalidated all prior WF Sharpe numbers as upper bounds, not honest estimates.
+
+**WF-A1 (PR #198 ✅):** AgentSimulator in walk-forward did not use the same normalization path as live PM. Fixed:
+- `pm_score()` now applies TS norm state when `model_ts_norm_state` is provided (falls back to cs_normalize for pre-Fix-2 models)
+- `predict_with_vix()` routing wired in (high-VIX sibling model)
+- PIT `regime_score_history` dict used instead of live regime oracle
+- 7 unit tests in `tests/backtesting/test_agent_simulator_normalization.py`
+
+**WF-A2 (PR #200 ✅):** Survivorship bias — walk-forward downloaded only current-index members; delisted names never appeared in any fold.
+- `pit_union(index, start, end, extra_symbols)` added to `app/data/universe_history.py` — unions members at both fold endpoints + DB-sourced historical symbols
+- `historical_trade_symbols(start, end, trade_type)` queries feature store + Trade table for delisted names
+- Swing WF download seed augmented with `_hist_syms()` before yfinance loop
+
+**WF-A3 (PR #200 ✅):** Universe mismatch — swing WF filtered folds against SP_100 (~81 symbols, dead parquet = no-op) while training used R1K (~750). WF was testing on <15% of training distribution.
+- All 13 system components now use `RUSSELL_1000_TICKERS` as single source of truth
+- Swing WF fold filter: `pit_union("russell1000", tr_start, te_end, extras)` instead of dead `_members_at("sp100", ...)`
+- PM `_get_universe()` fallback, earnings prefetch, watchlist seed, training default, CPCV, all backfill scripts updated
+
+**Expected impact:** Honest swing Sharpe will drop from already-low numbers (larger universe + delisted-loser exposure). All prior WF Sharpe is now triple-confirmed inflated upper bound.
+
+**Remaining data task (P0):** `russell1000_membership.parquet` tracks only 198/750 R1K tickers. `pit_union` falls back to static list for the rest — functionally correct but misses real PIT add/remove events for 552 tickers. Rebuild needed.
 
 ### 3c. NIS as PM Gate Layer (Not Model Feature) ⬜ MEDIUM
 **Why:** NIS has insufficient history to be a model feature. But it has real-time value as a trade filter.  
@@ -351,6 +376,32 @@ For each bucket: trades, win rate, avg R, Sharpe, max drawdown, profit factor.
 - Before submitting any order: check if `client_order_id` already exists in Alpaca
 - If exists: skip, log as duplicate  
 **Files:** `app/agents/trader.py`
+
+---
+
+## DATA TASKS (parallel, non-blocking)
+
+### D1. Rebuild `russell1000_membership.parquet` 🔴 P0
+**Why:** Current file tracks 198/750 R1K tickers. `pit_union()` falls back to the static 750 list for the rest — correct behavior, but misses real PIT add/remove events for 552 tickers. WF survivorship fix (WF-A2) is only fully effective once all 750 are tracked.  
+**What:** Pull iShares IWB historical holdings CSVs (available monthly back to 2010) → parse ticker + as-of-date → write `[ticker, added, removed]` rows for all 750. Run `invalidate_cache()` after.  
+**Source options:** iShares.com historical holdings (free monthly snapshots) or FTSE Russell reconstitution announcements.  
+**Files:** `data/universe/russell1000_membership.parquet`, new script `scripts/rebuild_r1k_membership.py`
+
+### D2. Daily price cache gap-fill 🟡 P1
+**Why:** 679 of 750 R1K symbols in cache — ~71 missing. Missing symbols silently skip download (< 210 rows threshold) and are absent from all WF folds.  
+**What:** Run `scripts/backfill_yfinance.py` targeting `RUSSELL_1000_TICKERS`, check which symbols still fail after 3 retries → mark as delisted / use Polygon fallback.
+
+### D3. Fundamentals backfill for R1K-only symbols 🟡 P1
+**Why:** `backfill_fundamentals_history.py` and `backfill_fmp_fundamentals.py` previously used SP_500/SP_100 — ~320 R1K-only symbols have zero fundamental features in training data → silently degrade model quality.  
+**What:** Re-run both backfill scripts (now default to R1K). Expect ~320 new symbols × ~5yr history = large FMP API quota. Schedule overnight.
+
+### D4. Earnings calendar prefetch covers R1K 🟡 P1
+**Why:** PM earnings prefetch at 06:00 ET now correctly uses R1K (fixed in WF-A3). But the in-memory cache populated at server start won't reflect R1K-only names until next restart.  
+**Action:** Restart uvicorn after PR #200 merges to trigger prefetch with the full R1K list.
+
+### D5. One-time watchlist DB reseed 🟢 P2
+**Why:** `WatchlistTicker` DB currently has SP_500 entries only. PM `_get_universe()` DB path caps at 430. The fallback now correctly returns R1K (750), but the DB path short-circuits before the fallback.  
+**Action:** `POST /api/watchlist/bulk` once on prod. This seeds 750 R1K tickers and makes the DB path consistent with training universe.
 
 ---
 

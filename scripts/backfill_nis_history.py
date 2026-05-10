@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
-import os
 import sys
 import threading
 import time
@@ -46,6 +45,7 @@ ET = timezone(timedelta(hours=-4))  # EDT; adjust to -5 in winter if needed
 _FINNHUB_LOCK = threading.Lock()
 _FINNHUB_LAST_REQ: list[float] = [0.0]
 _FINNHUB_MIN_INTERVAL = 1.05  # seconds between requests (57/min with margin)
+
 
 def _finnhub_rate_limit():
     with _FINNHUB_LOCK:
@@ -136,7 +136,6 @@ def _score_symbol(symbol: str, as_of_date: date, dry_run: bool) -> dict:
 
     # Fetch articles published before 10:30 AM ET on as_of_date only (no lookahead)
     to_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 10, 30, tzinfo=ET)
-    from_dt = to_dt - timedelta(hours=24)  # 24-hour lookback window before bar-12
 
     try:
         _finnhub_rate_limit()
@@ -186,8 +185,8 @@ def main():
     if args.symbols:
         universe = args.symbols
     else:
-        from app.utils.constants import SP_500_TICKERS
-        universe = list(SP_500_TICKERS)
+        from app.utils.constants import RUSSELL_1000_TICKERS
+        universe = list(RUSSELL_1000_TICKERS)
 
     trading_days = _past_trading_days(args.days)
     logger.info(
@@ -253,7 +252,6 @@ def main():
                         total_cost += (200 * 0.80 + 100 * 4.00) / 1_000_000
                 finally:
                     db.close()
-
 
         total_written += day_written
         total_skipped += skipped_today

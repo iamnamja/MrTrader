@@ -24,7 +24,7 @@ from app.ml.cs_normalize import cs_normalize, cs_normalize_branch_a
 from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FEATURE_NAMES as _INTRADAY_FEATURE_NAMES
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
-from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
+from app.utils.constants import RUSSELL_1000_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -648,7 +648,7 @@ class PortfolioManager(BaseAgent):
     # ─── Ticker Universe ──────────────────────────────────────────────────────
 
     def _get_universe(self) -> List[str]:
-        """Return active tickers from DB watchlist; fall back to SP_500_TICKERS."""
+        """Return active tickers from DB watchlist; fall back to RUSSELL_1000_TICKERS."""
         try:
             from app.database.session import get_session
             from app.database.models import WatchlistTicker
@@ -663,8 +663,8 @@ class PortfolioManager(BaseAgent):
             finally:
                 db.close()
         except Exception as exc:
-            self.logger.debug("Watchlist DB unavailable, using SP_500: %s", exc)
-        return list(SP_500_TICKERS)
+            self.logger.debug("Watchlist DB unavailable, using RUSSELL_1000: %s", exc)
+        return list(RUSSELL_1000_TICKERS)
 
     # ─── Instrument Selection ─────────────────────────────────────────────────
 
@@ -784,7 +784,7 @@ class PortfolioManager(BaseAgent):
         blocked automatically until the cache is refreshed.
         """
         from app.calendars.earnings import earnings_calendar
-        symbols = list(SP_500_TICKERS)
+        symbols = list(RUSSELL_1000_TICKERS)
         await asyncio.to_thread(earnings_calendar.prefetch, symbols)
 
     async def _run_premarket_intelligence(self):

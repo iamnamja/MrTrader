@@ -34,7 +34,7 @@ from app.ml.retrain_config import (
     REGIME_SPLIT_VIX_THRESHOLD as _CFG_REGIME_SPLIT_VIX_THRESHOLD,
     assert_no_sacred_holdout as _assert_no_sacred_holdout,
 )
-from app.utils.constants import SP_500_TICKERS, SECTOR_MAP
+from app.utils.constants import RUSSELL_1000_TICKERS, SECTOR_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -657,7 +657,7 @@ class ModelTrainer:
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
         Returns version number of the saved model.
         """
-        symbols = symbols or SP_500_TICKERS
+        symbols = symbols or RUSSELL_1000_TICKERS
         years = years or settings.historical_data_years
         self._use_union_label = use_union_label  # Phase 90: accessible to _windows_to_matrix
 

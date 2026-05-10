@@ -1,12 +1,12 @@
 """
-Tests for SP-500 universe expansion.
+Tests for trading universe consistency.
 
 Verifies:
 - SECTOR_MAP covers every symbol in SP_500_TICKERS (no silent unknowns)
 - SP_100_TICKERS is a subset of SP_500_TICKERS (backward compatibility)
-- PM fallback uses SP_500_TICKERS
-- Training default uses SP_500_TICKERS
-- Watchlist bulk seed uses SP_500_TICKERS
+- PM fallback uses RUSSELL_1000_TICKERS (training universe)
+- Training default uses RUSSELL_1000_TICKERS
+- Watchlist bulk seed uses RUSSELL_1000_TICKERS
 """
 import pytest
 from unittest.mock import MagicMock, patch
@@ -53,47 +53,58 @@ class TestSectorMapCoverage:
         from app.utils.constants import SP_500_TICKERS
         assert len(SP_500_TICKERS) == len(set(SP_500_TICKERS))
 
+    def test_r1k_larger_than_sp500(self):
+        from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
+        assert len(RUSSELL_1000_TICKERS) > len(SP_500_TICKERS)
+
+    def test_sp500_subset_of_r1k(self):
+        """SP_500 should be mostly contained in R1K (some overlap expected)."""
+        from app.utils.constants import SP_500_TICKERS, RUSSELL_1000_TICKERS
+        r1k_set = set(RUSSELL_1000_TICKERS)
+        # At least 90% of SP500 should be in R1K
+        in_r1k = [s for s in SP_500_TICKERS if s in r1k_set]
+        assert len(in_r1k) / len(SP_500_TICKERS) >= 0.90
+
 
 class TestTrainingDefaultUniverse:
-    def test_training_defaults_to_sp500(self):
-        """ModelTrainer.train() should use SP_500_TICKERS when symbols=None."""
-        from app.utils.constants import SP_500_TICKERS
+    def test_training_defaults_to_r1k(self):
+        """ModelTrainer.train() should use RUSSELL_1000_TICKERS when symbols=None."""
+        from app.utils.constants import RUSSELL_1000_TICKERS
         import app.ml.training as training_mod
-        assert training_mod.SP_500_TICKERS is SP_500_TICKERS
+        assert training_mod.RUSSELL_1000_TICKERS is RUSSELL_1000_TICKERS
 
-    def test_sp500_referenced_in_training(self):
+    def test_r1k_referenced_in_training(self):
         import inspect
         import app.ml.training as training_mod
         src = inspect.getsource(training_mod)
-        assert "SP_500_TICKERS" in src
-        assert "SP_100_TICKERS" not in src
+        assert "RUSSELL_1000_TICKERS" in src
 
 
 class TestPortfolioManagerFallback:
-    def test_pm_imports_sp500(self):
+    def test_pm_imports_r1k(self):
         import inspect
         import app.agents.portfolio_manager as pm_mod
         src = inspect.getsource(pm_mod)
-        assert "SP_500_TICKERS" in src
-        assert "SP_100_TICKERS" not in src
+        assert "RUSSELL_1000_TICKERS" in src
+        assert "SP_500_TICKERS" not in src
 
 
 class TestWatchlistSeed:
-    def test_bulk_seed_uses_sp500(self):
+    def test_bulk_seed_uses_r1k(self):
         import inspect
         import app.api.watchlist_routes as wr_mod
         src = inspect.getsource(wr_mod)
-        assert "SP_500_TICKERS" in src
-        assert "SP_100_TICKERS" not in src
+        assert "RUSSELL_1000_TICKERS" in src
+        assert "SP_500_TICKERS" not in src
 
     def test_bulk_seed_endpoint(self):
-        from unittest.mock import MagicMock, patch
-        from app.api.watchlist_routes import bulk_load_sp500
-        from app.utils.constants import SP_500_TICKERS
+        from unittest.mock import MagicMock
+        from app.api.watchlist_routes import bulk_load_r1k
+        from app.utils.constants import RUSSELL_1000_TICKERS
 
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
-        result = bulk_load_sp500(db=mock_db)
-        assert result["total_added"] == len(SP_500_TICKERS)
+        result = bulk_load_r1k(db=mock_db)
+        assert result["total_added"] == len(RUSSELL_1000_TICKERS)
         assert mock_db.commit.called
