@@ -19,13 +19,15 @@ Tracks model improvement iterations for active and recent phases.
 
 | Model | Version | Features | Label | Honest Sharpe | Best Result to Date | Status |
 |---|---|---|---|---|---|---|
-| Swing | v163 | 88 | path_quality (5d) | **+0.358** ❌ | +0.358 (v142 corrected) | Active paper — below gate |
+| Swing | v186 | ~82 (TS norm) | triple_barrier (5d) | **🔄 WF pending** | +0.358 (v163, pre-WF-A fix) | Active paper — WF results needed |
 | Intraday | v51 | 59 | cross-sectional top-20% | **+0.529** ❌ | +0.529 (v51, Phase 3a Branch B) | Active paper — below gate |
 
 > **Gate thresholds:** Swing avg Sharpe > 0.80 | Intraday avg Sharpe > 0.80 | No fold < -0.30 | DSR p > 0.95  
-> **Next milestones:** Swing — Phase 3b (triple-barrier label + full universe scan). Intraday — Phase R5 regime gate expected to push v51 over threshold.
+> **Next milestones:** Run swing v186 walk-forward (WF-A1/A2/A3 fixes applied — first honest result). Intraday — intraday absolute hurdle label (Phase 3e) or Phase R5 tuning.
 
 > **Phase 1 corrections applied (2026-05-05):** Walk-forward now includes (1) 5bps/15bps round-trip transaction costs, (2) 10-day swing / 2-day intraday purge at fold boundaries, (3) NIS features removed from training (time-leak). These are the first honest Sharpe numbers. Both models fail. See Phase 1 Corrections section below for full fold detail.
+
+> **WF-A corrections applied (2026-05-10):** Three additional simulator bugs fixed: (4) AgentSimulator now uses TS norm state + predict_with_vix + PIT regime scores (WF-A1); (5) swing download seed augmented with DB historical symbols to combat survivorship bias (WF-A2); (6) swing fold universe switched from SP_100 (~81, dead parquet) to pit_union("russell1000", ...) — all 13 system components now use R1K (WF-A3). All prior swing Sharpe numbers are upper bounds. Re-run v186 with these fixes to get the first truly honest swing baseline.
 
 ---
 
