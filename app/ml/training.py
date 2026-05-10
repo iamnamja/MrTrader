@@ -1888,16 +1888,27 @@ class ModelTrainer:
                 n_bad = sum(1 for ln in lengths if ln != target_len)
                 bad_pct = n_bad / len(lengths)
                 if bad_pct > 0.10:
-                    # >10% rows have wrong length — this is a schema bug, not noise.
-                    # Most likely cause: stale FeatureStore cache (bump SCHEMA_VERSION
-                    # in feature_store.py to force a clear) or FMP key count mismatch.
+                    # >10% rows have wrong length — schema mismatch, not noise.
+                    # Auto-clear the FeatureStore cache and raise so the caller
+                    # can retry with a clean cache (avoids requiring manual intervention).
                     bad_lengths = sorted(set(ln for ln in lengths if ln != target_len))
+                    if self._feature_store is not None:
+                        try:
+                            cleared = self._feature_store.count()
+                            self._feature_store.clear()
+                            logger.error(
+                                "Inhomogeneous feature rows (%d/%d rows, %.1f%%) — "
+                                "auto-cleared %d stale FeatureStore entries. "
+                                "Restart training to rebuild from scratch.",
+                                n_bad, len(lengths), bad_pct * 100, cleared,
+                            )
+                        except Exception as _clr_exc:
+                            logger.error("FeatureStore auto-clear failed: %s", _clr_exc)
                     raise RuntimeError(
                         f"Inhomogeneous feature rows: {n_bad}/{len(lengths)} rows "
                         f"({bad_pct:.1%}) have wrong length {bad_lengths} vs expected "
-                        f"{target_len}. This indicates a schema mismatch — likely a "
-                        f"stale FeatureStore cache. Bump SCHEMA_VERSION in feature_store.py "
-                        f"to clear the cache, then retrain."
+                        f"{target_len}. FeatureStore cache has been auto-cleared — "
+                        f"rerun training and it will rebuild from scratch."
                     )
                 logger.warning(
                     "Inhomogeneous feature rows detected — dropping %d/%d rows (%.1f%%) "
