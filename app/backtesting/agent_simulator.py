@@ -16,7 +16,9 @@ This is one step above Tier 2 (StrategySimulator) because:
 """
 
 import logging
+import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional, Tuple
@@ -404,23 +406,28 @@ class AgentSimulator:
 
         fe = self._get_feature_engineer()
         features_by_symbol: Dict[str, dict] = {}
+        _regime_score = self.regime_score_history.get(day, 0.5)
 
-        for sym, df in symbols_data.items():
+        def _compute_feats(sym_df_pair):
+            sym, df = sym_df_pair
             bars_to_yesterday = self._bars_up_to(df, day, exclude_today=True)
             if bars_to_yesterday is None or len(bars_to_yesterday) < 60:
-                continue
+                return sym, None
             try:
-                # WF-C1: use PIT regime score when available; neutral 0.5 fallback
-                _regime_score = self.regime_score_history.get(day, 0.5)
                 feats = fe.engineer_features(
                     sym, bars_to_yesterday, fetch_fundamentals=False,
                     as_of_date=day, regime_score=_regime_score,
                     vix_history=vix_history,
                 )
+                return sym, feats
+            except Exception:
+                return sym, None
+
+        _n_workers = min(os.cpu_count() or 4, 8)
+        with ThreadPoolExecutor(max_workers=_n_workers) as pool:
+            for sym, feats in pool.map(_compute_feats, symbols_data.items()):
                 if feats is not None:
                     features_by_symbol[sym] = feats
-            except Exception:
-                continue
 
         if not features_by_symbol:
             return []
