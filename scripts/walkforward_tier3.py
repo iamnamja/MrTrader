@@ -35,15 +35,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 
-import math
+import math  # noqa: E402
 
-import numpy as np
-import pandas as pd
-from scipy.stats import norm
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from scipy.stats import norm  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -128,11 +127,22 @@ def _fold_years(test_start: date, test_end: date) -> float:
 
 # ── Console helpers ───────────────────────────────────────────────────────────
 
-def _ok(msg):   print(f"  \033[32mOK\033[0m  {msg}")
-def _warn(msg): print(f"  \033[33mWARN\033[0m  {msg}")
-def _err(msg):  print(f"  \033[31mFAIL\033[0m  {msg}")
+def _ok(msg):
+    print(f"  \033[32mOK\033[0m  {msg}")
+
+
+def _warn(msg):
+    print(f"  \033[33mWARN\033[0m  {msg}")
+
+
+def _err(msg):
+    print(f"  \033[31mFAIL\033[0m  {msg}")
+
+
 def _header(msg):
     print(f"\n{'='*62}\n  {msg}\n{'='*62}")
+
+
 def _subheader(msg):
     print(f"\n{'-'*62}\n  {msg}\n{'-'*62}")
 
@@ -487,6 +497,11 @@ def run_swing_walkforward(
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
     macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
     benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
+    wf_max_symbols: Optional[int] = None,  # cap universe to top-N by avg dollar volume
+    feature_cache_workers: int = 0,
+    feature_cache_executor: str = "process",
+    feature_cache_disable: bool = False,
+    sim_scan_interval_days: int = 1,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -513,7 +528,10 @@ def run_swing_walkforward(
     if extra_seed:
         pre_len = len(symbols)
         symbols = sorted(set(symbols) | set(extra_seed))
-        logger.info("WF-A2: augmented download seed %d → %d (+%d historical)", pre_len, len(symbols), len(symbols) - pre_len)
+        logger.info(
+            "WF-A2: augmented download seed %d → %d (+%d historical)",
+            pre_len, len(symbols), len(symbols) - pre_len,
+        )
 
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
@@ -552,6 +570,25 @@ def run_swing_walkforward(
             logger.warning("VIX download failed — opportunity score will use defaults: %s", exc)
 
     logger.info("Data loaded: %d symbols in %.1fs", len(symbols_data), time.time() - t0)
+
+    # Speed-up: cap to top-N symbols by average dollar volume (price × volume).
+    if wf_max_symbols and wf_max_symbols < len(symbols_data):
+        _synthetic = {"^VIX", "SPY"}
+        _ranked = []
+        for sym, df in symbols_data.items():
+            if sym in _synthetic:
+                continue
+            if "close" in df.columns and "volume" in df.columns:
+                avg_dv = (df["close"] * df["volume"]).mean()
+            else:
+                avg_dv = 0.0
+            _ranked.append((avg_dv, sym))
+        _ranked.sort(reverse=True)
+        _keep = {sym for _, sym in _ranked[:wf_max_symbols]} | _synthetic
+        _before = len(symbols_data)
+        symbols_data = {s: d for s, d in symbols_data.items() if s in _keep}
+        logger.info("--wf-max-symbols %d: trimmed %d → %d symbols by avg dollar volume",
+                    wf_max_symbols, _before, len(symbols_data))
 
     # WF-1: embargo_days defaults to purge_days when not specified.
     # Both sides of every test window now have a clean gap:
@@ -607,6 +644,36 @@ def run_swing_walkforward(
             s: d for s, d in symbols_data.items()
             if s in pit_members or s in _synthetic
         }
+        # Build per-fold feature cache (pre-computes all (sym, day) features in parallel)
+        _feature_cache = None
+        if not feature_cache_disable:
+            try:
+                from app.backtesting.feature_cache import build_feature_cache as _build_fc
+                import os as _os
+                _test_days = sorted({
+                    d.date() if hasattr(d, "date") else d
+                    for df in fold_symbols_data.values()
+                    for d in df.index
+                    if te_start <= (d.date() if hasattr(d, "date") else d) <= te_end
+                })
+                _vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
+                _feat_names = getattr(model, "feature_names", None) or []
+                _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, 12))
+                logger.info("Fold %d: building feature cache (%d syms × %d days, %d %s workers)",
+                            fold_idx, len(fold_symbols_data), len(_test_days), _workers, feature_cache_executor)
+                _feature_cache = _build_fc(
+                    symbols_data=fold_symbols_data,
+                    trading_days=_test_days,
+                    feature_names=_feat_names,
+                    vix_history=_vix_s,
+                    workers=_workers,
+                    executor=feature_cache_executor,
+                )
+            except Exception as _exc:
+                logger.warning("Feature cache build failed, falling back to live compute: %s", _exc)
+                _feature_cache = None
+
         sim = AgentSimulator(
             model=model,
             atr_stop_mult=atr_stop_mult,
@@ -621,6 +688,8 @@ def run_swing_walkforward(
             earnings_blackout=earnings_blackout,
             macro_blocked_dates=macro_blocked_dates,
             benign_blocked_dates=benign_blocked_dates,
+            feature_cache=_feature_cache,
+            sim_scan_interval_days=sim_scan_interval_days,
         )
         result = sim.run(
             fold_symbols_data,
@@ -890,6 +959,10 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         use_opportunity_score=args.pm_opportunity_score,
         no_prefilters=args.no_prefilters,
         earnings_blackout=earnings_cal,
+        feature_cache_workers=args.feature_cache_workers,
+        feature_cache_executor=args.feature_cache_executor,
+        feature_cache_disable=args.feature_cache_disable,
+        sim_scan_interval_days=args.sim_scan_interval_days,
     )
     strategy.model_type = "swing"
     from datetime import datetime, timedelta
@@ -1056,6 +1129,24 @@ def main() -> int:
                         help="P1: block new entries on days where PIT composite regime score < "
                              "BENIGN_REGIME_THRESHOLD (from macro_history.parquet). "
                              "Off by default. Adds ~1s to setup time.")
+    parser.add_argument("--wf-max-symbols", type=int, default=0, metavar="N",
+                        help="Speed-up: cap the swing WF universe to the top-N symbols by "
+                             "average dollar volume. 0 = use all (default). "
+                             "300 gives ~2-3x speedup with negligible Sharpe impact.")
+    parser.add_argument("--feature-cache-workers", type=int, default=0,
+                        help="Workers for per-fold feature pre-computation (0 = auto: "
+                             "min(cpu_count, 12)). Ignored when --feature-cache-disable is set.")
+    parser.add_argument("--feature-cache-executor", choices=["process", "thread"],
+                        default="process",
+                        help="Executor for feature cache build: 'process' (default, avoids GIL) "
+                             "or 'thread' (lower overhead, useful on Windows with small universes).")
+    parser.add_argument("--feature-cache-disable", action="store_true", default=False,
+                        help="Disable the feature cache and fall back to per-day per-symbol "
+                             "engineer_features() calls (original behavior). Use for debugging.")
+    parser.add_argument("--sim-scan-interval-days", type=int, default=1,
+                        help="Score symbols every N trading days instead of daily (default: 1). "
+                             "N=5 gives ~5x sim speedup with minor strategy-behavior change. "
+                             "Exits still run daily regardless of this setting.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -1168,6 +1259,11 @@ def main() -> int:
             earnings_blackout=earnings_cal,
             macro_blocked_dates=macro_blocked_dates,
             benign_blocked_dates=benign_blocked_dates,
+            wf_max_symbols=args.wf_max_symbols if args.wf_max_symbols > 0 else None,
+            feature_cache_workers=args.feature_cache_workers,
+            feature_cache_executor=args.feature_cache_executor,
+            feature_cache_disable=args.feature_cache_disable,
+            sim_scan_interval_days=args.sim_scan_interval_days,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()

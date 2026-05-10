@@ -16,7 +16,9 @@ This is one step above Tier 2 (StrategySimulator) because:
 """
 
 import logging
+import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional, Tuple
@@ -130,6 +132,8 @@ class AgentSimulator:
         macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
         benign_blocked_dates: Optional[set] = None,  # P1: dates where regime score < threshold
         regime_score_history: Optional[Dict[date, float]] = None,  # WF-C1: PIT daily regime score
+        feature_cache=None,          # FeatureCache: pre-computed raw features (WF speedup)
+        sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -154,11 +158,16 @@ class AgentSimulator:
         self.macro_blocked_dates: set = macro_blocked_dates or set()
         self.benign_blocked_dates: set = benign_blocked_dates or set()
         self.regime_score_history: Dict[date, float] = regime_score_history or {}
+        self.feature_cache = feature_cache
+        self.sim_scan_interval_days = max(1, sim_scan_interval_days)
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
         # Warn once per run if TS norm state is absent (legacy model)
         self._ts_norm_warned = False
+        # Pre-built O(1) date lookup maps (built in run())
+        self._sym_date_to_row: Dict[str, Dict[date, int]] = {}
+        self._sym_date_arr: Dict[str, np.ndarray] = {}
 
     def run(
         self,
@@ -200,6 +209,14 @@ class AgentSimulator:
         if not trading_days:
             return self._empty_result()
 
+        # Build O(1) date-to-row index per symbol (used by _bars_up_to / _bars_on).
+        self._sym_date_to_row = {}
+        self._sym_date_arr = {}
+        for sym, df in symbols_data.items():
+            dates = np.array([d.date() if hasattr(d, "date") else d for d in df.index])
+            self._sym_date_arr[sym] = dates
+            self._sym_date_to_row[sym] = {d: i for i, d in enumerate(dates)}
+
         portfolio = _PortfolioState(
             cash=self.starting_capital,
             peak_equity=self.starting_capital,
@@ -224,7 +241,7 @@ class AgentSimulator:
         if _vix_df is not None and "close" in _vix_df.columns:
             _vix_closes = _vix_df["close"]
 
-        for day in trading_days:
+        for day_idx, day in enumerate(trading_days):
             # 1. Advance bars_held for all open positions, mark equity
             for pos in portfolio.positions.values():
                 pos.bars_held += 1
@@ -237,8 +254,13 @@ class AgentSimulator:
             if portfolio.equity > portfolio.peak_equity:
                 portfolio.peak_equity = portfolio.equity
 
-            # 3. PM: score all symbols using bars up to yesterday
-            proposals = self._pm_score(day, symbols_data, vix_history=_vix_closes)
+            # 3. PM: score all symbols using bars up to yesterday.
+            # When sim_scan_interval_days > 1, skip scoring on off-days
+            # (exits still run daily). Proposals from last scan day are reused.
+            _scan_day = (day_idx % self.sim_scan_interval_days == 0)
+            if _scan_day:
+                proposals = self._pm_score(day, symbols_data, vix_history=_vix_closes)
+            # else: proposals unchanged from previous scan day
 
             # 4. Phase 35: Market regime gate — cut exposure in bear/fear regimes
             _skip_entries = False
@@ -398,29 +420,41 @@ class AgentSimulator:
         self, day: date, symbols_data: Dict[str, pd.DataFrame],
         vix_history: Optional["pd.Series"] = None,
     ) -> List[Tuple[str, float]]:
-        """Return list of (symbol, confidence) sorted by confidence desc."""
+        """Return list of (symbol, confidence) sorted by confidence desc.
+
+        When a FeatureCache is available, dispatches to _pm_score_cached for
+        O(1) feature lookup instead of re-computing features per symbol.
+        """
         if self.model is None or not getattr(self.model, "is_trained", False):
             return []
 
+        if self.feature_cache is not None:
+            return self._pm_score_cached(day, vix_history)
+
         fe = self._get_feature_engineer()
         features_by_symbol: Dict[str, dict] = {}
+        _regime_score = self.regime_score_history.get(day, 0.5)
 
-        for sym, df in symbols_data.items():
+        def _compute_feats(sym_df_pair):
+            sym, df = sym_df_pair
             bars_to_yesterday = self._bars_up_to(df, day, exclude_today=True)
             if bars_to_yesterday is None or len(bars_to_yesterday) < 60:
-                continue
+                return sym, None
             try:
-                # WF-C1: use PIT regime score when available; neutral 0.5 fallback
-                _regime_score = self.regime_score_history.get(day, 0.5)
                 feats = fe.engineer_features(
                     sym, bars_to_yesterday, fetch_fundamentals=False,
                     as_of_date=day, regime_score=_regime_score,
                     vix_history=vix_history,
                 )
+                return sym, feats
+            except Exception:
+                return sym, None
+
+        _n_workers = min(os.cpu_count() or 4, 8)
+        with ThreadPoolExecutor(max_workers=_n_workers) as pool:
+            for sym, feats in pool.map(_compute_feats, symbols_data.items()):
                 if feats is not None:
                     features_by_symbol[sym] = feats
-            except Exception:
-                continue
 
         if not features_by_symbol:
             return []
@@ -452,6 +486,70 @@ class AgentSimulator:
             if self.max_vol_pct is not None:
                 vol_pct = features_by_symbol[sym].get("vol_percentile_52w", 0.0)
                 if vol_pct > self.max_vol_pct / 100.0:
+                    continue
+            proposals.append((sym, float(prob)))
+            if len(proposals) >= self.top_n:
+                break
+        return proposals
+
+    def _pm_score_cached(
+        self, day: date, vix_history: Optional["pd.Series"] = None,
+    ) -> List[Tuple[str, float]]:
+        """Cache-backed PM scoring: O(1) feature lookup per symbol per day.
+
+        Replaces the engineer_features() call with a numpy array row lookup,
+        eliminating the per-day per-symbol feature recomputation bottleneck.
+        """
+        cache = self.feature_cache
+        model_feat_names = getattr(self.model, "feature_names", None) or cache.feature_names
+
+        # Gather cached rows for symbols with data on this day
+        sym_list = []
+        rows = []
+        vol_pcts = []
+        vol_col_idx = None
+        if "vol_percentile_52w" in cache.feature_names and self.max_vol_pct is not None:
+            vol_col_idx = cache.feature_names.index("vol_percentile_52w")
+
+        for sym, idx_map in cache.date_index.items():
+            row_idx = idx_map.get(day)
+            if row_idx is None:
+                continue
+            raw_row = cache.matrix[sym][row_idx]
+            # Reorder to model feature order if cache order differs
+            if model_feat_names is not cache.feature_names:
+                row = np.array([
+                    float(raw_row[cache.feature_names.index(f)])
+                    if f in cache.feature_names else 0.0
+                    for f in model_feat_names
+                ], dtype=np.float32)
+            else:
+                row = raw_row
+            sym_list.append(sym)
+            rows.append(row)
+            vol_pcts.append(float(raw_row[vol_col_idx]) if vol_col_idx is not None else 0.0)
+
+        if not sym_list:
+            return []
+
+        try:
+            X = np.nan_to_num(np.vstack(rows), nan=0.0)
+            sym_arr = np.array(sym_list)
+            X = self._normalize_for_inference(X, sym_arr, day)
+            vix_now = self._vix_at(vix_history, day)
+            _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
+        except Exception as exc:
+            logger.debug("PM score (cached) failed on %s: %s", day, exc)
+            return []
+
+        proposals = []
+        for i, (sym, prob) in enumerate(
+            sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
+        ):
+            if float(prob) < self.min_confidence:
+                continue
+            if self.max_vol_pct is not None:
+                if vol_pcts[sym_list.index(sym)] > self.max_vol_pct / 100.0:
                     continue
             proposals.append((sym, float(prob)))
             if len(proposals) >= self.top_n:
@@ -715,10 +813,14 @@ class AgentSimulator:
             # Phase 37: Meta-label Expected-R gate
             if self.meta_model is not None:
                 try:
-                    fe = self._get_feature_engineer()
-                    feats = fe.engineer_features(sym, bars_yesterday,
-                                                 fetch_fundamentals=False, as_of_date=day,
-                                                 vix_history=vix_history)
+                    # Use cache if available, else re-compute
+                    if self.feature_cache is not None:
+                        feats = self.feature_cache.get_features(sym, day)
+                    else:
+                        fe = self._get_feature_engineer()
+                        feats = fe.engineer_features(sym, bars_yesterday,
+                                                     fetch_fundamentals=False, as_of_date=day,
+                                                     vix_history=vix_history)
                     if feats is not None and not self.meta_model.should_enter(feats):
                         continue
                 except Exception:
