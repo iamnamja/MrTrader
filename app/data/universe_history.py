@@ -16,7 +16,7 @@ import logging
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,71 @@ def members_at(index: str, as_of: date) -> List[str]:
     members = df.loc[mask_added & mask_removed, "ticker"].tolist()
 
     return members
+
+
+def pit_union(
+    index: str,
+    start: date,
+    end: date,
+    extra_symbols: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """
+    Return the union of members_at(index, start), members_at(index, end),
+    and any extra_symbols (e.g. historically-traded names from DB).
+
+    Captures index adds/removes that occurred during [start, end] and augments
+    sparse parquet coverage with names that demonstrably traded in the period,
+    directly combating survivorship bias.
+    """
+    seen: set[str] = set(members_at(index, start)) | set(members_at(index, end))
+    if extra_symbols:
+        seen.update(s for s in extra_symbols if s)
+    return sorted(seen)
+
+
+def historical_trade_symbols(start: date, end: date, trade_type: Optional[str] = None) -> List[str]:
+    """
+    Return distinct symbols that appear in the feature store for dates in [start, end].
+    Falls back to live Trade table if feature store is unavailable.
+    On any error returns [] so walk-forward never breaks on infra issues.
+    """
+    results: set[str] = set()
+
+    # Primary: feature store SQLite (richer — one row per symbol×date the model scored)
+    try:
+        import sqlite3
+        from app.ml.feature_store import _DEFAULT_DB  # type: ignore[attr-defined]
+        conn = sqlite3.connect(str(_DEFAULT_DB))
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM features WHERE as_of_date BETWEEN ? AND ?",
+                (str(start), str(end)),
+            ).fetchall()
+            results.update(r[0] for r in rows if r[0])
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    # Secondary: live Trade table (smaller but authoritative for executed trades)
+    try:
+        from app.database.session import get_session
+        from app.database.models import Trade
+        db = get_session()
+        try:
+            q = db.query(Trade.symbol).filter(  # type: ignore[union-attr]
+                Trade.created_at >= str(start),
+                Trade.created_at <= str(end),
+            )
+            if trade_type:
+                q = q.filter(Trade.trade_type == trade_type)
+            results.update(r[0] for r in q.distinct().all() if r[0])
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return sorted(results)
 
 
 def invalidate_cache() -> None:

@@ -93,9 +93,11 @@ class SwingStrategy:
     def run_fold(self, fold_idx: int, n_folds: int,
                  tr_start, tr_end, te_start, te_end) -> FoldResult:
         from app.backtesting.agent_simulator import AgentSimulator
-        from app.data.universe_history import members_at as _members_at
+        from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
 
-        pit_members = set(_members_at("sp100", tr_start))
+        # WF-A2/A3: use Russell 1000 PIT union (matches training universe).
+        extra = _hist_syms(tr_start, te_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in self.symbols_data.items()

@@ -12,6 +12,8 @@ Tracks model improvement iterations for active and recent phases.
 - Walk-forward gate (swing): avg Sharpe > 0.80, no fold < -0.30
 
 > **2026-05-05 Meta-update:** Multi-LLM review revealed the walk-forward gate numbers to date are NOT reliable baselines because: (1) no transaction costs, (2) no PM opportunity score simulated, (3) no purge/embargo between folds, (4) NIS features encode time (NaN = pre-2025 regime). Phases 1–2 of MASTER_BACKLOG fix this. Re-run all champions after Phase 1+2 complete to get honest numbers. See `docs/llm_review_synthesis.md`.
+>
+> **2026-05-10 WF-A2/A3 Fix:** Two additional walk-forward errors corrected: (5) swing universe was SP_100 (~81 symbols, silent no-op via dead `sp100` parquet) while training used Russell 1000 (~750) — mismatch inflated Sharpe by over-filtering folds; (6) survivorship bias — only current index members downloaded, delisted names absent from all folds. Fixed: swing now uses `RUSSELL_1000_TICKERS` as download seed + `pit_union("russell1000", fold_start, fold_end, extra_symbols=db_hist)` per fold. Honest Sharpe likely drops. Re-run champions after WF-A1+A2+A3.
 
 ---
 

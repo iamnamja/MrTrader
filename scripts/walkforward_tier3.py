@@ -497,15 +497,23 @@ def run_swing_walkforward(
         _err("No swing model found — retrain first.")
         return report
 
-    from app.utils.constants import SP_100_TICKERS
-    from app.data.universe_history import members_at as _members_at
-    symbols = symbols or list(SP_100_TICKERS)
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    from app.data.universe_history import members_at as _members_at, pit_union as _pit_union, historical_trade_symbols as _hist_syms
+    symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     # Download full history
     end_all = datetime.now()
     start_all = end_all - timedelta(days=total_years * 365 + 30)
     _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
                f"{len(symbols)} symbols | model v{version}")
+
+    # WF-A2: augment download seed with symbols that appeared in the feature store
+    # across the full backtest window (combats survivorship bias for delisted names).
+    extra_seed = _hist_syms(start_all.date(), end_all.date(), trade_type="swing")
+    if extra_seed:
+        pre_len = len(symbols)
+        symbols = sorted(set(symbols) | set(extra_seed))
+        logger.info("WF-A2: augmented download seed %d → %d (+%d historical)", pre_len, len(symbols), len(symbols) - pre_len)
 
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
@@ -586,10 +594,12 @@ def run_swing_walkforward(
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
                    f"test:{te_start}->{te_end}  purge={purge_days}d  embargo={emb}d")
         t_fold = time.time()
-        # Point-in-time filter: only use symbols that were in the index at fold train start.
-        # Synthetic symbols (^VIX, VIX, SPY) bypass the filter — they're needed for
-        # regime gates and opportunity score regardless of index membership.
-        pit_members = set(_members_at("sp100", tr_start))
+        # WF-A2/A3: PIT filter using Russell 1000 (matches training universe).
+        # pit_union() captures members at both fold endpoints (catches mid-fold adds/removes)
+        # plus DB-sourced historical names for survivorship-bias correction.
+        # Synthetic symbols (^VIX, VIX, SPY) bypass — needed for regime/opp-score gates.
+        extra = _hist_syms(tr_start, te_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in symbols_data.items()
