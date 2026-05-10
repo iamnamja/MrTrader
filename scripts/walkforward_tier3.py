@@ -656,7 +656,9 @@ def run_swing_walkforward(
                     for d in df.index
                     if te_start <= (d.date() if hasattr(d, "date") else d) <= te_end
                 })
-                _vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                _vix_df = fold_symbols_data.get("^VIX")
+                if _vix_df is None:
+                    _vix_df = fold_symbols_data.get("VIX")
                 _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
                 _feat_names = getattr(model, "feature_names", None) or []
                 _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, 12))
