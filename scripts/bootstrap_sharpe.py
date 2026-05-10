@@ -99,7 +99,7 @@ def run_bootstrap_swing(
     total_years: int = 5,
     swing_cost_bps: float = 5.0,
     swing_purge_days: int = 10,
-    n_trials_tested: int = 15,
+    n_trials_tested: int = 200,
     model_version: Optional[int] = None,
     seed: int = 42,
 ) -> dict:
@@ -172,7 +172,7 @@ def run_bootstrap_intraday(
     total_days: int = 730,
     intraday_cost_bps: float = 15.0,
     intraday_purge_days: int = 2,
-    n_trials_tested: int = 15,
+    n_trials_tested: int = 200,
     model_version: Optional[int] = None,
     seed: int = 42,
 ) -> dict:
@@ -339,8 +339,8 @@ def main() -> int:
     parser.add_argument("--intraday-cost-bps", type=float, default=15.0)
     parser.add_argument("--swing-purge-days", type=int, default=10)
     parser.add_argument("--intraday-purge-days", type=int, default=2)
-    parser.add_argument("--n-trials", type=int, default=15,
-                        help="Number of model variants tested historically (for DSR; default: 15)")
+    parser.add_argument("--n-trials", type=int, default=200,
+                        help="Number of model variants tested historically (for DSR; default: 200, reflects 184+ variants tested as of Phase 93)")
     parser.add_argument("--swing-model-version", type=int, default=0)
     parser.add_argument("--intraday-model-version", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)

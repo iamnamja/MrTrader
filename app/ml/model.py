@@ -43,6 +43,7 @@ class PortfolioSelectorModel:
         self._lgbm_model = None  # second estimator for lgbm_ensemble
         self._is_regression = False  # set True when training on float return labels
         self._is_ranker = False      # set True for XGBRanker (uses predict not predict_proba)
+        self._ts_norm_state = None   # TSNormalizerState for Fix 2 TS normalization (swing only)
 
         if model_type == "xgboost_ranker":
             self.model = XGBRanker(
@@ -475,6 +476,26 @@ class PortfolioSelectorModel:
                     )
         except Exception as exc:
             logger.warning("Regime-split sibling load failed (continuing single-model): %s", exc)
+
+        # ── Fix 2: TS normalizer state ────────────────────────────────────────
+        # If this model was trained with rolling time-series normalization, load
+        # the companion state file so inference applies the same normalization.
+        # Absent for models trained before Fix 2 (v184 and earlier) — graceful fallback.
+        self._ts_norm_state = None
+        if model_name == "swing":
+            norm_path = Path(directory) / f"swing_norm_v{version}.pkl"
+            if norm_path.exists():
+                try:
+                    from app.ml.ts_normalize import load_state as _ts_load, assert_state_compatible
+                    self._ts_norm_state = _ts_load(str(norm_path))
+                    if self.feature_names:
+                        assert_state_compatible(self._ts_norm_state, self.feature_names)
+                    logger.info("TSNormalizerState loaded from %s", norm_path)
+                except Exception as exc:
+                    logger.warning(
+                        "TSNormalizerState load failed — falling back to cs_normalize: %s", exc
+                    )
+                    self._ts_norm_state = None
 
     def predict_with_vix(
         self,

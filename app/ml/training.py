@@ -25,7 +25,6 @@ import pandas as pd
 from app.config import settings
 from app.database.models import ModelVersion
 from app.database.session import get_session
-from app.ml.cs_normalize import cs_normalize_by_group
 from app.ml.features import FeatureEngineer
 from app.ml.model import PortfolioSelectorModel
 from app.ml.retrain_config import (
@@ -81,8 +80,10 @@ _BASE_PRUNED: frozenset = frozenset([
     # fundamentals_history.parquet is present (PIT-correct values from EDGAR 10-K store)
     "earnings_proximity_days", "insider_score", "earnings_surprise",
     # sector_momentum / sector_momentum_5d un-pruned when sector_etf_history.parquet is present
-    "vix_fear_spike",
-    "vix_percentile_1y", "spy_trend_63d", "earnings_surprise_1q",
+    # vix_fear_spike, vix_percentile_1y, spy_trend_63d: re-enabled in Fix 2.
+    # Under TS-normalization + triple-barrier labels these carry real macro signal;
+    # cs_normalize zeroed them (all symbols same value → std=0). Un-pruned here.
+    "earnings_surprise_1q",
     "earnings_surprise_2q_avg", "days_since_earnings", "short_interest_pct",
     # Phase 92: vix_term_ratio, breadth_rsp_spy_ratio_20d, credit_hyg_ief_20d,
     # sector_dispersion_20d, spy_above_ma50, spy_above_ma200 are now wired into
@@ -221,13 +222,20 @@ def _process_symbol_windows_worker(
     fe = FeatureEngineer()
     df = pd.read_parquet(_io.BytesIO(df_bytes))
 
-    # Phase 93: resolve effective pruned set ONCE per worker call. If FMP
-    # fundamentals were passed, we can keep pe_ratio / pb_ratio (computed PIT).
+    # Phase 93: resolve effective pruned set ONCE per worker call.
+    # Un-prune pe_ratio/pb_ratio whenever the FMP parquet is in use globally
+    # (not just for this symbol) — ensures all symbols have the same feature schema.
+    # Symbols without FMP coverage get 0.0 defaults; schema is always consistent.
     _effective_pruned = PRUNED_FEATURES
-    if fmp_fundamentals_history:
-        _effective_pruned = frozenset(
-            f for f in PRUNED_FEATURES if f not in {"pe_ratio", "pb_ratio"}
-        )
+    try:
+        from app.ml.retrain_config import USE_FMP_FUNDAMENTALS as _UF_W
+        from pathlib import Path as _PW
+        if _UF_W and _PW("data/fundamentals/fmp_fundamentals_history.parquet").exists():
+            _effective_pruned = frozenset(
+                f for f in PRUNED_FEATURES if f not in {"pe_ratio", "pb_ratio"}
+            )
+    except Exception:
+        pass
 
     X_rows, y_vals, meta_rows, to_cache, feature_names = [], [], [], [], []
     idx = df.index.date
@@ -399,6 +407,7 @@ def _process_symbol_windows_worker(
         if features is not None and feature_names and len(features) != len(feature_names):
             features = None  # stale schema — recompute
 
+        freshly_computed = features is None
         if features is None:
             try:
                 # Use PIT regime score for this window (eliminates train/serve skew).
@@ -415,9 +424,6 @@ def _process_symbol_windows_worker(
                 )
             except Exception:
                 continue
-            if features:
-                to_cache.append((symbol, w_end_date, features))
-
         if not features:
             continue
 
@@ -444,6 +450,11 @@ def _process_symbol_windows_worker(
             "revenue_growth": 0.0, "debt_to_equity": 0.0,
             "gross_margin": 0.0, "operating_margin": 0.0, "fcf_margin": 0.0,
         }
+        if features:
+            # Always inject schema defaults so all symbols have the same keys.
+            # Symbols without FMP coverage get 0.0; those with FMP data get real values below.
+            for _k, _default in _FMP_SCHEMA.items():
+                features.setdefault(_k, _default)
         if fmp_fundamentals_history is not None and features:
             try:
                 from app.data.fmp_fundamentals import lookup_pit_from_index
@@ -496,6 +507,10 @@ def _process_symbol_windows_worker(
             for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
                        "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
                 features.setdefault(_k, 0.0)
+            # Cache AFTER setdefault so every cached entry has all 94 keys.
+            # Regime V2, EDGAR, FMP are always reapplied on cache read (fresh data).
+            if freshly_computed:
+                to_cache.append((symbol, w_end_date, dict(features)))
 
         # Phase 88: inject regime V2 scalars (date-level, same for all symbols on a given day)
         if regime_v2_map:
@@ -544,6 +559,7 @@ def _process_symbol_windows_worker(
         y_vals.append(label)
         meta_rows.append({
             "window_idx": w_start_idx,
+            "symbol": symbol,
             "outcome_return": outcome_return,
             "vol_percentile": features.get("vol_percentile_52w", 0.5),
             "avg_volume": avg_vol,
@@ -575,12 +591,12 @@ class ModelTrainer:
         provider: str = "polygon",
         use_feature_store: bool = True,
         model_type: str = "xgboost",
-        label_scheme: str = "cross_sectional",
+        label_scheme: str = "triple_barrier",
         top_n_features: Optional[int] = None,
         n_workers: int = 0,
         hpo_trials: int = 0,
         walk_forward_folds: int = 0,
-        prediction_threshold: float = 0.35,
+        prediction_threshold: float = 0.50,
         two_stage: bool = False,
         three_stage: bool = False,
         multi_window: bool = False,
@@ -869,6 +885,15 @@ class ModelTrainer:
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
         self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
 
+        # Persist TS normalizer state for inference parity (Fix 2).
+        # Must be loaded before prediction — without this, live features are
+        # normalized against an empty history and predictions are garbage.
+        if hasattr(self, "_ts_norm_state"):
+            from app.ml.ts_normalize import save_state as _ts_save
+            _norm_path = str(Path(self.model_dir) / f"swing_norm_v{version}.pkl")
+            _ts_save(self._ts_norm_state, _norm_path)
+            logger.info("TSNormalizerState saved to %s", _norm_path)
+
         return version
 
     # ── Option B: regime-split helper ────────────────────────────────────────
@@ -1119,16 +1144,37 @@ class ModelTrainer:
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
-        # Cross-sectional normalization: z-score each feature within each window
-        # (across all symbols at the same point in time) to remove regime/sector bias.
-        if len(X_train) > 0 and len(meta_train) > 0:
-            train_window_ids = np.array([m["window_idx"] for m in meta_train])
-            X_train = cs_normalize_by_group(X_train, train_window_ids)
-        if len(X_test) > 0 and len(meta_test) > 0:
-            test_window_ids = np.array([m["window_idx"] for m in meta_test])
-            X_test = cs_normalize_by_group(X_test, test_window_ids)
-
+        # Fix 2: Rolling time-series normalization replaces cross-sectional normalization.
+        # Each (symbol, feature) is z-scored against that symbol's trailing NORM_LOOKBACK
+        # windows. Preserves macro/regime signal (VIX, SPY MA, breadth) that cs_normalize
+        # destroys (identical cross-sectional values → std=0 → zeroed out).
+        # Required for triple-barrier labels which are absolute, not cross-sectional.
         feature_names = self._last_feature_names
+        if len(X_train) > 0 and len(meta_train) > 0:
+            from app.ml.ts_normalize import fit_transform_train as _ts_fit
+            _sym_train = np.array([m["symbol"] for m in meta_train])
+            _wid_train = np.array([m["window_idx"] for m in meta_train])
+            X_train, _keep_train, self._ts_norm_state = _ts_fit(
+                X_train, _sym_train, _wid_train, feature_names
+            )
+            if not np.all(_keep_train):
+                X_train = X_train[_keep_train]
+                y_train = y_train[_keep_train]
+                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
+        else:
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            self._ts_norm_state = _TSState()
+
+        if len(X_test) > 0 and len(meta_test) > 0:
+            from app.ml.ts_normalize import transform as _ts_transform
+            _sym_test = np.array([m["symbol"] for m in meta_test])
+            _wid_test = np.array([m["window_idx"] for m in meta_test])
+            X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
+            if not np.all(_keep_test):
+                X_test = X_test[_keep_test]
+                y_test = y_test[_keep_test]
+                meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
+
         self._last_all_dates = all_dates
         return X_train, y_train, X_test, y_test, feature_names, meta_train
 
@@ -1509,6 +1555,7 @@ class ModelTrainer:
                 if features is not None and feature_names and len(features) != len(feature_names):
                     features = None
 
+            _inst_freshly_computed = features is None
             if features is None:
                 features = self.feature_engineer.engineer_features(
                     symbol, window_df,
@@ -1518,11 +1565,16 @@ class ModelTrainer:
                     as_of_date=w_end_date,
                     vix_history=vix_history,
                 )
-                if features is not None:
-                    to_cache.append((symbol, w_end_date, features))
 
             if features is None:
                 continue
+
+            # Ensure sector-neutral keys exist regardless of cache hit/miss
+            for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
+                       "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
+                features.setdefault(_k, 0.0)
+            if _inst_freshly_computed:
+                to_cache.append((symbol, w_end_date, dict(features)))
 
             features = {k: v for k, v in features.items() if k not in _resolve_pruned_features()}
             if not feature_names:
@@ -1533,6 +1585,7 @@ class ModelTrainer:
             y_vals.append(label)
             meta_rows.append({
                 "window_idx": w_start_idx,
+                "symbol": symbol,
                 "outcome_return": outcome_return,
                 "vol_percentile": features.get("vol_percentile_52w", 0.5),
                 "avg_volume": avg_vol,
@@ -1857,16 +1910,27 @@ class ModelTrainer:
                 n_bad = sum(1 for ln in lengths if ln != target_len)
                 bad_pct = n_bad / len(lengths)
                 if bad_pct > 0.10:
-                    # >10% rows have wrong length — this is a schema bug, not noise.
-                    # Most likely cause: stale FeatureStore cache (bump SCHEMA_VERSION
-                    # in feature_store.py to force a clear) or FMP key count mismatch.
+                    # >10% rows have wrong length — schema mismatch, not noise.
+                    # Auto-clear the FeatureStore cache and raise so the caller
+                    # can retry with a clean cache (avoids requiring manual intervention).
                     bad_lengths = sorted(set(ln for ln in lengths if ln != target_len))
+                    if self._feature_store is not None:
+                        try:
+                            cleared = self._feature_store.count()
+                            self._feature_store.clear()
+                            logger.error(
+                                "Inhomogeneous feature rows (%d/%d rows, %.1f%%) — "
+                                "auto-cleared %d stale FeatureStore entries. "
+                                "Restart training to rebuild from scratch.",
+                                n_bad, len(lengths), bad_pct * 100, cleared,
+                            )
+                        except Exception as _clr_exc:
+                            logger.error("FeatureStore auto-clear failed: %s", _clr_exc)
                     raise RuntimeError(
                         f"Inhomogeneous feature rows: {n_bad}/{len(lengths)} rows "
                         f"({bad_pct:.1%}) have wrong length {bad_lengths} vs expected "
-                        f"{target_len}. This indicates a schema mismatch — likely a "
-                        f"stale FeatureStore cache. Bump SCHEMA_VERSION in feature_store.py "
-                        f"to clear the cache, then retrain."
+                        f"{target_len}. FeatureStore cache has been auto-cleared — "
+                        f"rerun training and it will rebuild from scratch."
                     )
                 logger.warning(
                     "Inhomogeneous feature rows detected — dropping %d/%d rows (%.1f%%) "

@@ -27,6 +27,7 @@ RETRAIN_WEEKDAY: int = 2  # Wednesday
 # HPO: 20 trials per weekly retrain (~3 min extra, finds slightly better params)
 SWING_RETRAIN: dict = dict(
     model_type="xgboost",
+    label_scheme="triple_barrier",    # Fix 2: aligned with ATR exit rule; was "cross_sectional"
     hpo_trials=20,
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
     n_workers=8,
@@ -197,7 +198,13 @@ BENIGN_INTRADAY_FEATURES: tuple = (
 #
 # Date format is ISO (YYYY-MM-DD). Boundary is INCLUSIVE: end_date == this date
 # is rejected (the holdout day itself is sacred).
-SACRED_HOLDOUT_START: str = "2025-11-09"
+#
+# History:
+#   2025-11-09 — original boundary (set 2026-05-09). Exhausted: all v182-v185
+#                retrains used --allow-sacred-holdout during pipeline debugging.
+#   2026-11-09 — reset 2026-05-10. Previous boundary considered consumed.
+#                Next promotion candidate evaluation must use this boundary.
+SACRED_HOLDOUT_START: str = "2026-11-09"
 
 
 def _parse_sacred_holdout_start():

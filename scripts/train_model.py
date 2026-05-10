@@ -526,6 +526,13 @@ def run_rolling_pipeline(
         path = trainer.model.save(str(MODEL_DIR), version, model_name="swing")
         ok(f"Model saved -> {path}")
 
+    # Save TS normalizer state for inference parity (Fix 2).
+    if hasattr(trainer, "_ts_norm_state") and trainer._ts_norm_state is not None:
+        from app.ml.ts_normalize import save_state as _ts_save
+        _norm_path = str(MODEL_DIR / f"swing_norm_v{version}.pkl")
+        _ts_save(trainer._ts_norm_state, _norm_path)
+        ok(f"TS norm state -> {_norm_path}")
+
     try:
         trainer._record_version(
             version, len(X_train), len(X_test), path, years, metrics
@@ -566,13 +573,13 @@ def main():
         help="Model architecture (default: xgboost)",
     )
     parser.add_argument(
-        "--label-scheme", default="atr",
+        "--label-scheme", default="triple_barrier",
         choices=[
             "atr", "triple_barrier", "cross_sectional", "spy_relative", "sector_relative",
             "atr_and_sector", "return_regression", "return_blend", "lambdarank",
             "percentile_rank", "path_quality",
         ],
-        help="Labeling scheme (default: atr). triple_barrier = bar-by-bar ATR-scaled target/stop.",
+        help="Labeling scheme (default: triple_barrier). triple_barrier = bar-by-bar ATR-scaled target/stop, aligned with live trading rule.",
     )
     parser.add_argument(
         "--tb-target-mult", type=float, default=None,
