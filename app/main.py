@@ -180,7 +180,6 @@ async def startup_event():
     # Also write to file handler directly so it appears in the dated log file.
     for _h in logging.getLogger().handlers:
         if type(_h).__name__ == "_DailyFileHandler":
-            import sys as _sys
             _h.emit(logging.makeLogRecord({
                 "levelno": logging.INFO, "levelname": "INFO",
                 "name": __name__, "msg": banner, "args": (),
