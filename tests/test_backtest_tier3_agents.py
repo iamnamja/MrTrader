@@ -31,10 +31,16 @@ def _mock_model(proba: float = 0.7) -> MagicMock:
     m = MagicMock()
     m.is_trained = True
     m.feature_names = None
-    def _predict(X):
+    m._ts_norm_state = None   # legacy path — cs_normalize fallback
+    m._highvix_sibling = None
+    m._regime_split_threshold = None
+    def _predict(X, threshold=None):
         n = len(X)
         return np.ones(n, dtype=int), np.full(n, proba)
+    def _predict_with_vix(X, vix_level=None, threshold=None):
+        return _predict(X, threshold=threshold)
     m.predict.side_effect = _predict
+    m.predict_with_vix.side_effect = _predict_with_vix
     return m
 
 
@@ -92,9 +98,9 @@ class TestPMScoring:
         with patch.object(sim, "_get_feature_engineer", return_value=mock_fe):
             proposals = sim._pm_score(day, syms)
 
-        # Model should be called once with all 5 symbols in one batch
-        assert model.predict.call_count == 1
-        X_arg = model.predict.call_args[0][0]
+        # Model should be called once with all 5 symbols in one batch (via predict_with_vix)
+        assert model.predict_with_vix.call_count == 1
+        X_arg = model.predict_with_vix.call_args[0][0]
         assert X_arg.shape[0] == 5
 
     def test_min_confidence_filters_low_scores(self):

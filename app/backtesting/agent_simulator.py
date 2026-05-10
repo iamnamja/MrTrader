@@ -129,6 +129,7 @@ class AgentSimulator:
         swing_blackout_days_before: int = 3,     # Phase 2b: skip new entries N days before earnings
         macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
         benign_blocked_dates: Optional[set] = None,  # P1: dates where regime score < threshold
+        regime_score_history: Optional[Dict[date, float]] = None,  # WF-C1: PIT daily regime score
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -152,9 +153,12 @@ class AgentSimulator:
         self.swing_blackout_days_before = swing_blackout_days_before
         self.macro_blocked_dates: set = macro_blocked_dates or set()
         self.benign_blocked_dates: set = benign_blocked_dates or set()
+        self.regime_score_history: Dict[date, float] = regime_score_history or {}
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
+        # Warn once per run if TS norm state is absent (legacy model)
+        self._ts_norm_warned = False
 
     def run(
         self,
@@ -406,9 +410,11 @@ class AgentSimulator:
             if bars_to_yesterday is None or len(bars_to_yesterday) < 60:
                 continue
             try:
+                # WF-C1: use PIT regime score when available; neutral 0.5 fallback
+                _regime_score = self.regime_score_history.get(day, 0.5)
                 feats = fe.engineer_features(
                     sym, bars_to_yesterday, fetch_fundamentals=False,
-                    as_of_date=day, regime_score=0.5,
+                    as_of_date=day, regime_score=_regime_score,
                     vix_history=vix_history,
                 )
                 if feats is not None:
@@ -430,8 +436,9 @@ class AgentSimulator:
             else:
                 X = np.array([list(features_by_symbol[s].values()) for s in sym_list])
             X = np.nan_to_num(X, nan=0.0)
-            X = cs_normalize(X)
-            _, probas = self.model.predict(X)
+            X = self._normalize_for_inference(X, sym_list, day)
+            vix_now = self._vix_at(vix_history, day)
+            _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
         except Exception as exc:
             logger.debug("PM score failed on %s: %s", day, exc)
             return []
@@ -450,6 +457,49 @@ class AgentSimulator:
             if len(proposals) >= self.top_n:
                 break
         return proposals
+
+    # ─── Inference helpers ─────────────────────────────────────────────────────
+
+    def _normalize_for_inference(
+        self, X: np.ndarray, symbols: List[str], day: date
+    ) -> np.ndarray:
+        """Mirror live PM normalization: TS norm for v185+ models, cs_normalize fallback.
+
+        Key divergence from live PM: window_id = day.toordinal() (one per sim day)
+        rather than date.today().toordinal(). This is intentional — in the sim each
+        historical day accumulates its own per-symbol trailing history, whereas live
+        PM always processes today as window N.
+        """
+        ts_state = getattr(self.model, "_ts_norm_state", None)
+        if ts_state is not None:
+            try:
+                from app.ml.ts_normalize import transform as _ts_transform
+                window_id = day.toordinal()
+                X_norm, _ = _ts_transform(X, symbols, [window_id] * len(symbols), ts_state)
+                return X_norm
+            except Exception as exc:
+                logger.warning("TS normalize failed on %s, falling back to cs_normalize: %s", day, exc)
+        else:
+            if not self._ts_norm_warned:
+                logger.info(
+                    "Model has no TS norm state — using cs_normalize (legacy pre-v185 path)"
+                )
+                self._ts_norm_warned = True
+        return cs_normalize(X)
+
+    def _vix_at(self, vix_history: Optional["pd.Series"], day: date) -> Optional[float]:
+        """Return last available VIX close on or before `day`. None if unavailable."""
+        if vix_history is None or vix_history.empty:
+            return None
+        try:
+            idx = vix_history.index
+            idx_dates = [i.date() if hasattr(i, "date") else i for i in idx]
+            candidates = [(d, v) for d, v in zip(idx_dates, vix_history.values) if d <= day]
+            if candidates:
+                return float(candidates[-1][1])
+        except Exception:
+            pass
+        return None
 
     # ─── Trader: technical signal gate ────────────────────────────────────────
 
