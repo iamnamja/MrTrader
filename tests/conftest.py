@@ -52,7 +52,7 @@ def db_session(db_engine) -> Generator[Session, None, None]:
 
 # ── Mock Alpaca ────────────────────────────────────────────────────────────────
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def mock_alpaca():
     client = MagicMock()
     client.health_check.return_value = True
@@ -81,7 +81,7 @@ def mock_alpaca():
 
 # ── Mock Redis ─────────────────────────────────────────────────────────────────
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def mock_redis():
     redis = MagicMock()
     redis.health_check.return_value = True
