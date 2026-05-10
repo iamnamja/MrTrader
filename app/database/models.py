@@ -817,3 +817,52 @@ class WfLiveReconciliation(Base):
     status = Column(String(20), nullable=False, default="pending")  # 'pending'|'complete'|'error'
     error_detail = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# P1 — BenignModel regime tables
+# ---------------------------------------------------------------------------
+
+class DailyRegimeScore(Base):
+    """
+    Daily PIT regime score computed from macro_history.parquet.
+    Populated at migration time (full history) and refreshed daily by macro cron.
+    Enables: "show me all days the regime gate would have fired."
+    """
+    __tablename__ = "daily_regime_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, unique=True, index=True, nullable=False)
+    spy_above_ma50 = Column(Float, nullable=False)   # 1.0 = bullish, 0.0 = bearish
+    spy_above_ma200 = Column(Float, nullable=False)
+    vix_term_ratio = Column(Float, nullable=False)   # vix3m / vix; >= 1.0 = contango
+    breadth_20d_change = Column(Float, nullable=False)  # RSP - SPY 20d return
+    credit_20d_change = Column(Float, nullable=False)   # HYG - IEF 20d return
+    composite_score = Column(Float, nullable=False, index=True)  # equal-weight mean [0,1]
+    computed_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<DailyRegimeScore {self.date} score={self.composite_score:.2f}>"
+
+
+class RegimeGateEvent(Base):
+    """
+    Logged every time BenignGate blocks ML signals due to adverse regime.
+    Also logged when stops are tightened due to a regime flip (reason='stop_tighten').
+    Enables: "how often did the gate fire and what did it block."
+    """
+    __tablename__ = "regime_gate_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, index=True, nullable=False)
+    regime_score = Column(Float, nullable=False)
+    threshold = Column(Float, nullable=False)
+    n_signals_blocked = Column(Integer, nullable=False, default=0)
+    blocked_symbols = Column(String(1000), nullable=True)  # comma-separated
+    reason = Column(String(50), nullable=True)  # "swing_ml"|"intraday_ml"|"stop_tighten"
+    components = Column(JSON, nullable=True)    # full component breakdown
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return (f"<RegimeGateEvent {self.date} score={self.regime_score:.2f} "
+                f"blocked={self.n_signals_blocked} reason={self.reason}>")

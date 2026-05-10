@@ -486,6 +486,7 @@ def run_swing_walkforward(
     train_years: Optional[int] = None,  # Phase 3b: rolling window (None = expanding)
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
     macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+    benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -607,6 +608,7 @@ def run_swing_walkforward(
             no_prefilters=no_prefilters,
             earnings_blackout=earnings_blackout,
             macro_blocked_dates=macro_blocked_dates,
+            benign_blocked_dates=benign_blocked_dates,
         )
         result = sim.run(
             fold_symbols_data,
@@ -672,6 +674,7 @@ def run_intraday_walkforward(
     use_dispersion_gate: bool = False,
     earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: pre-built calendar
     macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+    benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
     use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
     regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
 ) -> WalkForwardReport:
@@ -804,6 +807,7 @@ def run_intraday_walkforward(
             use_dispersion_gate=use_dispersion_gate,
             earnings_blackout=earnings_blackout,
             macro_blocked_dates=macro_blocked_dates,
+            benign_blocked_dates=benign_blocked_dates,
             use_regime_gate=use_regime_gate,
             regime_map=regime_map,
         )
@@ -1035,6 +1039,11 @@ def main() -> int:
     parser.add_argument("--cpcv-paths", type=int, default=2,
                         help="WF-3: number of test paths per combination (default: 2). "
                              "Larger = more combinations, slower but higher statistical power.")
+    # P1: BenignGate — block test-fold entries on adverse-regime days
+    parser.add_argument("--benign-gate", action="store_true", default=False,
+                        help="P1: block new entries on days where PIT composite regime score < "
+                             "BENIGN_REGIME_THRESHOLD (from macro_history.parquet). "
+                             "Off by default. Adds ~1s to setup time.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -1093,6 +1102,21 @@ def main() -> int:
         except Exception as _me:
             _warn(f"Macro gate calendar fetch failed: {_me} — macro gate disabled for this run")
 
+    # P1: pre-compute benign-blocked dates from macro_history.parquet
+    benign_blocked_dates: Optional[set] = None
+    if getattr(args, "benign_gate", False):
+        try:
+            from app.ml.regime_score_pit import build_regime_score_map
+            from app.ml.retrain_config import BENIGN_REGIME_THRESHOLD
+            _score_map = build_regime_score_map()
+            benign_blocked_dates = {
+                d for d, score in _score_map.items() if score < BENIGN_REGIME_THRESHOLD
+            }
+            _ok(f"BenignGate: {len(benign_blocked_dates)} adverse-regime dates "
+                f"(threshold={BENIGN_REGIME_THRESHOLD})")
+        except Exception as _be:
+            _warn(f"BenignGate setup failed: {_be} — benign gate disabled for this run")
+
     # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
@@ -1131,6 +1155,7 @@ def main() -> int:
             train_years=args.swing_train_years,
             earnings_blackout=earnings_cal,
             macro_blocked_dates=macro_blocked_dates,
+            benign_blocked_dates=benign_blocked_dates,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print()
@@ -1182,6 +1207,7 @@ def main() -> int:
             earnings_blackout=earnings_cal,
             embargo_days=args.intraday_embargo_days,
             macro_blocked_dates=macro_blocked_dates,
+            benign_blocked_dates=benign_blocked_dates,
             use_regime_gate=getattr(args, "regime_gate", False),
             regime_map=_regime_map,
         )

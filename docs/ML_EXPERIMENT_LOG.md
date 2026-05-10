@@ -1853,3 +1853,83 @@ symbol/parquet, rate-limit enforcement, and worker fast-path index lookup.
 
 **Verdict:** 🔄 Infrastructure complete. Backfill + walk-forward A/B vs the
 EDGAR baseline pending (user-triggered).
+
+
+## Phase P1 — BenignModel: Regime-Filtered Training + BenignGate Inference — 2026-05-09
+
+**Goal:** Prevent the ML model from learning patterns during adverse macro regimes
+where signals have no demonstrated edge. Root cause of both swing v181 (CPCV
+mean +0.12) and intraday v51 (CPCV mean -0.007) gate failures: the model trains
+on all market conditions including bear/shock regimes where signals are noise,
+then gets tested on them at inference. Solution: filter training data to favorable
+regimes only, and block inference signals when regime is adverse.
+
+**Key Insight (from Opus 4.7 architectural review):**  
+The `regime_score = 0.5` in training.py was a hardcoded placeholder — never
+computed per-window. Phase 92 wired the 5 macro components into features, but
+the composite scalar used for training filtering was always the static 0.5.
+P1 fixes this by computing a real PIT composite score from macro_history.parquet
+per training window.
+
+**Architecture — 13 implementation steps:**
+
+1. `app/ml/regime_score_pit.py` (new): Core PIT computation.
+   - `compute_pit_regime_series(macro_df)` → daily DataFrame with 5 binary components + composite
+   - `build_regime_score_map()` → `{date: float}` dict for training filter
+   - `get_current_regime_score()` → (score, components) for inference; fails closed (returns 0.0) if stale
+   - 5 components equal-weighted: spy_above_ma50, spy_above_ma200, vix_term_ratio (vix3m/vix≥1),
+     breadth_20d (RSP vs SPY), credit_20d (HYG vs IEF)
+   - No look-ahead: all rolling windows use only data through window_end_date
+
+2. `scripts/migrations/p1_add_regime_tables.py` (new): Creates `daily_regime_scores`
+   and `regime_gate_events` tables; seeds historical scores from macro_history.parquet.
+
+3. `app/database/models.py` (edited): Added `DailyRegimeScore` and `RegimeGateEvent` models.
+
+4. `app/ml/retrain_config.py` (edited): Added:
+   - `BENIGN_FILTER_ENABLED = False` (opt-in via `--benign-model` CLI flag)
+   - `BENIGN_REGIME_THRESHOLD = 0.5`
+   - `BENIGN_SWING_FEATURES` tuple (35 features)
+   - `BENIGN_INTRADAY_FEATURES` tuple (25 features)
+
+5. `app/ml/training.py` (edited): Added regime filter in `_process_symbol_windows_worker`;
+   per-window PIT score lookup; feature keep-list pruning when benign_enabled.
+   Fixed checkpoint key to include benign params.
+
+6. `scripts/train_model.py` (edited): Added `--benign-model` and `--regime-threshold` CLI flags.
+
+7. `app/strategy/benign_gate.py` (new): `BenignGate` class.
+   - Daily-cached composite score (one parquet read per trading day)
+   - `gate(symbols, reason)` → passes all or returns [] with DB logging
+   - `handle_regime_flip(prior_score)` → tightens open swing stops 50% on regime flip (Option B)
+   - `get_lkg_version() / set_lkg_version()` — LKG helpers via Configuration table
+
+8. `app/agents/portfolio_manager.py` (edited): BenignGate wired into swing pre-market scan
+   and intraday scan loops. Non-fatal (warns and proceeds if gate errors).
+
+9. `app/backtesting/agent_simulator.py` and `intraday_agent_simulator.py` (edited):
+   Added `benign_blocked_dates: set` parameter — blocks entries on adverse-regime days.
+   `scripts/walkforward_tier3.py` (edited): Added `--benign-gate` flag; pre-computes
+   adverse-date set from macro_history.parquet; passes to both simulators.
+
+10. `scripts/promote_lkg.py` (new): CLI to mark current ACTIVE model as LKG.
+    `restore_lkg(model_name)` function: promotes LKG back to ACTIVE if current is RETIRED.
+
+11–13. Test suite (new): 59 tests across 6 files covering PIT score computation,
+    benign filter logic, BenignGate inference, feature keep-list, stop-tightening
+    policy, and LKG rollback. All pass.
+
+**Regime frequency:**
+- ~21% of trading days (2018-2026) have composite_score < 0.5 (adverse regime)
+- Extended adverse periods: Mar-Dec 2022, Q4 2018, Mar-Apr 2020, early 2025
+
+**Next step: Train v182 with `--benign-model --allow-sacred-holdout` and run CPCV.**
+
+```bash
+python scripts/train_model.py --model swing --benign-model --no-fundamentals --workers 8
+python scripts/walkforward_tier3.py --model swing --cpcv --swing-model-version 182 --benign-gate
+```
+
+**Expected outcome:** Training on ~79% of days (favorable regime) should substantially
+improve OOS Sharpe vs v181 baseline (+0.12 CPCV mean). Hypothesis: removing adverse-regime
+training rows eliminates the noise that causes the model to mis-calibrate on bear market patterns.
