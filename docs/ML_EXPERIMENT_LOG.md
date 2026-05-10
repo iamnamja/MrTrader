@@ -21,7 +21,7 @@ Tracks model improvement iterations for active and recent phases.
 
 | Model | Version | Features | Label | Honest Sharpe | Best Result to Date | Status |
 |---|---|---|---|---|---|---|
-| Swing | v186 | ~82 (TS norm) | triple_barrier (5d) | **🔄 WF pending** | +0.358 (v163, pre-WF-A fix) | Active paper — WF results needed |
+| Swing | v186 | ~82 (TS norm) | triple_barrier (5d) | **+0.106 ❌** (3-fold, 750-sym R1K honest) | +0.358 (v163, pre-WF-A fix) | RETIRED — v187 retrain in progress |
 | Intraday | v51 | 59 | cross-sectional top-20% | **+0.529** ❌ | +0.529 (v51, Phase 3a Branch B) | Active paper — below gate |
 
 > **Gate thresholds:** Swing avg Sharpe > 0.80 | Intraday avg Sharpe > 0.80 | No fold < -0.30 | DSR p > 0.95  
@@ -2265,3 +2265,34 @@ Six fixes committed:
 **Backward compatibility:** Pre-v185 models (no `_ts_norm_state`) fall through to `cs_normalize` — identical to pre-fix behavior. Single INFO log per run.
 
 **Next:** Re-run v186 walk-forward with fixed simulator to get first honest Sharpe reading. Gate results from v186 and all prior models are invalidated.
+
+---
+
+## Phase 92b — Regime Feature Schema Fix + Feature Cache macro_history Wiring — 2026-05-10
+
+**Context:** v186 WF with WF-A1/A2/A3 corrections (3-fold, 750-symbol R1K universe, feature cache):
+- Fold 1 (Aug 2022–Nov 2023): +0.36
+- Fold 2 (Nov 2023–Feb 2025): +0.71
+- Fold 3 (Feb 2025–May 2026): **-0.75** ← tariff/volatility regime kills it
+- Avg Sharpe: +0.106 ❌ (gate: >0.80)
+
+Root cause of fold 3 collapse: model trained without 6 macro/regime features (schema version bug) and WF feature cache not computing them either.
+
+**Two bugs fixed:**
+
+**Bug 1: `SCHEMA_VERSION` not bumped after Phase 92 added 6 regime features.**
+- `app/ml/feature_store.py`: bumped `v7` → `v8`
+- Effect: SQLite feature store auto-clears all cached rows on next training run. Without this, training was serving stale pre-Phase-92 feature dicts (missing 6 keys → 0.0 defaults for regime features).
+- The 6 features (`vix_term_ratio`, `breadth_rsp_spy_ratio_20d`, `credit_hyg_ief_20d`, `sector_dispersion_20d`, `spy_above_ma50`, `spy_above_ma200`) are not in `_BASE_PRUNED` (correctly un-pruned in the frozenset), but the stale cache was silently serving rows without them.
+
+**Bug 2: WF feature cache (`_build_symbol_rows`) not passing `macro_history` to `engineer_features()`.**
+- `app/backtesting/feature_cache.py`: added `macro_history` param to `build_feature_cache()` and `_build_symbol_rows()`.
+- `build_feature_cache()` auto-loads `macro_history.parquet` via `load_macro_history()` if not explicitly passed — zero-change for all callers.
+- Serializes as `macro_idx` (date strings) + `macro_recs` (dict records) for pickling across ProcessPoolExecutor.
+- Previously relied on per-call on-demand disk load inside `engineer_features()` fallback — worked but fragile and slow (parquet read per (sym, day) call).
+
+**Tests:** All 13 feature cache tests pass. No interface changes for existing callers.
+
+**Next: Retrain swing v187** with SCHEMA_VERSION=v8 (cache auto-clears, regime features now in every training row). Hypothesis: `vix_term_ratio` backwardation + `credit_hyg_ief_20d` widening + `sector_dispersion_20d` spike are the regime indicators needed to reduce fold 3 losses. Top features from v186 training already showed `breadth_rsp_spy_ratio_20d`, `vix_term_ratio`, `spy_above_ma50` as top-3 by gain importance — confirming these features carry real signal when properly populated.
+
+**v187 training command:** `python scripts/train_model.py swing --no-fundamentals --workers 8`
