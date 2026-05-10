@@ -1,12 +1,31 @@
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pathlib import Path
 from typing import Optional
+
+from pydantic import ConfigDict
+from pydantic_settings import BaseSettings
+
+# Resolve .env from the repo root (parent of this file's directory) so the
+# correct file is always found regardless of CWD or how uvicorn is launched.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables"""
+    """Application settings.
 
-    model_config = ConfigDict(protected_namespaces=('settings_',), env_file=".env", case_sensitive=False)
+    Precedence (highest to lowest):
+      1. Explicit constructor kwargs
+      2. OS environment variables
+      3. .env file at repo root (resolved via __file__, independent of CWD)
+      4. Field defaults
+    """
+
+    model_config = ConfigDict(
+        protected_namespaces=("settings_",),
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     # Database
     database_url: str = "postgresql://mrtrader:mrtrader_password@localhost:5432/mrtrader"
@@ -68,23 +87,6 @@ class Settings(BaseSettings):
     regime_sizing_unknown: float = 1.0       # UNKNOWN label or no model (conservative: full size until model is stable)
     regime_risk_on_threshold: float = 0.60   # V2: was 0.65
     regime_risk_off_threshold: float = 0.30  # V2: was 0.35
-
-    # Phase 3d: Volatility-targeting position sizing
-    # When enabled, sizes each position to contribute a fixed % of account equity in daily vol.
-    # quantity = floor(account * vol_target_pct / (atr_norm * price))
-    # Bounded above by max_position_size_pct, below by vol_targeting_min_notional.
-    vol_targeting_enabled: bool = False
-    vol_target_pct: float = 0.005          # 0.5% of account equity in vol per position
-    vol_targeting_min_notional: float = 500.0  # never size below $500
-
-    # Phase 5b: Opportunity score weights (must sum to 1.0)
-    # New weights include breadth and dispersion inputs.
-    opp_score_vix_weight: float = 0.25
-    opp_score_vix_trend_weight: float = 0.15
-    opp_score_ma_weight: float = 0.25
-    opp_score_mom_weight: float = 0.10
-    opp_score_breadth_weight: float = 0.15
-    opp_score_dispersion_weight: float = 0.10
 
     # Phase 3d: Volatility-targeting position sizing
     # When enabled, sizes each position to contribute a fixed % of account equity in daily vol.

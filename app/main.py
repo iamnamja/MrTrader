@@ -1,17 +1,18 @@
 import asyncio
 import logging
-import logging.handlers
+import logging.config
 import os
 import subprocess
-import threading
+import sys
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket as _WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import WebSocket as _WebSocket
 
 from app.config import settings
 from app.database import init_db, check_db_connection
@@ -24,22 +25,25 @@ from app.api.nis_routes import router as nis_router, audit_router
 from app.api.websocket import websocket_endpoint
 
 
-class _DailyFileHandler(logging.Handler):
-    """
-    Writes to logs/mrtrader_YYYY-MM-DD.log based on the current wall-clock date.
+# ---------------------------------------------------------------------------
+# Logging
+#
+# Design: dictConfig with disable_existing_loggers=False merges cleanly with
+# uvicorn's loggers. Uvicorn installs its own handlers before our lifespan
+# runs; we set propagate=True and handlers=[] on uvicorn's named loggers so
+# each record bubbles to root exactly once, avoiding fan-out duplication.
+# Called once inside lifespan, never at import time.
+# ---------------------------------------------------------------------------
 
-    - On startup: opens today's dated file (appends if it already exists).
-    - At midnight: detects the date change on the next log write and seamlessly
-      switches to a new file — no restart required, no stale data in wrong file.
-    - Keeps last 30 daily files; older ones are pruned automatically.
-    """
+class _DailyFileHandler(logging.Handler):
+    """Rotate log file at midnight, prune files older than 30 days."""
 
     _KEEP_DAYS = 30
 
-    def __init__(self, log_dir: Path, fmt: logging.Formatter) -> None:
+    def __init__(self, log_dir: str = "logs") -> None:
         super().__init__()
-        self._log_dir = log_dir
-        self.setFormatter(fmt)
+        self._log_dir = Path(log_dir)
+        self._log_dir.mkdir(exist_ok=True)
         self._current_date: str = ""
         self._file = None
         self._open_for_today()
@@ -51,11 +55,9 @@ class _DailyFileHandler(logging.Handler):
         if self._file:
             self._file.close()
         self._current_date = self._today()
-        path = self._log_dir / f"mrtrader_{self._current_date}.log"
-        self._file = open(path, "a", encoding="utf-8")
-        self._prune_old_files()
-
-    def _prune_old_files(self) -> None:
+        self._file = open(
+            self._log_dir / f"mrtrader_{self._current_date}.log", "a", encoding="utf-8"
+        )
         files = sorted(self._log_dir.glob("mrtrader_*.log"))
         for old in files[: max(0, len(files) - self._KEEP_DAYS)]:
             try:
@@ -64,11 +66,10 @@ class _DailyFileHandler(logging.Handler):
                 pass
 
     def emit(self, record: logging.LogRecord) -> None:
-        if self._today() != self._current_date:
-            self._open_for_today()
         try:
-            msg = self.format(record)
-            self._file.write(msg + "\n")
+            if self._today() != self._current_date:
+                self._open_for_today()
+            self._file.write(self.format(record) + "\n")
             self._file.flush()
         except Exception:
             self.handleError(record)
@@ -80,41 +81,46 @@ class _DailyFileHandler(logging.Handler):
         super().close()
 
 
-def _setup_logging() -> None:
-    """Configure root logger: console + daily dated file."""
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+def _configure_logging() -> None:
+    """Replace the root handler list with exactly two handlers via dictConfig.
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    Using dictConfig guarantees an exact, known handler set regardless of what
+    uvicorn or imported modules added to the root logger before us. Setting
+    uvicorn's loggers to handlers=[] + propagate=True means each log record
+    reaches root exactly once — no duplication.
+    """
+    level = settings.log_level.upper()
+    fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
 
-    root = logging.getLogger()
-    root.setLevel(level)
-
-    # Console handler — apply our format to all stream handlers already on the
-    # root logger (uvicorn adds its own before we run). Add one only if none
-    # exist yet. Use isinstance check (not type equality) to catch subclasses.
-    stream_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
-                       and not isinstance(h, logging.FileHandler)]
-    if not stream_handlers:
-        ch = logging.StreamHandler()
-        ch.setFormatter(fmt)
-        root.addHandler(ch)
-    else:
-        for h in stream_handlers:
-            h.setFormatter(fmt)
-
-    # Daily file handler — logs/mrtrader_YYYY-MM-DD.log, rotates at midnight.
-    # Guard against duplicate handlers when the module is re-imported (e.g.
-    # uvicorn --reload reloads app.main on each file save; the root logger
-    # singleton persists across reloads but the class object is redefined, so
-    # isinstance() would not match old instances — use class name instead).
-    if not any(type(h).__name__ == "_DailyFileHandler" for h in root.handlers):
-        root.addHandler(_DailyFileHandler(log_dir, fmt))
+    logging.config.dictConfig({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "standard": {"format": fmt},
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "standard",
+                "stream": "ext://sys.stderr",
+            },
+            "daily_file": {
+                "()": _DailyFileHandler,
+                "formatter": "standard",
+                "log_dir": "logs",
+            },
+        },
+        "root": {"level": level, "handlers": ["console", "daily_file"]},
+        # Reformat uvicorn loggers; no handlers here — they propagate to root.
+        "loggers": {
+            "uvicorn":        {"handlers": [], "level": level, "propagate": True},
+            "uvicorn.error":  {"handlers": [], "level": level, "propagate": True},
+            "uvicorn.access": {"handlers": [], "level": "WARNING", "propagate": True},
+        },
+    })
 
 
 def _git_info() -> tuple[str, str]:
-    """Return (short_commit_hash, branch_name). Returns ('unknown', 'unknown') on error."""
     try:
         commit = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
@@ -127,91 +133,42 @@ def _git_info() -> tuple[str, str]:
         return "unknown", "unknown"
 
 
-_setup_logging()
-logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# Lifespan — replaces deprecated @app.on_event("startup"/"shutdown").
+# Starlette guarantees exactly one entry and one exit per ASGI process.
+# ---------------------------------------------------------------------------
 
-# Create FastAPI app
-app = FastAPI(
-    title="MrTrader - Automated Trading System",
-    description="AI-powered automated day trading system",
-    version="0.1.0",
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── 1. Logging must be configured first ──────────────────────────────────
+    _configure_logging()
+    log = logging.getLogger("mrtrader.startup")
 
-# Register routers
-app.include_router(orchestrator_router)
-app.include_router(dashboard_router)
-app.include_router(watchlist_router)
-app.include_router(config_router)
-app.include_router(nis_router)
-app.include_router(audit_router)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# Guard: uvicorn fires startup_event from multiple threads simultaneously.
-# Lock ensures only one thread runs the body; flag prevents re-entry.
-_STARTUP_LOCK = threading.Lock()
-_STARTUP_DONE = False
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    """Initialize app on startup"""
-    global _STARTUP_DONE
-    with _STARTUP_LOCK:
-        if _STARTUP_DONE:
-            return
-        _STARTUP_DONE = True
-
-    import sys
-    from datetime import datetime, timezone
-
+    # ── 2. Banner ─────────────────────────────────────────────────────────────
     commit, branch = _git_info()
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    py_ver = sys.version.split()[0]
-
-    banner = (
-        "\n"
-        "═" * 72 + "\n"
-        f"  MRTRADER STARTUP  {now_utc}\n"
-        f"  git: {commit}  branch: {branch}\n"
-        f"  mode: {settings.trading_mode.upper()}  capital: ${settings.initial_capital:,.0f}"
-        f"  python: {py_ver}  port: {settings.port}\n"
-        "═" * 72
+    bar = "=" * 72
+    log.info(
+        "\n%s\n  MRTRADER STARTUP  %s\n  git: %s  branch: %s\n"
+        "  mode: %s  capital: $%s  python: %s  port: %s\n%s",
+        bar, now_utc, commit, branch,
+        settings.trading_mode.upper(),
+        f"{settings.initial_capital:,.0f}",
+        sys.version.split()[0], settings.port, bar,
     )
-    # Print directly to stdout (bypasses all logging handlers — avoids N-handler
-    # duplication when uvicorn pre-populates the root logger with multiple handlers).
-    print(banner, flush=True)
-    # Also write to file handler directly so it appears in the dated log file.
-    for _h in logging.getLogger().handlers:
-        if type(_h).__name__ == "_DailyFileHandler":
-            _h.emit(logging.makeLogRecord({
-                "levelno": logging.INFO, "levelname": "INFO",
-                "name": __name__, "msg": banner, "args": (),
-            }))
-            break
 
-    # Initialize database
+    # ── 3. Database ───────────────────────────────────────────────────────────
     try:
         init_db()
-        logger.info("✓ Database initialized")
+        log.info("OK Database initialized")
     except Exception as e:
-        logger.error(f"✗ Database initialization failed: {e}")
+        log.error("Database initialization failed: %s", e)
         raise
-
-    # Check database connection
     if not check_db_connection():
         raise RuntimeError("Cannot connect to database")
-    logger.info("✓ Database connection verified")
+    log.info("OK Database connection verified")
 
-    # Check Redis + Alpaca concurrently (both are sync network calls)
+    # ── 4. Redis + Alpaca (parallel) ─────────────────────────────────────────
     try:
         redis_queue = get_redis_queue()
         redis_ok, alpaca_ok = await asyncio.gather(
@@ -219,29 +176,29 @@ async def startup_event():
             asyncio.to_thread(get_alpaca_client().health_check),
         )
         if redis_ok:
-            logger.info("✓ Redis connection verified")
+            log.info("OK Redis connection verified")
         else:
             raise RuntimeError("Redis health check failed")
         if alpaca_ok:
-            logger.info("✓ Alpaca connection verified")
+            log.info("OK Alpaca connection verified")
         else:
-            logger.warning("⚠ Alpaca health check failed")
+            log.warning("Alpaca health check failed — continuing in degraded mode")
     except RuntimeError:
         raise
     except Exception as e:
-        logger.warning(f"⚠ Startup check failed: {e}")
+        log.warning("Startup connectivity check failed: %s", e)
 
-    # Restore persisted state (kill switch + capital ramp)
+    # ── 5. Restore persisted state ────────────────────────────────────────────
     try:
         from app.live_trading.kill_switch import kill_switch
         from app.live_trading.capital_manager import capital_manager
         kill_switch.load_state()
-        logger.info("State restored (kill_switch=%s, capital_stage=%s)",
-                    kill_switch.is_active, capital_manager.current_stage.stage)
+        log.info("State restored (kill_switch=%s, capital_stage=%s)",
+                 kill_switch.is_active, capital_manager.current_stage.stage)
     except Exception as e:
-        logger.warning("State restore warning: %s", e)
+        log.warning("State restore warning: %s", e)
 
-    # Startup reconciliation (Alpaca vs DB)
+    # ── 6. Startup reconciliation (Alpaca vs DB) ──────────────────────────────
     try:
         from app.startup_reconciler import reconcile
         from app.database.session import get_session
@@ -252,153 +209,164 @@ async def startup_event():
         finally:
             db.close()
     except Exception as e:
-        logger.warning("Startup reconciliation skipped: %s", e)
+        log.warning("Startup reconciliation skipped: %s", e)
 
-    # Flush stale inter-agent queue messages before agents start consuming them.
-    # Proposals in Redis survive process restarts; without this, a restarted RM will
-    # re-approve proposals that PM already flagged as sent today.
+    # ── 7. Flush stale inter-agent queues ─────────────────────────────────────
     try:
-        from app.integrations.redis_queue import get_redis_queue as _get_rq
-        _rq = _get_rq()
-        for _qname in ["trade_proposals", "risk_approved", "exit_requests", "pm_commands"]:
-            _n = _rq.get_queue_length(_qname)
-            if _n > 0:
-                _rq.clear_queue(_qname)
-                logger.warning("Startup: flushed %d stale message(s) from queue '%s'", _n, _qname)
-    except Exception as _e:
-        logger.warning("Startup queue flush failed (non-fatal): %s", _e)
+        rq = get_redis_queue()
+        for qname in ["trade_proposals", "risk_approved", "exit_requests", "pm_commands"]:
+            n = rq.get_queue_length(qname)
+            if n > 0:
+                rq.clear_queue(qname)
+                log.warning("Startup: flushed %d stale message(s) from '%s'", n, qname)
+    except Exception as e:
+        log.warning("Startup queue flush failed (non-fatal): %s", e)
 
-    # Start orchestrator (registers + starts all agents)
+    # ── 8. Orchestrator + agents ──────────────────────────────────────────────
     try:
         from app.agents.portfolio_manager import portfolio_manager
         from app.agents.risk_manager import risk_manager
         from app.agents.trader import trader
         from app.orchestrator import orchestrator
-
         from app.utils.constants import SECTOR_MAP
-        risk_manager.update_sector_map(SECTOR_MAP)
 
+        risk_manager.update_sector_map(SECTOR_MAP)
         orchestrator.register_agent("portfolio_manager", portfolio_manager)
         orchestrator.register_agent("risk_manager", risk_manager)
         orchestrator.register_agent("trader", trader)
         await orchestrator.start()
 
-        # Log active model versions from DB.
-        # Retry up to 3× with a short sleep — the connection pool may not be
-        # fully warm when this runs immediately after orchestrator.start().
+        # Log active model versions (retry for connection pool warmup)
         try:
-            import time as _time
             from app.database.session import get_session
             from app.database.models import ModelVersion
             for _attempt in range(3):
-                _db = get_session()
+                db = get_session()
                 try:
-                    for _name in ("swing", "intraday"):
-                        _row = (
-                            _db.query(ModelVersion)
-                            .filter_by(model_name=_name, status="ACTIVE")
+                    for name in ("swing", "intraday"):
+                        row = (
+                            db.query(ModelVersion)
+                            .filter_by(model_name=name, status="ACTIVE")
                             .order_by(ModelVersion.version.desc())
                             .first()
                         )
-                        if _row:
-                            logger.info("Active model: %s v%d (path=%s)",
-                                        _name, _row.version, _row.model_path)
+                        if row:
+                            log.info("Active model: %s v%d (path=%s)", name, row.version, row.model_path)
                         else:
                             if _attempt < 2:
-                                break  # retry outer loop
-                            logger.warning("Active model: %s — NONE found in DB", _name)
+                                break
+                            log.warning("Active model: %s — NONE found in DB", name)
                     else:
-                        break  # all models logged successfully — no retry needed
+                        break
                 finally:
-                    _db.close()
-                _time.sleep(0.5)
-        except Exception as _e:
-            logger.warning("Could not log model versions: %s", _e)
+                    db.close()
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            log.warning("Could not log model versions: %s", e)
 
-        # Phase 53: start live news monitor as background task
         from app.agents.news_monitor import news_monitor
-        _news_task = asyncio.create_task(news_monitor.run(), name="news_monitor")
-        app.state.news_monitor_task = _news_task
-        logger.info("Orchestrator started (news monitor running)")
+        app.state.news_monitor_task = asyncio.create_task(
+            news_monitor.run(), name="news_monitor"
+        )
+        log.info("Orchestrator started (news monitor running)")
     except Exception as e:
-        logger.error("Orchestrator startup failed: %s", e)
+        log.error("Orchestrator startup failed: %s", e)
         raise
 
-    # Warm all dashboard caches in background — fire and forget, don't block server readiness
-    async def _warm_cache():
-        from app.api.routes import get_dashboard_summary, get_health_alias, get_market_regime
-        results = await asyncio.gather(
-            get_dashboard_summary(),
-            get_health_alias(),
-            get_market_regime(),
-            return_exceptions=True,
-        )
-        names = ["summary", "health", "regime"]
-        for name, r in zip(names, results):
-            if isinstance(r, Exception):
-                logger.warning("Cache warm-up skipped for %s: %s", name, r)
-        logger.info("✓ Dashboard cache warmed")
+    # ── 9. Background warm-ups (non-blocking) ────────────────────────────────
+    app.state.warm_task = asyncio.create_task(_warm_caches(), name="cache_warmup")
+    app.state.market_task = asyncio.create_task(_refresh_market_data(), name="market_data")
 
-    asyncio.create_task(_warm_cache())
+    log.info("MrTrader application started successfully")
 
-    # Phase 92 — refresh macro + sector ETF history in the background so
-    # live inference always has up-to-date regime features. Non-blocking.
-    async def _refresh_market_data():
-        try:
-            import asyncio as _aio
+    # ── Serve requests ────────────────────────────────────────────────────────
+    yield
 
-            def _do_refresh():
-                try:
-                    from app.data.macro_history import update_macro_history
-                    update_macro_history()
-                except Exception as e:
-                    logger.warning("Macro history refresh failed: %s", e)
-                try:
-                    from scripts.backfill_sector_etf_history import update_sector_etf_history_incremental
-                    update_sector_etf_history_incremental()
-                except Exception as e:
-                    logger.warning("Sector ETF refresh failed: %s", e)
-            await _aio.to_thread(_do_refresh)
-            logger.info("OK Market data (macro + sector ETF) refreshed")
-        except Exception as e:
-            logger.warning("Market data refresh skipped: %s", e)
-
-    asyncio.create_task(_refresh_market_data())
-
-    logger.info("MrTrader application started successfully")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up on shutdown"""
-    from datetime import datetime, timezone
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    _log_shutdown = logging.getLogger("mrtrader.shutdown")
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    logger.info("═" * 72)
-    logger.info("  MRTRADER SHUTDOWN  %s", now_utc)
-    logger.info("═" * 72)
+    _log_shutdown.info("%s\n  MRTRADER SHUTDOWN  %s\n%s", "=" * 72, now_utc, "=" * 72)
+
     from app.orchestrator import orchestrator
     await orchestrator.stop()
 
-    # Cancel news monitor (created outside orchestrator, must be cancelled separately)
-    news_task = getattr(app.state, "news_monitor_task", None)
-    if news_task and not news_task.done():
-        news_task.cancel()
+    for task_name in ("news_monitor_task", "warm_task", "market_task"):
+        t = getattr(app.state, task_name, None)
+        if t and not t.done():
+            t.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(t), timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+
+async def _warm_caches() -> None:
+    log = logging.getLogger("mrtrader.startup")
+    from app.api.routes import get_dashboard_summary, get_health_alias, get_market_regime
+    results = await asyncio.gather(
+        get_dashboard_summary(), get_health_alias(), get_market_regime(),
+        return_exceptions=True,
+    )
+    for name, r in zip(["summary", "health", "regime"], results):
+        if isinstance(r, Exception):
+            log.warning("Cache warm-up skipped for %s: %s", name, r)
+    log.info("OK Dashboard cache warmed")
+
+
+async def _refresh_market_data() -> None:
+    log = logging.getLogger("mrtrader.startup")
+
+    def _do_refresh() -> None:
         try:
-            await asyncio.wait_for(asyncio.shield(news_task), timeout=3.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+            from app.data.macro_history import update_macro_history
+            update_macro_history()
+        except Exception as e:
+            log.warning("Macro history refresh failed: %s", e)
+        try:
+            from scripts.backfill_sector_etf_history import update_sector_etf_history_incremental
+            update_sector_etf_history_incremental()
+        except Exception as e:
+            log.warning("Sector ETF refresh failed: %s", e)
+
+    await asyncio.to_thread(_do_refresh)
+    log.info("OK Market data (macro + sector ETF) refreshed")
 
 
-# Health and Status Endpoints
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="MrTrader - Automated Trading System",
+    description="AI-powered automated day trading system",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(orchestrator_router)
+app.include_router(dashboard_router)
+app.include_router(watchlist_router)
+app.include_router(config_router)
+app.include_router(nis_router)
+app.include_router(audit_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint.
-    Returns 503 when the kill switch is active or the circuit breaker is open
-    so that load balancers and monitoring tools can detect the degraded state.
-    """
     from fastapi.responses import JSONResponse
     from app.live_trading.kill_switch import kill_switch
     from app.agents.circuit_breaker import circuit_breaker
@@ -415,119 +383,50 @@ async def health_check():
 
 @app.get("/api/status")
 async def get_status():
-    """Get system status"""
     db_ok = check_db_connection()
     redis_ok, alpaca_ok = await asyncio.gather(
         asyncio.to_thread(get_redis_queue().health_check),
         asyncio.to_thread(get_alpaca_client().health_check),
     )
-    alpaca_status = "✓ connected" if alpaca_ok else "✗ error"
-    status = "healthy" if all([db_ok, redis_ok]) else "degraded"
-
     return {
-        "status": status,
-        "database": "✓ connected" if db_ok else "✗ disconnected",
-        "redis": "✓ connected" if redis_ok else "✗ disconnected",
-        "alpaca": alpaca_status,
+        "status": "healthy" if all([db_ok, redis_ok]) else "degraded",
+        "database": "OK connected" if db_ok else "disconnected",
+        "redis": "OK connected" if redis_ok else "disconnected",
+        "alpaca": "OK connected" if alpaca_ok else "error",
         "mode": settings.trading_mode,
     }
 
 
 @app.get("/api/account")
 async def get_account_info():
-    """Get Alpaca account information"""
-    if get_alpaca_client is None:
-        return {
-            "status": "unavailable",
-            "message": "Alpaca not installed (Phase 1 only, will add in Phase 2)",
-        }
     try:
-        alpaca = get_alpaca_client()
-        account = alpaca.get_account()
-        return {
-            "status": "success",
-            "data": account,
-        }
+        account = get_alpaca_client().get_account()
+        return {"status": "success", "data": account}
     except Exception as e:
-        logger.error(f"Error fetching account info: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-        }
+        logger.error("Error fetching account info: %s", e)
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get all open positions"""
-    if get_alpaca_client is None:
-        return {
-            "status": "unavailable",
-            "message": "Alpaca not installed (Phase 1 only)",
-            "data": [],
-            "count": 0,
-        }
     try:
-        alpaca = get_alpaca_client()
-        positions = alpaca.get_positions()
-        return {
-            "status": "success",
-            "data": positions,
-            "count": len(positions),
-        }
+        positions = get_alpaca_client().get_positions()
+        return {"status": "success", "data": positions, "count": len(positions)}
     except Exception as e:
-        logger.error(f"Error fetching positions: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-        }
+        logger.error("Error fetching positions: %s", e)
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/position/{symbol}")
 async def get_position(symbol: str):
-    """Get position for a specific symbol"""
-    if get_alpaca_client is None:
-        return {
-            "status": "unavailable",
-            "message": "Alpaca not installed (Phase 1 only)",
-        }
     try:
-        alpaca = get_alpaca_client()
-        position = alpaca.get_position(symbol.upper())
+        position = get_alpaca_client().get_position(symbol.upper())
         if position:
-            return {
-                "status": "success",
-                "data": position,
-            }
-        else:
-            return {
-                "status": "not_found",
-                "message": f"No position found for {symbol}",
-            }
+            return {"status": "success", "data": position}
+        return {"status": "not_found", "message": f"No position found for {symbol}"}
     except Exception as e:
-        logger.error(f"Error fetching position: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-        }
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "Welcome to MrTrader - Automated Trading System",
-        "version": "0.1.0",
-        "endpoints": {
-            "health": "/health",
-            "status": "/api/status",
-            "account": "/api/account",
-            "positions": "/api/positions",
-            "docs": "/docs",
-            "dashboard": "/dashboard",
-            "orchestrator": "/api/orchestrator/status",
-            "jobs": "/api/orchestrator/jobs",
-        },
-    }
+        logger.error("Error fetching position: %s", e)
+        return {"status": "error", "message": str(e)}
 
 
 @app.websocket("/ws")
@@ -561,14 +460,11 @@ async def root_redirect():
     return RedirectResponse(url="/dashboard")
 
 
-# Mount entire frontend/dist/ at root — must be LAST so API routes above take priority.
-# html=True serves index.html for unknown paths (SPA fallback).
-# This serves both /assets/index-*.js and any legacy /index-*.js paths correctly.
+# Must be last — API routes above take priority.
 if os.path.isdir(_REACT_DIST):
     app.mount("/", StaticFiles(directory=_REACT_DIST, html=True), name="spa")
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=settings.port, reload=settings.debug)
