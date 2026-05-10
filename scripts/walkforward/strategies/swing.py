@@ -127,7 +127,9 @@ class SwingStrategy:
                     if te_start <= (d.date() if hasattr(d, "date") else d) <= te_end
                 })
 
-                vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                vix_df = fold_symbols_data.get("^VIX")
+                if vix_df is None:
+                    vix_df = fold_symbols_data.get("VIX")
                 vix_series = vix_df["close"] if vix_df is not None and "close" in vix_df.columns else None
 
                 feature_names = getattr(self.model, "feature_names", None) or []
