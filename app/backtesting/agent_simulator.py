@@ -18,7 +18,7 @@ This is one step above Tier 2 (StrategySimulator) because:
 import logging
 import os
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional, Tuple

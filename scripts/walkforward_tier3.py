@@ -35,15 +35,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 
-import math
+import math  # noqa: E402
 
-import numpy as np
-import pandas as pd
-from scipy.stats import norm
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from scipy.stats import norm  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -128,11 +127,22 @@ def _fold_years(test_start: date, test_end: date) -> float:
 
 # ── Console helpers ───────────────────────────────────────────────────────────
 
-def _ok(msg):   print(f"  \033[32mOK\033[0m  {msg}")
-def _warn(msg): print(f"  \033[33mWARN\033[0m  {msg}")
-def _err(msg):  print(f"  \033[31mFAIL\033[0m  {msg}")
+def _ok(msg):
+    print(f"  \033[32mOK\033[0m  {msg}")
+
+
+def _warn(msg):
+    print(f"  \033[33mWARN\033[0m  {msg}")
+
+
+def _err(msg):
+    print(f"  \033[31mFAIL\033[0m  {msg}")
+
+
 def _header(msg):
     print(f"\n{'='*62}\n  {msg}\n{'='*62}")
+
+
 def _subheader(msg):
     print(f"\n{'-'*62}\n  {msg}\n{'-'*62}")
 
@@ -518,7 +528,10 @@ def run_swing_walkforward(
     if extra_seed:
         pre_len = len(symbols)
         symbols = sorted(set(symbols) | set(extra_seed))
-        logger.info("WF-A2: augmented download seed %d → %d (+%d historical)", pre_len, len(symbols), len(symbols) - pre_len)
+        logger.info(
+            "WF-A2: augmented download seed %d → %d (+%d historical)",
+            pre_len, len(symbols), len(symbols) - pre_len,
+        )
 
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()

@@ -58,7 +58,7 @@ def _build_symbol_rows(
     feature_names: List[str],
     regime_score_history: Dict[date, float],
     vix_index: Optional[list],  # dates for vix
-    vix_values: Optional[list], # close values for vix
+    vix_values: Optional[list],  # close values for vix
 ) -> Tuple[str, List[date], List[list]]:
     """Worker function: compute raw features for one symbol across all trading days.
 
