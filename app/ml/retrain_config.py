@@ -119,6 +119,64 @@ USE_REALIZED_R_LABELS: bool = False
 MIN_REALIZED_R: float = 0.35
 
 
+# ── P1: BenignModel — regime-filtered training ────────────────────────────────
+# When BENIGN_FILTER_ENABLED=True, the training pipeline filters out any
+# (symbol, window) row where the PIT composite regime score < BENIGN_REGIME_THRESHOLD.
+# This prevents the model from learning patterns that only appear during bear markets
+# (where our signals have no demonstrated edge).
+#
+# Default: False — existing retrain behaviour is unchanged until explicitly enabled.
+# Enable via CLI flag: --benign-model (sets this to True for the run).
+BENIGN_FILTER_ENABLED: bool = False
+
+# Regime threshold: rows with composite_score < this are excluded from training.
+# 0.5 = at least 3 of 5 components must be bullish (spy_ma50, spy_ma200, vix_term,
+# breadth, credit). Historically filters ~21% of days (2018-2026).
+BENIGN_REGIME_THRESHOLD: float = 0.5
+
+# P1 feature keep-lists. When BENIGN_FILTER_ENABLED=True, the worker retains ONLY
+# features in the relevant list after computing the full feature dict.
+# Verified against app/ml/features.py output — names must match exactly.
+BENIGN_SWING_FEATURES: tuple = (
+    # Momentum (8)
+    "rsi_14", "macd_hist", "momentum_5d", "momentum_20d", "momentum_60d",
+    "momentum_252d_ex1m", "price_change_pct", "consecutive_days",
+    # Trend (7)
+    "price_above_ema20", "price_above_ema50", "ema20_dist", "ema50_dist",
+    "adx_14", "uptrend", "downtrend",
+    # Volatility (5)
+    "atr_norm", "volatility", "vol_percentile_52w", "vol_regime", "parkinson_vol",
+    # Volume (3)
+    "volume_ratio", "volume_trend", "vwap_distance_20d",
+    # 52-week position (2)
+    "price_to_52w_high", "price_to_52w_low",
+    # Regime / macro (5)
+    "vix_term_ratio", "spy_above_ma50", "spy_above_ma200",
+    "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+    # Sector (2)
+    "sector_momentum", "sector_momentum_5d",
+    # Fundamentals (3) — only used when FMP parquet present
+    "pe_ratio", "profit_margin", "revenue_growth",
+)  # 35 total
+
+BENIGN_INTRADAY_FEATURES: tuple = (
+    # Momentum (6)
+    "rsi_14", "momentum_5d", "momentum_20d", "price_change_pct",
+    "consecutive_days", "adx_14",
+    # Trend (5)
+    "price_above_ema20", "price_above_ema50", "ema20_dist", "uptrend", "downtrend",
+    # Volatility (4)
+    "atr_norm", "volatility", "vol_percentile_52w", "parkinson_vol",
+    # Volume (3)
+    "volume_ratio", "volume_trend", "vwap_distance_20d",
+    # 52-week position (2)
+    "price_to_52w_high", "near_52w_high",
+    # Regime / macro (5)
+    "vix_term_ratio", "spy_above_ma50", "spy_above_ma200",
+    "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+)  # 25 total
+
+
 # ── P0: Sacred holdout enforcement ────────────────────────────────────────────
 # SACRED_HOLDOUT_START defines the boundary date — data ON or AFTER this date is
 # RESERVED for the single, final promotion-candidate evaluation. It must NEVER

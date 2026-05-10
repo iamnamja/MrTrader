@@ -128,6 +128,7 @@ class AgentSimulator:
         earnings_blackout: Optional[Dict[str, set]] = None,  # Phase 2b: symbol→{date,...} of earnings
         swing_blackout_days_before: int = 3,     # Phase 2b: skip new entries N days before earnings
         macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+        benign_blocked_dates: Optional[set] = None,  # P1: dates where regime score < threshold
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -150,6 +151,7 @@ class AgentSimulator:
         self.earnings_blackout = earnings_blackout or {}
         self.swing_blackout_days_before = swing_blackout_days_before
         self.macro_blocked_dates: set = macro_blocked_dates or set()
+        self.benign_blocked_dates: set = benign_blocked_dates or set()
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -350,6 +352,11 @@ class AgentSimulator:
             if not _skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
                 _skip_entries = True
                 logger.debug("Macro gate blocked entries on %s", day)
+
+            # P1 BenignGate: block new entries on days with adverse macro regime score
+            if not _skip_entries and self.benign_blocked_dates and day in self.benign_blocked_dates:
+                _skip_entries = True
+                logger.debug("BenignGate blocked entries on %s (adverse regime)", day)
 
             # 5. Trader signal + RM rules + entry
             if proposals and not _skip_entries:

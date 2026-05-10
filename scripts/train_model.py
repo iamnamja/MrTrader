@@ -251,6 +251,8 @@ def run_rolling_pipeline(
     tb_stop_mult: float | None = None,
     forward_days: int | None = None,
     allow_sacred_holdout: bool = False,
+    benign_model: bool = False,
+    regime_threshold: float = 0.5,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
@@ -278,6 +280,10 @@ def run_rolling_pipeline(
          + (f"  |  Top-N features: {top_n_features}" if top_n_features else ""))
     print()
 
+    from app.ml.retrain_config import (
+        BENIGN_FILTER_ENABLED, BENIGN_REGIME_THRESHOLD,
+        BENIGN_SWING_FEATURES, BENIGN_INTRADAY_FEATURES,
+    )
     trainer = ModelTrainer(
         model_type=model_type,
         top_n_features=top_n_features if top_n_features > 0 else None,
@@ -290,7 +296,17 @@ def run_rolling_pipeline(
         three_stage=three_stage,
         multi_window=multi_window,
     )
+    # P1: BenignModel flags — set on trainer instance so all downstream calls pick them up
     trainer._allow_sacred_holdout = allow_sacred_holdout
+    _benign_on = benign_model or BENIGN_FILTER_ENABLED
+    trainer._benign_enabled = _benign_on
+    trainer._benign_threshold = regime_threshold if benign_model else BENIGN_REGIME_THRESHOLD
+    trainer._benign_keeplist = (
+        BENIGN_SWING_FEATURES if model_type != "intraday" else BENIGN_INTRADAY_FEATURES
+    ) if _benign_on else None
+    if _benign_on:
+        ok(f"BenignModel: regime filter ON (threshold={trainer._benign_threshold:.2f}, "
+           f"keeplist={len(trainer._benign_keeplist)} features)")
 
     # Regime score
     try:
@@ -618,6 +634,14 @@ def main():
         "--allow-sacred-holdout", action="store_true", default=False,
         help="Bypass sacred holdout guard (development retrains only — not for final promotion)",
     )
+    parser.add_argument(
+        "--benign-model", action="store_true", default=False,
+        help="P1: filter training rows to regime >= threshold; prune to keep-list features",
+    )
+    parser.add_argument(
+        "--regime-threshold", type=float, default=0.5,
+        help="P1: regime composite score threshold for BenignModel filter (default 0.5)",
+    )
     args = parser.parse_args()
 
     symbols = args.symbols or RUSSELL_1000_TICKERS
@@ -687,6 +711,8 @@ def main():
         tb_stop_mult=getattr(args, "tb_stop_mult", None),
         forward_days=getattr(args, "forward_days", None),
         allow_sacred_holdout=getattr(args, "allow_sacred_holdout", False),
+        benign_model=getattr(args, "benign_model", False),
+        regime_threshold=getattr(args, "regime_threshold", 0.5),
     )
     phase_times["train_pipeline"] = time.time() - _t
 

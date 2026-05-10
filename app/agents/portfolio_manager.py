@@ -1167,6 +1167,24 @@ class PortfolioManager(BaseAgent):
 
         self._last_swing_features = features_by_symbol  # Gap 1: cache for decision audit
         symbols = list(features_by_symbol.keys())
+
+        # P1 BenignGate: block all swing signals when macro regime is adverse
+        try:
+            from app.strategy.benign_gate import BenignGate
+            _bg = BenignGate()
+            symbols = _bg.gate(symbols, reason="swing_ml")
+            if not symbols:
+                self.logger.warning("BenignGate blocked all swing signals — adverse regime")
+                await self.log_decision("SELECTION_SKIPPED", reasoning={
+                    "reason": "benign_gate_adverse_regime",
+                    "strategy": "swing",
+                    "model_version": model_ver,
+                    "universe_size": len(features_by_symbol),
+                })
+                return
+        except Exception as _bg_exc:
+            self.logger.warning("BenignGate check failed (non-fatal, proceeding): %s", _bg_exc)
+
         model_feature_names = getattr(self.model, "feature_names", None)
         if model_feature_names:
             X = np.array([
@@ -1775,6 +1793,18 @@ class PortfolioManager(BaseAgent):
             return
 
         symbols = list(features_by_symbol.keys())
+
+        # P1 BenignGate: block all intraday signals when macro regime is adverse
+        try:
+            from app.strategy.benign_gate import BenignGate
+            _bg = BenignGate()
+            symbols = _bg.gate(symbols, reason="intraday_ml")
+            if not symbols:
+                self.logger.warning("BenignGate blocked all intraday signals — adverse regime")
+                return
+        except Exception as _bg_exc:
+            self.logger.warning("BenignGate check failed (non-fatal, proceeding): %s", _bg_exc)
+
         # Use model's stored feature_names to guarantee correct column order and count.
         # Falls back to dict-value order if model has no feature_names (old pkl).
         model_feat_names = getattr(self.intraday_model, "feature_names", None)

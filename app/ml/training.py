@@ -202,6 +202,11 @@ def _process_symbol_windows_worker(
     abs_hurdle: float = 0.0,        # Option C: optional absolute-return floor for cross-sectional label
     macro_history: Optional[pd.DataFrame] = None,  # Phase 92: regime feature source
     fmp_fundamentals_history: Optional[list] = None,  # Phase 93: FMP quarterly PIT (date_str, fields)
+    # P1: BenignModel filter
+    regime_score_map: Optional[Dict] = None,   # {date: composite_score} from regime_score_pit
+    benign_enabled: bool = False,              # True = filter adverse-regime rows
+    benign_threshold: float = 0.5,            # rows with score < this are excluded
+    benign_feature_keeplist: Optional[tuple] = None,  # feature names to keep (None = use all)
 ) -> Tuple[List, List, List, List, List]:
     """
     Module-level worker for ProcessPoolExecutor.
@@ -380,6 +385,12 @@ def _process_symbol_windows_worker(
         if label is None:
             continue
 
+        # P1: BenignModel regime filter — skip windows in adverse regime
+        if benign_enabled and regime_score_map is not None:
+            pit_score = regime_score_map.get(w_end_date)
+            if pit_score is None or pit_score < benign_threshold:
+                continue  # pre-2018 or adverse regime — do not train on this window
+
         # Cache read from pre-loaded dict (no SQLite in subprocess)
         features = symbol_cache.get(str(w_end_date))
         if features is not None and feature_names and len(features) != len(feature_names):
@@ -473,7 +484,21 @@ def _process_symbol_windows_worker(
                       "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200"):
                 features[k] = rv2.get(k, 0.5)
 
-        features = {k: v for k, v in features.items() if k not in _effective_pruned}
+        # P1: BenignModel feature keep-list — supersedes legacy prune set
+        if benign_enabled and benign_feature_keeplist:
+            features = {k: v for k, v in features.items() if k in benign_feature_keeplist}
+            # Warn once per worker if expected features are missing
+            if not feature_names:
+                missing = [k for k in benign_feature_keeplist if k not in features]
+                if missing:
+                    import logging as _wlog
+                    _wlog.getLogger(__name__).warning(
+                        "BenignFilter: %d keep-list features not found in output "
+                        "(check BENIGN_*_FEATURES names match features.py): %s",
+                        len(missing), missing[:8],
+                    )
+        else:
+            features = {k: v for k, v in features.items() if k not in _effective_pruned}
         if not feature_names:
             feature_names = list(features.keys())
 
@@ -677,6 +702,11 @@ class ModelTrainer:
             "Train: %d samples | Test: %d samples | Features: %d",
             len(X_train), len(X_test), len(feature_names),
         )
+        if getattr(self, "_benign_enabled", False):
+            logger.info(
+                "P1 BenignFilter active: threshold=%.2f, features=%d (keep-list)",
+                getattr(self, "_benign_threshold", 0.5), len(feature_names),
+            )
 
         # Feature selection + MI weights
         mi_scores: Optional[np.ndarray] = None
@@ -791,6 +821,12 @@ class ModelTrainer:
                 n_folds=self.walk_forward_folds,
             )
             metrics.update(wf_metrics)
+
+        # P1: tag benign model metadata into metrics for DB persistence
+        if getattr(self, "_benign_enabled", False):
+            metrics["benign_model"] = True
+            metrics["benign_threshold"] = getattr(self, "_benign_threshold", 0.5)
+            metrics["benign_feature_count"] = len(feature_names)
 
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
@@ -985,13 +1021,36 @@ class ModelTrainer:
         embargo_start = min(split_idx + EMBARGO_WINDOWS, len(window_starts))
         test_window_starts = window_starts[embargo_start:]
 
-        # Use neutral regime_score for all historical training windows.
-        # The live regime_score is computed once and would be identical for all
-        # windows (2021 through 2026), creating look-ahead bias. Since
-        # spy_trend_63d, vix_level, and vix_regime_bucket already capture regime
-        # per-window from historical data, passing 0.5 here prevents leakage
-        # while keeping regime_score available for live inference.
+        # Keep regime_score=0.5 as a neutral placeholder for the scalar feature.
+        # The 5 macro components (spy_above_ma50, vix_term_ratio, etc.) are already
+        # injected PIT-correctly via macro_history in engineer_features(). The
+        # composite scalar is used only for the P1 BenignFilter row-exclusion logic
+        # (see regime_score_map below) — not as a training feature.
         regime_score = 0.5
+
+        # P1: Build PIT regime score map for BenignModel training filter.
+        _benign_enabled = getattr(self, "_benign_enabled", False)
+        _benign_threshold = getattr(self, "_benign_threshold", 0.5)
+        _regime_score_map: Dict = {}
+        if _benign_enabled:
+            try:
+                from app.ml.regime_score_pit import build_regime_score_map
+                _regime_score_map = build_regime_score_map()
+                if _regime_score_map:
+                    favorable = sum(1 for s in _regime_score_map.values() if s >= _benign_threshold)
+                    logger.info(
+                        "P1 BenignFilter: regime map has %d days, %d (%.0f%%) favorable (>= %.2f)",
+                        len(_regime_score_map), favorable,
+                        100 * favorable / len(_regime_score_map), _benign_threshold,
+                    )
+                else:
+                    logger.warning("P1 BenignFilter: empty regime map — filter disabled")
+                    _benign_enabled = False
+            except Exception as _exc:
+                logger.warning("P1 BenignFilter: failed to build regime map (%s) — filter disabled", _exc)
+                _benign_enabled = False
+        # Cache on self so _build_rolling_matrix can access without re-building
+        self._regime_score_map_cache = _regime_score_map
 
         # Pre-fetch fundamentals once per symbol to warm the cache.
         # The rolling loop calls engineer_features ~20x per symbol; without this
@@ -1498,7 +1557,14 @@ class ModelTrainer:
         import hashlib as _hashlib
         _ckpt_dir = Path(MODEL_DIR) / "checkpoints"
         _ckpt_dir.mkdir(parents=True, exist_ok=True)
-        _cfg_str = f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}"
+        _benign_enabled = getattr(self, "_benign_enabled", False)
+        _benign_threshold = getattr(self, "_benign_threshold", 0.5)
+        _benign_keeplist = getattr(self, "_benign_keeplist", None)
+        _regime_score_map: Dict = getattr(self, "_regime_score_map_cache", {})
+        _cfg_str = (
+            f"{self.label_scheme}:{len(trading_symbols)}:{len(window_starts)}"
+            f":benign={_benign_enabled}:thresh={_benign_threshold}"
+        )
         _cfg_key = _hashlib.md5(_cfg_str.encode()).hexdigest()[:8]
         _ckpt_path = _ckpt_dir / f"swing_checkpoint_{_cfg_key}.pkl"
         _completed_symbols: set = set()
@@ -1659,6 +1725,11 @@ class ModelTrainer:
                 getattr(self, "_label_abs_hurdle", 0.0),
                 _macro_history_df,
                 _fmp_fund_by_symbol.get(symbol),
+                # P1: BenignModel filter args
+                _regime_score_map if _benign_enabled else None,
+                _benign_enabled,
+                _benign_threshold,
+                _benign_keeplist,
             )
 
         # Maps row-length → first sym_names seen for that length. Used after

@@ -116,6 +116,7 @@ class IntradayAgentSimulator:
         intraday_blackout_days_before: int = 1,  # Phase 2b: skip entry N days before earnings
         intraday_blackout_days_after: int = 3,   # Phase 2b: skip entry N days after earnings
         macro_blocked_dates: Optional[set] = None,  # WF-5a: FOMC/NFP/CPI/GDP blocked dates
+        benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
         # Phase R5: regime gates (no retrain)
         use_regime_gate: bool = False,  # R5-A: block VIX-spike + SPY-downtrend days
         regime_map: Optional[dict] = None,  # R5-A: {date: label} from WF-4 regime.py
@@ -139,6 +140,7 @@ class IntradayAgentSimulator:
         self.intraday_blackout_days_before = intraday_blackout_days_before
         self.intraday_blackout_days_after = intraday_blackout_days_after
         self.macro_blocked_dates: set = macro_blocked_dates or set()
+        self.benign_blocked_dates: set = benign_blocked_dates or set()
         # Phase R5: regime gates
         self.use_regime_gate = use_regime_gate
         self.regime_map: dict = regime_map or {}
@@ -332,6 +334,11 @@ class IntradayAgentSimulator:
             if not skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
                 skip_entries = True
                 logger.debug("Macro gate blocked intraday entries on %s", day)
+
+            # P1 BenignGate: block new entries on days with adverse macro regime score
+            if not skip_entries and self.benign_blocked_dates and day in self.benign_blocked_dates:
+                skip_entries = True
+                logger.debug("BenignGate blocked intraday entries on %s (adverse regime)", day)
 
             # Phase R5: regime gates (no retrain)
             if not skip_entries and self.use_regime_gate:
