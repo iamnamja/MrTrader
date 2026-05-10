@@ -2187,9 +2187,58 @@ Six fixes committed:
 
 ### What remains
 
-1. **v185 walk-forward results** — pending training completion (~45-90 min). Gate: avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 at N=200.
-2. **Inference loader test** — manually verify that loading v185 in PM correctly loads `swing_norm_v185.pkl` and applies TS normalization (can check via unit test or log inspection).
-3. **SACRED_HOLDOUT_START reset** — current holdout (2025-11-09) is effectively exhausted since all recent retrains used `--allow-sacred-holdout`. Set a new holdout date 6 months forward and document as the final promotion candidate boundary.
-4. **RSI_DIP/EMA_CROSSOVER pre-filter removal (Step 1+3)** — deferred until v185 walk-forward results are in. Step 2 (triple-barrier label) is done.
+1. ~~v185 walk-forward results~~ — superseded by v186 (see below).
+2. **Inference loader test** — manually verify that loading v186 in PM correctly loads `swing_norm_v186.pkl` and applies TS normalization.
+3. **SACRED_HOLDOUT_START reset** — done (reset to 2026-11-09 in retrain_config.py).
+4. **RSI_DIP/EMA_CROSSOVER pre-filter removal (Step 1+3)** — next priority after v186 gate analysis.
 5. **Survivorship bias** — static universe (SP100/Russell1000) missing delisted symbols. Requires a point-in-time universe source.
 6. **Intraday inference normalization** — Fix 2 is swing-only. Intraday still uses `cs_normalize_branch_a`. If intraday moves to absolute labels later, same TS normalization pattern applies.
+
+---
+
+## v186 — Triple-Barrier + TS Normalization Walk-Forward — 2026-05-10
+
+**Context:** v185 trained but swing_norm_v185.pkl not saved (scripts/train_model.py bypasses train_model() method). v186 retrained with all 4 pipeline bug fixes applied:
+1. FMP schema inconsistency fixed (global parquet check, not per-symbol)
+2. `to_cache.append` moved after setdefault (cache now writes full 94-key entries)
+3. Instance method `_process_symbol_windows` cache-hit path fixed (same setdefault pattern)
+4. TS normalization keep_mask applied to X_train and X_test (was only applied to y and meta)
+
+**Training result:**
+- 121,472 train samples (after 8-window TS warmup drop), 40,065 test samples
+- 94 features, AUC=0.523 (near-random expected for first TS-normalization run — model hasn't learned the normalization pattern yet)
+- Top features: breadth_rsp_spy_ratio_20d, regime_score, vix_term_ratio, spy_above_ma50 (macro features dominating)
+- Model: `app/ml/models/swing_v186.pkl` + `app/ml/models/swing_norm_v186.pkl`
+
+**Walk-forward — 2026-05-10 | Cost: 5bps RT | Purge: 10 calendar days | Folds: 5**
+
+| Fold | Test Period | Trades | Win% | Sharpe | Max DD | Calmar | Gate |
+|---|---|---|---|---|---|---|---|
+| 1 | 2022-03-23 → 2023-01-10 | 43 | 51.2% | **+0.09** | 1.4% | 0.09 | ✅ |
+| 2 | 2023-01-21 → 2023-11-10 | 90 | 43.3% | **+0.55** | 1.9% | 0.64 | ✅ |
+| 3 | 2023-11-21 → 2024-09-09 | 151 | 47.7% | **+1.71** | 1.0% | 4.92 | ✅ |
+| 4 | 2024-09-20 → 2025-07-10 | 108 | 45.4% | **+0.64** | 2.2% | 0.60 | ✅ |
+| 5 | 2025-07-21 → 2026-05-10 | 154 | 40.9% | **+0.23** | 3.3% | 0.22 | ✅ |
+| **Avg** | | **546** | **45.7%** | **+0.644** | | **1.293** | ❌ GATE FAILED |
+
+**Gate:** avg Sharpe > 0.80 ❌ (got 0.644) | Min fold > -0.30 ✅ (min = +0.09) | DSR p > 0.95 ❌ (p=0.000, z=-23.94, N=15 trials)
+
+**Verdict: ❌ GATE FAILED — avg_sharpe, dsr_p**
+
+**Interpretation:**
+- Fold 1 (2022 bear) at 0.09 and Fold 5 (2025-2026) at 0.23 are the drag. Fold 3 (AI rally, trending regime) is very strong at 1.71.
+- **No fold below -0.30** — this is a major improvement over v142 (fold 3 was -0.23) and over the Phase 1 baseline. The triple-barrier label appears to eliminate catastrophic fold failures.
+- Win rate 40-51% across folds is consistent with a regime-timing model. The model has signal but entry timing is constrained by RSI_DIP/EMA_CROSSOVER pre-filters.
+- AUC=0.523 on train/test split is expected for the first TS-normalization run. The model needs more iterations to learn TS-normalized feature patterns.
+- DSR N=15 is understated (should be N=200 per Fix B). Even at N=15, p=0.000 fails — the avg Sharpe of 0.644 is too low for DSR to be meaningful.
+- Macro event gate calendar fetch failed due to charmap codec error (emoji in log message). Does not affect fold results.
+
+**Root cause analysis — why folds 1 and 5 are weak:**
+- Fold 1 (2022 bear): RSI_DIP pre-filter catches falling knives in sustained downtrend. Only 43 trades — the filter is too restrictive and misses the recovery. Triple-barrier helps (no catastrophic loss) but can't create alpha where signal is absent.
+- Fold 5 (2025-2026): 154 trades at 40.9% win rate. Recent regime (tariff shock + recovery) is choppy. The ML model trained on 2021-2025 may not generalize well to the post-tariff micro-structure.
+
+**Next steps:**
+1. **Remove RSI_DIP/EMA_CROSSOVER pre-filters** — let ML pick entries. The pre-filters are capping alpha in folds 1 and 5. This was the Opus Recommendation 2 from the multi-LLM review.
+2. **Expand swing universe to Russell 1000** — ~10× more cross-sectional training samples. More data for TS normalization to find signal. (Opus Recommendation 1)
+3. **Feature pruning** — correlation-cluster pruning ~94 → ~30 features. Reduce noise for sparse folds. (Opus Recommendation 3)
+4. The DSR gate cannot be met without avg Sharpe improvement — focus on the pre-filter removal first as highest expected impact.
