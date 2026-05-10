@@ -196,21 +196,26 @@ Three independent LLM reviews + internal re-validation converged on the same dia
 **Files:** `app/ml/intraday_trainer.py`  
 **Deliverable:** Model can learn "top 20% momentum + VIX > 25 → avoid". Currently impossible.
 
-### 3b. Remove Swing RSI_DIP / EMA_CROSSOVER Pre-Filters 📋 DESIGNED (2026-05-07) — see docs/phase_3b_design_spec.md
-**Why:** All three LLMs flag this. The ML model only scores candidates that pass rule-based pre-filters. It learns "which RSI dips don't fail" — not "what makes a good swing trade." This caps the alpha ceiling at whatever the rules can pre-select.  
-**What (phased approach — don't rush this):**
-- **Step 1:** Score the full 430-symbol universe daily (instead of only RSI_DIP/EMA_CROSSOVER candidates). Keep pre-filters as signal features, not hard gates.
-- **Step 2:** Replace binary `path_quality` label with triple-barrier label applied uniformly:
-  - Upper barrier: +2.0×ATR from prior close
-  - Lower barrier: -1.2×ATR from prior close  
-  - Time barrier: 10 calendar days
-  - Label: +1 (upper hit first), -1 (lower hit first), 0 (time/neutral)
-  - Use multiclass XGBoost (predict +1/-1/0), enter only when P(+1) > threshold
-- **Step 3:** PM takes top N by P(+1) from full universe daily, apply min probability threshold
-**Note:** This is a 2–3 week change. Do not start until Phase 1+2 are complete.  
-**Files:** `app/ml/training.py` (label computation), `app/agents/portfolio_manager.py` (scan logic)
+### 3b. Triple-Barrier Label + TS Normalization ✅ COMPLETE (2026-05-09/10) — v185 training in progress
 
-> ⚠️ **Naive removal attempted 2026-05-06 (ML_EXPERIMENT_LOG "Phase 3a"): FAILED.** Simply removing the RSI/EMA gates with existing v142 model produced avg Sharpe -0.731 (vs baseline +0.422). Fold 3 collapsed to 26 trades at 3.9% win rate / -2.54 Sharpe. The pre-filters were acting as regime guards. The phased approach above (Step 1+2+3 together) is required — don't retry naive removal.
+**Why:** Two structural issues identified in Opus 4.7 quant audit (2026-05-09):
+1. Label/trading-rule mismatch: model trained on cross-sectional top-20% Sharpe, but trades use ATR triple-barrier exit — different optimization targets
+2. cs_normalize zeroes macro/regime features (VIX, SPY MA, breadth all identical cross-sectionally → std=0 → signal destroyed)
+
+**What was delivered (PR #196):**
+- `app/ml/ts_normalize.py` (new): per-symbol rolling time-series normalization, 13 tests
+- `app/ml/training.py`: label default `cross_sectional` → `triple_barrier`; cs_normalize replaced with TS normalization in `_build_rolling_matrix`; TSNormalizerState persisted as `swing_norm_v{N}.pkl`; `"symbol"` key added to meta_rows; `vix_fear_spike`, `vix_percentile_1y`, `spy_trend_63d` un-pruned from `_BASE_PRUNED`
+- `app/ml/model.py`: `PortfolioSelectorModel.load()` auto-loads `swing_norm_v{N}.pkl` for inference parity
+- `app/agents/portfolio_manager.py`: `_normalize_for_inference()` helper wired into all 4 swing predict call sites; falls back to `cs_normalize` for pre-Fix-2 models
+- `app/ml/feature_store.py`: SCHEMA_VERSION v6 → v7 (auto-clears cache on startup)
+- `app/ml/training.py`: inhomogeneous row guard now auto-clears cache before raising (no more manual intervention)
+- `scripts/bootstrap_sharpe.py`: DSR N_TRIALS_TESTED 15 → 200 (reflects 184+ model variants)
+- `app/ml/retrain_config.py`: `SWING_RETRAIN` now explicitly sets `label_scheme="triple_barrier"`
+- 1771 tests pass, 0 failures
+
+**v185 training status:** In progress (2026-05-10). Clean cache (0 entries). Results pending.
+
+> ⚠️ **RSI_DIP/EMA_CROSSOVER pre-filter removal:** Still deferred. The triple-barrier label change (Step 2 of original plan) is now done. Step 1 (full universe scan) and Step 3 (PM routing) remain for a future phase once v185 walk-forward results are in.
 
 ### 3c. NIS as PM Gate Layer (Not Model Feature) ⬜ MEDIUM
 **Why:** NIS has insufficient history to be a model feature. But it has real-time value as a trade filter.  

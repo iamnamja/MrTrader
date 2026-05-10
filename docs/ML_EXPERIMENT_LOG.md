@@ -2121,3 +2121,75 @@ is normal — triple-barrier AUC is inherently harder (absolute prediction vs re
 A model with AUC 0.56 on triple-barrier labels and Sharpe > 0.80 in WF is deployable.
 
 **Full test suite status:** 1771 passed, 0 failed (including 13 new ts_normalize tests).
+
+---
+
+## Session Summary — 2026-05-09 to 2026-05-10 (Full Day)
+
+### What was done (chronological)
+
+**Phase P1 — BenignModel** (completed earlier, results documented here)
+- PR #194 merged. BenignGate inference guard, regime-filtered training, 59 tests.
+- v182 (AUC 0.527), v183 (AUC 0.553), v184 (AUC 0.510) — all failed. Root cause found below.
+
+**Root cause investigation (Opus 4.7 deep audit)**
+- FeatureStore cache poisoned: pre-v179 entries (with RSI/MACD) mixed with post-v179 entries. The inhomogeneous-rows filter discarded 54% of training data non-randomly → AUC collapse.
+- Additional issues found: test-set contamination (X_test used for early stopping + threshold tuning + AUC), `regime_score=0.5` hardcode (train/serve skew), FMP key count variance (91 vs 87 keys in sector ETF symbols).
+
+**PR #195 — Training pipeline audit (merged)**
+Six fixes committed:
+1. `feature_store.py` SCHEMA_VERSION v5 → v6 (auto-clears poisoned cache)
+2. FMP key injection uses fixed 8-key schema with 0.0 defaults (eliminates FMP-dependent row length divergence)
+3. Inhomogeneous rows >10% now raises RuntimeError (hard-fail vs silent drop)
+4. Val set carved from newest 20% of train windows for early stopping; X_test reserved for final AUC only
+5. PIT regime_score map always built; workers use real per-window composite score (eliminates 0.5 hardcode)
+6. Checkpoint key includes PRUNED_FEATURES hash + SCHEMA_VERSION
+
+**Phase 89b schema fix**
+- Sector-neutral features (`sector_momentum_5d`, `momentum_20d_sector_neutral`, `momentum_60d_sector_neutral`, `momentum_5d_sector_neutral`) only injected when sector ETF coverage exists → 87 vs 91 key schema mismatch
+- Fix: `setdefault(0.0)` for all 4 keys unconditionally after the Phase 89b block
+
+**Second Opus 4.7 audit (world-class quant perspective)**
+- Identified Fix 2 (label/normalization misalignment) and Fix B (DSR N_TRIALS understated) as structural issues more fundamental than cache poisoning
+- Full design spec produced covering: triple-barrier label, rolling TS normalization, macro feature handling, class imbalance, inference parity, implementation order
+
+**PR #196 — Fix 2 + Fix B (open, CI pending)**
+
+*Fix B (standalone):*
+- `scripts/bootstrap_sharpe.py` N_TRIALS_TESTED default: 15 → 200
+- Reflects 184+ model variants tested; at N=15, sr_star ≈ 1.74σ; at N=200, sr_star ≈ 2.55σ
+- Every prior DSR result in this log underestimated selection bias
+
+*Fix 2 (label + normalization):*
+- `app/ml/ts_normalize.py` (new): `TSNormalizerState`, `fit_transform_train`, `transform`, `save_state`, `load_state`, `assert_state_compatible`. 13 tests.
+- `app/ml/training.py`:
+  - Label default: `cross_sectional` → `triple_barrier`
+  - Prediction threshold default: 0.35 → 0.50
+  - `_build_rolling_matrix`: cs_normalize_by_group replaced with `fit_transform_train` + `transform`
+  - TSNormalizerState persisted as `swing_norm_v{N}.pkl` after each retrain
+  - `"symbol"` key added to meta_rows (required for per-symbol TS history)
+  - `vix_fear_spike`, `vix_percentile_1y`, `spy_trend_63d` removed from `_BASE_PRUNED` (carry signal under TS norm)
+  - Unused `cs_normalize_by_group` import removed (lint fix)
+  - Inhomogeneous row guard now auto-clears cache before raising (no manual intervention needed)
+- `app/ml/model.py`:
+  - `_ts_norm_state = None` added to `__init__`
+  - `load()` auto-loads `swing_norm_v{N}.pkl` when present; asserts feature-name hash; falls back gracefully for pre-Fix-2 models
+- `app/agents/portfolio_manager.py`:
+  - `_normalize_for_inference(X, symbols, model)` helper: uses TSNormalizerState.transform when loaded, cs_normalize fallback for v184 and earlier
+  - Wired into all 4 swing predict call sites: pre-market scan, opportunity scan, open-position rescore (2 paths)
+- `app/ml/feature_store.py`: SCHEMA_VERSION v6 → v7
+- `app/ml/retrain_config.py`: `SWING_RETRAIN` now explicitly sets `label_scheme="triple_barrier"`
+- `scripts/train_model.py`: `--label-scheme` default `atr` → `triple_barrier`
+
+**v185 training**
+- Clean cache (0 entries), all fixes applied, running as of 2026-05-10 morning
+- Results pending
+
+### What remains
+
+1. **v185 walk-forward results** — pending training completion (~45-90 min). Gate: avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 at N=200.
+2. **Inference loader test** — manually verify that loading v185 in PM correctly loads `swing_norm_v185.pkl` and applies TS normalization (can check via unit test or log inspection).
+3. **SACRED_HOLDOUT_START reset** — current holdout (2025-11-09) is effectively exhausted since all recent retrains used `--allow-sacred-holdout`. Set a new holdout date 6 months forward and document as the final promotion candidate boundary.
+4. **RSI_DIP/EMA_CROSSOVER pre-filter removal (Step 1+3)** — deferred until v185 walk-forward results are in. Step 2 (triple-barrier label) is done.
+5. **Survivorship bias** — static universe (SP100/Russell1000) missing delisted symbols. Requires a point-in-time universe source.
+6. **Intraday inference normalization** — Fix 2 is swing-only. Intraday still uses `cs_normalize_branch_a`. If intraday moves to absolute labels later, same TS normalization pattern applies.
