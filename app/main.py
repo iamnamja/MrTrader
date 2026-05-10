@@ -154,10 +154,19 @@ app.add_middleware(
 )
 
 
+# Guard: startup_event can fire multiple times in some uvicorn configurations.
+# This flag ensures the body runs exactly once per process.
+_STARTUP_DONE = False
+
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_event():
     """Initialize app on startup"""
+    global _STARTUP_DONE
+    if _STARTUP_DONE:
+        return
+    _STARTUP_DONE = True
+
     import sys
     from datetime import datetime, timezone
 
