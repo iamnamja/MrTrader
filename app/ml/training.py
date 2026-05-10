@@ -1031,7 +1031,6 @@ class ModelTrainer:
         # P1: Build PIT regime score map for BenignModel training filter.
         _benign_enabled = getattr(self, "_benign_enabled", False)
         _benign_threshold = getattr(self, "_benign_threshold", 0.5)
-        _benign_keeplist = getattr(self, "_benign_keeplist", None)
         _regime_score_map: Dict = {}
         if _benign_enabled:
             try:

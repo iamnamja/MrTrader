@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s",
@@ -28,7 +28,7 @@ logger = logging.getLogger("p1_migration")
 
 
 def run(dry_run: bool = False, seed: bool = True) -> None:
-    from app.database.models import Base, DailyRegimeScore, RegimeGateEvent
+    from app.database.models import DailyRegimeScore, RegimeGateEvent
     from app.database.session import engine, SessionLocal
 
     logger.info("Creating tables: daily_regime_scores, regime_gate_events")
