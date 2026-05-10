@@ -198,7 +198,13 @@ BENIGN_INTRADAY_FEATURES: tuple = (
 #
 # Date format is ISO (YYYY-MM-DD). Boundary is INCLUSIVE: end_date == this date
 # is rejected (the holdout day itself is sacred).
-SACRED_HOLDOUT_START: str = "2025-11-09"
+#
+# History:
+#   2025-11-09 — original boundary (set 2026-05-09). Exhausted: all v182-v185
+#                retrains used --allow-sacred-holdout during pipeline debugging.
+#   2026-11-09 — reset 2026-05-10. Previous boundary considered consumed.
+#                Next promotion candidate evaluation must use this boundary.
+SACRED_HOLDOUT_START: str = "2026-11-09"
 
 
 def _parse_sacred_holdout_start():
