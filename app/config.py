@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -7,6 +8,15 @@ from pydantic_settings import BaseSettings
 # Resolve .env from the repo root (parent of this file's directory) so the
 # correct file is always found regardless of CWD or how uvicorn is launched.
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+# Scrub known-bad env vars that should come exclusively from .env.
+# pydantic-settings gives os.environ higher precedence than .env, so a stray
+# shell-level INITIAL_CAPITAL (e.g. set by a PS profile) would silently win.
+# Popping it here before Settings() is instantiated guarantees .env wins.
+_KNOWN_STALE_ENV_VARS = ["INITIAL_CAPITAL"]
+for _k in _KNOWN_STALE_ENV_VARS:
+    if _k in os.environ:
+        os.environ.pop(_k)
 
 
 class Settings(BaseSettings):
