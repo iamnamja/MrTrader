@@ -35,6 +35,10 @@ class SwingStrategy:
         use_opportunity_score: bool = False,
         no_prefilters: bool = False,
         earnings_blackout: Optional[Dict[str, set]] = None,
+        feature_cache_workers: int = 0,
+        feature_cache_executor: str = "process",
+        feature_cache_disable: bool = False,
+        sim_scan_interval_days: int = 1,
     ):
         self.model = model
         self.version = version
@@ -49,6 +53,10 @@ class SwingStrategy:
         self.use_opportunity_score = use_opportunity_score
         self.no_prefilters = no_prefilters
         self.earnings_blackout = earnings_blackout
+        self.feature_cache_workers = feature_cache_workers
+        self.feature_cache_executor = feature_cache_executor
+        self.feature_cache_disable = feature_cache_disable
+        self.sim_scan_interval_days = sim_scan_interval_days
         self.symbols_data: Dict[str, pd.DataFrame] = {}
         self.spy_prices: Optional[pd.Series] = None
 
@@ -103,6 +111,45 @@ class SwingStrategy:
             s: d for s, d in self.symbols_data.items()
             if s in pit_members or s in _synthetic
         }
+        # Build feature cache for this fold (pre-computes all (sym, day) features
+        # once in parallel, eliminating per-day per-symbol re-computation).
+        feature_cache = None
+        if not self.feature_cache_disable:
+            try:
+                from app.backtesting.feature_cache import build_feature_cache
+                import os
+
+                # Collect test-fold trading days
+                test_days = sorted({
+                    d.date() if hasattr(d, "date") else d
+                    for df in fold_symbols_data.values()
+                    for d in df.index
+                    if te_start <= (d.date() if hasattr(d, "date") else d) <= te_end
+                })
+
+                vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                vix_series = vix_df["close"] if vix_df is not None and "close" in vix_df.columns else None
+
+                feature_names = getattr(self.model, "feature_names", None) or []
+                cache_workers = self.feature_cache_workers or max(2, min(os.cpu_count() or 4, 12))
+
+                logger.info(
+                    "Fold %d: building feature cache (%d symbols × %d days, %d workers, %s)",
+                    fold_idx, len(fold_symbols_data), len(test_days),
+                    cache_workers, self.feature_cache_executor,
+                )
+                feature_cache = build_feature_cache(
+                    symbols_data=fold_symbols_data,
+                    trading_days=test_days,
+                    feature_names=feature_names,
+                    vix_history=vix_series,
+                    workers=cache_workers,
+                    executor=self.feature_cache_executor,
+                )
+            except Exception as exc:
+                logger.warning("Feature cache build failed, falling back to live compute: %s", exc)
+                feature_cache = None
+
         sim = AgentSimulator(
             model=self.model,
             atr_stop_mult=self.atr_stop_mult,
@@ -115,6 +162,8 @@ class SwingStrategy:
             use_opportunity_score=self.use_opportunity_score,
             no_prefilters=self.no_prefilters,
             earnings_blackout=self.earnings_blackout,
+            feature_cache=feature_cache,
+            sim_scan_interval_days=self.sim_scan_interval_days,
         )
         result = sim.run(
             fold_symbols_data,
