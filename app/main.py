@@ -3,6 +3,7 @@ import logging
 import logging.handlers
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -154,8 +155,9 @@ app.add_middleware(
 )
 
 
-# Guard: startup_event can fire multiple times in some uvicorn configurations.
-# This flag ensures the body runs exactly once per process.
+# Guard: uvicorn fires startup_event from multiple threads simultaneously.
+# Lock ensures only one thread runs the body; flag prevents re-entry.
+_STARTUP_LOCK = threading.Lock()
 _STARTUP_DONE = False
 
 # Startup and shutdown events
@@ -163,9 +165,10 @@ _STARTUP_DONE = False
 async def startup_event():
     """Initialize app on startup"""
     global _STARTUP_DONE
-    if _STARTUP_DONE:
-        return
-    _STARTUP_DONE = True
+    with _STARTUP_LOCK:
+        if _STARTUP_DONE:
+            return
+        _STARTUP_DONE = True
 
     import sys
     from datetime import datetime, timezone
