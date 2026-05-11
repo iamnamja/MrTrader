@@ -1042,7 +1042,9 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
     parser.add_argument("--model", choices=["swing", "intraday", "both"], default="both")
-    parser.add_argument("--folds", type=int, default=3, help="Number of OOS folds")
+    parser.add_argument("--folds", type=int, default=None,
+                        help="Number of OOS folds. Default: 5 for swing, 3 for intraday. "
+                             "Explicit value overrides both.")
     parser.add_argument("--years", type=int, default=5,
                         help="Total years of swing history (default: 5)")
     parser.add_argument("--days", type=int, default=730,
@@ -1194,6 +1196,10 @@ def main() -> int:
             f"for an honest DSR correction. Use --paper-gate to suppress this warning."
         )
 
+    # P4: model-aware default fold counts (5 for swing, 3 for intraday)
+    _swing_folds = args.folds if args.folds is not None else 5
+    _intraday_folds = args.folds if args.folds is not None else 3
+
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
     passed = True
 
@@ -1271,7 +1277,7 @@ def main() -> int:
     if args.model in ("swing", "both"):
         t0 = time.time()
         _swing_kwargs = dict(
-            n_folds=args.folds,
+            n_folds=_swing_folds,
             total_years=args.years,
             symbols=symbols,
             atr_stop_mult=args.stop_mult,
@@ -1331,7 +1337,7 @@ def main() -> int:
             except Exception as _re:
                 _warn(f"R5 regime map fetch failed: {_re} — regime gate disabled for this run")
         _intraday_kwargs = dict(
-            n_folds=args.folds,
+            n_folds=_intraday_folds,
             total_days=args.days,
             symbols=symbols,
             meta_model=intraday_meta_model,
