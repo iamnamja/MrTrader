@@ -1042,9 +1042,7 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
     parser.add_argument("--model", choices=["swing", "intraday", "both"], default="both")
-    parser.add_argument("--folds", type=int, default=None,
-                        help="Number of OOS folds. Default: 5 for swing, 3 for intraday. "
-                             "Explicit value overrides both.")
+    parser.add_argument("--folds", type=int, default=3, help="Number of OOS folds")
     parser.add_argument("--years", type=int, default=5,
                         help="Total years of swing history (default: 5)")
     parser.add_argument("--days", type=int, default=730,
@@ -1163,15 +1161,6 @@ def main() -> int:
                         help="Score symbols every N trading days instead of daily (default: 1). "
                              "N=5 gives ~5x sim speedup with minor strategy-behavior change. "
                              "Exits still run daily regardless of this setting.")
-    # P2: swing macro regime gate (separate from stock ranker; uses raw macro values)
-    parser.add_argument("--swing-regime-gate", action="store_true", default=False,
-                        help="P2: block new swing entries on days where the PIT composite "
-                             "regime score < --swing-regime-gate-threshold. Off by default. "
-                             "Uses macro_history.parquet (VIX term ratio, SPY MA, credit, breadth).")
-    parser.add_argument("--swing-regime-gate-threshold", type=float, default=0.4, metavar="T",
-                        help="P2: composite regime score threshold for swing entry blocking "
-                             "(default: 0.4). Score is 5-component binary mean in [0, 1]. "
-                             "0.4 = at least 2 of 5 components must be in risk-on state.")
     # P3: DSR n-trials override and paper-gate mode
     parser.add_argument("--dsr-n", type=int, default=N_TRIALS_TESTED, metavar="N",
                         help=f"P3: number of model variants tried historically (for DSR correction). "
@@ -1204,10 +1193,6 @@ def main() -> int:
             f"Set to the actual number of model variants tried (typically 100-300) "
             f"for an honest DSR correction. Use --paper-gate to suppress this warning."
         )
-
-    # P4: model-aware default fold counts (5 for swing, 3 for intraday)
-    _swing_folds = args.folds if args.folds is not None else 5
-    _intraday_folds = args.folds if args.folds is not None else 3
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
     passed = True
@@ -1266,24 +1251,6 @@ def main() -> int:
         except Exception as _be:
             _warn(f"BenignGate setup failed: {_be} — benign gate disabled for this run")
 
-    # P2: swing macro regime gate — blocks new entries on adverse-regime days
-    swing_regime_gate = None
-    if getattr(args, "swing_regime_gate", False):
-        try:
-            from app.risk.regime_gate import build_regime_gate
-            from app.data.macro_history import load_macro_history
-            _mh = load_macro_history()
-            swing_regime_gate = build_regime_gate(
-                macro_df=_mh,
-                threshold=args.swing_regime_gate_threshold,
-                fail_open=True,
-            )
-            _ok(f"Swing regime gate: {swing_regime_gate.n_blocked} blocked dates "
-                f"(threshold={args.swing_regime_gate_threshold:.2f}, "
-                f"total={swing_regime_gate.n_loaded})")
-        except Exception as _rge:
-            _warn(f"Swing regime gate setup failed: {_rge} — gate disabled for this run")
-
     # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
@@ -1304,7 +1271,7 @@ def main() -> int:
     if args.model in ("swing", "both"):
         t0 = time.time()
         _swing_kwargs = dict(
-            n_folds=_swing_folds,
+            n_folds=args.folds,
             total_years=args.years,
             symbols=symbols,
             atr_stop_mult=args.stop_mult,
@@ -1322,12 +1289,7 @@ def main() -> int:
             train_years=args.swing_train_years,
             earnings_blackout=earnings_cal,
             macro_blocked_dates=macro_blocked_dates,
-            benign_blocked_dates=(
-                (benign_blocked_dates or set()) | swing_regime_gate.build_blocked_dates(
-                    date.today().replace(year=date.today().year - args.years - 1),
-                    date.today(),
-                ) if swing_regime_gate else benign_blocked_dates
-            ),
+            benign_blocked_dates=benign_blocked_dates,
             wf_max_symbols=args.wf_max_symbols if args.wf_max_symbols > 0 else None,
             feature_cache_workers=args.feature_cache_workers,
             feature_cache_executor=args.feature_cache_executor,
@@ -1369,7 +1331,7 @@ def main() -> int:
             except Exception as _re:
                 _warn(f"R5 regime map fetch failed: {_re} — regime gate disabled for this run")
         _intraday_kwargs = dict(
-            n_folds=_intraday_folds,
+            n_folds=args.folds,
             total_days=args.days,
             symbols=symbols,
             meta_model=intraday_meta_model,
