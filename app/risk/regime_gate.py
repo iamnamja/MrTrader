@@ -161,3 +161,51 @@ def build_regime_gate(
     if macro_df is not None and len(macro_df) > 0:
         return RegimeGate.from_df(macro_df, config=config)
     return RegimeGate.from_parquet(parquet=parquet, config=config)
+
+
+# ── R5: Regime probability gate (sizing multiplier) ───────────────────────────
+
+class RegimeProbGate:
+    """Wraps RegimeClassifier to provide a PM sizing weight ∈ [REGIME_FLOOR, 1.0].
+
+    Interface only — wiring into PM sizing is a Phase R1.5 follow-up.
+    Use after training via scripts/train_regime_classifier.py.
+    """
+
+    _DEFAULT_PATH = "app/ml/models/regime_v1.pkl"
+
+    def __init__(self, model_path: str | None = None):
+        self._path = model_path or self._DEFAULT_PATH
+        self._clf = None
+
+    def _load_once(self) -> None:
+        if self._clf is None:
+            from app.ml.regime_classifier import RegimeClassifier
+            self._clf = RegimeClassifier.load(self._path)
+
+    def weight(self, features_row: "pd.Series") -> float:
+        """Return sizing weight ∈ [REGIME_FLOOR, 1.0] for a single feature row.
+
+        Args:
+            features_row: pd.Series with FEATURE_NAMES columns.
+
+        Returns:
+            Float weight — multiply into PM position size.
+        """
+        from app.ml.regime_classifier import REGIME_FLOOR
+        try:
+            self._load_once()
+            prob = self._clf.predict_proba_date(features_row)
+            return self._clf.sizing_weight(prob)
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "RegimeProbGate.weight failed (%s) — returning 1.0 (fail-open)", exc
+            )
+            return 1.0
+
+    @classmethod
+    def is_available(cls, model_path: str | None = None) -> bool:
+        """True if a trained regime_v1 model exists at the expected path."""
+        from pathlib import Path
+        return Path(model_path or cls._DEFAULT_PATH).exists()
