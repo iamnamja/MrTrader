@@ -227,59 +227,71 @@ class WalkForwardReport:
         ks = [f.k_ratio for f in self.folds if f.k_ratio != 0]
         return float(np.mean(ks)) if ks else 0.0
 
-    def gate_passed(self) -> bool:
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
-        pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+    # P3: paper-gate thresholds (less strict, for deploy-to-paper decisions)
+    PAPER_SHARPE_GATE = 0.50
+    PAPER_MIN_FOLD_SHARPE = -0.40
+
+    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
+        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         return (
-            self.avg_sharpe >= SHARPE_GATE
-            and self.min_sharpe >= MIN_FOLD_SHARPE
+            self.avg_sharpe >= sharpe_gate
+            and self.min_sharpe >= min_fold_gate
             and dsr_p > 0.95
-            and pf_ok    # WF-1: profit factor gate
-            and cal_ok   # WF-1: Calmar gate
+            and pf_ok
+            and cal_ok
         )
 
-    def gate_detail(self) -> dict:
+    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
         """Return per-gate pass/fail dict for logging and tests."""
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
+        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         return {
-            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= SHARPE_GATE),
-            "min_sharpe": (self.min_sharpe, self.min_sharpe >= MIN_FOLD_SHARPE),
+            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= sharpe_gate),
+            "min_sharpe": (self.min_sharpe, self.min_sharpe >= min_fold_gate),
             "dsr_p": (dsr_p, dsr_p > 0.95),
-            "avg_profit_factor": (self.avg_profit_factor,
-                                  self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
-            "avg_calmar": (self.avg_calmar,
-                           self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+            "avg_profit_factor": (self.avg_profit_factor, pf_ok),
+            "avg_calmar": (self.avg_calmar, cal_ok),
         }
 
-    def print(self) -> None:
-        _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)")
+    def print(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> None:
+        _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)"
+                + (" [PAPER-GATE MODE]" if paper_gate else ""))
         for f in self.folds:
             print(f.summary_line())
         print()
-        detail = self.gate_detail()
-        print(f"  Avg Sharpe:      {self.avg_sharpe:+.3f}  (gate: > {SHARPE_GATE})  "
+        detail = self.gate_detail(dsr_n=dsr_n, paper_gate=paper_gate)
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        print(f"  Avg Sharpe:      {self.avg_sharpe:+.3f}  (gate: > {sharpe_gate})  "
               f"{'OK' if detail['avg_sharpe'][1] else 'FAIL'}")
-        print(f"  Min fold Sharpe: {self.min_sharpe:+.3f}  (gate: > {MIN_FOLD_SHARPE})  "
+        print(f"  Min fold Sharpe: {self.min_sharpe:+.3f}  (gate: > {min_fold_gate})  "
               f"{'OK' if detail['min_sharpe'][1] else 'FAIL'}")
         print(f"  Avg win rate:    {self.avg_win_rate:.1%}")
         print(f"  Total trades:    {self.total_trades}")
-        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
-        print(f"  DSR (N={N_TRIALS_TESTED} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
+        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        print(f"  DSR (N={dsr_n} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
               f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
-        if self.avg_profit_factor > 0:
+        if self.avg_profit_factor > 0 and not paper_gate:
             print(f"  Avg profit factor: {self.avg_profit_factor:.3f}  "
                   f"(gate: > {MIN_PROFIT_FACTOR})  "
                   f"{'OK' if detail['avg_profit_factor'][1] else 'FAIL'}")
-        if self.avg_calmar != 0:
+        if self.avg_calmar != 0 and not paper_gate:
             print(f"  Avg Calmar ratio:  {self.avg_calmar:.3f}  "
                   f"(gate: > {MIN_CALMAR})  "
                   f"{'OK' if detail['avg_calmar'][1] else 'FAIL'}")
         if self.avg_k_ratio != 0:
             print(f"  Avg K-ratio:       {self.avg_k_ratio:.3f}  (directional; > 0 = improving)")
         print()
-        if self.gate_passed():
-            _ok(f"GATE PASSED — avg Sharpe {self.avg_sharpe:.3f}, DSR p={dsr_p:.3f}, "
+        if self.gate_passed(dsr_n=dsr_n, paper_gate=paper_gate):
+            mode = "PAPER GATE" if paper_gate else "GATE"
+            _ok(f"{mode} PASSED — avg Sharpe {self.avg_sharpe:.3f}, DSR p={dsr_p:.3f}, "
                 f"PF={self.avg_profit_factor:.2f}, Calmar={self.avg_calmar:.2f}")
         else:
             failed = [k for k, (v, ok) in detail.items() if not ok]
@@ -1030,7 +1042,9 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
     parser.add_argument("--model", choices=["swing", "intraday", "both"], default="both")
-    parser.add_argument("--folds", type=int, default=3, help="Number of OOS folds")
+    parser.add_argument("--folds", type=int, default=None,
+                        help="Number of OOS folds. Default: 5 for swing, 3 for intraday. "
+                             "Explicit value overrides both.")
     parser.add_argument("--years", type=int, default=5,
                         help="Total years of swing history (default: 5)")
     parser.add_argument("--days", type=int, default=730,
@@ -1149,6 +1163,24 @@ def main() -> int:
                         help="Score symbols every N trading days instead of daily (default: 1). "
                              "N=5 gives ~5x sim speedup with minor strategy-behavior change. "
                              "Exits still run daily regardless of this setting.")
+    # P2: swing macro regime gate (separate from stock ranker; uses raw macro values)
+    parser.add_argument("--swing-regime-gate", action="store_true", default=False,
+                        help="P2: block new swing entries on days where the PIT composite "
+                             "regime score < --swing-regime-gate-threshold. Off by default. "
+                             "Uses macro_history.parquet (VIX term ratio, SPY MA, credit, breadth).")
+    parser.add_argument("--swing-regime-gate-threshold", type=float, default=0.4, metavar="T",
+                        help="P2: composite regime score threshold for swing entry blocking "
+                             "(default: 0.4). Score is 5-component binary mean in [0, 1]. "
+                             "0.4 = at least 2 of 5 components must be in risk-on state.")
+    # P3: DSR n-trials override and paper-gate mode
+    parser.add_argument("--dsr-n", type=int, default=N_TRIALS_TESTED, metavar="N",
+                        help=f"P3: number of model variants tried historically (for DSR correction). "
+                             f"Default={N_TRIALS_TESTED}. Set to actual count (e.g. 200) for honest "
+                             f"selection-bias correction. Warn if < 100.")
+    parser.add_argument("--paper-gate", action="store_true", default=False,
+                        help="P3: use paper-trading readiness gate instead of production gate. "
+                             "Criteria: avg_sharpe > 0.50 and min_fold_sharpe > -0.40 (less strict). "
+                             "DSR check still applies. Useful for deploy-to-paper decisions.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -1164,6 +1196,18 @@ def main() -> int:
         allow_sacred_holdout=args.allow_sacred_holdout,
         context="walkforward_tier3.main",
     )
+
+    # P3: warn if dsr_n is too low to give honest selection-bias correction
+    if args.dsr_n < 100 and not args.paper_gate:
+        _warn(
+            f"--dsr-n={args.dsr_n} is likely understated. "
+            f"Set to the actual number of model variants tried (typically 100-300) "
+            f"for an honest DSR correction. Use --paper-gate to suppress this warning."
+        )
+
+    # P4: model-aware default fold counts (5 for swing, 3 for intraday)
+    _swing_folds = args.folds if args.folds is not None else 5
+    _intraday_folds = args.folds if args.folds is not None else 3
 
     symbols = [s.upper() for s in args.symbols] if args.symbols else None
     passed = True
@@ -1222,6 +1266,24 @@ def main() -> int:
         except Exception as _be:
             _warn(f"BenignGate setup failed: {_be} — benign gate disabled for this run")
 
+    # P2: swing macro regime gate — blocks new entries on adverse-regime days
+    swing_regime_gate = None
+    if getattr(args, "swing_regime_gate", False):
+        try:
+            from app.risk.regime_gate import build_regime_gate
+            from app.data.macro_history import load_macro_history
+            _mh = load_macro_history()
+            swing_regime_gate = build_regime_gate(
+                macro_df=_mh,
+                threshold=args.swing_regime_gate_threshold,
+                fail_open=True,
+            )
+            _ok(f"Swing regime gate: {swing_regime_gate.n_blocked} blocked dates "
+                f"(threshold={args.swing_regime_gate_threshold:.2f}, "
+                f"total={swing_regime_gate.n_loaded})")
+        except Exception as _rge:
+            _warn(f"Swing regime gate setup failed: {_rge} — gate disabled for this run")
+
     # Phase 2b: pre-fetch earnings calendar once (used by both swing and intraday)
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
@@ -1242,7 +1304,7 @@ def main() -> int:
     if args.model in ("swing", "both"):
         t0 = time.time()
         _swing_kwargs = dict(
-            n_folds=args.folds,
+            n_folds=_swing_folds,
             total_years=args.years,
             symbols=symbols,
             atr_stop_mult=args.stop_mult,
@@ -1260,7 +1322,12 @@ def main() -> int:
             train_years=args.swing_train_years,
             earnings_blackout=earnings_cal,
             macro_blocked_dates=macro_blocked_dates,
-            benign_blocked_dates=benign_blocked_dates,
+            benign_blocked_dates=(
+                (benign_blocked_dates or set()) | swing_regime_gate.build_blocked_dates(
+                    date.today().replace(year=date.today().year - args.years - 1),
+                    date.today(),
+                ) if swing_regime_gate else benign_blocked_dates
+            ),
             wf_max_symbols=args.wf_max_symbols if args.wf_max_symbols > 0 else None,
             feature_cache_workers=args.feature_cache_workers,
             feature_cache_executor=args.feature_cache_executor,
@@ -1268,13 +1335,13 @@ def main() -> int:
             sim_scan_interval_days=args.sim_scan_interval_days,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
-        swing_report.print()
+        swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
         if args.cpcv and args.model in ("swing", "both"):
             _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
-        if not swing_report.gate_passed():
+        if not swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
             passed = False
         if args.record_results and swing_report.folds:
             from app.ml.training import ModelTrainer
@@ -1283,7 +1350,7 @@ def main() -> int:
                 version=loaded_ver,
                 avg_sharpe=swing_report.avg_sharpe,
                 fold_sharpes=[f.sharpe for f in swing_report.folds],
-                gate_passed=swing_report.gate_passed(),
+                gate_passed=swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate),
             )
 
     if args.model in ("intraday", "both"):
@@ -1302,7 +1369,7 @@ def main() -> int:
             except Exception as _re:
                 _warn(f"R5 regime map fetch failed: {_re} — regime gate disabled for this run")
         _intraday_kwargs = dict(
-            n_folds=args.folds,
+            n_folds=_intraday_folds,
             total_days=args.days,
             symbols=symbols,
             meta_model=intraday_meta_model,
@@ -1322,13 +1389,13 @@ def main() -> int:
             regime_map=_regime_map,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
-        intraday_report.print()
+        intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
         if args.bootstrap > 0:
             _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
         if args.cpcv and args.model in ("intraday", "both"):
             _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
-        if not intraday_report.gate_passed():
+        if not intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
             passed = False
         if args.record_results and intraday_report.folds:
             from app.ml.intraday_training import IntradayModelTrainer
@@ -1337,7 +1404,7 @@ def main() -> int:
                 version=loaded_ver,
                 avg_sharpe=intraday_report.avg_sharpe,
                 fold_sharpes=[f.sharpe for f in intraday_report.folds],
-                gate_passed=intraday_report.gate_passed(),
+                gate_passed=intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate),
             )
 
     print()

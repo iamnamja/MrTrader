@@ -2334,3 +2334,35 @@ The 6 regime features should be *context* for the XGBoost model, not its primary
 3. **Reduce regime feature count**: Keep only 2-3 most informative (vix_term_ratio + sector_dispersion_20d based on prior v186 top features) and prune the rest
 4. **Two-stage architecture**: Regime classifier gates entries; stock-selection model ranks within gate-passed universe
 5. **Re-examine `_BASE_PRUNED`**: The v186 run showed +0.36/+0.71/-0.75 with regime features defaulting to 0.0 — the stock-selection features were doing real work. Restoring balance is key.
+
+---
+
+## P0 — Macro Feature Prune (v189) — 2026-05-11
+
+**What:** Re-pruned 7 macro/regime features from `_BASE_PRUNED` in `app/ml/training.py`:
+- `vix_term_ratio`, `breadth_rsp_spy_ratio_20d`, `credit_hyg_ief_20d`, `sector_dispersion_20d`
+- `spy_above_ma50`, `spy_above_ma200`, `regime_score`
+
+**Rationale:** These features are **identical across all 750 symbols per day** — TS-normalization (per-symbol rolling z-score, 252d window) produces regime-epoch overfit (all symbols get same z-score on the same day). XGBoost placed them in top-6 importance (v188), displacing stock-selection features and turning the ranker into a macro timing model. P2 (regime gate) moves them to a separate gate layer that uses raw macro values directly.
+
+**Hypothesis:** Returning to stock-selection-only features in the ranker should recover v186-like fold structure (+0.36/+0.71/-0.75) or better, once macro features stop occupying top splits.
+
+**Training (2026-05-11):**
+- AUC = 0.505 (consistent with v186 AUC ~0.50)
+- Feature count: ~87 features (7 fewer macro features pruned)
+- Training date: 2026-05-11 01:53
+
+**Walk-Forward (5-fold, 750-sym R1K, 5bps RT, 10d purge, DSR N=200):** 🔄 Running
+
+| Fold | Test Period | Trades | Win% | Sharpe |
+|---|---|---|---|---|
+| 1 | TBD | — | — | — |
+| 2 | TBD | — | — | — |
+| 3 | TBD | — | — | — |
+| 4 | TBD | — | — | — |
+| 5 | TBD | — | — | — |
+| **Avg** | | — | — | **TBD** |
+
+**Gate:** TBD
+
+**Verdict:** 🔄 Pending WF completion
