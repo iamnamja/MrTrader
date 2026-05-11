@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # ── Gate thresholds ───────────────────────────────────────────────────────────
 SHARPE_GATE = 0.8          # avg OOS Sharpe required to pass
 MIN_FOLD_SHARPE = -0.3     # no individual fold may be below this
-N_TRIALS_TESTED = 15       # approx number of model variants tried historically (for DSR)
+N_TRIALS_TESTED = 200      # approx variants tried (ML_EXPERIMENT_LOG iter 1-6 + phases 18-87 ≈ 200)
 # WF-1: multi-metric gates
 MIN_PROFIT_FACTOR = 1.10   # avg profit factor across folds (sum wins / sum |losses|)
 MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)

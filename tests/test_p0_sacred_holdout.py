@@ -219,6 +219,7 @@ def test_wf_script_allows_bypass_after_holdout(monkeypatch):
     test_argv = [
         "walkforward_tier3.py", "--model", "swing", "--folds", "1", "--years", "1",
         "--allow-sacred-holdout",
+        "--no-earnings-blackout", "--no-macro-gate",  # skip network calls in CI
     ]
     monkeypatch.setattr("sys.argv", test_argv)
 
