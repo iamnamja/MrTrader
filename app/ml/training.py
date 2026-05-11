@@ -115,6 +115,20 @@ _BASE_PRUNED: frozenset = frozenset([
     "aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
     "drawdown_from_20d_high", "hurst_exponent_60d",
     "pct_closes_above_ema20", "volatility_adj_dist_52wk_high",
+    # P0 (2026-05-11): Six macro/regime features RE-PRUNED from the ranker.
+    # Phase 92 un-pruned these to give the ranker macro context, but v188
+    # diagnostic showed they dominated top-7 feature importance and caused
+    # avg Sharpe to drop from +0.106 (v186) to -0.085 (v188). Root cause:
+    # these values are IDENTICAL across all 750 symbols on any given day.
+    # TS-normalization per-symbol produces noise correlated to each symbol's
+    # lookback window, not cross-sectional signal. XGBoost overfits regime
+    # epochs rather than learning stock selection. These features are kept
+    # in features.py for the P2 regime-gate layer (separate from the ranker).
+    "vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+    "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200",
+    # regime_score is hardcoded 0.5 in training (placeholder, not PIT-computed).
+    # Pruned as dead column — adds noise without information.
+    "regime_score",
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
@@ -153,6 +167,49 @@ def _resolve_pruned_features() -> frozenset:
     if not fmp_path.exists():
         return base
     return frozenset(f for f in base if f not in {"pe_ratio", "pb_ratio"})
+
+
+# P1: named ablation buckets for --unprune CLI flag
+_UNPRUNE_BUCKETS: dict = {
+    "rs": frozenset({"rs_vs_spy_5d", "rs_vs_spy_10d", "rs_vs_spy_60d"}),
+    "adx_aroon": frozenset({
+        "adx_14_pct", "adx_rising",
+        "aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
+    }),
+    "phase89": frozenset({
+        "drawdown_from_20d_high", "hurst_exponent_60d",
+        "pct_closes_above_ema20", "volatility_adj_dist_52wk_high",
+    }),
+}
+_UNPRUNE_BUCKETS["all"] = frozenset().union(*_UNPRUNE_BUCKETS.values())
+
+
+def apply_unprune_overrides(unprune: list) -> None:
+    """P1 ablation: remove named features (or bucket names) from PRUNED_FEATURES.
+
+    Modifies the module-level PRUNED_FEATURES in-place so that ModelTrainer
+    sees the overridden set without touching _BASE_PRUNED.
+
+    Args:
+        unprune: list of feature names or bucket keys ('rs', 'adx_aroon',
+                 'phase89', 'all') to restore to the active feature set.
+    """
+    global PRUNED_FEATURES
+    to_restore: set = set()
+    for name in unprune:
+        if name in _UNPRUNE_BUCKETS:
+            to_restore |= _UNPRUNE_BUCKETS[name]
+        else:
+            to_restore.add(name)
+    original_count = len(PRUNED_FEATURES)
+    PRUNED_FEATURES = frozenset(f for f in PRUNED_FEATURES if f not in to_restore)
+    removed = original_count - len(PRUNED_FEATURES)
+    import logging as _log
+    _log.getLogger(__name__).info(
+        "apply_unprune_overrides: restored %d features from pruned set (%s). "
+        "New pruned count: %d",
+        removed, sorted(to_restore & _BASE_PRUNED), len(PRUNED_FEATURES),
+    )
 
 
 def _atr_label_thresholds(window_df: pd.DataFrame, entry_price: float):

@@ -253,6 +253,7 @@ def run_rolling_pipeline(
     allow_sacred_holdout: bool = False,
     benign_model: bool = False,
     regime_threshold: float = 0.5,
+    unprune: list | None = None,
 ):
     """
     Steps 3-6 combined using the new rolling-window ModelTrainer.
@@ -260,6 +261,11 @@ def run_rolling_pipeline(
     """
     import app.ml.training as _training_module
     from app.ml.training import ModelTrainer, WINDOW_DAYS, TEST_FRACTION
+
+    # P1: apply --unprune overrides before training
+    if unprune:
+        from app.ml.training import apply_unprune_overrides
+        apply_unprune_overrides(unprune)
 
     # Phase 3b: apply ATR multiplier + forward-day overrides before training
     if tb_target_mult is not None:
@@ -649,6 +655,13 @@ def main():
         "--regime-threshold", type=float, default=0.5,
         help="P1: regime composite score threshold for BenignModel filter (default 0.5)",
     )
+    parser.add_argument(
+        "--unprune", nargs="+", metavar="FEATURE",
+        help="P1 ablation: remove named features from _BASE_PRUNED, adding them back to training. "
+             "Predefined buckets: 'rs' (rs_vs_spy_5d/10d/60d), 'adx_aroon' (adx_14_pct + Aroon), "
+             "'phase89' (drawdown/hurst/pct_closes/vol_adj_dist), 'all' (all three buckets). "
+             "Or pass individual feature names. Does not affect PRUNED_FEATURES constant.",
+    )
     args = parser.parse_args()
 
     symbols = args.symbols or RUSSELL_1000_TICKERS
@@ -720,6 +733,7 @@ def main():
         allow_sacred_holdout=getattr(args, "allow_sacred_holdout", False),
         benign_model=getattr(args, "benign_model", False),
         regime_threshold=getattr(args, "regime_threshold", 0.5),
+        unprune=getattr(args, "unprune", None),
     )
     phase_times["train_pipeline"] = time.time() - _t
 
