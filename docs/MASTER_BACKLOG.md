@@ -1,16 +1,23 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-10  
-**Status:** Paper trading only. Best honest intraday: v51 +0.529. Best honest swing: v186 (training 2026-05-10, results pending). Live trading fully operational.  
-**Completed this session (2026-05-10):**
+**Last updated:** 2026-05-11  
+**Status:** Paper trading only. Best honest swing: v186 avg +0.106 ❌ (gate 0.80). v190 training in progress (P0 macro prune — expect recovery to v186-like fold structure). Intraday: v51 +0.529 ❌.  
+**Completed this session (2026-05-10/11):**
 - **WF-A1** (PR #198 ✅): AgentSimulator alignment — TS norm state, `predict_with_vix`, PIT `regime_score_history`. 7 tests.
-- **Startup/logging/settings** (PR #198 ✅): `dictConfig` replaces handler fan-out (70x banner duplication fixed); `lifespan` replaces deprecated `@app.on_event`; `INITIAL_CAPITAL` scrub in `config.py` + `__main__.py`
-- **WF-A2/A3** (PR #199/200 ✅): Full Russell 1000 universe alignment across 13 system components. Training, PM live, walk-forward swing (seed + fold filter), CPCV, backfill scripts all now use `RUSSELL_1000_TICKERS`. `pit_union()` + `historical_trade_symbols()` helpers added for survivorship-bias correction.
-- **Universe audit (Opus 4.7)**: Confirmed R2K deferred (no PIT data, yfinance unreliable, below Alpaca liquidity). Next data task: rebuild `russell1000_membership.parquet` with all 750 tickers + real PIT dates.
-**Next:** 
-- Run `POST /api/watchlist/bulk` on prod to reseed DB with R1K (one-time manual action)
-- Rebuild `russell1000_membership.parquet` (P0 data task)
-- Await v186 WF results (triple-barrier + TS norm). See ML_EXPERIMENT_LOG.md.
+- **WF-A2/A3** (PR #199/200 ✅): Full Russell 1000 universe alignment across 13 system components.
+- **Feature cache + TSNormalizer vectorization** (PR #202 ✅): ~25x WF speedup. ProcessPoolExecutor pre-computes all (sym, day) features.
+- **Phase 92b** (PR #202 ✅): SCHEMA_VERSION v7→v8 (regime features cache fix) + feature cache macro_history wiring.
+- **v188 WF** (2026-05-10): avg -0.085 ❌. Root cause: macro features identical across all symbols → TS-norm produces regime-epoch overfit not stock-selection signal. Top-6 importance = macro features.
+- **P0** (PR #203 ✅): Pruned 7 macro/regime features from XGBoost ranker. `_BASE_PRUNED` updated. 4 tests.
+- **P1** (PR #206 🔄 CI): `apply_unprune_overrides()` + `_UNPRUNE_BUCKETS` + `--unprune` CLI. 8 tests.
+- **P2** (PR #206 🔄 CI): `app/risk/regime_gate.py` — PIT regime gate for swing entries. 10 tests. Wired into WF via `--swing-regime-gate`.
+- **P3** (PR #204 🔄 CI): `--dsr-n` + `--paper-gate` CLI flags for honest WF evaluation. 9 tests.
+- **P4** (PR #205 🔄 CI): Swing WF default=5 folds, intraday=3. 4 tests.
+- **v190 training**: Running now with P0 pruning active. WF scheduled to start when complete.
+**Next:**
+- Await v190 WF results. Log in ML_EXPERIMENT_LOG.md.
+- P1 ablation runs (RS, ADX/Aroon, Phase89-misc, all) if v190 shows room for improvement.
+- Monday paper-trading readiness: verify server, models, gates, Alpaca connection.
 
 ---
 
