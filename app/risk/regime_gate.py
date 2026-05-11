@@ -192,7 +192,6 @@ class RegimeProbGate:
         Returns:
             Float weight — multiply into PM position size.
         """
-        from app.ml.regime_classifier import REGIME_FLOOR
         try:
             self._load_once()
             prob = self._clf.predict_proba_date(features_row)
