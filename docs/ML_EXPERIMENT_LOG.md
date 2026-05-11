@@ -2296,3 +2296,41 @@ Root cause of fold 3 collapse: model trained without 6 macro/regime features (sc
 **Next: Retrain swing v187** with SCHEMA_VERSION=v8 (cache auto-clears, regime features now in every training row). Hypothesis: `vix_term_ratio` backwardation + `credit_hyg_ief_20d` widening + `sector_dispersion_20d` spike are the regime indicators needed to reduce fold 3 losses. Top features from v186 training already showed `breadth_rsp_spy_ratio_20d`, `vix_term_ratio`, `spy_above_ma50` as top-3 by gain importance — confirming these features carry real signal when properly populated.
 
 **v187 training command:** `python scripts/train_model.py swing --no-fundamentals --workers 8`
+
+---
+
+## v188 — Phase 92b Regime Features Active Walk-Forward — 2026-05-10
+
+**Context:** First retrain after SCHEMA_VERSION v7→v8 fix. Feature store cache auto-cleared. All 6 regime features now properly populated in training rows for the first time.
+
+**Training result:**
+- 94 features, AUC=0.475
+- Top 10 features by gain: sector_dispersion_20d (535), vix_term_ratio (531), credit_hyg_ief_20d (499), breadth_rsp_spy_ratio_20d (484), spy_above_ma200 (431), regime_score (395), spy_above_ma50 (361), cmf_20 (177), uptrend (175), vrp (163)
+- **All top 6 slots are macro/regime features** — stock-selection features largely displaced
+
+**Walk-forward results (3-fold, 750-sym R1K, 5bps RT cost, 10d purge):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | v186 Sharpe |
+|---|---|---|---|---|---|
+| 1 | 2022-08-22 → 2023-11-10 | 146 | 50.7% | **+2.16** | +0.36 |
+| 2 | 2023-11-21 → 2025-02-08 | 176 | 40.3% | **-0.50** | +0.71 |
+| 3 | 2025-02-19 → 2026-05-10 | 155 | 36.1% | **-1.91** | -0.75 |
+| **Avg** | | **477** | **42.4%** | **-0.085** | +0.106 |
+
+**Gate:** avg Sharpe > 0.80 ❌ (-0.085) | Min fold > -0.30 ❌ (-1.91) | DSR p > 0.95 ❌
+
+**Verdict: ❌ GATE NOT MET — avg_sharpe, min_sharpe, dsr_p**
+
+**Analysis:**
+- Fold 1 (2022 bear recovery → 2023 bull): dramatically improved +2.16 vs +0.36. Regime features correctly identify bull-regime and the model trades confidently in the right direction.
+- Fold 2 (AI rally 2024): degraded -0.50 vs +0.71. Previously the model had stock-selection signal here; now the macro-dominated model misprices individual stocks in a low-volatility trending regime.
+- Fold 3 (tariff shock 2025): worsened -1.91 vs -0.75. Regime features signal "risk-off" but the model's response — reducing trades or trading the wrong direction — is worse than before.
+- **Root cause**: Regime features taking top 6 importance slots means stock-selection signal is suppressed. The model is now a macro timing model, not a stock-selection model. This is the wrong balance.
+
+**Hypothesis for next iteration:**
+The 6 regime features should be *context* for the XGBoost model, not its primary signal. Options:
+1. **Regularization**: Increase `reg_alpha`/`reg_lambda` to reduce dominance of any single feature cluster
+2. **Feature interaction constraint**: Prevent regime features from being root nodes in trees
+3. **Reduce regime feature count**: Keep only 2-3 most informative (vix_term_ratio + sector_dispersion_20d based on prior v186 top features) and prune the rest
+4. **Two-stage architecture**: Regime classifier gates entries; stock-selection model ranks within gate-passed universe
+5. **Re-examine `_BASE_PRUNED`**: The v186 run showed +0.36/+0.71/-0.75 with regime features defaulting to 0.0 — the stock-selection features were doing real work. Restoring balance is key.
