@@ -59,6 +59,8 @@ def _build_symbol_rows(
     regime_score_history: Dict[date, float],
     vix_index: Optional[list],  # dates for vix
     vix_values: Optional[list],  # close values for vix
+    macro_index: Optional[list] = None,   # dates for macro_history
+    macro_records: Optional[list] = None,  # macro_history.to_dict("records")
 ) -> Tuple[str, List[date], List[list]]:
     """Worker function: compute raw features for one symbol across all trading days.
 
@@ -83,6 +85,12 @@ def _build_symbol_rows(
             index=pd.DatetimeIndex([pd.Timestamp(d) for d in vix_index]),
         )
 
+    # Reconstruct macro_history DataFrame if provided
+    macro_history = None
+    if macro_index is not None and macro_records is not None:
+        macro_history = pd.DataFrame.from_records(macro_records)
+        macro_history.insert(0, "date", macro_index)
+
     valid_dates: List[date] = []
     feature_rows: List[list] = []
 
@@ -100,6 +108,7 @@ def _build_symbol_rows(
                 as_of_date=day,
                 regime_score=regime_score,
                 vix_history=vix_history,
+                macro_history=macro_history,
             )
             if feats is None:
                 continue
@@ -160,6 +169,7 @@ def build_feature_cache(
     feature_names: List[str],
     regime_score_history: Optional[Dict[date, float]] = None,
     vix_history: Optional[pd.Series] = None,
+    macro_history: Optional[pd.DataFrame] = None,
     workers: int = 0,
     executor: str = "process",
     skip_symbols: Iterable[str] = _SKIP_SYMBOLS,
@@ -173,6 +183,7 @@ def build_feature_cache(
         feature_names:         model feature column names (canonical order).
         regime_score_history:  {date: float} PIT regime scores (optional).
         vix_history:           VIX close Series (optional).
+        macro_history:         macro_history DataFrame (VIX, SPY, RSP, HYG, IEF, VIX3M) for regime features.
         workers:               parallel workers (0 = auto: cpu_count - 1, max 12).
         executor:              "process" (recommended) or "thread".
         skip_symbols:          synthetic symbols to exclude.
@@ -198,6 +209,19 @@ def build_feature_cache(
         vix_idx = [ts.date() if hasattr(ts, "date") else ts for ts in vix_history.index]
         vix_values = vix_history.tolist()
 
+    # Prepare macro_history as plain lists for pickling; auto-load from disk if not provided
+    macro_idx = macro_recs = None
+    _mh = macro_history
+    if _mh is None:
+        try:
+            from app.data.macro_history import load_macro_history
+            _mh = load_macro_history()
+        except Exception as _exc:
+            logger.debug("macro_history not available for feature cache: %s", _exc)
+    if _mh is not None and len(_mh) > 0:
+        macro_idx = list(_mh["date"].astype(str))
+        macro_recs = _mh.drop(columns=["date"]).to_dict("records")
+
     logger.info(
         "Building feature cache: %d symbols × %d days × %d features | "
         "%d %s workers",
@@ -218,6 +242,8 @@ def build_feature_cache(
             regime_scores,
             vix_idx,
             vix_values,
+            macro_idx,
+            macro_recs,
         )
 
     PoolClass = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
