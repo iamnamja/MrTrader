@@ -115,6 +115,20 @@ _BASE_PRUNED: frozenset = frozenset([
     "aroon_up_25", "aroon_down_25", "aroon_oscillator_25",
     "drawdown_from_20d_high", "hurst_exponent_60d",
     "pct_closes_above_ema20", "volatility_adj_dist_52wk_high",
+    # P0 (2026-05-11): Six macro/regime features RE-PRUNED from the ranker.
+    # Phase 92 un-pruned these to give the ranker macro context, but v188
+    # diagnostic showed they dominated top-7 feature importance and caused
+    # avg Sharpe to drop from +0.106 (v186) to -0.085 (v188). Root cause:
+    # these values are IDENTICAL across all 750 symbols on any given day.
+    # TS-normalization per-symbol produces noise correlated to each symbol's
+    # lookback window, not cross-sectional signal. XGBoost overfits regime
+    # epochs rather than learning stock selection. These features are kept
+    # in features.py for the P2 regime-gate layer (separate from the ranker).
+    "vix_term_ratio", "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
+    "sector_dispersion_20d", "spy_above_ma50", "spy_above_ma200",
+    # regime_score is hardcoded 0.5 in training (placeholder, not PIT-computed).
+    # Pruned as dead column — adds noise without information.
+    "regime_score",
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
