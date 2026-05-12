@@ -193,7 +193,10 @@ class TestDashboardRoutes:
         assert "overall" in data
 
     def test_positions_endpoint(self):
-        with patch("app.api.routes._alpaca", return_value=self.alpaca):
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.all.return_value = []
+        with patch("app.api.routes._alpaca", return_value=self.alpaca), \
+             patch("app.api.routes.get_session", return_value=mock_db):
             r = self.client.get("/api/dashboard/positions")
         assert r.status_code == 200
         data = r.json()
