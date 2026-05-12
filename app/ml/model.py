@@ -25,6 +25,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# R4: Optional XGBoost hyperparameter overrides for regularization experiments.
+# Set before calling train_model() to override defaults without code changes.
+# Example: EXPERIMENT_OVERRIDES = {"reg_alpha": 2.0, "reg_lambda": 2.0, "colsample_bytree": 0.5}
+# Reset to {} to restore defaults.
+EXPERIMENT_OVERRIDES: dict = {}
+
 
 class PortfolioSelectorModel:
     """
@@ -111,21 +117,25 @@ class PortfolioSelectorModel:
                 verbose=-1,
             )
         elif model_type in ("xgboost", "ensemble"):
-            self.model = XGBClassifier(
-                n_estimators=400,
-                max_depth=4,
-                learning_rate=0.03,
-                subsample=0.7,
-                colsample_bytree=0.6,
-                min_child_weight=10,
-                gamma=0.1,
-                reg_alpha=0.1,
-                reg_lambda=1.5,
-                random_state=42,
-                eval_metric="auc",
-                nthread=24,
-                verbosity=0,
-            )
+            _xgb_params = {
+                "n_estimators": 400,
+                "max_depth": 4,
+                "learning_rate": 0.03,
+                "subsample": 0.7,
+                "colsample_bytree": 0.6,
+                "min_child_weight": 10,
+                "gamma": 0.1,
+                "reg_alpha": 0.1,
+                "reg_lambda": 1.5,
+                "random_state": 42,
+                "eval_metric": "auc",
+                "nthread": 24,
+                "verbosity": 0,
+            }
+            if EXPERIMENT_OVERRIDES:
+                _xgb_params.update(EXPERIMENT_OVERRIDES)
+                logger.info("EXPERIMENT_OVERRIDES applied: %s", EXPERIMENT_OVERRIDES)
+            self.model = XGBClassifier(**_xgb_params)
             if model_type == "ensemble":
                 self._lr_model = LogisticRegression(
                     C=0.1,              # strong L2 — keeps weights small on noisy features
