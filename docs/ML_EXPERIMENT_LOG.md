@@ -2334,3 +2334,68 @@ The 6 regime features should be *context* for the XGBoost model, not its primary
 3. **Reduce regime feature count**: Keep only 2-3 most informative (vix_term_ratio + sector_dispersion_20d based on prior v186 top features) and prune the rest
 4. **Two-stage architecture**: Regime classifier gates entries; stock-selection model ranks within gate-passed universe
 5. **Re-examine `_BASE_PRUNED`**: The v186 run showed +0.36/+0.71/-0.75 with regime features defaulting to 0.0 — the stock-selection features were doing real work. Restoring balance is key.
+
+---
+
+## R1 — DSR N_TRIALS_TESTED Correction — 2026-05-11
+
+**Context:** Audit found `N_TRIALS_TESTED = 15` in `walkforward_tier3.py`, but the ML_EXPERIMENT_LOG documents ~200 model variants tried across iterations 1-6 and phases 18-87. DSR p-value increases as n_trials decreases, so the old value was under-penalizing selection bias.
+
+**Fix:** Changed `N_TRIALS_TESTED = 15 → 200` in `scripts/walkforward_tier3.py:57`.
+
+**Impact:** All future WF runs now report a correctly-penalized DSR p-value. Historical results logged with the old value should be re-run for honest comparison. The v186 baseline result (+0.106 avg Sharpe, DSR p reported with n=15) will be re-run with n=200 as part of R2 gate ablation.
+
+**PR:** #207 merged 2026-05-11T23:12Z
+
+---
+
+## R2 — Gate Ablation Runner — 2026-05-11
+
+**Context:** Wrote `scripts/gate_ablation_v186.py` to run 6 walk-forward configurations on v186, systematically isolating the contribution of each default-on gate:
+- A_all_on: all gates (baseline)
+- B_opp_only: opportunity score only
+- C_earnings_only: earnings blackout only
+- D_macro_only: macro gate only
+- E_regime_only: regime/benign gate only
+- F_all_off: all gates disabled
+
+**Status:** Runner code merged (PR #209). Full 6-config ablation compute (~2.5h on Linux, 6 × 5 folds) must be run on a Linux host. Results will be pasted here.
+
+**Command:** `python scripts/gate_ablation_v186.py --max-symbols 300 --folds 5 --dsr-n 200`
+
+**PR:** #209 merged 2026-05-11T23:58Z
+
+---
+
+## R5 — MVP Regime Classifier Stub — 2026-05-11
+
+**Context:** Added logistic regression regime classifier (`app/ml/regime_classifier.py`) with 5 macro features: SPY 20d log return, SPY/MA200 ratio, VIX level, VIX 20d percentile, HYG 20d log return. Label: 1 if SPY > MA200 AND VIX < 25. Output: sizing multiplier `max(0.25, prob)`.
+
+Added `RegimeProbGate` shim in `app/risk/regime_gate.py` that wraps the classifier and fails-open (returns 1.0) when model unavailable.
+
+Training script: `scripts/train_regime_classifier.py` (downloads SPY/VIX/HYG via yfinance, trains 2015-2023, validates 2024, gate: AUC ≥ 0.75 + Brier < baseline). Model saved to `app/ml/models/regime_v1.pkl`.
+
+**Status:** Code merged (PR #208). Training not yet run (requires yfinance data download — must run on a host with internet access; Windows local run hangs due to SQLAlchemy subprocess issue).
+
+**Command:** `python scripts/train_regime_classifier.py`
+
+**PR:** #208 merged 2026-05-11T23:33Z
+
+---
+
+## R3 — Correlation Prune → v192 — 2026-05-11
+
+**Context:** Post-P0 baseline (v186, n=15 DSR) showed avg Sharpe +0.106 across 3 folds. v188 with regime features showed -0.085. The swing ranker has ~87 features post-P0 (no-fundamentals, regime macro features excluded). R3 adds a deeper correlation/redundancy prune targeting ~65 features (from 87).
+
+**Rationale:** Feature audit (v163, 88 features) identified 20 zero-importance features that are expected to be stable across model versions. Additionally, 5 semantically redundant within-group members are pruned (keep highest-importance member of each group).
+
+**Pruned in R3** (added to `_BASE_PRUNED` in `app/ml/training.py`):
+- Zero-importance in v163 audit: `cmf_20`, `dema_20_dist`, `keltner_position`, `cci_20`, `price_efficiency_20d`, `vol_price_confirmation`, `volume_surge_3d`, `wq_alpha44`, `choch_detected`, `bars_since_choch`, `momentum_20d_sector_neutral`, `price_change_pct`, `volume_ratio` (13 features)
+- Semantic redundancy: `reversal_5d`, `reversal_3d` (keep reversal_5d_vol_weighted), `pressure_persistence`, `pressure_displacement` (keep pressure_index), `hh_hl_sequence` (5 features)
+- **Total new drops: 18 features → target ~69 features**
+
+**Expected training command:** `python scripts/train_model.py swing --no-fundamentals --workers 8`
+
+**Gate:** avg Sharpe > 0.80 (5-fold), min fold > -0.30, DSR p > 0.95 (n=200)
+
+**Status:** Code merged. Training not yet run (requires Linux host — Windows hangs on SQLAlchemy import). Version will be v192 (v191 already exists from undocumented earlier runs).
