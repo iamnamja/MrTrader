@@ -2135,7 +2135,13 @@ class ModelTrainer:
             pass
         try:
             import yfinance as yf
-            spy = yf.download("SPY", period="1y", progress=False, auto_adjust=True)
+            from datetime import date as _date, timedelta as _td
+            _end_s = _date.today() + _td(days=1)
+            _start_s = _end_s - _td(days=400)
+            spy = yf.download(
+                "SPY", start=_start_s.isoformat(), end=_end_s.isoformat(),
+                progress=False, auto_adjust=True,
+            )
             if spy is None or len(spy) < 30:
                 return 0.5
             closes = spy["Close"].values.astype(float)

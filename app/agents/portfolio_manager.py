@@ -1292,7 +1292,14 @@ class PortfolioManager(BaseAgent):
         try:
             import yfinance as yf
             import pandas as pd
-            vix = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+            from datetime import date as _date, timedelta as _td
+            # Bug fix: ^VIX returns empty with period=…; use start/end window.
+            _end = _date.today() + _td(days=1)
+            _start = _end - _td(days=14)
+            vix = yf.download(
+                "^VIX", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True,
+            )
             if isinstance(vix.columns, pd.MultiIndex):
                 vix.columns = vix.columns.get_level_values(0)
             vix.columns = [c.lower() for c in vix.columns]
@@ -1350,7 +1357,13 @@ class PortfolioManager(BaseAgent):
             from app.config import settings as _s
             import yfinance as yf
             import pandas as pd
-            spy = yf.download("SPY", period="40d", progress=False, auto_adjust=True)
+            from datetime import date as _date, timedelta as _td
+            _end = _date.today() + _td(days=1)
+            _start = _end - _td(days=80)  # ~40 trading days
+            spy = yf.download(
+                "SPY", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True,
+            )
             if isinstance(spy.columns, pd.MultiIndex):
                 spy.columns = spy.columns.get_level_values(0)
             spy.columns = [c.lower() for c in spy.columns]
@@ -1369,7 +1382,13 @@ class PortfolioManager(BaseAgent):
             # VIX trend: penalty if VIX spiking vs 5-day avg
             vix_5d_avg = vix_level
             try:
-                vix_hist = yf.download("^VIX", period="10d", progress=False, auto_adjust=True)
+                from datetime import date as _date, timedelta as _td
+                _end = _date.today() + _td(days=1)
+                _start = _end - _td(days=20)
+                vix_hist = yf.download(
+                    "^VIX", start=_start.isoformat(), end=_end.isoformat(),
+                    progress=False, auto_adjust=True,
+                )
                 if isinstance(vix_hist.columns, pd.MultiIndex):
                     vix_hist.columns = vix_hist.columns.get_level_values(0)
                 vix_hist.columns = [c.lower() for c in vix_hist.columns]

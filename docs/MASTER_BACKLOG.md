@@ -21,7 +21,7 @@
 - **R5** (PR #208 ✅): MVP logistic regime classifier stub (`app/ml/regime_classifier.py`, 5 macro features). Code only, training pending.
 **Next:**
 - **Run R2 gate ablation** (Linux): `python scripts/gate_ablation_v186.py --max-symbols 300 --folds 5 --dsr-n 200` (~2.5h). Isolates which gates help vs hurt on v186.
-- **Train R3 → v192** (Linux): `python scripts/train_model.py swing --no-fundamentals --workers 8`, then WF with `--folds 5 --dsr-n 200`. Decision: if avg Sharpe < +0.40 → trigger R4 (set EXPERIMENT_OVERRIDES → v193).
+- **Train R3 → v192** (Linux): `python scripts/retrain_cron.py --swing-only`, then WF with `--folds 5 --dsr-n 200`. Decision: if avg Sharpe < +0.40 → trigger R4 (set EXPERIMENT_OVERRIDES → v193).
 - **Train R5 regime classifier**: `python scripts/train_regime_classifier.py` → produces `regime_v1.pkl`. Independent of swing retrain.
 - Check if Windows yfinance/SQLAlchemy issues are resolved post-restart before routing to Linux.
 

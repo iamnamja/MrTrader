@@ -199,7 +199,11 @@ def build_feature_cache(
     F = len(feature_names)
 
     if workers <= 0:
-        workers = max(2, min(os.cpu_count() or 4, 12))
+        # Cap at 4 on Windows — each spawn worker loads numpy/pandas/scipy DLLs
+        # (~400MB each); 12 workers simultaneously exhausts the Windows paging file.
+        import sys
+        _max_workers = 4 if sys.platform == "win32" else 12
+        workers = max(2, min(os.cpu_count() or 4, _max_workers))
 
     regime_scores = regime_score_history or {}
 
@@ -279,4 +283,16 @@ def build_feature_cache(
         "Feature cache built: %d symbols, %.0f MB, %d trading days covered",
         cache.n_symbols, cache.memory_mb, n_days,
     )
+
+    # Bug 3 fix: if a worker crashes (e.g. OOM on Windows loky), ProcessPoolExecutor
+    # invalidates ALL pending futures with BrokenProcessPool. Each future is caught
+    # individually above, so the build "succeeds" with an empty cache — and the
+    # simulator then produces 0 trades for the whole fold (Sharpe=0). Detect this
+    # mass-failure case and raise, so the caller falls back to live-compute.
+    if n_syms > 0 and cache.n_symbols < max(1, n_syms // 10):
+        raise RuntimeError(
+            f"Feature cache build failed: only {cache.n_symbols}/{n_syms} symbols "
+            f"populated (process pool likely crashed). Caller should fall back "
+            f"to live-compute or rerun with fewer --feature-cache-workers."
+        )
     return cache

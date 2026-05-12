@@ -183,8 +183,19 @@ class CircuitBreaker:
 
         try:
             import yfinance as yf
-            vix_df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=10)
+            import pandas as pd
+            from datetime import date, timedelta
+            # Bug fix: period="1d" returns empty for ^VIX ("possibly delisted").
+            # Use start/end window instead (end exclusive).
+            _end = date.today() + timedelta(days=1)
+            _start = _end - timedelta(days=7)
+            vix_df = yf.download(
+                "^VIX", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True, timeout=10,
+            )
             if not vix_df.empty:
+                if isinstance(vix_df.columns, pd.MultiIndex):
+                    vix_df.columns = vix_df.columns.get_level_values(0)
                 vix = float(vix_df["Close"].values.flat[-1])
                 self._last_vix = vix
                 self._last_vix_check = now
