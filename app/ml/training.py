@@ -11,7 +11,6 @@ Key improvements over v1:
 
 import logging
 import multiprocessing
-import os
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
