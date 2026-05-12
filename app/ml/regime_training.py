@@ -20,6 +20,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import softmax
 from xgboost import XGBClassifier
 
+from app.ml.retrain_config import MAX_WORKERS, MAX_THREADS
 from app.ml.regime_features import (
     REGIME_FEATURE_NAMES,
     RegimeFeatureBuilder,
@@ -134,7 +135,7 @@ class RegimeModelTrainer:
             num_class=3,
             eval_metric="mlogloss",
             random_state=42,
-            n_jobs=4,
+            n_jobs=MAX_WORKERS,
         )
 
     def _fit_with_temperature(self, X: np.ndarray, y: np.ndarray) -> tuple:

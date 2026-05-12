@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
+from app.ml.retrain_config import MAX_WORKERS
 from scripts.walkforward.gates import WalkForwardReport
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ class FoldEngine:
             for i, (tr_start, tr_end, te_start, te_end) in enumerate(fold_boundaries)
         ]
         if self.parallel and len(fold_args) > 1:
-            with ThreadPoolExecutor(max_workers=n_folds) as pool:
+            with ThreadPoolExecutor(max_workers=min(n_folds, MAX_WORKERS)) as pool:
                 results = list(pool.map(_run_one, fold_args))
         else:
             results = [_run_one(args) for args in fold_args]

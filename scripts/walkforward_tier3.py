@@ -44,6 +44,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy.stats import norm  # noqa: E402
 
+from app.ml.retrain_config import MAX_WORKERS  # noqa: E402
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
     level=logging.INFO,
@@ -673,8 +675,7 @@ def run_swing_walkforward(
                     _vix_df = fold_symbols_data.get("VIX")
                 _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
                 _feat_names = getattr(model, "feature_names", None) or []
-                _win_cap = 4 if _os.name == "nt" else 12
-                _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, _win_cap))
+                _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, MAX_WORKERS))
                 logger.info("Fold %d: building feature cache (%d syms × %d days, %d %s workers)",
                             fold_idx, len(fold_symbols_data), len(_test_days), _workers, feature_cache_executor)
                 _feature_cache = _build_fc(
@@ -746,7 +747,7 @@ def run_swing_walkforward(
         for i, (tr_start, tr_end, te_start, te_end, emb) in enumerate(fold_boundaries)
     ]
     import sys as _sys
-    _fold_workers = 1 if _sys.platform == "win32" else n_folds
+    _fold_workers = 1 if _sys.platform == "win32" else min(n_folds, MAX_WORKERS)
     with ThreadPoolExecutor(max_workers=_fold_workers) as pool:
         results = list(pool.map(_run_swing_fold, fold_args))
     report.folds = sorted(results, key=lambda f: f.fold)

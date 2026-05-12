@@ -25,6 +25,7 @@ from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FE
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
 from app.utils.constants import RUSSELL_1000_TICKERS
+from app.ml.retrain_config import MAX_WORKERS, MAX_THREADS
 
 logger = logging.getLogger(__name__)
 
@@ -685,7 +686,7 @@ class PortfolioManager(BaseAgent):
 
         features_by_symbol: Dict[str, Dict[str, float]] = {}
         symbols = self._get_universe()
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {pool.submit(_fetch_one, s): s for s in symbols}
             for future in as_completed(futures, timeout=300):
                 try:
@@ -3148,8 +3149,8 @@ class PortfolioManager(BaseAgent):
         from app.database.session import get_session
         from app.database.models import ModelVersion
 
-        os.environ.setdefault("OMP_NUM_THREADS", "24")
-        os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
+        os.environ.setdefault("OMP_NUM_THREADS", str(MAX_THREADS))
+        os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(MAX_THREADS))
         loop = asyncio.get_event_loop()
 
         def _previous_active(strategy: str) -> int | None:

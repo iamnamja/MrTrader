@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+
+from app.ml.retrain_config import MAX_WORKERS
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -199,11 +201,8 @@ def build_feature_cache(
     F = len(feature_names)
 
     if workers <= 0:
-        # Cap at 4 on Windows — each spawn worker loads numpy/pandas/scipy DLLs
-        # (~400MB each); 12 workers simultaneously exhausts the Windows paging file.
-        import sys
-        _max_workers = 4 if sys.platform == "win32" else 12
-        workers = max(2, min(os.cpu_count() or 4, _max_workers))
+        # Cap routed through MAX_WORKERS (single source of truth in retrain_config).
+        workers = max(2, min(os.cpu_count() or 4, MAX_WORKERS))
 
     regime_scores = regime_score_history or {}
 

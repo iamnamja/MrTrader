@@ -15,7 +15,7 @@ Speed optimizations:
   - Parquet cache per symbol; only re-fetches stale/missing symbols on rerun
   - Chunked parallel API calls (FETCH_CHUNK_SIZE symbols/call, FETCH_WORKERS threads)
   - Parallel feature computation (FEATURE_WORKERS threads, one task per symbol)
-  - XGBoost trained with nthread=-1 (all CPU cores)
+  - XGBoost trained with nthread=MAX_THREADS (capped via retrain_config)
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 from app.data import get_provider
-from app.ml.retrain_config import MAX_WORKERS as _MAX_WORKERS
+from app.ml.retrain_config import MAX_WORKERS as _MAX_WORKERS, MAX_THREADS as _MAX_THREADS
 from app.database.models import ModelVersion
 from app.database.session import get_session
 from app.ml.cs_normalize import cs_normalize_by_group
@@ -84,7 +84,7 @@ ENSEMBLE_SEEDS = [42, 123, 777]
 # Parallelism config
 FETCH_CHUNK_SIZE = 100   # symbols per Alpaca API call
 FETCH_WORKERS = 4        # parallel API calls (stay well under 180 req/min)
-FEATURE_WORKERS = min(24, multiprocessing.cpu_count())  # threads; numpy/pandas release GIL
+FEATURE_WORKERS = min(_MAX_THREADS, multiprocessing.cpu_count())  # threads; numpy/pandas release GIL
 
 
 class IntradayModelTrainer:
@@ -291,7 +291,7 @@ class IntradayModelTrainer:
                             "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
                             "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 5.0),
                             "scale_pos_weight": spw,
-                            "nthread": -1, "verbosity": 0, "eval_metric": "auc",
+                            "nthread": _MAX_THREADS, "verbosity": 0, "eval_metric": "auc",
                             "random_state": 42,
                         }
                         cv = StratifiedKFold(n_splits=3, shuffle=False)
@@ -321,7 +321,7 @@ class IntradayModelTrainer:
             ensemble_models = []
             for seed in ENSEMBLE_SEEDS:
                 seed_params = {**(hpo_params or {}), "random_state": seed,
-                               "scale_pos_weight": spw, "nthread": -1, "verbosity": 0,
+                               "scale_pos_weight": spw, "nthread": _MAX_THREADS, "verbosity": 0,
                                "eval_metric": "auc"}
                 clf = XGBClassifier(**seed_params)
                 clf.fit(X_train, y_train, sample_weight=sample_weight)
