@@ -2399,3 +2399,23 @@ Training script: `scripts/train_regime_classifier.py` (downloads SPY/VIX/HYG via
 **Gate:** avg Sharpe > 0.80 (5-fold), min fold > -0.30, DSR p > 0.95 (n=200)
 
 **Status:** Code merged. Training not yet run (requires Linux host — Windows hangs on SQLAlchemy import). Version will be v192 (v191 already exists from undocumented earlier runs).
+
+---
+
+## R4 — EXPERIMENT_OVERRIDES Regularization Harness — 2026-05-12
+
+**Context:** Contingency plan if R3 (v192) avg Sharpe < +0.40. Adds `EXPERIMENT_OVERRIDES` dict to `app/ml/model.py` that patches XGBoost params at model construction time without code changes.
+
+**Purpose:** Enable rapid regularization experiments (reg_alpha, reg_lambda, colsample_bytree) by setting `EXPERIMENT_OVERRIDES` before training.
+
+**R4 regularization config (if v192 fails gate):**
+```python
+from app.ml.model import EXPERIMENT_OVERRIDES
+EXPERIMENT_OVERRIDES.update({"reg_alpha": 2.0, "reg_lambda": 2.0, "colsample_bytree": 0.5})
+# Then run: python scripts/train_model.py swing --no-fundamentals --workers 8
+# → produces v193
+```
+
+**Default state:** `EXPERIMENT_OVERRIDES = {}` (no-op — existing behavior preserved).
+
+**Status:** Code merged. Only activate if v192 WF avg Sharpe < +0.40.
