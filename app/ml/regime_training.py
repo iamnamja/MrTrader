@@ -20,7 +20,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import softmax
 from xgboost import XGBClassifier
 
-from app.ml.retrain_config import MAX_WORKERS, MAX_THREADS
+from app.ml.retrain_config import MAX_WORKERS
 from app.ml.regime_features import (
     REGIME_FEATURE_NAMES,
     RegimeFeatureBuilder,

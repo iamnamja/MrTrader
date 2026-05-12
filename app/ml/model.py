@@ -17,7 +17,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier, XGBRanker, XGBRegressor
 
-from app.ml.retrain_config import MAX_THREADS, MAX_WORKERS
+from app.ml.retrain_config import MAX_THREADS
 
 try:
     from lightgbm import LGBMClassifier, LGBMRanker
