@@ -2405,11 +2405,22 @@ Added `RegimeProbGate` shim in `app/risk/regime_gate.py` that wraps the classifi
 
 Training script: `scripts/train_regime_classifier.py` (downloads SPY/VIX/HYG via yfinance, trains 2015-2023, validates 2024, gate: AUC ≥ 0.75 + Brier < baseline). Model saved to `app/ml/models/regime_v1.pkl`.
 
-**Status:** Code merged (PR #208). Training not yet run (requires yfinance data download — must run on a host with internet access; Windows local run hangs due to SQLAlchemy subprocess issue).
+**Training results (2026-05-11):**
 
-**Command:** `python scripts/train_regime_classifier.py`
+| Split | Period | Samples | Label Mean | AUC | Brier | Baseline Brier | Gate |
+|---|---|---|---|---|---|---|---|
+| Train | 2015-08-06 – 2023-12-31 | 2115 | 0.727 | **0.989** | 0.0426 | 0.199 | PASS |
+| Validation | 2024-01-01 – 2024-12-31 | 251 | 0.984 | **1.000** | 0.0144 | 0.016 | PASS |
 
-**PR:** #208 merged 2026-05-11T23:33Z
+> **Note on 2024 label mean 0.984:** Expected — 2024 was a sustained bull/low-VIX year; the SPY > MA200 AND VIX < 25 label is almost always 1. Real generalization test will be 2025+ OOS (untouched).
+
+**Verdict:** GATE PASSED. `regime_v1.pkl` saved to `app/ml/models/`.
+
+**Windows fix:** Script required two patches — (1) flatten yfinance >= 0.2 MultiIndex columns before accessing `["Close"]`; (2) replace non-ASCII output characters (arrows, checkmarks) with ASCII for Windows cp1252 console compatibility. Fixed in same PR commit.
+
+**Status:** Complete. `regime_v1.pkl` active. `RegimeProbGate` shim wired and fails-open when model absent.
+
+**PR:** #208 merged 2026-05-11T23:33Z | fix commit on `docs/r-series-cleanup` branch
 
 ---
 
