@@ -16,6 +16,30 @@ Rules:
     is automatically restored — the new version is marked RETIRED
 """
 
+import os as _os
+import sys as _sys
+
+# ── Worker / parallelism caps ─────────────────────────────────────────────────
+# Single source of truth for process/thread counts across all training entry points.
+#
+# Root cause of prior OOM: 5 parallel folds × 12 workers = 60 Python processes,
+# each loading ~400-600 MB of numpy/pandas/scipy DLLs on Windows spawn → exhausted
+# paging file. Fix: (1) serialize walk-forward folds on Windows via MAX_FOLD_WORKERS=1,
+# (2) cap process pools via MAX_WORKERS, (3) cap BLAS/XGBoost threads via MAX_THREADS.
+#
+# With folds serialized the effective process count is MAX_WORKERS (not folds×workers),
+# so MAX_WORKERS can be raised well above 4 on machines with adequate RAM.
+#
+# Tuned for 24-core / 32 GB Windows dev machine:
+#   MAX_WORKERS=8   → 8 processes × ~500 MB DLL = ~4 GB overhead, 28 GB for data
+#   MAX_THREADS=16  → 16 BLAS/XGBoost threads, 8 cores reserved for OS + I/O
+#   MAX_FOLD_WORKERS=1 → folds run serially; prevents the multiplicative OOM
+#
+# To adjust for a different machine, change only these three constants.
+MAX_WORKERS: int = 8 if _sys.platform == "win32" else (_os.cpu_count() or 8)
+MAX_THREADS: int = 16 if _sys.platform == "win32" else (_os.cpu_count() or 24)
+MAX_FOLD_WORKERS: int = 1 if _sys.platform == "win32" else 4
+
 # ── Retraining schedule ──────────────────────────────────────────────────────
 # Day of week to run the weekly retrain (0=Monday … 6=Sunday).
 # Retrain only fires on this day — server restarts on other days don't trigger it.
@@ -30,7 +54,7 @@ SWING_RETRAIN: dict = dict(
     label_scheme="triple_barrier",    # Fix 2: aligned with ATR exit rule; was "cross_sectional"
     hpo_trials=20,
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
-    n_workers=8,
+    n_workers=MAX_WORKERS,
     walk_forward_folds=5,       # Phase 88: 5 folds (was 3) — one bad regime can't tank avg
     walk_forward_years=6,       # Phase 88: 6yr window → ~14mo per fold test
     exclude_risk_off_days=True,  # Phase R6b/88: down-weight (0.3×) not exclude RISK_OFF
@@ -77,6 +101,7 @@ SWING_GATE = dict(
 # due to distribution mismatch (trained on 3 windows, deployed on 1).
 INTRADAY_RETRAIN: dict = dict(
     days=730,
+    n_workers=MAX_WORKERS,
     fetch_spy=True,
     use_ranker=False,
     top_n_by_liquidity=None,    # None = full Russell 1000 universe

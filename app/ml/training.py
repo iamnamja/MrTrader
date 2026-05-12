@@ -11,7 +11,6 @@ Key improvements over v1:
 
 import logging
 import multiprocessing
-import os
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -32,6 +31,8 @@ from app.ml.retrain_config import (
     LABEL_HORIZON_DAYS as _CFG_LABEL_HORIZON_DAYS,
     LABEL_ABS_HURDLE_5D as _CFG_LABEL_ABS_HURDLE_5D,
     REGIME_SPLIT_VIX_THRESHOLD as _CFG_REGIME_SPLIT_VIX_THRESHOLD,
+    MAX_WORKERS,
+    MAX_THREADS,
     assert_no_sacred_holdout as _assert_no_sacred_holdout,
 )
 from app.utils.constants import RUSSELL_1000_TICKERS, SECTOR_MAP
@@ -703,7 +704,8 @@ class ModelTrainer:
         # Default: all logical CPUs. Caller can pass n_workers to override.
         # Feature engineering is numpy-heavy and releases the GIL, so threads
         # beyond 8 still yield speedups on machines with 16+ cores.
-        self.n_workers = n_workers if (n_workers and n_workers > 0) else (os.cpu_count() or 4)
+        from app.ml.retrain_config import MAX_WORKERS as _max_workers
+        self.n_workers = n_workers if (n_workers and n_workers > 0) else _max_workers
         self.hpo_trials = hpo_trials
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold
@@ -2352,7 +2354,7 @@ class ModelTrainer:
                     y_bin = self._to_binary(y_train[val_idx])
                 else:
                     params["eval_metric"] = "auc"
-                    params.setdefault("nthread", -1)
+                    params.setdefault("nthread", MAX_THREADS)
                     clf = XGBClassifier(**params)
                     clf.fit(X_train[train_idx], y_train[train_idx], verbose=False)
                     proba = clf.predict_proba(X_train[val_idx])[:, 1]
@@ -2367,7 +2369,7 @@ class ModelTrainer:
         # n_jobs=-1: Optuna runs trials in parallel threads; each trial spawns its own XGBoost
         # which also uses all cores (nthread in params), so cap Optuna parallelism at 4 to
         # avoid over-subscription (4 parallel trials × nthread cores each ≈ full utilisation).
-        study.optimize(objective, n_trials=n_trials, n_jobs=4, show_progress_bar=False)
+        study.optimize(objective, n_trials=n_trials, n_jobs=min(4, MAX_WORKERS), show_progress_bar=False)
 
         best = study.best_params
         logger.info(
@@ -2415,7 +2417,7 @@ class ModelTrainer:
                 clf = _XGBReg(
                     n_estimators=300, max_depth=4, learning_rate=0.05,
                     subsample=0.7, colsample_bytree=0.6, min_child_weight=10,
-                    random_state=42, nthread=-1, verbosity=0,
+                    random_state=42, nthread=MAX_THREADS, verbosity=0,
                 )
                 clf.fit(X_tr, y_tr, verbose=False)
                 raw = clf.predict(X_te).astype(float)
@@ -2425,7 +2427,7 @@ class ModelTrainer:
                 clf = XGBClassifier(
                     n_estimators=300, max_depth=4, learning_rate=0.05,
                     subsample=0.7, colsample_bytree=0.6, min_child_weight=10,
-                    random_state=42, eval_metric="auc", nthread=-1, verbosity=0,
+                    random_state=42, eval_metric="auc", nthread=MAX_THREADS, verbosity=0,
                 )
                 clf.fit(X_tr, y_tr, verbose=False)
                 proba = clf.predict_proba(X_te)[:, 1]

@@ -17,6 +17,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier, XGBRanker, XGBRegressor
 
+from app.ml.retrain_config import MAX_THREADS
+
 try:
     from lightgbm import LGBMClassifier, LGBMRanker
     _LGBM_AVAILABLE = True
@@ -64,7 +66,7 @@ class PortfolioSelectorModel:
                 reg_alpha=0.1,
                 reg_lambda=1.5,
                 random_state=42,
-                nthread=24,
+                nthread=MAX_THREADS,
                 verbosity=0,
             )
         elif model_type == "lgbm_ensemble":
@@ -82,7 +84,7 @@ class PortfolioSelectorModel:
                 reg_lambda=1.5,
                 random_state=42,
                 eval_metric="auc",
-                nthread=24,
+                nthread=MAX_THREADS,
                 verbosity=0,
             )
             self._lgbm_model = LGBMClassifier(
@@ -129,7 +131,7 @@ class PortfolioSelectorModel:
                 "reg_lambda": 1.5,
                 "random_state": 42,
                 "eval_metric": "auc",
-                "nthread": 24,
+                "nthread": MAX_THREADS,
                 "verbosity": 0,
             }
             if EXPERIMENT_OVERRIDES:

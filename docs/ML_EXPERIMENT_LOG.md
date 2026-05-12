@@ -33,6 +33,53 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## INFRA — Windows OOM Fix (Parallelism Caps) — 2026-05-12
+
+**Problem:** Machine was freezing (hard reboot required) every time the 17:00 retrain ran. Root causes identified via log analysis:
+
+1. **Swing WF folds ran in parallel** (`ThreadPoolExecutor(max_workers=5)`): each of 5 folds independently spawned a `ProcessPoolExecutor` with up to 12 workers → up to 60 concurrent Python spawn processes, each importing numpy/pandas/xgboost (~400–500 MB each). Combined with OMP_NUM_THREADS=24, total commit charge exceeded Windows paging file capacity.
+2. **pytest `-n auto`** spawned 32 xdist workers (one per logical CPU), each importing the full app stack at ~150 MB each → ~4.6 GB from tests alone. Running pytest concurrently with the retrain was the direct cause of the 2026-05-12 freeze.
+3. **No central cap** — `training.py`, `intraday_training.py`, and `walkforward_tier3.py` each had their own hard-coded worker counts (24, 24, 12) that didn't respect Windows limits.
+
+**Root cause of v191 0-trade result:** Feature cache worker processes were killed by Windows OOM before producing output → cache built with 0 symbols → `agent_simulator._pm_score_cached` returned empty proposals → 0 trades, 0.00 Sharpe across all 5 folds. v191 is likely a sound model killed by infrastructure, not a bad model.
+
+**Fixes applied (PR #215 `fix/retrain-windows-oom`):**
+
+**Phase 1 — Parallelism caps (commit 8c85e0c):**
+
+| File | Change |
+|---|---|
+| `app/ml/retrain_config.py` | `MAX_WORKERS`, `MAX_THREADS`, `MAX_FOLD_WORKERS` — single source of truth for all parallelism |
+| `scripts/walkforward_tier3.py` | Fold pool uses `MAX_FOLD_WORKERS`; feature cache workers use `MAX_WORKERS` |
+| `scripts/retrain_cron.py` | Sets OMP/MKL/OPENBLAS/LOKY caps from `MAX_THREADS` |
+| `app/ml/training.py` | `ModelTrainer.n_workers` reads `MAX_WORKERS`; HPO `nthread` reads `MAX_THREADS` |
+| `app/ml/intraday_training.py` | LightGBM `n_jobs` and `nthread` read `MAX_WORKERS`/`MAX_THREADS` |
+| `app/ml/model.py` | All `nthread=24` literals → `MAX_THREADS` |
+| `app/ml/regime_training.py` | `n_jobs=4` → `MAX_WORKERS` |
+| `app/agents/portfolio_manager.py` | `ThreadPoolExecutor(8)` → `MAX_WORKERS`; `OMP_NUM_THREADS="24"` → `MAX_THREADS` |
+| `app/backtesting/feature_cache.py` | Removed duplicated `4 if win32 else 12` literal → `MAX_WORKERS` |
+| `app/backtesting/agent_simulator.py` | `min(cpu_count, 8)` → `min(cpu_count, MAX_WORKERS)` |
+| `scripts/walkforward/engine.py` | Fold pool uses `MAX_FOLD_WORKERS` |
+| `app/backtesting/agent_simulator.py` | Falls back to live compute when feature cache is empty |
+| `pytest.ini` | `-n auto` → `-n 4` |
+| `tests/conftest.py` | Sets OMP/MKL/OPENBLAS/LOKY=2 for all pytest workers |
+
+**Phase 2 — Tuned for 24-core / 32 GB machine (commit d00d116):**
+
+```python
+MAX_WORKERS      = 8   # process pools — 8 × ~500MB DLL = ~4GB overhead, 28GB free for data
+MAX_THREADS      = 16  # XGBoost nthread / BLAS — leaves 8 cores for OS + I/O
+MAX_FOLD_WORKERS = 1   # walk-forward folds serial on Windows — prevents folds×workers explosion
+```
+
+The key insight: with `MAX_FOLD_WORKERS=1` (serial folds), the maximum concurrent process count is `MAX_WORKERS` (not `folds × MAX_WORKERS`). Safe to run 8 workers with 32 GB RAM. To adjust for a different machine, change only these three constants in `retrain_config.py`.
+
+**Effect on retrain timing:** Swing WF folds run serially (~5× slower per fold vs parallel) but machine stays stable. Total retrain estimate: ~2.5–3h. Acceptable for a nightly/weekly job.
+
+**Status:** PR #215 pending merge (CI). v192 retrain + R5 regime classifier are the immediate next steps once merged.
+
+---
+
 ## Phase 1 Corrections Baseline Walk-Forward — 2026-05-05
 
 **Purpose:** First honest re-validation of champions after applying Phase 1a (cost model), Phase 1b (purge/embargo), Phase 1c (NIS removal). Establishes true baseline before any new model work.

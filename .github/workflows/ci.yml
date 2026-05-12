@@ -28,10 +28,7 @@ jobs:
           cache: pip
 
       - name: Install lint dependencies
-        run: pip install flake8 mypy types-redis
-
-      - name: Install app dependencies
-        run: pip install -r requirements.txt
+        run: pip install flake8 mypy types-redis -r requirements.txt
 
       - name: flake8
         run: |
@@ -85,10 +82,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+
+      - name: Cache virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.venv
+          key: venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m venv ~/.venv
+          ~/.venv/bin/pip install -r requirements.txt
 
       - name: Run unit + integration + contract tests
         env:
@@ -96,13 +100,14 @@ jobs:
           ALPACA_SECRET_KEY: ${{ env.ALPACA_SECRET_KEY }}
           DATABASE_URL: ${{ env.DATABASE_URL }}
           REDIS_URL: redis://localhost:6379
+          PATH: ~/.venv/bin:$PATH
         run: |
           pytest tests/ \
             --ignore=tests/test_strategy_regression.py \
             --tb=short -q \
             --durations=20 \
+            --override-ini="addopts=-n auto --dist=loadscope --timeout=120" \
             --cov=app \
-            --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=58 \
             --cov-config=pytest.ini

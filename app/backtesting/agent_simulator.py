@@ -20,6 +20,8 @@ import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+
+from app.ml.retrain_config import MAX_WORKERS
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
@@ -428,7 +430,7 @@ class AgentSimulator:
         if self.model is None or not getattr(self.model, "is_trained", False):
             return []
 
-        if self.feature_cache is not None:
+        if self.feature_cache is not None and self.feature_cache.n_symbols > 0:
             return self._pm_score_cached(day, vix_history)
 
         fe = self._get_feature_engineer()
@@ -450,7 +452,7 @@ class AgentSimulator:
             except Exception:
                 return sym, None
 
-        _n_workers = min(os.cpu_count() or 4, 8)
+        _n_workers = min(os.cpu_count() or 4, MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=_n_workers) as pool:
             for sym, feats in pool.map(_compute_feats, symbols_data.items()):
                 if feats is not None:
