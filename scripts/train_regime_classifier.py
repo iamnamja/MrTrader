@@ -15,7 +15,6 @@ import logging
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,6 +46,9 @@ def _download(symbols: list[str], start: str, end: str) -> dict[str, pd.DataFram
         df = yf.download(sym, start=start, end=end, auto_adjust=True, progress=False)
         if df.empty:
             raise RuntimeError(f"yfinance returned empty DataFrame for {sym}")
+        # yfinance >= 0.2 returns MultiIndex columns (field, ticker) - flatten to single level
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         dfs[sym] = df
     return dfs
 
@@ -69,11 +71,11 @@ def _evaluate(clf: RegimeClassifier, features: pd.DataFrame, labels: pd.Series,
     brier = brier_score_loss(y_arr, p_arr)
     baseline_brier = float(y_arr.mean() * (1 - y_arr.mean()))
     label_mean = float(y_arr.mean())
-    print(f"\n  {split_name} ({split_start} → {split_end}):")
+    print(f"\n  {split_name} ({split_start} -> {split_end}):")
     print(f"    Samples:       {len(y)}")
-    print(f"    Label mean:    {label_mean:.3f}  {'⚠ IMBALANCED (>80% or <20%)' if label_mean > 0.8 or label_mean < 0.2 else 'OK'}")
-    print(f"    AUC:           {auc:.3f}  {'✓ PASS (≥0.75)' if auc >= 0.75 else '✗ FAIL (<0.75)'}")
-    print(f"    Brier:         {brier:.4f}  (baseline: {baseline_brier:.4f})  {'✓ PASS' if brier < baseline_brier else '✗ WORSE THAN BASELINE'}")
+    print(f"    Label mean:    {label_mean:.3f}  {'WARN: IMBALANCED (>80% or <20%)' if label_mean > 0.8 or label_mean < 0.2 else 'OK'}")
+    print(f"    AUC:           {auc:.3f}  {'PASS (>=0.75)' if auc >= 0.75 else 'FAIL (<0.75)'}")
+    print(f"    Brier:         {brier:.4f}  (baseline: {baseline_brier:.4f})  {'PASS' if brier < baseline_brier else 'FAIL: WORSE THAN BASELINE'}")
     return {"auc": auc, "brier": brier, "label_mean": label_mean, "n_samples": len(y)}
 
 
@@ -87,11 +89,11 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
-    print("  MrTrader — Regime Classifier Training (R5)")
+    print("  MrTrader - Regime Classifier Training (R5)")
     print("=" * 60)
-    print(f"  Download: {args.start} → {VAL_END}")
-    print(f"  Train:    {args.start} → {TRAIN_END}")
-    print(f"  Validate: {TRAIN_END[:4]+'-01-01'} (2024) → {VAL_END}")
+    print(f"  Download: {args.start} -> {VAL_END}")
+    print(f"  Train:    {args.start} -> {TRAIN_END}")
+    print(f"  Validate: {TRAIN_END[:4]+'-01-01'} (2024) -> {VAL_END}")
     print(f"  VIX threshold for label: {args.vix_threshold}")
 
     # Download
@@ -113,7 +115,7 @@ def main():
     label_mean_full = labels.mean()
     print(f"\n  Full label mean: {label_mean_full:.3f}", end="")
     if label_mean_full > 0.8 or label_mean_full < 0.2:
-        print(" ⚠ IMBALANCED — consider adjusting --vix-threshold")
+        print(" WARN: IMBALANCED - consider adjusting --vix-threshold")
     else:
         print(" (OK)")
 
@@ -140,7 +142,7 @@ def main():
     val_brier = val_metrics.get("brier", 1.0)
     val_baseline = val_metrics.get("label_mean", 0.5) * (1 - val_metrics.get("label_mean", 0.5))
     gate_passed = val_auc >= 0.75 and val_brier < val_baseline
-    print(f"\n  Gate: {'PASS ✓' if gate_passed else 'FAIL ✗'} (AUC≥0.75 and Brier<baseline)")
+    print(f"\n  Gate: {'PASS' if gate_passed else 'FAIL'} (AUC>=0.75 and Brier<baseline)")
     return 0 if gate_passed else 1
 
 
