@@ -619,8 +619,17 @@ class FeatureEngineer:
         if _vix is None and as_of_date is None:
             try:
                 import yfinance as yf
-                _vdf = yf.download("^VIX", period="2d", progress=False, auto_adjust=True)
+                from datetime import date as _date, timedelta as _td
+                # Bug fix: period="2d" returns empty for ^VIX. Use start/end.
+                _end_v = _date.today() + _td(days=1)
+                _start_v = _end_v - _td(days=7)
+                _vdf = yf.download(
+                    "^VIX", start=_start_v.isoformat(), end=_end_v.isoformat(),
+                    progress=False, auto_adjust=True,
+                )
                 if not _vdf.empty:
+                    if isinstance(_vdf.columns, pd.MultiIndex):
+                        _vdf.columns = _vdf.columns.get_level_values(0)
                     _vix = float(_vdf["Close"].iloc[-1].item() if hasattr(_vdf["Close"].iloc[-1], 'item') else _vdf["Close"].iloc[-1])
             except Exception:
                 pass

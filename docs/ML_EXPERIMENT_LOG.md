@@ -2295,7 +2295,7 @@ Root cause of fold 3 collapse: model trained without 6 macro/regime features (sc
 
 **Next: Retrain swing v187** with SCHEMA_VERSION=v8 (cache auto-clears, regime features now in every training row). Hypothesis: `vix_term_ratio` backwardation + `credit_hyg_ief_20d` widening + `sector_dispersion_20d` spike are the regime indicators needed to reduce fold 3 losses. Top features from v186 training already showed `breadth_rsp_spy_ratio_20d`, `vix_term_ratio`, `spy_above_ma50` as top-3 by gain importance — confirming these features carry real signal when properly populated.
 
-**v187 training command:** `python scripts/train_model.py swing --no-fundamentals --workers 8`
+**v187 training command:** `python scripts/retrain_cron.py --swing-only`
 
 ---
 
@@ -2435,7 +2435,7 @@ Training script: `scripts/train_regime_classifier.py` (downloads SPY/VIX/HYG via
 - Semantic redundancy: `reversal_5d`, `reversal_3d` (keep reversal_5d_vol_weighted), `pressure_persistence`, `pressure_displacement` (keep pressure_index), `hh_hl_sequence` (5 features)
 - **Total new drops: 18 features → target ~69 features**
 
-**Expected training command:** `python scripts/train_model.py swing --no-fundamentals --workers 8`
+**Expected training command:** `python scripts/retrain_cron.py --swing-only`
 
 **Gate:** avg Sharpe > 0.80 (5-fold), min fold > -0.30, DSR p > 0.95 (n=200)
 

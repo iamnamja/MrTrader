@@ -51,8 +51,19 @@ class RegimeDetector:
     def _refresh_vix(self) -> None:
         try:
             import yfinance as yf
-            df = yf.download("^VIX", period="1d", progress=False, auto_adjust=True, timeout=4)
+            import pandas as pd
+            from datetime import date, timedelta
+            # Bug fix: period="1d" returns empty for ^VIX ("possibly delisted").
+            # Use a small start/end window instead (end is exclusive in yfinance).
+            _end = date.today() + timedelta(days=1)
+            _start = _end - timedelta(days=7)
+            df = yf.download(
+                "^VIX", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True, timeout=4,
+            )
             if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
                 self._cached_vix = float(df["Close"].values.flat[-1])
                 self._cache_ts = time.monotonic()
         except Exception as exc:

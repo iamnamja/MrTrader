@@ -168,7 +168,36 @@ def get_current_regime_score(
             )
             return 0.0, {"error": f"stale_data_age_{cal_days_old}d", "max_date": str(max_date)}
 
-        series = compute_pit_regime_series(df)
+        # Bug fix: the last row in macro_history.parquet is often "today's row"
+        # written at server startup before market open — it only has VIX populated
+        # while SPY/HYG/IEF/RSP/VIX3M are NaN. Boolean comparisons on NaN inputs
+        # silently produce 0.0 components, so compute_pit_regime_series happily
+        # returns a bogus composite_score≈0.2 that trips BenignGate all day.
+        # Drop incomplete source rows BEFORE computing the regime series, so we
+        # use the most recent fully-populated trading day.
+        _df_norm = df.copy()
+        if "date" in _df_norm.columns:
+            _df_norm = _df_norm.set_index("date")
+        _df_norm.index = pd.to_datetime(_df_norm.index)
+        _df_norm = _df_norm.sort_index()
+        _src_cols = ["vix", "vix3m", "hyg", "ief", "rsp", "spy"]
+        _present = [c for c in _src_cols if c in _df_norm.columns]
+        _complete = _df_norm.dropna(subset=_present, how="any")
+        if _complete.empty:
+            logger.error(
+                "regime_score_pit: no row with complete macro columns — failing closed"
+            )
+            return 0.0, {"error": "no_complete_row"}
+        last_date = _df_norm.index[-1].date()
+        used_date = _complete.index[-1].date()
+        if used_date != last_date:
+            logger.info(
+                "regime_score_pit: latest macro row %s is incomplete "
+                "(today's pre-open partial fill) — falling back to %s",
+                last_date, used_date,
+            )
+
+        series = compute_pit_regime_series(_complete)
         row = series.iloc[-1]
 
         components = {
@@ -177,7 +206,7 @@ def get_current_regime_score(
             "vix_term_ratio": float(row["vix_term_ratio"]),
             "breadth_20d_change": float(row["breadth_20d_change"]),
             "credit_20d_change": float(row["credit_20d_change"]),
-            "data_date": str(series.index[-1].date()),
+            "data_date": str(used_date),
         }
         score = float(row["composite_score"])
         return score, components
