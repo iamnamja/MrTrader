@@ -4,7 +4,9 @@
 **Status:** Phase 85 ✅ | Phase 86 ❌ REVERTED | Phase 87 ✅ | Phase 3a ✅ | Phase R5 ✅ COMPLETE  
 **Champion model:** v51 (59 features = 56 Branch A + 3 Branch B; best honest result +0.529 avg Sharpe)  
 **Gate requirement (updated):** avg Sharpe > 0.80, no fold < -0.30, DSR p > 0.95 (honest gate with costs + purge)  
-**Next:** Phase R5 — regime gate in simulator (no retrain). Runs in parallel while swing 3b trains.
+**Next:** Intraday v52+ retrain — diagnostic runs (2026-05-08) confirmed model decay, not gate issue. Paused pending swing R-series completion.
+
+> **Terminology note (2026-05-11):** "Phase R5" in this document refers to the **intraday regime gate** (VIX/SPY/dispersion blocking rules, PR #171, ✅ complete). This is distinct from the swing R-series "R5" which refers to the **logistic regime classifier stub** (`app/ml/regime_classifier.py`, PR #208, training pending). They are separate features.
 
 ### Agreed execution plan (2026-05-07)
 

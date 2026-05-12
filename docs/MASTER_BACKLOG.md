@@ -1,7 +1,7 @@
 # MrTrader — Master Backlog & Roadmap
 
 **Last updated:** 2026-05-11  
-**Status:** Paper trading only. Best honest swing: v186 avg +0.106 ❌ (gate 0.80). v190 training in progress (P0 macro prune — expect recovery to v186-like fold structure). Intraday: v51 +0.529 ❌.  
+**Status:** Paper trading only. No gate-passed swing model. v191 active in paper (84 features, P0 macro prune, WF pending). Intraday: v51 +0.529 ❌.  
 **Completed this session (2026-05-10/11):**
 - **WF-A1** (PR #198 ✅): AgentSimulator alignment — TS norm state, `predict_with_vix`, PIT `regime_score_history`. 7 tests.
 - **WF-A2/A3** (PR #199/200 ✅): Full Russell 1000 universe alignment across 13 system components.
@@ -9,15 +9,21 @@
 - **Phase 92b** (PR #202 ✅): SCHEMA_VERSION v7→v8 (regime features cache fix) + feature cache macro_history wiring.
 - **v188 WF** (2026-05-10): avg -0.085 ❌. Root cause: macro features identical across all symbols → TS-norm produces regime-epoch overfit not stock-selection signal. Top-6 importance = macro features.
 - **P0** (PR #203 ✅): Pruned 7 macro/regime features from XGBoost ranker. `_BASE_PRUNED` updated. 4 tests.
-- **P1** (PR #206 🔄 CI): `apply_unprune_overrides()` + `_UNPRUNE_BUCKETS` + `--unprune` CLI. 8 tests.
-- **P2** (PR #206 🔄 CI): `app/risk/regime_gate.py` — PIT regime gate for swing entries. 10 tests. Wired into WF via `--swing-regime-gate`.
-- **P3** (PR #204 🔄 CI): `--dsr-n` + `--paper-gate` CLI flags for honest WF evaluation. 9 tests.
-- **P4** (PR #205 🔄 CI): Swing WF default=5 folds, intraday=3. 4 tests.
-- **v190 training**: Running now with P0 pruning active. WF scheduled to start when complete.
+- **P1** (PR #206 ✅): `apply_unprune_overrides()` + `_UNPRUNE_BUCKETS` + `--unprune` CLI. 8 tests.
+- **P2** (PR #206 ✅): `app/risk/regime_gate.py` — PIT regime gate for swing entries. 10 tests. Wired into WF via `--swing-regime-gate`.
+- **P3** (PR #204 ✅): `--dsr-n` + `--paper-gate` CLI flags for honest WF evaluation. 9 tests.
+- **P4** (PR #205 ✅): Swing WF default=5 folds, intraday=3. 4 tests.
+- **v190/v191 trained**: P0 macro prune applied (84 features, regime/macro features removed). v191 is current paper model. WF not yet run.
+- **R1** (PR #207 ✅): DSR N_TRIALS_TESTED 15→200 for honest p-value penalty.
+- **R2** (PR #209 ✅): `gate_ablation_v186.py` — 6-config WF ablation runner. Code only, not yet run.
+- **R3** (PR #210 ✅): Correlation-pruned 18 features from swing ranker (target v192, ~69 features). Code only, retrain pending.
+- **R4** (PR #211 ✅): `EXPERIMENT_OVERRIDES` hook in `app/ml/model.py` for XGBoost regularization experiments. Contingency for v193 if v192 fails.
+- **R5** (PR #208 ✅): MVP logistic regime classifier stub (`app/ml/regime_classifier.py`, 5 macro features). Code only, training pending.
 **Next:**
-- Await v190 WF results. Log in ML_EXPERIMENT_LOG.md.
-- P1 ablation runs (RS, ADX/Aroon, Phase89-misc, all) if v190 shows room for improvement.
-- Monday paper-trading readiness: verify server, models, gates, Alpaca connection.
+- **Run R2 gate ablation** (Linux): `python scripts/gate_ablation_v186.py --max-symbols 300 --folds 5 --dsr-n 200` (~2.5h). Isolates which gates help vs hurt on v186.
+- **Train R3 → v192** (Linux): `python scripts/train_model.py swing --no-fundamentals --workers 8`, then WF with `--folds 5 --dsr-n 200`. Decision: if avg Sharpe < +0.40 → trigger R4 (set EXPERIMENT_OVERRIDES → v193).
+- **Train R5 regime classifier**: `python scripts/train_regime_classifier.py` → produces `regime_v1.pkl`. Independent of swing retrain.
+- Check if Windows yfinance/SQLAlchemy issues are resolved post-restart before routing to Linux.
 
 ---
 

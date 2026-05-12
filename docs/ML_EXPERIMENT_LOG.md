@@ -21,11 +21,11 @@ Tracks model improvement iterations for active and recent phases.
 
 | Model | Version | Features | Label | Honest Sharpe | Best Result to Date | Status |
 |---|---|---|---|---|---|---|
-| Swing | v186 | ~82 (TS norm) | triple_barrier (5d) | **+0.106 ❌** (3-fold, 750-sym R1K honest) | +0.358 (v163, pre-WF-A fix) | RETIRED — v187 retrain in progress |
+| Swing | v191 | 84 (P0 macro prune) | triple_barrier (5d) | **WF PENDING** | +0.106 (v186, 3-fold honest) | Active paper — no gate-passed model |
 | Intraday | v51 | 59 | cross-sectional top-20% | **+0.529** ❌ | +0.529 (v51, Phase 3a Branch B) | Active paper — below gate |
 
 > **Gate thresholds:** Swing avg Sharpe > 0.80 | Intraday avg Sharpe > 0.80 | No fold < -0.30 | DSR p > 0.95  
-> **Next milestones:** Run swing v186 walk-forward (WF-A1/A2/A3 fixes applied — first honest result). Intraday — intraday absolute hurdle label (Phase 3e) or Phase R5 tuning.
+> **Next milestones:** (1) Run R2 gate ablation on v186. (2) Train v192 (R3 18-feature prune) + WF. (3) Train regime_v1.pkl (R5). Decision tree: if v192 avg Sharpe < +0.40 → trigger R4 regularization override → v193.
 
 > **Phase 1 corrections applied (2026-05-05):** Walk-forward now includes (1) 5bps/15bps round-trip transaction costs, (2) 10-day swing / 2-day intraday purge at fold boundaries, (3) NIS features removed from training (time-leak). These are the first honest Sharpe numbers. Both models fail. See Phase 1 Corrections section below for full fold detail.
 
@@ -2334,6 +2334,36 @@ The 6 regime features should be *context* for the XGBoost model, not its primary
 3. **Reduce regime feature count**: Keep only 2-3 most informative (vix_term_ratio + sector_dispersion_20d based on prior v186 top features) and prune the rest
 4. **Two-stage architecture**: Regime classifier gates entries; stock-selection model ranks within gate-passed universe
 5. **Re-examine `_BASE_PRUNED`**: The v186 run showed +0.36/+0.71/-0.75 with regime features defaulting to 0.0 — the stock-selection features were doing real work. Restoring balance is key.
+
+---
+
+## v187, v189 — Intermediate Training Runs (Undocumented) — 2026-05-10/11
+
+**Context:** Two training runs completed during the Phase 92b / P0 campaign but never walk-forwarded or formally logged.
+
+- **v187** (96 features): First retrain after SCHEMA_VERSION v7→v8 fix. Full feature set including all 6 regime/macro features (`spy_above_ma50`, `spy_above_ma200`, `vix_term_ratio`, `breadth_rsp_spy_ratio_20d`, `credit_hyg_ief_20d`, `sector_dispersion_20d`). Same architecture as v188. No WF run — superseded by v188 which was the official Phase 92b WF candidate.
+- **v189** (96 features): Second training run with full regime features, same feature set as v187. Exact trigger unknown — likely a second HPO seed or intermediate experiment. No WF run — superseded immediately by P0 macro prune decision.
+
+**Verdict:** Both retired without WF. Feature metadata confirmed via `swing_meta_v187.pkl` / `swing_meta_v189.pkl`.
+
+---
+
+## v190, v191 — P0 Macro Prune Retrains — 2026-05-11
+
+**Context:** After v188 WF showed regime features dominating importance (top 6 slots), P0 pruned 7 macro/regime features from `_BASE_PRUNED`: `regime_score`, `spy_above_ma50`, `spy_above_ma200`, `vix_term_ratio`, `breadth_rsp_spy_ratio_20d`, `credit_hyg_ief_20d`, `sector_dispersion_20d`.
+
+- **v190** (84 features): First P0 retrain. Predict threshold 0.45. No WF run — session interrupted.
+- **v191** (84 features): Second P0 retrain. Predict threshold 0.50. Has `feature_weights` array (likely a P1-P4 ensemble weighting experiment). **Currently active in paper trading.** No WF run.
+
+**Feature set (both):** Same 84-feature stock-selection-only set. All macro/regime features removed. Full feature list confirmed via `swing_meta_v190.pkl` / `swing_meta_v191.pkl`.
+
+**WF status:** Neither v190 nor v191 has been walk-forwarded. This is the highest-priority gap — v191 is live in paper trading with no honest WF baseline. Run:
+```
+python scripts/walkforward_tier3.py --model swing --folds 5 --dsr-n 200
+```
+Gate: avg Sharpe > 0.80, min fold > -0.30, DSR p > 0.95.
+
+> **Note:** Before running v191 WF, consider running R3 (v192) first — v192 applies an additional 18-feature correlation prune on top of P0. If v192 passes gate, v191 WF is moot. If v192 fails, v191 WF provides a useful delta comparison.
 
 ---
 
