@@ -44,7 +44,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy.stats import norm  # noqa: E402
 
-from app.ml.retrain_config import MAX_WORKERS  # noqa: E402
+from app.ml.retrain_config import MAX_WORKERS, MAX_FOLD_WORKERS  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -746,8 +746,7 @@ def run_swing_walkforward(
         (i + 1, tr_start, tr_end, te_start, te_end, emb)
         for i, (tr_start, tr_end, te_start, te_end, emb) in enumerate(fold_boundaries)
     ]
-    import sys as _sys
-    _fold_workers = 1 if _sys.platform == "win32" else min(n_folds, MAX_WORKERS)
+    _fold_workers = min(n_folds, MAX_FOLD_WORKERS)
     with ThreadPoolExecutor(max_workers=_fold_workers) as pool:
         results = list(pool.map(_run_swing_fold, fold_args))
     report.folds = sorted(results, key=lambda f: f.fold)
