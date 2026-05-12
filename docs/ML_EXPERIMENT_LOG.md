@@ -33,6 +33,35 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## INFRA — Windows OOM Fix (Parallelism Caps) — 2026-05-12
+
+**Problem:** Machine was freezing (hard reboot required) every time the 17:00 retrain ran. Root causes identified via log analysis:
+
+1. **Swing WF folds ran in parallel** (`ThreadPoolExecutor(max_workers=5)`): each of 5 folds independently spawned a `ProcessPoolExecutor` with up to 12 workers → up to 60 concurrent Python spawn processes, each importing numpy/pandas/xgboost (~400–500 MB each). Combined with OMP_NUM_THREADS=24, total commit charge exceeded Windows paging file capacity.
+2. **pytest `-n auto`** spawned 32 xdist workers (one per logical CPU), each importing the full app stack at ~150 MB each → ~4.6 GB from tests alone. Running pytest concurrently with the retrain was the direct cause of the 2026-05-12 freeze.
+3. **No central cap** — `training.py`, `intraday_training.py`, and `walkforward_tier3.py` each had their own hard-coded worker counts (24, 24, 12) that didn't respect Windows limits.
+
+**Root cause of v191 0-trade result:** Feature cache worker processes were killed by Windows OOM before producing output → cache built with 0 symbols → `agent_simulator._pm_score_cached` returned empty proposals → 0 trades, 0.00 Sharpe across all 5 folds. v191 is likely a sound model killed by infrastructure, not a bad model.
+
+**Fixes applied (PR `fix/retrain-windows-oom`, commit 8c85e0c):**
+
+| File | Change |
+|---|---|
+| `app/ml/retrain_config.py` | Added `MAX_WORKERS=4` and `MAX_THREADS=8` (Windows) as single source of truth |
+| `scripts/walkforward_tier3.py` | Swing WF folds now serial on Windows (`_fold_workers=1`); feature cache workers capped via `_win_cap=4` |
+| `scripts/retrain_cron.py` | Sets OMP/MKL/OPENBLAS/LOKY caps from `MAX_THREADS`; removed duplicated platform logic |
+| `app/ml/training.py` | `ModelTrainer.n_workers` default reads `MAX_WORKERS` (was `cpu_count()=32`) |
+| `app/ml/intraday_training.py` | LightGBM `n_jobs` reads `MAX_WORKERS` (was hard-coded 24) |
+| `app/backtesting/agent_simulator.py` | Falls back to live compute when feature cache is empty (`n_symbols > 0` guard) |
+| `pytest.ini` | `-n auto` → `-n 4` (was spawning 32 workers on this machine) |
+| `tests/conftest.py` | Sets OMP/MKL/OPENBLAS/LOKY=2 for all pytest workers |
+
+**Effect on retrain timing:** Swing WF folds now run serially on Windows (~5× slower per fold, but no freeze). Total retrain time estimate: ~2.5–3h instead of ~1h47m. Acceptable trade-off.
+
+**Action required:** Next scheduled retrain (2026-05-12 17:00 or Wednesday) will use fixed code. Monitor `logs/retrain_YYYY-MM-DD.log` to confirm fold results are non-zero and machine stays stable.
+
+---
+
 ## Phase 1 Corrections Baseline Walk-Forward — 2026-05-05
 
 **Purpose:** First honest re-validation of champions after applying Phase 1a (cost model), Phase 1b (purge/embargo), Phase 1c (NIS removal). Establishes true baseline before any new model work.
