@@ -199,7 +199,11 @@ def build_feature_cache(
     F = len(feature_names)
 
     if workers <= 0:
-        workers = max(2, min(os.cpu_count() or 4, 12))
+        # Cap at 4 on Windows — each spawn worker loads numpy/pandas/scipy DLLs
+        # (~400MB each); 12 workers simultaneously exhausts the Windows paging file.
+        import sys
+        _max_workers = 4 if sys.platform == "win32" else 12
+        workers = max(2, min(os.cpu_count() or 4, _max_workers))
 
     regime_scores = regime_score_history or {}
 
