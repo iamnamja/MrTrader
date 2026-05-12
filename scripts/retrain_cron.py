@@ -21,8 +21,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("OMP_NUM_THREADS", "24")
-os.environ.setdefault("LOKY_MAX_CPU_COUNT", "24")
+from app.ml.retrain_config import MAX_THREADS as _max_threads
+os.environ.setdefault("OMP_NUM_THREADS", str(_max_threads))
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(_max_threads))
+os.environ.setdefault("MKL_NUM_THREADS", str(_max_threads))
+os.environ.setdefault("OPENBLAS_NUM_THREADS", str(_max_threads))
 
 logging.basicConfig(
     level=logging.INFO,

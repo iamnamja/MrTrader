@@ -673,7 +673,8 @@ def run_swing_walkforward(
                     _vix_df = fold_symbols_data.get("VIX")
                 _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
                 _feat_names = getattr(model, "feature_names", None) or []
-                _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, 12))
+                _win_cap = 4 if _os.name == "nt" else 12
+                _workers = feature_cache_workers or max(2, min(_os.cpu_count() or 4, _win_cap))
                 logger.info("Fold %d: building feature cache (%d syms × %d days, %d %s workers)",
                             fold_idx, len(fold_symbols_data), len(_test_days), _workers, feature_cache_executor)
                 _feature_cache = _build_fc(
@@ -744,7 +745,9 @@ def run_swing_walkforward(
         (i + 1, tr_start, tr_end, te_start, te_end, emb)
         for i, (tr_start, tr_end, te_start, te_end, emb) in enumerate(fold_boundaries)
     ]
-    with ThreadPoolExecutor(max_workers=n_folds) as pool:
+    import sys as _sys
+    _fold_workers = 1 if _sys.platform == "win32" else n_folds
+    with ThreadPoolExecutor(max_workers=_fold_workers) as pool:
         results = list(pool.map(_run_swing_fold, fold_args))
     report.folds = sorted(results, key=lambda f: f.fold)
 

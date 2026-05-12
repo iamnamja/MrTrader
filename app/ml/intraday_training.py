@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from app.data import get_provider
+from app.ml.retrain_config import MAX_WORKERS as _MAX_WORKERS
 from app.database.models import ModelVersion
 from app.database.session import get_session
 from app.ml.cs_normalize import cs_normalize_by_group
@@ -354,7 +356,7 @@ class IntradayModelTrainer:
                 n_estimators=400, learning_rate=0.03, max_depth=6,
                 subsample=0.73, colsample_bytree=0.58, min_child_samples=24,
                 class_weight={0: 1.0, 1: float(spw)},
-                n_jobs=24, random_state=42, verbose=-1,
+                n_jobs=_MAX_WORKERS, random_state=42, verbose=-1,
             )
             lgbm.fit(X_train, y_train, sample_weight=sample_weight)
             lgbm_proba_test = lgbm.predict_proba(X_test)[:, 1]

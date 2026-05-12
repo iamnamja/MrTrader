@@ -428,7 +428,7 @@ class AgentSimulator:
         if self.model is None or not getattr(self.model, "is_trained", False):
             return []
 
-        if self.feature_cache is not None:
+        if self.feature_cache is not None and self.feature_cache.n_symbols > 0:
             return self._pm_score_cached(day, vix_history)
 
         fe = self._get_feature_engineer()

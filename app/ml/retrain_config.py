@@ -16,6 +16,15 @@ Rules:
     is automatically restored — the new version is marked RETIRED
 """
 
+import os as _os
+import sys as _sys
+
+# ── Worker / parallelism caps ─────────────────────────────────────────────────
+# Single source of truth for process/thread counts across all training entry points.
+# Windows is capped lower to prevent paging-file exhaustion from spawn-heavy pools.
+MAX_WORKERS: int = 4 if _sys.platform == "win32" else (_os.cpu_count() or 8)
+MAX_THREADS: int = 8 if _sys.platform == "win32" else 24
+
 # ── Retraining schedule ──────────────────────────────────────────────────────
 # Day of week to run the weekly retrain (0=Monday … 6=Sunday).
 # Retrain only fires on this day — server restarts on other days don't trigger it.
@@ -30,7 +39,7 @@ SWING_RETRAIN: dict = dict(
     label_scheme="triple_barrier",    # Fix 2: aligned with ATR exit rule; was "cross_sectional"
     hpo_trials=20,
     fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
-    n_workers=8,
+    n_workers=MAX_WORKERS,
     walk_forward_folds=5,       # Phase 88: 5 folds (was 3) — one bad regime can't tank avg
     walk_forward_years=6,       # Phase 88: 6yr window → ~14mo per fold test
     exclude_risk_off_days=True,  # Phase R6b/88: down-weight (0.3×) not exclude RISK_OFF
@@ -77,6 +86,7 @@ SWING_GATE = dict(
 # due to distribution mismatch (trained on 3 windows, deployed on 1).
 INTRADAY_RETRAIN: dict = dict(
     days=730,
+    n_workers=MAX_WORKERS,
     fetch_spy=True,
     use_ranker=False,
     top_n_by_liquidity=None,    # None = full Russell 1000 universe

@@ -703,7 +703,8 @@ class ModelTrainer:
         # Default: all logical CPUs. Caller can pass n_workers to override.
         # Feature engineering is numpy-heavy and releases the GIL, so threads
         # beyond 8 still yield speedups on machines with 16+ cores.
-        self.n_workers = n_workers if (n_workers and n_workers > 0) else (os.cpu_count() or 4)
+        from app.ml.retrain_config import MAX_WORKERS as _max_workers
+        self.n_workers = n_workers if (n_workers and n_workers > 0) else _max_workers
         self.hpo_trials = hpo_trials
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold

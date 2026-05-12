@@ -9,6 +9,12 @@ Fixture hierarchy:
 """
 from __future__ import annotations
 
+import os as _os
+# Cap thread counts for all pytest workers — prevents loky/OpenMP spawning
+# cpu_count() threads per worker when running under pytest-xdist.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY_MAX_CPU_COUNT"):
+    _os.environ.setdefault(_var, "2")
+
 from datetime import datetime
 from typing import Generator
 from unittest.mock import MagicMock, patch
