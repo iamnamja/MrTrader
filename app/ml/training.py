@@ -129,6 +129,29 @@ _BASE_PRUNED: frozenset = frozenset([
     # regime_score is hardcoded 0.5 in training (placeholder, not PIT-computed).
     # Pruned as dead column — adds noise without information.
     "regime_score",
+    # R3 (2026-05-11): Correlation pruning — zero-importance in v163 audit and/or
+    # semantically redundant with higher-importance group members.
+    # Target: ~30-40 features from 87 (post-P0, no-fundamentals baseline).
+    # Zero-importance in v163 feature audit:
+    "cmf_20",            # zero in v163; redundant with volume_trend
+    "dema_20_dist",      # zero in v163; redundant with ema20_dist
+    "keltner_position",  # zero in v163; redundant with ATR-family features
+    "cci_20",            # zero in v163; overlap with RSI/stochastic
+    "price_efficiency_20d",   # zero in v163
+    "vol_price_confirmation", # zero in v163
+    "volume_surge_3d",   # zero in v163; redundant with volume_trend
+    "wq_alpha44",        # zero in v163
+    "choch_detected",    # zero in v163; erratic micro-structure signal
+    "bars_since_choch",  # companion to choch_detected (now pruned)
+    "momentum_20d_sector_neutral",  # zero in v163; keep sector_momentum instead
+    "price_change_pct",  # zero in v163; redundant with return/momentum features
+    "volume_ratio",      # zero in v163; keep volume_trend instead
+    # Semantic-group redundancy pruning (keep highest-importance member):
+    "reversal_5d",             # keep reversal_5d_vol_weighted (more informative)
+    "reversal_3d",             # redundant with reversal_5d_vol_weighted
+    "pressure_persistence",    # keep pressure_index (summary); prune sub-components
+    "pressure_displacement",   # keep pressure_index
+    "hh_hl_sequence",          # structural marker; low importance vs trend_consistency_63d
 ])
 
 # Phase 1c (2026-05-05): NIS features pruned from swing training due to time-leak.
