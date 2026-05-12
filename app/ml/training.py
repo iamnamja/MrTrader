@@ -138,7 +138,7 @@ _BASE_PRUNED: frozenset = frozenset([
     "keltner_position",  # zero in v163; redundant with ATR-family features
     "cci_20",            # zero in v163; overlap with RSI/stochastic
     "price_efficiency_20d",   # zero in v163
-    "vol_price_confirmation", # zero in v163
+    "vol_price_confirmation",  # zero in v163
     "volume_surge_3d",   # zero in v163; redundant with volume_trend
     "wq_alpha44",        # zero in v163
     "choch_detected",    # zero in v163; erratic micro-structure signal
