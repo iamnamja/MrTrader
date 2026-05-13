@@ -396,8 +396,8 @@ def main() -> int:
     spy_df = spy_map.get("SPY", pd.DataFrame())
 
     # ── Load universe bars for B1/B3 ──
-    from app.data.universe_history import get_russell1000_symbols
-    symbols = get_russell1000_symbols()
+    from app.data.universe_history import pit_union
+    symbols = pit_union("russell1000", start=args.start, end=args.end)
     if args.max_symbols:
         symbols = symbols[:args.max_symbols]
     logger.info("Loading bars for %d symbols", len(symbols))

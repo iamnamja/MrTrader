@@ -74,10 +74,10 @@ def _load_symbols_and_bars(
 
     Returns {symbol: DataFrame} with DatetimeIndex.
     """
-    from app.data.universe_history import get_russell1000_symbols
+    from app.data.universe_history import pit_union
     from app.data import get_provider
 
-    symbols = get_russell1000_symbols()
+    symbols = pit_union("russell1000", start=start, end=end)
     if max_symbols:
         symbols = symbols[:max_symbols]
     logger.info("Loading bars for %d symbols %s -> %s", len(symbols), start, end)
