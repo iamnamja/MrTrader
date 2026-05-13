@@ -281,8 +281,8 @@ async def get_open_positions():
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
             t = db_trades.get(pos["symbol"])
-            stop = float(t.stop_price) if t and t.stop_price else None
-            target = float(t.target_price) if t and t.target_price else None
+            stop = float(t.stop_price) if t and t.stop_price and t.stop_price > 0 else None
+            target = float(t.target_price) if t and t.target_price and t.target_price > 0 else None
             entry = float(t.entry_price) if t and t.entry_price else float(avg)
             rr = None
             if stop and target and entry and (entry - stop) > 0:

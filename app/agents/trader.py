@@ -954,6 +954,14 @@ class Trader(BaseAgent):
         """Write PENDING_FILL Trade to DB before placing the order. Returns trade.id or None."""
         trade_type = proposal.get("trade_type", "swing")
         proposal_uuid = proposal.get("proposal_uuid")
+        # Prefer proposal-level stop/target (set by RM from signal generator);
+        # fall back to result object, then to ATR-based defaults.
+        _stop = (proposal.get("stop_price") or result.stop_price or 0.0)
+        _target = (proposal.get("target_price") or result.target_price or 0.0)
+        if not _stop or _stop <= 0:
+            _stop = round(intended_price * 0.98, 2)
+        if not _target or _target <= 0:
+            _target = round(intended_price * 1.06, 2)
         db = get_session()
         try:
             trade = Trade(
@@ -964,8 +972,8 @@ class Trader(BaseAgent):
                 status="PENDING_FILL",
                 signal_type=signal_type,
                 trade_type=trade_type,
-                stop_price=result.stop_price,
-                target_price=result.target_price,
+                stop_price=_stop,
+                target_price=_target,
                 highest_price=intended_price,
                 bars_held=0,
                 proposal_id=proposal_uuid,
