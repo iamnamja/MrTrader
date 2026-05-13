@@ -68,7 +68,7 @@ PHASE_C_FEATURE_KEEP_LIST: tuple = (
     "vrp",                   # IR=0.55
     "revenue_growth",        # IR=0.44 (mapped from revenue_growth_yoy)
     "near_52w_high",         # IR=0.46
-    "trend_consistency_63d", # IR=0.40
+    "trend_consistency_63d",  # IR=0.40
 )
 
 # ── Swing model (Phase C — LambdaRank on 14 IC-validated features) ───────────

@@ -253,12 +253,12 @@ class RegimeRuleScorer:
         vix_weight: float = 0.35,
         breadth_weight: float = 0.15,
     ):
-        self.vix_cap         = vix_cap
-        self.breadth_thresh  = breadth_thresh
-        self.spy_weight      = spy_weight
-        self.vix_weight      = vix_weight
-        self.breadth_weight  = breadth_weight
-        self._is_fitted      = True   # rule-based, always "fitted"
+        self.vix_cap = vix_cap
+        self.breadth_thresh = breadth_thresh
+        self.spy_weight = spy_weight
+        self.vix_weight = vix_weight
+        self.breadth_weight = breadth_weight
+        self._is_fitted = True  # rule-based, always "fitted"
 
     def score_row(
         self,
@@ -273,8 +273,8 @@ class RegimeRuleScorer:
             vix: VIX close level
             breadth: optional fraction of R1K symbols above their 50d MA
         """
-        spy_sig  = 1.0 if spy_above_ma200 else 0.0
-        vix_sig  = max(0.0, min(1.0, (self.vix_cap - vix) / self.vix_cap))
+        spy_sig = 1.0 if spy_above_ma200 else 0.0
+        vix_sig = max(0.0, min(1.0, (self.vix_cap - vix) / self.vix_cap))
         if breadth is not None:
             breadth_sig = 1.0 if breadth >= self.breadth_thresh else breadth / self.breadth_thresh
             total_w = self.spy_weight + self.vix_weight + self.breadth_weight

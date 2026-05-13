@@ -800,7 +800,7 @@ class ModelTrainer:
             if keep_idx:
                 feature_names = [feature_names[i] for i in keep_idx]
                 X_train = X_train[:, keep_idx]
-                X_test  = X_test[:, keep_idx] if len(X_test) > 0 else X_test
+                X_test = X_test[:, keep_idx] if len(X_test) > 0 else X_test
                 logger.info(
                     "feature_keep_list: restricted to %d features (from %d)",
                     len(feature_names), len(keep_idx) + (len(self.feature_keep_list) - len(keep_idx))

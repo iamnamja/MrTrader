@@ -162,10 +162,10 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
         pct = int(p.get("processed", 0)) * 100 // max(int(p.get("total", 1)), 1)
         subj = f"[MrTrader] A1 {pct}% — {p.get('processed','?')}/{p.get('total','?')} symbols"
         body = _section("A1 Feature IC — progress update", [
-            ("Processed",   f"{p.get('processed','?')} / {p.get('total','?')} ({pct}%)"),
-            ("Elapsed",     f"{p.get('elapsed_min','?')} min"),
-            ("ETA",         f"{p.get('eta_min','?')} min remaining"),
-            ("Log",         p.get("log_path", "")),
+            ("Processed", f"{p.get('processed','?')} / {p.get('total','?')} ({pct}%)"),
+            ("Elapsed", f"{p.get('elapsed_min','?')} min"),
+            ("ETA", f"{p.get('eta_min','?')} min remaining"),
+            ("Log", p.get("log_path", "")),
         ])
         if p.get("ic_table_html"):
             body += "<h3>Top features (interim)</h3>" + p["ic_table_html"]
@@ -173,9 +173,9 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
     elif event_type == "diag_complete":
         subj = f"[MrTrader] DONE: {p.get('script','?')} ({p.get('duration','?')})"
         body = _section(f"Diagnostic complete — {p.get('script','?')}", [
-            ("Script",    p.get("script")),
-            ("Duration",  p.get("duration")),
-            ("Outcome",   p.get("outcome", "")),
+            ("Script", p.get("script")),
+            ("Duration", p.get("duration")),
+            ("Outcome", p.get("outcome", "")),
             ("Artifacts", "<br>".join(p.get("artifacts", []))),
         ])
         if p.get("summary_html"):
@@ -186,12 +186,12 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
         pnl_color = "#1a7340" if pnl >= 0 else "#b00020"
         subj = f"[MrTrader] EOD {p.get('date','')} — P&L ${pnl:+,.2f}"
         body = _section("Paper trading — end of day", [
-            ("Date",           p.get("date")),
-            ("P&L",            f"<span style='color:{pnl_color};font-weight:bold'>${pnl:+,.2f}</span>"),
-            ("Portfolio eq.",  f"${p.get('equity', 0):,.2f}"),
-            ("Trades taken",   p.get("trades")),
+            ("Date", p.get("date")),
+            ("P&L", f"<span style='color:{pnl_color};font-weight:bold'>${pnl:+,.2f}</span>"),
+            ("Portfolio eq.", f"${p.get('equity', 0):,.2f}"),
+            ("Trades taken", p.get("trades")),
             ("Open positions", p.get("open_positions")),
-            ("Regime",         p.get("regime", "")),
+            ("Regime", p.get("regime", "")),
         ])
         if p.get("trades_html"):
             body += "<h3>Trades</h3>" + p["trades_html"]
@@ -203,8 +203,8 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
         body = (
             "<h2 style='color:#b00020'>⚠ Kill switch activated</h2>"
             + _section("Details", [
-                ("Reason",      p.get("reason")),
-                ("Trigger",     p.get("trigger", "")),
+                ("Reason", p.get("reason")),
+                ("Trigger", p.get("trigger", "")),
                 ("Portfolio eq.", f"${p.get('equity', 0):,.2f}"),
                 ("Action taken", p.get("action", "All orders cancelled, trading halted")),
             ])
@@ -215,12 +215,12 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
         gate_color = "#1a7340" if "PASS" in str(gate).upper() else "#b00020"
         subj = f"[MrTrader] Trained {p.get('model','?')} v{p.get('version','?')} — {gate}"
         body = _section("Model training complete", [
-            ("Model",        p.get("model")),
-            ("Version",      p.get("version")),
-            ("Sharpe (WF)",  p.get("sharpe")),
-            ("AUC",          p.get("auc", "")),
-            ("Gate result",  f"<span style='color:{gate_color};font-weight:bold'>{gate}</span>"),
-            ("Log",          p.get("log_path", "")),
+            ("Model", p.get("model")),
+            ("Version", p.get("version")),
+            ("Sharpe (WF)", p.get("sharpe")),
+            ("AUC", p.get("auc", "")),
+            ("Gate result", f"<span style='color:{gate_color};font-weight:bold'>{gate}</span>"),
+            ("Log", p.get("log_path", "")),
         ])
         if p.get("fold_table_html"):
             body += "<h3>Fold results</h3>" + p["fold_table_html"]
@@ -229,9 +229,9 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
         subj = f"[MrTrader] Phase {p.get('phase','?')} complete"
         body = _section(f"Phase {p.get('phase')} done", [
             ("Tasks completed", p.get("tasks_done")),
-            ("Outcome",         p.get("outcome", "")),
-            ("Next phase",      p.get("next_phase", "")),
-            ("Notes",           p.get("notes", "")),
+            ("Outcome", p.get("outcome", "")),
+            ("Next phase", p.get("next_phase", "")),
+            ("Notes", p.get("notes", "")),
         ])
 
     else:
@@ -267,14 +267,14 @@ def _section(title: str, rows: list[tuple[str, Any]]) -> str:
 
 def _smtp_send(subject: str, html_body: str) -> bool:
     user = os.environ.get("NOTIFY_GMAIL_USER", "").strip()
-    pw   = os.environ.get("NOTIFY_GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+    pw = os.environ.get("NOTIFY_GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
     if not user or not pw:
         log.error("NOTIFY_GMAIL_USER / NOTIFY_GMAIL_APP_PASSWORD not set in env")
         return False
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"MrTrader <{user}>"
-    msg["To"]      = RECIPIENT
+    msg["From"] = f"MrTrader <{user}>"
+    msg["To"] = RECIPIENT
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     ctx = ssl.create_default_context()
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
