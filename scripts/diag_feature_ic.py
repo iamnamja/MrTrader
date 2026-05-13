@@ -75,13 +75,14 @@ def _load_symbols_and_bars(
     Returns {symbol: DataFrame} with DatetimeIndex.
     """
     from app.data.universe_history import get_russell1000_symbols
-    from app.data.polygon_s3 import fetch_bulk_daily_bars
+    from app.data import get_provider
 
     symbols = get_russell1000_symbols()
     if max_symbols:
         symbols = symbols[:max_symbols]
     logger.info("Loading bars for %d symbols %s -> %s", len(symbols), start, end)
-    bars_map = fetch_bulk_daily_bars(symbols, start_date=start, end_date=end, workers=workers)
+    provider = get_provider("polygon")
+    bars_map = provider.get_daily_bars_bulk(symbols, start=start, end=end)
     logger.info("Loaded bars for %d symbols", len(bars_map))
     return bars_map
 

@@ -390,8 +390,9 @@ def main() -> int:
                 args.start, args.end, args.cost_bps, args.top_pct * 100)
 
     # ── Load SPY bars ──
-    from app.data.polygon_s3 import fetch_bulk_daily_bars
-    spy_map = fetch_bulk_daily_bars(["SPY"], start_date=args.start, end_date=args.end, workers=1)
+    from app.data import get_provider
+    provider = get_provider("polygon")
+    spy_map = provider.get_daily_bars_bulk(["SPY"], start=args.start, end=args.end)
     spy_df = spy_map.get("SPY", pd.DataFrame())
 
     # ── Load universe bars for B1/B3 ──
@@ -400,7 +401,7 @@ def main() -> int:
     if args.max_symbols:
         symbols = symbols[:args.max_symbols]
     logger.info("Loading bars for %d symbols", len(symbols))
-    bars_map = fetch_bulk_daily_bars(symbols, start_date=args.start, end_date=args.end, workers=args.workers)
+    bars_map = provider.get_daily_bars_bulk(symbols, start=args.start, end=args.end)
     bars_map["SPY"] = spy_df
 
     all_metrics = {}
