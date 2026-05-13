@@ -67,6 +67,21 @@ Proceed only if Phase A passes (edge confirmed). Architecture changes:
 
 ---
 
+## Infrastructure Bugs (fix regardless of phase outcome)
+
+### BUG-1. macro_history incremental fetch uses latest row, not latest complete row ✅ Fixed 2026-05-13
+**Symptom:** `regime_score_pit` fell back to 2026-05-08 data despite rows existing through 2026-05-13. HYG/IEF/RSP/SPY/VIX3M were NaN from 2026-05-11 onward.
+**Root cause:** `update_macro_history()` checked `existing["date"].max()` (last row) as the resume point. Today's row had only VIX populated (pre-open partial fill), so incremental logic concluded "up to date" and skipped re-fetching the incomplete tail.
+**Fix:** Find last *fully complete* row (all 6 source cols non-null), re-fetch from there so partial rows get overwritten.
+**Files:** `app/data/macro_history.py`
+
+### BUG-2. PM swing feature engineering timeout too tight
+**Symptom:** Premarket scan consistently failed at 7 min (420s) despite bulk bar fetch completing in 8s. Feature engineering for 697 symbols takes ~98s — fine. But startup-time premarket ran concurrently with two prior timed-out attempts, causing resource contention.
+**Fix:** Bumped timeout 420s → 1200s. Root fix is to cap universe to ~200 high-liquidity symbols for premarket scan (D1 in backlog).
+**Files:** `app/agents/portfolio_manager.py`
+
+---
+
 ## Phase C — Pivot (if Phase A fails kill criteria)
 
 Execute Phase C if 2+ of these are true after Phase A:

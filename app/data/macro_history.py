@@ -133,8 +133,20 @@ def update_macro_history() -> pd.DataFrame:
         logger.info("No existing macro_history.parquet — initialising from %s", start)
     else:
         last_date = existing["date"].max()
-        # Fetch from the day after the latest stored date
-        start_dt = datetime.strptime(last_date, "%Y-%m-%d").date() + timedelta(days=1)
+        # Use last *complete* row as the resume point — partial rows (e.g. today's
+        # pre-open fill that only has VIX but not HYG/SPY/etc.) must be re-fetched
+        # so we don't leave trailing NaNs that break regime_score_pit.
+        src_cols = [c for c in TICKER_COLUMNS.values() if c in existing.columns]
+        complete_rows = existing.dropna(subset=src_cols, how="any")
+        last_complete = complete_rows["date"].max() if not complete_rows.empty else None
+        if last_complete and last_complete < last_date:
+            logger.info(
+                "macro_history has incomplete tail rows (%s..%s) — re-fetching from %s",
+                last_complete, last_date, last_complete,
+            )
+            start_dt = datetime.strptime(last_complete, "%Y-%m-%d").date()
+        else:
+            start_dt = datetime.strptime(last_date, "%Y-%m-%d").date() + timedelta(days=1)
         start = start_dt.isoformat()
         logger.info("Existing macro_history latest=%s — fetching from %s", last_date, start)
 
@@ -153,11 +165,10 @@ def update_macro_history() -> pd.DataFrame:
     if existing.empty:
         combined = new_df
     else:
-        # Append only rows whose date is strictly after the existing max
-        existing_max = existing["date"].max()
-        new_df = new_df[new_df["date"] > existing_max]
+        # Concat and deduplicate — keep last (new_df wins) so partial rows
+        # from a prior partial fill get overwritten by the fresh fetch.
         if new_df.empty:
-            logger.info("yfinance returned no rows past %s", existing_max)
+            logger.info("yfinance returned no rows past %s", existing["date"].max())
             return existing
         combined = pd.concat([existing, new_df], ignore_index=True)
 
