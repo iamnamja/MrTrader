@@ -33,6 +33,74 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase A COMPLETE — Diagnostic Verdicts — 2026-05-13
+
+**All three kill criteria triggered. Proceeding to Phase C (re-architect).**
+
+### A1 — Feature IC Ceiling (run: 20260513T124800Z, v195, 69 features, 1785 days)
+
+| Feature | IC_mean h5 | IC_IR h5 | Hit Rate | Verdict |
+|---|---|---|---|---|
+| momentum_252d_ex1m | 0.029 | 1.99 | 0.576 | ✅ KEEP |
+| vol_regime | 0.016 | 1.87 | 0.557 | ✅ KEEP |
+| profit_margin | 0.013 | 1.40 | 0.532 | ✅ KEEP |
+| operating_margin | 0.012 | 1.24 | 0.530 | ✅ KEEP |
+| price_to_52w_high | 0.017 | 1.11 | 0.547 | ✅ KEEP |
+| pe_ratio | 0.009 | 1.05 | 0.516 | ✅ KEEP |
+| range_expansion | 0.007 | 0.89 | 0.532 | ✅ KEEP (tier 2) |
+| price_to_52w_low | 0.009 | 0.76 | 0.533 | ✅ KEEP (tier 2) |
+| gross_margin | 0.006 | 0.73 | 0.538 | ✅ KEEP (tier 2) |
+| volume_trend | 0.005 | 0.71 | 0.529 | ✅ KEEP (tier 2) |
+| vrp | 0.009 | 0.55 | 0.520 | ✅ KEEP (tier 2) |
+| revenue_growth | 0.005 | 0.44 | 0.520 | ✅ KEEP (tier 2) |
+| near_52w_high | 0.005 | 0.46 | 0.508 | ✅ KEEP (tier 2) |
+| trend_consistency_63d | 0.004 | 0.40 | 0.516 | ✅ KEEP (tier 2) |
+| *All others (55 features)* | ≤±0.009 | ≤±0.40 | ~0.50 | ❌ DROP (noise/negative) |
+
+**Kill criterion hit:** Only 1/69 features clears all thresholds (|IC|≥0.02, IR≥0.5, hit≥0.53). Need ≥3.
+**Key insight:** `momentum_252d_ex1m` IC *grows* with horizon (0.029→0.046 at h20) — this is a longer-horizon factor, not a 5-day predictor. Quality features (margins) also strengthen at h20. All technical/short-horizon features (RSI, MACD, EMA-dist, 20d/60d momentum) are noise or negative.
+
+### A3 — Naive Baseline Comparison (run: 20260513T032946Z)
+
+| Strategy | Sharpe | Max DD | Notes |
+|---|---|---|---|
+| B1: Top-20% 60d momentum | +0.627 | 57.2% | Long-only, no gate |
+| B2: SPY > 200d MA timing | **+0.808** | 21.6% | Best baseline |
+| B3: Momentum + SPY gate | +0.609 | 58.6% | Combined |
+| Best ML WF (v186) | +0.106 | — | Current champion |
+
+**Kill criterion hit:** Naive B2 (+0.808) beats best ML (+0.106) by 7.6×. ML is actively destroying alpha.
+
+### A4 — Regime Classifier (run: 20260513T032606Z)
+
+**Kill criterion hit:** `regime_v3` outputs **NEUTRAL 100% of the time** over 339 validation days. The regime gate in production is a no-op. All prior "regime-filtered" training results are unreliable.
+
+### Phase A Summary
+
+| Diagnostic | Kill criterion | Verdict |
+|---|---|---|
+| A1 IC ceiling | ≥3 features pass | **FAIL** (1/69) |
+| A3 Naive baseline | Naive ≤ ML | **FAIL** (0.808 vs 0.106) |
+| A4 Regime | regime_v3 discriminates | **FAIL** (100% NEUTRAL) |
+
+**Decision: Skip Phase B entirely. Proceed to Phase C — re-architect as factor portfolio + rule-based regime.**
+
+---
+
+## Phase C — Factor Portfolio + Architecture Overhaul — 2026-05-13
+
+**Strategy:** Replace binary XGBoost classifier with factor-driven momentum+quality portfolio. Replace broken `regime_v3` with rule-based `RegimeRuleScorer`.
+
+**Feature keep-list (14 features from A1):**
+```
+Tier 1: momentum_252d_ex1m, vol_regime, profit_margin, operating_margin, price_to_52w_high, pe_ratio
+Tier 2: range_expansion, price_to_52w_low, gross_margin, volume_trend, vrp, revenue_growth, near_52w_high, trend_consistency_63d
+```
+
+*(Results to be appended as Phase C steps complete)*
+
+---
+
 ## DIAG — Phase A1 IC Diagnostic Bug (Lex Sort) — 2026-05-13
 
 **Problem:** A1 IC diagnostic produced 0 IC rows and reported 10 features instead of 69. Appeared as a "no signal" result but was actually a diagnostic infrastructure bug.

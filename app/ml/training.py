@@ -674,6 +674,7 @@ class ModelTrainer:
         model_type: str = "xgboost",
         label_scheme: str = "triple_barrier",
         top_n_features: Optional[int] = None,
+        feature_keep_list: Optional[tuple] = None,  # restrict to exactly these features (Phase C)
         n_workers: int = 0,
         hpo_trials: int = 0,
         walk_forward_folds: int = 0,
@@ -701,6 +702,7 @@ class ModelTrainer:
         self._provider_name = provider
         self.label_scheme = label_scheme
         self.top_n_features = top_n_features
+        self.feature_keep_list = feature_keep_list  # Phase C: restrict to validated features
         # Default: all logical CPUs. Caller can pass n_workers to override.
         # Feature engineering is numpy-heavy and releases the GIL, so threads
         # beyond 8 still yield speedups on machines with 16+ cores.
@@ -791,6 +793,21 @@ class ModelTrainer:
         )
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after rolling windows.")
+
+        # Phase C: restrict to validated feature keep-list (IC-proven features only)
+        if self.feature_keep_list:
+            keep_idx = [i for i, f in enumerate(feature_names) if f in self.feature_keep_list]
+            if keep_idx:
+                feature_names = [feature_names[i] for i in keep_idx]
+                X_train = X_train[:, keep_idx]
+                X_test  = X_test[:, keep_idx] if len(X_test) > 0 else X_test
+                logger.info(
+                    "feature_keep_list: restricted to %d features (from %d)",
+                    len(feature_names), len(keep_idx) + (len(self.feature_keep_list) - len(keep_idx))
+                )
+            else:
+                logger.warning("feature_keep_list: none of %d requested features found — using all",
+                               len(self.feature_keep_list))
 
         _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(X_train) > 0:

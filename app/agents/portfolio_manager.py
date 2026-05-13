@@ -25,7 +25,7 @@ from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FE
 from app.ml.model import PortfolioSelectorModel
 from app.ml.training import ModelTrainer
 from app.utils.constants import RUSSELL_1000_TICKERS
-from app.ml.retrain_config import MAX_WORKERS, MAX_THREADS
+from app.ml.retrain_config import MAX_WORKERS, MAX_THREADS, INTRADAY_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +434,8 @@ class PortfolioManager(BaseAgent):
                 for win_h, win_m in INTRADAY_SCAN_WINDOWS:
                     # Window is "active" for 15 minutes after its scheduled time
                     if (
-                        is_weekday
+                        INTRADAY_ENABLED
+                        and is_weekday
                         and self._in_window(now, win_h, win_m, win_h, win_m + 15)
                         and (win_h, win_m) not in self._intraday_windows_run
                         and not self._in_window(now, 11, 15, 13, 0)  # lunch block
@@ -472,7 +473,8 @@ class PortfolioManager(BaseAgent):
                 not_eod = now.hour < 15
                 adaptive_gap_ok = (_time.monotonic() - self._last_adaptive_scan_at) > 3600
                 if (
-                    is_weekday
+                    INTRADAY_ENABLED
+                    and is_weekday
                     and market_open_intraday
                     and not_lunch
                     and not_eod

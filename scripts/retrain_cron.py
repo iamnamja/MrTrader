@@ -97,8 +97,10 @@ def run_swing(dry_run: bool) -> bool:
 
     trainer = ModelTrainer(
         model_type=SWING_RETRAIN["model_type"],
+        label_scheme=SWING_RETRAIN.get("label_scheme", "triple_barrier"),
         hpo_trials=SWING_RETRAIN["hpo_trials"],
         n_workers=SWING_RETRAIN["n_workers"],
+        feature_keep_list=SWING_RETRAIN.get("feature_keep_list", None),
     )
     try:
         version = trainer.train_model(
