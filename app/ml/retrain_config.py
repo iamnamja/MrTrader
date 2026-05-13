@@ -71,6 +71,14 @@ PHASE_C_FEATURE_KEEP_LIST: tuple = (
     "trend_consistency_63d",  # IR=0.40
 )
 
+# ── Phase C+ feature keep-list: 14 IC features + 3 Opus interaction terms ────
+# For v201+. Adds cross-terms among high-IC features per Opus 4.7 recommendation.
+PHASE_C_PLUS_FEATURE_KEEP_LIST: tuple = PHASE_C_FEATURE_KEEP_LIST + (
+    "ix_momentum_vol",    # momentum_252d_ex1m × vol_regime (trending + low-vol)
+    "ix_quality_at_high", # price_to_52w_high × profit_margin (quality near highs)
+    "ix_vrp_range",       # vrp × range_expansion (vol premium confirming breakout)
+)
+
 # ── Swing model (Phase C — LambdaRank on 14 IC-validated features) ───────────
 # v200: XGBoost LambdaRank, 14 features, 21d forward rank target, 5 folds
 # Previous: XGBoost binary classifier, 69 features, triple_barrier — Sharpe +0.106

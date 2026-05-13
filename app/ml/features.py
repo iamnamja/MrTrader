@@ -1689,4 +1689,23 @@ class FeatureEngineer:
         for _rk, _rv in _regime_defaults.items():
             features.setdefault(_rk, _rv)
 
+        # Phase C interaction features (Opus 4.7 recommendation, 2026-05-13)
+        # Three cross-terms among high-IC features — models the joint signal
+        # that a stock is simultaneously trending + low-vol (1), quality near a high (2),
+        # or volatility premium confirming range expansion (3).
+        try:
+            features["ix_momentum_vol"] = float(
+                features.get("momentum_252d_ex1m", 0.0) * features.get("vol_regime", 1.0)
+            )
+            features["ix_quality_at_high"] = float(
+                features.get("price_to_52w_high", 1.0) * max(0.0, features.get("profit_margin", 0.0))
+            )
+            features["ix_vrp_range"] = float(
+                features.get("vrp", 0.0) * features.get("range_expansion", 1.0)
+            )
+        except Exception:
+            features.setdefault("ix_momentum_vol", 0.0)
+            features.setdefault("ix_quality_at_high", 0.0)
+            features.setdefault("ix_vrp_range", 0.0)
+
         return features
