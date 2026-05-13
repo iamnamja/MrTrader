@@ -67,6 +67,21 @@ Proceed only if Phase A passes (edge confirmed). Architecture changes:
 
 ---
 
+## Infrastructure Bugs (fix regardless of phase outcome)
+
+### BUG-1. macro_history incremental fetch uses latest row, not latest complete row ✅ Fixed 2026-05-13
+**Symptom:** `regime_score_pit` fell back to 2026-05-08 data despite rows existing through 2026-05-13. HYG/IEF/RSP/SPY/VIX3M were NaN from 2026-05-11 onward.
+**Root cause:** `update_macro_history()` checked `existing["date"].max()` (last row) as the resume point. Today's row had only VIX populated (pre-open partial fill), so incremental logic concluded "up to date" and skipped re-fetching the incomplete tail.
+**Fix:** Find last *fully complete* row (all 6 source cols non-null), re-fetch from there so partial rows get overwritten.
+**Files:** `app/data/macro_history.py`
+
+### BUG-2. PM swing feature engineering timeout too tight
+**Symptom:** Premarket scan consistently failed at 7 min (420s) despite bulk bar fetch completing in 8s. Feature engineering for 697 symbols takes ~98s — fine. But startup-time premarket ran concurrently with two prior timed-out attempts, causing resource contention.
+**Fix:** Bumped timeout 420s → 1200s. Root fix is to cap universe to ~200 high-liquidity symbols for premarket scan (D1 in backlog).
+**Files:** `app/agents/portfolio_manager.py`
+
+---
+
 ## Phase C — Pivot (if Phase A fails kill criteria)
 
 Execute Phase C if 2+ of these are true after Phase A:
@@ -477,6 +492,12 @@ For each bucket: trades, win rate, avg R, Sharpe, max drawdown, profit factor.
 ---
 
 ## DATA TASKS (parallel, non-blocking)
+
+### D0. PM Premarket Feature Fetch: Switch to Bulk Bars Endpoint 🔴 P0
+**Why:** `_fetch_swing_features()` makes 750 individual Alpaca `get_bars()` calls (one per symbol, 8 workers). At normal latency (~0.4s/call) this takes ~37s. Under load (rate limiting, or competing with another job like A1 IC diagnostic), each call degrades to 2-5s → 280-470s total → hits the 300s inner timeout → premarket scan produces no proposals. Observed 2026-05-13: two consecutive 7-minute timeouts, no swing proposals cached for the day.  
+**What:** Replace the per-symbol loop in `_fetch_swing_features()` with Alpaca's bulk snapshot or multi-symbol bars endpoint. One API call returns all 750 symbols' latest bars. Fallback to per-symbol for any missing.  
+**Files:** `app/agents/portfolio_manager.py::_fetch_swing_features`  
+**Expected impact:** Feature fetch drops from 37-470s → <5s. Eliminates premarket timeout on busy mornings.
 
 ### D1. Rebuild `russell1000_membership.parquet` 🔴 P0
 **Why:** Current file tracks 198/750 R1K tickers. `pit_union()` falls back to the static 750 list for the rest — correct behavior, but misses real PIT add/remove events for 552 tickers. WF survivorship fix (WF-A2) is only fully effective once all 750 are tracked.  

@@ -460,7 +460,7 @@ class RiskManager(BaseAgent):
         # ── Rule 3b: Correlation Risk ─────────────────────────────────────────
         open_symbols = [p["symbol"] for p in positions if p.get("symbol") != symbol]
         position_values = {
-            p["symbol"]: float(p.get("market_value", p.get("qty", 0) * entry_price))
+            p["symbol"]: float(p.get("market_value") or (float(p.get("qty") or 0) * entry_price))
             for p in positions if p.get("symbol")
         }
         ok, msg = validate_correlation_risk(

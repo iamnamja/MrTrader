@@ -33,6 +33,20 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## DIAG — Phase A1 IC Diagnostic Bug (Lex Sort) — 2026-05-13
+
+**Problem:** A1 IC diagnostic produced 0 IC rows and reported 10 features instead of 69. Appeared as a "no signal" result but was actually a diagnostic infrastructure bug.
+
+**Root cause:** `diag_feature_ic.py` selected the active meta pkl via `sorted(glob("swing_meta_v*.pkl"), reverse=True)`. Lexicographic sort puts `swing_meta_v99.pkl` above `swing_meta_v194.pkl` because string `"9" > "1"`. Script loaded v99 (a 10-feature stub with dummy names `f0..f9`), which don't exist in `FeatureEngineer` → all features silently default to `0.0` → constant cross-sectionally → `ConstantInputWarning` → 0 valid IC rows.
+
+**Impact:** Only `diag_feature_ic.py` was affected. Production training pipeline uses `st_mtime` sort (safe). Other scripts work with version ranges that don't have lex-inversion (regime v3, intraday v61). The A1 result from 2026-05-13T12:15Z is **invalid** — discard it.
+
+**Fix applied (2026-05-13):** Replaced with numeric sort (`re.search(r"v(\d+)\.pkl")` → `int`). Also isolated to this script; no fix needed in other scripts given current version numbers.
+
+**A1 re-run:** Scheduled immediately after fix. Results will appear in `data/diagnostics/feature_ic/<new-timestamp>/`.
+
+---
+
 ## INFRA — Windows OOM Fix (Parallelism Caps) — 2026-05-12
 
 **Problem:** Machine was freezing (hard reboot required) every time the 17:00 retrain ran. Root causes identified via log analysis:

@@ -291,22 +291,28 @@ def main() -> int:
     logger.info("Phase A1 IC diagnostic: %s -> %s | horizons=%s", args.start, args.end, args.horizons)
 
     # ── Load active model's feature names ──
+    feature_names = None
     try:
-        from app.ml.model import load_active_model
-        model = load_active_model(model_type="swing")
-        feature_names = model.feature_names
-        logger.info("Loaded active swing model feature names: %d features", len(feature_names))
+        import glob as _glob
+        import re as _re
+        model_dir = "app/ml/models"
+        # Numeric sort — lexicographic sort puts v99 > v194 (string "9" > "1")
+        def _vnum(p):
+            m = _re.search(r"swing_meta_v(\d+)\.pkl$", p)
+            return int(m.group(1)) if m else -1
+        meta_files = sorted(_glob.glob(f"{model_dir}/swing_meta_v*.pkl"), key=_vnum, reverse=True)
+        if meta_files:
+            import pickle as _pickle
+            with open(meta_files[0], "rb") as _f:
+                _meta = _pickle.load(_f)
+            feature_names = _meta.get("feature_names")
+            logger.info("Loaded swing model feature names from %s: %d features", meta_files[0], len(feature_names))
     except Exception as exc:
         logger.warning("Could not load active model: %s — using fallback feature set", exc)
-        # Fallback to the well-known v195 feature names (69 features post-R3 prune)
-        from app.ml.training import _BASE_PRUNED  # noqa: SLF001
-        from app.ml.features import FeatureEngineer
-        fe = FeatureEngineer()
-        # Get the full feature list (we'll need a sample bar to call engineer_features)
-        feature_names = getattr(fe, "FEATURE_NAMES", None)
-        if feature_names is None:
-            logger.error("Cannot determine feature names — aborting")
-            return 1
+
+    if feature_names is None:
+        logger.error("Cannot determine feature names — aborting")
+        return 1
 
     # ── Load bars ──
     bars_map = _load_symbols_and_bars(args.start, args.end, args.workers, args.max_symbols)

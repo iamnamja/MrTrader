@@ -670,29 +670,41 @@ class PortfolioManager(BaseAgent):
     # ─── Instrument Selection ─────────────────────────────────────────────────
 
     def _fetch_swing_features(self) -> Dict[str, Dict[str, float]]:
-        """Fetch bars + engineer features concurrently. Run in a thread via asyncio.to_thread."""
+        """Fetch bars + engineer features. Uses bulk bar fetch (4 API calls for 750 symbols)
+        instead of one call per symbol, then parallelises only the CPU-bound feature engineering."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _fetch_one(symbol: str):
+        symbols = self._get_universe()
+
+        # ── Step 1: bulk fetch — 4 API calls instead of 750 ──────────────────
+        t0 = _time.monotonic()
+        bars_by_symbol = self._alpaca.get_bars_batch(symbols, timeframe="1D", limit=300)
+        self.logger.info(
+            "Bulk bar fetch: %d/%d symbols in %.1fs",
+            len(bars_by_symbol), len(symbols), _time.monotonic() - t0,
+        )
+
+        # ── Step 2: feature engineering — CPU-bound, parallelise ─────────────
+        def _engineer(symbol: str, bars) -> tuple:
             try:
-                bars = self._alpaca.get_bars(symbol, timeframe="1D", limit=300)
-                if bars.empty:
-                    return symbol, None
                 feats = self.feature_engineer.engineer_features(symbol, bars, fetch_fundamentals=False)
                 return symbol, feats
             except Exception as e:
-                self.logger.debug("Skipping %s: %s", symbol, e)
+                self.logger.debug("Feature engineering failed for %s: %s", symbol, e)
                 return symbol, None
 
         features_by_symbol: Dict[str, Dict[str, float]] = {}
-        symbols = self._get_universe()
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            futures = {pool.submit(_fetch_one, s): s for s in symbols}
-            for future in as_completed(futures, timeout=300):
+            futures = {
+                pool.submit(_engineer, sym, bars): sym
+                for sym, bars in bars_by_symbol.items()
+                if not bars.empty
+            }
+            for future in as_completed(futures, timeout=120):
                 try:
                     symbol, feats = future.result(timeout=30)
                 except Exception as e:
-                    self.logger.debug("Feature fetch timed out or failed: %s", e)
+                    self.logger.debug("Feature engineering timed out or failed: %s", e)
                     continue
                 if feats is not None:
                     features_by_symbol[symbol] = feats
@@ -1139,10 +1151,10 @@ class PortfolioManager(BaseAgent):
         # Run blocking network calls in a thread so the event loop stays free
         try:
             features_by_symbol = await asyncio.wait_for(
-                asyncio.to_thread(self._fetch_swing_features), timeout=420
+                asyncio.to_thread(self._fetch_swing_features), timeout=1200
             )
         except asyncio.TimeoutError:
-            self.logger.error("Swing feature fetch timed out after 7 minutes — skipping")
+            self.logger.error("Swing feature fetch timed out after 20 minutes — skipping")
             await self.log_decision("SELECTION_SKIPPED", reasoning={
                 "reason": "feature fetch timeout",
                 "strategy": "swing",
@@ -1585,11 +1597,19 @@ class PortfolioManager(BaseAgent):
             await self._analyze_swing_premarket()
             await self._send_swing_proposals()
         elif minutes < 15 * 60 + 45:
-            # Market hours — run intraday
+            # Market hours — run intraday; skip if this window already ran
+            win_key = (now.hour, now.minute // 15 * 15)  # bucket to 15-min window
+            if win_key in self._intraday_windows_run:
+                self.logger.info(
+                    "select_instruments: intraday window %02d:%02d already ran — skipping duplicate",
+                    win_key[0], win_key[1],
+                )
+                return
             self.logger.info(
                 "select_instruments called at %02d:%02d ET — routing to intraday scan",
                 now.hour, now.minute,
             )
+            self._intraday_windows_run.add(win_key)
             await self.select_intraday_instruments()
         else:
             self.logger.info(

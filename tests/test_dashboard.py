@@ -180,6 +180,11 @@ class TestDashboardRoutes:
         self.alpaca = _mock_alpaca()
         self.client = _make_client()
 
+    def teardown_method(self):
+        from app.live_trading.kill_switch import kill_switch
+        if kill_switch.is_active:
+            kill_switch.reset(reason="test teardown")
+
     def test_system_health_endpoint(self):
         with patch("app.api.routes._alpaca", return_value=self.alpaca), \
              patch("app.api.routes._redis") as mock_redis, \
@@ -237,14 +242,20 @@ class TestDashboardRoutes:
     def test_kill_switch_no_positions(self):
         alpaca = _mock_alpaca()
         alpaca.get_positions.return_value = []
-        with patch("app.api.routes._alpaca", return_value=alpaca):
+        with patch("app.live_trading.kill_switch.kill_switch") as mock_ks, \
+             patch("app.api.routes._alpaca", return_value=alpaca):
+            mock_ks.is_active = False
+            mock_ks.activate.return_value = {"status": "kill_switch_executed", "closed": [], "errors": []}
             r = self.client.post("/api/dashboard/control/kill-switch")
         assert r.status_code == 200
         data = r.json()
         assert data["closed"] == []
 
     def test_kill_switch_closes_positions(self):
-        with patch("app.api.routes._alpaca", return_value=self.alpaca):
+        with patch("app.live_trading.kill_switch.kill_switch") as mock_ks, \
+             patch("app.api.routes._alpaca", return_value=self.alpaca):
+            mock_ks.is_active = False
+            mock_ks.activate.return_value = {"status": "kill_switch_executed", "closed": ["AAPL"], "errors": []}
             r = self.client.post("/api/dashboard/control/kill-switch")
         assert r.status_code == 200
         assert "AAPL" in r.json()["closed"]
