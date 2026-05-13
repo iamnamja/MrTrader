@@ -481,6 +481,48 @@ For each bucket: trades, win rate, avg R, Sharpe, max drawdown, profit factor.
 - On restart: if Alpaca state unknown → safe mode until reconciliation passes  
 **Files:** `app/agents/trader.py`, `app/api/routes.py`
 
+### 6d. Macro Intel Tab (NIS Dashboard) ⬜ MEDIUM
+**Why:** NIS assessments currently only surface as a small overview banner. On HIGH-risk days (like 2026-05-13: PPI surprise, 38 symbols sized down, 2 blocked) there is no way to see *why* trades were blocked or which symbols were affected without digging through logs. Traceability from macro event → NIS run → agent decision is completely invisible in the UI.
+
+**Page layout** (dark theme, 1280px max, single-column scroll, four stacked sections):
+
+```
++--------------------------------------------------------------+
+| [A] CURRENT STATE BANNER (sticky)                            |
+|     Risk pill (HIGH/MED/LOW) · Sizing scalar · Block badges  |
+|     Swing: BLOCKED/CLEAR  Intraday: BLOCKED/CLEAR  As of:    |
++--------------------------------------------------------------+
+| [B] TODAY'S TIMELINE (60%)    | [C] EVENT SCHEDULE (40%)    |
+|  Vertical timeline newest→top |  TODAY + THIS WEEK table     |
+|  Each node = one NIS run      |  Past events dimmed/struck   |
+|  Expandable reasoning text    |  Impact color-coded          |
++--------------------------------------------------------------+
+| [D] SYMBOL IMPACT LISTS                                      |
+|  BLOCK_ENTRY (red border)  |  SIZE_DOWN (amber border)       |
+|  Chip grid, clickable       |  Chip grid, collapsible >20    |
++--------------------------------------------------------------+
+| [E] DECISION LINKAGE TABLE (full width)                      |
+|  NIS Run | Time | Agent | Symbol | Action | Outcome | Reason |
++--------------------------------------------------------------+
+```
+
+**Panel detail:**
+- **[A]** Risk pill (24px, color-coded), sizing scalar (mono), swing/intraday block badges, "as of" timestamp, next scheduled event
+- **[B]** Timeline node fields: timestamp ET, label, risk pill, sizing, trigger event name, full reasoning text (preformatted, no truncation). Click node → highlights linked rows in [E]
+- **[C]** Columns: Time ET, Event name, Impact (HIGH/MED/LOW), Status (Released/Upcoming). Row click → filter [B] to runs triggered by that event
+- **[D]** Block list: symbol chips with hover popover (reason + NIS run timestamp). Size-down list: chips with sizing factor on hover, search box above, collapse >20
+- **[E]** Linkage table joins NIS runs ↔ agent decisions. Columns: NIS Run timestamp, Decision time, Agent (PM/RM), Symbol, Proposed action, Outcome (BLOCKED/SIZED_DOWN/EXECUTED), Reason snippet. Summary line above table: "08:33 run blocked 2 swing proposals, sized down 4 orders". Row click → deep-links to Agent Decisions tab
+
+**New backend endpoints needed:**
+- `GET /api/macro/current` → [A] current state
+- `GET /api/macro/runs?date=YYYY-MM-DD` → [B] timeline + reasoning texts
+- `GET /api/macro/events?range=week` → [C] event schedule
+- `GET /api/macro/symbols?run_id=latest` → [D] block/size lists
+- `GET /api/macro/linkage?date=YYYY-MM-DD` → [E] decision linkage
+
+**DB join:** Agent event log already records `nis_run_id` and `block_reason` per decision. Linkage endpoint aggregates on `nis_run_id`.  
+**Files:** `app/api/routes.py` (new macro router), `app/news/intelligence_service.py` (expose run history), `frontend/src/` (new MacroIntel tab component)
+
 ### 6c. Idempotent Order IDs + Duplicate Prevention ⬜ MEDIUM
 **Why:** Queue lag + restart can result in duplicate orders if client_order_id is not tracked.  
 **What:**
