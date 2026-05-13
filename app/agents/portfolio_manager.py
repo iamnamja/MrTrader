@@ -1597,11 +1597,19 @@ class PortfolioManager(BaseAgent):
             await self._analyze_swing_premarket()
             await self._send_swing_proposals()
         elif minutes < 15 * 60 + 45:
-            # Market hours — run intraday
+            # Market hours — run intraday; skip if this window already ran
+            win_key = (now.hour, now.minute // 15 * 15)  # bucket to 15-min window
+            if win_key in self._intraday_windows_run:
+                self.logger.info(
+                    "select_instruments: intraday window %02d:%02d already ran — skipping duplicate",
+                    win_key[0], win_key[1],
+                )
+                return
             self.logger.info(
                 "select_instruments called at %02d:%02d ET — routing to intraday scan",
                 now.hour, now.minute,
             )
+            self._intraday_windows_run.add(win_key)
             await self.select_intraday_instruments()
         else:
             self.logger.info(
