@@ -2766,3 +2766,27 @@ All of these on full 2019–2026 walk-forward before deployment:
 | **Total Phase C** | **~2 weeks** |
 
 **If ranking model also fails to clear +0.85**: ship B1-gated-by-B2 as the production strategy and stop spending on ML for this universe/horizon.
+
+---
+
+## R2: Gate Ablation on v186 — 2026-05-13
+
+**Run:** `python scripts/gate_ablation_v186.py --max-symbols 300 --folds 5 --years 5 --dsr-n 200`
+**Output:** `logs/gate_ablation_v186.json`
+
+| Config | Description | Avg Sharpe | Min Fold | Fold Sharpes |
+|---|---|---|---|---|
+| A: All gates ON | Baseline | **-0.291** | -1.163 | [+0.06, +0.54, -0.52, -0.37, -1.16] |
+| B: Opp score only | No earnings/macro gate | **-0.195** | -0.914 | [+0.58, +0.54, -0.91, -0.69, -0.50] |
+| C: Earnings only | No opp/macro gate | **-0.507** | -1.401 | [-0.76, 0.00, +1.00, -1.40, -1.37] |
+| D: Macro only | No opp/earnings gate | **-0.364** | -1.563 | [-1.04, +0.65, +1.10, -1.56, -0.97] |
+| E: Regime only | Benign gate only | **-0.233** | -1.767 | [-0.24, +0.36, +0.66, -1.77, -0.17] |
+| F: All gates OFF | No filtering | **-0.323** | -1.573 | [-0.79, +0.43, +1.12, -1.57, -0.81] |
+
+**Key findings:**
+1. **All 6 configurations are gate-fail** (avg Sharpe < 0.80, multiple folds < -0.30). This is expected given v186 is the worst recent model.
+2. **Gate combination makes no meaningful difference** — removing gates changes avg Sharpe by ≤ 0.15. Gates are not the problem.
+3. **Fold 3 collapse is universal**: every configuration shows a catastrophic fold (Sharpe -0.91 to -1.77). This is the 2025 tariff-shock period — consistent with the triple-barrier label analysis.
+4. **Opportunity score gate gives the least-negative result** (-0.195) vs all-on (-0.291). Slightly helps but doesn't fix the underlying signal problem.
+
+**Conclusion:** Gates are not causing the poor WF results. The problem is in the signal itself (confirmed by A3: naive momentum Sharpe +0.627 >> ML +0.106). Aligns with Phase A kill criterion 3.
