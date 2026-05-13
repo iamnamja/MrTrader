@@ -44,7 +44,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy.stats import norm  # noqa: E402
 
-from app.ml.retrain_config import MAX_WORKERS, MAX_FOLD_WORKERS  # noqa: E402
+from app.ml.retrain_config import MAX_WORKERS, MAX_FOLD_WORKERS, N_TRIALS_TESTED  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # ── Gate thresholds ───────────────────────────────────────────────────────────
 SHARPE_GATE = 0.8          # avg OOS Sharpe required to pass
 MIN_FOLD_SHARPE = -0.3     # no individual fold may be below this
-N_TRIALS_TESTED = 200      # approx variants tried (ML_EXPERIMENT_LOG iter 1-6 + phases 18-87 ≈ 200)
+# N_TRIALS_TESTED imported from app.ml.retrain_config — single source of truth.
 # WF-1: multi-metric gates
 MIN_PROFIT_FACTOR = 1.10   # avg profit factor across folds (sum wins / sum |losses|)
 MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)
@@ -176,6 +176,10 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Phase A diagnostics: per-feature mean IC over the test window (optional).
+    # Populated when --compute-fold-ic is passed. Not a gate — used to monitor
+    # feature decay between train and test.
+    feature_ic: Optional[Dict[str, float]] = None
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE

@@ -1,10 +1,94 @@
 # MrTrader — Master Backlog & Roadmap
 
 **Last updated:** 2026-05-12  
-**Status:** Paper trading only. No gate-passed swing model. v186 active in paper (honest +0.106 ❌). Intraday: v51 +0.529 ❌.  
+**Status:** Paper trading only. v194 ACTIVE but NEVER WALK-FORWARD TESTED. STOP RETRAINING — entering diagnostic phase.
 
-**Completed 2026-05-12:**
-- **Windows OOM root cause fixed** (PR #215 🔄 pending merge): Centralized all parallelism into `retrain_config.py` (`MAX_WORKERS=8`, `MAX_THREADS=16`, `MAX_FOLD_WORKERS=1`). Every `nthread`, `n_jobs`, `max_workers` literal across 9 files now routes through this config. Folds run serially on Windows to prevent the folds×workers process explosion that caused OOM.
+---
+
+## ⚠ STRATEGIC PIVOT — 2026-05-12
+
+After 10+ retrains (v186→v195) all producing AUC 0.49–0.53 and failing the walk-forward gate, a full Opus 4.7 strategic audit concluded:
+
+**The problem is NOT hyperparameters. It is:**
+1. **Wrong label** — `triple_barrier` collapses in high-vol regimes (ATR widens → fewer barriers hit → None labels dominate → model loses training data exactly when it matters most)
+2. **Wrong architecture** — binary classifier for stock selection on 750 names is the wrong framing. This is a **ranking problem**. Use cross-sectional label + LambdaRank.
+3. **Missing stock-specific features** — top-5 SHAP are always market-level (VRP, sector momentum, SPY trend). No stock-specific alpha: short interest and earnings revisions are untried.
+4. **Possible genuine regime break** — Feb 2025–May 2026 tariff shock may genuinely invert momentum/VRP signals (stock-specific tariff exposure dominates index regime)
+
+**Decision: stop retraining. Run diagnostics first.**
+
+---
+
+## Phase A — Diagnostics (Week 1, before any retrain)
+
+**A1. IC ceiling test** — does any signal exist at all?
+```bash
+python scripts/diag_feature_ic.py --years 5 --horizon 10 --output docs/diag_feature_ic.md
+```
+Compute Spearman IC of top-20 features vs. forward 5/10/20d returns, per day, cross-sectionally.
+- **Kill criterion:** if max |IC| < 0.015 across all features → no edge in this feature set → go to Phase C
+
+**A2. Label comparison** — is triple_barrier the problem?
+```bash
+python scripts/retrain_cron.py --swing-only  # with label_scheme=cross_sectional (1-fold only for speed)
+```
+Test `cross_sectional` (top/bottom quintile, 10d) and `return_regression` against triple_barrier baseline.
+- **Kill criterion:** if all labels show avg IC < 0.02 → label isn't the problem
+
+**A3. Naive baselines** — is ML even adding value?
+```bash
+# Top-20% 60d momentum, monthly rebalance (no ML)
+# SPY when SPY>200d MA, cash otherwise (regime-timing only)
+```
+If naive baseline Sharpe > best ML Sharpe → ML is destroying value, hard pivot needed.
+
+**A4. R5 2025-2026 validation** — does regime gate work on the hard period?
+```bash
+python scripts/regime_diagnostic.py --start 2025-02-01 --end 2025-05-31
+```
+Need >60% RISK_OFF recall on tariff-shock period. Current regime_v1 validated only on 2024 (98.4% RISK_ON trivial class).
+
+**A5. R2 gate ablation** — currently running on v186 (all gates ON → OFF configs)
+Results will tell us which gates help vs. suppress trades without benefit.
+
+---
+
+## Phase B — Build (Week 2-3, if Phase A shows edge exists)
+
+Proceed only if Phase A passes (edge confirmed). Architecture changes:
+
+1. **Switch label to `cross_sectional`** (10d, top/bottom quintile, ~150 positives + 150 negatives per day regardless of VIX)
+2. **Switch model to LambdaRank** (`app/ml/model.py::LambdaRankModel` already implemented). Eval metric: rank IC, not AUC.
+3. **Add stock-specific features**: short interest (FINRA biweekly, free), HYG/IEF spread, DXY
+4. **CPCV validation** (k=6, 2 paths = 15 evaluation paths). Gate: mean Sharpe > 0.5, p5 > -0.5.
+5. Paper trade 4 weeks before live.
+
+**Budget:** 3 retrains max in Phase B, then decide. Have already done 15+ without architecture change.
+
+---
+
+## Phase C — Pivot (if Phase A fails kill criteria)
+
+Execute Phase C if 2+ of these are true after Phase A:
+- Max feature |IC| < 0.015 over 5 years
+- Cross-sectional label avg Sharpe < 0.3 AND rank IC < 0.02
+- Naive baseline Sharpe > best ML Sharpe
+- R5 RISK_OFF recall < 60% on 2025-2026
+
+**Options (ranked by feasibility at $20k retail):**
+1. Weekly bars + monthly rebalance — 4× less cost drag, simpler model
+2. Regime-timing ETF rotation (SPY/QQQ/IWM/GLD/TLT) — no stock selection needed
+3. Curated 30-symbol intraday momentum
+
+---
+
+## Completed History (2026-05-12)
+
+- **Windows OOM root cause fixed** (PR #215 ✅ merged): Centralized all parallelism into `retrain_config.py` (`MAX_WORKERS=8`, `MAX_THREADS=16`, `MAX_FOLD_WORKERS=1`). Every `nthread`, `n_jobs`, `max_workers` literal across 9 files now routes through this config. Folds run serially on Windows to prevent the folds×workers process explosion that caused OOM.
+- **v195 trained + WF**: avg_sharpe=-0.546, all 5 folds negative. GATE FAILED. v194 auto-restored (but never WF tested).
+- **R5 regime classifier** (`regime_v1.pkl`): GATE PASSED on 2024 validation but trivially (98.4% RISK_ON). Must validate on 2025-2026.
+- **R2 gate ablation** (`gate_ablation_v186.py`): running, results pending.
+- **Branch cleanup**: deleted 73 stale local branches + all remote branches.
 
 **Completed 2026-05-10/11:**
 - **WF-A1** (PR #198 ✅): AgentSimulator alignment — TS norm state, `predict_with_vix`, PIT `regime_score_history`. 7 tests.
@@ -23,15 +107,6 @@
 - **R3** (PR #210 ✅): Correlation-pruned 18 features from swing ranker (target v192, ~69 features). Code only, retrain pending.
 - **R4** (PR #211 ✅): `EXPERIMENT_OVERRIDES` hook in `app/ml/model.py` for XGBoost regularization experiments. Contingency for v193 if v192 fails.
 - **R5** (PR #208 ✅): MVP logistic regime classifier stub (`app/ml/regime_classifier.py`, 5 macro features). Code only, training pending.
-
-**Next (in order, after PR #215 merges):**
-1. **Train v192 + R5 in parallel** (Windows now safe after OOM fix):
-   - `python scripts/retrain_cron.py --swing-only` → v192 (R3: 69-feature prune)
-   - `python scripts/train_regime_classifier.py` → `regime_v1.pkl`
-2. **v192 walk-forward**: `python scripts/walkforward_tier3.py --model swing --folds 5 --dsr-n 200` (~2.5h serial folds)
-   - avg Sharpe ≥ 0.40 → proceed to CPCV promotion gate
-   - avg Sharpe < 0.40 → trigger R4 (set `EXPERIMENT_OVERRIDES` → v193)
-3. **R2 gate ablation on v186**: `python scripts/gate_ablation_v186.py --max-symbols 300 --folds 5 --dsr-n 200` (~2.5h) — can run in parallel with step 1
 
 
 ---

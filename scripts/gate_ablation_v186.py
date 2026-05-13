@@ -96,9 +96,9 @@ def run_config(
     total_trades = _parse_total_trades(stdout)
     fold_sharpes = _parse_fold_sharpes(stdout)
 
-    print(f"  → elapsed: {elapsed:.0f}s  exit: {result.returncode}")
-    print(f"  → avg_sharpe={avg_sharpe}  min_sharpe={min_sharpe}  trades={total_trades}")
-    print(f"  → fold_sharpes={fold_sharpes}")
+    print(f"  elapsed: {elapsed:.0f}s  exit: {result.returncode}")
+    print(f"  avg_sharpe={avg_sharpe}  min_sharpe={min_sharpe}  trades={total_trades}")
+    print(f"  fold_sharpes={fold_sharpes}")
 
     return {
         "name": name,
@@ -132,9 +132,9 @@ def _markdown_table(results: list[dict]) -> str:
             no_lift = sharpe <= all_off_sharpe + 0.05
             suppresses = trades < 0.85 * all_off_trades
             if no_lift and suppresses:
-                gate_verdict = "⚠ suppress-only"
+                gate_verdict = "WARN suppress-only"
             elif sharpe > all_off_sharpe + 0.10:
-                gate_verdict = "✓ load-bearing"
+                gate_verdict = "OK load-bearing"
         rows.append(
             f"| {r['name']} | {r['description']} | "
             f"{sharpe:+.3f} | {min_s:+.3f} | {trades} ({trade_pct}) | "
@@ -186,10 +186,10 @@ def main():
             )
             results.append(r)
         except subprocess.TimeoutExpired:
-            print(f"  ✗ Config {name} timed out (>7200s)")
+            print(f"  TIMEOUT Config {name} timed out (>7200s)")
             results.append({"name": name, "description": desc, "error": "timeout"})
         except Exception as exc:
-            print(f"  ✗ Config {name} failed: {exc}")
+            print(f"  FAILED Config {name} failed: {exc}")
             results.append({"name": name, "description": desc, "error": str(exc)})
 
     # Save JSON

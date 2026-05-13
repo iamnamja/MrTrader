@@ -16,7 +16,9 @@ from scipy.stats import norm
 # ── Gate thresholds ───────────────────────────────────────────────────────────
 SHARPE_GATE = 0.8
 MIN_FOLD_SHARPE = -0.3
-N_TRIALS_TESTED = 15
+# N_TRIALS_TESTED is the single source of truth in retrain_config.py.
+# Imported here for backward compatibility — do not re-define or shadow it.
+from app.ml.retrain_config import N_TRIALS_TESTED  # noqa: E402
 MIN_PROFIT_FACTOR = 1.10
 MIN_CALMAR = 0.30
 MIN_WORST_REGIME_SHARPE = -0.5
@@ -99,6 +101,11 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Phase A diagnostics: per-feature mean IC over the test window (optional).
+    # Populated by the walk-forward engine when --compute-fold-ic is passed.
+    # Not a gate — used to monitor feature decay between train and test.
+    # Key = feature name, value = mean cross-sectional Spearman IC (h=10d).
+    feature_ic: Optional[Dict[str, float]] = None
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE

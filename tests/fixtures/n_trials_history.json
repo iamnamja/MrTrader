@@ -1,0 +1,5 @@
+[
+  {"date": "2026-05-11", "value": 15,  "note": "original under-stated value"},
+  {"date": "2026-05-11", "value": 200, "note": "R1 correction: iter1-6 + phases18-87 + R-series"},
+  {"date": "2026-05-12", "value": 200, "note": "v192-v195 + R5 + R2 = ~205, kept at 200"}
+]
