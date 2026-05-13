@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -308,5 +308,6 @@ def format_ic_markdown(
             )
         return "\n".join(lines)
 
-    return _table(top, f"Top {top_n} Features by IC IR (h={horizon}d)") + "\n\n" + \
-           _table(bottom, f"Bottom {top_n} Features by IC IR (h={horizon}d)")
+    top_table = _table(top, f"Top {top_n} Features by IC IR (h={horizon}d)")
+    bottom_table = _table(bottom, f"Bottom {top_n} Features by IC IR (h={horizon}d)")
+    return top_table + "\n\n" + bottom_table
