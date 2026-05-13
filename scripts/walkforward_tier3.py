@@ -176,6 +176,10 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Phase A diagnostics: per-feature mean IC over the test window (optional).
+    # Populated when --compute-fold-ic is passed. Not a gate — used to monitor
+    # feature decay between train and test.
+    feature_ic: Optional[Dict[str, float]] = None
 
     def passed_gate(self) -> bool:
         return self.sharpe >= MIN_FOLD_SHARPE
