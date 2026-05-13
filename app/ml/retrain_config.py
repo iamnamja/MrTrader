@@ -74,9 +74,9 @@ PHASE_C_FEATURE_KEEP_LIST: tuple = (
 # ── Phase C+ feature keep-list: 14 IC features + 3 Opus interaction terms ────
 # For v201+. Adds cross-terms among high-IC features per Opus 4.7 recommendation.
 PHASE_C_PLUS_FEATURE_KEEP_LIST: tuple = PHASE_C_FEATURE_KEEP_LIST + (
-    "ix_momentum_vol",    # momentum_252d_ex1m × vol_regime (trending + low-vol)
-    "ix_quality_at_high", # price_to_52w_high × profit_margin (quality near highs)
-    "ix_vrp_range",       # vrp × range_expansion (vol premium confirming breakout)
+    "ix_momentum_vol",  # momentum_252d_ex1m x vol_regime (trending + low-vol)
+    "ix_quality_at_high",  # price_to_52w_high x profit_margin (quality near highs)
+    "ix_vrp_range",  # vrp x range_expansion (vol premium confirming breakout)
 )
 
 # ── Swing model (Phase C — LambdaRank on 14 IC-validated features) ───────────
