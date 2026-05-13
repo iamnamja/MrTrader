@@ -114,6 +114,22 @@ INTRADAY_GATE = dict(
     min_fold_sharpe=-0.30,      # no single fold below this floor
 )
 
+# ── Deflated Sharpe Ratio — selection bias correction ────────────────────────
+# N_TRIALS_TESTED: the number of distinct model variants evaluated across the
+# project's lifetime. Used by the Deflated Sharpe Ratio (Bailey & López de Prado
+# 2014) to penalise observed Sharpe for selection bias from iterative development.
+#
+# This is the SINGLE SOURCE OF TRUTH for this value. It must be imported by
+# any code computing DSR; never hardcode a duplicate. Update whenever we
+# materially try a new model architecture, label scheme, or feature set.
+# Record the update in docs/ML_EXPERIMENT_LOG.md with the justification.
+#
+# History:
+#   15   — original (under-stated: only counted explicit HPO trials, not all variants)
+#   200  — corrected 2026-05-11 (R1): iterations 1-6 + phases 18-87 + R-series ≈ 200
+#   200  — 2026-05-12: v192-v195 retrains + R5 + R2 ablation = ~205; rounded 200
+N_TRIALS_TESTED: int = 200
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
 #   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025
