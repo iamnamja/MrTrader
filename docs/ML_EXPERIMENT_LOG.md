@@ -97,7 +97,47 @@ Tier 1: momentum_252d_ex1m, vol_regime, profit_margin, operating_margin, price_t
 Tier 2: range_expansion, price_to_52w_low, gross_margin, volume_trend, vrp, revenue_growth, near_52w_high, trend_consistency_63d
 ```
 
-*(Results to be appended as Phase C steps complete)*
+### C1 — Feature Pruning (2026-05-13)
+69 features → 14 IC-validated features via `PHASE_C_FEATURE_KEEP_LIST` in `retrain_config.py`.
+
+### C2.a — Factor Portfolio Backtest (2026-05-13)
+Rule-based factor portfolio: top-20 equal-weight, monthly rebalance, daily SPY>MA200 + VIX<30 gate.
+- Composite score: 2×momentum_252d_ex1m + profit_margin + operating_margin - pe_ratio + price_to_52w_high + tier2 z-scores
+- **Sharpe=1.335, CAGR=32.4%, MaxDD=-25.9%, WorstYear=+4.6%**
+- Gate: Sharpe>=0.80 ✅ WorstYear>=-0.20 ✅ MaxDD<=22% ❌ (COVID crash = -25.9%)
+- **Decision:** Accept MaxDD; ML must beat this 1.335 Sharpe floor. Factor portfolio is production fallback.
+
+### C3 — RegimeRuleScorer v4 (2026-05-13)
+Rule-based regime classifier replacing broken regime_v3 (100% NEUTRAL):
+- SPY>MA200 (w=0.50) + VIX<25 (w=0.35) + breadth>40% (w=0.15) → composite score → BULL/NEUTRAL/RISK_OFF
+- Validation PASSED: 60% RISK_OFF/NEUTRAL in 2025-02→05 tariff shock (gate >=60%)
+- Saved: `app/ml/models/regime_model_v4.pkl`
+
+### C4 — Pipeline Audit (2026-05-13) — Opus 4.7 directed
+Critical findings from code review of `training.py` + `walkforward_tier3.py`:
+
+| Item | Finding | Status |
+|---|---|---|
+| LambdaRank grouping | Correct: groups by date/window, quintile-ranked within date | OK |
+| Label lookahead | 5-day forward return uses `w_end_idx + FORWARD_DAYS`, time-based | OK |
+| Embargo/purge | 10-day purge at fold boundary; embargo_days parameter exists | OK |
+| Optuna vs test fold | HPO uses `TimeSeriesSplit` within X_train only, never sees test | OK |
+| **LambdaRank HPO** | **BUG: HPO guard only covers `xgboost/lgbm_ensemble` — LambdaRank silently skipped** | **FIXED** |
+| **Group/fit size mismatch** | **BUG: groups built from X_train, then val-split removes rows → LightGBM error** | **FIXED** |
+| WF Sharpe calc | Mean-of-fold-Sharpes (not concatenated equity). Per-fold Sharpe = mean(trade_ret)/std × sqrt(n_trades). Consistent across all versions. | Accepted (consistent) |
+
+**Fixes applied to `app/ml/training.py`:**
+1. Added `_tune_lambdarank_hyperparams()` — Optuna HPO for LGBMRanker optimizing NDCG@5
+2. Moved LambdaRank group construction to AFTER val-split (post-split `X_fit` size matches groups)
+3. LambdaRank skips internal val-split (LGBM ranking doesn't support ES with heterogeneous groups)
+
+### C4.a — swing_v200 (LambdaRank, 14 features, HPO=50) — 2026-05-13
+- First attempt: crashed with `LightGBMError: Sum of query counts differs from #data` (group/fit mismatch bug)
+- Re-launched after fix with PID 5404. Training underway.
+- Config: LambdaRank, 14 IC features, 50 Optuna HPO trials (now actually runs), 5-fold WF, `exclude_risk_off_days=True`
+- Expected version: v200
+
+*(Gate results to be appended when training completes)*
 
 ---
 

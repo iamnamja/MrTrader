@@ -96,8 +96,10 @@ class PortfolioManager(BaseAgent):
         from app.ml.retrain_config import SWING_RETRAIN
         self.trainer = ModelTrainer(
             model_type=SWING_RETRAIN["model_type"],
+            label_scheme=SWING_RETRAIN.get("label_scheme", "triple_barrier"),
             hpo_trials=SWING_RETRAIN["hpo_trials"],
             n_workers=SWING_RETRAIN["n_workers"],
+            feature_keep_list=SWING_RETRAIN.get("feature_keep_list", None),
         )
         self._analyzed_today: bool = False       # 08:00 pre-market analysis done
         self._selected_today: bool = False       # 09:50 proposals sent
