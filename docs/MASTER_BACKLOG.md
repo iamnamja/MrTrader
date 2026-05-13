@@ -478,6 +478,12 @@ For each bucket: trades, win rate, avg R, Sharpe, max drawdown, profit factor.
 
 ## DATA TASKS (parallel, non-blocking)
 
+### D0. PM Premarket Feature Fetch: Switch to Bulk Bars Endpoint 🔴 P0
+**Why:** `_fetch_swing_features()` makes 750 individual Alpaca `get_bars()` calls (one per symbol, 8 workers). At normal latency (~0.4s/call) this takes ~37s. Under load (rate limiting, or competing with another job like A1 IC diagnostic), each call degrades to 2-5s → 280-470s total → hits the 300s inner timeout → premarket scan produces no proposals. Observed 2026-05-13: two consecutive 7-minute timeouts, no swing proposals cached for the day.  
+**What:** Replace the per-symbol loop in `_fetch_swing_features()` with Alpaca's bulk snapshot or multi-symbol bars endpoint. One API call returns all 750 symbols' latest bars. Fallback to per-symbol for any missing.  
+**Files:** `app/agents/portfolio_manager.py::_fetch_swing_features`  
+**Expected impact:** Feature fetch drops from 37-470s → <5s. Eliminates premarket timeout on busy mornings.
+
 ### D1. Rebuild `russell1000_membership.parquet` 🔴 P0
 **Why:** Current file tracks 198/750 R1K tickers. `pit_union()` falls back to the static 750 list for the rest — correct behavior, but misses real PIT add/remove events for 552 tickers. WF survivorship fix (WF-A2) is only fully effective once all 750 are tracked.  
 **What:** Pull iShares IWB historical holdings CSVs (available monthly back to 2010) → parse ticker + as-of-date → write `[ticker, added, removed]` rows for all 750. Run `invalidate_cache()` after.  
