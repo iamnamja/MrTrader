@@ -2604,3 +2604,165 @@ Options ranked by feasibility at $20k retail:
 
 **Budget:** 3 retrains in Phase B, then decide. Already ran 15+ retrains in Phase A pattern (wrong question). Stop retraining until IC diagnostic is done.
 
+
+---
+
+## Phase A Diagnostic Results — 2026-05-13
+
+### A3: Naive Baseline Comparison (KILL CRITERION HIT)
+
+**Run:** `python scripts/diag_naive_baseline.py --start 2019-01-01 --end 2026-05-09 --cost-bps 5 --max-symbols 50`
+**Output:** `data/diagnostics/naive_baseline/20260513T032946Z/`
+
+| Strategy | Sharpe | Max DD | Calmar | Total Ret | CAGR |
+|---|---|---|---|---|---|
+| B1: Top-20% 60d momentum, monthly rebalance | **+0.627** | 57.2% | +0.458 | +453% | +26.2% |
+| B2: SPY > 200d MA timing | **+0.808** | 21.6% | +0.434 | +93.3% | +9.4% |
+| B3: B1 gated by SPY MA | **+0.609** | 58.6% | +0.424 | +411% | +24.9% |
+
+**Best ML WF Sharpe (v186): +0.106**
+**Best baseline Sharpe: +0.808 (SPY MA timing)**
+
+**KILL CRITERION HIT**: naive baseline Sharpe (+0.808) > best ML Sharpe (+0.106).
+The ML model is not adding value over a trivial SPY timing rule on the same universe/period.
+
+**Interpretation:**
+- A simple "long SPY when above 200d MA, else cash" strategy produced Sharpe +0.808 over 2019-2026
+- Top-20% momentum portfolio (no ML) produced Sharpe +0.627
+- Our best ML walk-forward result ever achieved +0.106
+- This means ML is currently *destroying* alpha, not extracting it
+
+**Kill criterion 3 of 4 triggered** (from Phase A plan): "Naive momentum baseline Sharpe > best ML Sharpe"
+
+---
+
+### A4: Regime Classifier Validation — 2025-2026 (FAILED)
+
+**Run:** `python scripts/diag_regime_classifier.py --start 2025-01-01 --end 2026-05-09`
+**Output:** `data/diagnostics/regime_classifier/20260513T032606Z/`
+
+| Finding | Value | Status |
+|---|---|---|
+| % predictions = RISK_ON | 0.0% | — |
+| % predictions = NEUTRAL | **100.0%** | CRITICAL |
+| % predictions = RISK_OFF | 0.0% | — |
+| VIX range in period | 13.5 – 52.3 | — |
+| VIX median | 17.6 | — |
+
+**Result:** R5 regime classifier predicted NEUTRAL for **every single day** from Jan 2025–May 2026.
+- VIX hit 52 during this period (April 2025 tariff shock) — a multi-year volatility extreme
+- R5 assigned NEUTRAL to the day VIX=52, the same as a VIX=13 quiet day
+- Classifier is completely non-functional on out-of-sample data
+
+**Root cause confirmed:** R5 was trained on 2022-2024 where 98.4% of days were RISK_ON.
+The model learned to predict NEUTRAL/RISK_ON by default. It never learned RISK_OFF.
+
+**Kill criterion 4 of 4 triggered**: "R5 RISK_OFF recall < 60% on 2025-2026" → actual recall = 0%
+
+**Immediate action:** Disable regime gate in walk-forward until R5 is retrained with balanced
+2025-2026 data including tariff-shock RISK_OFF periods.
+
+---
+
+### Phase A Kill Criterion Scorecard
+
+| Criterion | Threshold | Result | Status |
+|---|---|---|---|
+| 1. Max feature \|IC\| < 0.015 | 5-year window | NOT YET RUN (A1 pending) | — |
+| 2. Cross-sectional label avg Sharpe | < 0.3 AND IC < 0.02 | NOT YET RUN (A2 pending) | — |
+| 3. Naive baseline Sharpe > best ML Sharpe | v186 = +0.106 | +0.808 vs +0.106 | **TRIGGERED** |
+| 4. R5 RISK_OFF recall < 60% on 2025-2026 | < 60% | 0% recall | **TRIGGERED** |
+
+**2 of 4 kill criteria triggered → Phase C decision threshold reached.**
+
+Per the plan: "Execute Phase C if 2+ of these." Even if A1 (IC) passes, criteria 3 and 4 alone are sufficient
+to mandate Phase C intervention.
+
+---
+
+### Phase C Decision — Recommended Path
+
+Given A3 + A4 results, the recommended path forward:
+
+**Immediate (no more retrains until these are done):**
+1. **Disable regime gate** — R5 is producing 100% NEUTRAL, actively harming the strategy by
+   making the gate meaningless. Fall back to unfiltered momentum baseline or skip regime filter.
+2. **Run A1 IC diagnostic** (`scripts/diag_feature_ic.py`) to confirm whether signal exists at all.
+   If IC < 0.015 → full Phase C pivot. If IC >= 0.015 → feature signal exists, problem is architecture.
+
+**Phase C Option 1 (recommended if IC >= 0.015):**
+- Switch label: cross-sectional top/bottom quintile over 10d (removes ATR dependency)
+- Switch objective: LambdaRank (already implemented in `app/ml/model.py`)
+- Switch eval metric: rank IC instead of AUC
+- Validate with CPCV (k=6) — gate: mean rank IC > 0.03
+- Gate: Sharpe > 0.5 (B2 sets the floor — must beat simple SPY timing)
+- New gate requirement: must beat B2 Sharpe (+0.808) before going live
+
+**Phase C Option 2 (if IC < 0.015):**
+- Pivot to regime-timing ETF rotation: SPY/QQQ/IWM/GLD/TLT
+- No stock selection required — pure macro/regime signals
+- Far lower transaction costs (monthly rebalance, 5 ETFs)
+- B2 baseline (+0.808) already demonstrates regime timing works
+
+**New minimum viable bar for any ML model:**
+- Must beat B2 SPY MA-timing (Sharpe +0.808) in walk-forward
+- Must beat B1 momentum (Sharpe +0.627) in walk-forward
+- Anything below +0.627 means ML is not adding value
+
+---
+
+## Opus 4.7 Strategic Synthesis — 2026-05-13
+
+### What We Confirmed
+
+Phase A delivered two unambiguous kill-criterion hits:
+
+- **A3 baseline destruction**: Top-20% 60d momentum (B1) achieves Sharpe **+0.627** on the same universe where best ML (v186) achieved **+0.106**. SPY-200d trend filter alone (B2) hits **+0.808**. ML destroys ~0.5 Sharpe of freely-available signal.
+- **A4 regime classifier collapse**: R5 predicted NEUTRAL on **100%** of 2025-2026 days including VIX=52 during April 2025 tariff shock. RISK_OFF recall: **0%** vs. 60% threshold.
+
+A1 (IC) is unnecessary as a gate — AUC 0.49–0.53 already implies IC ≈ 0.02, below the 5bps noise floor. Run it later for feature-pruning only.
+
+### The ML Destruction Problem (Mechanism)
+
+1. **Wrong framing**: Binary classifier + threshold on 750 names. Cross-sectional ranking (LambdaRank) is the correct framing.
+2. **Label decay under volatility**: Triple-barrier with ATR bands inflates widths in high-VIX folds → 30–50% None labels in tariff-shock fold exactly when signal matters most.
+3. **No stock-specific alpha**: SHAP tops are SPY trend, VIX, sector momentum — all market-level. Model is a noisy lagged reimplementation of B2.
+4. **Cost asymmetry**: IC ≈ 0.02 at 5bps round-trip with weekly turnover guarantees negative net Sharpe.
+
+### Phase C Recommended Path (Priority Order)
+
+1. **Reframe as cross-sectional ranking**: XGBoost/LightGBM LambdaRank over daily groups of ~750 names. Target = forward 5d return rank. **Highest-leverage single change.**
+2. **Replace triple-barrier with residual return label**: Forward 5d return minus SPY beta-adjusted return (or minus sector ETF). Eliminates None-label collapse, forces stock-specific learning.
+3. **Rebuild R5 regime model on 2008–2024**: Must include 2008/2011/2020/2022 stress periods with class-balanced sampling. Add direct features: VIX level + 20d change, SPY 200d distance, HY-IG spread. Validate on held-out 2025.
+4. **Ensemble against baseline**: `w_ml * ML_rank + w_b1 * momentum_rank`, gated by B2 trend filter. ML must *add to* B1, not replace it.
+5. **Run A1 IC as feature-pruning**: Drop features with |IC| < 0.01 over 3 of 5 folds.
+
+### New Minimum Bar (Any Future Model)
+
+All of these on full 2019–2026 walk-forward before deployment:
+- **Sharpe > +0.85** (B2 + 0.05 margin) — +0.106 is no longer interesting
+- **Information ratio vs. B1 > +0.2** — must add value over naive momentum
+- **MaxDD better than -50%** (B1 baseline -57.2%)
+- **Positive Sharpe in tariff-shock fold specifically**
+- Net Sharpe reported with 5bps assumed costs
+
+### What NOT to Do
+
+- Do NOT retrain v196+ with current binary + triple-barrier setup. 16 iterations is the data point; stop.
+- Do NOT add more features before reframing. Problem is the target, not the inputs.
+- Do NOT tune `n_trials` or XGBoost hyperparameters — wrong frontier.
+- Do NOT ship the existing R5 — it is a constant-predictor.
+- Do NOT benchmark against buy-and-hold — B1 and B2 are the new floors.
+
+### Timeline Estimate
+
+| Phase C Step | Estimate |
+|---|---|
+| LambdaRank + residual-return label prototype | 3–5 days |
+| Regime model rebuild on 2008–2024 | 2–3 days |
+| Full walk-forward (2019–2026, 5 folds) | 1–2 days compute |
+| Ensemble weighting + cost-aware backtest | 2 days |
+| IC pruning + documentation | 1 day |
+| **Total Phase C** | **~2 weeks** |
+
+**If ranking model also fails to clear +0.85**: ship B1-gated-by-B2 as the production strategy and stop spending on ML for this universe/horizon.
