@@ -2509,3 +2509,98 @@ EXPERIMENT_OVERRIDES.update({"reg_alpha": 2.0, "reg_lambda": 2.0, "colsample_byt
 **Default state:** `EXPERIMENT_OVERRIDES = {}` (no-op — existing behavior preserved).
 
 **Status:** Code merged. Only activate if v192 WF avg Sharpe < +0.40.
+
+---
+
+## v195 Retrain — Campaign 2026-05-12 ❌ GATE FAILED
+
+**Context:** R3 correlation prune (87→69 features). First retrain with MAX_WORKERS=8 (OOM fix). label_scheme=triple_barrier, 5-fold WF, 6yr window, 750 symbols, 20 HPO trials.
+
+**Training result:** AUC=0.5089, 69 features. Top SHAP: vrp, sector_momentum, wq_alpha54, spy_trend_63d, wq_alpha53.
+
+| Fold | Trades | Win% | Sharpe |
+|---|---|---|---|
+| 1 | — | — | **-0.845** |
+| 2 | — | — | **-0.052** |
+| 3 | — | — | **-0.533** |
+| 4 | — | — | **-0.996** |
+| 5 | — | — | **-0.303** |
+| **Avg** | | | **-0.546** ❌ |
+
+**Gate:** avg_sharpe=-0.546 < 0.80 ❌ | min_fold=-0.996 < -0.30 ❌
+
+**Verdict:** ❌ GATE FAILED — ALL FIVE FOLDS NEGATIVE. v194 auto-restored as ACTIVE (but v194 itself was never walk-forward tested — see below).
+
+---
+
+## R5 Regime Classifier Training — 2026-05-12 ✅ GATE PASSED (with caveats)
+
+**Script:** `scripts/train_regime_classifier.py`  
+**Label:** SPY > 200d MA AND VIX < 25 → RISK_ON (1), else RISK_OFF (0)  
+**Features:** 5 macro features (SPY 20d log return, SPY/MA200, VIX level, VIX 20d percentile, HYG 20d return)  
+**Saved:** `app/ml/models/regime_v1.pkl`
+
+| Split | Period | Samples | Label Mean | AUC | Brier | Gate |
+|---|---|---|---|---|---|---|
+| Train | 2015-08 → 2023-12 | 2115 | 0.727 | 0.989 | 0.043 | PASS |
+| Validation | 2024-01 → 2024-12 | 251 | **0.984** | **1.000** | 0.014 | PASS |
+
+**⚠ WARNING:** 2024 validation label_mean=0.984 (98.4% RISK_ON). AUC=1.000 is trivially achieved by predicting "always RISK_ON." This is NOT a meaningful gate pass. **R5 must be validated on 2025-2026 (tariff-shock period) before use.** The Brier improvement vs. baseline is only 12% relative (0.014 vs 0.016).
+
+**Status:** regime_v1.pkl saved. Not yet validated on the critical 2025-2026 window.
+
+---
+
+## Strategic Audit — 2026-05-12 (Opus 4.7 Analysis)
+
+After 10+ retrains across v186–v195 all producing AUC 0.49–0.53 and failing the walk-forward gate, a full strategic audit was conducted. Key findings:
+
+### Root Cause: Signal Problem + Wrong Label + Architecture Mismatch
+
+1. **AUC 0.49–0.53 = IC ≈ 0.02** — at the noise floor for cross-sectional daily equity strategies with 5bps costs. A 1.5×ATR target needs ~52% accuracy to break even after costs; AUC 0.51 is exactly on the cost line with no margin.
+
+2. **Triple-barrier label is wrong for this universe.** In high-vol regimes (VIX>25), ATR widens → thresholds widen → fewer barriers hit → `None` labels dominate → effective training sample drops 30-50% in exactly fold 3 (Feb 2025–May 2026). This mechanically causes fold 3 collapse.
+
+3. **Same top-5 SHAP features across every model** (vrp, sector_momentum, wq_alpha54/53, spy_trend_63d) = market-level regime features dominate; stock-selection signal not found yet. Short interest and earnings revisions are the cheapest untried stock-specific alpha sources.
+
+4. **Binary classifier → threshold → trade is the wrong framing** for stock selection on 750 names. This is a ranking problem — cross-sectional rank label + LambdaRank objective is the right architecture.
+
+5. **Earlier folds show real edge exists**: v188 fold1=+2.16, v164 folds 1+2 averaging +0.92. The strategy isn't hopeless — it's regime-fragile and label-fragile.
+
+### Phase A — Diagnostics (Before Any More Retrains)
+
+**A1. IC ceiling test** (`scripts/diag_feature_ic.py`): Compute Spearman IC of top-20 SHAP features vs. forward 5/10/20d returns, cross-sectionally, per day, for 5-year window.
+- Kill criterion: if max |IC| < 0.015 across all features → edge isn't in this feature set → go to Phase C
+
+**A2. Label comparison**: Run 1-fold WF on v186 features with `cross_sectional` and `return_regression` labels.
+- Kill criterion: if all labels show avg IC < 0.02 → label isn't the problem
+
+**A3. Naive baselines**: Backtest (a) top-20% 60d momentum, monthly rebalance; (b) SPY when SPY>200d MA.
+- Kill criterion: if naive baseline Sharpe > best ML Sharpe → ML is destroying value
+
+**A4. R5 validation on 2025-2026**: Score regime classifier on tariff-shock period. Need >60% RISK_OFF recall.
+
+### Phase B — Build (if A passes)
+
+- Switch to `cross_sectional` label (10d, top/bottom quintile)
+- Switch to LambdaRank objective (`app/ml/model.py::LambdaRankModel` already exists)
+- Eval metric: rank IC, not AUC
+- Add short interest + HYG/IEF/DXY features
+- Validate with CPCV (k=6, paths=2 = 15 paths). Gate: mean Sharpe > 0.5, p5 > -0.5
+- Paper trade 4 weeks before live
+
+### Phase C — Pivot (if A fails)
+
+Options ranked by feasibility at $20k retail:
+1. Move to weekly bars + monthly rebalance (4× less cost drag)
+2. Regime-timing ETF rotation (SPY/QQQ/IWM/GLD/TLT) — no stock selection
+3. Curated 30-symbol intraday momentum
+
+### Kill Criteria (Execute Phase C if 2+ of these):
+1. Max feature |IC| < 0.015 over 5 years
+2. Cross-sectional label avg Sharpe < 0.3 AND rank IC < 0.02
+3. Naive momentum baseline Sharpe > best ML Sharpe
+4. R5 RISK_OFF recall < 60% on 2025-2026
+
+**Budget:** 3 retrains in Phase B, then decide. Already ran 15+ retrains in Phase A pattern (wrong question). Stop retraining until IC diagnostic is done.
+
