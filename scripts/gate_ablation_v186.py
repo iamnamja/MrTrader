@@ -145,7 +145,7 @@ def _markdown_table(results: list[dict]) -> str:
 
     header = (
         "| Config | Description | Avg Sharpe | Min Fold Sharpe | "
-        "Trades (vs all-off) | Δ vs all-off | Verdict |\n"
+        "Trades (vs all-off) | diff vs all-off | Verdict |\n"
         "|---|---|---|---|---|---|---|"
     )
     return header + "\n" + "\n".join(rows)
