@@ -160,19 +160,19 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
 
     if event_type == "a1_progress":
         pct = int(p.get("processed", 0)) * 100 // max(int(p.get("total", 1)), 1)
-        subj = f"[MrTrader] A1 {pct}% — {p.get('processed','?')}/{p.get('total','?')} symbols"
+        subj = f"[MrTrader] A1 {pct}% — {p.get('processed', '?')}/{p.get('total', '?')} symbols"
         body = _section("A1 Feature IC — progress update", [
-            ("Processed", f"{p.get('processed','?')} / {p.get('total','?')} ({pct}%)"),
-            ("Elapsed", f"{p.get('elapsed_min','?')} min"),
-            ("ETA", f"{p.get('eta_min','?')} min remaining"),
+            ("Processed", f"{p.get('processed', '?')} / {p.get('total', '?')} ({pct}%)"),
+            ("Elapsed", f"{p.get('elapsed_min', '?')} min"),
+            ("ETA", f"{p.get('eta_min', '?')} min remaining"),
             ("Log", p.get("log_path", "")),
         ])
         if p.get("ic_table_html"):
             body += "<h3>Top features (interim)</h3>" + p["ic_table_html"]
 
     elif event_type == "diag_complete":
-        subj = f"[MrTrader] DONE: {p.get('script','?')} ({p.get('duration','?')})"
-        body = _section(f"Diagnostic complete — {p.get('script','?')}", [
+        subj = f"[MrTrader] DONE: {p.get('script', '?')} ({p.get('duration', '?')})"
+        body = _section(f"Diagnostic complete — {p.get('script', '?')}", [
             ("Script", p.get("script")),
             ("Duration", p.get("duration")),
             ("Outcome", p.get("outcome", "")),
@@ -184,7 +184,7 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
     elif event_type == "paper_eod":
         pnl = p.get("pnl", 0)
         pnl_color = "#1a7340" if pnl >= 0 else "#b00020"
-        subj = f"[MrTrader] EOD {p.get('date','')} — P&L ${pnl:+,.2f}"
+        subj = f"[MrTrader] EOD {p.get('date', '')} — P&L ${pnl:+,.2f}"
         body = _section("Paper trading — end of day", [
             ("Date", p.get("date")),
             ("P&L", f"<span style='color:{pnl_color};font-weight:bold'>${pnl:+,.2f}</span>"),
@@ -199,7 +199,7 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             body += "<h3>Open positions</h3>" + p["positions_html"]
 
     elif event_type == "kill_switch":
-        subj = f"[MrTrader] ⚠ KILL SWITCH: {p.get('reason','?')}"
+        subj = f"[MrTrader] ⚠ KILL SWITCH: {p.get('reason', '?')}"
         body = (
             "<h2 style='color:#b00020'>⚠ Kill switch activated</h2>"
             + _section("Details", [
@@ -213,7 +213,7 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
     elif event_type == "training_complete":
         gate = p.get("gate_result", "?")
         gate_color = "#1a7340" if "PASS" in str(gate).upper() else "#b00020"
-        subj = f"[MrTrader] Trained {p.get('model','?')} v{p.get('version','?')} — {gate}"
+        subj = f"[MrTrader] Trained {p.get('model', '?')} v{p.get('version', '?')} — {gate}"
         body = _section("Model training complete", [
             ("Model", p.get("model")),
             ("Version", p.get("version")),
@@ -226,7 +226,7 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             body += "<h3>Fold results</h3>" + p["fold_table_html"]
 
     elif event_type == "phase_complete":
-        subj = f"[MrTrader] Phase {p.get('phase','?')} complete"
+        subj = f"[MrTrader] Phase {p.get('phase', '?')} complete"
         body = _section(f"Phase {p.get('phase')} done", [
             ("Tasks completed", p.get("tasks_done")),
             ("Outcome", p.get("outcome", "")),
