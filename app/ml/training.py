@@ -788,7 +788,7 @@ class ModelTrainer:
         # Stash bypass flag for _build_rolling_matrix's secondary guard.
         self._allow_sacred_holdout = allow_sacred_holdout
 
-        X_train, y_train, X_test, y_test, feature_names, meta_train = self._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, feature_names, meta_train, meta_test = self._build_rolling_matrix(
             symbols_data, fetch_fundamentals=fetch_fundamentals
         )
         if len(X_train) == 0:
@@ -808,6 +808,31 @@ class ModelTrainer:
             else:
                 logger.warning("feature_keep_list: none of %d requested features found — using all",
                                len(self.feature_keep_list))
+
+        # Rolling TS normalization — applied AFTER keep-list so hash matches filtered feature set.
+        # Each (symbol, feature) z-scored against trailing NORM_LOOKBACK windows.
+        if len(X_train) > 0 and len(meta_train) > 0:
+            from app.ml.ts_normalize import fit_transform_train as _ts_fit, transform as _ts_transform
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            _sym_train = np.array([m["symbol"] for m in meta_train])
+            _wid_train = np.array([m["window_idx"] for m in meta_train])
+            X_train, _keep_train, self._ts_norm_state = _ts_fit(
+                X_train, _sym_train, _wid_train, feature_names
+            )
+            if not np.all(_keep_train):
+                X_train = X_train[_keep_train]
+                y_train = y_train[_keep_train]
+                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
+            if len(X_test) > 0 and len(meta_test) > 0:
+                _sym_test = np.array([m["symbol"] for m in meta_test])
+                _wid_test = np.array([m["window_idx"] for m in meta_test])
+                X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
+                if not np.all(_keep_test):
+                    X_test = X_test[_keep_test]
+                    y_test = y_test[_keep_test]
+        else:
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            self._ts_norm_state = _TSState()
 
         _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(X_train) > 0:
@@ -1168,7 +1193,7 @@ class ModelTrainer:
 
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
             logger.warning("Not enough common dates for rolling windows")
-            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
+            return np.array([]), np.array([]), np.array([]), np.array([]), [], [], []
 
         # P0: secondary guard — verify no row in the assembled date spine
         # crosses the sacred holdout boundary. Defense in depth: even if a
@@ -1255,39 +1280,12 @@ class ModelTrainer:
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
-        # Fix 2: Rolling time-series normalization replaces cross-sectional normalization.
-        # Each (symbol, feature) is z-scored against that symbol's trailing NORM_LOOKBACK
-        # windows. Preserves macro/regime signal (VIX, SPY MA, breadth) that cs_normalize
-        # destroys (identical cross-sectional values → std=0 → zeroed out).
-        # Required for triple-barrier labels which are absolute, not cross-sectional.
         feature_names = self._last_feature_names
-        if len(X_train) > 0 and len(meta_train) > 0:
-            from app.ml.ts_normalize import fit_transform_train as _ts_fit
-            _sym_train = np.array([m["symbol"] for m in meta_train])
-            _wid_train = np.array([m["window_idx"] for m in meta_train])
-            X_train, _keep_train, self._ts_norm_state = _ts_fit(
-                X_train, _sym_train, _wid_train, feature_names
-            )
-            if not np.all(_keep_train):
-                X_train = X_train[_keep_train]
-                y_train = y_train[_keep_train]
-                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
-        else:
-            from app.ml.ts_normalize import TSNormalizerState as _TSState
-            self._ts_norm_state = _TSState()
-
-        if len(X_test) > 0 and len(meta_test) > 0:
-            from app.ml.ts_normalize import transform as _ts_transform
-            _sym_test = np.array([m["symbol"] for m in meta_test])
-            _wid_test = np.array([m["window_idx"] for m in meta_test])
-            X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
-            if not np.all(_keep_test):
-                X_test = X_test[_keep_test]
-                y_test = y_test[_keep_test]
-                meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
-
         self._last_all_dates = all_dates
-        return X_train, y_train, X_test, y_test, feature_names, meta_train
+        # TS normalization is intentionally NOT applied here — it must run AFTER
+        # feature_keep_list filtering in train_model so the hash is computed from
+        # the same (filtered) feature set that gets saved with the model.
+        return X_train, y_train, X_test, y_test, feature_names, meta_train, meta_test
 
     def _compute_cs_thresholds(
         self,
@@ -2425,6 +2423,8 @@ class ModelTrainer:
         from sklearn.model_selection import TimeSeriesSplit
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         cv = TimeSeriesSplit(n_splits=3)
+        # Convert list→object array so numpy fancy-indexing works in objective()
+        meta_arr = np.asarray(meta_train, dtype=object) if meta_train is not None else None
 
         def _build_groups(X, y, meta):
             """Build quintile-ranked labels and group sizes from meta (list of dicts)."""
@@ -2470,8 +2470,8 @@ class ModelTrainer:
                 if len(val_idx) < 10:
                     continue
                 try:
-                    m_tr = meta_train[train_idx] if meta_train is not None else None
-                    m_va = meta_train[val_idx] if meta_train is not None else None
+                    m_tr = meta_arr[train_idx] if meta_arr is not None else None
+                    m_va = meta_arr[val_idx] if meta_arr is not None else None
                     X_tr, y_tr, g_tr = _build_groups(X_train[train_idx], y_train[train_idx], m_tr)
                     X_va, y_va, g_va = _build_groups(X_train[val_idx], y_train[val_idx], m_va)
                     clf = LGBMRanker(objective="lambdarank", **params)
@@ -2492,7 +2492,8 @@ class ModelTrainer:
                         idx += gs
                     if ndcg_vals:
                         fold_ndcg.append(float(np.mean(ndcg_vals)))
-                except Exception:
+                except Exception as _hpo_exc:
+                    logger.warning("HPO fold failed (%s): %s", type(_hpo_exc).__name__, _hpo_exc)
                     fold_ndcg.append(0.0)
             return float(np.mean(fold_ndcg)) if fold_ndcg else 0.0
 
@@ -2622,7 +2623,7 @@ class ModelTrainer:
                     three_stage=self.three_stage,
                 )
 
-                X_tr, y_tr, X_te, y_te, feat_names, meta = sub._build_rolling_matrix(
+                X_tr, y_tr, X_te, y_te, feat_names, meta, _meta_te = sub._build_rolling_matrix(
                     symbols_data, fetch_fundamentals=fetch_fundamentals
                 )
             finally:
