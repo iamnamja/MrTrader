@@ -2423,8 +2423,6 @@ class ModelTrainer:
         import optuna
         from lightgbm import LGBMRanker
         from sklearn.model_selection import TimeSeriesSplit
-        from scipy.stats import rankdata
-
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         cv = TimeSeriesSplit(n_splits=3)
 
@@ -2467,7 +2465,6 @@ class ModelTrainer:
                 "lambdarank_truncation_level": 5,
             }
             fold_ndcg = []
-            n = len(X_train)
             # Use simple chronological index splits (TimeSeriesSplit on row indices)
             for train_idx, val_idx in cv.split(X_train):
                 if len(val_idx) < 10:
