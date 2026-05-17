@@ -44,21 +44,59 @@ MAX_FOLD_WORKERS: int = 1 if _sys.platform == "win32" else 4
 # Day of week to run the weekly retrain (0=Monday … 6=Sunday).
 # Retrain only fires on this day — server restarts on other days don't trigger it.
 # Change to a different day if Wednesday conflicts with market events.
-RETRAIN_WEEKDAY: int = 2  # Wednesday
+# Set to -1 to disable scheduled retrains (Phase C diagnostic mode — retraining
+# current 69-feature arch is counterproductive; re-enable after v200 ships).
+RETRAIN_WEEKDAY: int = -1  # disabled — Phase C in progress (was: 2 = Wednesday)
 
-# ── Swing model (daily bars, ~84 features, XGBoost) ─────────────────────────
-# Current champion: v135 — XGBoost, default hyperparams, 84 features
-# HPO: 20 trials per weekly retrain (~3 min extra, finds slightly better params)
+# ── Phase C validated feature keep-list (from A1 IC diagnostic 2026-05-13) ──
+# Only these 14 features showed positive, stable IC (IR >= 0.40 at h5).
+# All other features (technical noise, WQ alphas, short-momentum) are dropped.
+# Source: data/diagnostics/feature_ic/20260513T124800Z/ic_summary.csv
+PHASE_C_FEATURE_KEEP_LIST: tuple = (
+    # Tier 1 — strong, stable IC (IR >= 1.0)
+    "momentum_252d_ex1m",    # IR=1.99, IC grows with horizon (long-horizon factor)
+    "vol_regime",            # IR=1.87
+    "profit_margin",         # IR=1.40
+    "operating_margin",      # IR=1.24
+    "price_to_52w_high",     # IR=1.11
+    "pe_ratio",              # IR=1.05 (sign: lower PE = better)
+    # Tier 2 — additive, positive IC (IR 0.40–1.0)
+    "range_expansion",       # IR=0.89
+    "price_to_52w_low",      # IR=0.76
+    "gross_margin",          # IR=0.73
+    "volume_trend",          # IR=0.71
+    "vrp",                   # IR=0.55
+    "revenue_growth",        # IR=0.44 (mapped from revenue_growth_yoy)
+    "near_52w_high",         # IR=0.46
+    "trend_consistency_63d",  # IR=0.40
+)
+
+# ── Phase C+ feature keep-list: 14 IC features + 3 Opus interaction terms ────
+# For v201+. Adds cross-terms among high-IC features per Opus 4.7 recommendation.
+PHASE_C_PLUS_FEATURE_KEEP_LIST: tuple = PHASE_C_FEATURE_KEEP_LIST + (
+    "ix_momentum_vol",  # momentum_252d_ex1m x vol_regime (trending + low-vol)
+    "ix_quality_at_high",  # price_to_52w_high x profit_margin (quality near highs)
+    "ix_vrp_range",  # vrp x range_expansion (vol premium confirming breakout)
+)
+
+# ── Swing model (Phase C — LambdaRank on 14 IC-validated features) ───────────
+# v200: XGBoost LambdaRank, 14 features, 21d forward rank target, 5 folds
+# Previous: XGBoost binary classifier, 69 features, triple_barrier — Sharpe +0.106
+# Rationale: A1 shows only 14/69 features have positive IC. LambdaRank trains
+#   for cross-sectional ranking (which is what we do in the PM) rather than
+#   per-symbol binary classification. A3 shows signal clearly exists (factor
+#   Sharpe +1.399) — ML should learn to exploit it better than rule-based ranking.
 SWING_RETRAIN: dict = dict(
-    model_type="xgboost",
-    label_scheme="triple_barrier",    # Fix 2: aligned with ATR exit rule; was "cross_sectional"
-    hpo_trials=20,
-    fetch_fundamentals=False,   # avoid OOM on Windows (prefetch_fundamentals)
+    model_type="lambdarank",
+    label_scheme="lambdarank",
+    hpo_trials=50,              # Optuna: num_leaves, lr, min_child, lambda_l2
+    fetch_fundamentals=False,   # avoid OOM on Windows
     n_workers=MAX_WORKERS,
-    walk_forward_folds=5,       # Phase 88: 5 folds (was 3) — one bad regime can't tank avg
-    walk_forward_years=6,       # Phase 88: 6yr window → ~14mo per fold test
-    exclude_risk_off_days=True,  # Phase R6b/88: down-weight (0.3×) not exclude RISK_OFF
-    use_union_label=False,       # Phase 90 REVERTED: union label collapsed AUC to 0.50 OOS (5d features can't predict 15d outcome)
+    walk_forward_folds=5,
+    walk_forward_years=6,
+    exclude_risk_off_days=True,
+    use_union_label=False,
+    feature_keep_list=PHASE_C_FEATURE_KEEP_LIST,  # restrict to 14 IC-validated features
 )
 
 # ── Option C (label horizon) ─────────────────────────────────────────────────
@@ -94,11 +132,13 @@ SWING_GATE = dict(
     min_fold_sharpe=-0.30,      # no single fold may fall below this
 )
 
-# ── Intraday model (5-min bars, 50 features, XGBoost + LightGBM ensemble) ───
-# Current champion: v29 — XGBoost HPO-tuned (n_est=577, depth=6, lr=0.0176),
-# 56 features, SINGLE scan at bar 12 (60 min post-open), 730 days history.
-# IMPORTANT: ENTRY_OFFSETS must stay [12] — multi-window (v30) failed the gate
-# due to distribution mismatch (trained on 3 windows, deployed on 1).
+# ── Intraday model ───────────────────────────────────────────────────────────
+# DISABLED (Phase C, 2026-05-13): A1 IC diagnostic shows no intraday alpha at
+# daily bar level. 15bps round-trip cost wipes any marginal edge. Mothballed
+# until a dedicated intraday-IC diagnostic (5-min bar level) confirms signal.
+# Re-enable by setting INTRADAY_ENABLED = True.
+INTRADAY_ENABLED: bool = False
+
 INTRADAY_RETRAIN: dict = dict(
     days=730,
     n_workers=MAX_WORKERS,

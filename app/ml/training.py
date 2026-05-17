@@ -674,6 +674,7 @@ class ModelTrainer:
         model_type: str = "xgboost",
         label_scheme: str = "triple_barrier",
         top_n_features: Optional[int] = None,
+        feature_keep_list: Optional[tuple] = None,  # restrict to exactly these features (Phase C)
         n_workers: int = 0,
         hpo_trials: int = 0,
         walk_forward_folds: int = 0,
@@ -701,6 +702,7 @@ class ModelTrainer:
         self._provider_name = provider
         self.label_scheme = label_scheme
         self.top_n_features = top_n_features
+        self.feature_keep_list = feature_keep_list  # Phase C: restrict to validated features
         # Default: all logical CPUs. Caller can pass n_workers to override.
         # Feature engineering is numpy-heavy and releases the GIL, so threads
         # beyond 8 still yield speedups on machines with 16+ cores.
@@ -792,6 +794,21 @@ class ModelTrainer:
         if len(X_train) == 0:
             raise RuntimeError("No valid training samples after rolling windows.")
 
+        # Phase C: restrict to validated feature keep-list (IC-proven features only)
+        if self.feature_keep_list:
+            keep_idx = [i for i, f in enumerate(feature_names) if f in self.feature_keep_list]
+            if keep_idx:
+                feature_names = [feature_names[i] for i in keep_idx]
+                X_train = X_train[:, keep_idx]
+                X_test = X_test[:, keep_idx] if len(X_test) > 0 else X_test
+                logger.info(
+                    "feature_keep_list: restricted to %d features (from %d)",
+                    len(feature_names), len(keep_idx) + (len(self.feature_keep_list) - len(keep_idx))
+                )
+            else:
+                logger.warning("feature_keep_list: none of %d requested features found — using all",
+                               len(self.feature_keep_list))
+
         _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(X_train) > 0:
             weight_map = self._load_regime_weight_map()
@@ -845,23 +862,28 @@ class ModelTrainer:
             except Exception:
                 mi_scores = None
 
-        # Optional HPO — tune XGBoost params before final training
+        # Optional HPO — tune params before final training
         if self.hpo_trials > 0 and self.model.model_type in (
             "xgboost", "ensemble", "lgbm_ensemble", "xgboost_regressor"
         ):
             logger.info("Running Optuna HPO (%d trials)...", self.hpo_trials)
             best_params = self._tune_hyperparams(X_train, y_train, n_trials=self.hpo_trials)
             self.model.model.set_params(**best_params)
+        elif self.hpo_trials > 0 and self.model.model_type == "lambdarank":
+            logger.info("Running LambdaRank HPO (%d trials)...", self.hpo_trials)
+            best_params = self._tune_lambdarank_hyperparams(
+                X_train, y_train, meta_train, n_trials=self.hpo_trials
+            )
+            self.model.model.set_params(**best_params)
+            logger.info("LambdaRank HPO complete — params=%s", best_params)
 
-        # LambdaRank: convert float returns → quintile ranks, sort by window, build groups
+        # LambdaRank: groups are built after the val-split (see below) to match X_fit size.
+        # Set placeholders here; actual group construction happens post-split.
         train_groups = None
         val_groups = None
         if self.label_scheme == "lambdarank":
-            X_train, y_train, train_groups = self._build_lambdarank_groups(X_train, y_train, meta_train)
-            val_groups = None
             spw = None
             sample_weight = None
-            logger.info("LambdaRank/DoubleEnsemble: %d train groups, %d samples", len(train_groups), len(X_train))
         else:
             # Correct for class imbalance (not applicable to regression labels)
             if self.label_scheme in ("return_regression", "path_quality"):
@@ -905,22 +927,29 @@ class ModelTrainer:
             )
 
         # Carve an internal validation slice from the NEWEST 20% of training windows.
-        # This prevents X_test from being touched during early stopping or threshold
-        # tuning — X_test is reserved strictly for the final OOS AUC evaluation.
+        # LambdaRank skips this split — groups must match X_fit exactly and LGBM
+        # ranking doesn't support early stopping with a heterogeneous val group.
         X_fit, y_fit, sample_weight_fit = X_train, y_train, sample_weight
         X_val_es, y_val_es = X_test, y_test  # fallback if split fails
-        if len(meta_train) > 0:
+        meta_fit = meta_train  # track which meta rows go to fit (needed for LambdaRank)
+        if self.label_scheme != "lambdarank" and len(meta_train) > 0:
             _widx = np.array([m["window_idx"] for m in meta_train])
             _val_thresh = np.percentile(_widx, 80)  # newest 20% of train windows
             _val_mask = _widx >= _val_thresh
             if _val_mask.sum() > 10 and (~_val_mask).sum() > 10:
                 X_val_es, y_val_es = X_train[_val_mask], y_train[_val_mask]
                 X_fit, y_fit = X_train[~_val_mask], y_train[~_val_mask]
+                meta_fit = [m for m, k in zip(meta_train, ~_val_mask) if k]
                 sample_weight_fit = sample_weight[~_val_mask] if sample_weight is not None else None
                 logger.info(
                     "Train/val/test split: fit=%d rows, val_es=%d rows, test=%d rows",
                     len(X_fit), len(X_val_es), len(X_test),
                 )
+
+        # LambdaRank: build groups from X_fit (post-split) to match actual fit size.
+        if self.label_scheme == "lambdarank":
+            X_fit, y_fit, train_groups = self._build_lambdarank_groups(X_fit, y_fit, meta_fit)
+            logger.info("LambdaRank groups: %d groups, %d samples", len(train_groups), len(X_fit))
 
         self.model.train(
             X_fit, y_fit, feature_names,
@@ -2376,6 +2405,101 @@ class ModelTrainer:
             "HPO complete — best CV AUC=%.4f  params=%s",
             study.best_value, best,
         )
+        return best
+
+    def _tune_lambdarank_hyperparams(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        meta_train: np.ndarray,
+        n_trials: int = 20,
+    ) -> Dict[str, Any]:
+        """Optuna HPO for LambdaRank using 3-fold TimeSeriesSplit on training set.
+
+        Optimizes NDCG@5 within each fold's date groups. Low capacity prior:
+        fixes max_depth=4, min_child_samples>=20, only tunes regularization and
+        tree/sample fractions. Returns param dict for LGBMRanker.set_params().
+        """
+        import optuna
+        from lightgbm import LGBMRanker
+        from sklearn.model_selection import TimeSeriesSplit
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        cv = TimeSeriesSplit(n_splits=3)
+
+        def _build_groups(X, y, meta):
+            """Build quintile-ranked labels and group sizes from meta (list of dicts)."""
+            from scipy.stats import rankdata as _rd
+            if meta is not None and len(meta) == len(y):
+                window_idx = np.array([m["window_idx"] for m in meta], dtype=int)
+            else:
+                window_idx = np.arange(len(y))
+            unique_windows = np.unique(window_idx)
+            y_rank = np.zeros_like(y, dtype=np.int32)
+            sort_order = np.argsort(window_idx, kind="stable")
+            for w in unique_windows:
+                mask = window_idx == w
+                if mask.sum() < 2:
+                    continue
+                ranks = _rd(y[mask], method="ordinal")
+                quintiles = np.clip(((ranks - 1) * 5 // mask.sum()), 0, 4).astype(np.int32)
+                y_rank[mask] = quintiles
+            X_s = X[sort_order]
+            y_s = y_rank[sort_order]
+            _, group_sizes = np.unique(window_idx[sort_order], return_counts=True)
+            return X_s, y_s, group_sizes.astype(np.int32)
+
+        def objective(trial: optuna.Trial) -> float:
+            params = {
+                "n_estimators": trial.suggest_int("n_estimators", 300, 800),
+                "num_leaves": trial.suggest_int("num_leaves", 15, 63),
+                "max_depth": 4,
+                "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.05, log=True),
+                "subsample": trial.suggest_float("subsample", 0.5, 0.9),
+                "subsample_freq": 1,
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+                "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 2.0),
+                "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
+                "min_child_samples": trial.suggest_int("min_child_samples", 20, 50),
+                "random_state": 42,
+                "verbose": -1,
+                "lambdarank_truncation_level": 5,
+            }
+            fold_ndcg = []
+            # Use simple chronological index splits (TimeSeriesSplit on row indices)
+            for train_idx, val_idx in cv.split(X_train):
+                if len(val_idx) < 10:
+                    continue
+                try:
+                    m_tr = meta_train[train_idx] if meta_train is not None else None
+                    m_va = meta_train[val_idx] if meta_train is not None else None
+                    X_tr, y_tr, g_tr = _build_groups(X_train[train_idx], y_train[train_idx], m_tr)
+                    X_va, y_va, g_va = _build_groups(X_train[val_idx], y_train[val_idx], m_va)
+                    clf = LGBMRanker(objective="lambdarank", **params)
+                    from sklearn.preprocessing import StandardScaler as _SS
+                    sc = _SS()
+                    clf.fit(sc.fit_transform(X_tr), y_tr, group=g_tr)
+                    scores = clf.predict(sc.transform(X_va))
+                    # Compute NDCG@5 manually
+                    from sklearn.metrics import ndcg_score as _ndcg
+                    # Reconstruct per-group arrays
+                    idx = 0
+                    ndcg_vals = []
+                    for gs in g_va:
+                        s = scores[idx:idx + gs]
+                        t = y_va[idx:idx + gs].astype(float)
+                        if len(t) >= 2:
+                            ndcg_vals.append(_ndcg([t], [s], k=min(5, len(t))))
+                        idx += gs
+                    if ndcg_vals:
+                        fold_ndcg.append(float(np.mean(ndcg_vals)))
+                except Exception:
+                    fold_ndcg.append(0.0)
+            return float(np.mean(fold_ndcg)) if fold_ndcg else 0.0
+
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
+        best = study.best_params
+        logger.info("LambdaRank HPO done — best NDCG@5=%.4f  params=%s", study.best_value, best)
         return best
 
     # ── Walk-forward CV ───────────────────────────────────────────────────────

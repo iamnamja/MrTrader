@@ -275,6 +275,7 @@
   <div class="tab" data-tab="signals">Signal Monitor</div>
   <div class="tab" data-tab="ramp">Capital Ramp</div>
   <div class="tab" data-tab="kill">Kill Switch</div>
+  <div class="tab" data-tab="macrointel">Macro Intel</div>
 </div>
 
 <!-- ── Main ─────────────────────────────────────────────────────────── -->
@@ -423,6 +424,113 @@
     </div>
   </div>
 
+
+  <!-- ── MACRO INTEL ────────────────────────────────────────────────── -->
+  <div class="panel" id="panel-macrointel">
+    <div style="padding:0 4px">
+
+      <!-- [A] Current State Banner -->
+      <div id="mi-banner" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+           padding:14px 18px;background:var(--surface2);border:1px solid var(--border);
+           border-radius:6px;margin-bottom:16px">
+        <div>
+          <div style="color:var(--muted);font-size:10px;margin-bottom:3px">MACRO RISK</div>
+          <span id="mi-risk-pill" style="font-size:18px;font-weight:700">—</span>
+        </div>
+        <div style="width:1px;height:40px;background:var(--border)"></div>
+        <div>
+          <div style="color:var(--muted);font-size:10px;margin-bottom:3px">SIZING SCALAR</div>
+          <span id="mi-sizing" style="font-size:18px;font-weight:700;color:var(--accent)">—</span>
+        </div>
+        <div style="width:1px;height:40px;background:var(--border)"></div>
+        <div>
+          <div style="color:var(--muted);font-size:10px;margin-bottom:3px">SWING</div>
+          <span id="mi-swing-block" style="font-size:12px;font-weight:600">—</span>
+        </div>
+        <div>
+          <div style="color:var(--muted);font-size:10px;margin-bottom:3px">INTRADAY</div>
+          <span id="mi-intra-block" style="font-size:12px;font-weight:600">—</span>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <div style="color:var(--muted);font-size:10px">AS OF</div>
+          <div id="mi-asof" style="font-size:11px;color:var(--muted)">—</div>
+        </div>
+      </div>
+
+      <!-- [B+C] Timeline + Events -->
+      <div style="display:grid;grid-template-columns:1fr 380px;gap:16px;margin-bottom:16px">
+
+        <!-- [B] NIS Rationale + Refresh Timeline -->
+        <div class="card" style="min-height:260px">
+          <div class="card-header"><span class="card-title">Today's NIS Assessment</span></div>
+          <div style="padding:12px 14px">
+            <div id="mi-rationale" style="font-size:12px;line-height:1.7;color:var(--text);
+                 white-space:pre-wrap;word-break:break-word;max-height:160px;overflow-y:auto">—</div>
+          </div>
+          <div class="card-header" style="border-top:1px solid var(--border);margin-top:4px">
+            <span class="card-title" style="font-size:11px">Refresh History</span>
+          </div>
+          <div id="mi-timeline" style="padding:8px 14px;font-size:11px;max-height:180px;overflow-y:auto"></div>
+        </div>
+
+        <!-- [C] Event Schedule -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">Macro Event Schedule</span></div>
+          <div class="tbl-wrap" style="max-height:420px;overflow-y:auto">
+            <table>
+              <thead><tr><th>Time (ET)</th><th>Event</th><th>Impact</th><th>Status</th></tr></thead>
+              <tbody id="mi-events-tbody">
+                <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- [D] Symbol Impact Lists -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div class="card" style="border-color:#ef4444;border-left:3px solid #ef4444">
+          <div class="card-header">
+            <span class="card-title">Block Entry</span>
+            <span id="mi-block-count" style="color:var(--muted);font-size:11px"></span>
+          </div>
+          <div id="mi-block-chips" style="padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px;min-height:44px">
+            <span style="color:var(--muted);font-size:11px">Loading...</span>
+          </div>
+        </div>
+        <div class="card" style="border-color:#eab308;border-left:3px solid #eab308">
+          <div class="card-header">
+            <span class="card-title">Size Down</span>
+            <span id="mi-sizedown-count" style="color:var(--muted);font-size:11px"></span>
+          </div>
+          <div id="mi-sizedown-chips" style="padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px;min-height:44px">
+            <span style="color:var(--muted);font-size:11px">Loading...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- [E] Decision Linkage Table -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Decision Linkage — NIS Impact on Trades</span>
+          <span id="mi-linkage-summary" style="color:var(--muted);font-size:11px"></span>
+        </div>
+        <div class="tbl-wrap" style="max-height:340px;overflow-y:auto">
+          <table>
+            <thead><tr>
+              <th>Time</th><th>Symbol</th><th>Strategy</th><th>ML Score</th>
+              <th>Macro Risk</th><th>NIS Policy</th><th>Outcome</th><th>Block Reason</th>
+            </tr></thead>
+            <tbody id="mi-linkage-tbody">
+              <tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
 </div><!-- /main -->
 
 <!-- ── Modal ────────────────────────────────────────────────────────── -->
@@ -498,7 +606,8 @@ document.querySelectorAll('.tab').forEach(tab => {
     $('panel-' + tab.dataset.tab).classList.add('active');
     // Lazy-load panel data
     const loaders = { positions: loadPositions, trades: loadTrades,
-                      signals: loadDecisions, ramp: loadRamp, kill: loadKillStatus };
+                      signals: loadDecisions, ramp: loadRamp, kill: loadKillStatus,
+                      macrointel: loadMacroIntel };
     if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
   });
 });
@@ -887,6 +996,135 @@ async function loadAuditLog() {
   } catch(e) {}
 }
 
+// ── Macro Intel ─────────────────────────────────────────────────────────────
+async function loadMacroIntel() {
+  await Promise.all([loadMacroBanner(), loadMacroSignals(), loadMacroLinkage()]);
+}
+
+async function loadMacroBanner() {
+  try {
+    const r = await fetch('/api/nis/macro');
+    const j = await r.json();
+    if (j.status === 'not_yet_run' || j.status === 'error') {
+      $('mi-risk-pill').textContent = j.detail || 'Not available';
+      return;
+    }
+    const risk = (j.overall_risk || 'UNKNOWN').toUpperCase();
+    const riskColor = risk === 'HIGH' ? '#ef4444' : risk === 'MEDIUM' ? '#eab308' : '#22c55e';
+    $('mi-risk-pill').textContent = risk;
+    $('mi-risk-pill').style.color = riskColor;
+    $('mi-sizing').textContent = j.global_sizing_factor != null ? `${j.global_sizing_factor}x` : '—';
+    const blockBadge = (blocked) => blocked
+      ? `<span style="color:#ef4444;font-weight:700">BLOCKED</span>`
+      : `<span style="color:#22c55e;font-weight:700">CLEAR</span>`;
+    $('mi-swing-block').innerHTML = blockBadge(j.block_new_entries);
+    $('mi-intra-block').innerHTML = blockBadge(j.block_new_entries);
+    $('mi-asof').textContent = j.as_of ? fmtTs(j.as_of) : (j.snapshot_date || '—');
+    $('mi-rationale').textContent = j.rationale || '—';
+
+    // Refresh history (single entry for now — server only stores latest in-memory)
+    const src = j.source === 'db_snapshot' ? ' (DB snapshot)' : '';
+    $('mi-timeline').innerHTML = j.as_of ? `
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--border)">
+        <div style="color:var(--muted);min-width:70px">${fmtTs(j.as_of)}</div>
+        <div>
+          <span style="color:${riskColor};font-weight:600">${risk}</span>
+          <span style="color:var(--muted)"> · ${j.global_sizing_factor}x sizing${src}</span>
+          ${(j.events_today||[]).length ? `<div style="color:var(--muted);font-size:10px;margin-top:2px">${j.events_today.length} event(s) today</div>` : ''}
+        </div>
+      </div>` : '<div style="color:var(--muted)">No history available</div>';
+
+    // Events today
+    const events = j.events_today || [];
+    const evTbody = $('mi-events-tbody');
+    if (!events.length) {
+      evTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:16px">No events today</td></tr>`;
+    } else {
+      evTbody.innerHTML = events.map(e => {
+        const ic = (e.risk_level||'').toUpperCase();
+        const icColor = ic === 'HIGH' ? '#ef4444' : ic === 'MEDIUM' ? '#eab308' : '#22c55e';
+        const status = e.already_priced_in ? 'Priced in' : (e.event_time && new Date(e.event_time) < new Date() ? 'Released' : 'Upcoming');
+        const statusColor = status === 'Upcoming' ? 'var(--accent)' : 'var(--muted)';
+        return `<tr title="${e.consensus_summary||''}">
+          <td style="white-space:nowrap;color:var(--muted)">${e.event_time ? fmtTs(e.event_time) : '—'}</td>
+          <td style="font-weight:600">${e.event_type||'—'}</td>
+          <td style="color:${icColor}">${ic||'—'}</td>
+          <td style="color:${statusColor}">${status}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch(e) { console.error('loadMacroBanner', e); }
+}
+
+async function loadMacroSignals() {
+  try {
+    const r = await fetch('/api/nis/signals');
+    const j = await r.json();
+    const blocked = j.blocked || [];
+    const sizedDown = j.sized_down || [];
+    const signals = j.signals || [];
+
+    const chip = (sym, color, title) =>
+      `<span title="${title}" style="background:rgba(${color},0.12);border:1px solid rgba(${color},0.4);
+       color:rgb(${color});border-radius:4px;padding:3px 8px;font-size:11px;cursor:default">${sym}</span>`;
+
+    $('mi-block-count').textContent = blocked.length ? `${blocked.length} symbol${blocked.length>1?'s':''}` : '';
+    $('mi-block-chips').innerHTML = blocked.length
+      ? blocked.map(s => {
+          const sig = signals.find(x=>x.symbol===s);
+          return chip(s, '239,68,68', sig ? (sig.rationale||'').slice(0,120) : '');
+        }).join('')
+      : '<span style="color:var(--green);font-size:11px">✓ No symbols blocked</span>';
+
+    $('mi-sizedown-count').textContent = sizedDown.length ? `${sizedDown.length} symbol${sizedDown.length>1?'s':''}` : '';
+    const sdDisplay = sizedDown.slice(0, 40);
+    $('mi-sizedown-chips').innerHTML = sizedDown.length
+      ? sdDisplay.map(s => {
+          const sig = signals.find(x=>x.symbol===s);
+          const mult = sig ? ` ${sig.sizing_multiplier}x` : '';
+          return chip(s+''+mult, '234,179,8', sig ? (sig.rationale||'').slice(0,120) : '');
+        }).join('') + (sizedDown.length > 40 ? `<span style="color:var(--muted);font-size:11px">+${sizedDown.length-40} more</span>` : '')
+      : '<span style="color:var(--muted);font-size:11px">No symbols sized down</span>';
+  } catch(e) { console.error('loadMacroSignals', e); }
+}
+
+async function loadMacroLinkage() {
+  try {
+    const r = await fetch('/api/decision-audit/recent?limit=100');
+    const j = await r.json();
+    const rows = j.decisions || [];
+    const tb = $('mi-linkage-tbody');
+    if (!rows.length) {
+      tb.innerHTML = `<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No decision audit records yet</td></tr>`;
+      return;
+    }
+
+    const blocked = rows.filter(r => r.final_decision === 'BLOCKED').length;
+    const sizedDown = rows.filter(r => r.size_multiplier && r.size_multiplier < 1.0).length;
+    $('mi-linkage-summary').textContent = `${rows.length} decisions — ${blocked} blocked, ${sizedDown} sized down`;
+
+    tb.innerHTML = rows.map(row => {
+      const outcome = row.final_decision || '—';
+      const outcomeColor = outcome === 'BLOCKED' ? '#ef4444' : outcome === 'APPROVED' ? '#22c55e' : 'var(--muted)';
+      const risk = (row.macro_risk_level||'').toUpperCase();
+      const riskColor = risk === 'HIGH' ? '#ef4444' : risk === 'MEDIUM' ? '#eab308' : risk === 'LOW' ? '#22c55e' : 'var(--muted)';
+      const policy = row.news_action_policy || '—';
+      const policyColor = policy === 'block_entry' ? '#ef4444' : policy.includes('size_down') ? '#eab308' : 'var(--muted)';
+      return `<tr>
+        <td style="color:var(--muted);white-space:nowrap;font-size:11px">${fmtTs(row.decided_at)}</td>
+        <td style="font-weight:600;color:var(--accent)">${row.symbol||'—'}</td>
+        <td style="color:var(--muted)">${row.strategy||'—'}</td>
+        <td>${row.model_score != null ? (row.model_score*100).toFixed(1)+'%' : '—'}</td>
+        <td style="color:${riskColor}">${risk||'—'}</td>
+        <td style="color:${policyColor};font-size:11px">${policy}</td>
+        <td style="color:${outcomeColor};font-weight:600">${outcome}</td>
+        <td style="color:var(--muted);font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${row.block_reason||''}">${row.block_reason||'—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.error('loadMacroLinkage', e); }
+}
+
 // ── Auto-refresh ────────────────────────────────────────────────────────────
 async function fullRefresh() {
   await loadSummary();
@@ -894,9 +1132,10 @@ async function fullRefresh() {
   const active = document.querySelector('.tab.active')?.dataset.tab;
   if (active === 'positions') loadPositions();
   if (active === 'trades')    loadTrades();
-  if (active === 'signals')   loadDecisionsOverview();
-  if (active === 'ramp')      loadRamp();
-  if (active === 'kill')      loadKillStatus();
+  if (active === 'signals')    loadDecisionsOverview();
+  if (active === 'ramp')       loadRamp();
+  if (active === 'kill')       loadKillStatus();
+  if (active === 'macrointel') loadMacroIntel();
 }
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────

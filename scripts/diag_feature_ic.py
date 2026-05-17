@@ -40,6 +40,11 @@ from typing import Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from dotenv import load_dotenv
+load_dotenv(ROOT / ".env")
+
+from app.notifications import notifier as _notifier
+
 from app.ml.retrain_config import (
     MAX_WORKERS,
     SACRED_HOLDOUT_START,
@@ -51,11 +56,23 @@ os.environ.setdefault("OMP_NUM_THREADS", str(MAX_WORKERS))
 import numpy as np
 import pandas as pd
 
+class _StripCR(logging.Filter):
+    """Strip carriage returns from log messages (boto3/botocore write \r progress)."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = record.msg.replace("\r", "").strip()
+        return True
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
     level=logging.INFO,
     datefmt="%H:%M:%S",
 )
+# Silence noisy third-party loggers
+for _noisy in ("botocore", "boto3", "urllib3", "s3transfer", "aiobotocore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+logging.getLogger().addFilter(_StripCR())
 logger = logging.getLogger(__name__)
 
 # ── Safe default window: just before sacred holdout ───────────────────────────
@@ -320,6 +337,8 @@ def main() -> int:
         logger.error("No bar data loaded — aborting")
         return 1
 
+    n_syms = len(bars_map)
+
     # ── Load VIX + macro history for feature computation ──
     vix_history = None
     macro_history = None
@@ -420,6 +439,28 @@ def main() -> int:
 
     logger.info("Artifacts written to: %s", out_dir)
     logger.info("Done in %.1fs", runtime_s)
+
+    # ── Notify completion ──
+    try:
+        top_html = agg.sort_values(f"IC_mean_h{h_first}", key=abs, ascending=False).head(20).to_html(
+            float_format=lambda x: f"{x:.4f}", classes="ic-table", border=0,
+        )
+        max_ic_val = float(agg[f"IC_mean_h{h_first}"].abs().max()) if f"IC_mean_h{h_first}" in agg.columns else 0.0
+        outcome = (
+            f"SIGNAL EXISTS — {len(passing)} features pass threshold (max |IC|={max_ic_val:.4f})"
+            if len(passing) >= 3
+            else f"WEAK SIGNAL — {len(passing)} features pass (max |IC|={max_ic_val:.4f}), consider Phase C"
+        )
+        _notifier.enqueue("diag_complete", {
+            "script":       "diag_feature_ic.py (Phase A1)",
+            "duration":     f"{runtime_s / 60:.1f} min",
+            "outcome":      outcome,
+            "artifacts":    [str(p) for p in sorted(out_dir.iterdir())],
+            "summary_html": top_html,
+        })
+    except Exception:
+        pass  # notifications are best-effort
+
     return 0
 
 

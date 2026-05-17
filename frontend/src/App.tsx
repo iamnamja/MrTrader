@@ -1534,6 +1534,264 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
   )
 }
 
+// ── Macro Intel Panel ────────────────────────────────────────────────────────
+function MacroIntelPanel() {
+  const [macro, setMacro] = useState<NisMacroContext | null>(null)
+  const [signals, setSignals] = useState<{ blocked: string[]; sized_down: string[]; signals: NisSignal[] }>({ blocked: [], sized_down: [], signals: [] })
+  const [decisions, setDecisions] = useState<DecisionAuditRow[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [m, sig, dec] = await Promise.all([
+        api.nisMacro(),
+        api.nisSignals(),
+        fetch('/api/decision-audit/recent?limit=100').then(r => r.json()),
+      ])
+      const sigTyped = sig as { blocked: string[]; sized_down: string[]; signals: NisSignal[] }
+      const decRows = ((dec as { decisions?: DecisionAuditRow[] }).decisions ?? []) as DecisionAuditRow[]
+      setMacro(m as NisMacroContext)
+      setDecisions(decRows)
+      // When live NIS cache is empty (server restart / premarket not yet run),
+      // synthesize blocked/sized_down from today's decision audit rows so the panel stays useful.
+      if ((sigTyped.blocked?.length ?? 0) === 0 && (sigTyped.sized_down?.length ?? 0) === 0 && decRows.length > 0) {
+        const today = new Date().toISOString().slice(0, 10)
+        const todays = decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today)
+        const blocked = Array.from(new Set(todays.filter(r => r.news_action_policy === 'block_entry').map(r => r.symbol)))
+        const sized_down = Array.from(new Set(
+          todays.filter(r => (r.news_action_policy ?? '').includes('size_down')).map(r => r.symbol)
+        ))
+        setSignals({ blocked, sized_down, signals: sigTyped.signals ?? [] })
+      } else {
+        setSignals(sigTyped)
+      }
+    } catch (e) { /* silent */ }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const risk = (macro?.overall_risk ?? '').toUpperCase()
+  const riskColor = risk === 'HIGH' ? C.red : risk === 'MEDIUM' ? C.yellow : risk === 'LOW' ? C.green : C.muted
+  const blockBadge = (blocked: boolean) => (
+    <span style={{ color: blocked ? C.red : C.green, fontWeight: 700, fontSize: 12 }}>
+      {blocked ? 'BLOCKED' : 'CLEAR'}
+    </span>
+  )
+
+  const chip = (sym: string, color: string, title: string) => (
+    <span key={sym} title={title} style={{
+      background: color + '1e', border: `1px solid ${color}66`,
+      color, borderRadius: 4, padding: '2px 7px', fontSize: 11, cursor: 'default',
+    }}>{sym}</span>
+  )
+
+  // Format ISO timestamp → "May 13 14:00 ET"
+  const fmtTs = (iso: string) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso  // return raw string if unparseable
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
+      d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
+  }
+  // Format event_time which may be a plain string like "14:00 ET" or an ISO timestamp
+  const fmtEventTime = (t: string | null | undefined) => {
+    if (!t) return '—'
+    const d = new Date(t)
+    if (isNaN(d.getTime())) return t  // plain string like "14:00 ET" — show as-is
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
+  }
+
+  if (loading) return <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading Macro Intel…</div>
+
+  return (
+    <div>
+      {/* [A] Banner */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap', padding: '14px 18px',
+        background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 6, marginBottom: 16 }}>
+        <div>
+          <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>MACRO RISK</div>
+          <span style={{ fontSize: 20, fontWeight: 700, color: riskColor }}>{risk || '—'}</span>
+        </div>
+        <div style={{ width: 1, height: 40, background: C.border }} />
+        <div>
+          <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>SIZING SCALAR</div>
+          <span style={{ fontSize: 20, fontWeight: 700, color: C.accent }}>
+            {macro?.global_sizing_factor != null ? `${macro.global_sizing_factor}x` : '—'}
+          </span>
+        </div>
+        <div style={{ width: 1, height: 40, background: C.border }} />
+        <div>
+          <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>SWING</div>
+          {blockBadge(macro?.block_new_entries ?? false)}
+        </div>
+        <div>
+          <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>INTRADAY</div>
+          {blockBadge(macro?.block_new_entries ?? false)}
+        </div>
+        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+          <div style={{ color: C.muted, fontSize: 10 }}>AS OF</div>
+          <div style={{ fontSize: 11, color: C.muted }}>{macro?.as_of ? fmtTs(macro.as_of) : '—'}</div>
+        </div>
+      </div>
+
+      {/* [B+C] Rationale + Events */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <div style={s.card}>
+          <div style={s.cardTitle}>Today's NIS Assessment</div>
+          <div style={{ padding: '10px 14px', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', maxHeight: 160, overflowY: 'auto', color: C.text }}>
+            {macro?.rationale || '—'}
+          </div>
+          <div style={{ ...s.cardTitle, borderTop: `1px solid ${C.border}`, marginTop: 4, fontSize: 11 }}>
+            Refresh History
+          </div>
+          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 120, overflowY: 'auto' }}>
+            {macro?.as_of ? (
+              <div style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ color: C.muted, minWidth: 90 }}>{fmtTs(macro.as_of)}</span>
+                <span>
+                  <span style={{ color: riskColor, fontWeight: 600 }}>{risk}</span>
+                  <span style={{ color: C.muted }}> · {macro.global_sizing_factor}x sizing</span>
+                  {(macro.events_today?.length ?? 0) > 0 &&
+                    <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>
+                      {macro.events_today!.length} event(s) today
+                    </div>}
+                </span>
+              </div>
+            ) : <span style={{ color: C.muted }}>No history available</span>}
+          </div>
+        </div>
+
+        <div style={s.card}>
+          <div style={s.cardTitle}>Macro Event Schedule</div>
+          <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr>{['Time (ET)', 'Event', 'Impact', 'Status'].map(h => (
+                  <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${C.border}`,
+                    color: C.muted, textAlign: 'left', fontWeight: 500 }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(macro?.events_today ?? []).length === 0 ? (
+                  <tr><td colSpan={4} style={{ padding: 16, color: C.muted, textAlign: 'center' }}>No events today</td></tr>
+                ) : (macro?.events_today ?? []).map((e, i) => {
+                  const ic = (e.risk_level ?? '').toUpperCase()
+                  const icColor = ic === 'HIGH' ? C.red : ic === 'MEDIUM' ? C.yellow : C.green
+                  const released = e.already_priced_in ?? false
+                  return (
+                    <tr key={i} title={e.consensus_summary ?? ''} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
+                        {fmtEventTime(e.event_time)}
+                      </td>
+                      <td style={{ padding: '5px 8px', fontWeight: 600 }}>{e.event_type}</td>
+                      <td style={{ padding: '5px 8px', color: icColor }}>{ic || '—'}</td>
+                      <td style={{ padding: '5px 8px', color: released ? C.muted : C.accent }}>
+                        {released ? 'Released' : 'Upcoming'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* [D] Symbol Impact */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <div style={{ ...s.card, borderLeft: `3px solid ${C.red}` }}>
+          <div style={{ ...s.cardTitle, display: 'flex', justifyContent: 'space-between' }}>
+            <span>Block Entry</span>
+            <span style={{ color: C.muted, fontSize: 11 }}>
+              {signals.blocked.length ? `${signals.blocked.length} symbol${signals.blocked.length > 1 ? 's' : ''}` : ''}
+            </span>
+          </div>
+          <div style={{ padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 6, minHeight: 44 }}>
+            {signals.blocked.length === 0
+              ? <span style={{ color: C.green, fontSize: 11 }}>✓ No symbols blocked</span>
+              : signals.blocked.map(sym => {
+                  const sig = signals.signals.find(x => x.symbol === sym)
+                  return chip(sym, C.red, (sig?.rationale ?? '').slice(0, 120))
+                })}
+          </div>
+        </div>
+        <div style={{ ...s.card, borderLeft: `3px solid ${C.yellow}` }}>
+          <div style={{ ...s.cardTitle, display: 'flex', justifyContent: 'space-between' }}>
+            <span>Size Down</span>
+            <span style={{ color: C.muted, fontSize: 11 }}>
+              {signals.sized_down.length ? `${signals.sized_down.length} symbol${signals.sized_down.length > 1 ? 's' : ''}` : ''}
+            </span>
+          </div>
+          <div style={{ padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 6, minHeight: 44 }}>
+            {signals.sized_down.length === 0
+              ? <span style={{ color: C.muted, fontSize: 11 }}>No symbols sized down</span>
+              : <>
+                  {signals.sized_down.slice(0, 40).map(sym => {
+                    const sig = signals.signals.find(x => x.symbol === sym)
+                    const label = sig?.sizing_multiplier != null ? `${sym} ${sig.sizing_multiplier}x` : sym
+                    return chip(label, C.yellow, (sig?.rationale ?? '').slice(0, 120))
+                  })}
+                  {signals.sized_down.length > 40 &&
+                    <span style={{ color: C.muted, fontSize: 11 }}>+{signals.sized_down.length - 40} more</span>}
+                </>}
+          </div>
+        </div>
+      </div>
+
+      {/* [E] Decision Linkage */}
+      <div style={s.card}>
+        <div style={{ ...s.cardTitle, display: 'flex', justifyContent: 'space-between' }}>
+          <span>Decision Linkage — NIS Impact on Trades</span>
+          <span style={{ color: C.muted, fontSize: 11 }}>
+            {decisions.length > 0 &&
+              `${decisions.length} decisions — ${decisions.filter(d => d.final_decision === 'BLOCKED').length} blocked, ` +
+              `${decisions.filter(d => d.size_multiplier != null && d.size_multiplier < 1).length} sized down`}
+          </span>
+        </div>
+        <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr>{['Time', 'Symbol', 'Strategy', 'ML Score', 'Macro Risk', 'NIS Policy', 'Outcome', 'Block Reason'].map(h => (
+                <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${C.border}`,
+                  color: C.muted, textAlign: 'left', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {decisions.length === 0
+                ? <tr><td colSpan={8} style={{ padding: 20, color: C.muted, textAlign: 'center' }}>No decision audit records yet</td></tr>
+                : decisions.map(row => {
+                    const outcome = row.final_decision ?? '—'
+                    const outcomeColor = outcome === 'BLOCKED' ? C.red : outcome === 'APPROVED' ? C.green : C.muted
+                    const risk2 = (row.macro_risk_level ?? '').toUpperCase()
+                    const rc = risk2 === 'HIGH' ? C.red : risk2 === 'MEDIUM' ? C.yellow : risk2 === 'LOW' ? C.green : C.muted
+                    const policy = row.news_action_policy ?? '—'
+                    const pc = policy === 'block_entry' ? C.red : policy.includes('size_down') ? C.yellow : C.muted
+                    return (
+                      <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(row.decided_at)}</td>
+                        <td style={{ padding: '5px 8px', fontWeight: 600, color: C.accent }}>{row.symbol}</td>
+                        <td style={{ padding: '5px 8px', color: C.muted }}>{row.strategy}</td>
+                        <td style={{ padding: '5px 8px' }}>{row.model_score != null ? (row.model_score * 100).toFixed(1) + '%' : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: rc }}>{risk2 || '—'}</td>
+                        <td style={{ padding: '5px 8px', color: pc, fontSize: 10 }}>{policy}</td>
+                        <td style={{ padding: '5px 8px', color: outcomeColor, fontWeight: 600 }}>{outcome}</td>
+                        <td style={{ padding: '5px 8px', color: C.muted, fontSize: 10, maxWidth: 200,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={row.block_reason ?? ''}>{row.block_reason || '—'}</td>
+                      </tr>
+                    )
+                  })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Kill Switch Panel ─────────────────────────────────────────────────────────
 function KillPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void }) {
   const [active, setActive] = useState(false)
@@ -3564,7 +3822,7 @@ function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents', 'Macro Intel'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -3715,6 +3973,7 @@ export default function App() {
         {tab === 'Config' && <ConfigPanel toast={toast} />}
         {tab === 'Monitor' && <MonitorPanel />}
         {tab === 'Agents' && <AgentsPanel liveEvents={agentEvents} />}
+        {tab === 'Macro Intel' && <MacroIntelPanel />}
       </div>
 
       <ToastContainer toasts={toasts} />
