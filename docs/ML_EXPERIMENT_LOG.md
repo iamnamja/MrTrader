@@ -2912,3 +2912,48 @@ All of these on full 2019–2026 walk-forward before deployment:
 4. **Opportunity score gate gives the least-negative result** (-0.195) vs all-on (-0.291). Slightly helps but doesn't fix the underlying signal problem.
 
 **Conclusion:** Gates are not causing the poor WF results. The problem is in the signal itself (confirmed by A3: naive momentum Sharpe +0.627 >> ML +0.106). Aligns with Phase A kill criterion 3.
+
+---
+
+## Phase C Training Run 1 — 2026-05-17 — v199 (LambdaRank) + v200 (XGBoost ablation)
+
+### Context
+
+First retrain after Phase A kill criteria + Phase C re-architecture. Two models run in parallel:
+- **v199** — LambdaRank (`run_v201_lambdarank_plus.py`): 17 features (14 IC-validated + 3 interaction terms: `ix_momentum_vol`, `ix_quality_at_high`, `ix_vrp_range`)
+- **v200** — XGBoost binary (`run_v200b_ablation.py`): 14 IC-validated features, triple_barrier label (ablation baseline to isolate whether LambdaRank or feature pruning drives any improvement)
+
+Feature store cache: SCHEMA_VERSION bumped v8→v9 (72 raw features after Phase C+ interaction terms added); 267,384 stale rows auto-cleared.
+
+### Results
+
+| Model | Version | Features | Label | HPO metric | WF avg Sharpe | Folds | Gate | Status |
+|---|---|---|---|---|---|---|---|---|
+| LambdaRank | v199 | 17 | lambdarank quintile | NDCG@5=0.000 | 0.000 | [0,0,0,0,0] | ❌ FAIL | RETIRED |
+| XGBoost binary | v200 | 14 | triple_barrier | AUC=0.568 | -0.694 | [+0.15,-1.29,+0.04,-2.05,-0.32] | ❌ FAIL | RETIRED |
+
+v194 restored as swing ACTIVE.
+
+### Root Cause Analysis (Opus 4.7, 2026-05-17)
+
+**Bug 1 — LambdaRank 0 trades (v199):**
+- `LambdaRankModel` had no `predict_with_vix()` method
+- `AgentSimulator._pm_score` / `_pm_score_cached` calls `self.model.predict_with_vix(...)` unconditionally
+- `AttributeError` was caught by broad `except Exception` at DEBUG level → silently returned `[]` every day → 0 proposals → 0 trades in all 5 folds
+- NDCG@5=0.000 in HPO is a separate cosmetic artefact (TimeSeriesSplit val slice treated as one giant query group → ranking metric degenerates)
+
+**Bug 2 — TSNorm hash mismatch (v199, v200):**
+- `_build_rolling_matrix` called `_ts_fit` with the full 72-feature `self._last_feature_names` BEFORE `feature_keep_list` filtering in `train_model`
+- Saved `swing_norm_v{N}.pkl` hash computed on 72-feature list
+- At walk-forward inference time, only 14/17 filtered features passed → hash mismatch → fallback to `cs_normalize`
+- `cs_normalize` destroys macro/regime signal (VIX, SPY MA, breadth all identical cross-sectionally → std=0 → zeroed) → near-random predictions
+
+### Fixes Implemented (2026-05-17)
+
+1. **`app/ml/model.py`**: Added `predict_with_vix()` to `LambdaRankModel` and `DoubleEnsembleModel` — delegates to `self.predict()` (no VIX routing needed for rankers)
+2. **`app/backtesting/agent_simulator.py`**: Upgraded silent `DEBUG` in `_pm_score` / `_pm_score_cached` except blocks to `WARNING` with exception type — future failures will be visible
+3. **`app/ml/training.py`**: Moved `_ts_fit`/`_ts_transform` from `_build_rolling_matrix` to `train_model`, executed AFTER `feature_keep_list` filter — hash now computed on filtered feature list that matches `model.feature_names`
+
+### Verdict: ❌ FAIL — bugs masked true signal, retrain required
+
+Next: **v202** — LambdaRank with both fixes applied. Expected: non-zero trades, valid TSNorm. Gate still uncertain (actual signal quality TBD after bugs removed).
