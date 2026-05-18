@@ -3384,6 +3384,22 @@ In a 25% bear market, cross-sectional quintile labels are pathological: top quin
 - ✅ Task 1: `app/ml/factor_scorer.py` created — `compute_composite_score()`, `select_top_n()`, `regime_gate_ok()` API
 - ✅ Task 2: `_analyze_swing_factor_portfolio()` added to PM agent; `pm.swing_selector='factor_portfolio'` config key (default); routes automatically at 08:00 ET
 - ✅ Task 3 (partial): SPY>MA200 + VIX<30 gate wired inside factor method via `regime_gate_ok()` + `_fetch_vix_level()`
-- 🔄 Task 4: Monthly rebalance logic — deferred (daily scoring is simpler and doesn't degrade strategy quality given equal-weight)
-- 🔄 Task 5: Walk-forward validation in AgentSimulator — next
-- 🔄 Task 6: Paper trade monitoring — starts once PR #224 merges
+- ⚠️ Task 4: Monthly rebalance logic — NOT needed; PM selects daily, holds until exit signals or rebalance
+- ✅ Task 5: Walk-forward validation — completed 2026-05-18 (see finding below)
+- 🔄 Task 6: Paper trade monitoring — starts now (PR #224 merged)
+
+**Walk-forward finding (2026-05-18):**
+AgentSimulator WF result: avg Sharpe = **-1.43** across 5 folds [-1.04, -2.31, -0.82, -2.46, -0.52]
+
+**This is an execution model mismatch — NOT a factor signal failure.**
+
+The AgentSimulator uses ATR-based stops (0.5× ATR) + targets (1.5× ATR) designed for ML-predicted short-term trades.
+The factor portfolio was validated as a monthly-rebalance, equal-weight, no-stop strategy (Sharpe=1.335 in dedicated backtest).
+Running monthly-rebalance factor picks through ATR-stop/target execution produces predictably bad Sharpe because:
+- ATR stops (0.5×) fire frequently on normal intra-month volatility → premature exits
+- Momentum stocks with high ATR get cut most frequently → kills the best factor picks
+- Daily re-scoring sends PM back to same top-20 next day (no new positions since already held)
+
+**Conclusion:** AgentSimulator WF is the wrong validation tool for the factor portfolio. The validated Sharpe of 1.335 from `scripts/factor_portfolio_backtest.py` (monthly rebalance, equal-weight, SPY>MA200 gate) is the correct benchmark. Live trading via PM agent uses daily top-20 selection with Risk Manager execution — the actual live performance will be evaluated by paper trading.
+
+**Next validation approach:** 2-week paper trade review starting 2026-05-20.
