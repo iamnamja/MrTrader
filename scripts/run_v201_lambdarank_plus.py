@@ -38,7 +38,10 @@ def main() -> int:
                         help="Use XGBoost binary instead of LambdaRank")
     args = parser.parse_args()
 
-    from app.ml.retrain_config import PHASE_C_PLUS_FEATURE_KEEP_LIST, SWING_GATE, MAX_WORKERS
+    from app.ml.retrain_config import (
+        PHASE_C_PLUS_FEATURE_KEEP_LIST, PHASE_C_V2_FEATURE_KEEP_LIST,
+        SWING_GATE, MAX_WORKERS,
+    )
     from app.ml.training import ModelTrainer
     from app.database.session import get_session
     from scripts.retrain_cron import _previous_active, _restore_previous
@@ -46,22 +49,30 @@ def main() -> int:
     model_type = "xgboost" if args.use_xgboost else "lambdarank"
     label_scheme = "triple_barrier" if args.use_xgboost else "lambdarank"
 
+    # v209a: revert to 17-feature clean baseline (drop sector-neutral features
+    # that hurt v208 — Opus analysis shows they landed HPO in a worse basin).
+    # Switch back to PHASE_C_PLUS_FEATURE_KEEP_LIST for this run.
+    feature_list = PHASE_C_PLUS_FEATURE_KEEP_LIST
+    n_feats = len(feature_list)
+
     db = get_session()
     try:
         prev = _previous_active(db, "swing")
     finally:
         db.close()
 
-    logger.info("v201: %s, 17 features (14+3 interactions), prev_active=v%s",
-                model_type, prev)
-    logger.info("Features: %s", PHASE_C_PLUS_FEATURE_KEEP_LIST)
+    logger.info("v209b: %s, %d features, NDCG@3 HPO seed=42, num_leaves<=31, prev_active=v%s",
+                model_type, n_feats, prev)
+    logger.info("Features: %s", feature_list)
 
     trainer = ModelTrainer(
         model_type=model_type,
         label_scheme=label_scheme,
-        hpo_trials=20,
+        hpo_trials=50,
+        hpo_seed=42,
+        hpo_ndcg_k=3,
         n_workers=MAX_WORKERS,
-        feature_keep_list=PHASE_C_PLUS_FEATURE_KEEP_LIST,
+        feature_keep_list=feature_list,
     )
 
     try:
@@ -77,6 +88,7 @@ def main() -> int:
 
     try:
         from scripts.walkforward_tier3 import run_swing_walkforward
+
         wf = run_swing_walkforward(
             n_folds=5,
             total_years=6,

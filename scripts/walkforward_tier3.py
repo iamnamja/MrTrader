@@ -644,6 +644,24 @@ def run_swing_walkforward(
             _embargo,  # carry embargo into the fold runner for logging
         ))
 
+    # Load sector ETF bars once for all folds (PIT sector-neutral features)
+    _sector_etf_bars_wf: Optional[dict] = None
+    _etf_hist_path_wf = Path("data/sector_etf/sector_etf_history.parquet")
+    if _etf_hist_path_wf.exists():
+        try:
+            import pandas as _pd_etf
+            _ef_wf = _pd_etf.read_parquet(_etf_hist_path_wf)
+            _sector_etf_bars_wf = {}
+            for _etf, _grp in _ef_wf.groupby("etf"):
+                _grp_s = _grp.sort_values("date")
+                _sector_etf_bars_wf[_etf] = [
+                    (row["date"], float(row["close"]))
+                    for _, row in _grp_s.iterrows()
+                ]
+            logger.info("Walk-forward: loaded sector ETF bars for %d ETFs", len(_sector_etf_bars_wf))
+        except Exception as _exc_etf:
+            logger.warning("Walk-forward: could not load sector_etf_history.parquet — %s", _exc_etf)
+
     def _run_swing_fold(args):
         fold_idx, tr_start, tr_end, te_start, te_end, emb = args
         _subheader(f"Fold {fold_idx}/{n_folds}  train:{tr_start}->{tr_end}  "
@@ -687,6 +705,7 @@ def run_swing_walkforward(
                     trading_days=_test_days,
                     feature_names=_feat_names,
                     vix_history=_vix_s,
+                    sector_etf_bars=_sector_etf_bars_wf,
                     workers=_workers,
                     executor=feature_cache_executor,
                 )

@@ -677,6 +677,8 @@ class ModelTrainer:
         feature_keep_list: Optional[tuple] = None,  # restrict to exactly these features (Phase C)
         n_workers: int = 0,
         hpo_trials: int = 0,
+        hpo_seed: int = 42,
+        hpo_ndcg_k: int = 3,
         walk_forward_folds: int = 0,
         prediction_threshold: float = 0.50,
         two_stage: bool = False,
@@ -709,6 +711,8 @@ class ModelTrainer:
         from app.ml.retrain_config import MAX_WORKERS as _max_workers
         self.n_workers = n_workers if (n_workers and n_workers > 0) else _max_workers
         self.hpo_trials = hpo_trials
+        self.hpo_seed = hpo_seed
+        self.hpo_ndcg_k = hpo_ndcg_k
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold
         self.two_stage = two_stage
@@ -788,7 +792,7 @@ class ModelTrainer:
         # Stash bypass flag for _build_rolling_matrix's secondary guard.
         self._allow_sacred_holdout = allow_sacred_holdout
 
-        X_train, y_train, X_test, y_test, feature_names, meta_train = self._build_rolling_matrix(
+        X_train, y_train, X_test, y_test, feature_names, meta_train, meta_test = self._build_rolling_matrix(
             symbols_data, fetch_fundamentals=fetch_fundamentals
         )
         if len(X_train) == 0:
@@ -808,6 +812,40 @@ class ModelTrainer:
             else:
                 logger.warning("feature_keep_list: none of %d requested features found — using all",
                                len(self.feature_keep_list))
+
+        # Rolling TS normalization — applied AFTER keep-list so hash matches filtered feature set.
+        # Each (symbol, feature) z-scored against trailing NORM_LOOKBACK windows.
+        # SKIPPED for lambdarank: TSNorm destroys cross-sectional ranking signal because it
+        # z-scores each (symbol, feature) against that symbol's own history, making a top-decile
+        # stock look identical to a bottom-decile stock if both are near their personal means.
+        # LambdaRank's pairwise loss needs relative magnitudes across symbols on the same day.
+        _use_ts_norm = (
+            len(X_train) > 0
+            and len(meta_train) > 0
+            and getattr(self.model, "model_type", "") != "lambdarank"
+        )
+        if _use_ts_norm:
+            from app.ml.ts_normalize import fit_transform_train as _ts_fit, transform as _ts_transform
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            _sym_train = np.array([m["symbol"] for m in meta_train])
+            _wid_train = np.array([m["window_idx"] for m in meta_train])
+            X_train, _keep_train, self._ts_norm_state = _ts_fit(
+                X_train, _sym_train, _wid_train, feature_names
+            )
+            if not np.all(_keep_train):
+                X_train = X_train[_keep_train]
+                y_train = y_train[_keep_train]
+                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
+            if len(X_test) > 0 and len(meta_test) > 0:
+                _sym_test = np.array([m["symbol"] for m in meta_test])
+                _wid_test = np.array([m["window_idx"] for m in meta_test])
+                X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
+                if not np.all(_keep_test):
+                    X_test = X_test[_keep_test]
+                    y_test = y_test[_keep_test]
+        else:
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            self._ts_norm_state = _TSState()
 
         _regime_sw_multiplier = np.ones(len(X_train), dtype=np.float32)
         if exclude_risk_off_days and len(X_train) > 0:
@@ -872,7 +910,10 @@ class ModelTrainer:
         elif self.hpo_trials > 0 and self.model.model_type == "lambdarank":
             logger.info("Running LambdaRank HPO (%d trials)...", self.hpo_trials)
             best_params = self._tune_lambdarank_hyperparams(
-                X_train, y_train, meta_train, n_trials=self.hpo_trials
+                X_train, y_train, meta_train,
+                n_trials=self.hpo_trials,
+                hpo_seed=self.hpo_seed,
+                ndcg_k=self.hpo_ndcg_k,
             )
             self.model.model.set_params(**best_params)
             logger.info("LambdaRank HPO complete — params=%s", best_params)
@@ -991,6 +1032,13 @@ class ModelTrainer:
             metrics["benign_model"] = True
             metrics["benign_threshold"] = getattr(self, "_benign_threshold", 0.5)
             metrics["benign_feature_count"] = len(feature_names)
+
+        # Bug 5 fix: transfer TSNorm state onto model object so it's included in the
+        # pickle — agent_simulator reads _ts_norm_state from the model, not ModelTrainer.
+        # For lambdarank: explicitly set None so agent_simulator falls back to cs_normalize.
+        # An empty TSNormalizerState() is NOT None and would cause transform to drop all
+        # rows (MIN_WARMUP=8 never met with empty history) → 0 trades → garbage results.
+        self.model._ts_norm_state = self._ts_norm_state if _use_ts_norm else None
 
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
@@ -1168,7 +1216,7 @@ class ModelTrainer:
 
         if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
             logger.warning("Not enough common dates for rolling windows")
-            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
+            return np.array([]), np.array([]), np.array([]), np.array([]), [], [], []
 
         # P0: secondary guard — verify no row in the assembled date spine
         # crosses the sacred holdout boundary. Defense in depth: even if a
@@ -1255,39 +1303,12 @@ class ModelTrainer:
             regime_score, fetch_fundamentals, total_windows=len(window_starts)
         )
 
-        # Fix 2: Rolling time-series normalization replaces cross-sectional normalization.
-        # Each (symbol, feature) is z-scored against that symbol's trailing NORM_LOOKBACK
-        # windows. Preserves macro/regime signal (VIX, SPY MA, breadth) that cs_normalize
-        # destroys (identical cross-sectional values → std=0 → zeroed out).
-        # Required for triple-barrier labels which are absolute, not cross-sectional.
         feature_names = self._last_feature_names
-        if len(X_train) > 0 and len(meta_train) > 0:
-            from app.ml.ts_normalize import fit_transform_train as _ts_fit
-            _sym_train = np.array([m["symbol"] for m in meta_train])
-            _wid_train = np.array([m["window_idx"] for m in meta_train])
-            X_train, _keep_train, self._ts_norm_state = _ts_fit(
-                X_train, _sym_train, _wid_train, feature_names
-            )
-            if not np.all(_keep_train):
-                X_train = X_train[_keep_train]
-                y_train = y_train[_keep_train]
-                meta_train = [m for m, k in zip(meta_train, _keep_train) if k]
-        else:
-            from app.ml.ts_normalize import TSNormalizerState as _TSState
-            self._ts_norm_state = _TSState()
-
-        if len(X_test) > 0 and len(meta_test) > 0:
-            from app.ml.ts_normalize import transform as _ts_transform
-            _sym_test = np.array([m["symbol"] for m in meta_test])
-            _wid_test = np.array([m["window_idx"] for m in meta_test])
-            X_test, _keep_test = _ts_transform(X_test, _sym_test, _wid_test, self._ts_norm_state)
-            if not np.all(_keep_test):
-                X_test = X_test[_keep_test]
-                y_test = y_test[_keep_test]
-                meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
-
         self._last_all_dates = all_dates
-        return X_train, y_train, X_test, y_test, feature_names, meta_train
+        # TS normalization is intentionally NOT applied here — it must run AFTER
+        # feature_keep_list filtering in train_model so the hash is computed from
+        # the same (filtered) feature set that gets saved with the model.
+        return X_train, y_train, X_test, y_test, feature_names, meta_train, meta_test
 
     def _compute_cs_thresholds(
         self,
@@ -2413,18 +2434,23 @@ class ModelTrainer:
         y_train: np.ndarray,
         meta_train: np.ndarray,
         n_trials: int = 20,
+        hpo_seed: int = 42,
+        ndcg_k: int = 3,
     ) -> Dict[str, Any]:
         """Optuna HPO for LambdaRank using 3-fold TimeSeriesSplit on training set.
 
-        Optimizes NDCG@5 within each fold's date groups. Low capacity prior:
-        fixes max_depth=4, min_child_samples>=20, only tunes regularization and
-        tree/sample fractions. Returns param dict for LGBMRanker.set_params().
+        Optimizes NDCG@k (default k=3, tighter match to top-5 portfolio) within
+        each fold's date groups. Seeded for reproducibility — same hpo_seed gives
+        the same HPO result. Low capacity prior: max_depth=4, num_leaves<=31,
+        n_estimators<=500. Returns param dict for LGBMRanker.set_params().
         """
         import optuna
         from lightgbm import LGBMRanker
         from sklearn.model_selection import TimeSeriesSplit
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         cv = TimeSeriesSplit(n_splits=3)
+        # Convert list→object array so numpy fancy-indexing works in objective()
+        meta_arr = np.asarray(meta_train, dtype=object) if meta_train is not None else None
 
         def _build_groups(X, y, meta):
             """Build quintile-ranked labels and group sizes from meta (list of dicts)."""
@@ -2450,8 +2476,10 @@ class ModelTrainer:
 
         def objective(trial: optuna.Trial) -> float:
             params = {
-                "n_estimators": trial.suggest_int("n_estimators", 300, 800),
-                "num_leaves": trial.suggest_int("num_leaves", 15, 63),
+                # Tighter capacity caps: num_leaves<=31, n_est<=500 prevent over-fitting
+                # on 17-19 features × ~650 stocks/day. Larger values chased CV noise.
+                "n_estimators": trial.suggest_int("n_estimators", 200, 500),
+                "num_leaves": trial.suggest_int("num_leaves", 8, 31),
                 "max_depth": 4,
                 "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.05, log=True),
                 "subsample": trial.suggest_float("subsample", 0.5, 0.9),
@@ -2459,10 +2487,10 @@ class ModelTrainer:
                 "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
                 "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 2.0),
                 "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
-                "min_child_samples": trial.suggest_int("min_child_samples", 20, 50),
-                "random_state": 42,
+                "min_child_samples": trial.suggest_int("min_child_samples", 20, 60),
+                "random_state": hpo_seed,
                 "verbose": -1,
-                "lambdarank_truncation_level": 5,
+                "lambdarank_truncation_level": ndcg_k,
             }
             fold_ndcg = []
             # Use simple chronological index splits (TimeSeriesSplit on row indices)
@@ -2470,8 +2498,8 @@ class ModelTrainer:
                 if len(val_idx) < 10:
                     continue
                 try:
-                    m_tr = meta_train[train_idx] if meta_train is not None else None
-                    m_va = meta_train[val_idx] if meta_train is not None else None
+                    m_tr = meta_arr[train_idx] if meta_arr is not None else None
+                    m_va = meta_arr[val_idx] if meta_arr is not None else None
                     X_tr, y_tr, g_tr = _build_groups(X_train[train_idx], y_train[train_idx], m_tr)
                     X_va, y_va, g_va = _build_groups(X_train[val_idx], y_train[val_idx], m_va)
                     clf = LGBMRanker(objective="lambdarank", **params)
@@ -2488,18 +2516,20 @@ class ModelTrainer:
                         s = scores[idx:idx + gs]
                         t = y_va[idx:idx + gs].astype(float)
                         if len(t) >= 2:
-                            ndcg_vals.append(_ndcg([t], [s], k=min(5, len(t))))
+                            ndcg_vals.append(_ndcg([t], [s], k=min(ndcg_k, len(t))))
                         idx += gs
                     if ndcg_vals:
                         fold_ndcg.append(float(np.mean(ndcg_vals)))
-                except Exception:
+                except Exception as _hpo_exc:
+                    logger.warning("HPO fold failed (%s): %s", type(_hpo_exc).__name__, _hpo_exc)
                     fold_ndcg.append(0.0)
             return float(np.mean(fold_ndcg)) if fold_ndcg else 0.0
 
-        study = optuna.create_study(direction="maximize")
+        sampler = optuna.samplers.TPESampler(seed=hpo_seed)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
         best = study.best_params
-        logger.info("LambdaRank HPO done — best NDCG@5=%.4f  params=%s", study.best_value, best)
+        logger.info("LambdaRank HPO done — best NDCG@%d=%.4f  params=%s", ndcg_k, study.best_value, best)
         return best
 
     # ── Walk-forward CV ───────────────────────────────────────────────────────
@@ -2617,12 +2647,14 @@ class ModelTrainer:
                     top_n_features=self.top_n_features,
                     n_workers=max(1, self.n_workers // len(windows)),  # share workers
                     hpo_trials=self.hpo_trials,
+                    hpo_seed=self.hpo_seed,
+                    hpo_ndcg_k=self.hpo_ndcg_k,
                     prediction_threshold=self.prediction_threshold,
                     two_stage=self.two_stage,
                     three_stage=self.three_stage,
                 )
 
-                X_tr, y_tr, X_te, y_te, feat_names, meta = sub._build_rolling_matrix(
+                X_tr, y_tr, X_te, y_te, feat_names, meta, _meta_te = sub._build_rolling_matrix(
                     symbols_data, fetch_fundamentals=fetch_fundamentals
                 )
             finally:

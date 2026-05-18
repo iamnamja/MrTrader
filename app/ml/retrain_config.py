@@ -79,6 +79,19 @@ PHASE_C_PLUS_FEATURE_KEEP_LIST: tuple = PHASE_C_FEATURE_KEEP_LIST + (
     "ix_vrp_range",  # vrp x range_expansion (vol premium confirming breakout)
 )
 
+# ── Phase C v2 feature keep-list: 17 + 2 sector-neutral features ──────────────
+# v207+: adds sector-neutral momentum features (stock momentum minus sector ETF
+# 20d momentum) to remove sector-concentration bias.  Opus 4.7 identified this
+# as the highest-EV fix after regime gating failed — the 17-feature set has an
+# absolute momentum bias that makes the ranker a concentrated sector bet in
+# trending periods (energy 2022, tech 2024), which is the primary cause of
+# Fold 2 and Fold 4 losses.  Both features are PIT-clean (ETF bars from
+# sector_etf_history.parquet, not live API calls).
+PHASE_C_V2_FEATURE_KEEP_LIST: tuple = PHASE_C_PLUS_FEATURE_KEEP_LIST + (
+    "momentum_20d_sector_neutral",   # 20d stock return minus sector ETF 20d return
+    "momentum_60d_sector_neutral",   # 60d stock return minus sector ETF 20d return
+)
+
 # ── Swing model (Phase C — LambdaRank on 14 IC-validated features) ───────────
 # v200: XGBoost LambdaRank, 14 features, 21d forward rank target, 5 folds
 # Previous: XGBoost binary classifier, 69 features, triple_barrier — Sharpe +0.106

@@ -908,6 +908,7 @@ class LambdaRankModel:
         self.is_trained = False
         self.predict_threshold: float = 0.5
         self._feature_weights: Optional[np.ndarray] = None
+        self._ts_norm_state = None  # set by training.py Bug 5 fix; included in pickle
         self.model = LGBMRanker(
             objective="lambdarank",
             n_estimators=600,
@@ -1001,6 +1002,16 @@ class LambdaRankModel:
         logger.info("LambdaRank threshold tuned: %.2f (F1=%.4f)", best_t, best_score)
         return best_t
 
+    def predict_with_vix(
+        self,
+        X: np.ndarray,
+        vix_level: Optional[float] = None,
+        threshold: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Adapter so AgentSimulator can call predict_with_vix uniformly across model types.
+        LambdaRank has no VIX routing — delegates directly to predict()."""
+        return self.predict(X, threshold=threshold)
+
     def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
         if not self.is_trained or not hasattr(self.model, "feature_importances_"):
             return None
@@ -1021,6 +1032,20 @@ class LambdaRankModel:
             obj = pickle.load(f)
         self.__dict__.update(obj.__dict__)
         logger.info("LambdaRankModel v%d loaded", version)
+        # Load TSNorm state so _normalize_for_inference uses TS normalization
+        self._ts_norm_state = None
+        if model_name == "swing":
+            norm_path = Path(directory) / f"swing_norm_v{version}.pkl"
+            if norm_path.exists():
+                try:
+                    from app.ml.ts_normalize import load_state as _ts_load, assert_state_compatible
+                    self._ts_norm_state = _ts_load(str(norm_path))
+                    if self.feature_names:
+                        assert_state_compatible(self._ts_norm_state, self.feature_names)
+                    logger.info("TSNormalizerState loaded from %s", norm_path)
+                except Exception as exc:
+                    logger.warning("TSNormalizerState load failed — falling back to cs_normalize: %s", exc)
+                    self._ts_norm_state = None
 
 
 # ── DoubleEnsemble model ──────────────────────────────────────────────────────
@@ -1199,6 +1224,15 @@ class DoubleEnsembleModel:
         self.predict_threshold = best_t
         logger.info("DoubleEnsemble threshold tuned: %.2f (F1=%.4f)", best_t, best_score)
         return best_t
+
+    def predict_with_vix(
+        self,
+        X: np.ndarray,
+        vix_level: Optional[float] = None,
+        threshold: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Adapter so AgentSimulator can call predict_with_vix uniformly across model types."""
+        return self.predict(X, threshold=threshold)
 
     def feature_importance(self) -> Optional[List[Tuple[str, float]]]:
         if not self.is_trained:
