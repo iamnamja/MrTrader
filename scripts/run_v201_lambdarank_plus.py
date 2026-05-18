@@ -59,7 +59,7 @@ def main() -> int:
     trainer = ModelTrainer(
         model_type=model_type,
         label_scheme=label_scheme,
-        hpo_trials=20,
+        hpo_trials=50,
         n_workers=MAX_WORKERS,
         feature_keep_list=PHASE_C_PLUS_FEATURE_KEEP_LIST,
     )

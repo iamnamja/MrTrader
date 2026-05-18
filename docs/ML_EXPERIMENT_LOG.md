@@ -3009,3 +3009,52 @@ Despite TSNorm mismatch, the fold pattern [+1.57, -1.22, +2.39, +0.75, -1.91] sh
 
 - All 5 bugs now fixed. v204 launched 2026-05-17 ~21:30.
 - Expected: TSNorm applied in all folds → more stable cross-fold Sharpe
+
+---
+
+## Phase C Training Run 3 — 2026-05-17 — v204 (LambdaRank, 17 features, all 5 bugs fixed, TSNorm enabled)
+
+### Setup
+- **Model**: LambdaRank, 17 features (PHASE_C_PLUS_FEATURE_KEEP_LIST)
+- **Bug fixes**: All 5 bugs fixed including Bug 5 (TSNorm state transferred to model pickle)
+- **TSNorm**: Enabled (Bug 5 fixed means it actually ran this time)
+- **HPO**: 20 trials, best NDCG@5=0.5037
+- DB version assigned: v203
+
+### Results
+
+| Model | DB Ver | Features | TSNorm | Avg Sharpe | Min Fold | Fold Sharpes | Verdict |
+|---|---|---|---|---|---|---|---|
+| LambdaRank | v203 | 17 | ✅ Applied | -0.372 | -1.730 | [+0.95, -1.64, +1.12, -0.56, -1.73] | ❌ FAIL |
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Both failed. **Worse than v202 (avg -0.372 vs +0.317).**
+
+### Fold Detail
+
+| Fold | Train Period | Test Period | Trades | Sharpe | Calmar |
+|---|---|---|---|---|---|
+| 1 | 2020-04-18 → 2021-05-18 | 2021-05-29 → 2022-05-18 | 166 | +0.95 | 1.33 |
+| 2 | 2020-04-18 → 2022-05-18 | 2022-05-29 → 2023-05-18 | 138 | -1.64 | -1.03 |
+| 3 | 2020-04-18 → 2023-05-18 | 2023-05-29 → 2024-05-17 | 224 | +1.12 | 0.87 |
+| 4 | 2020-04-18 → 2024-05-17 | 2024-05-28 → 2025-05-17 | 203 | -0.56 | -0.48 |
+| 5 | 2020-04-18 → 2025-05-17 | 2025-05-28 → 2026-05-17 | 110 | -1.73 | -0.85 |
+
+HPO: n_estimators=338, num_leaves=23, lr=0.00885, subsample=0.568, colsample=0.788, reg_alpha=1.60, reg_lambda=0.61, min_child_samples=35. AUC=0.4848 (below 0.5 — drift alert).
+
+### Root Cause: TSNorm is structurally wrong for LambdaRank (Opus 4.7 analysis)
+
+LambdaRank's pairwise loss operates *within groups* (within a single day's ~650 stocks). It needs **relative magnitudes across symbols on the same day**. TSNorm destroys exactly this signal: it z-scores each (symbol, feature) against that symbol's own 20-day trailing history, making a top-decile momentum stock look identical to a bottom-decile stock if both are near their personal means. Slow-moving features (margins, P/E) collapse to ~0 variance after TSNorm since they barely change in 20 days — effectively losing ~7-10 of 17 features. AUC < 0.5 confirms the model learned idiosyncratic deviation signals that don't generalize.
+
+v202 (TSNorm silently off via Bug 5) gave +0.317 — the best result so far — showing the ranking objective works when fed raw cross-sectional values.
+
+### Pattern diagnosis
+- Fold 2 (2022 bear): always fails — feature set has momentum/growth bias, punished in rate-hike regimes
+- Fold 5 (2025-2026 recent): always fails — mega-cap/AI concentration era, possible concept drift on interaction terms
+- Folds 1, 3, 4 (bull/recovery periods): positive signal (+0.95, +1.12; previously +1.57, +2.39, +0.75)
+
+### Fix applied: disable TSNorm for LambdaRank
+- `app/ml/training.py`: TSNorm block now guarded by `getattr(self.model, "model_type", "") != "lambdarank"`
+- `scripts/run_v201_lambdarank_plus.py`: HPO trials bumped 20 → 50
+
+### Next: v205 — LambdaRank, cs_normalize only, 50 HPO trials
+Expected: recover v202 baseline (+0.317) plus meaningful HPO improvement. Target: avg ≥ +0.5 to confirm signal quality, then pursue regime-gating for F2/F5.

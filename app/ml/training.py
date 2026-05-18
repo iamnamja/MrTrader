@@ -811,7 +811,16 @@ class ModelTrainer:
 
         # Rolling TS normalization — applied AFTER keep-list so hash matches filtered feature set.
         # Each (symbol, feature) z-scored against trailing NORM_LOOKBACK windows.
-        if len(X_train) > 0 and len(meta_train) > 0:
+        # SKIPPED for lambdarank: TSNorm destroys cross-sectional ranking signal because it
+        # z-scores each (symbol, feature) against that symbol's own history, making a top-decile
+        # stock look identical to a bottom-decile stock if both are near their personal means.
+        # LambdaRank's pairwise loss needs relative magnitudes across symbols on the same day.
+        _use_ts_norm = (
+            len(X_train) > 0
+            and len(meta_train) > 0
+            and getattr(self.model, "model_type", "") != "lambdarank"
+        )
+        if _use_ts_norm:
             from app.ml.ts_normalize import fit_transform_train as _ts_fit, transform as _ts_transform
             from app.ml.ts_normalize import TSNormalizerState as _TSState
             _sym_train = np.array([m["symbol"] for m in meta_train])
