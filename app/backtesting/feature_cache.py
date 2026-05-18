@@ -63,6 +63,7 @@ def _build_symbol_rows(
     vix_values: Optional[list],  # close values for vix
     macro_index: Optional[list] = None,   # dates for macro_history
     macro_records: Optional[list] = None,  # macro_history.to_dict("records")
+    sector_etf_records: Optional[Dict[str, list]] = None,  # {etf: [(date_str, close), ...]}
 ) -> Tuple[str, List[date], List[list]]:
     """Worker function: compute raw features for one symbol across all trading days.
 
@@ -93,6 +94,17 @@ def _build_symbol_rows(
         macro_history = pd.DataFrame.from_records(macro_records)
         macro_history.insert(0, "date", macro_index)
 
+    # Resolve sector ETF ticker for this symbol (mirrors training worker logic)
+    _sector_etf_ticker = None
+    if sector_etf_records:
+        try:
+            from app.utils.constants import SECTOR_MAP as _SM
+            from app.ml.fundamental_fetcher import SECTOR_ETF_MAP as _SEM
+            _sym_sector = _SM.get(sym)
+            _sector_etf_ticker = _SEM.get(_sym_sector) if _sym_sector else None
+        except Exception:
+            pass
+
     valid_dates: List[date] = []
     feature_rows: List[list] = []
 
@@ -114,6 +126,39 @@ def _build_symbol_rows(
             )
             if feats is None:
                 continue
+            # Apply sector ETF override (mirrors training._process_symbol_windows_worker)
+            if sector_etf_records and _sector_etf_ticker:
+                etf_bars = sector_etf_records.get(_sector_etf_ticker)
+                if etf_bars:
+                    as_of_str = str(day)
+                    idx20 = idx5 = None
+                    for i, (d, _) in enumerate(etf_bars):
+                        if d <= as_of_str:
+                            idx20 = i
+                    idx5 = idx20
+                    if idx20 is not None and idx20 >= 20:
+                        feats["sector_momentum"] = float(
+                            (etf_bars[idx20][1] - etf_bars[idx20 - 20][1])
+                            / max(etf_bars[idx20 - 20][1], 1e-8)
+                        )
+                        feats["momentum_20d_sector_neutral"] = (
+                            feats.get("momentum_20d", 0.0) - feats["sector_momentum"]
+                        )
+                        feats["momentum_60d_sector_neutral"] = (
+                            feats.get("momentum_60d", 0.0) - feats["sector_momentum"]
+                        )
+                    if idx5 is not None and idx5 >= 5:
+                        feats["sector_momentum_5d"] = float(
+                            (etf_bars[idx5][1] - etf_bars[idx5 - 5][1])
+                            / max(etf_bars[idx5 - 5][1], 1e-8)
+                        )
+                        feats["momentum_5d_sector_neutral"] = (
+                            feats.get("momentum_5d", 0.0) - feats["sector_momentum_5d"]
+                        )
+            # Ensure sector-neutral keys always exist
+            for _k in ("sector_momentum_5d", "momentum_20d_sector_neutral",
+                       "momentum_60d_sector_neutral", "momentum_5d_sector_neutral"):
+                feats.setdefault(_k, 0.0)
             row = [float(feats.get(f, 0.0)) for f in feature_names]
             valid_dates.append(day)
             feature_rows.append(row)
@@ -172,6 +217,7 @@ def build_feature_cache(
     regime_score_history: Optional[Dict[date, float]] = None,
     vix_history: Optional[pd.Series] = None,
     macro_history: Optional[pd.DataFrame] = None,
+    sector_etf_bars: Optional[Dict[str, list]] = None,  # {etf: [(date_str, close), ...]}
     workers: int = 0,
     executor: str = "process",
     skip_symbols: Iterable[str] = _SKIP_SYMBOLS,
@@ -186,6 +232,7 @@ def build_feature_cache(
         regime_score_history:  {date: float} PIT regime scores (optional).
         vix_history:           VIX close Series (optional).
         macro_history:         macro_history DataFrame (VIX, SPY, RSP, HYG, IEF, VIX3M) for regime features.
+        sector_etf_bars:       {ticker: OHLCV DataFrame} for sector-neutral feature computation (optional).
         workers:               parallel workers (0 = auto: cpu_count - 1, max 12).
         executor:              "process" (recommended) or "thread".
         skip_symbols:          synthetic symbols to exclude.
@@ -211,6 +258,9 @@ def build_feature_cache(
     if vix_history is not None:
         vix_idx = [ts.date() if hasattr(ts, "date") else ts for ts in vix_history.index]
         vix_values = vix_history.tolist()
+
+    # sector_etf_bars is already picklable: {etf: [(date_str, close), ...]}
+    sector_etf_serial = sector_etf_bars  # pass through directly
 
     # Prepare macro_history as plain lists for pickling; auto-load from disk if not provided
     macro_idx = macro_recs = None
@@ -247,6 +297,7 @@ def build_feature_cache(
             vix_values,
             macro_idx,
             macro_recs,
+            sector_etf_serial,
         )
 
     PoolClass = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
