@@ -264,7 +264,7 @@ class TestModelTrainerIntegration:
         with patch.object(trainer, "_fetch_data", return_value=data):
             with patch.object(
                 trainer, "_build_rolling_matrix",
-                return_value=(X, y, X[:40], y[:40], names, {}),
+                return_value=(X, y, X[:40], y[:40], names, {}, {}),
             ):
                 with patch.object(trainer, "_record_version"):
                     with patch.object(trainer, "_next_version", return_value=99):
