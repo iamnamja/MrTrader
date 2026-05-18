@@ -71,6 +71,7 @@ class _Position:
     bars_held: int = 0
     confidence: float = 0.0
     sector: str = "UNKNOWN"
+    direction: str = "long"  # "long" or "short"
 
 
 @dataclass
@@ -774,7 +775,14 @@ class AgentSimulator:
         _max_pos = max_positions if max_positions is not None else self.limits.MAX_OPEN_POSITIONS
 
         # Entry price: today's open (PM runs premarket; Trader executes post-open)
-        for sym, confidence in proposals:
+        for proposal in proposals:
+            # Support both 2-tuple (sym, conf) legacy and 3-tuple (sym, conf, direction)
+            if len(proposal) == 3:
+                sym, confidence, direction = proposal
+            else:
+                sym, confidence = proposal
+                direction = "long"
+            is_short = direction == "short"
             if len(portfolio.positions) >= _max_pos:
                 break  # Phase 35: respect regime-adjusted position cap
 
@@ -839,24 +847,29 @@ class AgentSimulator:
                 except Exception:
                     pass
 
-            # Trader: technical signal gate
-            should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
-            if not should_enter:
-                continue
+            # Trader: technical signal gate (longs only; shorts bypass technical filter)
+            if not is_short:
+                should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
+                if not should_enter:
+                    continue
+                # Use signal stops if valid, else fallback percentages
+                if stop_price <= 0 or stop_price >= entry_price:
+                    stop_price = entry_price * (1 - SWING_STOP_PCT)
+                if target_price <= entry_price:
+                    target_price = entry_price * (1 + SWING_TARGET_PCT)
+            else:
+                # Short: stop is above entry, target is below entry
+                stop_price = entry_price * (1 + SWING_STOP_PCT)
+                target_price = entry_price * (1 - SWING_TARGET_PCT)
 
-            # Use signal stops if valid, else fallback percentages
-            if stop_price <= 0 or stop_price >= entry_price:
-                stop_price = entry_price * (1 - SWING_STOP_PCT)
-            if target_price <= entry_price:
-                target_price = entry_price * (1 + SWING_TARGET_PCT)
-
-            # Position sizing via actual size_position(), then cap to RM position limit
+            # Position sizing — use abs(confidence) for shorts
+            conf_for_sizing = abs(confidence)
             quantity = size_position(
                 account_equity=portfolio.equity,
                 available_cash=portfolio.cash,
                 entry_price=entry_price,
-                stop_price=stop_price,
-                ml_score=confidence,
+                stop_price=stop_price if not is_short else entry_price * (1 - SWING_STOP_PCT),
+                ml_score=conf_for_sizing,
             )
             # Apply RM position-size cap so the trade doesn't auto-reject
             max_position_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
@@ -873,7 +886,13 @@ class AgentSimulator:
             trade_cost = entry_price * quantity
             tx_cost = trade_cost * self.transaction_cost_pct  # entry side
 
-            portfolio.cash -= trade_cost + tx_cost
+            if not is_short:
+                portfolio.cash -= trade_cost + tx_cost
+            else:
+                # Short: receive proceeds; deduct tx cost and post margin
+                portfolio.cash += trade_cost - tx_cost
+                portfolio.cash -= trade_cost  # margin held = notional value
+
             portfolio.positions[sym] = _Position(
                 symbol=sym,
                 entry_date=day,
@@ -884,6 +903,7 @@ class AgentSimulator:
                 highest_price=entry_price,
                 confidence=confidence,
                 sector=sector,
+                direction=direction,
             )
             portfolio.sector_values[sector] = (
                 portfolio.sector_values.get(sector, 0.0) + trade_cost
@@ -915,33 +935,55 @@ class AgentSimulator:
             today_high = float(today_bar["high"])
             today_low = float(today_bar["low"])
             today_close = float(today_bar["close"])
+            is_short = getattr(pos, "direction", "long") == "short"
+
+            # Daily borrow cost for short positions (0.5% annualised)
+            if is_short:
+                borrow_cost = pos.entry_price * pos.quantity * 0.005 / 252
+                portfolio.cash -= borrow_cost
+                portfolio.daily_pnl -= borrow_cost
 
             pos.highest_price = max(pos.highest_price, today_high)
 
-            # Use check_exit() — the actual Trader exit logic
-            should_exit, exit_reason, new_stop = check_exit(
-                symbol=sym,
-                current_price=today_close,
-                entry_price=pos.entry_price,
-                stop_price=pos.stop_price,
-                target_price=pos.target_price,
-                highest_price=pos.highest_price,
-                bars_held=pos.bars_held,
-                min_hold_bars=1,
-                max_hold_bars=self.limits.MAX_OPEN_POSITIONS * 4,  # ~20 days
-            )
-            pos.stop_price = new_stop
-
-            # Intrabar stop/target override (check_exit uses close; we check H/L)
-            if not should_exit:
-                if today_low <= pos.stop_price:
+            if not is_short:
+                # Long: use standard check_exit with trailing stop
+                should_exit, exit_reason, new_stop = check_exit(
+                    symbol=sym,
+                    current_price=today_close,
+                    entry_price=pos.entry_price,
+                    stop_price=pos.stop_price,
+                    target_price=pos.target_price,
+                    highest_price=pos.highest_price,
+                    bars_held=pos.bars_held,
+                    min_hold_bars=1,
+                    max_hold_bars=self.limits.MAX_OPEN_POSITIONS * 4,
+                )
+                pos.stop_price = new_stop
+                # Intrabar stop/target override
+                if not should_exit:
+                    if today_low <= pos.stop_price:
+                        should_exit = True
+                        exit_reason = "stop_hit"
+                        today_close = pos.stop_price
+                    elif today_high >= pos.target_price:
+                        should_exit = True
+                        exit_reason = "target_hit"
+                        today_close = pos.target_price
+            else:
+                # Short: stop is above entry (upside), target is below entry (downside)
+                should_exit = False
+                exit_reason = ""
+                if today_high >= pos.stop_price:
                     should_exit = True
                     exit_reason = "stop_hit"
                     today_close = pos.stop_price
-                elif today_high >= pos.target_price:
+                elif today_low <= pos.target_price:
                     should_exit = True
                     exit_reason = "target_hit"
                     today_close = pos.target_price
+                elif pos.bars_held >= self.limits.MAX_OPEN_POSITIONS * 4:
+                    should_exit = True
+                    exit_reason = "max_hold"
 
             if should_exit:
                 trade, tx = self._close_position(pos, day, today_close, exit_reason, portfolio)
@@ -958,13 +1000,25 @@ class AgentSimulator:
         reason: str,
         portfolio: Optional[_PortfolioState] = None,
     ) -> Tuple[Trade, float]:
+        is_short = getattr(pos, "direction", "long") == "short"
         tx_cost = exit_price * pos.quantity * self.transaction_cost_pct
-        gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-        net_pnl = gross_pnl - tx_cost
+
+        if not is_short:
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            net_pnl = gross_pnl - tx_cost
+            pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
+            if portfolio is not None:
+                portfolio.cash += exit_price * pos.quantity - tx_cost
+        else:
+            # Short: profit when price falls (entry - exit)
+            gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            net_pnl = gross_pnl - tx_cost
+            pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
+            if portfolio is not None:
+                # Return margin + realised P&L; deduct buy-to-cover cost
+                portfolio.cash += pos.entry_price * pos.quantity + gross_pnl - tx_cost
 
         if portfolio is not None:
-            # Credit back proceeds minus exit transaction cost
-            portfolio.cash += exit_price * pos.quantity - tx_cost
             portfolio.daily_pnl += net_pnl
             sector = getattr(pos, "sector", "UNKNOWN")
             cost_basis = pos.entry_price * pos.quantity
@@ -980,7 +1034,7 @@ class AgentSimulator:
             exit_price=round(exit_price, 4),
             quantity=pos.quantity,
             pnl=round(net_pnl, 2),
-            pnl_pct=round((exit_price - pos.entry_price) / pos.entry_price, 6),
+            pnl_pct=round(pnl_pct, 6),
             hold_bars=pos.bars_held,
             exit_reason=self._normalize_reason(reason),
             trade_type="swing",

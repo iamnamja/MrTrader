@@ -521,6 +521,7 @@ def run_swing_walkforward(
     feature_cache_disable: bool = False,
     sim_scan_interval_days: int = 1,
     use_factor_portfolio: bool = False,  # Phase D: bypass ML model, use factor composite scorer
+    scorer_instance=None,  # Phase G: inject any callable scorer directly (overrides use_factor_portfolio)
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -714,10 +715,14 @@ def run_swing_walkforward(
                 logger.warning("Feature cache build failed, falling back to live compute: %s", _exc)
                 _feature_cache = None
 
-        _factor_scorer_inst = None
-        if use_factor_portfolio:
+        _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
+        if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
-            _factor_scorer_inst = FactorPortfolioScorer(top_n=20)
+            _factor_scorer_inst = FactorPortfolioScorer(
+                top_n=20,
+                top_n_short=15,
+                long_short=True,  # Phase F: directional L/S, 40% net long
+            )
 
         sim = AgentSimulator(
             model=model,
