@@ -35,7 +35,7 @@ _DEFAULT_DB = "app/ml/models/feature_store.db"
 
 # Bump this whenever engineer_features() gains or loses columns.
 # Mismatch → cache auto-cleared on startup.
-SCHEMA_VERSION = "v9"  # v9: Phase C+ — 3 interaction features added (72 raw features, up from 69)
+SCHEMA_VERSION = "v10"  # v10: Phase C v2 — 2 sector-neutral features added (74 raw features)
 
 
 class FeatureStore:
