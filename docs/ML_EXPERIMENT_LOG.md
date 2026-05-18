@@ -3403,3 +3403,80 @@ Running monthly-rebalance factor picks through ATR-stop/target execution produce
 **Conclusion:** AgentSimulator WF is the wrong validation tool for the factor portfolio. The validated Sharpe of 1.335 from `scripts/factor_portfolio_backtest.py` (monthly rebalance, equal-weight, SPY>MA200 gate) is the correct benchmark. Live trading via PM agent uses daily top-20 selection with Risk Manager execution — the actual live performance will be evaluated by paper trading.
 
 **Next validation approach:** 2-week paper trade review starting 2026-05-20.
+
+---
+
+## Phase E — P0 Audit + L/S Pivot Decision (2026-05-18)
+
+**Capital:** $100k (paper)
+**Status:** Phase D factor portfolio integration complete (PR #224/#225). Strategy now pivoting to directional Long/Short.
+
+### P0 Bug Audit Results
+
+| Item | Result |
+|---|---|
+| **P0.1 Entry price** | ✅ ALREADY CORRECT — `agent_simulator.py:804` uses `today_bar["open"]` (actual next-session open, not `prev_close × 1.001`) |
+| **P0.2 Intrabar stop** | ✅ ALREADY CORRECT — `agent_simulator.py:935-944` checks `today_low <= stop_price` and `today_high >= target_price` (intraday H/L, not close-only) |
+| **P0.3 Factor IC** | Script written: `scripts/compute_factor_ic.py` (Spearman IC, monthly rebalance dates, forward 10d returns). Pass: IC ≥ 0.02, t-stat ≥ 2.0. **Not yet run.** |
+| **P0.4 Survivorship** | Script written: `scripts/audit_survivorship.py` (delisted ticker coverage in daily cache). **Not yet run.** |
+
+**Key finding:** Two of the four "critical bugs" identified by reviewers were already correctly implemented. The simulator uses next-session open and intraday H/L. This shifts weight to P0.3 (IC) and P0.4 (survivorship) as the remaining unknowns.
+
+### Strategic Pivot: Long-Only → Long/Short
+
+After Phase C LambdaRank campaign close (9 runs, structural Fold-2 collapse in 2022-2023 bear), and synthesis of 4 independent LLM reviews, the decision is to convert the strategy stack to directional Long/Short.
+
+**Root cause of long-only failure:** Cross-sectional quintile labels in a 25% bear drawdown teach the model "fell least = winner" — defensive/low-vol signals that contradict the momentum-quality features optimized over the full training history. Fold 2 collapsed in all 9 runs (avg ~-2.0 Sharpe). This is a data-generating process problem that survives all hyperparameter / objective / feature-set variations.
+
+**Why L/S fixes this:**
+- Shorts produce P&L when the market falls — bear regime is no longer a label-inversion trap
+- Net exposure of +40% (configurable) still captures beta in bull markets, with reduced drawdown
+- WF gate of 0.80 avg Sharpe is achievable for L/S (was structurally unreachable for long-only ranking)
+
+### Decisions Locked-In (2026-05-18)
+
+| # | Decision | Notes |
+|---|---|---|
+| 1 | **Long/Short, 40% net long** | `pm.ls_net_exposure_pct=0.40` configurable. Gross ~150%. |
+| 2 | **Factor portfolio → paper after PIT audit + post-L/S WF ≥ 0.80** | PR #224/#225 integrated; will become long sleeve of L/S |
+| 3 | **Intraday: backburner** | Paper continues, zero dev investment, revisit after swing validated |
+| 4 | **PEAD as 2nd strategy** | FMP `get_earnings_features_at()` already PIT-safe via `filingDate`, $0 extra cost |
+| 5 | **50/50 equal-weight by strategy** | When factor + PEAD both active |
+| 6 | **Survivorship audit gate** | Must run before any new WF |
+| 7 | **Live promotion** | 3mo paper, Sharpe ≥ 0.50, DD ≤ 15%, max pos ≤ 8% NAV |
+| 8 | **WF gate stays 0.80 avg / -0.30 min** | Achievable for L/S |
+
+### Phase Plan Going Forward
+
+```
+Phase E (DONE 2026-05-18) — compute_factor_ic.py + audit_survivorship.py
+Phase F (NEXT)             — L/S infrastructure
+  F.1 FactorPortfolioScorer → [(sym, conf, direction)] with SHORT candidates
+  F.2 PM proposals → SELL_SHORT direction
+  F.3 AgentSimulator → short P&L, 0.5%/yr borrow cost, inverted stop/target
+  F.4 risk_rules.py → net exposure gate (±15% tolerance), short heat
+  F.5 agent_config.py → pm.ls_net_exposure_pct (0.40), pm.ls_top_n_long (20), pm.ls_top_n_short (15)
+  F.6 WF re-run → gate avg ≥ 0.80, min fold ≥ -0.30
+Phase G                    — PEAD strategy
+  G.1 pead_scorer.py using fmp_provider.get_earnings_features_at()
+  G.2 Multi-strategy routing in PM (PEAD priority for ≤5d post-earnings)
+  G.3 run_pead_walkforward.py — 5-fold, 6yr
+Phase H                    — 3-month paper trading gate
+Phase I                    — Live $100k (start small, scale after 4 weeks clean data)
+```
+
+### Technical Insights From LLM Review (Preserved)
+
+1. **IC was never computed for any model** — single most critical gap. Phase E script addresses it.
+2. **Factor decomposition required** before live: regress factor returns on SPY + AQR MOM + QMJ, require alpha t-stat > 2
+3. **StrategyContract abstraction** (ChatGPT) — deferred to P2, not blocking
+4. **Sector rotation as floor benchmark** — 11 SPDR ETFs, top-3 by 6mo momentum, monthly rebalance
+5. **FMP PIT confirmed extensive** — uses `filingDate` not period end; look-ahead bias less likely than initially feared
+6. **Long-only cross-sectional ranking is structurally broken in bear regimes** — all 4 reviewers agreed independently
+
+### LLM Review Synthesis Reference
+
+Full synthesis: `docs/QUANT_REVIEW_SYNTHESIS_2026_05_18.md`
+
+4 reviewers (DeepSeek, Gemini, ChatGPT, Opus 4.7) **unanimous**: fix IC first, then pivot to L/S. The 1.335 factor Sharpe is unvalidated until PIT-clean IC > 0.02 is confirmed.
+
