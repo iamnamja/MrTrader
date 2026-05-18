@@ -3154,4 +3154,74 @@ Opus identified the true root cause of fold losses: absolute momentum features c
 
 ## Phase C Training Run 6 — 2026-05-18 — v207 (LambdaRank, 19 features: +2 sector-neutral)
 
-*In progress...*
+**Status:** ❌ GATE FAILED — Infrastructure bug (sector_momentum=0.0 in walk-forward)
+
+- **Root cause:** `build_feature_cache` in `app/backtesting/feature_cache.py` called `engineer_features()` without `sector_etf_bars`. Walk-forward computed `sector_momentum=0.0` for all symbols/days. This made `momentum_20d_sector_neutral = momentum_20d` (training used real ETF values). Catastrophic train/test mismatch.
+- **Folds:** [-1.618, -2.637, +0.831, -1.540, -1.640] | avg=-1.322 ❌
+- **Fix applied:** Added `sector_etf_bars` parameter to `_build_symbol_rows()` and `build_feature_cache()`, replicating the PIT ETF override logic from the training worker. `walkforward_tier3.py` now loads `data/sector_etf/sector_etf_history.parquet` before fold loop and passes to `_build_fc()`.
+
+---
+
+## Phase C Training Run 7 — 2026-05-18 — v208 (LambdaRank, 19 features, sector ETF fix)
+
+**Completed:** 2026-05-18 07:15 | **Status:** ❌ GATE FAILED (avg=-0.156)
+
+### Configuration
+- Model: LGBMRanker (LambdaRank), 19 features (PHASE_C_V2_FEATURE_KEEP_LIST: 17 IC-validated + momentum_20d_sector_neutral + momentum_60d_sector_neutral)
+- HPO: 50 Optuna trials, NDCG@5 objective → best NDCG@5=0.4799
+- Best HPO params: n_estimators=436, num_leaves=24, lr=0.0074, subsample=0.652, colsample=0.721, reg_alpha=1.246, reg_lambda=1.897, min_child_samples=30
+- AUC=0.5066 (drift_flag=True), walk-forward: 5 folds, 6yr, expanding window, no_prefilters=True
+
+### Walk-Forward Results
+
+| Fold | Test Period | Trades | Sharpe | PF | Calmar | Gate |
+|---|---|---|---|---|---|---|
+| 1 | 2021-05-30→2022-05-19 | 227 | **-0.434** | 0.00* | -0.50 | ❌ |
+| 2 | 2022-05-30→2023-05-19 | 99 | **-2.597** | 0.00* | -1.03 | ❌ |
+| 3 | 2023-05-30→2024-05-18 | 242 | **+2.128** | 0.00* | +2.79 | ✅ |
+| 4 | 2024-05-29→2025-05-18 | 236 | **-0.052** | 0.00* | -0.05 | ✅ |
+| 5 | 2025-05-29→2026-05-18 | 235 | **+0.176** | 0.00* | +0.16 | ✅ |
+| **Avg** | | **1039** | **-0.156** ❌ | — | | ❌ GATE FAILED |
+
+*PF=0.00 is a known reporting bug: `trade_returns` not propagated from strategy→result object; gate forgives PF=0 explicitly.
+
+**Gate thresholds:** avg Sharpe ≥ 0.80 ❌ | min fold ≥ -0.30 ❌ (fold 2 = -2.597)
+
+### Opus 4.7 Analysis — 2026-05-18
+
+**Root cause of regression vs v205b (+0.267 → -0.156):**
+
+1. **HPO landed in a worse basin after +2 low-signal features.** SHAP: momentum_60d_sector_neutral=0.021, momentum_20d_sector_neutral not in top-15. Adding low-signal features expanded HPO search space; optimizer found a Fold-3-specific (2023-2024 bull) basin that overfits. Fold 3 (+2.128) is an outlier — the model memorized that regime. Fold dispersion exploded: v205b range ~0.5, v208 range ~4.7.
+2. **Fold 2 trade count collapse (99 vs ~235 avg).** 2022 bear market: model score degeneracy (AUC≈0.5066 → near-random ranking) likely produces near-tied top-5 scores. Some gate/vol-target mechanism may be suppressing entries. This fold accounts for most of the avg Sharpe drag.
+3. **NDCG@5=0.4799 is HPO-overfit.** Good CV metric but poor proxy for OOS Sharpe on a 5-name portfolio. The optimizer is maximizing list ordering, not portfolio return.
+4. **Sector-neutral feature train/test mismatch suspicion.** Despite the ETF fix, `momentum_20d` sector neutral may still have a lookback alignment issue at fold-test boundaries (first ~20 trading days emit near-0 if ETF history doesn't pre-roll into test start).
+
+**What PF=0.00 means:** Reporting bug only — `trade_returns` list is empty because `agent_simulator` result object doesn't expose it. Gate forgives this. Not actionable for Sharpe improvement.
+
+### v209 Plan (Opus 4.7 recommended)
+
+**P0 — v209a: Clean baseline (highest priority)**
+- Revert to v205b's 17-feature `PHASE_C_PLUS_FEATURE_KEEP_LIST` exactly
+- Same HPO (50 trials), same walk-forward config
+- Goal: confirm v205b +0.267 is reproducible. If v209a ≈ +0.267 → sector-neutral was the culprit. If v209a < +0.267 → something else regressed since v205b.
+
+**P1 — v209b: Tighter HPO constraints**
+- Cap num_leaves ≤ 16, n_estimators ≤ 250 (prevent over-fitting with 19 features on ~650 symbols/day)
+- Switch HPO objective from NDCG@5 → NDCG@3 (tighter match to top-5 portfolio)
+- Expected: lower fold dispersion, more stable avg Sharpe
+
+**P2 — v209c: Rolling 3yr training window**
+- Expanding window hurts when recent regime (tariff/vol shock 2025) differs from early data (2020-2022)
+- Rolling 3yr removes 2020-2021 COVID patterns that don't generalize to 2025
+- Expected: Fold 4 and Fold 5 improvement
+
+**P3 — v209d: LambdaRank + XGBoost binary ensemble**
+- v200b (XGBoost binary, now bug-free) rank-averaged with best LambdaRank
+- Different inductive biases; ensemble expected +0.1 to +0.2 Sharpe
+- Only if P0-P2 don't reach interim gate of +0.50
+
+**Path to 0.80:** Pure single-model LambdaRank tuning likely caps ~+0.35 to +0.45. Structural path requires ensemble (LambdaRank + XGBoost) + regime routing + tighter HPO. Interim checkpoint: avg ≥ +0.50, min ≥ -0.30.
+
+---
+
+## Phase C Training Run 8 — 2026-05-18 — v209a (LambdaRank, 17 features, clean baseline)
