@@ -197,3 +197,90 @@ def regime_gate_ok(
     vix_ok = (vix_value is None) or (vix_value < vix_threshold)
 
     return spy_ok and vix_ok
+
+
+class FactorPortfolioScorer:
+    """Callable wrapper for use as AgentSimulator.factor_scorer.
+
+    Implements the interface: (day, symbols_data, vix_history) -> [(sym, conf)]
+
+    Usage:
+        scorer = FactorPortfolioScorer(top_n=20, use_tier2=True)
+        sim = AgentSimulator(..., factor_scorer=scorer)
+    """
+
+    def __init__(
+        self,
+        top_n: int = 20,
+        use_tier2: bool = True,
+        vix_threshold: float = 30.0,
+        spy_ma_window: int = 200,
+    ):
+        self.top_n = top_n
+        self.use_tier2 = use_tier2
+        self.vix_threshold = vix_threshold
+        self.spy_ma_window = spy_ma_window
+
+    def __call__(
+        self,
+        day,
+        symbols_data: dict,
+        vix_history=None,
+    ) -> list:
+        """Score all symbols on `day` using factor composite. Returns [(sym, conf)]."""
+        import pandas as pd
+
+        # Build aligned closes DataFrame
+        close_cols = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < day if hasattr(df.index[0], "date") else df.index < pd.Timestamp(day)
+            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            if len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+        as_of = closes.index[-1]
+
+        # Regime gate
+        spy_series = closes.get("SPY", pd.Series(dtype=float))
+        vix_val = None
+        if vix_history is not None:
+            try:
+                past_vix = vix_history[vix_history.index <= as_of]
+                if len(past_vix) > 0:
+                    vix_val = float(past_vix.iloc[-1])
+            except Exception:
+                pass
+
+        if not regime_gate_ok(
+            spy_series, as_of, vix_value=vix_val,
+            ma_window=self.spy_ma_window, vix_threshold=self.vix_threshold,
+        ):
+            return []
+
+        bars_by_sym = {
+            sym: df.loc[df.index.date < day] if hasattr(df.index[0], "date")
+            else df.loc[df.index < pd.Timestamp(day)]
+            for sym, df in symbols_data.items()
+            if sym in close_cols
+        }
+
+        scores = compute_composite_score(as_of, closes, bars_by_sym, use_tier2=self.use_tier2)
+        if scores.empty:
+            return []
+
+        top_syms = select_top_n(scores, n=self.top_n)
+
+        s_min, s_max = float(scores.min()), float(scores.max())
+        s_range = max(s_max - s_min, 1e-6)
+
+        return [
+            (sym, 0.55 + 0.40 * ((float(scores[sym]) - s_min) / s_range))
+            for sym in top_syms
+        ]
