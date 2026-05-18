@@ -77,12 +77,28 @@ def main() -> int:
 
     try:
         from scripts.walkforward_tier3 import run_swing_walkforward
+
+        # v206: regime-gated inference — build benign_blocked_dates from PIT regime scores.
+        # Training already uses exclude_risk_off_days=True; gating test entries too fixes
+        # the train/test distribution mismatch (training = risk-on only, test = all days).
+        benign_blocked_dates = None
+        try:
+            from app.ml.regime_score_pit import build_regime_score_map
+            from app.ml.retrain_config import BENIGN_REGIME_THRESHOLD
+            _score_map = build_regime_score_map()
+            benign_blocked_dates = {d for d, s in _score_map.items() if s < BENIGN_REGIME_THRESHOLD}
+            logger.info("BenignGate: %d adverse-regime dates blocked (threshold=%.2f)",
+                        len(benign_blocked_dates), BENIGN_REGIME_THRESHOLD)
+        except Exception as _be:
+            logger.warning("BenignGate setup failed — running without regime gate: %s", _be)
+
         wf = run_swing_walkforward(
             n_folds=5,
             total_years=6,
             model_version=version,
             use_opportunity_score=True,
             no_prefilters=True,
+            benign_blocked_dates=benign_blocked_dates,
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe

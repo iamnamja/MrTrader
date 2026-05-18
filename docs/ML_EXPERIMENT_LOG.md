@@ -3058,3 +3058,54 @@ v202 (TSNorm silently off via Bug 5) gave +0.317 — the best result so far — 
 
 ### Next: v205 — LambdaRank, cs_normalize only, 50 HPO trials
 Expected: recover v202 baseline (+0.317) plus meaningful HPO improvement. Target: avg ≥ +0.5 to confirm signal quality, then pursue regime-gating for F2/F5.
+
+---
+
+## Phase C Training Run 4 — 2026-05-18 — v205b (LambdaRank, cs_normalize, 50 HPO trials, all bugs fixed)
+
+### Setup
+- **Model**: LambdaRank, 17 features (PHASE_C_PLUS_FEATURE_KEEP_LIST)
+- **Normalization**: cs_normalize only — TSNorm disabled for lambdarank at code level
+- **HPO**: 50 trials, TPE sampler, NDCG@5 objective
+- **Bug fixes**: All 5 bugs + Bug 5b fixed (model._ts_norm_state=None for lambdarank)
+- DB version assigned: v205
+
+### Results
+
+| Model | DB Ver | Features | TSNorm | HPO | Avg Sharpe | Min Fold | Fold Sharpes | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| LambdaRank | v205 | 17 | ❌ Off | 50 | +0.267 | -0.211 | [+0.41, -0.06, +0.76, -0.21, +0.44] | ❌ FAIL |
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Min fold PASSES (-0.211 > -0.30). Avg Sharpe fails (+0.267 < 0.80).
+
+### Fold Detail
+
+| Fold | Train Period | Test Period | Trades | Sharpe | Calmar |
+|---|---|---|---|---|---|
+| 1 | 2020-04-18 → 2021-05-18 | 2021-05-29 → 2022-05-18 | 222 | +0.41 | 0.43 |
+| 2 | 2020-04-18 → 2022-05-18 | 2022-05-29 → 2023-05-18 | 168 | -0.06 | -0.05 |
+| 3 | 2020-04-18 → 2023-05-18 | 2023-05-29 → 2024-05-17 | 246 | +0.76 | 0.55 |
+| 4 | 2020-04-18 → 2024-05-17 | 2024-05-28 → 2025-05-17 | 207 | -0.21 | -0.16 |
+| 5 | 2020-04-18 → 2025-05-17 | 2025-05-28 → 2026-05-17 | 203 | +0.44 | 0.34 |
+
+HPO: n_estimators=387, num_leaves=37, lr=0.00778, subsample=0.710, colsample=0.874, reg_alpha=1.07, reg_lambda=0.92, min_child=42. Best NDCG@5=0.5187.
+
+### Comparison vs v202 (cs_norm, 20 HPO)
+| | avg | F1 | F2 | F3 | F4 | F5 | min |
+|---|---|---|---|---|---|---|---|---|
+| v202 (20 HPO) | +0.317 | +1.57 | -1.22 | +2.39 | +0.75 | -1.91 | -1.91 |
+| v205b (50 HPO) | +0.267 | +0.41 | **-0.06** | +0.76 | -0.21 | **+0.44** | **-0.211** |
+
+50 HPO trials found a more stable (lower variance) model: min fold improved from -1.91 → -0.211 (now passing the gate). But peak folds collapsed (F3: +2.39→+0.76). Avg Sharpe slightly worse.
+
+### Opus 4.7 Analysis
+- **HPO objective misalignment**: NDCG@5 3-fold CV is stability-seeking — it rejects high-variance param sets. The 50-trial search optimized for balanced folds, not peak Sharpe. This is correct behavior but wrong for a gate that also requires high avg Sharpe.
+- **Signal ceiling**: NDCG@5=0.5187 (barely above 0.50) → realistic avg Sharpe ceiling ~0.3-0.6 for this 17-feature set without regime help. Gate of 0.80 is NOT achievable with LambdaRank alone.
+- **Key insight**: Min fold now passes. Problem is entirely avg Sharpe. Need ~+0.53 more avg Sharpe.
+- **Next**: Regime-gated inference. Training already excludes risk-off days (`exclude_risk_off_days=True`). Not applying the same gate at inference is a train/test mismatch. Adding `benign_blocked_dates` from `regime_model_v4` should reduce drag from adverse-market periods.
+
+### Next: v206 — same LambdaRank + regime-gated inference (benign_blocked_dates)
+- No architecture change — same 17 features, cs_normalize, 50 HPO
+- `benign_blocked_dates` built from `build_regime_score_map()` (threshold=0.50) passed to walk-forward
+- Fixes train/test distribution mismatch (training = risk-on only, test now = risk-on only too)
+- Expected: avg Sharpe +0.267 → +0.45-0.60, min fold stable
