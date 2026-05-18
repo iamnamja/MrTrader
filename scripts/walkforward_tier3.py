@@ -520,6 +520,7 @@ def run_swing_walkforward(
     feature_cache_executor: str = "process",
     feature_cache_disable: bool = False,
     sim_scan_interval_days: int = 1,
+    use_factor_portfolio: bool = False,  # Phase D: bypass ML model, use factor composite scorer
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -713,6 +714,11 @@ def run_swing_walkforward(
                 logger.warning("Feature cache build failed, falling back to live compute: %s", _exc)
                 _feature_cache = None
 
+        _factor_scorer_inst = None
+        if use_factor_portfolio:
+            from app.ml.factor_scorer import FactorPortfolioScorer
+            _factor_scorer_inst = FactorPortfolioScorer(top_n=20)
+
         sim = AgentSimulator(
             model=model,
             atr_stop_mult=atr_stop_mult,
@@ -729,6 +735,7 @@ def run_swing_walkforward(
             benign_blocked_dates=benign_blocked_dates,
             feature_cache=_feature_cache,
             sim_scan_interval_days=sim_scan_interval_days,
+            factor_scorer=_factor_scorer_inst,
         )
         result = sim.run(
             fold_symbols_data,

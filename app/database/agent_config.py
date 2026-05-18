@@ -101,6 +101,16 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Re-score below this threshold triggers PM exit signal",
         "group": "Portfolio Manager",
     },
+    {
+        "key": "pm.swing_selector",
+        "default": "factor_portfolio",
+        "type": "str",
+        "description": (
+            "Swing selection method: 'ml_model' uses LambdaRank/XGBoost scores; "
+            "'factor_portfolio' uses momentum+quality composite (Phase D default)"
+        ),
+        "group": "Portfolio Manager",
+    },
     # Trader / Strategy
     {
         "key": "strategy.partial_exit_pct",

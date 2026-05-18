@@ -136,6 +136,7 @@ class AgentSimulator:
         regime_score_history: Optional[Dict[date, float]] = None,  # WF-C1: PIT daily regime score
         feature_cache=None,          # FeatureCache: pre-computed raw features (WF speedup)
         sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
+        factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -162,6 +163,7 @@ class AgentSimulator:
         self.regime_score_history: Dict[date, float] = regime_score_history or {}
         self.feature_cache = feature_cache
         self.sim_scan_interval_days = max(1, sim_scan_interval_days)
+        self.factor_scorer = factor_scorer  # Phase D: optional callable override
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -426,7 +428,16 @@ class AgentSimulator:
 
         When a FeatureCache is available, dispatches to _pm_score_cached for
         O(1) feature lookup instead of re-computing features per symbol.
+        When factor_scorer is set, delegates entirely to the callable.
         """
+        # Phase D: factor portfolio path — bypasses ML model entirely
+        if self.factor_scorer is not None:
+            try:
+                return self.factor_scorer(day, symbols_data, vix_history)
+            except Exception as _fsc_exc:
+                logger.warning("factor_scorer failed on %s: %s", day, _fsc_exc)
+                return []
+
         if self.model is None or not getattr(self.model, "is_trained", False):
             return []
 
@@ -476,7 +487,7 @@ class AgentSimulator:
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
         except Exception as exc:
-            logger.debug("PM score failed on %s: %s", day, exc)
+            logger.warning("PM score failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
         ranked = sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
@@ -541,7 +552,7 @@ class AgentSimulator:
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
         except Exception as exc:
-            logger.debug("PM score (cached) failed on %s: %s", day, exc)
+            logger.warning("PM score (cached) failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
         proposals = []

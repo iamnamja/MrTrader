@@ -1130,6 +1130,163 @@ class PortfolioManager(BaseAgent):
         finally:
             db.close()
 
+    def _fetch_bars_bulk_for_factor(self) -> dict:
+        """Fetch 300-day daily bars for the universe — shared between ML and factor paths."""
+        symbols = self._get_universe()
+        return self._alpaca.get_bars_batch(symbols, timeframe="1D", limit=300)
+
+    async def _analyze_swing_factor_portfolio(self) -> None:
+        """Phase D: factor portfolio swing selection (momentum + quality composite).
+
+        Replaces ML model scoring when pm.swing_selector='factor_portfolio'.
+        Top-20 by composite score, regime-gated (SPY>MA200 + VIX<30).
+        Proposals use confidence = min-max normalised composite score.
+        """
+        import pandas as pd
+        from app.ml.factor_scorer import (
+            compute_composite_score, select_top_n, regime_gate_ok,
+        )
+
+        universe = self._get_universe()
+        self.logger.info(
+            "Factor portfolio swing scan: fetching bars for %d symbols...", len(universe)
+        )
+        t0 = _time.monotonic()
+        try:
+            bars_by_symbol: dict = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._alpaca.get_bars_batch, universe, "1D", 300
+                ),
+                timeout=1200,
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("Factor portfolio bar fetch timed out — skipping")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "factor_bar_fetch_timeout",
+                "strategy": "swing",
+                "selector": "factor_portfolio",
+            })
+            return
+        self.logger.info(
+            "Factor portfolio bar fetch: %d/%d symbols in %.1fs",
+            len(bars_by_symbol), len(universe), _time.monotonic() - t0,
+        )
+
+        if not bars_by_symbol:
+            self.logger.warning("Factor portfolio: no bars fetched — skipping")
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "no_bars",
+                "strategy": "swing",
+                "selector": "factor_portfolio",
+            })
+            return
+
+        # Build aligned closes DataFrame (each column = one symbol)
+        close_cols: dict[str, pd.Series] = {}
+        for sym, df in bars_by_symbol.items():
+            if df is not None and not df.empty and "close" in df.columns:
+                close_cols[sym] = df["close"]
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+
+        as_of = closes.index[-1]  # most recent bar date
+
+        # Regime gate: SPY > MA200 AND VIX < 30
+        spy_ok = True
+        try:
+            vix_val = self._fetch_vix_level()
+            spy_series = closes.get("SPY", pd.Series(dtype=float))
+            spy_ok = regime_gate_ok(spy_series, as_of, vix_value=vix_val)
+            if not spy_ok:
+                self.logger.warning(
+                    "Factor portfolio regime gate BLOCKED (SPY<MA200 or VIX>=30, VIX=%.1f)", vix_val
+                )
+                await self.log_decision("SELECTION_SKIPPED", reasoning={
+                    "reason": "factor_regime_gate_blocked",
+                    "strategy": "swing",
+                    "selector": "factor_portfolio",
+                    "vix": round(vix_val, 1),
+                })
+                return
+        except Exception as _rg_exc:
+            self.logger.warning("Factor regime gate check failed (permissive): %s", _rg_exc)
+
+        # Compute composite score
+        try:
+            scores = compute_composite_score(as_of, closes, bars_by_symbol)
+        except Exception as _sc_exc:
+            self.logger.error("Factor score computation failed: %s", _sc_exc, exc_info=True)
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "factor_score_error",
+                "strategy": "swing",
+                "selector": "factor_portfolio",
+                "error": str(_sc_exc),
+            })
+            return
+
+        if scores.empty:
+            self.logger.warning("Factor portfolio: all scores empty — skipping")
+            return
+
+        # Exclude currently-held symbols
+        from app.database.session import get_session as _gs3
+        from app.database.models import Trade as _Trade3
+        _hdb3 = _gs3()
+        try:
+            _open3 = _hdb3.query(_Trade3).filter(
+                _Trade3.status.in_(["open", "pending"]),
+                _Trade3.trade_type == "swing",
+            ).all()
+            _held3 = {t.symbol for t in _open3}
+        finally:
+            _hdb3.close()
+        scores = scores.drop(index=list(_held3), errors="ignore")
+
+        top_n_count = 20  # Phase D: top-20 equal-weight
+        try:
+            from app.database.session import get_session as _gs4
+            from app.database.agent_config import get_agent_config as _gac4
+            _db4 = _gs4()
+            try:
+                _cfg_top_n = _gac4(_db4, "pm.top_n_stocks")
+                if isinstance(_cfg_top_n, int) and _cfg_top_n > 0:
+                    top_n_count = _cfg_top_n
+            finally:
+                _db4.close()
+        except Exception:
+            pass
+
+        top_syms = select_top_n(scores, n=top_n_count)
+
+        # Map composite score → [0,1] confidence for _build_proposals compatibility
+        s_min, s_max = float(scores.min()), float(scores.max())
+        s_range = max(s_max - s_min, 1e-6)
+
+        def _norm_conf(sym: str) -> float:
+            raw = float(scores.get(sym, s_min))
+            return 0.55 + 0.40 * ((raw - s_min) / s_range)  # maps to [0.55, 0.95]
+
+        selected = [(sym, _norm_conf(sym)) for sym in top_syms]
+
+        self.logger.info(
+            "Factor portfolio scan: scored %d symbols, top-%d selected: %s",
+            len(scores), len(selected), [s for s, _ in selected[:5]],
+        )
+
+        self._swing_proposals = await self._build_proposals(selected)
+
+        await self.log_decision(
+            "SWING_PREMARKET_ANALYSIS",
+            reasoning={
+                "selector": "factor_portfolio",
+                "candidates": [
+                    {"symbol": s, "confidence": round(float(c), 4)} for s, c in selected
+                ],
+                "total_evaluated": len(scores),
+                "send_time": "09:50 ET",
+            },
+        )
+
     async def _analyze_swing_premarket(self):
         """
         08:00 ET: Score all universe stocks using yesterday's daily bars.
@@ -1137,16 +1294,29 @@ class PortfolioManager(BaseAgent):
         Sending is deferred to 09:50 so we enter after the open volatility spike.
         """
         model_ver = getattr(self.model, "version", None)
-        self.logger.info("Pre-market swing analysis starting — model v%s", model_ver)
 
-        if not self.model.is_trained:
-            self.logger.warning("No trained model — pre-market analysis skipped")
-            await self.log_decision("SELECTION_SKIPPED", reasoning={
-                "reason": "model not trained",
-                "strategy": "swing",
-                "model_version": model_ver,
-            })
+        # Phase D: route to factor portfolio if configured or model not trained
+        selector = "ml_model"
+        try:
+            from app.database.session import get_session as _gs2
+            from app.database.agent_config import get_agent_config as _gac
+            _db2 = _gs2()
+            try:
+                selector = _gac(_db2, "pm.swing_selector") or "factor_portfolio"
+            finally:
+                _db2.close()
+        except Exception:
+            pass
+
+        if selector == "factor_portfolio" or not self.model.is_trained:
+            self.logger.info(
+                "Pre-market swing analysis starting — factor_portfolio selector (model v%s)",
+                model_ver,
+            )
+            await self._analyze_swing_factor_portfolio()
             return
+
+        self.logger.info("Pre-market swing analysis starting — model v%s", model_ver)
 
         universe = self._get_universe()
         self.logger.info("Fetching features for %d symbols...", len(universe))
