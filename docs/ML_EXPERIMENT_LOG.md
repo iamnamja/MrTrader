@@ -2957,3 +2957,55 @@ v194 restored as swing ACTIVE.
 ### Verdict: ❌ FAIL — bugs masked true signal, retrain required
 
 Next: **v202** — LambdaRank with both fixes applied. Expected: non-zero trades, valid TSNorm. Gate still uncertain (actual signal quality TBD after bugs removed).
+
+---
+
+## Phase C Training Run 2 — 2026-05-17 — v202/v203 (LambdaRank, 17 features, all bugs fixed)
+
+### Setup
+- **Model**: LambdaRank (`run_v201_lambdarank_plus.py`), 17 features (14 IC-validated + 3 interactions)
+- **Bug fixes applied**: Bug 1 (predict_with_vix), Bug 2 (TSNorm fit order), Bug 3 (HPO meta_arr indexing), Bug 4 (LambdaRankModel.load TSNorm)
+- v202 = first clean run (computer restarted mid-v203 attempt; the surviving process assigned version v202 from DB)
+
+### Results (v202 — DB version assigned to this run)
+
+| Model | DB Ver | Features | Label | TSNorm? | Avg Sharpe | Min Fold | Fold Sharpes | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| LambdaRank | v202 | 17 | lambdarank | ❌ Bug 5 | +0.317 | -1.909 | [+1.57, -1.22, +2.39, +0.75, -1.91] | ❌ FAIL |
+
+Gate: avg ≥ 0.80, min ≥ -0.30. **Both failed.**
+
+### Fold Detail
+
+| Fold | Train Period | Test Period | Trades | Sharpe | Calmar |
+|---|---|---|---|---|---|
+| 1 | 2020-04-18 → 2021-05-18 | 2021-05-29 → 2022-05-18 | 185 | +1.57 | 2.35 |
+| 2 | 2020-04-18 → 2022-05-18 | 2022-05-29 → 2023-05-18 | 179 | -1.22 | -0.85 |
+| 3 | 2020-04-18 → 2023-05-18 | 2023-05-29 → 2024-05-17 | 250 | +2.39 | 2.52 |
+| 4 | 2020-04-18 → 2024-05-17 | 2024-05-28 → 2025-05-17 | 250 | +0.75 | 1.03 |
+| 5 | 2020-04-18 → 2025-05-17 | 2025-05-28 → 2026-05-17 | 246 | -1.91 | -0.88 |
+
+### Root Cause: Bug 5 — TSNorm state never transferred to model pickle
+
+**Discovery**: Log showed "Model has no TS norm state — using cs_normalize" for all 5 walk-forward folds. This means every fold was scored with the wrong normalization.
+
+**Root cause**: `training.py` sets `self._ts_norm_state` on `ModelTrainer` (line 819), but `self.model.save()` pickles the `LambdaRankModel` object — which never had `_ts_norm_state` assigned to it. `agent_simulator.py` reads `_ts_norm_state` from the model object (`getattr(self.model, "_ts_norm_state", None)`), so every fold fell back to cs_normalize despite the training-time fix.
+
+**Fix applied to `app/ml/training.py`** (before `self.model.save()`):
+```python
+# Bug 5 fix: transfer TSNorm state onto model object so it's included in the
+# pickle — agent_simulator reads _ts_norm_state from the model, not ModelTrainer.
+if hasattr(self, "_ts_norm_state"):
+    self.model._ts_norm_state = self._ts_norm_state
+```
+
+**Also**: Added `self._ts_norm_state = None` to `LambdaRankModel.__init__` for clean pickle compatibility.
+
+### Signal Quality Observation
+
+Despite TSNorm mismatch, the fold pattern [+1.57, -1.22, +2.39, +0.75, -1.91] shows strong positive signal in 3/5 folds (Fold 2=2022 bear market, Fold 5=2025-2026 recent period are weak). This is promising — it's not zero signal, it's high variance that TSNorm should help stabilize.
+
+### Next: v204 — LambdaRank with Bug 5 fixed
+
+- All 5 bugs now fixed. v204 launched 2026-05-17 ~21:30.
+- Expected: TSNorm applied in all folds → more stable cross-fold Sharpe

@@ -908,6 +908,7 @@ class LambdaRankModel:
         self.is_trained = False
         self.predict_threshold: float = 0.5
         self._feature_weights: Optional[np.ndarray] = None
+        self._ts_norm_state = None  # set by training.py Bug 5 fix; included in pickle
         self.model = LGBMRanker(
             objective="lambdarank",
             n_estimators=600,

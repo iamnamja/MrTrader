@@ -1017,6 +1017,11 @@ class ModelTrainer:
             metrics["benign_threshold"] = getattr(self, "_benign_threshold", 0.5)
             metrics["benign_feature_count"] = len(feature_names)
 
+        # Bug 5 fix: transfer TSNorm state onto model object so it's included in the
+        # pickle — agent_simulator reads _ts_norm_state from the model, not ModelTrainer.
+        if hasattr(self, "_ts_norm_state"):
+            self.model._ts_norm_state = self._ts_norm_state
+
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
         self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
