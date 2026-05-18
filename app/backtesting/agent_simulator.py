@@ -849,18 +849,29 @@ class AgentSimulator:
 
             # Trader: technical signal gate (longs only; shorts bypass technical filter)
             if not is_short:
-                should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
-                if not should_enter:
-                    continue
-                # Use signal stops if valid, else fallback percentages
-                if stop_price <= 0 or stop_price >= entry_price:
-                    stop_price = entry_price * (1 - SWING_STOP_PCT)
-                if target_price <= entry_price:
-                    target_price = entry_price * (1 + SWING_TARGET_PCT)
+                if self.factor_scorer is not None:
+                    # Factor portfolio mode: monthly rebalance, no active stops.
+                    # Wide stop (20%) acts as circuit-breaker only; exit via max_hold_bars.
+                    stop_price = entry_price * (1 - 0.20)
+                    target_price = entry_price * 2.0  # effectively never fires
+                else:
+                    should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
+                    if not should_enter:
+                        continue
+                    # Use signal stops if valid, else fallback percentages
+                    if stop_price <= 0 or stop_price >= entry_price:
+                        stop_price = entry_price * (1 - SWING_STOP_PCT)
+                    if target_price <= entry_price:
+                        target_price = entry_price * (1 + SWING_TARGET_PCT)
             else:
-                # Short: stop is above entry, target is below entry
-                stop_price = entry_price * (1 + SWING_STOP_PCT)
-                target_price = entry_price * (1 - SWING_TARGET_PCT)
+                if self.factor_scorer is not None:
+                    # Factor portfolio short: same monthly rebalance model — wide stops
+                    stop_price = entry_price * (1 + 0.20)   # 20% circuit-breaker above entry
+                    target_price = entry_price * 0.50       # effectively never fires
+                else:
+                    # Short: stop is above entry, target is below entry
+                    stop_price = entry_price * (1 + SWING_STOP_PCT)
+                    target_price = entry_price * (1 - SWING_TARGET_PCT)
 
             # Position sizing — use abs(confidence) for shorts
             conf_for_sizing = abs(confidence)
