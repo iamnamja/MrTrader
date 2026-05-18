@@ -3358,3 +3358,24 @@ In a 25% bear market, cross-sectional quintile labels are pathological: top quin
 ---
 
 ## Phase D — Factor Portfolio Deployment (Opening 2026-05-18)
+
+**Goal:** Deploy the Phase C2.a factor portfolio as the primary live swing strategy, replacing the LambdaRank ML model.
+
+**Validated performance:** Sharpe=1.335, CAGR=32.4%, MaxDD=-25.9% (COVID crash), WorstYear=+4.6%
+
+**Factor scoring formula** (from `scripts/factor_portfolio_backtest.py::_composite_score`):
+- Tier 1 (2× weight): momentum_252d_ex1m, vol_regime, profit_margin, operating_margin, price_to_52w_high, pe_ratio
+- Tier 2 (1× weight): range_expansion, price_to_52w_low, gross_margin, volume_trend, vrp, revenue_growth, near_52w_high, trend_consistency_63d
+- Z-score cross-sectionally, then equal-weight composite
+- SPY>MA200 + VIX<30 daily regime gate → skip entries if gate fails
+- Monthly rebalance: top-20 equal-weight, hold until next rebalance
+
+**Deployment tasks:**
+1. Extract `_composite_score()` from backtest script into `app/ml/factor_scorer.py`
+2. Integrate into `app/agents/portfolio_manager.py` swing selection path as alternative to ML model
+3. Wire SPY>MA200 + VIX<30 gate using existing `RegimeRuleScorer` (regime_model_v4)
+4. Monthly rebalance logic: PM checks if current holdings need rotation on 1st trading day of month
+5. Walk-forward validation with factor portfolio scorer in AgentSimulator (not the backtest script)
+6. Paper trade 2 weeks then review
+
+**Status:** Planning — starting after PR #223 merges
