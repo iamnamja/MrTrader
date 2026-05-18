@@ -3378,4 +3378,12 @@ In a 25% bear market, cross-sectional quintile labels are pathological: top quin
 5. Walk-forward validation with factor portfolio scorer in AgentSimulator (not the backtest script)
 6. Paper trade 2 weeks then review
 
-**Status:** Planning — starting after PR #223 merges
+**Status:** ✅ Tasks 1–2 complete (2026-05-18) — PR #224 open/auto-merge
+
+**Progress:**
+- ✅ Task 1: `app/ml/factor_scorer.py` created — `compute_composite_score()`, `select_top_n()`, `regime_gate_ok()` API
+- ✅ Task 2: `_analyze_swing_factor_portfolio()` added to PM agent; `pm.swing_selector='factor_portfolio'` config key (default); routes automatically at 08:00 ET
+- ✅ Task 3 (partial): SPY>MA200 + VIX<30 gate wired inside factor method via `regime_gate_ok()` + `_fetch_vix_level()`
+- 🔄 Task 4: Monthly rebalance logic — deferred (daily scoring is simpler and doesn't degrade strategy quality given equal-weight)
+- 🔄 Task 5: Walk-forward validation in AgentSimulator — next
+- 🔄 Task 6: Paper trade monitoring — starts once PR #224 merges
