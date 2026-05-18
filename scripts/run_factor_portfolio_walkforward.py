@@ -58,7 +58,7 @@ def main() -> int:
         load_dotenv()
         from app.notifications.notifier import _smtp_send
         fold_rows = "\n".join(
-            f"  Fold {f.fold}: Sharpe={f.sharpe:.3f}  trades={f.total_trades}" for f in wf.folds
+            f"  Fold {f.fold}: Sharpe={f.sharpe:.3f}  trades={f.trades}" for f in wf.folds
         )
         _smtp_send(
             subject=f"MrTrader Factor Portfolio WF: {verdict} (avg={avg_sh:.3f})",

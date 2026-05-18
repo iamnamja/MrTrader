@@ -814,7 +814,8 @@ class AgentSimulator:
                 continue
 
             # Phase 34: No-chase filter — skip large overnight gaps and extended entries
-            if bars_yesterday is not None and len(bars_yesterday) >= 14:
+            # Not applied in factor portfolio mode (monthly rebalance enters regardless of daily gap)
+            if self.factor_scorer is None and bars_yesterday is not None and len(bars_yesterday) >= 14:
                 try:
                     prior_close = float(bars_yesterday["close"].iloc[-1])
                     hi = bars_yesterday["high"].to_numpy(dtype=float)[-15:]
