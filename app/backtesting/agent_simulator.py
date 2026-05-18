@@ -476,7 +476,7 @@ class AgentSimulator:
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
         except Exception as exc:
-            logger.debug("PM score failed on %s: %s", day, exc)
+            logger.warning("PM score failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
         ranked = sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
@@ -541,7 +541,7 @@ class AgentSimulator:
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
         except Exception as exc:
-            logger.debug("PM score (cached) failed on %s: %s", day, exc)
+            logger.warning("PM score (cached) failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
         proposals = []
