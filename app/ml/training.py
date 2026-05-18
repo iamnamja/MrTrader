@@ -1028,8 +1028,10 @@ class ModelTrainer:
 
         # Bug 5 fix: transfer TSNorm state onto model object so it's included in the
         # pickle — agent_simulator reads _ts_norm_state from the model, not ModelTrainer.
-        if hasattr(self, "_ts_norm_state"):
-            self.model._ts_norm_state = self._ts_norm_state
+        # For lambdarank: explicitly set None so agent_simulator falls back to cs_normalize.
+        # An empty TSNormalizerState() is NOT None and would cause transform to drop all
+        # rows (MIN_WARMUP=8 never met with empty history) → 0 trades → garbage results.
+        self.model._ts_norm_state = self._ts_norm_state if _use_ts_norm else None
 
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
