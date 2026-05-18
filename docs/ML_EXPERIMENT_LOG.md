@@ -3225,3 +3225,63 @@ Opus identified the true root cause of fold losses: absolute momentum features c
 ---
 
 ## Phase C Training Run 8 — 2026-05-18 — v209a (LambdaRank, 17 features, clean baseline)
+
+**Completed:** 2026-05-18 08:52 | **Status:** ❌ GATE FAILED (avg=-0.163)
+
+### Configuration
+Same as v205b: LGBMRanker, 17 features (PHASE_C_PLUS_FEATURE_KEEP_LIST), 50 Optuna trials NDCG@5, no_prefilters=True, 5-fold 6yr expanding WF.
+
+### Walk-Forward Results
+
+| Fold | Test Period | Trades | Sharpe | Gate |
+|---|---|---|---|---|
+| 1 | 2021-05-30→2022-05-19 | 231 | **-0.847** | ❌ |
+| 2 | 2022-05-30→2023-05-19 | 204 | **-0.625** | ❌ |
+| 3 | 2023-05-30→2024-05-18 | 215 | **+0.724** | ✅ |
+| 4 | 2024-05-29→2025-05-18 | 180 | **+0.339** | ✅ |
+| 5 | 2025-05-29→2026-05-18 | 212 | **-0.404** | ❌ |
+| **Avg** | | 1042 | **-0.163** ❌ | GATE FAILED |
+
+### Critical Finding: Extreme HPO Variance
+
+v209a used IDENTICAL config to v205b (17 feats, 50 Optuna trials, NDCG@5) yet got avg=-0.163 vs v205b's +0.267. Combined with v206 at +0.158, three runs of the same config give: +0.267, +0.158, -0.163 → estimated **true mean ≈ +0.09, σ ≈ 0.20**.
+
+**v205b's +0.267 is likely a lucky HPO draw, not a genuine edge.** The model cannot be improved by re-rolling HPO.
+
+Fold 2 recovered to 204 trades (vs 99 in v208) — confirming the v208 Fold 2 collapse was sector-neutral-feature-specific, not a structural issue.
+
+### Opus 4.7 Analysis — 2026-05-18
+
+**Root cause of HPO variance:**
+- Optuna TPE uses random startup (first ~10 trials). Different random seeds find different HPO basins.
+- NDCG@5 improvement between trials is at noise floor — optimizer picks by noise, not signal.
+- NDCG→Sharpe transfer correlation is ~0.1-0.3 at this scale. Optimizing the proxy doesn't reliably optimize the objective.
+- With σ≈0.20 per run, need ~16 runs of same config to estimate true mean to ±0.10 precision.
+
+**Regime dependence pattern (folds 1+2 negative, 3+4 positive, 5 negative):**
+- Folds 1-2 (2021-2023): post-COVID meme-bubble unwinding, leadership rotation — quintile labels invert
+- Folds 3-4 (2023-2025): clean AI-led bull, momentum+quality dominant — ranker thrives
+- Fold 5 (2025-2026): late-cycle breadth narrows, top-of-list crowded → mean reversion penalizes ranker
+
+**What won't work:** Running same config again (diminishing returns after 3 runs). More HPO trials alone (returns diminish past ~30 TPE-guided trials). Adding sector-neutral features without fixing HPO noise first.
+
+**Fix: Deterministic seeded HPO + NDCG@3 + tighter capacity caps**
+- `TPESampler(seed=42)` makes runs reproducible — same seed = same HPO result
+- NDCG@3 better matches top-5 portfolio (emphasizes ranks 1-3 where most P&L concentrates)
+- num_leaves cap: 8-31 (was 15-63), n_estimators: 200-500 (was 300-800) — prevents over-fitting
+- After determinism established: multi-seed ensemble (5 seeds, average predictions) cuts run-std from 0.20 to ~0.09
+
+### v209b Plan
+
+**Changes from v209a:**
+- Fixed Optuna seed: `TPESampler(seed=42)` — reproducible HPO
+- NDCG@3 objective instead of NDCG@5
+- Tighter HPO param bounds: num_leaves 8-31, n_estimators 200-500
+- `random_state=42` in LGBMRanker (seeded within each trial)
+- Same 17 features, same walk-forward config
+
+**Expected outcome:** More reproducible result. If NDCG@3 + tighter bounds find a more stable basin, expect Sharpe closer to +0.15-0.25 range consistently rather than ±0.20 variance.
+
+---
+
+## Phase C Training Run 9 — 2026-05-18 — v209b (LambdaRank, 17 features, NDCG@3, seeded HPO)

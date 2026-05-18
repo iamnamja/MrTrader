@@ -61,7 +61,7 @@ def main() -> int:
     finally:
         db.close()
 
-    logger.info("v209a: %s, %d features (17-feat clean baseline), prev_active=v%s",
+    logger.info("v209b: %s, %d features, NDCG@3 HPO seed=42, num_leaves<=31, prev_active=v%s",
                 model_type, n_feats, prev)
     logger.info("Features: %s", feature_list)
 
@@ -69,6 +69,8 @@ def main() -> int:
         model_type=model_type,
         label_scheme=label_scheme,
         hpo_trials=50,
+        hpo_seed=42,
+        hpo_ndcg_k=3,
         n_workers=MAX_WORKERS,
         feature_keep_list=feature_list,
     )

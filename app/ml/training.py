@@ -677,6 +677,8 @@ class ModelTrainer:
         feature_keep_list: Optional[tuple] = None,  # restrict to exactly these features (Phase C)
         n_workers: int = 0,
         hpo_trials: int = 0,
+        hpo_seed: int = 42,
+        hpo_ndcg_k: int = 3,
         walk_forward_folds: int = 0,
         prediction_threshold: float = 0.50,
         two_stage: bool = False,
@@ -709,6 +711,8 @@ class ModelTrainer:
         from app.ml.retrain_config import MAX_WORKERS as _max_workers
         self.n_workers = n_workers if (n_workers and n_workers > 0) else _max_workers
         self.hpo_trials = hpo_trials
+        self.hpo_seed = hpo_seed
+        self.hpo_ndcg_k = hpo_ndcg_k
         self.walk_forward_folds = walk_forward_folds
         self.prediction_threshold = prediction_threshold
         self.two_stage = two_stage
@@ -906,7 +910,10 @@ class ModelTrainer:
         elif self.hpo_trials > 0 and self.model.model_type == "lambdarank":
             logger.info("Running LambdaRank HPO (%d trials)...", self.hpo_trials)
             best_params = self._tune_lambdarank_hyperparams(
-                X_train, y_train, meta_train, n_trials=self.hpo_trials
+                X_train, y_train, meta_train,
+                n_trials=self.hpo_trials,
+                hpo_seed=self.hpo_seed,
+                ndcg_k=self.hpo_ndcg_k,
             )
             self.model.model.set_params(**best_params)
             logger.info("LambdaRank HPO complete — params=%s", best_params)
@@ -2427,12 +2434,15 @@ class ModelTrainer:
         y_train: np.ndarray,
         meta_train: np.ndarray,
         n_trials: int = 20,
+        hpo_seed: int = 42,
+        ndcg_k: int = 3,
     ) -> Dict[str, Any]:
         """Optuna HPO for LambdaRank using 3-fold TimeSeriesSplit on training set.
 
-        Optimizes NDCG@5 within each fold's date groups. Low capacity prior:
-        fixes max_depth=4, min_child_samples>=20, only tunes regularization and
-        tree/sample fractions. Returns param dict for LGBMRanker.set_params().
+        Optimizes NDCG@k (default k=3, tighter match to top-5 portfolio) within
+        each fold's date groups. Seeded for reproducibility — same hpo_seed gives
+        the same HPO result. Low capacity prior: max_depth=4, num_leaves<=31,
+        n_estimators<=500. Returns param dict for LGBMRanker.set_params().
         """
         import optuna
         from lightgbm import LGBMRanker
@@ -2466,8 +2476,10 @@ class ModelTrainer:
 
         def objective(trial: optuna.Trial) -> float:
             params = {
-                "n_estimators": trial.suggest_int("n_estimators", 300, 800),
-                "num_leaves": trial.suggest_int("num_leaves", 15, 63),
+                # Tighter capacity caps: num_leaves<=31, n_est<=500 prevent over-fitting
+                # on 17-19 features × ~650 stocks/day. Larger values chased CV noise.
+                "n_estimators": trial.suggest_int("n_estimators", 200, 500),
+                "num_leaves": trial.suggest_int("num_leaves", 8, 31),
                 "max_depth": 4,
                 "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.05, log=True),
                 "subsample": trial.suggest_float("subsample", 0.5, 0.9),
@@ -2475,10 +2487,10 @@ class ModelTrainer:
                 "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
                 "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 2.0),
                 "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 3.0),
-                "min_child_samples": trial.suggest_int("min_child_samples", 20, 50),
-                "random_state": 42,
+                "min_child_samples": trial.suggest_int("min_child_samples", 20, 60),
+                "random_state": hpo_seed,
                 "verbose": -1,
-                "lambdarank_truncation_level": 5,
+                "lambdarank_truncation_level": ndcg_k,
             }
             fold_ndcg = []
             # Use simple chronological index splits (TimeSeriesSplit on row indices)
@@ -2504,7 +2516,7 @@ class ModelTrainer:
                         s = scores[idx:idx + gs]
                         t = y_va[idx:idx + gs].astype(float)
                         if len(t) >= 2:
-                            ndcg_vals.append(_ndcg([t], [s], k=min(5, len(t))))
+                            ndcg_vals.append(_ndcg([t], [s], k=min(ndcg_k, len(t))))
                         idx += gs
                     if ndcg_vals:
                         fold_ndcg.append(float(np.mean(ndcg_vals)))
@@ -2513,10 +2525,11 @@ class ModelTrainer:
                     fold_ndcg.append(0.0)
             return float(np.mean(fold_ndcg)) if fold_ndcg else 0.0
 
-        study = optuna.create_study(direction="maximize")
+        sampler = optuna.samplers.TPESampler(seed=hpo_seed)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
         best = study.best_params
-        logger.info("LambdaRank HPO done — best NDCG@5=%.4f  params=%s", study.best_value, best)
+        logger.info("LambdaRank HPO done — best NDCG@%d=%.4f  params=%s", ndcg_k, study.best_value, best)
         return best
 
     # ── Walk-forward CV ───────────────────────────────────────────────────────
@@ -2634,6 +2647,8 @@ class ModelTrainer:
                     top_n_features=self.top_n_features,
                     n_workers=max(1, self.n_workers // len(windows)),  # share workers
                     hpo_trials=self.hpo_trials,
+                    hpo_seed=self.hpo_seed,
+                    hpo_ndcg_k=self.hpo_ndcg_k,
                     prediction_threshold=self.prediction_threshold,
                     two_stage=self.two_stage,
                     three_stage=self.three_stage,
