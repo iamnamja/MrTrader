@@ -3285,3 +3285,76 @@ Fold 2 recovered to 204 trades (vs 99 in v208) — confirming the v208 Fold 2 co
 ---
 
 ## Phase C Training Run 9 — 2026-05-18 — v209b (LambdaRank, 17 features, NDCG@3, seeded HPO)
+
+**Completed:** 2026-05-18 10:29 | **Status:** ❌ GATE FAILED (avg=-0.294)
+
+### Configuration
+LGBMRanker, 17 features (PHASE_C_PLUS_FEATURE_KEEP_LIST), TPESampler(seed=42), NDCG@3 objective, num_leaves 8-31, n_estimators 200-500, no_prefilters=True, 5-fold 6yr expanding WF.
+
+### Walk-Forward Results
+
+| Fold | Test Period | Trades | Sharpe | Calmar | Gate |
+|---|---|---|---|---|---|
+| 1 | 2021-05-30→2022-05-19 | 242 | **-0.415** | -0.35 | ❌ |
+| 2 | 2022-05-30→2023-05-19 | 141 | **-1.822** | -0.95 | ❌ |
+| 3 | 2023-05-30→2024-05-18 | 268 | **-0.347** | -0.25 | ❌ |
+| 4 | 2024-05-29→2025-05-18 | 258 | **-0.029** | -0.03 | ✅ |
+| 5 | 2025-05-29→2026-05-18 | 248 | **+1.144** | +1.75 | ❌ (min violated) |
+| **Avg** | | 1157 | **-0.294** ❌ | | GATE FAILED |
+
+Best HPO trial: NDCG@3=0.5238, params: n_estimators=312, num_leaves=30, lr=0.027, subsample=0.739
+
+### Opus 4.7 Analysis — 2026-05-18 — CAMPAIGN CLOSE RECOMMENDATION
+
+**NDCG@3 vs NDCG@5 effect on fold pattern:**
+NDCG@3 selects a high-confidence, low-breadth model (emphasizes ranks 1-3). This explains:
+- Fold 5 improved (+1.144): recent 2025-2026 regime has narrow mega-cap/AI concentration → high-confidence top-3 picks work
+- Fold 3 collapsed (-0.347 vs +0.724 v209a, +2.128 v208): 2023-2024 bull required broader breadth → NDCG@3 picked too narrowly
+
+NDCG@3 is not superior to NDCG@5 for a top-5 portfolio — it's a different trade-off, not a fix.
+
+**Fold 2 (2022-2023) root cause — label degradation, not tuning issue:**
+In a 25% bear market, cross-sectional quintile labels are pathological: top quintile = "fell least" (e.g., -5%), bottom = "fell most" (-25%). The model learns defensive/low-vol signals from bear-regime labels, but those signals contradict the momentum-quality features optimized across the full training history. This is a data-generating process problem that survives all hyperparameter variations because:
+- Fold 2 collapses in all 9 runs: -2.597, -0.625, -1.822 (across 17 feats, 19 feats, different objectives, seeds)
+- Trade count instability (99→204→141): score degeneracy when features lose discriminative power in bear regime
+- Min fold (-1.82 best avoided) is **structurally unreachable** at ≥-0.30 without fixing label degradation in bear markets
+
+**Campaign stopping condition met:**
+- 9 runs, no min-fold ever above -0.30
+- True mean ≈ +0.09 Sharpe (σ≈0.20), gate requires +0.80 → 3× structural gap
+- Multi-seed ensemble would average Fold 2 disaster → ensemble Fold 2 ≈ -1.0 to -1.5 → ensemble avg ≈ +0.3 to +0.4 → still fails min-fold gate
+- NDCG@5 / NDCG@3 / seeded HPO / 17 feats / 19 feats / BenignGate: all explored, none close gap
+
+**Recommendation: CLOSE LambdaRank campaign. Deploy Phase C2.a factor portfolio.**
+
+---
+
+## Phase C — LambdaRank Campaign Summary (v199–v209b) — CLOSED 2026-05-18
+
+**Conclusion:** LambdaRank cross-sectional ranking with momentum-heavy features cannot pass walk-forward gate due to structural label degradation in bear regimes (Fold 2, 2022-2023). After 9 training runs and systematic bug-fixing, the fundamental architecture does not support a gate-passing solution.
+
+**Bugs fixed (all valuable for future ML work):**
+1. predict_with_vix missing on LambdaRankModel
+2. TSNorm fit before feature_keep_list filter
+3. HPO meta_arr numpy indexing (NDCG@5=0.0000)
+4. LambdaRankModel.load() not loading TSNorm state
+5. TSNorm state on ModelTrainer not model pickle
+6. Empty TSNormalizerState ≠ None (0 trades)
+7. build_feature_cache not passing sector_etf_bars
+
+**Paths explored and closed:**
+- TSNorm (Bugs 1-5): fixed but not the root cause
+- BenignGate: removed, improved from -0.041 to +0.267 best
+- Sector-neutral features (v208): infrastructure bug fixed; features hurt HPO without signal benefit
+- NDCG@3 vs NDCG@5 (v209b): different trade-off, not better for top-5 portfolio
+- Seeded deterministic HPO: confirms σ≈0.20 run-to-run variance is fundamental to NDCG proxy weakness
+- Multi-seed ensemble: not pursued — structural Fold 2 collapse means averaging does not close gap
+
+**Next steps (per Opus 4.7):**
+1. **Deploy Phase C2.a factor portfolio** (validated Sharpe 1.335 — passes gate today)
+2. **New ML track: regime gate for factor portfolio** (binary trade-on/off — easier problem, higher EV)
+3. **XGBoost triple-barrier** as Phase D — orthogonal labels for bear regime, deferred until factor portfolio live
+
+---
+
+## Phase D — Factor Portfolio Deployment (Opening 2026-05-18)
