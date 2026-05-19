@@ -574,6 +574,7 @@ def run_swing_walkforward(
         spy_raw.columns = spy_raw.columns.get_level_values(0)
     spy_raw.columns = [c.lower() for c in spy_raw.columns]
     spy_prices = spy_raw["close"]
+    symbols_data["SPY"] = spy_raw  # make SPY available to factor_scorer regime gate
 
     # Download VIX for opportunity score (Phase 2a); stored in symbols_data so simulator sees it
     if use_opportunity_score:
