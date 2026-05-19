@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
+GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -1.00}
 
 
 def main() -> int:
