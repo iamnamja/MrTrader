@@ -106,18 +106,27 @@ def _scale_conf(scores: pd.Series, value: float) -> float:
 class QualityShortScorer:
     """Short fundamentally deteriorating stocks; long top factor names.
 
-    Short qualifies if >=2 of:
+    Short qualifies if >= flags_required of:
         - operating_margin <= 0
         - revenue_growth_yoy <= 0
         - debt_to_equity >= 1.5
         - fmp_surprise_1q <= -0.05 (within 90d)
+
+    legs_mode:
+        "both"        — long + short legs (default)
+        "longs_only"  — emit only long picks
+        "shorts_only" — emit only short picks
     """
 
     def __init__(self, top_n: int = 20, max_shorts: int = 15,
-                 vix_threshold: float = DEFAULT_VIX_REGIME):
+                 vix_threshold: float = DEFAULT_VIX_REGIME,
+                 flags_required: int = 2,
+                 legs_mode: str = "both"):
         self.top_n = top_n
         self.max_shorts = max_shorts
         self.vix_threshold = vix_threshold
+        self.flags_required = flags_required
+        self.legs_mode = legs_mode
         self._fmp_df = None
 
     def _fmp(self):
@@ -147,10 +156,13 @@ class QualityShortScorer:
 
         result = []
         long_set = set()
-        if long_allowed:
+        if long_allowed and self.legs_mode in ("both", "longs_only"):
             longs = select_top_n(scores, n=self.top_n)
             long_set = set(longs)
             result.extend((s, _scale_conf(scores, float(scores[s])), "long") for s in longs)
+
+        if self.legs_mode == "longs_only":
+            return result
 
         # Build short candidates from FMP
         fmp_df = self._fmp()
@@ -186,7 +198,7 @@ class QualityShortScorer:
                             flags += 1
                     except Exception:
                         pass
-                    if flags >= 2:
+                    if flags >= self.flags_required:
                         candidates.append((sym, float(scores[sym]), flags))
 
         # Rank candidates by worst composite (most negative score) — most "broken" first
@@ -210,10 +222,16 @@ class MeanReversionShortScorer:
     """
 
     def __init__(self, top_n: int = 20, max_shorts: int = 15,
-                 vix_threshold: float = DEFAULT_VIX_REGIME):
+                 vix_threshold: float = DEFAULT_VIX_REGIME,
+                 quantile_1m: float = 0.80,
+                 quantile_20d: float = 0.90,
+                 legs_mode: str = "both"):
         self.top_n = top_n
         self.max_shorts = max_shorts
         self.vix_threshold = vix_threshold
+        self.quantile_1m = quantile_1m
+        self.quantile_20d = quantile_20d
+        self.legs_mode = legs_mode
 
     def __call__(self, day, symbols_data, vix_history=None):
         closes, bars, as_of = _build_closes_and_bars(day, symbols_data)
@@ -245,15 +263,18 @@ class MeanReversionShortScorer:
         # fresh-high signal: current close >= max of last 252 days (i.e. at new high)
         at_new_high = (last >= high_252 * 0.999).reindex(closes.columns).fillna(False)
 
-        thresh_1m = ret_1m.quantile(0.80) if len(ret_1m) > 10 else float("inf")
-        thresh_20d = ret_20d.quantile(0.90) if len(ret_20d) > 10 else float("inf")
+        thresh_1m = ret_1m.quantile(self.quantile_1m) if len(ret_1m) > 10 else float("inf")
+        thresh_20d = ret_20d.quantile(self.quantile_20d) if len(ret_20d) > 10 else float("inf")
 
         result = []
         long_set = set()
-        if long_allowed:
+        if long_allowed and self.legs_mode in ("both", "longs_only"):
             longs = select_top_n(scores, n=self.top_n)
             long_set = set(longs)
             result.extend((s, _scale_conf(scores, float(scores[s])), "long") for s in longs)
+
+        if self.legs_mode == "longs_only":
+            return result
 
         candidates = []
         for sym in scores.index:
@@ -394,4 +415,129 @@ class CombinedLSScorer:
             if tup[0] not in pead_syms:
                 result.append(tup)
 
+        return result
+
+
+# ── E. A+B Combined Short Leg (Quality OR MeanReversion) ────────────────────
+
+class ABCombinedScorer:
+    """Factor longs (top-N) + union of QualityShort and MeanReversionShort.
+
+    A stock qualifies as a short if it satisfies the criteria of EITHER
+    QualityShortScorer or MeanReversionShortScorer. Widens the short
+    candidate pool while still requiring at least one disciplined signal.
+    """
+
+    def __init__(self, top_n: int = 20, max_shorts: int = 20,
+                 vix_threshold: float = DEFAULT_VIX_REGIME):
+        self.top_n = top_n
+        self.max_shorts = max_shorts
+        self.vix_threshold = vix_threshold
+        self._quality = QualityShortScorer(
+            top_n=top_n, max_shorts=max_shorts * 2,
+            vix_threshold=vix_threshold, legs_mode="shorts_only",
+        )
+        self._meanrev = MeanReversionShortScorer(
+            top_n=top_n, max_shorts=max_shorts * 2,
+            vix_threshold=vix_threshold, legs_mode="shorts_only",
+        )
+
+    def __call__(self, day, symbols_data, vix_history=None):
+        closes, bars, as_of = _build_closes_and_bars(day, symbols_data)
+        if closes is None:
+            return []
+        vix = _vix_value(vix_history, as_of)
+        if vix is not None and vix >= EXTREME_VIX:
+            return []
+
+        long_allowed = _spy_bull_ok(closes, as_of) and (vix is None or vix < self.vix_threshold)
+
+        scores = compute_composite_score(as_of, closes, bars, use_tier2=True)
+        if scores.empty:
+            return []
+
+        result = []
+        long_set = set()
+        if long_allowed:
+            longs = select_top_n(scores, n=self.top_n)
+            long_set = set(longs)
+            result.extend((s, _scale_conf(scores, float(scores[s])), "long") for s in longs)
+
+        q_shorts = self._quality(day, symbols_data, vix_history)
+        m_shorts = self._meanrev(day, symbols_data, vix_history)
+        seen = set()
+        union = []
+        for tup in list(q_shorts) + list(m_shorts):
+            sym = tup[0]
+            if sym in long_set or sym in seen or sym == "SPY":
+                continue
+            seen.add(sym)
+            union.append(tup)
+
+        union.sort(key=lambda x: float(scores.get(x[0], 0.0)))
+        result.extend(union[: self.max_shorts])
+        return result
+
+
+# ── F. Analyst Revision Short Scorer ────────────────────────────────────────
+
+class AnalystRevisionShortScorer:
+    """Short stocks with recent net analyst downgrades; long top factor names.
+
+    Uses FMP analyst grades (upgrade/downgrade actions).
+    Short qualifies if fmp_analyst_momentum_30d <= downgrade_threshold
+    (default: -2, i.e. net 2+ downgrades in the last 30 calendar days).
+    """
+
+    def __init__(self, top_n: int = 20, max_shorts: int = 15,
+                 vix_threshold: float = DEFAULT_VIX_REGIME,
+                 downgrade_threshold: float = -2.0,
+                 legs_mode: str = "both"):
+        self.top_n = top_n
+        self.max_shorts = max_shorts
+        self.vix_threshold = vix_threshold
+        self.downgrade_threshold = downgrade_threshold
+        self.legs_mode = legs_mode
+
+    def __call__(self, day, symbols_data, vix_history=None):
+        closes, bars, as_of = _build_closes_and_bars(day, symbols_data)
+        if closes is None:
+            return []
+        vix = _vix_value(vix_history, as_of)
+        if vix is not None and vix >= EXTREME_VIX:
+            return []
+
+        long_allowed = _spy_bull_ok(closes, as_of) and (vix is None or vix < self.vix_threshold)
+
+        scores = compute_composite_score(as_of, closes, bars, use_tier2=True)
+        if scores.empty:
+            return []
+
+        result = []
+        long_set = set()
+        if long_allowed and self.legs_mode in ("both", "longs_only"):
+            longs = select_top_n(scores, n=self.top_n)
+            long_set = set(longs)
+            result.extend((s, _scale_conf(scores, float(scores[s])), "long") for s in longs)
+        if self.legs_mode == "longs_only":
+            return result
+
+        from app.data.fmp_provider import get_analyst_features_at
+        as_of_date = pd.Timestamp(as_of).date()
+        candidates = []
+        for sym in scores.index:
+            if sym in long_set or sym == "SPY":
+                continue
+            try:
+                af = get_analyst_features_at(sym, as_of_date)
+                mom = af.get("fmp_analyst_momentum_30d", 0.0)
+            except Exception:
+                continue
+            if mom <= self.downgrade_threshold:
+                candidates.append((sym, float(scores[sym]), mom))
+
+        candidates.sort(key=lambda x: (x[2], x[1]))
+        for sym, raw, _mom in candidates[: self.max_shorts]:
+            conf = _scale_conf(scores, raw)
+            result.append((sym, -conf, "short"))
         return result

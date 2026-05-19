@@ -138,6 +138,7 @@ class AgentSimulator:
         feature_cache=None,          # FeatureCache: pre-computed raw features (WF speedup)
         sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
         factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
+        max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -165,6 +166,7 @@ class AgentSimulator:
         self.feature_cache = feature_cache
         self.sim_scan_interval_days = max(1, sim_scan_interval_days)
         self.factor_scorer = factor_scorer  # Phase D: optional callable override
+        self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -971,7 +973,9 @@ class AgentSimulator:
                     highest_price=pos.highest_price,
                     bars_held=pos.bars_held,
                     min_hold_bars=1,
-                    max_hold_bars=self.limits.MAX_OPEN_POSITIONS * 4,
+                    max_hold_bars=(self.max_hold_bars_override
+                                   if self.max_hold_bars_override is not None
+                                   else self.limits.MAX_OPEN_POSITIONS * 4),
                 )
                 pos.stop_price = new_stop
                 # Intrabar stop/target override
@@ -996,7 +1000,9 @@ class AgentSimulator:
                     should_exit = True
                     exit_reason = "target_hit"
                     today_close = pos.target_price
-                elif pos.bars_held >= self.limits.MAX_OPEN_POSITIONS * 4:
+                elif pos.bars_held >= (self.max_hold_bars_override
+                                       if self.max_hold_bars_override is not None
+                                       else self.limits.MAX_OPEN_POSITIONS * 4):
                     should_exit = True
                     exit_reason = "max_hold"
 

@@ -522,6 +522,7 @@ def run_swing_walkforward(
     sim_scan_interval_days: int = 1,
     use_factor_portfolio: bool = False,  # Phase D: bypass ML model, use factor composite scorer
     scorer_instance=None,  # Phase G: inject any callable scorer directly (overrides use_factor_portfolio)
+    max_hold_bars_override: Optional[int] = None,  # Phase H+: force per-position hold cap
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -758,6 +759,7 @@ def run_swing_walkforward(
             sim_scan_interval_days=sim_scan_interval_days,
             factor_scorer=_factor_scorer_inst,
             limits=_sim_limits,
+            max_hold_bars_override=max_hold_bars_override,
         )
         result = sim.run(
             fold_symbols_data,
