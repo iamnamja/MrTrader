@@ -1,0 +1,242 @@
+[
+  {
+    "name": "A_QualityShort",
+    "verdict": "PASS",
+    "avg_sharpe": 3.2553999999999994,
+    "min_sharpe": 2.043,
+    "fold2_sharpe": 5.145,
+    "elapsed_min": 17.228927278518675,
+    "folds": [
+      {
+        "fold": 1,
+        "test_start": "2021-05-30",
+        "test_end": "2022-05-19",
+        "sharpe": 3.212,
+        "trades": 101,
+        "win_rate": 0.7921,
+        "max_dd": 0.0258,
+        "total_return": 1.2175
+      },
+      {
+        "fold": 2,
+        "test_start": "2022-05-30",
+        "test_end": "2023-05-19",
+        "sharpe": 5.145,
+        "trades": 84,
+        "win_rate": 0.5119,
+        "max_dd": 0.0264,
+        "total_return": 4.8087
+      },
+      {
+        "fold": 3,
+        "test_start": "2023-05-30",
+        "test_end": "2024-05-18",
+        "sharpe": 2.043,
+        "trades": 161,
+        "win_rate": 0.882,
+        "max_dd": 0.0477,
+        "total_return": 0.2676
+      },
+      {
+        "fold": 4,
+        "test_start": "2024-05-29",
+        "test_end": "2025-05-18",
+        "sharpe": 2.668,
+        "trades": 130,
+        "win_rate": 0.6923,
+        "max_dd": 0.0842,
+        "total_return": 0.8863
+      },
+      {
+        "fold": 5,
+        "test_start": "2025-05-29",
+        "test_end": "2026-05-18",
+        "sharpe": 3.209,
+        "trades": 199,
+        "win_rate": 0.8241,
+        "max_dd": 0.0596,
+        "total_return": 0.7691
+      }
+    ]
+  },
+  {
+    "name": "B_MeanReversionShort",
+    "verdict": "PASS",
+    "avg_sharpe": 3.0614,
+    "min_sharpe": 2.148,
+    "fold2_sharpe": 3.573,
+    "elapsed_min": 13.156488807996114,
+    "folds": [
+      {
+        "fold": 1,
+        "test_start": "2021-05-30",
+        "test_end": "2022-05-19",
+        "sharpe": 3.227,
+        "trades": 90,
+        "win_rate": 0.7667,
+        "max_dd": 0.0258,
+        "total_return": 1.0161
+      },
+      {
+        "fold": 2,
+        "test_start": "2022-05-30",
+        "test_end": "2023-05-19",
+        "sharpe": 3.573,
+        "trades": 41,
+        "win_rate": 0.3171,
+        "max_dd": 0.0357,
+        "total_return": 2.2592
+      },
+      {
+        "fold": 3,
+        "test_start": "2023-05-30",
+        "test_end": "2024-05-18",
+        "sharpe": 2.84,
+        "trades": 145,
+        "win_rate": 0.8759,
+        "max_dd": 0.0385,
+        "total_return": 0.264
+      },
+      {
+        "fold": 4,
+        "test_start": "2024-05-29",
+        "test_end": "2025-05-18",
+        "sharpe": 2.148,
+        "trades": 120,
+        "win_rate": 0.75,
+        "max_dd": 0.0707,
+        "total_return": 0.4185
+      },
+      {
+        "fold": 5,
+        "test_start": "2025-05-29",
+        "test_end": "2026-05-18",
+        "sharpe": 3.519,
+        "trades": 183,
+        "win_rate": 0.8415,
+        "max_dd": 0.0367,
+        "total_return": 0.5354
+      }
+    ]
+  },
+  {
+    "name": "C_SectorRelative",
+    "verdict": "PASS",
+    "avg_sharpe": 2.1116,
+    "min_sharpe": 0.697,
+    "fold2_sharpe": 3.027,
+    "elapsed_min": 13.805053595701853,
+    "folds": [
+      {
+        "fold": 1,
+        "test_start": "2021-05-30",
+        "test_end": "2022-05-19",
+        "sharpe": 2.241,
+        "trades": 49,
+        "win_rate": 0.6939,
+        "max_dd": 0.0419,
+        "total_return": 0.4946
+      },
+      {
+        "fold": 2,
+        "test_start": "2022-05-30",
+        "test_end": "2023-05-19",
+        "sharpe": 3.027,
+        "trades": 28,
+        "win_rate": 0.5,
+        "max_dd": 0.0221,
+        "total_return": 1.4245
+      },
+      {
+        "fold": 3,
+        "test_start": "2023-05-30",
+        "test_end": "2024-05-18",
+        "sharpe": 1.639,
+        "trades": 50,
+        "win_rate": 0.7,
+        "max_dd": 0.039,
+        "total_return": 0.3362
+      },
+      {
+        "fold": 4,
+        "test_start": "2024-05-29",
+        "test_end": "2025-05-18",
+        "sharpe": 2.954,
+        "trades": 48,
+        "win_rate": 0.5833,
+        "max_dd": 0.0383,
+        "total_return": 1.0215
+      },
+      {
+        "fold": 5,
+        "test_start": "2025-05-29",
+        "test_end": "2026-05-18",
+        "sharpe": 0.697,
+        "trades": 43,
+        "win_rate": 0.5814,
+        "max_dd": 0.0428,
+        "total_return": 0.2091
+      }
+    ]
+  },
+  {
+    "name": "D_Combined",
+    "verdict": "PASS",
+    "avg_sharpe": 3.1384,
+    "min_sharpe": 2.8,
+    "fold2_sharpe": 2.998,
+    "elapsed_min": 20.789666720231374,
+    "folds": [
+      {
+        "fold": 1,
+        "test_start": "2021-05-30",
+        "test_end": "2022-05-19",
+        "sharpe": 3.086,
+        "trades": 72,
+        "win_rate": 0.7917,
+        "max_dd": 0.0185,
+        "total_return": 0.4938
+      },
+      {
+        "fold": 2,
+        "test_start": "2022-05-30",
+        "test_end": "2023-05-19",
+        "sharpe": 2.998,
+        "trades": 63,
+        "win_rate": 0.6508,
+        "max_dd": 0.0325,
+        "total_return": 1.1391
+      },
+      {
+        "fold": 3,
+        "test_start": "2023-05-30",
+        "test_end": "2024-05-18",
+        "sharpe": 2.8,
+        "trades": 63,
+        "win_rate": 0.746,
+        "max_dd": 0.0283,
+        "total_return": 0.5571
+      },
+      {
+        "fold": 4,
+        "test_start": "2024-05-29",
+        "test_end": "2025-05-18",
+        "sharpe": 3.31,
+        "trades": 54,
+        "win_rate": 0.6296,
+        "max_dd": 0.0194,
+        "total_return": 1.214
+      },
+      {
+        "fold": 5,
+        "test_start": "2025-05-29",
+        "test_end": "2026-05-18",
+        "sharpe": 3.498,
+        "trades": 77,
+        "win_rate": 0.7273,
+        "max_dd": 0.0265,
+        "total_return": 1.0223
+      }
+    ]
+  }
+]

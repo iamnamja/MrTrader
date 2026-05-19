@@ -3623,4 +3623,92 @@ Run date: 2026-05-18. 3 runs required to fix bugs.
 | `scripts/run_pead_walkforward.py` | New: PEAD WF script with FMP cache pre-warm + early dotenv load |
 
 **Verdict: ✅ GATE PASSED — both factor portfolio (1.772) and PEAD (3.253) validated**
-**Next: Phase H — multi-strategy PM routing (50%/50% factor + PEAD, PEAD gets priority)**
+**Next: Phase H — L/S short selection research (finding a working hedging leg)**
+
+---
+
+## Phase H — L/S Short Selection Research (2026-05-18)
+
+### Context
+
+Bottom-N composite momentum shorts (the original planned short leg) **failed** — beaten-down stocks violently reverse during bear market rallies (Fold 2 2022 Sharpe -0.91 when shorts active). Phase H tested 4 alternative short-selection approaches to find a viable hedging leg.
+
+### Approach
+
+All 4 scorers conform to `AgentSimulator.factor_scorer` interface: `(day, symbols_data, vix_history) -> [(sym, conf, direction)]`. Regime gates: VIX ≥ 40 → cash; SPY < MA200 → long leg suppressed but shorts still run. Gate: avg Sharpe ≥ 0.80, min fold ≥ -0.30 (critical: Fold 2 2022 bear ≥ -0.30).
+
+### Results — ALL 4 PASSED
+
+| Scorer | Avg Sharpe | Min Fold | Fold 2 (2022) | Verdict |
+|--------|-----------|----------|----------------|---------|
+| A. QualityShort | **3.255** | 2.043 | **5.145** | ✅ PASS |
+| B. MeanReversionShort | **3.061** | 2.148 | 3.573 | ✅ PASS |
+| C. SectorRelative | 2.112 | 0.697 | 3.027 | ✅ PASS |
+| D. Combined (PEAD+Factor+Quality) | **3.138** | **2.800** | 2.998 | ✅ PASS |
+
+**Gate: avg ≥ 0.80, min ≥ -0.30 → all 4 passed**
+
+### Fold-by-Fold Detail
+
+**A. QualityShortScorer** — short fundamentally deteriorating names (negative margin + revenue decline + high debt ≥ 2 flags)
+
+| Fold | Period | Trades | Sharpe | WinRate | MaxDD | TotalRet |
+|------|--------|--------|--------|---------|-------|---------|
+| 1 | 2021-05 → 2022-05 | 101 | 3.212 | 79.2% | 2.6% | +122% |
+| 2 | 2022-05 → 2023-05 | 84 | **5.145** | 51.2% | 2.6% | +481% |
+| 3 | 2023-05 → 2024-05 | 161 | 2.043 | 88.2% | 4.8% | +27% |
+| 4 | 2024-05 → 2025-05 | 130 | 2.668 | 69.2% | 8.4% | +89% |
+| 5 | 2025-05 → 2026-05 | 199 | 3.209 | 82.4% | 6.0% | +77% |
+
+**B. MeanReversionShortScorer** — short overextended stocks (top-20% 1-month return + near 52-week high)
+
+| Fold | Period | Trades | Sharpe | WinRate | MaxDD | TotalRet |
+|------|--------|--------|--------|---------|-------|---------|
+| 1 | 2021-05 → 2022-05 | 90 | 3.227 | 76.7% | 2.6% | +102% |
+| 2 | 2022-05 → 2023-05 | 41 | 3.573 | 31.7% | 3.6% | +226% |
+| 3 | 2023-05 → 2024-05 | 145 | 2.840 | 87.6% | 3.9% | +26% |
+| 4 | 2024-05 → 2025-05 | 120 | 2.148 | 75.0% | 7.1% | +42% |
+| 5 | 2025-05 → 2026-05 | 183 | 3.519 | 84.2% | 3.7% | +54% |
+
+**C. SectorRelativeScorer** — sector-neutral, long top-3 / short bottom-3 within each GICS sector
+
+| Fold | Period | Trades | Sharpe | WinRate | MaxDD | TotalRet |
+|------|--------|--------|--------|---------|-------|---------|
+| 1 | 2021-05 → 2022-05 | 49 | 2.241 | 69.4% | 4.2% | +49% |
+| 2 | 2022-05 → 2023-05 | 28 | 3.027 | 50.0% | 2.2% | +143% |
+| 3 | 2023-05 → 2024-05 | 50 | 1.639 | 70.0% | 3.9% | +34% |
+| 4 | 2024-05 → 2025-05 | 48 | 2.954 | 58.3% | 3.8% | +102% |
+| 5 | 2025-05 → 2026-05 | 43 | 0.697 | 58.1% | 4.3% | +21% |
+
+**D. CombinedLSScorer** — PEAD priority signals + factor longs + QualityShort hedging leg
+
+| Fold | Period | Trades | Sharpe | WinRate | MaxDD | TotalRet |
+|------|--------|--------|--------|---------|-------|---------|
+| 1 | 2021-05 → 2022-05 | 72 | 3.086 | 79.2% | 1.9% | +49% |
+| 2 | 2022-05 → 2023-05 | 63 | 2.998 | 65.1% | 3.3% | +114% |
+| 3 | 2023-05 → 2024-05 | 63 | 2.800 | 74.6% | 2.8% | +56% |
+| 4 | 2024-05 → 2025-05 | 54 | 3.310 | 63.0% | 1.9% | +121% |
+| 5 | 2025-05 → 2026-05 | 77 | 3.498 | 72.7% | 2.7% | +102% |
+
+### Analysis
+
+- **A (QualityShort)** is the standout: highest avg Sharpe (3.255), highest Fold 2 (5.145 — the 2022 bear market when longs were suppressed and quality shorts thrived). High trade count (101-199/fold) = statistically robust.
+- **D (Combined)** has the **tightest min fold (2.800)** and lowest max drawdowns (1.9-3.3%) — most consistent. PEAD priority + quality shorts create a self-hedging strategy.
+- **B (MeanReversionShort)** has unusual Fold 2 dynamics: 31.7% win rate but Sharpe 3.573 → large right-tail on shorts (few big winners). Viable but riskier profile.
+- **C (SectorRelative)** lowest avg (2.112) and weakest Fold 5 (0.697). Still passes, but sector-neutral construction limits alpha vs. unconstrained approaches.
+
+### Recommendation for Phase I
+
+**Primary candidate: D_Combined** — most consistent across all folds (min=2.800), lowest drawdowns, combines 3 validated edge sources (PEAD, factor longs, quality shorts). Best for live paper trading given regime robustness.
+
+**Secondary: A_QualityShort** — highest raw Sharpe if single-strategy preferred.
+
+### Implementation
+
+| Component | Change |
+|-----------|--------|
+| `app/ml/short_scorers.py` | New: QualityShortScorer, MeanReversionShortScorer, SectorRelativeScorer, CombinedLSScorer |
+| `scripts/run_ls_research_walkforward.py` | New: Phase H research WF runner (4 scorers, JSON output, email summary) |
+| `docs/phase_h_ls_research_results.json` | Full fold-by-fold JSON results |
+
+**Verdict: ✅ ALL 4 GATE PASSED — D_Combined recommended for Phase I paper trading**
