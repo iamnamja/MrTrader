@@ -22,7 +22,11 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.database import check_db_connection
+<<<<<<< Updated upstream
 from app.database.models import AgentDecision, AuditLog, ProposalLog, RiskMetric, Trade
+=======
+from app.database.models import AgentDecision, AuditLog, IntraProposalLog, RiskMetric, SwingProposalLog, Trade
+>>>>>>> Stashed changes
 from app.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -1159,6 +1163,7 @@ async def get_model_versions(limit: int = 10):
 
 # ─── Swing Proposal Log ───────────────────────────────────────────────────────
 
+<<<<<<< Updated upstream
 @router.get("/regime/current")
 async def get_regime_current():
     """Return latest regime model score from regime_snapshots (today's row or last-known fallback)."""
@@ -1194,10 +1199,25 @@ async def get_regime_history(days: int = 30):
             )
             .order_by(RegimeSnapshot.snapshot_date.desc(), RegimeSnapshot.snapshot_time.desc())
             .limit(500)
+=======
+@router.get("/swing-proposals")
+async def get_swing_proposals(days: int = 3, limit: int = 200):
+    """Return swing proposal log rows — today's scan batches with full scoring context."""
+    db = get_session()
+    try:
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        rows = (
+            db.query(SwingProposalLog)
+            .filter(SwingProposalLog.proposed_at >= cutoff)
+            .order_by(desc(SwingProposalLog.proposed_at))
+            .limit(min(limit, 500))
+>>>>>>> Stashed changes
             .all()
         )
         return [
             {
+<<<<<<< Updated upstream
                 "snapshot_date": r.snapshot_date.isoformat() if r.snapshot_date else None,
                 "snapshot_time": r.snapshot_time.isoformat() if r.snapshot_time else None,
                 "trigger": r.snapshot_trigger,
@@ -1338,11 +1358,22 @@ async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
                 "pm_status": r.pm_status,
                 "pm_status_reason": r.pm_status_reason,
                 "pm_decided_at": r.pm_decided_at.isoformat() if r.pm_decided_at else None,
+=======
+                "id": r.id,
+                "batch_id": r.batch_id,
+                "scan_label": r.scan_label,
+                "scan_time": r.scan_time.isoformat() if r.scan_time else None,
+                "symbol": r.symbol,
+                "rank": r.rank,
+                "ml_score": r.ml_score,
+                "confidence": r.confidence,
+>>>>>>> Stashed changes
                 "direction": r.direction,
                 "entry_price": r.entry_price,
                 "stop_price": r.stop_price,
                 "target_price": r.target_price,
                 "quantity": r.quantity,
+<<<<<<< Updated upstream
                 "rm_status": r.rm_status,
                 "rm_reason": r.rm_reason,
                 "rm_rule": r.rm_rule,
@@ -1354,16 +1385,37 @@ async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
                 "trader_decided_at": r.trader_decided_at.isoformat() if r.trader_decided_at else None,
                 "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
                 "sent_to_rm_at": r.sent_to_rm_at.isoformat() if r.sent_to_rm_at else None,
+=======
+                "sector": r.sector,
+                "vix_at_scan": r.vix_at_scan,
+                "spy_price_at_scan": r.spy_price_at_scan,
+                "opportunity_score": r.opportunity_score,
+                "gate_results": r.gate_results,
+                "nis_signal": r.nis_signal,
+                "status": r.status,
+                "status_reason": r.status_reason,
+                "rm_status": r.rm_status,
+                "rm_reason": r.rm_reason,
+                "rm_decided_at": r.rm_decided_at.isoformat() if r.rm_decided_at else None,
+                "trade_id": r.trade_id,
+                "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
+                "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+>>>>>>> Stashed changes
             }
             for r in rows
         ]
     except Exception as exc:
+<<<<<<< Updated upstream
         logger.error("Proposal log error: %s", exc)
+=======
+        logger.error("Swing proposals error: %s", exc)
+>>>>>>> Stashed changes
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         db.close()
 
 
+<<<<<<< Updated upstream
 @router.get("/swing-proposals")
 async def get_swing_proposals(days: int = 3, limit: int = 200):
     """Swing proposals — reads from unified proposal_log. Kept for backward compatibility."""
@@ -1486,11 +1538,26 @@ async def get_reconciliation_history(strategy: str = "swing", limit: int = 20):
             .filter(WfLiveReconciliation.strategy == strategy)
             .order_by(WfLiveReconciliation.computed_at.desc())
             .limit(limit)
+=======
+@router.get("/intra-proposals")
+async def get_intra_proposals(days: int = 3, limit: int = 200):
+    """Return intraday proposal log rows — recent scan windows with scoring and gate results."""
+    db = get_session()
+    try:
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        rows = (
+            db.query(IntraProposalLog)
+            .filter(IntraProposalLog.scan_time >= cutoff)
+            .order_by(desc(IntraProposalLog.scan_time), IntraProposalLog.rank)
+            .limit(min(limit, 1000))
+>>>>>>> Stashed changes
             .all()
         )
         return [
             {
                 "id": r.id,
+<<<<<<< Updated upstream
                 "computed_at": r.computed_at.isoformat() if r.computed_at else None,
                 "range_start": r.range_start.isoformat(),
                 "range_end": r.range_end.isoformat(),
@@ -1500,11 +1567,34 @@ async def get_reconciliation_history(strategy: str = "swing", limit: int = 20):
                 "shortfall_sharpe": r.shortfall_sharpe,
                 "shortfall_pct": r.shortfall_pct,
                 "live_trade_count": r.live_trade_count,
+=======
+                "scan_time": r.scan_time.isoformat() if r.scan_time else None,
+                "window": r.window,
+                "symbol": r.symbol,
+                "rank": r.rank,
+                "ml_score": r.ml_score,
+                "above_threshold": r.above_threshold,
+                "scan_gate_block": r.scan_gate_block,
+                "entry_price": r.entry_price,
+                "stop_price": r.stop_price,
+                "target_price": r.target_price,
+                "quantity": r.quantity,
+                "status": r.status,
+                "nis_signal": r.nis_signal,
+                "entry_gate_reason": r.entry_gate_reason,
+                "rm_status": r.rm_status,
+                "rm_reason": r.rm_reason,
+                "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
+>>>>>>> Stashed changes
             }
             for r in rows
         ]
     except Exception as exc:
+<<<<<<< Updated upstream
         logger.error("reconciliation/history error: %s", exc)
+=======
+        logger.error("Intra proposals error: %s", exc)
+>>>>>>> Stashed changes
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         db.close()

@@ -268,35 +268,38 @@ class AgentSimulator:
             # else: proposals unchanged from previous scan day
 
             # 4. Phase 35: Market regime gate — cut exposure in bear/fear regimes
+            # Factor portfolio L/S mode: scorer manages its own regime logic (longs suppressed
+            # in bear market, everything blocked at VIX >= 40). Skip simulator-level gates.
             _skip_entries = False
             _max_pos_today = self.limits.MAX_OPEN_POSITIONS
-            if _spy_closes is not None:
-                try:
-                    spy_idx = _spy_closes.index
-                    spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                    spy_hist = _spy_closes.loc[spy_dates <= day]
-                    if len(spy_hist) >= 200:
-                        spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
-                        spy_close = float(spy_hist.iloc[-1])
-                        if spy_close < spy_ema200:
-                            _max_pos_today = self.regime_bear_max_positions
-                            logger.debug("Bear regime on %s: SPY %.2f < EMA200 %.2f — max_pos=%d",
-                                         day, spy_close, spy_ema200, _max_pos_today)
-                except Exception:
-                    pass
-            if _vix_closes is not None:
-                try:
-                    vix_idx = _vix_closes.index
-                    vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
-                    vix_today = _vix_closes.loc[vix_dates <= day]
-                    if len(vix_today) > 0:
-                        vix_val = float(vix_today.iloc[-1])
-                        if vix_val > self.vix_fear_threshold:
-                            _skip_entries = True
-                            logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
-                                         day, vix_val, self.vix_fear_threshold)
-                except Exception:
-                    pass
+            if self.factor_scorer is None:
+                if _spy_closes is not None:
+                    try:
+                        spy_idx = _spy_closes.index
+                        spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        if len(spy_hist) >= 200:
+                            spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
+                            spy_close = float(spy_hist.iloc[-1])
+                            if spy_close < spy_ema200:
+                                _max_pos_today = self.regime_bear_max_positions
+                                logger.debug("Bear regime on %s: SPY %.2f < EMA200 %.2f — max_pos=%d",
+                                             day, spy_close, spy_ema200, _max_pos_today)
+                    except Exception:
+                        pass
+                if _vix_closes is not None:
+                    try:
+                        vix_idx = _vix_closes.index
+                        vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
+                        vix_today = _vix_closes.loc[vix_dates <= day]
+                        if len(vix_today) > 0:
+                            vix_val = float(vix_today.iloc[-1])
+                            if vix_val > self.vix_fear_threshold:
+                                _skip_entries = True
+                                logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
+                                             day, vix_val, self.vix_fear_threshold)
+                    except Exception:
+                        pass
 
             # Phase 45 P3-Parallel: PM abstention gate (VIX >= threshold OR SPY < N-day SMA)
             if not _skip_entries and (self.pm_abstention_vix > 0

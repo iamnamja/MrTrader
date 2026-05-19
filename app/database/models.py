@@ -471,6 +471,7 @@ class IntraProposalLog(Base):
         return f"<IntraProposalLog {self.symbol} {self.window} {self.status}>"
 
 
+<<<<<<< Updated upstream
 class ProposalLog(Base):
     """Unified PM proposal log — one row per symbol per scan, covers both swing and intraday.
 
@@ -676,6 +677,8 @@ class ScanAbstention(Base):
     verdict = Column(String(20), nullable=True)
 
 
+=======
+>>>>>>> Stashed changes
 class ProcessHeartbeat(Base):
     """Phase 83 — PM heartbeat for deadman watchdog."""
     __tablename__ = "process_heartbeat"

@@ -2083,6 +2083,7 @@ class PortfolioManager(BaseAgent):
             ", ".join(f"{s}={p}" for s, p in top5),
         )
 
+<<<<<<< Updated upstream
         # Persist scan results to ProposalLog (log top-N for DB, does not cap scoring universe)
         _scan_time_utc = datetime.utcnow()
         _intraday_batch_id = f"intra_{_scan_time_utc.strftime('%Y%m%d_%H%M%S')}_{win_str.replace(':', '')}"
@@ -2111,13 +2112,35 @@ class PortfolioManager(BaseAgent):
                         regime_score_at_scan=_regime.get("regime_score"),
                         regime_label_at_scan=_regime.get("regime_label"),
                         regime_trigger_at_scan=_regime.get("trigger"),
+=======
+        # Persist scan results to IntraProposalLog (top-50 to keep DB lean)
+        _scan_time_utc = datetime.utcnow()
+        try:
+            from app.database.models import IntraProposalLog
+            from app.database.session import get_session as _gs2
+            _idb = _gs2()
+            try:
+                for _rank, (_sym, _prob) in enumerate(ranked[:50], start=1):
+                    _row = IntraProposalLog(
+                        scan_time=_scan_time_utc,
+                        window=win_str,
+                        symbol=_sym,
+                        rank=_rank,
+                        ml_score=round(float(_prob), 4),
+                        above_threshold=(_prob >= intraday_min_conf),
+                        status="SCORED",
+>>>>>>> Stashed changes
                     )
                     _idb.add(_row)
                 _idb.commit()
             finally:
                 _idb.close()
         except Exception as _loge:
+<<<<<<< Updated upstream
             self.logger.debug("ProposalLog intraday write failed (non-fatal): %s", _loge)
+=======
+            self.logger.debug("IntraProposalLog write failed (non-fatal): %s", _loge)
+>>>>>>> Stashed changes
 
         # Store top-N by score for later scans (10:45, 13:00 use this instead of full universe)
         if not use_morning_candidates:
@@ -2167,6 +2190,7 @@ class PortfolioManager(BaseAgent):
                 "window": win_str,
             })
             try:
+<<<<<<< Updated upstream
                 from app.database.models import ProposalLog
                 from app.database.session import get_session as _gs3
                 _idb3 = _gs3()
@@ -2174,11 +2198,22 @@ class PortfolioManager(BaseAgent):
                     _idb3.query(ProposalLog).filter(
                         ProposalLog.batch_id == _intraday_batch_id,
                     ).update({"scan_gate_block": _gate_reason, "pm_status": "SCAN_GATE_BLOCKED"})
+=======
+                from app.database.models import IntraProposalLog
+                from app.database.session import get_session as _gs3
+                _idb3 = _gs3()
+                try:
+                    _idb3.query(IntraProposalLog).filter(
+                        IntraProposalLog.scan_time == _scan_time_utc,
+                        IntraProposalLog.window == win_str,
+                    ).update({"scan_gate_block": _gate_reason, "status": "SCAN_GATE_BLOCKED"})
+>>>>>>> Stashed changes
                     _idb3.commit()
                 finally:
                     _idb3.close()
             except Exception:
                 pass
+<<<<<<< Updated upstream
             try:
                 from app.database.decision_audit import write_scan_abstention
                 _spy_px = float(spy_state.get("spy_price") or spy_state.get("spy_close") or 0) or None
@@ -2191,6 +2226,8 @@ class PortfolioManager(BaseAgent):
                 )
             except Exception:
                 pass
+=======
+>>>>>>> Stashed changes
             return
 
         # Gate 1C: melt-up compression guard — catch sustained low-vol melt-up regime
@@ -2213,6 +2250,7 @@ class PortfolioManager(BaseAgent):
                     "window": win_str,
                 })
                 try:
+<<<<<<< Updated upstream
                     from app.database.models import ProposalLog
                     from app.database.session import get_session as _gs3
                     _idb3 = _gs3()
@@ -2220,11 +2258,22 @@ class PortfolioManager(BaseAgent):
                         _idb3.query(ProposalLog).filter(
                             ProposalLog.batch_id == _intraday_batch_id,
                         ).update({"scan_gate_block": "gate1c_meltup", "pm_status": "SCAN_GATE_BLOCKED"})
+=======
+                    from app.database.models import IntraProposalLog
+                    from app.database.session import get_session as _gs3
+                    _idb3 = _gs3()
+                    try:
+                        _idb3.query(IntraProposalLog).filter(
+                            IntraProposalLog.scan_time == _scan_time_utc,
+                            IntraProposalLog.window == win_str,
+                        ).update({"scan_gate_block": "gate1c_meltup", "status": "SCAN_GATE_BLOCKED"})
+>>>>>>> Stashed changes
                         _idb3.commit()
                     finally:
                         _idb3.close()
                 except Exception:
                     pass
+<<<<<<< Updated upstream
                 try:
                     from app.database.decision_audit import write_scan_abstention
                     _spy_px2 = float(spy_state.get("spy_price") or spy_state.get("spy_close") or 0) or None
@@ -2237,6 +2286,8 @@ class PortfolioManager(BaseAgent):
                     )
                 except Exception:
                     pass
+=======
+>>>>>>> Stashed changes
                 return
 
         # Gate 1B: score-spread abstention — reduce picks if model has no strong opinion
@@ -2390,6 +2441,7 @@ class PortfolioManager(BaseAgent):
                 symbol, price, confidence,
             )
             try:
+<<<<<<< Updated upstream
                 from app.database.models import ProposalLog
                 from app.database.session import get_session as _gs4
                 _idb4 = _gs4()
@@ -2403,6 +2455,18 @@ class PortfolioManager(BaseAgent):
                         "sent_to_rm_at": datetime.utcnow(),
                         "proposal_uuid": proposal.get("proposal_uuid"),
                         "direction": proposal.get("direction", "BUY"),
+=======
+                from app.database.models import IntraProposalLog
+                from app.database.session import get_session as _gs4
+                _idb4 = _gs4()
+                try:
+                    _idb4.query(IntraProposalLog).filter(
+                        IntraProposalLog.scan_time == _scan_time_utc,
+                        IntraProposalLog.window == win_str,
+                        IntraProposalLog.symbol == symbol,
+                    ).update({
+                        "status": "SENT",
+>>>>>>> Stashed changes
                         "entry_price": price,
                         "stop_price": proposal.get("stop_loss"),
                         "target_price": proposal.get("profit_target"),
