@@ -3582,3 +3582,45 @@ Run date: 2026-05-18 (WF Run #7). All execution model fixes applied.
 4. **SPY must be in symbols_data** — Factor scorer's regime gate reads SPY from the symbols dict. Without it, regime_gate_ok() returns True (permissive), making the bear market gate a no-op.
 
 **Verdict: ✅ GATE PASSED — proceed to Phase G (PEAD walk-forward)**
+
+---
+
+## Phase G — PEAD Walk-Forward (2026-05-18)
+
+### PEAD WF Results — GATE PASSED
+
+Run date: 2026-05-18. 3 runs required to fix bugs.
+
+**Bug-fix journey:**
+1. Run #1: FMP API key missing (load_dotenv() called after WF) → 0 trades
+2. Run #2: api key fixed but pd.Timestamp passed to get_earnings_features_at → TypeError in (as_of - last_date).days → days_since=90 always → 0 trades
+3. Run #3: as_of.date() extracted before FMP call → **GATE PASSED**
+
+**Final fold results:**
+
+| Fold | Period | Trades | Sharpe | Calmar |
+|------|--------|--------|--------|--------|
+| 1 | 2021-05 → 2022-05 | 35 | +3.36 | 44.65 |
+| 2 | 2022-05 → 2023-05 | 66 | +3.46 | 32.32 |
+| 3 | 2023-05 → 2024-05 | 53 | +2.80 | 21.59 |
+| 4 | 2024-05 → 2025-05 | 41 | +3.60 | 64.96 |
+| 5 | 2025-05 → 2026-05 | 56 | +3.05 | 19.31 |
+
+**Avg Sharpe: 3.253 ✅ | Min fold: 2.797 ✅ (gate: avg ≥ 0.80, min ≥ -0.30) → GATE PASSED**
+
+### Notes and Caveats
+
+- **Trade counts are sparse (35-66/fold)**: PEAD is event-driven — earnings reports every ~90 days per stock. Only 35-66 positions per year with 5% surprise threshold.
+- **Hold period**: Simulator uses max_hold_bars=160 (40 positions × 4). PEAD literature suggests 5-day optimal hold. Positions held longer than needed, but returns still positive — PEAD drift persists.
+- **FMP PIT safety**: FMP uses `filingDate` not period end; look-ahead less likely. However, historical surprise figures may be revised after announcement — this is a potential data quality caveat common to commercial data providers.
+- **FMP limit=20**: Returns last 20 quarterly reports = ~5 years. All folds covered (2021-2026).
+
+### Implementation (Phase G complete)
+
+| Component | Change |
+|-----------|--------|
+| `app/ml/pead_scorer.py` | New: PEADScorer using FMP EPS surprise (PIT-safe, $0 extra) |
+| `scripts/run_pead_walkforward.py` | New: PEAD WF script with FMP cache pre-warm + early dotenv load |
+
+**Verdict: ✅ GATE PASSED — both factor portfolio (1.772) and PEAD (3.253) validated**
+**Next: Phase H — multi-strategy PM routing (50%/50% factor + PEAD, PEAD gets priority)**
