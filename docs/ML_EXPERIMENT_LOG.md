@@ -3712,3 +3712,105 @@ All 4 scorers conform to `AgentSimulator.factor_scorer` interface: `(day, symbol
 | `docs/phase_h_ls_research_results.json` | Full fold-by-fold JSON results |
 
 **Verdict: ✅ ALL 4 GATE PASSED — D_Combined recommended for Phase I paper trading**
+
+---
+
+## Phase H+ — Attribution, Parameter Sensitivity & New Scorers (2026-05-19)
+
+### Context
+
+Phase H+ ran 13 WF configurations across 7 research batches to answer: (1) where does the alpha come from — longs or shorts? (2) are parameters robust? (3) are there better short signals? (4) what's the optimal PEAD hold period?
+
+### Full Results Table
+
+| Configuration | Avg Sharpe | Min Fold | Fold 2 (2022) | Verdict |
+|---|---|---|---|---|
+| **G_PEAD_hold5** | **8.109** | **7.197** | **8.787** | ✅ PASS |
+| A2_QS_shorts_only | 5.953 | 3.958 | 6.773 | ✅ PASS |
+| B2_MR_shorts_only | 5.371 | 4.381 | 4.381 | ✅ PASS |
+| A4_QS_flags3_shorts20 | 3.518 | 2.561 | 4.554 | ✅ PASS |
+| A3_QS_flags1_shorts10 | 3.405 | 2.364 | 4.400 | ✅ PASS |
+| E_ABCombined | 3.265 | 2.186 | 4.557 | ✅ PASS |
+| D2_broad | 3.059 | 2.836 | 3.038 | ✅ PASS |
+| B3_MR_aggressive | 2.967 | 2.114 | 3.573 | ✅ PASS |
+| F_AnalystRev | 2.569 | 1.877 | 1.877 | ✅ PASS |
+| A1_QS_longs_only | 1.888 | -1.306 | 1.736 | ❌ FAIL |
+| B1_MR_longs_only | 1.888 | -1.306 | 1.736 | ❌ FAIL |
+| D1_concentrated | 0.000 | 0.000 | 0.000 | ❌ FAIL (0 trades) |
+| B4_MR_selective | 0.000 | 0.000 | 0.000 | ❌ FAIL (0 trades) |
+
+### Key Findings
+
+#### 1. Short legs are the primary alpha source (CRITICAL)
+
+The long leg alone **fails the gate in both strategies** (avg=1.888, min=-1.306). Shorts-only vastly outperforms combined:
+
+- QualityShort shorts-only: **5.953** vs combined: 3.255 (+83% improvement)
+- MeanRevShort shorts-only: **5.371** vs combined: 3.061 (+75% improvement)
+
+**The long leg dilutes performance.** The factor-score long positions add drawdown without proportionate return. In bear markets (Fold 2 2022), the short leg thrives while longs get stopped out — and the combination averages out the short-leg excellence.
+
+**Implication:** For Phase I, consider running short-heavy (e.g., 30% long / 70% short gross) rather than equal-weight L/S.
+
+#### 2. PEAD 5-day hold is transformative
+
+Fixing hold period from RiskLimits default → 5 trading days (per academic literature):
+- Original PEAD: avg=3.253
+- PEAD hold-5: avg=**8.109** (+149% improvement), min fold=7.197
+
+The original PEAD was overstaying positions (holding 20-40+ bars), giving back post-announcement drift gains. With 5-bar hold cap, the strategy captures the short-term drift window cleanly. **This is the best single configuration tested across the entire research campaign.**
+
+#### 3. QualityShort parameters are robust
+
+- flags_required=1 (more permissive): avg=3.405 — passes cleanly
+- flags_required=3 (more selective): avg=3.518 — marginally better
+- Default flags_required=2 (avg=3.255) — all three work; signal is not fragile
+
+Recommendation: keep flags_required=2 as default (balance of coverage and precision).
+
+#### 4. MeanReversionShort has a cliff edge at high thresholds
+
+- Aggressive (0.75/0.85 quantile): avg=2.967 — passes, slight deterioration
+- Selective (0.85/0.95 quantile): **0 trades** — too restrictive, no signals generated
+- Default (0.80/0.90): avg=3.061 — optimal operating point near the upper boundary
+
+Keep at or below default thresholds.
+
+#### 5. AB Combined adds breadth without hurting quality
+
+Union of quality + mean-reversion shorts: avg=3.265, fold2=4.557. No meaningful improvement over A alone (3.255), suggesting heavy overlap — the worst fundamental stocks and the most overextended stocks are often the same names.
+
+#### 6. Analyst revision signals are the weakest
+
+avg=2.569, Fold 2=1.877 (weakest bear-market performance). Analyst downgrades lag fast market moves — useful as a secondary filter but not a primary short signal.
+
+#### 7. D_Combined position sizing matters
+
+- Concentrated (top_n=10, max_shorts=8): 0 trades — PEAD consumed all capacity
+- Broad (top_n=20, max_shorts=15): avg=3.059, min=2.836 — robust, nearly identical to default
+- Default (top_n=15, max_shorts=12): avg=3.138 — optimal
+
+### Revised Phase I Recommendation
+
+**Primary: PEAD with 5-day hold cap** (`G_PEAD_hold5`, avg=8.109) — by far the best risk-adjusted configuration. Requires adding `max_hold_bars_override=5` to AgentSimulator for PEAD-sourced positions.
+
+**Secondary hedging leg: QualityShort shorts-only** (`A2_QS_shorts_only`, avg=5.953) — run as a dedicated short book alongside PEAD longs. The long leg of QualityShort should be dropped or minimized.
+
+**Architecture for Phase I:**
+1. PEAD scorer with 5-day hold → event-driven longs AND shorts (earnings surprise)
+2. QualityShort shorts-only → fundamental deterioration shorts (always on)
+3. Factor longs (long-only, bear market cash) → systematic long book
+4. Portfolio allocation: ~50% PEAD event trades, ~30% quality shorts, ~20% factor longs
+
+**Do NOT run:** Equal-weight L/S with factor long leg — the long leg drags down the short-alpha by 50-75%.
+
+### Implementation
+
+| Component | Change |
+|-----------|--------|
+| `app/ml/short_scorers.py` | legs_mode param on QS/MR scorers; ABCombinedScorer; AnalystRevisionShortScorer |
+| `app/backtesting/agent_simulator.py` | max_hold_bars_override for per-position hold cap |
+| `scripts/walkforward_tier3.py` | max_hold_bars_override pass-through |
+| `scripts/run_ls_research_phase_h_plus.py` | 13-config research runner, incremental email, JSON output |
+
+**Verdict: ✅ Phase H+ complete — PEAD hold-5 (8.109) + QualityShort shorts-only (5.953) are the winning configurations for Phase I**
