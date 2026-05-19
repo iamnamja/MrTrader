@@ -281,10 +281,10 @@ class FactorPortfolioScorer:
             spy_series, as_of, vix_value=vix_val,
             ma_window=self.spy_ma_window, vix_threshold=self.vix_threshold,
         )
-        # In L/S mode: only suppress longs on bad regime; shorts still trade
-        # (they benefit from downturns). Gate stays for both when extreme (VIX > 40).
-        extreme_regime = (vix_val is not None and vix_val >= 40.0)
-        if extreme_regime:
+        # In bear market: suppress all trading. Bottom-N momentum shorts (beaten-down stocks)
+        # reverse violently during bear market rallies, destroying the short book.
+        # The strategy's edge is long momentum; sit in cash during bear markets.
+        if not regime_ok:
             return []
 
         bars_by_sym = {
