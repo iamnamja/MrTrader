@@ -724,6 +724,21 @@ def run_swing_walkforward(
                 long_short=True,  # Phase F: directional L/S, 40% net long
             )
 
+        # Phase F: factor portfolio needs wider limits than the ML-signal defaults
+        # (top-20 longs + top-15 shorts = 35 positions, 15% drawdown tolerance)
+        if _factor_scorer_inst is not None:
+            from app.agents.risk_rules import RiskLimits
+            _sim_limits = RiskLimits(
+                MAX_OPEN_POSITIONS=40,          # headroom for 20L + 15S + slack
+                MAX_POSITION_SIZE_PCT=0.05,     # 5% per position (same)
+                MAX_ACCOUNT_DRAWDOWN_PCT=0.15,  # 15% drawdown gate (vs 5% for single trades)
+                MAX_DAILY_LOSS_PCT=0.05,        # 5% daily loss (vs 2%)
+                MAX_PORTFOLIO_HEAT_PCT=0.30,    # 30% heat (diversified portfolio)
+                MAX_SECTOR_CONCENTRATION_PCT=0.30,  # 30% sector cap
+            )
+        else:
+            _sim_limits = None  # use AgentSimulator defaults
+
         sim = AgentSimulator(
             model=model,
             atr_stop_mult=atr_stop_mult,
@@ -741,6 +756,7 @@ def run_swing_walkforward(
             feature_cache=_feature_cache,
             sim_scan_interval_days=sim_scan_interval_days,
             factor_scorer=_factor_scorer_inst,
+            limits=_sim_limits,
         )
         result = sim.run(
             fold_symbols_data,
