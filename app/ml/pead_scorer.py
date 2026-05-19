@@ -69,8 +69,8 @@ class PEADScorer:
 
         from app.data.fmp_provider import get_earnings_features_at
 
-        as_of = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
-        cutoff = as_of - pd.Timedelta(days=self.max_days_after)
+        _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
+        as_of = _ts.date()  # get_earnings_features_at requires datetime.date
 
         results = []
 
