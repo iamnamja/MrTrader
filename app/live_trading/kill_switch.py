@@ -80,7 +80,9 @@ class KillSwitch:
             positions = []
 
         for pos in positions:
-            symbol = pos["symbol"]
+            symbol = pos.get("symbol")
+            if not symbol:
+                continue
             raw_qty = int(pos.get("quantity") or pos.get("qty", 0))
             # Negative qty means a short position in Alpaca; cover with "buy"
             exit_side = "buy" if raw_qty < 0 else "sell"

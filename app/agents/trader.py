@@ -147,6 +147,20 @@ class Trader(BaseAgent):
                     days_since_entry = (datetime.now(ET).date() - entry_date).days
                     bars_held = max(t.bars_held or 0, days_since_entry)
                     _rec_dir = getattr(t, "direction", "BUY") or "BUY"
+                    # Cross-check DB direction against Alpaca qty sign; correct if mismatched
+                    _alpaca_short = float(pos.get("qty", 0)) < 0
+                    if _alpaca_short and _rec_dir != "SELL_SHORT":
+                        self.logger.warning(
+                            "Reconcile %s: DB direction=%s but Alpaca qty<0 — correcting to SELL_SHORT",
+                            symbol, _rec_dir,
+                        )
+                        _rec_dir = "SELL_SHORT"
+                    elif not _alpaca_short and _rec_dir == "SELL_SHORT":
+                        self.logger.warning(
+                            "Reconcile %s: DB direction=SELL_SHORT but Alpaca qty>0 — correcting to BUY",
+                            symbol,
+                        )
+                        _rec_dir = "BUY"
                     _rec_short = _rec_dir == "SELL_SHORT"
                     _rec_stop = t.stop_price or round(avg * (1.02 if _rec_short else 0.98), 2)
                     _rec_tgt = t.target_price or round(avg * (0.94 if _rec_short else 1.06), 2)
@@ -1938,8 +1952,9 @@ class Trader(BaseAgent):
         position = alpaca.get_position(symbol)
         if not position:
             return
-        total_qty = int(position.get("qty", 0))
-        if total_qty <= 0:
+        raw_qty = int(position.get("qty", 0))
+        total_qty = abs(raw_qty)
+        if total_qty == 0:
             return
 
         partial_qty = max(1, int(total_qty * partial_pct))
@@ -1958,8 +1973,8 @@ class Trader(BaseAgent):
 
         if _partial_is_short:
             pnl = (pos["entry_price"] - current_price) * partial_qty
-            # Move stop toward entry for shorts (stop is above entry)
-            breakeven_stop = round(pos["entry_price"] * 0.999, 4)
+            # Move stop toward entry for shorts: stop is above entry, clamp it down toward entry
+            breakeven_stop = round(pos["entry_price"] * 1.001, 4)
             pos["stop_price"] = min(pos["stop_price"], breakeven_stop)
         else:
             pnl = (current_price - pos["entry_price"]) * partial_qty
@@ -2042,8 +2057,9 @@ class Trader(BaseAgent):
             self.active_positions.pop(symbol, None)
             return
 
-        qty = int(position.get("qty", 0))
-        if qty <= 0:
+        raw_qty = int(position.get("qty", 0))
+        qty = abs(raw_qty)
+        if qty == 0:
             self.active_positions.pop(symbol, None)
             return
 

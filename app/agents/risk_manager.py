@@ -467,7 +467,12 @@ class RiskManager(BaseAgent):
             for p in positions if p.get("symbol")
         }
         # Direction map for sign-adjusted correlation: long+short pairs hedge, not concentrate
-        _pos_directions = {p["symbol"]: (p.get("side") or "long") for p in positions if p.get("symbol")}
+        _pos_directions = {
+            p["symbol"]: (
+                p.get("side") or ("short" if float(p.get("qty") or p.get("quantity") or 0) < 0 else "long")
+            )
+            for p in positions if p.get("symbol")
+        }
         ok, msg = validate_correlation_risk(
             symbol, open_symbols, account_value, position_values, limits=self.limits,
             proposed_direction=proposal.get("direction", "BUY"),
@@ -615,9 +620,11 @@ class RiskManager(BaseAgent):
             # Intraday: use proposal stop or tight default (direction-aware)
             if _rm_short:
                 intraday_stop = proposal.get("stop_loss") or round(entry_price * 1.005, 2)
-                stop_loss = max(intraday_stop, entry_price * 1.005)
+                # Clamp: stop must not be looser (higher) than 0.5% above entry
+                stop_loss = min(intraday_stop, entry_price * 1.005)
             else:
                 intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
+                # Clamp: stop must not be looser (lower) than 0.5% below entry
                 stop_loss = min(intraday_stop, entry_price * 0.995)
         else:
             stop_loss = calculate_dynamic_stop_loss(

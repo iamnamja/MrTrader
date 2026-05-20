@@ -120,13 +120,19 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
             for ghost in stale_ghosts:
                 if ghost.symbol not in alpaca_positions:
-                    exit_price, exit_order_id = _lookup_sell_fill(alpaca, ghost.symbol, ghost.quantity)
+                    _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
+                    exit_price, exit_order_id = _lookup_close_fill(alpaca, ghost.symbol, ghost.quantity, _ghost_short)
                     ghost.status = "CLOSED"
                     ghost.exit_reason = "reconcile_ghost_expired"
                     ghost.closed_at = datetime.utcnow()
                     if exit_price is not None:
                         ghost.exit_price = exit_price
-                        ghost.pnl = round((exit_price - float(ghost.entry_price or 0)) * (ghost.quantity or 0), 2)
+                        _entry = float(ghost.entry_price or 0)
+                        _qty = ghost.quantity or 0
+                        if _ghost_short:
+                            ghost.pnl = round((_entry - exit_price) * _qty, 2)
+                        else:
+                            ghost.pnl = round((exit_price - _entry) * _qty, 2)
                         logger.info(
                             "Closing stale RECONCILE_GHOST Trade#%d %s — exit=$%.4f pnl=$%.2f (order %s)",
                             ghost.id, ghost.symbol, exit_price, ghost.pnl or 0, exit_order_id or "?",
@@ -291,8 +297,11 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 .first()
             )
 
-            if recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05:
-                # Entry prices within 5% — same position, reactivate
+            _alpaca_dir = "SELL_SHORT" if qty < 0 else "BUY"
+            _price_match = recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05
+            _dir_match = (getattr(recent_trade, "direction", "BUY") or "BUY") == _alpaca_dir if recent_trade else False
+            if _price_match and _dir_match:
+                # Entry prices within 5% and direction matches — same position, reactivate
                 logger.warning(
                     "UNTRACKED POSITION: %s x%d @ $%.2f — reactivating Trade#%d (was %s) "
                     "instead of creating duplicate",
@@ -406,18 +415,22 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     return result
 
 
-def _lookup_sell_fill(alpaca, symbol: str, qty) -> tuple:
-    """Return (filled_avg_price, order_id) for the most recent SELL fill for symbol, or (None, None)."""
+def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False) -> tuple:
+    """Return (filled_avg_price, order_id) for the most recent closing fill for symbol.
+
+    Longs close via SELL; shorts close via BUY (cover).
+    """
     try:
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
         orders = alpaca.trading_client.get_orders(req)
-        target_qty = int(qty or 0)
+        target_qty = abs(int(qty or 0))
+        close_side = "BUY" if is_short else "SELL"
         for o in orders:
             if o.symbol != symbol:
                 continue
-            if "SELL" not in str(o.side).upper():
+            if close_side not in str(o.side).upper():
                 continue
             if "FILLED" not in str(o.status).upper():
                 continue
@@ -427,8 +440,12 @@ def _lookup_sell_fill(alpaca, symbol: str, qty) -> tuple:
             if o.filled_avg_price:
                 return float(o.filled_avg_price), str(o.id)
     except Exception as exc:
-        logger.debug("_lookup_sell_fill failed for %s: %s", symbol, exc)
+        logger.debug("_lookup_close_fill failed for %s: %s", symbol, exc)
     return None, None
+
+
+# Backward-compat alias
+_lookup_sell_fill = _lookup_close_fill
 
 
 def _get_open_alpaca_orders(alpaca) -> List[Dict[str, Any]]:
