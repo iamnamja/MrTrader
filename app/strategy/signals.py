@@ -359,67 +359,107 @@ def check_dynamic_adjustments(
     vix: float = 0.0,
     partial_exit_pct: float = 0.50,
     db=None,
+    direction: str = "BUY",
 ) -> DynamicAdjustment:
     """
-    Evaluate dynamic adjustments for a live position:
+    Evaluate dynamic adjustments for a live position.
 
-    1. Partial exit — take `partial_exit_pct` off the table when price hits
-       the first profit target (entry + 2×ATR), letting the rest run to full target.
-    2. Stop tightening — when VIX spikes > 20 mid-day, trail stop closer
-       (1.5×ATR instead of 2.5×ATR) to protect unrealised gains.
-    3. Target extension — when price moves strongly and momentum is intact,
-       extend target by 1×ATR to let winners run further.
+    1. Partial exit — take `partial_exit_pct` off the table when price hits T1.
+    2. Stop tightening — when VIX spikes > 20 or position is up 4%, trail stop.
+    3. Target extension — when price approaches target with momentum.
 
-    Returns a DynamicAdjustment with updated stop/target and partial exit flag.
-    Does NOT execute anything — Trader acts on the result.
+    For shorts (direction="SELL_SHORT"), all price relationships are inverted:
+    highest_price is the lowest price reached; T1 is below entry; stop is above entry.
+
+    Returns a DynamicAdjustment. Does NOT execute anything.
     """
     adj = DynamicAdjustment(new_stop=stop_price, new_target=target_price)
 
     if entry_price <= 0 or current_price <= 0 or atr <= 0:
         return adj
 
-    pnl_pct = (current_price - entry_price) / entry_price
-    t1_price = entry_price + 2.0 * atr     # first profit target (half-position exit)
+    is_short = direction == "SELL_SHORT"
     notes = []
 
-    # ── 1. Partial exit at T1 ─────────────────────────────────────────────────
-    # Only trigger once — after partial exit the remaining qty drives remaining logic.
-    # Caller is responsible for tracking whether partial exit has already fired.
-    if current_price >= t1_price and shares > 1:
-        partial_qty = max(1, int(shares * partial_exit_pct))
-        adj.partial_exit = True
-        adj.partial_exit_qty = partial_qty
-        adj.partial_exit_reason = f"t1_hit (price={current_price:.2f} T1={t1_price:.2f} P&L={pnl_pct*100:+.1f}%)"
-        notes.append(f"partial_exit {partial_qty}sh at T1")
+    if is_short:
+        pnl_pct = (entry_price - current_price) / entry_price
+        # For shorts: T1 is BELOW entry (price fell 2×ATR = profit)
+        t1_price = entry_price - 2.0 * atr
 
-    # ── 2. Stop tightening on VIX spike ──────────────────────────────────────
-    if vix > 20 and pnl_pct > 0:
-        # Tighten: trail at 1.5×ATR below highest_price (vs default 2.5×ATR below entry)
-        tight_stop = highest_price - 1.5 * atr
-        tight_stop = round(max(tight_stop, stop_price), 4)  # never move stop down
-        if tight_stop > adj.new_stop:
-            adj.new_stop = tight_stop
-            adj.stop_tightened = True
-            notes.append(f"stop_tightened VIX={vix:.1f} → {tight_stop:.2f}")
-    elif pnl_pct >= 0.04:
-        # Normal trail: tighten to 2×ATR below highest once up 4%
-        normal_trail = highest_price - 2.0 * atr
-        normal_trail = round(max(normal_trail, stop_price), 4)
-        if normal_trail > adj.new_stop:
-            adj.new_stop = normal_trail
-            adj.stop_tightened = True
-            notes.append(f"stop_trailed → {normal_trail:.2f}")
+        # ── 1. Partial exit at T1 (short: price dropped to T1) ───────────────
+        if current_price <= t1_price and shares > 1:
+            partial_qty = max(1, int(shares * partial_exit_pct))
+            adj.partial_exit = True
+            adj.partial_exit_qty = partial_qty
+            adj.partial_exit_reason = (
+                f"t1_hit_short (price={current_price:.2f} T1={t1_price:.2f} P&L={pnl_pct*100:+.1f}%)"
+            )
+            notes.append(f"partial_exit {partial_qty}sh at T1")
 
-    # ── 3. Target extension ───────────────────────────────────────────────────
-    # Extend by 1×ATR when price is within 0.5×ATR of current target AND
-    # momentum is still positive (price above entry + 3×ATR).
-    strong_move_threshold = entry_price + 3.0 * atr
-    within_target_zone = (target_price - current_price) < (0.5 * atr)
-    if within_target_zone and current_price > strong_move_threshold:
-        new_target = round(target_price + 1.0 * atr, 4)
-        adj.new_target = new_target
-        adj.target_extended = True
-        notes.append(f"target_extended → {new_target:.2f}")
+        # ── 2. Stop tightening (short: trail stop DOWN toward current price) ──
+        # highest_price for shorts = lowest price reached
+        if vix > 20 and pnl_pct > 0:
+            tight_stop = highest_price + 1.5 * atr
+            tight_stop = round(min(tight_stop, stop_price), 4)  # never move stop up
+            if tight_stop < adj.new_stop:
+                adj.new_stop = tight_stop
+                adj.stop_tightened = True
+                notes.append(f"stop_tightened_short VIX={vix:.1f} → {tight_stop:.2f}")
+        elif pnl_pct >= 0.04:
+            normal_trail = highest_price + 2.0 * atr
+            normal_trail = round(min(normal_trail, stop_price), 4)
+            if normal_trail < adj.new_stop:
+                adj.new_stop = normal_trail
+                adj.stop_tightened = True
+                notes.append(f"stop_trailed_short → {normal_trail:.2f}")
+
+        # ── 3. Target extension (short: extend target FURTHER below entry) ────
+        strong_move_threshold = entry_price - 3.0 * atr
+        within_target_zone = (current_price - target_price) < (0.5 * atr)
+        if within_target_zone and current_price < strong_move_threshold:
+            new_target = round(target_price - 1.0 * atr, 4)
+            adj.new_target = new_target
+            adj.target_extended = True
+            notes.append(f"target_extended_short → {new_target:.2f}")
+
+    else:
+        pnl_pct = (current_price - entry_price) / entry_price
+        t1_price = entry_price + 2.0 * atr
+
+        # ── 1. Partial exit at T1 ─────────────────────────────────────────────
+        if current_price >= t1_price and shares > 1:
+            partial_qty = max(1, int(shares * partial_exit_pct))
+            adj.partial_exit = True
+            adj.partial_exit_qty = partial_qty
+            adj.partial_exit_reason = (
+                f"t1_hit (price={current_price:.2f} T1={t1_price:.2f} P&L={pnl_pct*100:+.1f}%)"
+            )
+            notes.append(f"partial_exit {partial_qty}sh at T1")
+
+        # ── 2. Stop tightening on VIX spike ──────────────────────────────────
+        if vix > 20 and pnl_pct > 0:
+            tight_stop = highest_price - 1.5 * atr
+            tight_stop = round(max(tight_stop, stop_price), 4)
+            if tight_stop > adj.new_stop:
+                adj.new_stop = tight_stop
+                adj.stop_tightened = True
+                notes.append(f"stop_tightened VIX={vix:.1f} → {tight_stop:.2f}")
+        elif pnl_pct >= 0.04:
+            normal_trail = highest_price - 2.0 * atr
+            normal_trail = round(max(normal_trail, stop_price), 4)
+            if normal_trail > adj.new_stop:
+                adj.new_stop = normal_trail
+                adj.stop_tightened = True
+                notes.append(f"stop_trailed → {normal_trail:.2f}")
+
+        # ── 3. Target extension ───────────────────────────────────────────────
+        strong_move_threshold = entry_price + 3.0 * atr
+        within_target_zone = (target_price - current_price) < (0.5 * atr)
+        if within_target_zone and current_price > strong_move_threshold:
+            new_target = round(target_price + 1.0 * atr, 4)
+            adj.new_target = new_target
+            adj.target_extended = True
+            notes.append(f"target_extended → {new_target:.2f}")
 
     adj.notes = "; ".join(notes)
     return adj

@@ -1029,26 +1029,43 @@ class AgentSimulator:
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 
-            pos.highest_price = max(pos.highest_price, today_high)
+            # Track best price: longs use highest close, shorts use lowest close
+            if is_short:
+                pos.highest_price = min(pos.highest_price, today_low)
+            else:
+                pos.highest_price = max(pos.highest_price, today_high)
 
-            if not is_short:
-                # Long: use standard check_exit with trailing stop
-                should_exit, exit_reason, new_stop = check_exit(
-                    symbol=sym,
-                    current_price=today_close,
-                    entry_price=pos.entry_price,
-                    stop_price=pos.stop_price,
-                    target_price=pos.target_price,
-                    highest_price=pos.highest_price,
-                    bars_held=pos.bars_held,
-                    min_hold_bars=1,
-                    max_hold_bars=(self.max_hold_bars_override
-                                   if self.max_hold_bars_override is not None
-                                   else self.limits.MAX_OPEN_POSITIONS * 4),
-                )
-                pos.stop_price = new_stop
-                # Intrabar stop/target override
-                if not should_exit:
+            # Use shared check_exit for both long and short (sim/live parity)
+            _check_dir = "SELL_SHORT" if is_short else "BUY"
+            _max_hold = (self.max_hold_bars_override
+                         if self.max_hold_bars_override is not None
+                         else self.limits.MAX_OPEN_POSITIONS * 4)
+            should_exit, exit_reason, new_stop = check_exit(
+                symbol=sym,
+                current_price=today_close,
+                entry_price=pos.entry_price,
+                stop_price=pos.stop_price,
+                target_price=pos.target_price,
+                highest_price=pos.highest_price,
+                bars_held=pos.bars_held,
+                min_hold_bars=1,
+                max_hold_bars=_max_hold,
+                direction=_check_dir,
+            )
+            pos.stop_price = new_stop
+
+            # Intrabar stop/target override: use H/L to check for intrabar breach
+            if not should_exit:
+                if is_short:
+                    if today_high >= pos.stop_price:
+                        should_exit = True
+                        exit_reason = "stop_hit"
+                        today_close = pos.stop_price
+                    elif today_low <= pos.target_price:
+                        should_exit = True
+                        exit_reason = "target_hit"
+                        today_close = pos.target_price
+                else:
                     if today_low <= pos.stop_price:
                         should_exit = True
                         exit_reason = "stop_hit"
@@ -1057,23 +1074,6 @@ class AgentSimulator:
                         should_exit = True
                         exit_reason = "target_hit"
                         today_close = pos.target_price
-            else:
-                # Short: stop is above entry (upside), target is below entry (downside)
-                should_exit = False
-                exit_reason = ""
-                if today_high >= pos.stop_price:
-                    should_exit = True
-                    exit_reason = "stop_hit"
-                    today_close = pos.stop_price
-                elif today_low <= pos.target_price:
-                    should_exit = True
-                    exit_reason = "target_hit"
-                    today_close = pos.target_price
-                elif pos.bars_held >= (self.max_hold_bars_override
-                                       if self.max_hold_bars_override is not None
-                                       else self.limits.MAX_OPEN_POSITIONS * 4):
-                    should_exit = True
-                    exit_reason = "max_hold"
 
             if should_exit:
                 trade, tx = self._close_position(pos, day, today_close, exit_reason, portfolio)

@@ -12,7 +12,7 @@ class Trade(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(10), index=True, nullable=False)
-    direction = Column(String(10), nullable=False)  # BUY or SELL
+    direction = Column(String(15), nullable=False)  # BUY | SELL_SHORT
     entry_price = Column(Float, nullable=False)
     exit_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=False)
@@ -170,7 +170,7 @@ class TradeProposal(Base):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(10), index=True, nullable=False)
     trade_type = Column(String(20), nullable=False)          # "swing" | "intraday"
-    direction = Column(String(10), nullable=False, default="BUY")
+    direction = Column(String(15), nullable=False, default="BUY")
     entry_price = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)
     ml_score = Column(Float, nullable=True)
@@ -250,7 +250,7 @@ class MacroSignalCache(Base):
     date = Column(String(10), nullable=False, index=True)   # YYYY-MM-DD
     prompt_version = Column(String(20), nullable=False)
     risk_level = Column(String(10), nullable=False)         # LOW / MEDIUM / HIGH
-    direction = Column(String(10), nullable=False)
+    direction = Column(String(15), nullable=False)
     sizing_factor = Column(Float, nullable=False)
     block_new_entries = Column(Boolean, nullable=False, default=False)
     rationale = Column(Text, nullable=True)
@@ -331,7 +331,7 @@ class DecisionAudit(Base):
     # Stock price at decision time — anchor for counterfactual P&L calculation
     price_at_decision = Column(Float, nullable=True)
     # Intended direction (BUY/SELL) — needed to compute signed counterfactual P&L
-    direction = Column(String(5), nullable=True)
+    direction = Column(String(15), nullable=True)
     # Regime-aware sizing (Phase regime-sizing)
     regime_sizing_mult = Column(Float, nullable=True)        # multiplier applied due to regime (1.0/0.6/0.3/0.5)
     regime_label_at_decision = Column(String(15), nullable=True)  # RISK_ON|RISK_CAUTION|RISK_OFF|UNKNOWN
@@ -361,6 +361,7 @@ class PendingLimitOrder(Base):
     atr = Column(Float, nullable=True)
     trade_type = Column(String(20), nullable=False, default="swing")
     signal_type = Column(String(30), nullable=True)
+    direction = Column(String(15), nullable=False, default="BUY")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     # Phase: limit-order lifecycle redesign — re-quote + EOD escalation tracking
     requote_count = Column(Integer, nullable=True, default=0)
@@ -388,7 +389,7 @@ class SwingProposalLog(Base):
     ml_score = Column(Float, nullable=True)         # raw model confidence
 
     # Proposal details
-    direction = Column(String(5), nullable=False, default="BUY")
+    direction = Column(String(15), nullable=False, default="BUY")
     entry_price = Column(Float, nullable=True)
     stop_price = Column(Float, nullable=True)
     target_price = Column(Float, nullable=True)
@@ -485,7 +486,8 @@ class ProposalLog(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     # ── Identity ──────────────────────────────────────────────────────────────
-    proposal_uuid = Column(String(36), nullable=True, index=True)  # PM-generated UUID; may be null for gate-blocked rows
+    # PM-generated UUID; may be null for gate-blocked rows
+    proposal_uuid = Column(String(36), nullable=True, index=True)
     strategy = Column(String(10), nullable=False, index=True)       # 'swing' | 'intraday'
     batch_id = Column(String(50), nullable=True, index=True)        # groups all rows from one scan
 
@@ -527,7 +529,7 @@ class ProposalLog(Base):
     pm_decided_at = Column(DateTime, nullable=True)
 
     # ── Proposal details (set when pm_status=SENT) ───────────────────────────
-    direction = Column(String(5), nullable=True, default="BUY")
+    direction = Column(String(15), nullable=True, default="BUY")
     entry_price = Column(Float, nullable=True)
     stop_price = Column(Float, nullable=True)
     target_price = Column(Float, nullable=True)

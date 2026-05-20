@@ -56,15 +56,22 @@ def validate_buying_power(
     trade_cost: float,
     available_buying_power: float,
     limits: RiskLimits = None,
+    direction: str = "BUY",
 ) -> Tuple[bool, str]:
-    """Ensure sufficient buying power exists before placing a trade."""
+    """Ensure sufficient buying power exists before placing a trade.
+
+    For short sales, Reg T requires 150% of notional as margin, so effective cost
+    is multiplied by 1.5 when checking available buying power.
+    """
     if limits is None:
         limits = RiskLimits()
 
-    if trade_cost > available_buying_power:
+    effective_cost = trade_cost * 1.5 if direction == "SELL_SHORT" else trade_cost
+    if effective_cost > available_buying_power:
         return (
             False,
-            f"Insufficient buying power: need ${trade_cost:,.2f}, "
+            f"Insufficient buying power: need ${effective_cost:,.2f}"
+            f"{' (150% short margin)' if direction == 'SELL_SHORT' else ''}, "
             f"have ${available_buying_power:,.2f}",
         )
     return True, f"Buying power OK (${available_buying_power:,.2f} available)"
@@ -317,13 +324,15 @@ def calculate_dynamic_stop_loss(
     entry_price: float,
     atr: Optional[float] = None,
     limits: RiskLimits = None,
+    direction: str = "BUY",
 ) -> float:
     """
     Calculate a volatility-adjusted stop-loss price.
 
-    If ATR is provided, the stop is scaled by ATR / (entry_price * NORMAL_VOLATILITY_ATR_RATIO).
-    At normal volatility (ATR/price == NORMAL_VOLATILITY_ATR_RATIO) this equals STOP_LOSS_BASE_PCT.
-    Without ATR, falls back to the base stop-loss percentage.
+    For longs (default): stop is below entry (entry * (1 - stop_pct)).
+    For shorts (direction="SELL_SHORT"): stop is above entry (entry * (1 + stop_pct)).
+
+    If ATR is provided, stop pct scales with ATR / (entry * NORMAL_VOLATILITY_ATR_RATIO).
     """
     if limits is None:
         limits = RiskLimits()
@@ -331,12 +340,14 @@ def calculate_dynamic_stop_loss(
     if atr is not None and entry_price > 0:
         atr_ratio = atr / entry_price
         normal_ratio = limits.NORMAL_VOLATILITY_ATR_RATIO
-        # Scale stop pct proportionally: higher ATR → wider stop
         stop_pct = limits.STOP_LOSS_BASE_PCT * (atr_ratio / normal_ratio)
     else:
         stop_pct = limits.STOP_LOSS_BASE_PCT
 
-    stop_loss = entry_price * (1 - stop_pct)
+    if direction == "SELL_SHORT":
+        stop_loss = entry_price * (1 + stop_pct)
+    else:
+        stop_loss = entry_price * (1 - stop_pct)
     return round(stop_loss, 2)
 
 
