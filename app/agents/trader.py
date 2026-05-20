@@ -702,6 +702,7 @@ class Trader(BaseAgent):
                     macro_flags,
                 )
                 self.approved_symbols.pop(symbol, None)
+                self._release_intraday_slot(trade_type)
                 await self.log_decision("ENTRY_BLOCKED_MACRO", reasoning={
                     "symbol": symbol, "trade_type": "intraday",
                     "reason": f"macro gate: {macro_flags}",
@@ -848,6 +849,8 @@ class Trader(BaseAgent):
                     )
                     self.approved_symbols.pop(symbol, None)
                     self._daily_discarded_symbols.add(symbol)
+                # Position was never entered — release the RM intraday slot
+                self._release_intraday_slot(trade_type)
                 return
 
         # Size the position
@@ -909,6 +912,7 @@ class Trader(BaseAgent):
         )
         if pending_trade is None:
             self.logger.error("Could not write PENDING_FILL for %s — aborting entry", symbol)
+            self._release_intraday_slot(trade_type)
             return
         pending_trade_id = pending_trade
 
@@ -993,6 +997,7 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.error("Market order failed for %s: %s", symbol, exc)
             self._cancel_pending_fill(pending_trade_id)
+            self._release_intraday_slot(trade_type)
             return
 
         # Poll for actual fill price instead of using next-bar price (Phase 76)
@@ -1074,6 +1079,16 @@ class Trader(BaseAgent):
             self.logger.error("Failed to update alpaca_order_id for trade %d: %s", trade_id, exc)
         finally:
             db.close()
+
+    def _release_intraday_slot(self, trade_type: str) -> None:
+        """Decrement the RM intraday slot counter when an approved intraday proposal is not filled."""
+        if trade_type != "intraday":
+            return
+        try:
+            from app.agents.risk_manager import risk_manager
+            risk_manager.on_intraday_position_closed()
+        except Exception:
+            pass
 
     def _cancel_pending_fill(self, trade_id: int) -> None:
         """Mark a PENDING_FILL trade as CANCELLED when order placement fails."""
