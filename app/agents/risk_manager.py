@@ -432,7 +432,9 @@ class RiskManager(BaseAgent):
         })
 
         # ── Rule 1: Buying Power ──────────────────────────────────────────────
-        ok, msg = validate_buying_power(trade_cost, buying_power, self.limits)
+        ok, msg = validate_buying_power(
+            trade_cost, buying_power, self.limits, direction=proposal.get("direction", "BUY")
+        )
         reasoning["checks"].append({"rule": "buying_power", "ok": ok, "msg": msg})
         if not ok:
             reasoning["failed_rule"] = "buying_power"
@@ -460,7 +462,7 @@ class RiskManager(BaseAgent):
         # ── Rule 3b: Correlation Risk ─────────────────────────────────────────
         open_symbols = [p["symbol"] for p in positions if p.get("symbol") != symbol]
         position_values = {
-            p["symbol"]: float(p.get("market_value") or (float(p.get("qty") or 0) * entry_price))
+            p["symbol"]: abs(float(p.get("market_value") or (float(p.get("qty") or 0) * entry_price)))
             for p in positions if p.get("symbol")
         }
         ok, msg = validate_correlation_risk(

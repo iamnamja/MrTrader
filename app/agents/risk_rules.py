@@ -56,15 +56,22 @@ def validate_buying_power(
     trade_cost: float,
     available_buying_power: float,
     limits: RiskLimits = None,
+    direction: str = "BUY",
 ) -> Tuple[bool, str]:
-    """Ensure sufficient buying power exists before placing a trade."""
+    """Ensure sufficient buying power exists before placing a trade.
+
+    For short sales, Reg T requires 150% of notional as margin, so effective cost
+    is multiplied by 1.5 when checking available buying power.
+    """
     if limits is None:
         limits = RiskLimits()
 
-    if trade_cost > available_buying_power:
+    effective_cost = trade_cost * 1.5 if direction == "SELL_SHORT" else trade_cost
+    if effective_cost > available_buying_power:
         return (
             False,
-            f"Insufficient buying power: need ${trade_cost:,.2f}, "
+            f"Insufficient buying power: need ${effective_cost:,.2f}"
+            f"{' (150% short margin)' if direction == 'SELL_SHORT' else ''}, "
             f"have ${available_buying_power:,.2f}",
         )
     return True, f"Buying power OK (${available_buying_power:,.2f} available)"
