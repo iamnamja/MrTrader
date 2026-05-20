@@ -18,7 +18,6 @@ Public API:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 MAX_DAYS_AFTER_EARNINGS = 3
 
 # EPS surprise thresholds (fraction: 0.05 = 5%)
-LONG_SURPRISE_THRESHOLD  = 0.05
+LONG_SURPRISE_THRESHOLD = 0.05
 SHORT_SURPRISE_THRESHOLD = -0.05
 
 # Confidence range for PEAD signals — high conviction since anomaly is well-studied
@@ -52,10 +51,10 @@ class PEADScorer:
         max_days_after: int = MAX_DAYS_AFTER_EARNINGS,
         long_short: bool = True,
     ):
-        self.long_threshold  = long_threshold
+        self.long_threshold = long_threshold
         self.short_threshold = short_threshold
-        self.max_days_after  = max_days_after
-        self.long_short      = long_short
+        self.max_days_after = max_days_after
+        self.long_short = long_short
 
     def __call__(
         self,
@@ -65,8 +64,6 @@ class PEADScorer:
     ) -> list:
         """Score symbols on `day` using PEAD signal. Returns [(sym, conf, direction)]."""
         import pandas as pd
-        from datetime import datetime, timedelta
-
         from app.data.fmp_provider import get_earnings_features_at
 
         _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
@@ -88,7 +85,7 @@ class PEADScorer:
                 continue
 
             # feats contains: fmp_surprise_1q, fmp_days_since_earnings, etc.
-            surprise  = feats.get("fmp_surprise_1q")
+            surprise = feats.get("fmp_surprise_1q")
             days_since = feats.get("fmp_days_since_earnings")
 
             if surprise is None or days_since is None:
