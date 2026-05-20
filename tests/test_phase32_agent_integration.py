@@ -46,6 +46,37 @@ class TestPortfolioManagerDualModel:
             result = pm._try_load_model()
         assert result is False
 
+    def test_try_load_model_lambda_rank_branch(self):
+        """_try_load_model takes LambdaRankModel branch when pkl is a LambdaRankModel."""
+        import pickle, tempfile, os
+        from app.ml.model import LambdaRankModel
+        pm = self._pm()
+
+        lr = LambdaRankModel()
+        lr.is_trained = True
+        lr.version = 201
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkl_path = os.path.join(tmpdir, "swing_v201.pkl")
+            with open(pkl_path, "wb") as f:
+                pickle.dump(lr, f)
+
+            fake_latest = MagicMock()
+            fake_latest.model_path = pkl_path
+            fake_latest.version = 201
+
+            mock_db = MagicMock()
+            q = mock_db.query.return_value.filter_by.return_value.order_by.return_value.first
+            # Return fake_latest for swing, None for intraday
+            q.side_effect = [fake_latest, None]
+
+            with patch("app.database.session.get_session", return_value=mock_db):
+                result = pm._try_load_model()
+
+        assert result is True
+        from app.ml.model import LambdaRankModel as LRM
+        assert isinstance(pm.model, LRM)
+
     @pytest.mark.asyncio
     async def test_select_intraday_skips_when_model_not_trained(self):
         pm = self._pm()

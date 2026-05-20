@@ -3822,12 +3822,33 @@ class PortfolioManager(BaseAgent):
                 )
                 if latest and latest.model_path:
                     try:
+                        import pickle as _pickle
                         from pathlib import Path
+                        from app.ml.model import LambdaRankModel as _LRModel
                         model_path = Path(latest.model_path)
                         model_dir = str(model_path.parent)
                         version = latest.version
-                        wrapper = PortfolioSelectorModel(model_type="xgboost")
-                        wrapper.load(model_dir, version, model_name=model_name)
+                        # Detect model type by peeking at the pkl file.
+                        # v201+ models are LambdaRankModel (self-contained, no separate scaler).
+                        # v200 and earlier are PortfolioSelectorModel with separate scaler/meta files.
+                        with open(model_path, "rb") as _f:
+                            _raw = _pickle.load(_f)
+                        if isinstance(_raw, _LRModel):
+                            wrapper = _LRModel()
+                            wrapper.__dict__.update(_raw.__dict__)
+                            # Load TS norm state (same as LambdaRankModel.load)
+                            norm_path = model_path.parent / f"swing_norm_v{version}.pkl"
+                            if norm_path.exists() and model_name == "swing":
+                                try:
+                                    from app.ml.ts_normalize import load_state as _ts_load
+                                    wrapper._ts_norm_state = _ts_load(str(norm_path))
+                                except Exception:
+                                    wrapper._ts_norm_state = None
+                            wrapper.is_trained = True
+                            wrapper.version = version
+                        else:
+                            wrapper = PortfolioSelectorModel(model_type="xgboost")
+                            wrapper.load(model_dir, version, model_name=model_name)
                         loaded = wrapper
                         if model_name == "swing":
                             self.model = loaded
