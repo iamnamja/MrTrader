@@ -999,8 +999,10 @@ class AgentSimulator:
                 sector=sector,
                 direction=direction,
             )
+            # Use signed delta so same-sector shorts reduce exposure (match live RM behavior)
+            _sector_delta = -trade_cost if is_short else trade_cost
             portfolio.sector_values[sector] = (
-                portfolio.sector_values.get(sector, 0.0) + trade_cost
+                portfolio.sector_values.get(sector, 0.0) + _sector_delta
             )
             tx_costs_total += tx_cost
 
@@ -1121,8 +1123,10 @@ class AgentSimulator:
             portfolio.daily_pnl += net_pnl
             sector = getattr(pos, "sector", "UNKNOWN")
             cost_basis = pos.entry_price * pos.quantity
-            portfolio.sector_values[sector] = max(
-                0.0, portfolio.sector_values.get(sector, 0.0) - cost_basis
+            # Reverse the signed delta applied at entry (shorts added negative, longs positive)
+            _sector_unwind = cost_basis if is_short else -cost_basis
+            portfolio.sector_values[sector] = (
+                portfolio.sector_values.get(sector, 0.0) + _sector_unwind
             )
 
         trade = Trade(

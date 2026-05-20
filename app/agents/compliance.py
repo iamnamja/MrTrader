@@ -57,8 +57,8 @@ class ComplianceTracker:
         # day_trades: {date_str: [symbol, ...]} (each entry = one round-trip)
         self._day_trades: Dict[str, List[str]] = {}
 
-        # Wash sale tracking — {symbol: last_loss_close_date}
-        self._loss_closes: Dict[str, date] = {}
+        # Wash sale tracking — {symbol: (last_loss_close_date, direction)}
+        self._loss_closes: Dict[str, Tuple[date, str]] = {}
 
         # Unsettled cash entries — [(settle_date, amount)]
         self._unsettled: List[Tuple[date, float]] = []

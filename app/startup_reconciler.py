@@ -227,8 +227,13 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     filled_price=filled_price,
                     filled_qty=filled_qty,
                     intended_price=intended_price,
-                    slippage_bps=round(
-                        (filled_price - intended_price) / intended_price * 10000, 2
+                    slippage_bps=(
+                        round(
+                            (intended_price - filled_price) / intended_price * 10000, 2
+                        ) if (trade.direction or "BUY") == "SELL_SHORT"
+                        else round(
+                            (filled_price - intended_price) / intended_price * 10000, 2
+                        )
                     ) if intended_price > 0 else 0.0,
                 )
                 db_session.add(db_order)
