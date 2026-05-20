@@ -3814,3 +3814,70 @@ avg=2.569, Fold 2=1.877 (weakest bear-market performance). Analyst downgrades la
 | `scripts/run_ls_research_phase_h_plus.py` | 13-config research runner, incremental email, JSON output |
 
 **Verdict: ✅ Phase H+ complete — PEAD hold-5 (8.109) + QualityShort shorts-only (5.953) are the winning configurations for Phase I**
+
+---
+
+## Phase H+ Postscript — LLM Quant Review Synthesis (2026-05-19)
+
+**Status:** WF Sharpe 8.1 and per-fold returns 11x-38x sent for independent review by 4 senior-quant LLMs. All four flagged the headline as arithmetically impossible. Internal code audit confirms two critical equity-accounting bugs.
+
+### The Four Reviews (1 paragraph each)
+
+- **Gemini** (`docs/MrTrader_Quant_Review_Report_gemini.md`) — Verdict: 0% probability of success in current state. Identifies the MTM bug (open positions not marked to today's close → DD of 0.01% impossible) and the cash-management/leverage path. Demands Norgate point-in-time data, 15bps/side costs, and a full simulator rewrite before any deployment decision.
+
+- **Claude** (`docs/MrTrader_Quant_Review_claude.md`) — Most rigorous quant decomposition. Argues a ~20x inflation from per-trade-return treated as portfolio-return, plus secondary issues (cost, borrow, survivorship). Probability 35-40%. Provides academic benchmarks (PEAD post-cost Sharpe 0.6-1.5, QMJ 0.7-1.0). Best phased plan: forensic audit (Phase A), cost re-run (B), CPCV (C), live-code forward test (D), 6-9 month paper (E).
+
+- **ChatGPT** (`docs/MrTrader_Independent_Quant_Strategy_Review_chatgpt.md`) — Most precise on the impossibility: solves for the implied per-trade return required to reach 38x in 300 trades at 5% sizing → ~24% per trade, which is absurd. Enumerates 7 candidate bugs. <5% probability the headline is real; 35% probability some edge survives audit. Strongly recommends "Phase I should be forensic validation, not paper trading."
+
+- **DeepSeek** (`docs/MrTrader_Quant_Review_deepseek.md`) — Most operationally tactical. Concrete code snippets for the equity-curve audit, sensitivity tests (20bps cost, 10% borrow, hold = {1,3,5,7,10}), kill-switch criteria, manual trade audit checklist. Probability 30-40%. 3-4 weeks of fixes.
+
+### Consensus Bugs Found (after code audit)
+
+| # | Bug | Status | File:Line |
+|---|---|---|---|
+| 1 | `position_market_value` uses `entry_price * quantity` → no MTM on open positions, DD invisible until close | **CONFIRMED** | `app/backtesting/agent_simulator.py` 86-92 |
+| 2 | Opening a short ADDS short_notional to reported equity (PMV unsigned by direction) → ghost equity bump explains 11x-38x | **CONFIRMED (new finding)** | same file, 86-92 combined with 906-911 |
+| 3 | Sharpe fallback to per-trade pct returns when daily_rets < 2 | **CONFIRMED (edge case)** | line 1090 |
+| 4 | Borrow cost hardcoded at 0.5%/yr (realistic for QS HTB universe: 5-15%) | **CONFIRMED parameter error** | line 959 |
+| 5 | Round-trip cost 10 bps for next-day-open R1000 mid-caps (realistic: 25-40 bps) | **CONFIRMED parameter error** | `transaction_cost_pct` defaults |
+| 6 | FMP `date` semantics for `earnings-surprises` endpoint not verified | **UNVERIFIED — medium risk** | `app/data/fmp_provider.py` 92-129 |
+| 7 | Survivorship in fundamentals/feature side may still miss delisted names | **PARTIAL** | WF-A2/A3 mitigated download side |
+
+### Code Audit Findings (Q1-Q7 from review prompt)
+
+- **Q1 Daily returns:** Correct shape (portfolio equity diff series), but fallback to per-trade pct returns at <2 days is a defensive bug.
+- **Q2 MTM open positions:** **BUG** — entry-price valuation only.
+- **Q3 Max DD:** Method correct; input series bugged per Q2.
+- **Q4 Cash on entry / short bug:** Cash flow itself correct; **PMV adds short notional as positive equity = ghost-equity bug**.
+- **Q5 Short P&L on close:** Correct `(entry - exit) * qty`.
+- **Q6 Sharpe annualization:** Correct `mean/std * sqrt(252)`.
+- **Q7 FMP PIT:** `date <= as_of` filter is correct in code; risk is whether the FMP `date` field is press-release date or populated-at date. **Email FMP to confirm.**
+
+### Revised Probability Estimate
+
+**P(observed paper Sharpe > 0.50 over 3-month paper, given Phase H+ configs):** **25-35%** — slightly below the reviewer median (35-40%) because the bugs are now confirmed, not just hypothesized.
+
+| Scenario | P | Notes |
+|---|---|---|
+| Bugs fixed, true Sharpe 1.5-2.5 | ~15% | Real PEAD + Quality stack matches academic post-cost |
+| Bugs fixed, true Sharpe 0.5-1.5 | ~30% | Partial signal survives realistic costs |
+| Bugs fixed, true Sharpe 0.0-0.5 | ~30% | Marginal — not investable at retail capital |
+| Bugs fixed, true Sharpe < 0 | ~20% | No real edge after honest accounting |
+| Bug not fixed before paper | ~5% | Alpaca measures real equity anyway → paper reports honest worse number |
+
+### Action Plan (see `docs/LLM_REVIEW_SYNTHESIS.md` for full detail)
+
+1. **Fix MTM bug** in `_PortfolioState.position_market_value` — mark-to-close, sign by direction. 1-2 days.
+2. **Fix short-equity bug** — treat shorts as a signed liability in PMV. 1 day.
+3. **Recompute daily return series with unrealized MTM.** 1 day.
+4. Raise borrow to 5-10%/yr blended (HTB-aware ideal). 0.5 day.
+5. Raise round-trip cost to 30 bps for next-day-open trades. 0.5 day.
+6. Email FMP to confirm `earnings-surprises.date` semantics. Spot-check 20 rows vs EDGAR.
+7. Re-run all 17 Phase H+ configs on corrected simulator. Make written predictions BEFORE reading.
+8. CPCV on top 2 survivors.
+9. Vol-targeted sizing (Phase replacement for fixed 5%).
+10. PEAD-short ↔ QualityShort de-duplication.
+11. Drop the line-1090 Sharpe fallback.
+
+**Verdict: ❌ Phase H+ configs are NOT paper-ready. Required: complete steps 1-7 above, then re-evaluate. No paper before late June 2026 at earliest.**
+
