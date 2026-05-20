@@ -4025,6 +4025,15 @@ Investigated `_process_entries()` in `agent_simulator.py`. Entry pipeline is PIT
 **Prior baseline:** avg Sharpe -1.43 (all folds negative). P0.2 fix was real and material.
 **Key insight:** Fold 4 (May 2024 – May 2025) is systematically negative across all configs. This is the post-rate-hike plateau / pre-cut uncertainty period — a genuine market condition, not a simulation bug. L/S infrastructure (Phase 1) should hedge this regime.
 
+### P0.4 — Universe Mode Label (audit)
+
+All WF runs from 2026-05-10 onwards use `universe_mode = "r1k_pit_union_partial"`:
+- Download seed: `RUSSELL_1000_TICKERS` (current members, ~750 symbols)
+- Historical additions: union with DB historical symbols (∪ delisted that appeared in DB)
+- Fold universe: `pit_union("russell1000", fold_start, fold_end)` per fold where available
+- **Survivorship bias: PARTIAL** — DB coverage is incomplete; confirmed ~15% survivorship bias (WF-A2/A3 audit). All Sharpe numbers in this log are upper bounds by approximately this margin.
+- `universe_mode` label added to all WF result dicts going forward for reproducibility.
+
 ### Regime Model — v5 trained (2026-05-20)
 
 - macro_F1_min = 0.728, log_loss_mean = 0.358

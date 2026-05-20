@@ -111,7 +111,7 @@ class TestDrawdownCheck:
         assert r.value == 2.0
 
     def test_fails_when_drawdown_high(self):
-        mock_metric = MagicMock(max_drawdown=0.06)
+        mock_metric = MagicMock(max_drawdown=0.20)  # 20% > 15% new threshold
         session = MagicMock()
         session.query.return_value.filter_by.return_value.first.return_value = mock_metric
         session.close = MagicMock()
@@ -130,7 +130,7 @@ class TestDrawdownCheck:
 
 class TestPaperTradeDays:
     def test_passes_when_old_enough(self):
-        old_trade = MagicMock(created_at=datetime.utcnow() - timedelta(days=30))
+        old_trade = MagicMock(created_at=datetime.utcnow() - timedelta(days=75))  # > 60d threshold
         session = MagicMock()
         session.query.return_value.order_by.return_value.first.return_value = old_trade
         session.close = MagicMock()
