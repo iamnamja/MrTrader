@@ -503,7 +503,14 @@ class Trader(BaseAgent):
         """Ask PM to re-evaluate a position. PM will respond via trader_exit_requests."""
         pos = self.active_positions.get(symbol, {})
         entry = pos.get("entry_price") or 0.0
-        pnl_pct = round((current_price - entry) / entry, 4) if entry > 0 and current_price > 0 else 0.0
+        _is_short = pos.get("direction") == "SELL_SHORT"
+        if entry > 0 and current_price > 0:
+            pnl_pct = round(
+                (entry - current_price) / entry if _is_short else (current_price - entry) / entry,
+                4,
+            )
+        else:
+            pnl_pct = 0.0
         self.send_message(REEVAL_REQUESTS_QUEUE, {
             "symbol": symbol,
             "reason": reason,
@@ -512,6 +519,7 @@ class Trader(BaseAgent):
             "current_pnl_pct": pnl_pct,
             "bars_held": pos.get("bars_held", 0),
             "trade_type": pos.get("trade_type", "swing"),
+            "direction": pos.get("direction", "BUY"),
         })
         self.logger.info("Sent reeval request to PM: %s (%s)", symbol, reason)
 
@@ -1427,7 +1435,9 @@ class Trader(BaseAgent):
                 already_escalated = bool(pending.get("escalated", False))
                 if past_escalation_cutoff and not already_escalated:
                     quote = alpaca.get_quote(symbol)
-                    if not quote or quote.get("ask", 0) <= 0:
+                    _esc_is_short = pending.get("proposal", {}).get("direction") == "SELL_SHORT"
+                    _esc_side_price = quote.get("bid", 0) if _esc_is_short else quote.get("ask", 0)
+                    if not quote or _esc_side_price <= 0:
                         self.logger.warning(
                             "Escalation skipped for %s — no quote available", symbol,
                         )
@@ -1496,11 +1506,13 @@ class Trader(BaseAgent):
                 fresh_ask = None
                 if requote_count < max_requotes and not already_escalated:
                     quote = alpaca.get_quote(symbol)
-                    if quote and quote.get("ask", 0) > 0:
-                        fresh_ask = float(quote["ask"])
+                    _rq_is_short_check = pending.get("proposal", {}).get("direction") == "SELL_SHORT"
+                    _rq_ref_price = quote.get("bid", 0) if _rq_is_short_check else quote.get("ask", 0)
+                    if quote and _rq_ref_price > 0:
+                        fresh_ask = float(quote["ask"])  # kept for compat; actual limit uses side-aware price below
                         old_limit = float(pending["limit_price"])
                         if old_limit > 0:
-                            drift_bps = (fresh_ask - old_limit) / old_limit * 10000.0
+                            drift_bps = (float(_rq_ref_price) - old_limit) / old_limit * 10000.0
                         drift_trigger = drift_bps >= requote_drift_bps
 
                 if requote_count < max_requotes and not already_escalated and (age_trigger or drift_trigger):
@@ -1816,7 +1828,9 @@ class Trader(BaseAgent):
                         weakness_reason = "rsi_deteriorating"
                     elif vol_now < vol_avg * 0.4 and pnl_pct > 0:
                         weakness_reason = "volume_fading"
-                    elif current_price < pos["stop_price"] * 1.005:
+                    elif (is_short and current_price > pos["stop_price"] * 0.995) or (
+                        not is_short and current_price < pos["stop_price"] * 1.005
+                    ):
                         weakness_reason = "approaching_stop"
 
                     if weakness_reason:
@@ -2050,7 +2064,12 @@ class Trader(BaseAgent):
             if proposal_uuid:
                 from app.database.models import ProposalEvent
                 entry = pos.get("entry_price", 0)
-                pnl_pct = round((current_price - entry) / entry * 100, 3) if entry > 0 else None
+                if entry > 0:
+                    _closed_is_short = pos.get("direction") == "SELL_SHORT"
+                    _raw = (entry - current_price) if _closed_is_short else (current_price - entry)
+                    pnl_pct = round(_raw / entry * 100, 3)
+                else:
+                    pnl_pct = None
                 db.add(ProposalEvent(
                     proposal_uuid=proposal_uuid,
                     event_time=datetime.now(ET),

@@ -1367,6 +1367,36 @@ class PortfolioManager(BaseAgent):
             if max_hold_days > 0:
                 proposal["max_hold_days"] = max_hold_days
 
+            # Persist to ProposalLog so the SENT update in send_swing_proposals finds the row
+            try:
+                from app.database.models import ProposalLog as _PLdp
+                from app.database.session import get_session as _gs_pl
+                _pl_db = _gs_pl()
+                try:
+                    _regime = self._current_regime_ctx or {}
+                    _pl_row = _PLdp(
+                        strategy="swing",
+                        batch_id=f"dir_{selector}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+                        scan_time=datetime.utcnow(),
+                        symbol=sym,
+                        ml_score=round(float(abs_conf), 4),
+                        confidence=round(float(abs_conf), 4),
+                        above_threshold=True,
+                        pm_status="SCORED",
+                        proposed_at=datetime.utcnow(),
+                        proposal_uuid=proposal["proposal_uuid"],
+                        direction=trade_direction,
+                        entry_price=price,
+                        regime_score_at_scan=_regime.get("regime_score"),
+                        regime_label_at_scan=_regime.get("regime_label"),
+                    )
+                    _pl_db.add(_pl_row)
+                    _pl_db.commit()
+                finally:
+                    _pl_db.close()
+            except Exception as _ple:
+                self.logger.debug("ProposalLog directional write failed (non-fatal): %s", _ple)
+
             proposals.append(proposal)
 
         return proposals
