@@ -1287,6 +1287,217 @@ class PortfolioManager(BaseAgent):
             },
         )
 
+    async def _build_directional_proposals(
+        self,
+        scored: list,
+        selector: str = "pead",
+        max_hold_days: int = 0,
+    ) -> list:
+        """Build trade proposals supporting both long (BUY) and short (SELL_SHORT) directions.
+
+        Args:
+            scored: List of (symbol, confidence, direction) where direction is "long" or "short"
+                    and confidence is positive for longs, negative for shorts.
+            selector: Label for logging/audit trail.
+            max_hold_days: If > 0, annotate proposals with max_hold_days metadata so the
+                           Trader agent can enforce time-based exits (PEAD hold-5).
+        """
+        try:
+            account = self._alpaca.get_account()
+            account_value = account["portfolio_value"]
+        except Exception:
+            account_value = 20_000.0
+
+        # Exclude currently-held symbols
+        from app.database.session import get_session as _gs_dp
+        from app.database.models import Trade as _Trade_dp
+        _db_dp = _gs_dp()
+        try:
+            _open_dp = _db_dp.query(_Trade_dp).filter(
+                _Trade_dp.status.in_(["open", "pending"]),
+                _Trade_dp.trade_type == "swing",
+            ).all()
+            _held_dp = {t.symbol for t in _open_dp}
+        finally:
+            _db_dp.close()
+
+        proposals = []
+        for sym, conf, direction in scored:
+            if sym in _held_dp:
+                continue
+            price = self._alpaca.get_latest_price(sym)
+            if price is None or price <= 0:
+                continue
+
+            abs_conf = abs(conf)
+            is_short = direction == "short"
+
+            quantity = self._calculate_quantity(
+                price, account_value, trade_type="swing", confidence=float(abs_conf)
+            )
+            _regime_mult, _regime_lbl, _regime_score = self._regime_sizing_multiplier()
+            if _regime_mult != 1.0:
+                quantity = max(1, int(quantity * _regime_mult))
+
+            if quantity <= 0:
+                continue
+
+            if is_short:
+                stop_loss = round(price * 1.05, 2)       # 5% above entry
+                profit_target = round(price * 0.95, 2)   # 5% below entry
+                trade_direction = "SELL_SHORT"
+            else:
+                stop_loss = round(price * 0.98, 2)
+                profit_target = round(price * 1.05, 2)
+                trade_direction = "BUY"
+
+            proposal: dict = {
+                "symbol": sym,
+                "direction": trade_direction,
+                "quantity": quantity,
+                "entry_price": price,
+                "confidence": float(abs_conf),
+                "stop_loss": stop_loss,
+                "profit_target": profit_target,
+                "source_agent": "portfolio_manager",
+                "trade_type": "swing",
+                "proposal_uuid": str(uuid.uuid4()),
+                "selector": selector,
+            }
+            if max_hold_days > 0:
+                proposal["max_hold_days"] = max_hold_days
+
+            proposals.append(proposal)
+
+        return proposals
+
+    async def _analyze_swing_pead(self) -> None:
+        """PEAD scorer: enter long (and optionally short) within 3 days of EPS surprise > ±5%.
+        Hold cap: 5 trading days (max_hold_days=5 annotated on each proposal).
+
+        Short support requires pm.pead_enable_shorts=true AND a margin-enabled Alpaca account.
+        Default is longs-only to allow paper trading before short order routing is wired.
+        """
+        from app.ml.pead_scorer import PEADScorer
+        from app.database.session import get_session as _gs_pead
+        from app.database.agent_config import get_agent_config as _gac_pead
+        from datetime import date as _date
+        import pandas as _pd
+
+        # Check whether short PEAD signals are enabled (default: longs only for Phase I)
+        _shorts_enabled = False
+        try:
+            _db_pead = _gs_pead()
+            try:
+                _shorts_enabled = str(_gac_pead(_db_pead, "pm.pead_enable_shorts") or "false").lower() == "true"
+            finally:
+                _db_pead.close()
+        except Exception:
+            pass
+
+        universe = self._get_universe()
+        self.logger.info("PEAD scan: fetching bars for %d symbols (shorts_enabled=%s)...",
+                         len(universe), _shorts_enabled)
+        try:
+            bars_by_symbol = await asyncio.wait_for(
+                asyncio.to_thread(self._alpaca.get_bars_batch, universe, "1D", 60),
+                timeout=600,
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("PEAD bar fetch timed out — skipping")
+            return
+
+        if not bars_by_symbol:
+            self.logger.warning("PEAD: no bars fetched — skipping")
+            return
+
+        symbols_data = {s: df for s, df in bars_by_symbol.items() if df is not None and not df.empty}
+        scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05,
+                            max_days_after=3, long_short=_shorts_enabled)
+        scored = scorer(day=_pd.Timestamp(_date.today()), symbols_data=symbols_data)
+        # If shorts disabled, filter to longs only
+        if not _shorts_enabled:
+            scored = [(s, c, d) for s, c, d in scored if d == "long"]
+
+        self.logger.info("PEAD: %d signals generated (long+short)", len(scored))
+        if not scored:
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "no_pead_signals", "selector": "pead",
+            })
+            return
+
+        self._swing_proposals = await self._build_directional_proposals(
+            scored, selector="pead", max_hold_days=5,
+        )
+        await self.log_decision("SWING_PREMARKET_ANALYSIS", reasoning={
+            "selector": "pead",
+            "signals": [{"symbol": s, "conf": round(abs(c), 4), "direction": d} for s, c, d in scored[:10]],
+            "total_signals": len(scored),
+            "proposals": len(self._swing_proposals),
+            "send_time": "09:50 ET",
+        })
+
+    async def _analyze_swing_quality_short(self) -> None:
+        """QualityShort scorer (shorts_only): short fundamentally deteriorating stocks."""
+        from app.ml.short_scorers import QualityShortScorer
+        import pandas as pd
+
+        universe = self._get_universe()
+        self.logger.info("QualityShort scan: fetching bars for %d symbols...", len(universe))
+        try:
+            bars_by_symbol = await asyncio.wait_for(
+                asyncio.to_thread(self._alpaca.get_bars_batch, universe, "1D", 300),
+                timeout=1200,
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("QualityShort bar fetch timed out — skipping")
+            return
+
+        if not bars_by_symbol:
+            self.logger.warning("QualityShort: no bars fetched — skipping")
+            return
+
+        symbols_data = {s: df for s, df in bars_by_symbol.items() if df is not None and not df.empty}
+        scorer = QualityShortScorer(max_shorts=15, flags_required=2, legs_mode="shorts_only")
+        import pandas as _pd
+        from datetime import date as _date
+        scored = scorer(day=_pd.Timestamp(_date.today()), symbols_data=symbols_data)
+
+        self.logger.info("QualityShort: %d short signals generated", len(scored))
+        if not scored:
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "reason": "no_quality_short_signals", "selector": "quality_short",
+            })
+            return
+
+        self._swing_proposals = await self._build_directional_proposals(
+            scored, selector="quality_short", max_hold_days=0,
+        )
+        await self.log_decision("SWING_PREMARKET_ANALYSIS", reasoning={
+            "selector": "quality_short",
+            "signals": [{"symbol": s, "conf": round(abs(c), 4), "direction": d} for s, c, d in scored[:10]],
+            "total_signals": len(scored),
+            "proposals": len(self._swing_proposals),
+            "send_time": "09:50 ET",
+        })
+
+    async def _analyze_swing_pead_quality_short(self) -> None:
+        """Combined: PEAD events (long+short, hold-5) + QualityShort shorts-only.
+        PEAD proposals take priority; QualityShort fills remaining capacity.
+        """
+        await self._analyze_swing_pead()
+        pead_proposals = list(self._swing_proposals or [])
+        pead_syms = {p["symbol"] for p in pead_proposals}
+
+        await self._analyze_swing_quality_short()
+        qs_proposals = [p for p in (self._swing_proposals or []) if p["symbol"] not in pead_syms]
+
+        self._swing_proposals = pead_proposals + qs_proposals
+        self.logger.info(
+            "pead_quality_short combined: %d PEAD + %d QualityShort = %d total proposals",
+            len(pead_proposals), len(qs_proposals), len(self._swing_proposals),
+        )
+
     async def _analyze_swing_premarket(self):
         """
         08:00 ET: Score all universe stocks using yesterday's daily bars.
@@ -1307,6 +1518,21 @@ class PortfolioManager(BaseAgent):
                 _db2.close()
         except Exception:
             pass
+
+        if selector == "pead":
+            self.logger.info("Pre-market swing analysis starting — PEAD selector")
+            await self._analyze_swing_pead()
+            return
+
+        if selector == "quality_short":
+            self.logger.info("Pre-market swing analysis starting — quality_short selector")
+            await self._analyze_swing_quality_short()
+            return
+
+        if selector == "pead_quality_short":
+            self.logger.info("Pre-market swing analysis starting — pead_quality_short combined selector")
+            await self._analyze_swing_pead_quality_short()
+            return
 
         if selector == "factor_portfolio" or not self.model.is_trained:
             self.logger.info(

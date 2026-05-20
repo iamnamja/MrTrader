@@ -103,11 +103,14 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "key": "pm.swing_selector",
-        "default": "factor_portfolio",
+        "default": "pead_quality_short",
         "type": "str",
         "description": (
             "Swing selection method: 'ml_model' uses LambdaRank/XGBoost scores; "
-            "'factor_portfolio' uses momentum+quality composite (Phase D default)"
+            "'factor_portfolio' uses momentum+quality composite; "
+            "'pead' uses PEAD scorer (EPS surprise, hold-5); "
+            "'quality_short' uses QualityShortScorer (shorts-only); "
+            "'pead_quality_short' combines PEAD + QualityShort (Phase I default)"
         ),
         "group": "Portfolio Manager",
     },
