@@ -3310,8 +3310,11 @@ function AgentFeed({ name, events, onToggle }: {
 
 interface SwingProposal {
   id: number
+<<<<<<< Updated upstream
   proposal_uuid: string | null
   strategy: string
+=======
+>>>>>>> Stashed changes
   batch_id: string
   scan_label: string
   scan_time: string | null
@@ -3328,6 +3331,7 @@ interface SwingProposal {
   vix_at_scan: number | null
   opportunity_score: number | null
   gate_results: Record<string, string> | null
+<<<<<<< Updated upstream
   scan_gate_block: string | null
   nis_signal: Record<string, unknown> | null
   pm_status: string
@@ -3343,6 +3347,16 @@ interface SwingProposal {
   trader_decided_at: string | null
   proposed_at: string | null
   sent_to_rm_at: string | null
+=======
+  nis_signal: Record<string, unknown> | null
+  status: string
+  status_reason: string | null
+  rm_status: string | null
+  rm_reason: string | null
+  rm_decided_at: string | null
+  trade_id: number | null
+  proposed_at: string | null
+>>>>>>> Stashed changes
 }
 
 const PROPOSAL_STATUS_COLOR = (s: string): string => {
@@ -3359,6 +3373,7 @@ const RM_COLOR = (s: string | null): string => {
   return C.muted
 }
 
+<<<<<<< Updated upstream
 const TRADER_COLOR = (s: string | null): string => {
   if (s === 'FILLED') return C.green
   if (s === 'QUALITY_REJECTED' || s === 'DISCARDED') return C.red
@@ -3407,6 +3422,8 @@ function ExecutionCell({ rmStatus, rmReason, traderStatus, traderReason }: {
   return <span style={{ color: C.muted }}>—</span>
 }
 
+=======
+>>>>>>> Stashed changes
 function PMProposalsTable() {
   const [proposals, setProposals] = useState<SwingProposal[]>([])
   const [loading, setLoading] = useState(true)
@@ -3461,14 +3478,22 @@ function PMProposalsTable() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr>
+<<<<<<< Updated upstream
               {['Time', 'PM Rank', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Execution', 'Trade'].map(h => (
+=======
+              {['#', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Trade'].map(h => (
+>>>>>>> Stashed changes
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
+<<<<<<< Updated upstream
               <tr><td colSpan={16} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+=======
+              <tr><td colSpan={14} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+>>>>>>> Stashed changes
             )}
             {filtered.map(p => {
               const isExpanded = expandedId === p.id
@@ -3482,7 +3507,10 @@ function PMProposalsTable() {
                   <tr key={p.id} onClick={() => setExpandedId(isExpanded ? null : p.id)}
                     style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
                       background: isExpanded ? C.surface2 : 'transparent' }}>
+<<<<<<< Updated upstream
                     <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(p.scan_time ?? undefined)}</td>
+=======
+>>>>>>> Stashed changes
                     <td style={s.td}>{p.rank ?? '—'}</td>
                     <td style={{ ...s.td, fontWeight: 600, color: C.accent }}>{p.symbol}</td>
                     <td style={{ ...s.td, color: C.muted }}>{p.sector ?? '—'}</td>
@@ -3501,8 +3529,13 @@ function PMProposalsTable() {
                         : '—'}
                     </td>
                     <td style={{ ...s.td }}>
+<<<<<<< Updated upstream
                       <span style={{ color: PROPOSAL_STATUS_COLOR(p.pm_status), fontWeight: 600 }}>{p.pm_status}</span>
                       {p.pm_status_reason && <span style={{ color: C.muted, marginLeft: 4 }}>({p.pm_status_reason})</span>}
+=======
+                      <span style={{ color: PROPOSAL_STATUS_COLOR(p.status), fontWeight: 600 }}>{p.status}</span>
+                      {p.status_reason && <span style={{ color: C.muted, marginLeft: 4 }}>({p.status_reason})</span>}
+>>>>>>> Stashed changes
                     </td>
                     <td style={s.td}>
                       {p.rm_status
@@ -3510,15 +3543,22 @@ function PMProposalsTable() {
                         : <span style={{ color: C.muted }}>—</span>}
                     </td>
                     <td style={s.td}>
+<<<<<<< Updated upstream
                       <ExecutionCell rmStatus={p.rm_status} rmReason={p.rm_reason} traderStatus={p.trader_status} traderReason={p.trader_reason} />
                     </td>
                     <td style={s.td}>
+=======
+>>>>>>> Stashed changes
                       {p.trade_id ? <span style={{ color: C.green }}>#{p.trade_id}</span> : '—'}
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${p.id}-detail`}>
+<<<<<<< Updated upstream
                       <td colSpan={16} style={{ background: C.surface2, padding: '8px 16px' }}>
+=======
+                      <td colSpan={14} style={{ background: C.surface2, padding: '8px 16px' }}>
+>>>>>>> Stashed changes
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           <div>
                             <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Context</div>
@@ -3578,9 +3618,14 @@ function PMProposalsTable() {
 
 interface IntraProposal {
   id: number
+<<<<<<< Updated upstream
   proposal_uuid: string | null
   scan_time: string | null
   scan_window: string
+=======
+  scan_time: string | null
+  window: string
+>>>>>>> Stashed changes
   symbol: string
   rank: number | null
   ml_score: number | null
@@ -3590,6 +3635,7 @@ interface IntraProposal {
   stop_price: number | null
   target_price: number | null
   quantity: number | null
+<<<<<<< Updated upstream
   pm_status: string
   nis_signal: Record<string, unknown> | null
   rm_status: string | null
@@ -3600,6 +3646,14 @@ interface IntraProposal {
   trader_decided_at: string | null
   proposed_at: string | null
   sent_to_rm_at: string | null
+=======
+  status: string
+  nis_signal: Record<string, unknown> | null
+  entry_gate_reason: string | null
+  rm_status: string | null
+  rm_reason: string | null
+  proposed_at: string | null
+>>>>>>> Stashed changes
 }
 
 const INTRA_STATUS_COLOR = (s: string): string => {
@@ -3624,8 +3678,13 @@ function IntraProposalsTable() {
     }).catch(console.error).finally(() => setLoading(false))
   }, [days])
 
+<<<<<<< Updated upstream
   const windows = Array.from(new Set(proposals.map(p => `${p.scan_time?.slice(0, 10)} ${p.scan_window}`))).sort().reverse()
   const filtered = windowFilter === 'all' ? proposals : proposals.filter(p => `${p.scan_time?.slice(0, 10)} ${p.scan_window}` === windowFilter)
+=======
+  const windows = Array.from(new Set(proposals.map(p => `${p.scan_time?.slice(0, 10)} ${p.window}`))).sort().reverse()
+  const filtered = windowFilter === 'all' ? proposals : proposals.filter(p => `${p.scan_time?.slice(0, 10)} ${p.window}` === windowFilter)
+>>>>>>> Stashed changes
 
   return (
     <div>
@@ -3653,14 +3712,22 @@ function IntraProposalsTable() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr>
+<<<<<<< Updated upstream
               {['Time', 'Window', 'PM Rank', 'Symbol', 'ML Score', 'Entry', 'Stop', 'Target', 'Status', 'Gate Block', 'RM', 'Execution'].map(h => (
+=======
+              {['Window', '#', 'Symbol', 'ML Score', 'Entry', 'Stop', 'Target', 'Status', 'Gate Block', 'RM'].map(h => (
+>>>>>>> Stashed changes
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
+<<<<<<< Updated upstream
               <tr><td colSpan={12} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
+=======
+              <tr><td colSpan={10} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
+>>>>>>> Stashed changes
                 No intraday proposals found. Run an intraday scan to populate.
               </td></tr>
             )}
@@ -3672,8 +3739,12 @@ function IntraProposalsTable() {
                     style={{ cursor: 'pointer', borderBottom: `1px solid rgba(255,255,255,.05)`,
                       background: isExpanded ? C.surface2 : 'transparent',
                       opacity: p.above_threshold ? 1 : 0.55 }}>
+<<<<<<< Updated upstream
                     <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(p.scan_time ?? undefined)}</td>
                     <td style={{ ...s.td, color: C.muted }}>{p.scan_window}</td>
+=======
+                    <td style={{ ...s.td, color: C.muted }}>{p.window}</td>
+>>>>>>> Stashed changes
                     <td style={s.td}>{p.rank ?? '—'}</td>
                     <td style={{ ...s.td, fontWeight: 600, color: p.above_threshold ? C.accent : C.text }}>{p.symbol}</td>
                     <td style={s.td}>{p.ml_score != null ? (p.ml_score * 100).toFixed(1) + '%' : '—'}</td>
@@ -3681,7 +3752,11 @@ function IntraProposalsTable() {
                     <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? '$' + p.stop_price.toFixed(2) : '—'}</td>
                     <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? '$' + p.target_price.toFixed(2) : '—'}</td>
                     <td style={s.td}>
+<<<<<<< Updated upstream
                       <span style={{ color: INTRA_STATUS_COLOR(p.pm_status), fontWeight: 600 }}>{p.pm_status}</span>
+=======
+                      <span style={{ color: INTRA_STATUS_COLOR(p.status), fontWeight: 600 }}>{p.status}</span>
+>>>>>>> Stashed changes
                     </td>
                     <td style={{ ...s.td, color: C.red, fontSize: 10 }}>{p.scan_gate_block ?? '—'}</td>
                     <td style={s.td}>
@@ -3689,6 +3764,7 @@ function IntraProposalsTable() {
                         ? <span style={{ color: RM_COLOR(p.rm_status), fontWeight: 600 }}>{p.rm_status}</span>
                         : <span style={{ color: C.muted }}>—</span>}
                     </td>
+<<<<<<< Updated upstream
                     <td style={s.td}>
                       <ExecutionCell rmStatus={p.rm_status} rmReason={p.rm_reason} traderStatus={p.trader_status} traderReason={p.trader_reason} />
                     </td>
@@ -3696,11 +3772,21 @@ function IntraProposalsTable() {
                   {isExpanded && (
                     <tr key={`${p.id}-detail`}>
                       <td colSpan={12} style={{ background: C.surface2, padding: '8px 16px' }}>
+=======
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${p.id}-detail`}>
+                      <td colSpan={10} style={{ background: C.surface2, padding: '8px 16px' }}>
+>>>>>>> Stashed changes
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           <div>
                             <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Info</div>
                             <div style={{ fontSize: 11 }}>Time: <span style={{ color: C.text }}>{p.scan_time ? fmtTs(p.scan_time) : '—'}</span></div>
+<<<<<<< Updated upstream
                             <div style={{ fontSize: 11 }}>Window: <span style={{ color: C.text }}>{p.scan_window}</span></div>
+=======
+                            <div style={{ fontSize: 11 }}>Window: <span style={{ color: C.text }}>{p.window}</span></div>
+>>>>>>> Stashed changes
                             <div style={{ fontSize: 11 }}>Above threshold: <span style={{ color: p.above_threshold ? C.green : C.muted }}>{p.above_threshold ? 'Yes' : 'No'}</span></div>
                             <div style={{ fontSize: 11 }}>Qty: <span style={{ color: C.text }}>{p.quantity ?? '—'} shares</span></div>
                           </div>
@@ -3711,10 +3797,17 @@ function IntraProposalsTable() {
                               <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>All symbols in this window were blocked by this gate.</div>
                             </div>
                           )}
+<<<<<<< Updated upstream
                           {p.scan_gate_block && (
                             <div>
                               <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Entry Gate Block</div>
                               <div style={{ fontSize: 11, color: C.yellow }}>{p.scan_gate_block}</div>
+=======
+                          {p.entry_gate_reason && (
+                            <div>
+                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Entry Gate Block</div>
+                              <div style={{ fontSize: 11, color: C.yellow }}>{p.entry_gate_reason}</div>
+>>>>>>> Stashed changes
                             </div>
                           )}
                           {p.nis_signal && (

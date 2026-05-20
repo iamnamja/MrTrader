@@ -22,7 +22,8 @@
       "Bash(docker compose ps)",
       "Bash(docker compose logs)",
       "Bash(ls *)",
-      "Bash(ls)"
+      "Bash(ls)",
+      "Read(//c/Users/kimmi/AppData/Local/Temp/claude/c--Projects-MrTrader/c9040082-d1e7-46a6-8c66-e1d0e22a6333/tasks/**)"
     ],
     "deny": [
       "Bash(git push --force *)",

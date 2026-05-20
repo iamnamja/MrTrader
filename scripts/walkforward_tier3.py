@@ -521,6 +521,8 @@ def run_swing_walkforward(
     feature_cache_disable: bool = False,
     sim_scan_interval_days: int = 1,
     use_factor_portfolio: bool = False,  # Phase D: bypass ML model, use factor composite scorer
+    scorer_instance=None,  # Phase G: inject any callable scorer directly (overrides use_factor_portfolio)
+    max_hold_bars_override: Optional[int] = None,  # Phase H+: force per-position hold cap
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -573,6 +575,7 @@ def run_swing_walkforward(
         spy_raw.columns = spy_raw.columns.get_level_values(0)
     spy_raw.columns = [c.lower() for c in spy_raw.columns]
     spy_prices = spy_raw["close"]
+    symbols_data["SPY"] = spy_raw  # make SPY available to factor_scorer regime gate
 
     # Download VIX for opportunity score (Phase 2a); stored in symbols_data so simulator sees it
     if use_opportunity_score:
@@ -714,10 +717,29 @@ def run_swing_walkforward(
                 logger.warning("Feature cache build failed, falling back to live compute: %s", _exc)
                 _feature_cache = None
 
-        _factor_scorer_inst = None
-        if use_factor_portfolio:
+        _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
+        if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
-            _factor_scorer_inst = FactorPortfolioScorer(top_n=20)
+            _factor_scorer_inst = FactorPortfolioScorer(
+                top_n=20,
+                top_n_short=15,
+                long_short=True,  # Phase F: directional L/S, 40% net long
+            )
+
+        # Phase F: factor portfolio needs wider limits than the ML-signal defaults
+        # (top-20 longs + top-15 shorts = 35 positions, 15% drawdown tolerance)
+        if _factor_scorer_inst is not None:
+            from app.agents.risk_rules import RiskLimits
+            _sim_limits = RiskLimits(
+                MAX_OPEN_POSITIONS=40,          # headroom for 20L + 15S + slack
+                MAX_POSITION_SIZE_PCT=0.05,     # 5% per position (same)
+                MAX_ACCOUNT_DRAWDOWN_PCT=0.15,  # 15% drawdown gate (vs 5% for single trades)
+                MAX_DAILY_LOSS_PCT=0.05,        # 5% daily loss (vs 2%)
+                MAX_PORTFOLIO_HEAT_PCT=0.30,    # 30% heat (diversified portfolio)
+                MAX_SECTOR_CONCENTRATION_PCT=0.30,  # 30% sector cap
+            )
+        else:
+            _sim_limits = None  # use AgentSimulator defaults
 
         sim = AgentSimulator(
             model=model,
@@ -736,6 +758,8 @@ def run_swing_walkforward(
             feature_cache=_feature_cache,
             sim_scan_interval_days=sim_scan_interval_days,
             factor_scorer=_factor_scorer_inst,
+            limits=_sim_limits,
+            max_hold_bars_override=max_hold_bars_override,
         )
         result = sim.run(
             fold_symbols_data,

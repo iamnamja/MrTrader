@@ -71,6 +71,7 @@ class _Position:
     bars_held: int = 0
     confidence: float = 0.0
     sector: str = "UNKNOWN"
+    direction: str = "long"  # "long" or "short"
 
 
 @dataclass
@@ -81,14 +82,51 @@ class _PortfolioState:
     positions: Dict[str, _Position] = field(default_factory=dict)
     daily_pnl: float = 0.0
     sector_values: Dict[str, float] = field(default_factory=dict)
+    # MTM equity cached each bar before entries run — used for all sizing/RM decisions.
+    # None until first bar closes; falls back to entry-price equity if not set.
+    _cached_mtm_equity: float = field(default=None, repr=False)
 
     @property
     def position_market_value(self) -> float:
+        # Uses entry price (no MTM) — kept for backward compat with live PM code paths.
         return sum(p.entry_price * p.quantity for p in self.positions.values())
+
+    def equity_mtm(self, today_closes: dict) -> float:
+        """Mark-to-market equity: longs at today's close, shorts as unrealized PnL.
+
+        For longs:  contribution = today_close * qty
+        For shorts: contribution = (entry_price - today_close) * qty
+                    (profit when price falls; cash already holds entry proceeds as margin)
+        Falls back to entry_price if today_close is unavailable for a symbol.
+        """
+        pmv = 0.0
+        for sym, pos in self.positions.items():
+            close = today_closes.get(sym, pos.entry_price)
+            is_short = getattr(pos, "direction", "long") == "short"
+            if is_short:
+                pmv += (pos.entry_price - close) * pos.quantity
+            else:
+                pmv += close * pos.quantity
+        return self.cash + pmv
+
+    def update_mtm(self, today_closes: dict) -> float:
+        """Compute MTM equity and cache it for use in sizing/RM decisions this bar."""
+        self._cached_mtm_equity = self.equity_mtm(today_closes)
+        return self._cached_mtm_equity
 
     @property
     def equity(self) -> float:
         return self.cash + self.position_market_value
+
+    @property
+    def equity_decision(self) -> float:
+        """MTM-aware equity for position sizing and RM rules.
+        Uses the cached MTM equity if available (set by update_mtm each bar),
+        otherwise falls back to entry-price equity (safe at t=0 when no positions open).
+        """
+        if self._cached_mtm_equity is not None:
+            return self._cached_mtm_equity
+        return self.equity
 
     @property
     def buying_power(self) -> float:
@@ -137,6 +175,8 @@ class AgentSimulator:
         feature_cache=None,          # FeatureCache: pre-computed raw features (WF speedup)
         sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
         factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
+        max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
+        short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -164,6 +204,8 @@ class AgentSimulator:
         self.feature_cache = feature_cache
         self.sim_scan_interval_days = max(1, sim_scan_interval_days)
         self.factor_scorer = factor_scorer  # Phase D: optional callable override
+        self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
+        self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -196,12 +238,22 @@ class AgentSimulator:
 
         sector_map = sector_map or {}
 
-        # Collect all trading days across all symbols
-        all_days = sorted({
-            d.date() if hasattr(d, "date") else d
-            for df in symbols_data.values()
-            for d in df.index
-        })
+        # Anchor trading_days to SPY's calendar if available (C3 fix: union of all symbol
+        # indices includes stale/missing-bar days that inject zero-return artifacts into Sharpe).
+        _spy_data = symbols_data.get("SPY")
+        if _spy_data is None:
+            _spy_data = symbols_data.get("spy")
+        if _spy_data is not None and len(_spy_data) > 0:
+            all_days = sorted({
+                d.date() if hasattr(d, "date") else d
+                for d in _spy_data.index
+            })
+        else:
+            all_days = sorted({
+                d.date() if hasattr(d, "date") else d
+                for df in symbols_data.values()
+                for d in df.index
+            })
 
         if not all_days:
             return self._empty_result()
@@ -246,7 +298,17 @@ class AgentSimulator:
             _vix_closes = _vix_df["close"]
 
         for day_idx, day in enumerate(trading_days):
-            # 1. Advance bars_held for all open positions, mark equity
+            # 0. Compute today's closes for MTM equity (used for peak tracking + sizing/RM).
+            _today_closes = {}
+            for _sym, _pos in portfolio.positions.items():
+                _df = symbols_data.get(_sym)
+                if _df is not None:
+                    _bar = self._bars_on(_df, day)
+                    if _bar is not None:
+                        _today_closes[_sym] = float(_bar["close"])
+            portfolio.update_mtm(_today_closes)
+
+            # 1. Advance bars_held for all open positions
             for pos in portfolio.positions.values():
                 pos.bars_held += 1
 
@@ -255,8 +317,8 @@ class AgentSimulator:
             for trade, tx_cost in closed:
                 accepted_trades.append(trade)
                 tx_costs_total += tx_cost
-            if portfolio.equity > portfolio.peak_equity:
-                portfolio.peak_equity = portfolio.equity
+            if portfolio.equity_decision > portfolio.peak_equity:
+                portfolio.peak_equity = portfolio.equity_decision
 
             # 3. PM: score all symbols using bars up to yesterday.
             # When sim_scan_interval_days > 1, skip scoring on off-days
@@ -267,35 +329,38 @@ class AgentSimulator:
             # else: proposals unchanged from previous scan day
 
             # 4. Phase 35: Market regime gate — cut exposure in bear/fear regimes
+            # Factor portfolio L/S mode: scorer manages its own regime logic (longs suppressed
+            # in bear market, everything blocked at VIX >= 40). Skip simulator-level gates.
             _skip_entries = False
             _max_pos_today = self.limits.MAX_OPEN_POSITIONS
-            if _spy_closes is not None:
-                try:
-                    spy_idx = _spy_closes.index
-                    spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                    spy_hist = _spy_closes.loc[spy_dates <= day]
-                    if len(spy_hist) >= 200:
-                        spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
-                        spy_close = float(spy_hist.iloc[-1])
-                        if spy_close < spy_ema200:
-                            _max_pos_today = self.regime_bear_max_positions
-                            logger.debug("Bear regime on %s: SPY %.2f < EMA200 %.2f — max_pos=%d",
-                                         day, spy_close, spy_ema200, _max_pos_today)
-                except Exception:
-                    pass
-            if _vix_closes is not None:
-                try:
-                    vix_idx = _vix_closes.index
-                    vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
-                    vix_today = _vix_closes.loc[vix_dates <= day]
-                    if len(vix_today) > 0:
-                        vix_val = float(vix_today.iloc[-1])
-                        if vix_val > self.vix_fear_threshold:
-                            _skip_entries = True
-                            logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
-                                         day, vix_val, self.vix_fear_threshold)
-                except Exception:
-                    pass
+            if self.factor_scorer is None:
+                if _spy_closes is not None:
+                    try:
+                        spy_idx = _spy_closes.index
+                        spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
+                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        if len(spy_hist) >= 200:
+                            spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
+                            spy_close = float(spy_hist.iloc[-1])
+                            if spy_close < spy_ema200:
+                                _max_pos_today = self.regime_bear_max_positions
+                                logger.debug("Bear regime on %s: SPY %.2f < EMA200 %.2f — max_pos=%d",
+                                             day, spy_close, spy_ema200, _max_pos_today)
+                    except Exception:
+                        pass
+                if _vix_closes is not None:
+                    try:
+                        vix_idx = _vix_closes.index
+                        vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
+                        vix_today = _vix_closes.loc[vix_dates <= day]
+                        if len(vix_today) > 0:
+                            vix_val = float(vix_today.iloc[-1])
+                            if vix_val > self.vix_fear_threshold:
+                                _skip_entries = True
+                                logger.debug("Fear spike on %s: VIX %.1f > %.1f — skipping new entries",
+                                             day, vix_val, self.vix_fear_threshold)
+                    except Exception:
+                        pass
 
             # Phase 45 P3-Parallel: PM abstention gate (VIX >= threshold OR SPY < N-day SMA)
             if not _skip_entries and (self.pm_abstention_vix > 0
@@ -397,7 +462,16 @@ class AgentSimulator:
                 accepted_trades.extend(new_trades)
                 tx_costs_total += new_tx
 
-            equity_by_date[day] = portfolio.equity
+            # Record MTM equity for this day (already computed at step 0 above).
+            # Re-run update_mtm with any new positions opened this bar so exits are included.
+            _today_closes_eod = {}
+            for _sym, _pos in portfolio.positions.items():
+                _df = symbols_data.get(_sym)
+                if _df is not None:
+                    _bar = self._bars_on(_df, day)
+                    if _bar is not None:
+                        _today_closes_eod[_sym] = float(_bar["close"])
+            equity_by_date[day] = portfolio.equity_mtm(_today_closes_eod)
             portfolio.daily_pnl = 0.0  # reset for next day
 
         # Force-close any remaining open positions at last bar close
@@ -721,7 +795,7 @@ class AgentSimulator:
     ) -> Tuple[bool, str]:
         """Run key RM rules against current portfolio state. Returns (ok, reason)."""
         trade_cost = entry_price * quantity
-        equity = portfolio.equity
+        equity = portfolio.equity_decision  # MTM-aware: avoids phantom equity from short opens
 
         ok, msg = validate_buying_power(trade_cost, portfolio.buying_power, self.limits)
         if not ok:
@@ -774,7 +848,14 @@ class AgentSimulator:
         _max_pos = max_positions if max_positions is not None else self.limits.MAX_OPEN_POSITIONS
 
         # Entry price: today's open (PM runs premarket; Trader executes post-open)
-        for sym, confidence in proposals:
+        for proposal in proposals:
+            # Support both 2-tuple (sym, conf) legacy and 3-tuple (sym, conf, direction)
+            if len(proposal) == 3:
+                sym, confidence, direction = proposal
+            else:
+                sym, confidence = proposal
+                direction = "long"
+            is_short = direction == "short"
             if len(portfolio.positions) >= _max_pos:
                 break  # Phase 35: respect regime-adjusted position cap
 
@@ -806,7 +887,8 @@ class AgentSimulator:
                 continue
 
             # Phase 34: No-chase filter — skip large overnight gaps and extended entries
-            if bars_yesterday is not None and len(bars_yesterday) >= 14:
+            # Not applied in factor portfolio mode (monthly rebalance enters regardless of daily gap)
+            if self.factor_scorer is None and bars_yesterday is not None and len(bars_yesterday) >= 14:
                 try:
                     prior_close = float(bars_yesterday["close"].iloc[-1])
                     hi = bars_yesterday["high"].to_numpy(dtype=float)[-15:]
@@ -839,27 +921,43 @@ class AgentSimulator:
                 except Exception:
                     pass
 
-            # Trader: technical signal gate
-            should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
-            if not should_enter:
-                continue
+            # Trader: technical signal gate (longs only; shorts bypass technical filter)
+            if not is_short:
+                if self.factor_scorer is not None:
+                    # Factor portfolio mode: monthly rebalance, no active stops.
+                    # Wide stop (20%) acts as circuit-breaker only; exit via max_hold_bars.
+                    stop_price = entry_price * (1 - 0.20)
+                    target_price = entry_price * 2.0  # effectively never fires
+                else:
+                    should_enter, stop_price, target_price = self._trader_signal(sym, bars_yesterday)
+                    if not should_enter:
+                        continue
+                    # Use signal stops if valid, else fallback percentages
+                    if stop_price <= 0 or stop_price >= entry_price:
+                        stop_price = entry_price * (1 - SWING_STOP_PCT)
+                    if target_price <= entry_price:
+                        target_price = entry_price * (1 + SWING_TARGET_PCT)
+            else:
+                if self.factor_scorer is not None:
+                    # Factor portfolio short: same monthly rebalance model — wide stops
+                    stop_price = entry_price * (1 + 0.20)   # 20% circuit-breaker above entry
+                    target_price = entry_price * 0.50       # effectively never fires
+                else:
+                    # Short: stop is above entry, target is below entry
+                    stop_price = entry_price * (1 + SWING_STOP_PCT)
+                    target_price = entry_price * (1 - SWING_TARGET_PCT)
 
-            # Use signal stops if valid, else fallback percentages
-            if stop_price <= 0 or stop_price >= entry_price:
-                stop_price = entry_price * (1 - SWING_STOP_PCT)
-            if target_price <= entry_price:
-                target_price = entry_price * (1 + SWING_TARGET_PCT)
-
-            # Position sizing via actual size_position(), then cap to RM position limit
+            # Position sizing — use abs(confidence) for shorts; equity_decision is MTM-aware
+            conf_for_sizing = abs(confidence)
             quantity = size_position(
-                account_equity=portfolio.equity,
+                account_equity=portfolio.equity_decision,
                 available_cash=portfolio.cash,
                 entry_price=entry_price,
-                stop_price=stop_price,
-                ml_score=confidence,
+                stop_price=stop_price if not is_short else entry_price * (1 - SWING_STOP_PCT),
+                ml_score=conf_for_sizing,
             )
             # Apply RM position-size cap so the trade doesn't auto-reject
-            max_position_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
+            max_position_dollars = portfolio.equity_decision * self.limits.MAX_POSITION_SIZE_PCT
             quantity = min(quantity, max(1, int(max_position_dollars / entry_price)))
             if quantity <= 0:
                 continue
@@ -873,7 +971,13 @@ class AgentSimulator:
             trade_cost = entry_price * quantity
             tx_cost = trade_cost * self.transaction_cost_pct  # entry side
 
-            portfolio.cash -= trade_cost + tx_cost
+            if not is_short:
+                portfolio.cash -= trade_cost + tx_cost
+            else:
+                # Short: receive proceeds; deduct tx cost and post margin
+                portfolio.cash += trade_cost - tx_cost
+                portfolio.cash -= trade_cost  # margin held = notional value
+
             portfolio.positions[sym] = _Position(
                 symbol=sym,
                 entry_date=day,
@@ -884,6 +988,7 @@ class AgentSimulator:
                 highest_price=entry_price,
                 confidence=confidence,
                 sector=sector,
+                direction=direction,
             )
             portfolio.sector_values[sector] = (
                 portfolio.sector_values.get(sector, 0.0) + trade_cost
@@ -915,33 +1020,60 @@ class AgentSimulator:
             today_high = float(today_bar["high"])
             today_low = float(today_bar["low"])
             today_close = float(today_bar["close"])
+            is_short = getattr(pos, "direction", "long") == "short"
+
+            # Daily borrow cost for short positions (configurable annual rate, default 5%).
+            # Use today's close as current notional (M6 fix: entry_price understates HTB tail risk).
+            if is_short:
+                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 252
+                portfolio.cash -= borrow_cost
+                portfolio.daily_pnl -= borrow_cost
 
             pos.highest_price = max(pos.highest_price, today_high)
 
-            # Use check_exit() — the actual Trader exit logic
-            should_exit, exit_reason, new_stop = check_exit(
-                symbol=sym,
-                current_price=today_close,
-                entry_price=pos.entry_price,
-                stop_price=pos.stop_price,
-                target_price=pos.target_price,
-                highest_price=pos.highest_price,
-                bars_held=pos.bars_held,
-                min_hold_bars=1,
-                max_hold_bars=self.limits.MAX_OPEN_POSITIONS * 4,  # ~20 days
-            )
-            pos.stop_price = new_stop
-
-            # Intrabar stop/target override (check_exit uses close; we check H/L)
-            if not should_exit:
-                if today_low <= pos.stop_price:
+            if not is_short:
+                # Long: use standard check_exit with trailing stop
+                should_exit, exit_reason, new_stop = check_exit(
+                    symbol=sym,
+                    current_price=today_close,
+                    entry_price=pos.entry_price,
+                    stop_price=pos.stop_price,
+                    target_price=pos.target_price,
+                    highest_price=pos.highest_price,
+                    bars_held=pos.bars_held,
+                    min_hold_bars=1,
+                    max_hold_bars=(self.max_hold_bars_override
+                                   if self.max_hold_bars_override is not None
+                                   else self.limits.MAX_OPEN_POSITIONS * 4),
+                )
+                pos.stop_price = new_stop
+                # Intrabar stop/target override
+                if not should_exit:
+                    if today_low <= pos.stop_price:
+                        should_exit = True
+                        exit_reason = "stop_hit"
+                        today_close = pos.stop_price
+                    elif today_high >= pos.target_price:
+                        should_exit = True
+                        exit_reason = "target_hit"
+                        today_close = pos.target_price
+            else:
+                # Short: stop is above entry (upside), target is below entry (downside)
+                should_exit = False
+                exit_reason = ""
+                if today_high >= pos.stop_price:
                     should_exit = True
                     exit_reason = "stop_hit"
                     today_close = pos.stop_price
-                elif today_high >= pos.target_price:
+                elif today_low <= pos.target_price:
                     should_exit = True
                     exit_reason = "target_hit"
                     today_close = pos.target_price
+                elif pos.bars_held >= (self.max_hold_bars_override
+                                       if self.max_hold_bars_override is not None
+                                       else self.limits.MAX_OPEN_POSITIONS * 4):
+                    should_exit = True
+                    exit_reason = "max_hold"
 
             if should_exit:
                 trade, tx = self._close_position(pos, day, today_close, exit_reason, portfolio)
@@ -958,13 +1090,25 @@ class AgentSimulator:
         reason: str,
         portfolio: Optional[_PortfolioState] = None,
     ) -> Tuple[Trade, float]:
+        is_short = getattr(pos, "direction", "long") == "short"
         tx_cost = exit_price * pos.quantity * self.transaction_cost_pct
-        gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-        net_pnl = gross_pnl - tx_cost
+
+        if not is_short:
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            net_pnl = gross_pnl - tx_cost
+            pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
+            if portfolio is not None:
+                portfolio.cash += exit_price * pos.quantity - tx_cost
+        else:
+            # Short: profit when price falls (entry - exit)
+            gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            net_pnl = gross_pnl - tx_cost
+            pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
+            if portfolio is not None:
+                # Return margin + realised P&L; deduct buy-to-cover cost
+                portfolio.cash += pos.entry_price * pos.quantity + gross_pnl - tx_cost
 
         if portfolio is not None:
-            # Credit back proceeds minus exit transaction cost
-            portfolio.cash += exit_price * pos.quantity - tx_cost
             portfolio.daily_pnl += net_pnl
             sector = getattr(pos, "sector", "UNKNOWN")
             cost_basis = pos.entry_price * pos.quantity
@@ -980,7 +1124,7 @@ class AgentSimulator:
             exit_price=round(exit_price, 4),
             quantity=pos.quantity,
             pnl=round(net_pnl, 2),
-            pnl_pct=round((exit_price - pos.entry_price) / pos.entry_price, 6),
+            pnl_pct=round(pnl_pct, 6),
             hold_bars=pos.bars_held,
             exit_reason=self._normalize_reason(reason),
             trade_type="swing",

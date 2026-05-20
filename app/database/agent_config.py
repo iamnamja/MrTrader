@@ -103,12 +103,45 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "key": "pm.swing_selector",
-        "default": "factor_portfolio",
+        "default": "pead_quality_short",
         "type": "str",
         "description": (
             "Swing selection method: 'ml_model' uses LambdaRank/XGBoost scores; "
-            "'factor_portfolio' uses momentum+quality composite (Phase D default)"
+            "'factor_portfolio' uses momentum+quality composite; "
+            "'pead' uses PEAD scorer (EPS surprise, hold-5); "
+            "'quality_short' uses QualityShortScorer (shorts-only); "
+            "'pead_quality_short' combines PEAD + QualityShort (Phase I default)"
         ),
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.ls_net_exposure_pct",
+        "default": 0.40,
+        "type": "float",
+        "min": 0.0,
+        "max": 1.0,
+        "description": (
+            "Target net long exposure (long_mkt_val - short_mkt_val) / NAV. "
+            "0.40 = 40% net long (directional L/S). 1.0 = long-only."
+        ),
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.ls_top_n_long",
+        "default": 20,
+        "type": "int",
+        "min": 5,
+        "max": 50,
+        "description": "Number of long candidates from factor composite score (top-N).",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.ls_top_n_short",
+        "default": 15,
+        "type": "int",
+        "min": 5,
+        "max": 50,
+        "description": "Number of short candidates from factor composite score (bottom-N).",
         "group": "Portfolio Manager",
     },
     # Trader / Strategy

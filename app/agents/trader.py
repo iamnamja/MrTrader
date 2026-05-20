@@ -1213,7 +1213,7 @@ class Trader(BaseAgent):
 
             db.commit()
 
-            self.active_positions[symbol] = {
+            _pos_entry: dict = {
                 "entry_price":   filled_price,
                 "stop_price":    result.stop_price,
                 "target_price":  result.target_price,
@@ -1224,6 +1224,11 @@ class Trader(BaseAgent):
                 "trade_type":    trade_type,
                 "entry_date":    datetime.now(ET).date(),
             }
+            # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
+            _mhd = proposal.get("max_hold_days")
+            if _mhd and int(_mhd) > 0:
+                _pos_entry["max_hold_days"] = int(_mhd)
+            self.active_positions[symbol] = _pos_entry
             self.approved_symbols.pop(symbol, None)
 
             self.logger.info(
@@ -1723,12 +1728,15 @@ class Trader(BaseAgent):
             except Exception:
                 pass  # reeval is best-effort; don't let it block exit logic
 
-        max_hold = 20
+        # Per-position max_hold overrides global config (e.g. PEAD hold-5)
+        max_hold = pos.get("max_hold_days") or 20
         try:
             from app.database.agent_config import get_agent_config
             _db = get_session()
             try:
-                max_hold = int(get_agent_config(_db, "strategy.max_hold_bars") or 20)
+                global_max = int(get_agent_config(_db, "strategy.max_hold_bars") or 20)
+                if not pos.get("max_hold_days"):
+                    max_hold = global_max
             finally:
                 _db.close()
         except Exception:

@@ -170,6 +170,13 @@ def select_top_n(scores: pd.Series, n: int = 20) -> list[str]:
     return scores.nlargest(n).index.tolist()
 
 
+def select_bottom_n(scores: pd.Series, n: int = 15) -> list[str]:
+    """Return bottom-N symbols by composite score (ascending) — short candidates."""
+    if scores.empty:
+        return []
+    return scores.nsmallest(n).index.tolist()
+
+
 def regime_gate_ok(
     spy_closes: pd.Series,
     as_of: pd.Timestamp,
@@ -202,21 +209,29 @@ def regime_gate_ok(
 class FactorPortfolioScorer:
     """Callable wrapper for use as AgentSimulator.factor_scorer.
 
-    Implements the interface: (day, symbols_data, vix_history) -> [(sym, conf)]
+    Implements the interface:
+        (day, symbols_data, vix_history) -> [(sym, conf, direction)]
+
+    direction is "long" (positive conf) or "short" (negative conf).
+    When long_short=False, only longs are returned (legacy behaviour).
 
     Usage:
-        scorer = FactorPortfolioScorer(top_n=20, use_tier2=True)
+        scorer = FactorPortfolioScorer(top_n=20, top_n_short=15)
         sim = AgentSimulator(..., factor_scorer=scorer)
     """
 
     def __init__(
         self,
         top_n: int = 20,
+        top_n_short: int = 15,
+        long_short: bool = True,
         use_tier2: bool = True,
         vix_threshold: float = 30.0,
         spy_ma_window: int = 200,
     ):
         self.top_n = top_n
+        self.top_n_short = top_n_short
+        self.long_short = long_short
         self.use_tier2 = use_tier2
         self.vix_threshold = vix_threshold
         self.spy_ma_window = spy_ma_window
@@ -227,7 +242,11 @@ class FactorPortfolioScorer:
         symbols_data: dict,
         vix_history=None,
     ) -> list:
-        """Score all symbols on `day` using factor composite. Returns [(sym, conf)]."""
+        """Score all symbols on `day`. Returns [(sym, conf, direction)].
+
+        conf is in [0.55, 0.95] for longs; [-0.95, -0.55] for shorts.
+        direction is "long" or "short".
+        """
         import pandas as pd
 
         # Build aligned closes DataFrame
@@ -258,10 +277,14 @@ class FactorPortfolioScorer:
             except Exception:
                 pass
 
-        if not regime_gate_ok(
+        regime_ok = regime_gate_ok(
             spy_series, as_of, vix_value=vix_val,
             ma_window=self.spy_ma_window, vix_threshold=self.vix_threshold,
-        ):
+        )
+        # In bear market: suppress all trading. Bottom-N momentum shorts (beaten-down stocks)
+        # reverse violently during bear market rallies, destroying the short book.
+        # The strategy's edge is long momentum; sit in cash during bear markets.
+        if not regime_ok:
             return []
 
         bars_by_sym = {
@@ -275,12 +298,32 @@ class FactorPortfolioScorer:
         if scores.empty:
             return []
 
-        top_syms = select_top_n(scores, n=self.top_n)
-
         s_min, s_max = float(scores.min()), float(scores.max())
         s_range = max(s_max - s_min, 1e-6)
 
-        return [
-            (sym, 0.55 + 0.40 * ((float(scores[sym]) - s_min) / s_range))
-            for sym in top_syms
-        ]
+        def _conf(raw: float) -> float:
+            return 0.55 + 0.40 * ((raw - s_min) / s_range)
+
+        result = []
+
+        # Longs: top-N (only when regime is ok)
+        if regime_ok:
+            top_syms = select_top_n(scores, n=self.top_n)
+            result.extend(
+                (sym, _conf(float(scores[sym])), "long")
+                for sym in top_syms
+            )
+
+        # Shorts: bottom-N (when L/S mode enabled; excluded symbols that are longs)
+        if self.long_short:
+            long_set = {s for s, _, _ in result}
+            bottom_syms = [
+                s for s in select_bottom_n(scores, n=self.top_n_short)
+                if s not in long_set
+            ]
+            result.extend(
+                (sym, -_conf(float(scores[sym])), "short")
+                for sym in bottom_syms
+            )
+
+        return result
