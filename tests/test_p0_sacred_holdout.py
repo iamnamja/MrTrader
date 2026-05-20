@@ -223,6 +223,16 @@ def test_wf_script_allows_bypass_after_holdout(monkeypatch):
     ]
     monkeypatch.setattr("sys.argv", test_argv)
 
+    # Mock the heavy data fetch so the test exits immediately after the guard check
+    # without crashing the xdist worker process via OOM / training load.
+    def _fast_fail(*args, **kwargs):
+        raise SystemExit(0)
+
+    monkeypatch.setattr(wf3, "run_swing_walkforward", _fast_fail, raising=False)
+    monkeypatch.setattr(wf3, "run_intraday_walkforward", _fast_fail, raising=False)
+    monkeypatch.setattr(wf3, "_run_swing_wf", _fast_fail, raising=False)
+    monkeypatch.setattr(wf3, "_run_intraday_wf", _fast_fail, raising=False)
+
     # We expect the run to fail eventually (no model, no data), but NOT due to
     # the sacred-holdout guard. Catch any exception and assert it's not the
     # holdout one.

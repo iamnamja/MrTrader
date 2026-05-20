@@ -2528,6 +2528,11 @@ class PortfolioManager(BaseAgent):
             self.logger.info("No intraday candidates above confidence threshold (or all on cooldown)")
             return
 
+        from app.live_trading.kill_switch import kill_switch
+        if kill_switch.is_active:
+            self.logger.warning("Intraday scan: kill switch active — suppressing proposals")
+            return
+
         self.logger.info("Intraday selected: %s", [s for s, _ in selected])
 
         try:
@@ -2707,7 +2712,11 @@ class PortfolioManager(BaseAgent):
 
         db = get_session()
         try:
-            active_trades = db.query(Trade).filter_by(status="ACTIVE", direction="BUY").all()
+            active_trades = (
+                db.query(Trade)
+                .filter(Trade.status == "ACTIVE", Trade.direction.in_(["BUY", "SELL_SHORT"]))
+                .all()
+            )
         finally:
             db.close()
 
@@ -2771,8 +2780,16 @@ class PortfolioManager(BaseAgent):
         except Exception:
             pass
 
+        # Build direction map from the queried trades for score interpretation below
+        _trade_direction = {t.symbol: (getattr(t, "direction", "BUY") or "BUY") for t in swing_trades}
+
         for symbol, info in scores.items():
             score = info["score"]
+            _is_short_pos = _trade_direction.get(symbol) == "SELL_SHORT"
+            # For short positions the ML score is a long-bullish signal, so invert:
+            # high score → short thesis is failing → EXIT; low score → short working → hold.
+            if _is_short_pos:
+                score = 1.0 - score
             action = None
             reason = None
 
