@@ -951,11 +951,13 @@ class AgentSimulator:
 
             # Position sizing — use abs(confidence) for shorts; equity_decision is MTM-aware
             conf_for_sizing = abs(confidence)
+            # Pass the already-correct stop_price (above entry for shorts, below for longs)
+            # so size_position gets the right risk-per-share in both directions.
             quantity = size_position(
                 account_equity=portfolio.equity_decision,
                 available_cash=portfolio.cash,
                 entry_price=entry_price,
-                stop_price=stop_price if not is_short else entry_price * (1 - SWING_STOP_PCT),
+                stop_price=stop_price,
                 ml_score=conf_for_sizing,
             )
             # Apply RM position-size cap so the trade doesn't auto-reject

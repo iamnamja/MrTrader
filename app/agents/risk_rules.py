@@ -5,8 +5,11 @@ Each rule is a standalone function that returns (is_valid: bool, message: str).
 Thresholds live in RiskLimits and can be overridden during backtesting.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,20 +36,34 @@ class RiskLimits:
         """Build RiskLimits pulling values from DB config, falling back to defaults."""
         try:
             from app.database.agent_config import get_agent_config
+            _d = cls()  # defaults
+
+            def _get(key, default):
+                v = get_agent_config(db, key)
+                return default if v is None else v
+
             return cls(
-                MAX_POSITION_SIZE_PCT=get_agent_config(db, "risk.max_position_size_pct"),
-                MAX_SECTOR_CONCENTRATION_PCT=get_agent_config(db, "risk.max_sector_concentration_pct"),
-                MAX_DAILY_LOSS_PCT=get_agent_config(db, "risk.max_daily_loss_pct"),
-                MAX_ACCOUNT_DRAWDOWN_PCT=get_agent_config(db, "risk.max_account_drawdown_pct"),
-                MAX_OPEN_POSITIONS=get_agent_config(db, "risk.max_open_positions"),
-                max_spread_pct=get_agent_config(db, "risk.max_spread_pct"),
-                max_adtv_pct=get_agent_config(db, "risk.max_adtv_pct"),
-                max_correlation=get_agent_config(db, "risk.max_correlation"),
-                max_portfolio_beta=get_agent_config(db, "risk.max_portfolio_beta"),
-                high_beta_threshold=get_agent_config(db, "risk.high_beta_threshold"),
-                max_factor_concentration=get_agent_config(db, "risk.max_factor_concentration"),
+                MAX_POSITION_SIZE_PCT=_get("risk.max_position_size_pct", _d.MAX_POSITION_SIZE_PCT),
+                MAX_SECTOR_CONCENTRATION_PCT=_get("risk.max_sector_concentration_pct", _d.MAX_SECTOR_CONCENTRATION_PCT),
+                MAX_DAILY_LOSS_PCT=_get("risk.max_daily_loss_pct", _d.MAX_DAILY_LOSS_PCT),
+                MAX_ACCOUNT_DRAWDOWN_PCT=_get("risk.max_account_drawdown_pct", _d.MAX_ACCOUNT_DRAWDOWN_PCT),
+                MAX_OPEN_POSITIONS=_get("risk.max_open_positions", _d.MAX_OPEN_POSITIONS),
+                MAX_PORTFOLIO_HEAT_PCT=_get("risk.max_portfolio_heat_pct", _d.MAX_PORTFOLIO_HEAT_PCT),
+                NORMAL_VOLATILITY_ATR_RATIO=_get("risk.normal_volatility_atr_ratio", _d.NORMAL_VOLATILITY_ATR_RATIO),
+                STOP_LOSS_BASE_PCT=_get("risk.stop_loss_base_pct", _d.STOP_LOSS_BASE_PCT),
+                max_spread_pct=_get("risk.max_spread_pct", _d.max_spread_pct),
+                max_adtv_pct=_get("risk.max_adtv_pct", _d.max_adtv_pct),
+                max_correlation=_get("risk.max_correlation", _d.max_correlation),
+                max_portfolio_beta=_get("risk.max_portfolio_beta", _d.max_portfolio_beta),
+                high_beta_threshold=_get("risk.high_beta_threshold", _d.high_beta_threshold),
+                max_factor_concentration=_get("risk.max_factor_concentration", _d.max_factor_concentration),
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "RiskLimits.from_db failed — using hardcoded defaults. "
+                "Check DB config for corrupt/missing values: %s",
+                exc, exc_info=True,
+            )
             return cls()
 
 

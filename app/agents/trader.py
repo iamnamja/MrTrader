@@ -205,8 +205,17 @@ class Trader(BaseAgent):
                 _rem_short = _rem_dir == "SELL_SHORT"
                 _rem_stop = existing_today.stop_price or round(avg * (1.02 if _rem_short else 0.98), 2)
                 _rem_tgt = existing_today.target_price or round(avg * (0.94 if _rem_short else 1.06), 2)
+                # Recompute partial P&L from the immutable Order ledger rather than
+                # trusting trade.pnl which may have been zeroed by a prior reconcile cycle.
+                from app.database.models import recompute_partial_pnl
+                _entry_px = float(existing_today.entry_price or avg)
+                _prior_pnl = recompute_partial_pnl(db, existing_today.id, _entry_px, _rem_dir)
+                # If ledger returns 0 but trade.pnl has a value, fall back to trade.pnl
+                # (handles legacy rows written before Order-ledger fix was deployed)
+                if _prior_pnl == 0.0 and existing_today.pnl:
+                    _prior_pnl = float(existing_today.pnl)
                 self.active_positions[symbol] = {
-                    "entry_price":   float(existing_today.entry_price or avg),
+                    "entry_price":   _entry_px,
                     "stop_price":    float(_rem_stop),
                     "target_price":  float(_rem_tgt),
                     "highest_price": avg,
@@ -214,6 +223,7 @@ class Trader(BaseAgent):
                     "bars_held":     existing_today.bars_held or 0,
                     "trade_id":      existing_today.id,
                     "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
+                    "shares":        abs(qty),
                     "entry_date":    (
                         existing_today.created_at.date()
                         if existing_today.created_at else datetime.now(ET).date()
@@ -221,11 +231,13 @@ class Trader(BaseAgent):
                     "direction":     _rem_dir,
                     "proposal_uuid": getattr(existing_today, "proposal_id", None),
                     "_partial_exited": True,
+                    "_partial_pnl":    _prior_pnl,
                 }
                 existing_today.status = "ACTIVE"
                 existing_today.quantity = abs(qty)
                 existing_today.exit_price = None
-                existing_today.pnl = None
+                # Restore trade.pnl from the Order-ledger recompute so it stays consistent
+                existing_today.pnl = _prior_pnl if _prior_pnl != 0.0 else None
                 existing_today.closed_at = None
                 db.commit()
                 continue
@@ -1023,7 +1035,15 @@ class Trader(BaseAgent):
             except Exception:
                 pass
 
-        slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2) if intended_price > 0 else 0.0
+        # Slippage is direction-aware: for shorts, a lower fill price is worse (less proceeds)
+        # so slippage = intended - filled (positive = bad, negative = good, same sign as longs).
+        if intended_price > 0:
+            if is_short:
+                slippage_bps = round((intended_price - filled_price) / intended_price * 10000, 2)
+            else:
+                slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2)
+        else:
+            slippage_bps = 0.0
 
         await self._record_entry(
             symbol, shares, filled_price, intended_price, slippage_bps,
@@ -1431,7 +1451,17 @@ class Trader(BaseAgent):
                 if order_status in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
                     filled_price = float(filled_price)
                     intended = pending["intended_price"]
-                    slippage_bps = round((filled_price - intended) / intended * 10000, 2) if intended > 0 else 0.0
+                    _pend_short = (
+                        pending.get("direction") == "SELL_SHORT"
+                        or (pending.get("proposal") or {}).get("direction") == "SELL_SHORT"
+                    )
+                    if intended > 0:
+                        if _pend_short:
+                            slippage_bps = round((intended - filled_price) / intended * 10000, 2)
+                        else:
+                            slippage_bps = round((filled_price - intended) / intended * 10000, 2)
+                    else:
+                        slippage_bps = 0.0
 
                     # Phase 78a: cancel unfilled remainder on partial fills to prevent
                     # silent second fills creating untracked additional shares.
@@ -2066,10 +2096,18 @@ class Trader(BaseAgent):
                         actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
                         trade.exit_price = actual_price
                         _fc_qty = pos.get("shares", trade.quantity or 0)
-                        if pos.get("direction") == "SELL_SHORT":
-                            trade.pnl = (pos["entry_price"] - actual_price) * _fc_qty
+                        _fc_dir = pos.get("direction", getattr(trade, "direction", "BUY") or "BUY")
+                        if _fc_dir == "SELL_SHORT":
+                            _final_leg = (pos["entry_price"] - actual_price) * _fc_qty
                         else:
-                            trade.pnl = (actual_price - pos["entry_price"]) * _fc_qty
+                            _final_leg = (actual_price - pos["entry_price"]) * _fc_qty
+                        # Accumulate any partial-exit P&L.  Use in-memory cache first;
+                        # fall back to Order ledger for robustness on stale in-memory state.
+                        from app.database.models import recompute_partial_pnl
+                        _partial = pos.get("_partial_pnl") or recompute_partial_pnl(
+                            db, trade.id, pos["entry_price"], _fc_dir
+                        )
+                        trade.pnl = _final_leg + _partial
                         trade.status = "FORCE_CLOSED_NO_POSITION"
                         trade.exit_reason = "force_closed_no_position"
                         trade.closed_at = datetime.now(ET)
@@ -2160,7 +2198,7 @@ class Trader(BaseAgent):
                     from app.ml.walk_forward_stats import get_predicted_pnl as _wf_pnl2
                     _predicted = _wf_pnl2(_trade_type_2d)
                     if _predicted is not None:
-                        _shortfall = round(pnl - _predicted * (pos.get("quantity", qty) or qty), 4)
+                        _shortfall = round(pnl - _predicted * (pos.get("shares", qty) or qty), 4)
                         self.logger.info(
                             "2d shortfall %s trade#%d: live_pnl=%.2f predicted_per_share=%.4f shortfall=%.2f",
                             symbol, trade_id, pnl, _predicted, _shortfall,

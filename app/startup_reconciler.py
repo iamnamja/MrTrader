@@ -308,10 +308,17 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     "instead of creating duplicate",
                     symbol, qty, avg, recent_trade.id, recent_trade.status,
                 )
+                # Recompute partial P&L from immutable Order ledger before reactivating.
+                # Zeroing trade.pnl here would destroy any partial-exit P&L realized before
+                # the position was incorrectly marked closed.
+                from app.database.models import recompute_partial_pnl
+                _entry = float(recent_trade.entry_price or avg)
+                _dir = getattr(recent_trade, "direction", "BUY") or "BUY"
+                _partial = recompute_partial_pnl(db_session, recent_trade.id, _entry, _dir)
                 recent_trade.status = "ACTIVE"
                 recent_trade.quantity = abs(qty)
                 recent_trade.exit_price = None
-                recent_trade.pnl = None
+                recent_trade.pnl = _partial or None  # preserve realized partial; None if no partials
                 recent_trade.closed_at = None
                 recent_trade.exit_reason = None
                 recent_trade.highest_price = avg
@@ -347,6 +354,8 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     symbol=symbol, direction=_syn_dir, entry_price=avg,
                     quantity=abs(qty), status="ACTIVE", signal_type="RECONCILED",
                     trade_type="swing", stop_price=stop_price, target_price=target_price,
+                    highest_price=avg, bars_held=0,
+                    created_at=datetime.utcnow(),
                 )
                 db_session.add(placeholder)
                 db_session.add(AuditLog(

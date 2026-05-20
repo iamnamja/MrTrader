@@ -10,6 +10,7 @@ Flow:
 
 import asyncio
 import logging
+import time
 from datetime import date
 from typing import Any, Dict, Optional, Tuple
 
@@ -46,9 +47,14 @@ class RiskManager(BaseAgent):
     and either forwards them for execution or rejects them with reasoning.
     """
 
+    # How often (seconds) to reload RiskLimits from DB.  Allows operator config
+    # changes to take effect quickly without hammering the DB on every proposal.
+    LIMITS_TTL: float = 60.0
+
     def __init__(self, limits: Optional[RiskLimits] = None):
         super().__init__("risk_manager")
         self.limits = limits or RiskLimits()
+        self._limits_loaded_at: float = 0.0  # monotonic clock; 0 forces first-proposal load
         from app.utils.constants import SECTOR_MAP
         self._sector_map: Dict[str, str] = dict(SECTOR_MAP)
         self._peak_equity: Optional[float] = None
@@ -294,15 +300,20 @@ class RiskManager(BaseAgent):
         """
         reasoning: Dict[str, Any] = {"checks": [], "proposal": proposal}
 
-        # Reload limits from DB so UI changes take effect without restart
-        try:
-            _db = get_session()
+        # Reload limits from DB at most every LIMITS_TTL seconds.
+        # This lets operator config changes take effect quickly (< 1 minute) while
+        # avoiding a DB round-trip on every proposal in a busy market session.
+        _now = time.monotonic()
+        if _now - self._limits_loaded_at >= self.LIMITS_TTL:
             try:
-                self.limits = RiskLimits.from_db(_db)
-            finally:
-                _db.close()
-        except Exception:
-            pass
+                _db = get_session()
+                try:
+                    self.limits = RiskLimits.from_db(_db)
+                    self._limits_loaded_at = _now
+                finally:
+                    _db.close()
+            except Exception as exc:
+                logger.warning("Could not reload RiskLimits from DB: %s", exc)
 
         symbol = proposal.get("symbol", "")
         quantity = proposal.get("quantity", 0)
@@ -888,7 +899,10 @@ class RiskManager(BaseAgent):
             try:
                 count = (
                     db.query(_Trade)
-                    .filter(_Trade.status == "ACTIVE", _Trade.trade_type == "intraday")
+                    .filter(
+                        _Trade.status.in_(("ACTIVE", "PENDING_FILL")),
+                        _Trade.trade_type == "intraday",
+                    )
                     .count()
                 )
                 self._open_intraday_count = count
@@ -898,6 +912,23 @@ class RiskManager(BaseAgent):
                 db.close()
         except Exception as exc:
             self.logger.warning("Could not restore intraday count: %s", exc)
+
+    def reload_limits(self) -> None:
+        """Force an immediate reload of RiskLimits from DB (bypasses TTL).
+
+        Call this from the admin API after changing risk config so changes take
+        effect on the next proposal rather than waiting up to LIMITS_TTL seconds.
+        """
+        try:
+            _db = get_session()
+            try:
+                self.limits = RiskLimits.from_db(_db)
+                self._limits_loaded_at = time.monotonic()
+                self.logger.info("RiskLimits reloaded from DB (admin-triggered)")
+            finally:
+                _db.close()
+        except Exception as exc:
+            self.logger.warning("reload_limits failed: %s", exc)
 
     def update_sector_map(self, sector_map: Dict[str, str]) -> None:
         """Update the symbol→sector mapping (called externally or at startup)."""
