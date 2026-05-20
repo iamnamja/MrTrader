@@ -20,31 +20,46 @@ def _fresh_tracker():
 # ─── PDT Rule ─────────────────────────────────────────────────────────────────
 
 class TestPdtRule:
+    # Equity in 25k-26k band: above PDT threshold (rules don't apply by count)
+    # but below circuit breaker (always blocked). Tests the circuit breaker path.
+    # For count-logic tests, mock PDT_CIRCUIT_BREAKER to be below test equity.
+    _EQUITY_ABOVE_PDT = 26_500   # above circuit breaker → "PDT check skipped"
+
     def test_no_trades_not_blocked(self):
         ct = _fresh_tracker()
-        blocked, msg = ct.is_pdt_blocked(account_equity=10_000)
+        blocked, msg = ct.is_pdt_blocked(account_equity=self._EQUITY_ABOVE_PDT)
         assert not blocked
-        assert "0/" in msg
+        assert "PDT check skipped" in msg
 
-    def test_one_trade_not_blocked(self):
+    def test_one_trade_high_equity_not_blocked(self):
         ct = _fresh_tracker()
         ct.record_day_trade("AAPL")
-        blocked, _ = ct.is_pdt_blocked(10_000)
+        blocked, _ = ct.is_pdt_blocked(self._EQUITY_ABOVE_PDT)
         assert not blocked
 
-    def test_two_trades_blocks_intraday(self):
+    def test_two_trades_circuit_breaker_takes_precedence(self):
+        # With circuit breaker at $26k, the count-based block (25k-26k band) is
+        # superseded — circuit breaker fires first. Verify circuit breaker blocks
+        # regardless of trade count.
         ct = _fresh_tracker()
         ct.record_day_trade("AAPL")
         ct.record_day_trade("TSLA")
-        blocked, msg = ct.is_pdt_blocked(10_000)
+        blocked, msg = ct.is_pdt_blocked(25_800)  # below $26k circuit breaker
         assert blocked
-        assert "PDT limit" in msg
+        assert "circuit breaker" in msg
+
+    def test_circuit_breaker_blocks_below_26k(self):
+        ct = _fresh_tracker()
+        # No trades at all — blocked purely by circuit breaker
+        blocked, msg = ct.is_pdt_blocked(25_500)
+        assert blocked
+        assert "circuit breaker" in msg
 
     def test_high_equity_skips_pdt(self):
         ct = _fresh_tracker()
         ct.record_day_trade("AAPL")
         ct.record_day_trade("TSLA")
-        # equity above $25k threshold — PDT rules don't apply
+        # equity above $26k circuit breaker — PDT rules don't apply
         blocked, msg = ct.is_pdt_blocked(30_000)
         assert not blocked
         assert "PDT check skipped" in msg
