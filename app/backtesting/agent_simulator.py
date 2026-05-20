@@ -1040,21 +1040,19 @@ class AgentSimulator:
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 
-            # Track best price: longs use highest close, shorts use lowest close
+            # P0.2 fix: snapshot pre-bar extremes BEFORE updating highest_price.
+            # check_exit receives the PRE-bar highest so its trailing-stop ratchet
+            # cannot retroactively use today's H/L for the intrabar breach check.
+            _orig_stop = pos.stop_price
+            _orig_target = pos.target_price
+            _pre_bar_highest = pos.highest_price
+
+            # Track best price: longs use highest high, shorts use lowest low.
+            # Done after snapshot so the update is only visible to FUTURE bars.
             if is_short:
                 pos.highest_price = min(pos.highest_price, today_low)
             else:
                 pos.highest_price = max(pos.highest_price, today_high)
-
-            # P0.2 fix: Run intrabar H/L stop/target check FIRST, using the
-            # stop/target levels that were in effect at the START of today's bar
-            # (i.e. before any trailing-stop ratchet that would itself be informed
-            # by today's H/L → look-ahead). The trailing stop update from check_exit
-            # uses `highest_price` which already includes today's extreme, so it
-            # must not be allowed to retroactively pull the intrabar stop into
-            # today's range.
-            _orig_stop = pos.stop_price
-            _orig_target = pos.target_price
             today_open = float(today_bar["open"])
             should_exit = False
             exit_reason = ""
@@ -1117,7 +1115,7 @@ class AgentSimulator:
                     entry_price=pos.entry_price,
                     stop_price=pos.stop_price,
                     target_price=pos.target_price,
-                    highest_price=pos.highest_price,
+                    highest_price=_pre_bar_highest,
                     bars_held=pos.bars_held,
                     min_hold_bars=1,
                     max_hold_bars=_max_hold,

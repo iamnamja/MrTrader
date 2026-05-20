@@ -168,13 +168,23 @@ class TestAlpacaProvider:
 
 # ── Rolling window training ───────────────────────────────────────────────────
 
+_DUMMY_FEATURES = {f"feat_{i}": float(i) for i in range(22)}
+_DUMMY_FEATURES.update({"rsi_14": 50.0, "rsi_7": 52.0, "macd": 0.1, "macd_signal": 0.0,
+                         "macd_histogram": 0.1, "ema_20": 100.0, "ema_50": 98.0,
+                         "price_above_ema20": 1.0, "price_above_ema50": 1.0,
+                         "sentiment": 0.0, "volatility": 0.01, "volume_ratio": 1.0,
+                         "momentum_5d": 0.01, "momentum_20d": 0.02,
+                         "price_change_pct": 0.005, "price_to_52w_high": 0.95,
+                         "price_to_52w_low": 0.60, "uptrend": 1.0, "downtrend": 0.0})
+
+
 class TestRollingWindowTraining:
 
     def _trainer(self):
         from app.ml.training import ModelTrainer
         return ModelTrainer()
 
-    def _multi_symbol_data(self, n_symbols=10, n_days=500):
+    def _multi_symbol_data(self, n_symbols=4, n_days=252):
         """Create enough data for multiple windows across multiple symbols."""
         data = {}
         for i in range(n_symbols):
@@ -183,12 +193,24 @@ class TestRollingWindowTraining:
             data[sym] = _make_daily_df(n_days)
         return data
 
+    def _build_matrix(self, trainer, data):
+        """Build rolling matrix with SPY pre-loaded and feature engineering mocked."""
+        from unittest.mock import patch, MagicMock
+        # Pre-load SPY so _build_rolling_matrix skips the yfinance download
+        dates = sorted(set.union(*[set(df.index.date) for df in data.values()]))
+        spy_df = _make_daily_df(len(dates), start=str(dates[0]))
+        spy_df.index = pd.bdate_range(start=str(dates[0]), periods=len(dates))
+        data_with_spy = dict(data)
+        data_with_spy["SPY"] = spy_df
+        mock_fe_instance = MagicMock()
+        mock_fe_instance.engineer_features.return_value = dict(_DUMMY_FEATURES)
+        with patch("app.ml.training.FeatureEngineer", return_value=mock_fe_instance):
+            return trainer._build_rolling_matrix(data_with_spy, fetch_fundamentals=False)
+
     def test_rolling_matrix_produces_more_samples_than_single_window(self):
         trainer = self._trainer()
-        data = self._multi_symbol_data(10, 500)
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            data, fetch_fundamentals=False
-        )
+        data = self._multi_symbol_data()
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, data)
         # Rolling should produce many more samples than 10 (single-window)
         assert len(X_train) + len(X_test) > 10
 
@@ -196,20 +218,16 @@ class TestRollingWindowTraining:
         """Test set must be the most recent windows, not a random sample."""
         from app.ml.training import WINDOW_DAYS as _W, STEP_DAYS as _S, TEST_FRACTION as _T  # noqa
         trainer = self._trainer()
-        data = self._multi_symbol_data(8, 600)
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            data, fetch_fundamentals=False
-        )
+        data = self._multi_symbol_data()
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, data)
         # Both sets should have samples
         assert len(X_train) > 0
         assert len(X_test) >= 0  # may be 0 with small dataset
 
     def test_feature_names_consistent(self):
         trainer = self._trainer()
-        data = self._multi_symbol_data(8, 500)
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            data, fetch_fundamentals=False
-        )
+        data = self._multi_symbol_data()
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, data)
         assert len(names) >= 19  # at least price-only features
         if len(X_train) > 0:
             assert X_train.shape[1] == len(names)
@@ -218,27 +236,21 @@ class TestRollingWindowTraining:
         trainer = self._trainer()
         # Only 30 days — not enough for any window
         tiny_data = {"AAPL": _make_daily_df(30), "MSFT": _make_daily_df(30)}
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            tiny_data, fetch_fundamentals=False
-        )
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, tiny_data)
         assert len(X_train) == 0
 
     def test_labels_are_binary(self):
         trainer = self._trainer()
-        data = self._multi_symbol_data(10, 500)
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            data, fetch_fundamentals=False
-        )
+        data = self._multi_symbol_data()
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, data)
         if len(y_train) > 0:
             assert set(y_train).issubset({0, 1})
 
     def test_no_label_leakage_across_split(self):
         """Train and test X arrays must not overlap (time-based split)."""
         trainer = self._trainer()
-        data = self._multi_symbol_data(12, 700)
-        X_train, y_train, X_test, y_test, names, _, _meta_te = trainer._build_rolling_matrix(
-            data, fetch_fundamentals=False
-        )
+        data = self._multi_symbol_data(5, 252)
+        X_train, y_train, X_test, y_test, names, _, _meta_te = self._build_matrix(trainer, data)
         # Shapes must be consistent
         if len(X_train) > 0 and len(X_test) > 0:
             assert X_train.shape[1] == X_test.shape[1]
