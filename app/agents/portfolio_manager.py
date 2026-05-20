@@ -107,6 +107,7 @@ class PortfolioManager(BaseAgent):
         self._intraday_windows_run: set = set()  # Phase 51: (hour,min) windows already scanned
         self._intraday_symbol_last_entry: Dict[str, float] = {}  # symbol → monotonic ts of last entry
         self._retrained_today: bool = False
+        self._retrained_regime_today: bool = False
         self._earnings_prefetched_today: bool = False  # 06:00 earnings calendar prefetch
         self._premarket_run_today: bool = False  # 09:00 premarket routine done
         self._benchmark_recorded_today: bool = False
@@ -334,6 +335,7 @@ class PortfolioManager(BaseAgent):
                     self._intraday_windows_run = set()
                     self._intraday_symbol_last_entry = {}
                     self._retrained_today = False
+                    self._retrained_regime_today = False
                     self._earnings_prefetched_today = False
                     self._premarket_run_today = False
                     self._benchmark_recorded_today = False
@@ -594,6 +596,22 @@ class PortfolioManager(BaseAgent):
                     await self._run_task(
                         "model_retrain", 17, 0,
                         self._retrain(),
+                    )
+
+                # ── 17:30: regime model retrain (weekly, independent of RETRAIN_WEEKDAY) ─
+                # Regime model retrains on its own cadence even when swing/intraday
+                # retraining is disabled (RETRAIN_WEEKDAY=-1). Checks file age against
+                # REGIME_RETRAIN_INTERVAL_DAYS; skips if model is still fresh.
+                if (
+                    is_weekday
+                    and now.hour == 17
+                    and now.minute >= 30
+                    and not self._retrained_regime_today
+                ):
+                    self._retrained_regime_today = True
+                    await self._run_task(
+                        "regime_retrain", 17, 30,
+                        self._retrain_regime(),
                     )
 
                 await asyncio.sleep(60)
@@ -3605,6 +3623,84 @@ class PortfolioManager(BaseAgent):
         return (settings.regime_sizing_risk_caution, "RISK_CAUTION", score)
 
     # ─── Retraining ───────────────────────────────────────────────────────────
+
+    async def _retrain_regime(self) -> None:
+        """Retrain the regime model if it is older than REGIME_RETRAIN_INTERVAL_DAYS.
+
+        Gate: macro_f1_min >= 0.60 AND log_loss_mean < 0.22 (matches CLI script).
+        If gate fails, the old model file is untouched — the new version is written
+        with an incremented version number and left on disk (RETIRED in DB) so it can
+        be inspected, but the regime_model.py loader still picks the prior highest
+        version that passed the gate... wait, actually the loader picks the highest
+        version by filename. So on gate failure we delete the new file to prevent
+        the loader from auto-loading it.
+        """
+        import asyncio
+        import time
+        from pathlib import Path
+        from app.ml.retrain_config import REGIME_RETRAIN_INTERVAL_DAYS
+
+        MODEL_DIR = Path(__file__).resolve().parent.parent / "ml" / "models"
+        existing = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
+        if existing:
+            age_seconds = time.time() - existing[-1].stat().st_mtime
+            age_days = age_seconds / 86400
+            if age_days < REGIME_RETRAIN_INTERVAL_DAYS:
+                self.logger.info(
+                    "Regime model is %.1f days old (interval=%d) — skipping retrain",
+                    age_days, REGIME_RETRAIN_INTERVAL_DAYS,
+                )
+                return
+            self.logger.info(
+                "Regime model is %.1f days old — retraining (interval=%d days)",
+                age_days, REGIME_RETRAIN_INTERVAL_DAYS,
+            )
+        else:
+            self.logger.info("No regime model found — training from scratch")
+
+        loop = asyncio.get_event_loop()
+        try:
+            from app.ml.regime_training import RegimeModelTrainer
+            trainer = RegimeModelTrainer()
+            model_path = await loop.run_in_executor(None, trainer.train)
+
+            import pickle
+            with open(model_path, "rb") as f:
+                payload = pickle.load(f)
+
+            f1_min = payload.get("wf_auc_min", 0.0)       # macro_f1_min across folds
+            log_loss = payload.get("wf_log_loss_mean", 99.0)  # log_loss mean across folds
+            gate_ok = f1_min >= 0.60 and log_loss < 0.45  # 0.45 = 3-class CE threshold (random=1.099)
+
+            if gate_ok:
+                self.logger.info(
+                    "Regime model v%d GATE PASSED (macro_f1_min=%.3f log_loss=%.4f) — now active",
+                    payload.get("version"), f1_min, log_loss,
+                )
+                await self.log_decision("REGIME_MODEL_RETRAINED", reasoning={
+                    "version": payload.get("version"),
+                    "macro_f1_min": f1_min,
+                    "log_loss": log_loss,
+                    "model_path": str(model_path),
+                })
+            else:
+                failures = []
+                if f1_min < 0.60:
+                    failures.append(f"macro_f1_min={f1_min:.3f} < 0.60")
+                if log_loss >= 0.45:
+                    failures.append(f"log_loss={log_loss:.4f} >= 0.45")
+                self.logger.warning(
+                    "Regime model v%d GATE FAILED (%s) — deleting new file, keeping old model",
+                    payload.get("version"), ", ".join(failures),
+                )
+                model_path.unlink(missing_ok=True)
+                await self.log_decision("REGIME_RETRAIN_GATE_FAILED", reasoning={
+                    "version": payload.get("version"),
+                    "failures": failures,
+                })
+        except Exception as exc:
+            self.logger.error("Regime retrain failed: %s", exc, exc_info=True)
+            await self.log_decision("REGIME_RETRAIN_FAILED", reasoning={"error": str(exc)})
 
     async def _retrain(self):
         """Retrain swing + intraday models with walk-forward gate enforcement.

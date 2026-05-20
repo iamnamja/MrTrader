@@ -48,6 +48,12 @@ MAX_FOLD_WORKERS: int = 1 if _sys.platform == "win32" else 4
 # current 69-feature arch is counterproductive; re-enable after v200 ships).
 RETRAIN_WEEKDAY: int = -1  # disabled — Phase C in progress (was: 2 = Wednesday)
 
+# Regime model retrains on its own weekly cadence, independent of RETRAIN_WEEKDAY.
+# The regime classifier is macro-level (slow-moving) — daily retraining adds noise
+# without benefit. 7 days (weekly) matches the frequency at which regime features
+# (VIX term structure, credit spreads, breadth) meaningfully shift.
+REGIME_RETRAIN_INTERVAL_DAYS: int = 7
+
 # ── Phase C validated feature keep-list (from A1 IC diagnostic 2026-05-13) ──
 # Only these 14 features showed positive, stable IC (IR >= 0.40 at h5).
 # All other features (technical noise, WQ alphas, short-momentum) are dropped.

@@ -44,23 +44,30 @@ def main() -> int:
     with open(model_path, "rb") as f:
         payload = pickle.load(f)
 
-    auc_min = payload["wf_auc_min"]
-    brier = payload["brier_score"]
+    f1_min = payload["wf_auc_min"]          # macro_F1 min across folds
+    log_loss_mean = payload["brier_score"]  # log_loss mean across folds (3-class CE)
+
+    # Gate thresholds:
+    #   macro_F1_min >= 0.60: at least 60% F1 on the hardest fold
+    #   log_loss_mean < 0.45: 3-class cross-entropy threshold (random baseline = log(3) ≈ 1.099)
+    #   Note: 0.22 was incorrectly imported from 2-class Brier score — wrong metric for 3-class.
+    GATE_F1_MIN = 0.60
+    GATE_LOG_LOSS = 0.45
 
     logger.info("=" * 60)
-    logger.info("Walk-forward AUC min : %.4f  (gate: >= 0.60)", auc_min)
-    logger.info("Brier score (mean)   : %.4f  (gate: < 0.22)", brier)
-    logger.info("Model path           : %s", model_path)
+    logger.info("Walk-forward macro_F1 min : %.4f  (gate: >= %.2f)", f1_min, GATE_F1_MIN)
+    logger.info("Log-loss mean (3-class CE): %.4f  (gate: < %.2f, random baseline=1.099)", log_loss_mean, GATE_LOG_LOSS)
+    logger.info("Model path                : %s", model_path)
 
-    gate_pass = auc_min >= 0.60 and brier < 0.22
+    gate_pass = f1_min >= GATE_F1_MIN and log_loss_mean < GATE_LOG_LOSS
     if gate_pass:
         logger.info("GATE: PASSED ✓")
     else:
         failures = []
-        if auc_min < 0.60:
-            failures.append(f"AUC min {auc_min:.4f} < 0.60")
-        if brier >= 0.22:
-            failures.append(f"Brier {brier:.4f} >= 0.22")
+        if f1_min < GATE_F1_MIN:
+            failures.append(f"macro_F1_min={f1_min:.4f} < {GATE_F1_MIN}")
+        if log_loss_mean >= GATE_LOG_LOSS:
+            failures.append(f"log_loss_mean={log_loss_mean:.4f} >= {GATE_LOG_LOSS}")
         logger.error("GATE: FAILED — %s", ", ".join(failures))
         return 1
 

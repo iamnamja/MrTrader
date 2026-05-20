@@ -286,6 +286,10 @@ class RegimeModelTrainer:
         model_path = MODEL_DIR / f"regime_model_v{version}.pkl"
         xgb_model, temperature = self.train_final(df)
 
+        f1_min = min(
+            (r["macro_f1"] for r in fold_results if r.get("macro_f1") is not None),
+            default=0.0,
+        )
         with open(model_path, "wb") as f:
             pickle.dump({
                 "xgb_model": xgb_model,
@@ -299,6 +303,9 @@ class RegimeModelTrainer:
                 "wf_results": fold_results,
                 "wf_log_loss_mean": ll_mean,
                 "wf_macro_f1_mean": f1_mean,
+                "wf_auc_min": f1_min,        # macro_f1_min — used by gate checks
+                "wf_auc_mean": f1_mean,
+                "brier_score": ll_mean,      # log_loss_mean — used by gate checks
             }, f)
 
         logger.info("Regime model v%d saved → %s", version, model_path)
