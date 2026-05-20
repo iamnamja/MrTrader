@@ -328,11 +328,14 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 result["untracked_positions"].append({
                     "symbol": symbol, "qty": qty, "avg_price": avg, "action": "created",
                 })
-                stop_price = round(avg * 0.98, 2) if avg > 0 else None
-                target_price = round(avg * 1.06, 2) if avg > 0 else None
+                _syn_dir = "SELL_SHORT" if qty < 0 else "BUY"
+                _syn_short = _syn_dir == "SELL_SHORT"
+                # Short stop is above entry; short target is below entry
+                stop_price = round(avg * (1.02 if _syn_short else 0.98), 2) if avg > 0 else None
+                target_price = round(avg * (0.94 if _syn_short else 1.06), 2) if avg > 0 else None
                 placeholder = Trade(
-                    symbol=symbol, direction="BUY", entry_price=avg,
-                    quantity=qty, status="ACTIVE", signal_type="RECONCILED",
+                    symbol=symbol, direction=_syn_dir, entry_price=avg,
+                    quantity=abs(qty), status="ACTIVE", signal_type="RECONCILED",
                     trade_type="swing", stop_price=stop_price, target_price=target_price,
                 )
                 db_session.add(placeholder)

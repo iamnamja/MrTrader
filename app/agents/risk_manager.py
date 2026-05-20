@@ -64,6 +64,8 @@ class RiskManager(BaseAgent):
 
         # Load persisted peak equity on startup so drawdown rule survives restarts
         self._load_peak_equity()
+        # Restore open intraday position count from DB so the cap survives restarts
+        self._load_intraday_count()
 
         while self.status == "running":
             try:
@@ -836,6 +838,25 @@ class RiskManager(BaseAgent):
                 db.close()
         except Exception as exc:
             self.logger.debug("Could not persist peak equity: %s", exc)
+
+    def _load_intraday_count(self) -> None:
+        """Restore open intraday position count from DB so the cap survives restarts."""
+        try:
+            from app.database.models import Trade as _Trade
+            db = get_session()
+            try:
+                count = (
+                    db.query(_Trade)
+                    .filter(_Trade.status == "ACTIVE", _Trade.trade_type == "intraday")
+                    .count()
+                )
+                self._open_intraday_count = count
+                if count > 0:
+                    self.logger.info("Intraday count restored from DB: %d open", count)
+            finally:
+                db.close()
+        except Exception as exc:
+            self.logger.warning("Could not restore intraday count: %s", exc)
 
     def update_sector_map(self, sector_map: Dict[str, str]) -> None:
         """Update the symbol→sector mapping (called externally or at startup)."""
