@@ -308,7 +308,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     symbol, qty, avg, recent_trade.id, recent_trade.status,
                 )
                 recent_trade.status = "ACTIVE"
-                recent_trade.quantity = qty
+                recent_trade.quantity = abs(qty)
                 recent_trade.exit_price = None
                 recent_trade.pnl = None
                 recent_trade.closed_at = None

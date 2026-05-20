@@ -2302,6 +2302,13 @@ class Trader(BaseAgent):
                 len(stale_ghost_symbols), stale_ghost_symbols,
             )
 
+        # Always reset the RM intraday counter — includes slots consumed by ghost rows
+        try:
+            from app.agents.risk_manager import risk_manager
+            risk_manager.reset_intraday_count()
+        except Exception:
+            pass
+
         if not intraday_symbols:
             return
 
@@ -2316,13 +2323,6 @@ class Trader(BaseAgent):
                                          "FORCE_CLOSE_EOD", alpaca)
             except Exception as exc:
                 self.logger.error("Force-close failed for %s: %s", symbol, exc)
-
-        # Notify risk manager to reset intraday counter
-        try:
-            from app.agents.risk_manager import risk_manager
-            risk_manager.reset_intraday_count()
-        except Exception:
-            pass
 
         await self.log_decision(
             "INTRADAY_FORCE_CLOSED",

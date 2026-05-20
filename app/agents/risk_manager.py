@@ -624,8 +624,8 @@ class RiskManager(BaseAgent):
                 stop_loss = min(intraday_stop, entry_price * 1.005)
             else:
                 intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
-                # Clamp: stop must not be looser (lower) than 0.5% below entry
-                stop_loss = min(intraday_stop, entry_price * 0.995)
+                # Clamp: stop must not be looser (lower) than 0.5% below entry; use max to enforce floor
+                stop_loss = max(intraday_stop, entry_price * 0.995)
         else:
             stop_loss = calculate_dynamic_stop_loss(
                 entry_price, atr=atr, limits=self.limits, direction=_rm_dir,
@@ -746,7 +746,7 @@ class RiskManager(BaseAgent):
                 portfolio_beta * account_value + _beta_sign * trade_cost * new_beta
             ) / max(account_value + trade_cost, 1.0)
 
-            if (portfolio_beta > limits.max_portfolio_beta
+            if (prospective_beta > limits.max_portfolio_beta
                     and new_beta > limits.high_beta_threshold):
                 return {
                     "ok": False,
