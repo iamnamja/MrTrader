@@ -361,6 +361,7 @@ class PendingLimitOrder(Base):
     atr = Column(Float, nullable=True)
     trade_type = Column(String(20), nullable=False, default="swing")
     signal_type = Column(String(30), nullable=True)
+    direction = Column(String(15), nullable=False, default="BUY")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     # Phase: limit-order lifecycle redesign — re-quote + EOD escalation tracking
     requote_count = Column(Integer, nullable=True, default=0)
@@ -485,7 +486,8 @@ class ProposalLog(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     # ── Identity ──────────────────────────────────────────────────────────────
-    proposal_uuid = Column(String(36), nullable=True, index=True)  # PM-generated UUID; may be null for gate-blocked rows
+    # PM-generated UUID; may be null for gate-blocked rows
+    proposal_uuid = Column(String(36), nullable=True, index=True)
     strategy = Column(String(10), nullable=False, index=True)       # 'swing' | 'intraday'
     batch_id = Column(String(50), nullable=True, index=True)        # groups all rows from one scan
 

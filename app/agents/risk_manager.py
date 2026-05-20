@@ -495,8 +495,12 @@ class RiskManager(BaseAgent):
 
         # ── Rule 7: Portfolio Heat ────────────────────────────────────────────
         atr = proposal.get("atr")
-        stop_loss_est = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
-        new_trade_risk = (entry_price - stop_loss_est) * quantity
+        _prop_dir = proposal.get("direction", "BUY")
+        stop_loss_est = calculate_dynamic_stop_loss(
+            entry_price, atr=atr, limits=self.limits, direction=_prop_dir,
+        )
+        # Risk is always positive: abs(entry - stop) * qty regardless of direction
+        new_trade_risk = abs(entry_price - stop_loss_est) * quantity
         ok, msg = validate_portfolio_heat(new_trade_risk, positions, account_value, self.limits)
         reasoning["checks"].append({"rule": "portfolio_heat", "ok": ok, "msg": msg})
         if not ok:
@@ -523,10 +527,16 @@ class RiskManager(BaseAgent):
                         "msg": f"spread={spread_pct*100:.3f}% (limit {max_spread*100:.3f}%)"
                     })
                 else:
-                    reasoning["checks"].append({"rule": "bid_ask_spread", "ok": True, "msg": "quote unavailable — skipped"})
+                    reasoning["checks"].append({
+                        "rule": "bid_ask_spread", "ok": True,
+                        "msg": "quote unavailable — skipped",
+                    })
             except Exception as exc:
                 self.logger.debug("Spread check error for %s: %s", symbol, exc)
-                reasoning["checks"].append({"rule": "bid_ask_spread", "ok": True, "msg": f"spread check skipped: {exc}"})
+                reasoning["checks"].append({
+                    "rule": "bid_ask_spread", "ok": True,
+                    "msg": f"spread check skipped: {exc}",
+                })
 
         # ── Rule 8b: ADTV Liquidity Gate ─────────────────────────────────────
         if proposal.get("trade_type") == "swing":
@@ -550,7 +560,10 @@ class RiskManager(BaseAgent):
                             "msg": f"trade={adtv_pct*100:.2f}% of ADTV (limit {max_adtv_pct*100:.1f}%)"
                         })
                 else:
-                    reasoning["checks"].append({"rule": "adtv_liquidity", "ok": True, "msg": "insufficient ADTV data — skipped"})
+                    reasoning["checks"].append({
+                        "rule": "adtv_liquidity", "ok": True,
+                        "msg": "insufficient ADTV data — skipped",
+                    })
             except Exception as exc:
                 self.logger.debug("ADTV check error for %s: %s", symbol, exc)
                 reasoning["checks"].append({"rule": "adtv_liquidity", "ok": True, "msg": f"ADTV check skipped: {exc}"})
@@ -589,12 +602,20 @@ class RiskManager(BaseAgent):
 
         # ── Rule 8: Dynamic Stop Loss ─────────────────────────────────────────
         atr = proposal.get("atr")
+        _rm_dir = proposal.get("direction", "BUY")
+        _rm_short = _rm_dir == "SELL_SHORT"
         if proposal.get("trade_type") == "intraday":
-            # Intraday: use tight 0.5% stop from proposal or 0.5% of entry
-            intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
-            stop_loss = min(intraday_stop, entry_price * 0.995)
+            # Intraday: use proposal stop or tight default (direction-aware)
+            if _rm_short:
+                intraday_stop = proposal.get("stop_loss") or round(entry_price * 1.005, 2)
+                stop_loss = max(intraday_stop, entry_price * 1.005)
+            else:
+                intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
+                stop_loss = min(intraday_stop, entry_price * 0.995)
         else:
-            stop_loss = calculate_dynamic_stop_loss(entry_price, atr=atr, limits=self.limits)
+            stop_loss = calculate_dynamic_stop_loss(
+                entry_price, atr=atr, limits=self.limits, direction=_rm_dir,
+            )
         stop_msg = f"Stop loss set at ${stop_loss:.2f}"
         reasoning["checks"].append({"rule": "stop_loss", "ok": True, "msg": stop_msg})
         reasoning["stop_loss"] = stop_loss

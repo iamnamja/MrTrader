@@ -189,7 +189,10 @@ class Trader(BaseAgent):
                     "bars_held":     existing_today.bars_held or 0,
                     "trade_id":      existing_today.id,
                     "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
-                    "entry_date":    existing_today.created_at.date() if existing_today.created_at else datetime.now(ET).date(),
+                    "entry_date":    (
+                        existing_today.created_at.date()
+                        if existing_today.created_at else datetime.now(ET).date()
+                    ),
                     "_partial_exited": True,
                 }
                 existing_today.status = "ACTIVE"
@@ -228,7 +231,8 @@ class Trader(BaseAgent):
                 if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
                     result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
                     stop = result.stop_price if result.stop_price and result.stop_price > 0 else round(avg * 0.98, 2)
-                    target = result.target_price if result.target_price and result.target_price > 0 else round(avg * 1.06, 2)
+                    target = (result.target_price if result.target_price and result.target_price > 0
+                              else round(avg * 1.06, 2))
                     # NONE means no rule-based pattern fired, but entry was ML-driven
                     signal = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
                     atr = result.atr
@@ -410,7 +414,9 @@ class Trader(BaseAgent):
                                 for _sym, _pend in list(self._pending_limit_orders.items()):
                                     try:
                                         _ks_alpaca.cancel_order(_pend["order_id"])
-                                        self.logger.warning("KS: cancelled pending limit %s (%s)", _pend["order_id"], _sym)
+                                        self.logger.warning(
+                                            "KS: cancelled pending limit %s (%s)", _pend["order_id"], _sym
+                                        )
                                     except Exception as _ce:
                                         self.logger.error("KS: cancel pending limit %s failed: %s", _sym, _ce)
                                 self._pending_limit_orders.clear()
@@ -462,7 +468,9 @@ class Trader(BaseAgent):
                 try:
                     alpaca = get_alpaca_client()
                     _q = alpaca.get_quote(symbol)
-                    price = (_q["mid"] if _q else None) or alpaca.get_latest_price(symbol) or self.active_positions[symbol]["entry_price"]
+                    price = ((_q["mid"] if _q else None)
+                             or alpaca.get_latest_price(symbol)
+                             or self.active_positions[symbol]["entry_price"])
                     await self._execute_exit(symbol, price, f"PM_{reason.upper()}", alpaca)
                 except Exception as exc:
                     self.logger.error("PM-requested exit failed for %s: %s", symbol, exc)
@@ -619,7 +627,8 @@ class Trader(BaseAgent):
 
         # Intraday only: no new entries after 3:00 PM ET (force-close at 3:45 PM)
         now_et = datetime.now(ET)
-        if trade_type == "intraday" and now_et.weekday() < 5 and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0)):
+        if (trade_type == "intraday" and now_et.weekday() < 5
+                and (now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 0))):
             self.logger.info(
                 "%s: no new intraday entries after 3:00 PM ET (%02d:%02d) — skipping",
                 symbol, now_et.hour, now_et.minute,
@@ -775,7 +784,9 @@ class Trader(BaseAgent):
                         )
                         db = get_session()
                         try:
-                            for pl_row in db.query(ProposalLog).filter(ProposalLog.proposal_uuid == proposal_uuid).all():
+                            for pl_row in db.query(ProposalLog).filter(
+                                ProposalLog.proposal_uuid == proposal_uuid
+                            ).all():
                                 pl_row.trader_status = "DISCARDED" if discard else "QUALITY_REJECTED"
                                 pl_row.trader_reason = trader_reason
                                 pl_row.trader_decided_at = datetime.now(ET)
@@ -967,14 +978,15 @@ class Trader(BaseAgent):
         trade_type = proposal.get("trade_type", "swing")
         proposal_uuid = proposal.get("proposal_uuid")
         _direction = proposal.get("direction", "BUY")
-        # Prefer proposal-level stop/target (set by RM from signal generator);
-        # fall back to result object, then to ATR-based defaults.
-        _stop = (proposal.get("stop_price") or result.stop_price or 0.0)
-        _target = (proposal.get("target_price") or result.target_price or 0.0)
+        _is_short = _direction == "SELL_SHORT"
+        # Accept both key conventions: stop_price (RM path) and stop_loss (PM direct path)
+        _stop = (proposal.get("stop_price") or proposal.get("stop_loss") or result.stop_price or 0.0)
+        _target = (proposal.get("target_price") or proposal.get("profit_target") or result.target_price or 0.0)
         if not _stop or _stop <= 0:
-            _stop = round(intended_price * 0.98, 2)
+            # Short: stop above entry; long: stop below entry
+            _stop = round(intended_price * 1.05, 2) if _is_short else round(intended_price * 0.98, 2)
         if not _target or _target <= 0:
-            _target = round(intended_price * 1.06, 2)
+            _target = round(intended_price * 0.95, 2) if _is_short else round(intended_price * 1.06, 2)
         db = get_session()
         try:
             trade = Trade(
@@ -1053,6 +1065,7 @@ class Trader(BaseAgent):
             row.atr = getattr(result, "atr", None)
             row.trade_type = pending.get("proposal", {}).get("trade_type", "swing")
             row.signal_type = getattr(result, "signal_type", None)
+            row.direction = pending.get("proposal", {}).get("direction", "BUY")
             row.requote_count = int(pending.get("requote_count", 0) or 0)
             row.escalated = bool(pending.get("escalated", False))
             db.commit()
@@ -1106,7 +1119,10 @@ class Trader(BaseAgent):
                     "intended_price": row.intended_price,
                     "limit_price": row.limit_price,
                     "result": _FakeResult(),
-                    "proposal": {"trade_type": row.trade_type},
+                    "proposal": {
+                        "trade_type": row.trade_type,
+                        "direction": getattr(row, "direction", "BUY") or "BUY",
+                    },
                     "queued_at": row.created_at,
                     "requote_count": int(getattr(row, "requote_count", 0) or 0),
                     "escalated": bool(getattr(row, "escalated", False) or False),
@@ -1160,12 +1176,20 @@ class Trader(BaseAgent):
                 trade.alpaca_order_id = order_id
             else:
                 # Fallback: no PENDING_FILL found (e.g. reconciler path) — create fresh
+                _fb_dir = proposal.get("direction", "BUY")
+                _fb_short = _fb_dir == "SELL_SHORT"
+                _fb_stop = (proposal.get("stop_price") or proposal.get("stop_loss")
+                            or result.stop_price
+                            or round(filled_price * (1.05 if _fb_short else 0.98), 2))
+                _fb_target = (proposal.get("target_price") or proposal.get("profit_target")
+                              or result.target_price
+                              or round(filled_price * (0.95 if _fb_short else 1.06), 2))
                 trade = Trade(
-                    symbol=symbol, direction=proposal.get("direction", "BUY"),
+                    symbol=symbol, direction=_fb_dir,
                     entry_price=filled_price,
                     quantity=shares, status="ACTIVE", signal_type=signal_type,
-                    trade_type=trade_type, stop_price=result.stop_price,
-                    target_price=result.target_price, highest_price=filled_price,
+                    trade_type=trade_type, stop_price=_fb_stop,
+                    target_price=_fb_target, highest_price=filled_price,
                     bars_held=0, alpaca_order_id=order_id,
                     proposal_id=proposal.get("proposal_uuid"),
                 )
@@ -1227,17 +1251,25 @@ class Trader(BaseAgent):
 
             db.commit()
 
+            _pos_dir = proposal.get("direction", "BUY")
+            _pos_short = _pos_dir == "SELL_SHORT"
+            _pos_stop = (proposal.get("stop_price") or proposal.get("stop_loss")
+                         or result.stop_price
+                         or round(filled_price * (1.05 if _pos_short else 0.98), 2))
+            _pos_target = (proposal.get("target_price") or proposal.get("profit_target")
+                           or result.target_price
+                           or round(filled_price * (0.95 if _pos_short else 1.06), 2))
             _pos_entry: dict = {
                 "entry_price":   filled_price,
-                "stop_price":    result.stop_price,
-                "target_price":  result.target_price,
+                "stop_price":    _pos_stop,
+                "target_price":  _pos_target,
                 "highest_price": filled_price,
                 "atr":           result.atr,
                 "bars_held":     0,
                 "trade_id":      trade.id,
                 "trade_type":    trade_type,
                 "entry_date":    datetime.now(ET).date(),
-                "direction":     proposal.get("direction", "BUY"),
+                "direction":     _pos_dir,
             }
             # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
             _mhd = proposal.get("max_hold_days")
@@ -1578,8 +1610,15 @@ class Trader(BaseAgent):
                 atr_val = _calc_atr(bars["high"], bars["low"], bars["close"], 14)
                 if not atr_val:
                     continue
-                tight_stop = round(current_price - 1.0 * atr_val, 4)
-                if tight_stop > pos["stop_price"]:
+                _rt_is_short = pos.get("direction") == "SELL_SHORT"
+                if _rt_is_short:
+                    # Short: tighten stop downward (stop is above entry)
+                    tight_stop = round(current_price + 1.0 * atr_val, 4)
+                    _stop_better = tight_stop < pos["stop_price"]
+                else:
+                    tight_stop = round(current_price - 1.0 * atr_val, 4)
+                    _stop_better = tight_stop > pos["stop_price"]
+                if _stop_better:
                     old_stop = pos["stop_price"]
                     pos["stop_price"] = tight_stop
                     self.logger.warning(
@@ -1705,10 +1744,15 @@ class Trader(BaseAgent):
                 atr=pos["atr"],
                 trade_type=pos.get("trade_type", "swing"),
                 vix=vix_now,
+                direction=pos.get("direction", "BUY"),
             )
 
-            # Apply stop update (trail/tighten)
-            if adj.new_stop > pos["stop_price"]:
+            # Apply stop update — for longs stop moves up; for shorts stop moves down
+            _stop_improved = (
+                adj.new_stop < pos["stop_price"] if is_short
+                else adj.new_stop > pos["stop_price"]
+            )
+            if _stop_improved:
                 pos["stop_price"] = adj.new_stop
                 if adj.stop_tightened:
                     db = get_session()
@@ -1725,8 +1769,14 @@ class Trader(BaseAgent):
                                      "tightened" if vix_now > 20 else "trailed",
                                      adj.new_stop, adj.notes)
 
-            # Apply target extension
-            if adj.target_extended and adj.new_target > pos["target_price"]:
+            # Apply target extension (longs extend upward; shorts extend downward)
+            _target_extended = (
+                adj.target_extended and (
+                    adj.new_target < pos["target_price"] if is_short
+                    else adj.new_target > pos["target_price"]
+                )
+            )
+            if _target_extended:
                 pos["target_price"] = adj.new_target
                 db = get_session()
                 try:

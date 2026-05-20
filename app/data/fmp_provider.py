@@ -270,7 +270,13 @@ def get_fmp_features_at(symbol: str, as_of: date) -> Dict[str, float]:
     Safe — always returns a complete dict of defaults on any error.
     """
     features: Dict[str, float] = {}
-    features.update(get_earnings_features_at(symbol, as_of))
+    _earnings = get_earnings_features_at(symbol, as_of)
+    if _earnings:
+        features.update(_earnings)
+    else:
+        # Stable sentinel columns so feature matrix has consistent shape
+        features.update({"fmp_surprise_1q": 0.0, "fmp_surprise_2q_avg": 0.0,
+                         "fmp_days_since_earnings": 90.0})
     features.update(get_analyst_features_at(symbol, as_of))
     features.update(get_institutional_features_at(symbol, as_of))
     return features

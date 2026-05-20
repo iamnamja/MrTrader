@@ -317,13 +317,15 @@ def calculate_dynamic_stop_loss(
     entry_price: float,
     atr: Optional[float] = None,
     limits: RiskLimits = None,
+    direction: str = "BUY",
 ) -> float:
     """
     Calculate a volatility-adjusted stop-loss price.
 
-    If ATR is provided, the stop is scaled by ATR / (entry_price * NORMAL_VOLATILITY_ATR_RATIO).
-    At normal volatility (ATR/price == NORMAL_VOLATILITY_ATR_RATIO) this equals STOP_LOSS_BASE_PCT.
-    Without ATR, falls back to the base stop-loss percentage.
+    For longs (default): stop is below entry (entry * (1 - stop_pct)).
+    For shorts (direction="SELL_SHORT"): stop is above entry (entry * (1 + stop_pct)).
+
+    If ATR is provided, stop pct scales with ATR / (entry * NORMAL_VOLATILITY_ATR_RATIO).
     """
     if limits is None:
         limits = RiskLimits()
@@ -331,12 +333,14 @@ def calculate_dynamic_stop_loss(
     if atr is not None and entry_price > 0:
         atr_ratio = atr / entry_price
         normal_ratio = limits.NORMAL_VOLATILITY_ATR_RATIO
-        # Scale stop pct proportionally: higher ATR → wider stop
         stop_pct = limits.STOP_LOSS_BASE_PCT * (atr_ratio / normal_ratio)
     else:
         stop_pct = limits.STOP_LOSS_BASE_PCT
 
-    stop_loss = entry_price * (1 - stop_pct)
+    if direction == "SELL_SHORT":
+        stop_loss = entry_price * (1 + stop_pct)
+    else:
+        stop_loss = entry_price * (1 - stop_pct)
     return round(stop_loss, 2)
 
 
