@@ -147,8 +147,8 @@ class Trader(BaseAgent):
                     days_since_entry = (datetime.now(ET).date() - entry_date).days
                     bars_held = max(t.bars_held or 0, days_since_entry)
                     _rec_dir = getattr(t, "direction", "BUY") or "BUY"
-                    # Cross-check DB direction against Alpaca qty sign; correct if mismatched
-                    _alpaca_short = float(pos.get("qty", 0)) < 0
+                    # Cross-check DB direction against Alpaca qty sign; use already-resolved qty
+                    _alpaca_short = qty < 0
                     if _alpaca_short and _rec_dir != "SELL_SHORT":
                         self.logger.warning(
                             "Reconcile %s: DB direction=%s but Alpaca qty<0 — correcting to SELL_SHORT",
@@ -176,6 +176,7 @@ class Trader(BaseAgent):
                         "entry_date":    entry_date,
                         "direction":     _rec_dir,
                         "proposal_uuid": getattr(t, "proposal_id", None),
+                        "shares":        int(t.quantity or 0),
                     }
                     self.logger.info("Reconciled %s from DB trade id=%d dir=%s", symbol, t.id, _rec_dir)
                 continue
@@ -222,7 +223,7 @@ class Trader(BaseAgent):
                     "_partial_exited": True,
                 }
                 existing_today.status = "ACTIVE"
-                existing_today.quantity = qty
+                existing_today.quantity = abs(qty)
                 existing_today.exit_price = None
                 existing_today.pnl = None
                 existing_today.closed_at = None
@@ -306,6 +307,7 @@ class Trader(BaseAgent):
                     "trade_type":    "swing",
                     "entry_date":    datetime.now(ET).date(),
                     "direction":     _syn_dir,
+                    "shares":        abs(qty),
                 }
                 self.logger.info(
                     "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
@@ -518,7 +520,9 @@ class Trader(BaseAgent):
                 if extend_atr > 0 and symbol in self.active_positions:
                     pos = self.active_positions[symbol]
                     old_target = pos["target_price"]
-                    pos["target_price"] = round(old_target + extend_atr, 4)
+                    # Shorts: target is below entry — extending means moving further down
+                    _ext_sign = -1 if pos.get("direction") == "SELL_SHORT" else 1
+                    pos["target_price"] = round(old_target + _ext_sign * extend_atr, 4)
                     # Persist to DB so it survives a restart
                     db = get_session()
                     try:
@@ -680,12 +684,14 @@ class Trader(BaseAgent):
                 symbol, now_et.hour, now_et.minute,
             )
             self.approved_symbols.pop(symbol, None)
+            self._release_intraday_slot(trade_type)
             return
 
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
                 "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
             )
+            self._release_intraday_slot(trade_type)
             return
 
         # ── Macro/market gate ─────────────────────────────────────────────────
@@ -702,6 +708,7 @@ class Trader(BaseAgent):
                     macro_flags,
                 )
                 self.approved_symbols.pop(symbol, None)
+                self._release_intraday_slot(trade_type)
                 await self.log_decision("ENTRY_BLOCKED_MACRO", reasoning={
                     "symbol": symbol, "trade_type": "intraday",
                     "reason": f"macro gate: {macro_flags}",
@@ -748,6 +755,7 @@ class Trader(BaseAgent):
                 "%s: only %d daily bars available (need %d)",
                 symbol, len(bars) if bars is not None else 0, MIN_BARS,
             )
+            self._release_intraday_slot(trade_type)
             return
 
         ml_score = proposal.get("confidence")
@@ -756,6 +764,7 @@ class Trader(BaseAgent):
                 "%s: ML score %.3f below threshold %.2f — skipping",
                 symbol, ml_score or 0.0, ML_SCORE_THRESHOLD,
             )
+            self._release_intraday_slot(trade_type)
             return
 
         # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
@@ -848,6 +857,8 @@ class Trader(BaseAgent):
                     )
                     self.approved_symbols.pop(symbol, None)
                     self._daily_discarded_symbols.add(symbol)
+                # Position was never entered — release the RM intraday slot
+                self._release_intraday_slot(trade_type)
                 return
 
         # Size the position
@@ -878,6 +889,7 @@ class Trader(BaseAgent):
         )
         if shares <= 0:
             self.logger.warning("%s: position sizer returned 0 shares — skipping", symbol)
+            self._release_intraday_slot(trade_type)
             return
 
         self.logger.info(
@@ -909,6 +921,7 @@ class Trader(BaseAgent):
         )
         if pending_trade is None:
             self.logger.error("Could not write PENDING_FILL for %s — aborting entry", symbol)
+            self._release_intraday_slot(trade_type)
             return
         pending_trade_id = pending_trade
 
@@ -993,6 +1006,7 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.error("Market order failed for %s: %s", symbol, exc)
             self._cancel_pending_fill(pending_trade_id)
+            self._release_intraday_slot(trade_type)
             return
 
         # Poll for actual fill price instead of using next-bar price (Phase 76)
@@ -1074,6 +1088,16 @@ class Trader(BaseAgent):
             self.logger.error("Failed to update alpaca_order_id for trade %d: %s", trade_id, exc)
         finally:
             db.close()
+
+    def _release_intraday_slot(self, trade_type: str) -> None:
+        """Decrement the RM intraday slot counter when an approved intraday proposal is not filled."""
+        if trade_type != "intraday":
+            return
+        try:
+            from app.agents.risk_manager import risk_manager
+            risk_manager.on_intraday_position_closed()
+        except Exception:
+            pass
 
     def _cancel_pending_fill(self, trade_id: int) -> None:
         """Mark a PENDING_FILL trade as CANCELLED when order placement fails."""
@@ -1317,6 +1341,7 @@ class Trader(BaseAgent):
                 "entry_date":    datetime.now(ET).date(),
                 "direction":     _pos_dir,
                 "proposal_uuid": proposal.get("proposal_uuid"),
+                "shares":        shares,
             }
             # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
             _mhd = proposal.get("max_hold_days")
@@ -1978,8 +2003,8 @@ class Trader(BaseAgent):
             pos["stop_price"] = min(pos["stop_price"], breakeven_stop)
         else:
             pnl = (current_price - pos["entry_price"]) * partial_qty
-            # Move stop on remaining shares to near-breakeven
-            breakeven_stop = round(pos["entry_price"] * 1.001, 4)
+            # Move stop on remaining shares to near-breakeven (just below entry for longs)
+            breakeven_stop = round(pos["entry_price"] * 0.999, 4)
             pos["stop_price"] = max(pos["stop_price"], breakeven_stop)
 
         db = get_session()
@@ -2040,7 +2065,7 @@ class Trader(BaseAgent):
                         # Try to get a real price; only fall back to entry_price if nothing available
                         actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
                         trade.exit_price = actual_price
-                        _fc_qty = pos.get("quantity", trade.quantity or 0)
+                        _fc_qty = pos.get("shares", trade.quantity or 0)
                         if pos.get("direction") == "SELL_SHORT":
                             trade.pnl = (pos["entry_price"] - actual_price) * _fc_qty
                         else:
@@ -2160,13 +2185,14 @@ class Trader(BaseAgent):
                     entry_date and entry_date == today
                 ):
                     compliance_tracker.record_day_trade(symbol)
-                # Settlement: record proceeds as unsettled (T+1)
-                proceeds = current_price * qty
-                compliance_tracker.record_sale_proceeds(proceeds)
+                # Settlement: only long closes are sale proceeds (short covers are cash outflows)
+                if pos.get("direction") != "SELL_SHORT":
+                    proceeds = current_price * qty
+                    compliance_tracker.record_sale_proceeds(proceeds)
                 compliance_tracker.sweep_settled()
                 # Wash sale: flag if closed at a loss
                 if pnl < 0:
-                    compliance_tracker.record_loss_close(symbol)
+                    compliance_tracker.record_loss_close(symbol, direction=pos.get("direction", "BUY"))
             except Exception as _ce:
                 self.logger.debug("Compliance post-trade update failed: %s", _ce)
 
@@ -2287,6 +2313,13 @@ class Trader(BaseAgent):
                 len(stale_ghost_symbols), stale_ghost_symbols,
             )
 
+        # Always reset the RM intraday counter — includes slots consumed by ghost rows
+        try:
+            from app.agents.risk_manager import risk_manager
+            risk_manager.reset_intraday_count()
+        except Exception:
+            pass
+
         if not intraday_symbols:
             return
 
@@ -2301,13 +2334,6 @@ class Trader(BaseAgent):
                                          "FORCE_CLOSE_EOD", alpaca)
             except Exception as exc:
                 self.logger.error("Force-close failed for %s: %s", symbol, exc)
-
-        # Notify risk manager to reset intraday counter
-        try:
-            from app.agents.risk_manager import risk_manager
-            risk_manager.reset_intraday_count()
-        except Exception:
-            pass
 
         await self.log_decision(
             "INTRADAY_FORCE_CLOSED",

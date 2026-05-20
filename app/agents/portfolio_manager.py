@@ -1234,7 +1234,7 @@ class PortfolioManager(BaseAgent):
         _hdb3 = _gs3()
         try:
             _open3 = _hdb3.query(_Trade3).filter(
-                _Trade3.status.in_(["open", "pending"]),
+                _Trade3.status.in_(["ACTIVE", "PENDING_FILL"]),
                 _Trade3.trade_type == "swing",
             ).all()
             _held3 = {t.symbol for t in _open3}
@@ -1314,16 +1314,18 @@ class PortfolioManager(BaseAgent):
         _db_dp = _gs_dp()
         try:
             _open_dp = _db_dp.query(_Trade_dp).filter(
-                _Trade_dp.status.in_(["open", "pending"]),
+                _Trade_dp.status.in_(["ACTIVE", "PENDING_FILL"]),
                 _Trade_dp.trade_type == "swing",
             ).all()
-            _held_dp = {t.symbol for t in _open_dp}
+            # Include direction in held-set: allow opposite-direction entry on same symbol
+            _held_dp = {(t.symbol, getattr(t, "direction", "BUY") or "BUY") for t in _open_dp}
         finally:
             _db_dp.close()
 
         proposals = []
         for sym, conf, direction in scored:
-            if sym in _held_dp:
+            _prop_dir = "SELL_SHORT" if direction == "short" else "BUY"
+            if (sym, _prop_dir) in _held_dp:
                 continue
             price = self._alpaca.get_latest_price(sym)
             if price is None or price <= 0:
@@ -2758,7 +2760,7 @@ class PortfolioManager(BaseAgent):
                         "entry_price": float(trade.entry_price or 0),
                         "target_price": float(trade.target_price or 0),
                         "atr": (
-                            float(trade.target_price or 0) - float(trade.entry_price or 0)
+                            abs(float(trade.target_price or 0) - float(trade.entry_price or 0))
                             if trade.target_price and trade.entry_price else 0.0
                         ),
                     }

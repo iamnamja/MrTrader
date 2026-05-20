@@ -20,15 +20,19 @@ FALLBACK_RISK_PCT = 0.02        # 2% assumed risk when stop unknown
 
 
 def _position_risk(pos: Dict[str, Any]) -> float:
-    """Dollar risk for a single position dict."""
-    qty = float(pos.get("qty", pos.get("quantity", 0)))
+    """Dollar risk for a single position dict (always non-negative).
+
+    Shorts have negative qty and stop above entry — abs() both so the
+    formula is direction-neutral: risk = |entry - stop| * |qty|.
+    """
+    qty = abs(float(pos.get("qty", pos.get("quantity", 0))))
     entry = float(pos.get("entry_price", pos.get("avg_entry_price", 0)))
     stop = pos.get("stop_price")
 
-    if stop is not None and entry > 0 and float(stop) < entry:
-        return (entry - float(stop)) * qty
-    # Fallback: assume 2% risk on market value
-    market_val = float(pos.get("market_value", entry * qty))
+    if stop is not None and entry > 0 and float(stop) > 0:
+        return abs(entry - float(stop)) * qty
+    # Fallback: assume 2% risk on absolute market value
+    market_val = abs(float(pos.get("market_value", entry * qty)))
     return market_val * FALLBACK_RISK_PCT
 
 

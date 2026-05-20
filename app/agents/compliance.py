@@ -140,23 +140,35 @@ class ComplianceTracker:
 
     # ─── 21.2  Wash Sale Awareness ────────────────────────────────────────────
 
-    def record_loss_close(self, symbol: str, close_date: Optional[date] = None) -> None:
+    def record_loss_close(self, symbol: str, close_date: Optional[date] = None, direction: str = "BUY") -> None:
         """Record that symbol was closed at a loss today (or given date)."""
         d = close_date or date.today()
         with self._lock:
-            self._loss_closes[symbol] = d
-        logger.info("Wash sale: recorded loss close for %s on %s", symbol, d)
+            self._loss_closes[symbol] = (d, direction)
+        logger.info("Wash sale: recorded loss close for %s (%s) on %s", symbol, direction, d)
 
-    def check_wash_sale(self, symbol: str) -> Tuple[bool, str]:
+    def check_wash_sale(self, symbol: str, proposed_direction: str = "BUY") -> Tuple[bool, str]:
         """
         Return (is_wash_sale_window, message).
-        True if the symbol was sold at a loss within WASH_SALE_DAYS calendar days.
+        True if the symbol was closed at a loss within WASH_SALE_DAYS calendar days
+        AND the new proposed direction matches the closed direction.
+        Opening the opposite direction is not a wash sale.
         This is a warning — caller decides whether to block or proceed.
         """
         with self._lock:
-            loss_date = self._loss_closes.get(symbol)
-        if loss_date is None:
+            entry = self._loss_closes.get(symbol)
+        if entry is None:
             return False, f"{symbol}: no recent loss close — wash sale clear"
+        # Handle legacy entries stored as plain date (before direction was tracked)
+        if isinstance(entry, tuple):
+            loss_date, loss_direction = entry
+        else:
+            loss_date, loss_direction = entry, "BUY"
+        # Wash sale only applies when re-entering the same direction
+        if loss_direction != proposed_direction:
+            return False, (
+                f"{symbol}: loss close was {loss_direction}, proposed {proposed_direction} — not a wash sale"
+            )
         days_since = (date.today() - loss_date).days
         if days_since <= WASH_SALE_DAYS:
             return True, (
@@ -181,7 +193,8 @@ class ComplianceTracker:
             with self._lock:
                 for t in trades:
                     if t.closed_at:
-                        self._loss_closes[t.symbol] = t.closed_at.date()
+                        _dir = getattr(t, "direction", "BUY") or "BUY"
+                        self._loss_closes[t.symbol] = (t.closed_at.date(), _dir)
             logger.info("Wash sale state loaded: %d loss positions", len(self._loss_closes))
         except Exception as exc:
             logger.warning("Could not load wash sale state from DB: %s", exc)

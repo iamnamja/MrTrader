@@ -415,10 +415,25 @@ class RiskManager(BaseAgent):
         # ── Rule 0c: Strategy budget cap ─────────────────────────────────────
         trade_type = proposal.get("trade_type", "swing")
         budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
+        # Alpaca positions don't carry trade_type — resolve from DB
+        try:
+            from app.database.models import Trade as _BudgetTrade
+            _bdb = get_session()
+            try:
+                _type_map = {
+                    t.symbol: (t.trade_type or "swing")
+                    for t in _bdb.query(_BudgetTrade)
+                    .filter(_BudgetTrade.status.in_(("ACTIVE", "PENDING_FILL")))
+                    .all()
+                }
+            finally:
+                _bdb.close()
+        except Exception:
+            _type_map = {}
         type_deployed = sum(
             abs(float(p.get("market_value") or 0))
             for p in positions
-            if (p.get("trade_type") or "swing") == trade_type
+            if _type_map.get(p.get("symbol"), "swing") == trade_type
         )
         type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
         if type_pct > budget_pct:
@@ -583,7 +598,8 @@ class RiskManager(BaseAgent):
         # ── Rule 9: Correlation Check (swing only) ───────────────────────────
         if proposal.get("trade_type") == "swing" and positions:
             corr_result = await asyncio.to_thread(
-                self._check_correlation, symbol, positions, self.limits.max_correlation
+                self._check_correlation, symbol, positions, self.limits.max_correlation,
+                proposal.get("direction", "BUY"),
             )
             reasoning["checks"].append({"rule": "correlation", **corr_result})
             if not corr_result["ok"]:
@@ -624,8 +640,8 @@ class RiskManager(BaseAgent):
                 stop_loss = min(intraday_stop, entry_price * 1.005)
             else:
                 intraday_stop = proposal.get("stop_loss") or round(entry_price * 0.995, 2)
-                # Clamp: stop must not be looser (lower) than 0.5% below entry
-                stop_loss = min(intraday_stop, entry_price * 0.995)
+                # Clamp: stop must not be looser (lower) than 0.5% below entry; use max to enforce floor
+                stop_loss = max(intraday_stop, entry_price * 0.995)
         else:
             stop_loss = calculate_dynamic_stop_loss(
                 entry_price, atr=atr, limits=self.limits, direction=_rm_dir,
@@ -635,7 +651,7 @@ class RiskManager(BaseAgent):
         reasoning["stop_loss"] = stop_loss
 
         # ── Wash sale warning (non-blocking) ─────────────────────────────────
-        is_wash, wash_msg = compliance_tracker.check_wash_sale(symbol)
+        is_wash, wash_msg = compliance_tracker.check_wash_sale(symbol, proposed_direction=_rm_dir)
         reasoning["checks"].append({"rule": "wash_sale", "ok": True, "msg": wash_msg})
         if is_wash:
             self.logger.warning("WASH SALE: %s", wash_msg)
@@ -646,12 +662,17 @@ class RiskManager(BaseAgent):
     # ─── Phase 19: Risk Intelligence Helpers ─────────────────────────────────
 
     def _check_correlation(
-        self, symbol: str, positions: list, max_corr: float
+        self, symbol: str, positions: list, max_corr: float,
+        proposed_direction: str = "BUY",
     ) -> dict:
         """
         Compute 60-day return correlation between proposed symbol and each open
         position. Returns ok=False with the worst offender if any exceed max_corr.
         Skips check (ok=True) if bars unavailable.
+
+        Direction-aware: a short proposal against a long position is a hedge —
+        effective correlation is negated so opposite-direction pairs don't
+        incorrectly trigger the concentration limit.
         """
         try:
             import numpy as np
@@ -665,6 +686,15 @@ class RiskManager(BaseAgent):
             returns_new = bars_new["close"].pct_change().dropna().values
             worst_corr, worst_sym = 0.0, ""
 
+            # Build direction map for existing positions
+            _existing_dirs = {
+                p["symbol"]: (
+                    p.get("side") or ("short" if float(p.get("qty") or p.get("quantity") or 0) < 0 else "long")
+                )
+                for p in positions if p.get("symbol")
+            }
+            _prop_is_short = proposed_direction == "SELL_SHORT"
+
             open_syms = [p["symbol"] for p in positions if p.get("symbol") != symbol]
             for open_sym in open_syms:
                 try:
@@ -676,6 +706,10 @@ class RiskManager(BaseAgent):
                     if n < 10:
                         continue
                     corr = float(np.corrcoef(returns_new[-n:], returns_open[-n:])[0, 1])
+                    # Opposite directions hedge each other — negate effective correlation
+                    _existing_is_short = _existing_dirs.get(open_sym) in ("short", "SELL_SHORT")
+                    if _prop_is_short != _existing_is_short:
+                        corr = -corr
                     if corr > worst_corr:
                         worst_corr, worst_sym = corr, open_sym
                 except Exception:
@@ -746,7 +780,7 @@ class RiskManager(BaseAgent):
                 portfolio_beta * account_value + _beta_sign * trade_cost * new_beta
             ) / max(account_value + trade_cost, 1.0)
 
-            if (portfolio_beta > limits.max_portfolio_beta
+            if (prospective_beta > limits.max_portfolio_beta
                     and new_beta > limits.high_beta_threshold):
                 return {
                     "ok": False,
@@ -783,7 +817,7 @@ class RiskManager(BaseAgent):
                     sector_value += float(pos.get("market_value") or 0)
 
             sector_pct = sector_value / max(account_value, 1.0)
-            if sector_pct > max_factor_conc:
+            if abs(sector_pct) > max_factor_conc:
                 return {
                     "ok": False,
                     "msg": (f"Factor/sector '{new_sector}' concentration {sector_pct:.1%} "
