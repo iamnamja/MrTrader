@@ -176,6 +176,7 @@ class Trader(BaseAgent):
                         "entry_date":    entry_date,
                         "direction":     _rec_dir,
                         "proposal_uuid": getattr(t, "proposal_id", None),
+                        "shares":        int(t.quantity or 0),
                     }
                     self.logger.info("Reconciled %s from DB trade id=%d dir=%s", symbol, t.id, _rec_dir)
                 continue
@@ -306,6 +307,7 @@ class Trader(BaseAgent):
                     "trade_type":    "swing",
                     "entry_date":    datetime.now(ET).date(),
                     "direction":     _syn_dir,
+                    "shares":        abs(qty),
                 }
                 self.logger.info(
                     "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
@@ -518,7 +520,9 @@ class Trader(BaseAgent):
                 if extend_atr > 0 and symbol in self.active_positions:
                     pos = self.active_positions[symbol]
                     old_target = pos["target_price"]
-                    pos["target_price"] = round(old_target + extend_atr, 4)
+                    # Shorts: target is below entry — extending means moving further down
+                    _ext_sign = -1 if pos.get("direction") == "SELL_SHORT" else 1
+                    pos["target_price"] = round(old_target + _ext_sign * extend_atr, 4)
                     # Persist to DB so it survives a restart
                     db = get_session()
                     try:
@@ -1333,6 +1337,7 @@ class Trader(BaseAgent):
                 "entry_date":    datetime.now(ET).date(),
                 "direction":     _pos_dir,
                 "proposal_uuid": proposal.get("proposal_uuid"),
+                "shares":        shares,
             }
             # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
             _mhd = proposal.get("max_hold_days")

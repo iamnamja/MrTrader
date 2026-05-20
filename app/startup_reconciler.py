@@ -213,6 +213,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
 
             if status_str in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
                 filled_price = float(filled_price)
+                intended_price = float(trade.entry_price or filled_price)
                 trade.status = "ACTIVE"
                 trade.entry_price = filled_price
                 trade.quantity = filled_qty
@@ -225,10 +226,10 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     status="FILLED",
                     filled_price=filled_price,
                     filled_qty=filled_qty,
-                    intended_price=trade.entry_price,
+                    intended_price=intended_price,
                     slippage_bps=round(
-                        (filled_price - trade.entry_price) / trade.entry_price * 10000, 2
-                    ) if trade.entry_price > 0 else 0.0,
+                        (filled_price - intended_price) / intended_price * 10000, 2
+                    ) if intended_price > 0 else 0.0,
                 )
                 db_session.add(db_order)
                 logger.info(

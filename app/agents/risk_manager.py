@@ -692,7 +692,7 @@ class RiskManager(BaseAgent):
                         continue
                     corr = float(np.corrcoef(returns_new[-n:], returns_open[-n:])[0, 1])
                     # Opposite directions hedge each other — negate effective correlation
-                    _existing_is_short = _existing_dirs.get(open_sym) == "short"
+                    _existing_is_short = _existing_dirs.get(open_sym) in ("short", "SELL_SHORT")
                     if _prop_is_short != _existing_is_short:
                         corr = -corr
                     if corr > worst_corr:
