@@ -684,12 +684,14 @@ class Trader(BaseAgent):
                 symbol, now_et.hour, now_et.minute,
             )
             self.approved_symbols.pop(symbol, None)
+            self._release_intraday_slot(trade_type)
             return
 
         if circuit_breaker.is_strategy_paused(trade_type):
             self.logger.debug(
                 "%s: strategy '%s' is paused — skipping entry", symbol, trade_type
             )
+            self._release_intraday_slot(trade_type)
             return
 
         # ── Macro/market gate ─────────────────────────────────────────────────
@@ -753,6 +755,7 @@ class Trader(BaseAgent):
                 "%s: only %d daily bars available (need %d)",
                 symbol, len(bars) if bars is not None else 0, MIN_BARS,
             )
+            self._release_intraday_slot(trade_type)
             return
 
         ml_score = proposal.get("confidence")
@@ -761,6 +764,7 @@ class Trader(BaseAgent):
                 "%s: ML score %.3f below threshold %.2f — skipping",
                 symbol, ml_score or 0.0, ML_SCORE_THRESHOLD,
             )
+            self._release_intraday_slot(trade_type)
             return
 
         # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
@@ -2061,7 +2065,7 @@ class Trader(BaseAgent):
                         # Try to get a real price; only fall back to entry_price if nothing available
                         actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
                         trade.exit_price = actual_price
-                        _fc_qty = pos.get("quantity", trade.quantity or 0)
+                        _fc_qty = pos.get("shares", trade.quantity or 0)
                         if pos.get("direction") == "SELL_SHORT":
                             trade.pnl = (pos["entry_price"] - actual_price) * _fc_qty
                         else:

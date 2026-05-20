@@ -193,7 +193,8 @@ class ComplianceTracker:
             with self._lock:
                 for t in trades:
                     if t.closed_at:
-                        self._loss_closes[t.symbol] = t.closed_at.date()
+                        _dir = getattr(t, "direction", "BUY") or "BUY"
+                        self._loss_closes[t.symbol] = (t.closed_at.date(), _dir)
             logger.info("Wash sale state loaded: %d loss positions", len(self._loss_closes))
         except Exception as exc:
             logger.warning("Could not load wash sale state from DB: %s", exc)
