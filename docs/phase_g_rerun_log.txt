@@ -1,0 +1,375 @@
+2026-05-20 01:31:42,076 INFO [pead_wf] PEAD walk-forward: 5 folds, 6yr, L/S, earnings-surprise driven
+2026-05-20 01:31:42,256 WARNING [pead_wf] FMP cache pre-warm failed (non-fatal): No module named 'app.data.universe'
+2026-05-20 01:31:44,414 INFO [pead_wf] Loaded swing model v211 (status=ACTIVE)
+2026-05-20 01:31:44,436 INFO [pead_wf] WF-A2: augmented download seed 750 \u2192 750 (+0 historical)
+2026-05-20 01:31:44,436 INFO [pead_wf] Downloading daily bars 2020-04-21 -> 2026-05-20
+2026-05-20 01:31:52,601 ERROR [pead_wf] $AIRC: possibly delisted; no timezone found
+2026-05-20 01:31:52,602 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:31:52,603 ERROR [pead_wf] ['AIRC']: possibly delisted; no timezone found
+2026-05-20 01:31:54,481 ERROR [pead_wf] $ALEX: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:31:54,484 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:31:54,485 ERROR [pead_wf] ['ALEX']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:31:59,331 ERROR [pead_wf] HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ANSS"}}}
+2026-05-20 01:31:59,424 ERROR [pead_wf] $ANSS: possibly delisted; no timezone found
+2026-05-20 01:31:59,433 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:31:59,433 ERROR [pead_wf] ['ANSS']: possibly delisted; no timezone found
+2026-05-20 01:32:01,594 ERROR [pead_wf] $APRN: possibly delisted; no timezone found
+2026-05-20 01:32:01,595 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:01,595 ERROR [pead_wf] ['APRN']: possibly delisted; no timezone found
+2026-05-20 01:32:02,827 ERROR [pead_wf] $APTS: possibly delisted; no timezone found
+2026-05-20 01:32:02,829 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:02,829 ERROR [pead_wf] ['APTS']: possibly delisted; no timezone found
+2026-05-20 01:32:05,163 ERROR [pead_wf] $ARHAUS: possibly delisted; no timezone found
+2026-05-20 01:32:05,170 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:05,170 ERROR [pead_wf] ['ARHAUS']: possibly delisted; no timezone found
+2026-05-20 01:32:08,374 ERROR [pead_wf] $AZEK: possibly delisted; no timezone found
+2026-05-20 01:32:08,381 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:08,381 ERROR [pead_wf] ['AZEK']: possibly delisted; no timezone found
+2026-05-20 01:32:13,412 ERROR [pead_wf] $BECN: possibly delisted; no timezone found
+2026-05-20 01:32:13,419 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:13,419 ERROR [pead_wf] ['BECN']: possibly delisted; no timezone found
+2026-05-20 01:32:14,622 ERROR [pead_wf] $BERY: possibly delisted; no timezone found
+2026-05-20 01:32:14,622 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:14,622 ERROR [pead_wf] ['BERY']: possibly delisted; no timezone found
+2026-05-20 01:32:17,511 ERROR [pead_wf] $BLUE: possibly delisted; no timezone found
+2026-05-20 01:32:17,521 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:17,521 ERROR [pead_wf] ['BLUE']: possibly delisted; no timezone found
+2026-05-20 01:32:19,594 ERROR [pead_wf] $BRKL: possibly delisted; no timezone found
+2026-05-20 01:32:19,600 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:19,600 ERROR [pead_wf] ['BRKL']: possibly delisted; no timezone found
+2026-05-20 01:32:25,496 ERROR [pead_wf] $CBTX: possibly delisted; no timezone found
+2026-05-20 01:32:25,505 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:25,505 ERROR [pead_wf] ['CBTX']: possibly delisted; no timezone found
+2026-05-20 01:32:28,283 ERROR [pead_wf] $CHICO: possibly delisted; no timezone found
+2026-05-20 01:32:28,287 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:28,287 ERROR [pead_wf] ['CHICO']: possibly delisted; no timezone found
+2026-05-20 01:32:29,929 ERROR [pead_wf] $CIO: possibly delisted; no timezone found
+2026-05-20 01:32:29,935 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:29,935 ERROR [pead_wf] ['CIO']: possibly delisted; no timezone found
+2026-05-20 01:32:30,641 ERROR [pead_wf] $CIVI: possibly delisted; no timezone found
+2026-05-20 01:32:30,651 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:30,651 ERROR [pead_wf] ['CIVI']: possibly delisted; no timezone found
+2026-05-20 01:32:32,411 ERROR [pead_wf] $CLR: possibly delisted; no timezone found
+2026-05-20 01:32:32,416 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:32,416 ERROR [pead_wf] ['CLR']: possibly delisted; no timezone found
+2026-05-20 01:32:33,378 ERROR [pead_wf] $CMA: possibly delisted; no timezone found
+2026-05-20 01:32:33,382 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:33,382 ERROR [pead_wf] ['CMA']: possibly delisted; no timezone found
+2026-05-20 01:32:41,116 ERROR [pead_wf] $COUP: possibly delisted; no timezone found
+2026-05-20 01:32:41,127 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:41,127 ERROR [pead_wf] ['COUP']: possibly delisted; no timezone found
+2026-05-20 01:32:45,871 ERROR [pead_wf] $CURO: possibly delisted; no timezone found
+2026-05-20 01:32:45,872 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:45,872 ERROR [pead_wf] ['CURO']: possibly delisted; no timezone found
+2026-05-20 01:32:50,042 ERROR [pead_wf] $DEN: possibly delisted; no timezone found
+2026-05-20 01:32:50,049 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:50,049 ERROR [pead_wf] ['DEN']: possibly delisted; no timezone found
+2026-05-20 01:32:53,045 ERROR [pead_wf] $DOOR: possibly delisted; no timezone found
+2026-05-20 01:32:53,055 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:53,055 ERROR [pead_wf] ['DOOR']: possibly delisted; no timezone found
+2026-05-20 01:32:55,952 ERROR [pead_wf] $DSVL: possibly delisted; no timezone found
+2026-05-20 01:32:55,954 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:55,954 ERROR [pead_wf] ['DSVL']: possibly delisted; no timezone found
+2026-05-20 01:32:57,079 ERROR [pead_wf] $DVAX: possibly delisted; no timezone found
+2026-05-20 01:32:57,089 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:57,089 ERROR [pead_wf] ['DVAX']: possibly delisted; no timezone found
+2026-05-20 01:32:59,314 ERROR [pead_wf] $ECHO: possibly delisted; no timezone found
+2026-05-20 01:32:59,321 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:32:59,321 ERROR [pead_wf] ['ECHO']: possibly delisted; no timezone found
+2026-05-20 01:33:02,507 ERROR [pead_wf] $ELASTIC: possibly delisted; no timezone found
+2026-05-20 01:33:02,517 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:02,517 ERROR [pead_wf] ['ELASTIC']: possibly delisted; no timezone found
+2026-05-20 01:33:04,019 ERROR [pead_wf] $ENLC: possibly delisted; no timezone found
+2026-05-20 01:33:04,029 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:04,029 ERROR [pead_wf] ['ENLC']: possibly delisted; no timezone found
+2026-05-20 01:33:05,761 ERROR [pead_wf] $EQC: possibly delisted; no timezone found
+2026-05-20 01:33:05,769 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:05,769 ERROR [pead_wf] ['EQC']: possibly delisted; no timezone found
+2026-05-20 01:33:06,654 ERROR [pead_wf] $ERF: possibly delisted; no timezone found
+2026-05-20 01:33:06,655 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:06,655 ERROR [pead_wf] ['ERF']: possibly delisted; no timezone found
+2026-05-20 01:33:08,426 ERROR [pead_wf] $ESTE: possibly delisted; no timezone found
+2026-05-20 01:33:08,431 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:08,431 ERROR [pead_wf] ['ESTE']: possibly delisted; no timezone found
+2026-05-20 01:33:13,246 ERROR [pead_wf] $EXPR: possibly delisted; no timezone found
+2026-05-20 01:33:13,252 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:13,252 ERROR [pead_wf] ['EXPR']: possibly delisted; no timezone found
+2026-05-20 01:33:15,780 ERROR [pead_wf] $FBHS: possibly delisted; no timezone found
+2026-05-20 01:33:15,790 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:15,790 ERROR [pead_wf] ['FBHS']: possibly delisted; no timezone found
+2026-05-20 01:33:16,135 ERROR [pead_wf] $FBMS: possibly delisted; no timezone found
+2026-05-20 01:33:16,136 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:16,136 ERROR [pead_wf] ['FBMS']: possibly delisted; no timezone found
+2026-05-20 01:33:18,875 ERROR [pead_wf] $FI: possibly delisted; no timezone found
+2026-05-20 01:33:18,886 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:18,886 ERROR [pead_wf] ['FI']: possibly delisted; no timezone found
+2026-05-20 01:33:29,633 ERROR [pead_wf] $GMRE: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:33:29,638 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:29,638 ERROR [pead_wf] ['GMRE']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:33:30,058 ERROR [pead_wf] $GMS: possibly delisted; no timezone found
+2026-05-20 01:33:30,064 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:30,064 ERROR [pead_wf] ['GMS']: possibly delisted; no timezone found
+2026-05-20 01:33:35,271 ERROR [pead_wf] $GPS: possibly delisted; no timezone found
+2026-05-20 01:33:35,281 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:35,281 ERROR [pead_wf] ['GPS']: possibly delisted; no timezone found
+2026-05-20 01:33:40,932 ERROR [pead_wf] $HES: possibly delisted; no timezone found
+2026-05-20 01:33:40,941 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:40,941 ERROR [pead_wf] ['HES']: possibly delisted; no timezone found
+2026-05-20 01:33:41,509 ERROR [pead_wf] $HIBB: possibly delisted; no timezone found
+2026-05-20 01:33:41,519 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:41,520 ERROR [pead_wf] ['HIBB']: possibly delisted; no timezone found
+2026-05-20 01:33:42,730 ERROR [pead_wf] $HMST: possibly delisted; no timezone found
+2026-05-20 01:33:42,736 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:42,736 ERROR [pead_wf] ['HMST']: possibly delisted; no timezone found
+2026-05-20 01:33:47,482 ERROR [pead_wf] $HTLF: possibly delisted; no timezone found
+2026-05-20 01:33:47,491 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:47,491 ERROR [pead_wf] ['HTLF']: possibly delisted; no timezone found
+2026-05-20 01:33:51,757 ERROR [pead_wf] $ICAD: possibly delisted; no timezone found
+2026-05-20 01:33:51,768 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:51,768 ERROR [pead_wf] ['ICAD']: possibly delisted; no timezone found
+2026-05-20 01:33:56,535 ERROR [pead_wf] $IPG: possibly delisted; no timezone found
+2026-05-20 01:33:56,539 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:56,539 ERROR [pead_wf] ['IPG']: possibly delisted; no timezone found
+2026-05-20 01:33:58,234 ERROR [pead_wf] $IRBT: possibly delisted; no timezone found
+2026-05-20 01:33:58,238 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:58,238 ERROR [pead_wf] ['IRBT']: possibly delisted; no timezone found
+2026-05-20 01:33:59,142 ERROR [pead_wf] $ITCI: possibly delisted; no timezone found
+2026-05-20 01:33:59,142 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:33:59,142 ERROR [pead_wf] ['ITCI']: possibly delisted; no timezone found
+2026-05-20 01:34:00,826 ERROR [pead_wf] $JAMF: possibly delisted; no timezone found
+2026-05-20 01:34:00,836 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:00,836 ERROR [pead_wf] ['JAMF']: possibly delisted; no timezone found
+2026-05-20 01:34:03,367 ERROR [pead_wf] $JOANN: possibly delisted; no timezone found
+2026-05-20 01:34:03,377 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:03,377 ERROR [pead_wf] ['JOANN']: possibly delisted; no timezone found
+2026-05-20 01:34:05,698 ERROR [pead_wf] $KITE: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:34:05,703 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:05,703 ERROR [pead_wf] ['KITE']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:34:28,188 ERROR [pead_wf] $MRO: possibly delisted; no timezone found
+2026-05-20 01:34:28,198 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:28,198 ERROR [pead_wf] ['MRO']: possibly delisted; no timezone found
+2026-05-20 01:34:33,195 ERROR [pead_wf] $MYR: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:34:33,206 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:33,206 ERROR [pead_wf] ['MYR']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:34:34,395 ERROR [pead_wf] $NCS: possibly delisted; no timezone found
+2026-05-20 01:34:34,404 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:34,404 ERROR [pead_wf] ['NCS']: possibly delisted; no timezone found
+2026-05-20 01:34:36,947 ERROR [pead_wf] $NEP: possibly delisted; no timezone found
+2026-05-20 01:34:36,957 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:36,957 ERROR [pead_wf] ['NEP']: possibly delisted; no timezone found
+2026-05-20 01:34:37,592 ERROR [pead_wf] $NFIN: possibly delisted; no timezone found
+2026-05-20 01:34:37,592 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:37,592 ERROR [pead_wf] ['NFIN']: possibly delisted; no timezone found
+2026-05-20 01:34:40,794 ERROR [pead_wf] $NOVA: possibly delisted; no timezone found
+2026-05-20 01:34:40,804 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:40,804 ERROR [pead_wf] ['NOVA']: possibly delisted; no timezone found
+2026-05-20 01:34:42,684 ERROR [pead_wf] $NRE: possibly delisted; no timezone found
+2026-05-20 01:34:42,694 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:42,694 ERROR [pead_wf] ['NRE']: possibly delisted; no timezone found
+2026-05-20 01:34:47,374 ERROR [pead_wf] $NYCB: possibly delisted; no timezone found
+2026-05-20 01:34:47,385 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:47,385 ERROR [pead_wf] ['NYCB']: possibly delisted; no timezone found
+2026-05-20 01:34:48,025 ERROR [pead_wf] $OCDX: possibly delisted; no timezone found
+2026-05-20 01:34:48,033 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:48,033 ERROR [pead_wf] ['OCDX']: possibly delisted; no timezone found
+2026-05-20 01:34:48,647 ERROR [pead_wf] $OFC: possibly delisted; no timezone found
+2026-05-20 01:34:48,658 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:48,658 ERROR [pead_wf] ['OFC']: possibly delisted; no timezone found
+2026-05-20 01:34:51,812 ERROR [pead_wf] $ONEM: possibly delisted; no timezone found
+2026-05-20 01:34:51,814 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:51,814 ERROR [pead_wf] ['ONEM']: possibly delisted; no timezone found
+2026-05-20 01:34:55,053 ERROR [pead_wf] $PACW: possibly delisted; no timezone found
+2026-05-20 01:34:55,063 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:55,063 ERROR [pead_wf] ['PACW']: possibly delisted; no timezone found
+2026-05-20 01:34:56,010 ERROR [pead_wf] $PARA: possibly delisted; no timezone found
+2026-05-20 01:34:56,012 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:56,012 ERROR [pead_wf] ['PARA']: possibly delisted; no timezone found
+2026-05-20 01:34:57,982 ERROR [pead_wf] $PDCE: possibly delisted; no timezone found
+2026-05-20 01:34:57,993 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:57,993 ERROR [pead_wf] ['PDCE']: possibly delisted; no timezone found
+2026-05-20 01:34:58,335 ERROR [pead_wf] $PDCO: possibly delisted; no timezone found
+2026-05-20 01:34:58,338 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:34:58,338 ERROR [pead_wf] ['PDCO']: possibly delisted; no timezone found
+2026-05-20 01:35:00,608 ERROR [pead_wf] $PGTI: possibly delisted; no timezone found
+2026-05-20 01:35:00,619 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:00,619 ERROR [pead_wf] ['PGTI']: possibly delisted; no timezone found
+2026-05-20 01:35:05,370 ERROR [pead_wf] $POSHMARK: possibly delisted; no timezone found
+2026-05-20 01:35:05,378 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:05,378 ERROR [pead_wf] ['POSHMARK']: possibly delisted; no timezone found
+2026-05-20 01:35:05,692 ERROR [pead_wf] $PPBI: possibly delisted; no timezone found
+2026-05-20 01:35:05,692 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:05,692 ERROR [pead_wf] ['PPBI']: possibly delisted; no timezone found
+2026-05-20 01:35:06,963 ERROR [pead_wf] $PRTY: possibly delisted; no timezone found
+2026-05-20 01:35:06,974 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:06,974 ERROR [pead_wf] ['PRTY']: possibly delisted; no timezone found
+2026-05-20 01:35:12,858 ERROR [pead_wf] $RE: possibly delisted; no timezone found
+2026-05-20 01:35:12,869 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:12,869 ERROR [pead_wf] ['RE']: possibly delisted; no timezone found
+2026-05-20 01:35:14,432 ERROR [pead_wf] $REXNORD: possibly delisted; no timezone found
+2026-05-20 01:35:14,443 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:14,443 ERROR [pead_wf] ['REXNORD']: possibly delisted; no timezone found
+2026-05-20 01:35:18,731 ERROR [pead_wf] $ROIC: possibly delisted; no timezone found
+2026-05-20 01:35:18,737 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:18,737 ERROR [pead_wf] ['ROIC']: possibly delisted; no timezone found
+2026-05-20 01:35:20,144 ERROR [pead_wf] $RPAI: possibly delisted; no timezone found
+2026-05-20 01:35:20,154 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:20,154 ERROR [pead_wf] ['RPAI']: possibly delisted; no timezone found
+2026-05-20 01:35:24,472 ERROR [pead_wf] $SAVA: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:35:24,483 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:24,483 ERROR [pead_wf] ['SAVA']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20) (Yahoo error = "No data found, symbol may be delisted")
+2026-05-20 01:35:28,542 ERROR [pead_wf] $SJW: possibly delisted; no timezone found
+2026-05-20 01:35:28,552 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:28,552 ERROR [pead_wf] ['SJW']: possibly delisted; no timezone found
+2026-05-20 01:35:29,853 ERROR [pead_wf] $SKX: possibly delisted; no timezone found
+2026-05-20 01:35:29,864 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:29,864 ERROR [pead_wf] ['SKX']: possibly delisted; no timezone found
+2026-05-20 01:35:31,954 ERROR [pead_wf] $SMAR: possibly delisted; no timezone found
+2026-05-20 01:35:31,964 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:31,964 ERROR [pead_wf] ['SMAR']: possibly delisted; no timezone found
+2026-05-20 01:35:35,046 ERROR [pead_wf] $SPLK: possibly delisted; no timezone found
+2026-05-20 01:35:35,056 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:35,056 ERROR [pead_wf] ['SPLK']: possibly delisted; no timezone found
+2026-05-20 01:35:35,581 ERROR [pead_wf] $SQ: possibly delisted; no timezone found
+2026-05-20 01:35:35,591 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:35,591 ERROR [pead_wf] ['SQ']: possibly delisted; no timezone found
+2026-05-20 01:35:38,597 ERROR [pead_wf] $SUM: possibly delisted; no timezone found
+2026-05-20 01:35:38,607 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:38,607 ERROR [pead_wf] ['SUM']: possibly delisted; no timezone found
+2026-05-20 01:35:39,157 ERROR [pead_wf] $SWN: possibly delisted; no timezone found
+2026-05-20 01:35:39,167 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:39,167 ERROR [pead_wf] ['SWN']: possibly delisted; no timezone found
+2026-05-20 01:35:41,025 ERROR [pead_wf] $TBK: possibly delisted; no timezone found
+2026-05-20 01:35:41,036 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:41,036 ERROR [pead_wf] ['TBK']: possibly delisted; no timezone found
+2026-05-20 01:35:41,363 ERROR [pead_wf] $TBNK: possibly delisted; no timezone found
+2026-05-20 01:35:41,371 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:41,371 ERROR [pead_wf] ['TBNK']: possibly delisted; no timezone found
+2026-05-20 01:35:52,992 ERROR [pead_wf] $UFP: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:35:53,001 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:35:53,001 ERROR [pead_wf] ['UFP']: possibly delisted; no price data found  (1d 2020-04-21 -> 2026-05-20)
+2026-05-20 01:36:00,992 ERROR [pead_wf] $VTLE: possibly delisted; no timezone found
+2026-05-20 01:36:01,003 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:36:01,003 ERROR [pead_wf] ['VTLE']: possibly delisted; no timezone found
+2026-05-20 01:36:06,107 ERROR [pead_wf] $WIRE: possibly delisted; no timezone found
+2026-05-20 01:36:06,118 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:36:06,118 ERROR [pead_wf] ['WIRE']: possibly delisted; no timezone found
+2026-05-20 01:36:13,085 ERROR [pead_wf] $ZI: possibly delisted; no timezone found
+2026-05-20 01:36:13,091 ERROR [pead_wf] 
+1 Failed download:
+2026-05-20 01:36:13,091 ERROR [pead_wf] ['ZI']: possibly delisted; no timezone found
+2026-05-20 01:36:14,547 INFO [pead_wf] Data loaded: 666 symbols in 270.1s
+2026-05-20 01:36:15,032 INFO [pead_wf] Walk-forward: loaded sector ETF bars for 11 ETFs
+2026-05-20 01:40:14,091 INFO [pead_wf] PEAD WF GATE PASSED — avg_sharpe=2.697  min_fold=2.490  folds=[2.68, 3.009, 2.49, 2.707, 2.599]
+2026-05-20 01:40:15,351 INFO [pead_wf] email sent: MrTrader PEAD WF: GATE PASSED (avg=2.697) -> kimminjae@gmail.com
+
+--------------------------------------------------------------
+  Swing walk-forward: 5 folds | 6yr | 750 symbols | model v211
+--------------------------------------------------------------
+
+--------------------------------------------------------------
+  Fold 1/5  train:2020-04-21->2021-05-21  test:2021-06-01->2022-05-21  purge=10d  embargo=10d
+--------------------------------------------------------------
+  [32mOK[0m  Fold 1 done in 172.8s — 40 trades, Sharpe 2.68  PF=0.00  Calmar=30.09
+
+--------------------------------------------------------------
+  Fold 2/5  train:2020-04-21->2022-05-21  test:2022-06-01->2023-05-21  purge=10d  embargo=10d
+--------------------------------------------------------------
+  [32mOK[0m  Fold 2 done in 16.7s — 71 trades, Sharpe 3.01  PF=0.00  Calmar=22.09
+
+--------------------------------------------------------------
+  Fold 3/5  train:2020-04-21->2023-05-21  test:2023-06-01->2024-05-20  purge=10d  embargo=10d
+--------------------------------------------------------------
+  [32mOK[0m  Fold 3 done in 17.5s — 59 trades, Sharpe 2.49  PF=0.00  Calmar=10.89
+
+--------------------------------------------------------------
+  Fold 4/5  train:2020-04-21->2024-05-20  test:2024-05-31->2025-05-20  purge=10d  embargo=10d
+--------------------------------------------------------------
+  [32mOK[0m  Fold 4 done in 15.9s — 33 trades, Sharpe 2.71  PF=0.00  Calmar=15.37
+
+--------------------------------------------------------------
+  Fold 5/5  train:2020-04-21->2025-05-20  test:2025-05-31->2026-05-20  purge=10d  embargo=10d
+--------------------------------------------------------------
+  [32mOK[0m  Fold 5 done in 16.1s — 54 trades, Sharpe 2.60  PF=0.00  Calmar=14.12
