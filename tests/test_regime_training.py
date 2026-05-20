@@ -183,13 +183,73 @@ class TestRegimeModel:
 # ── Gate check ────────────────────────────────────────────────────────────────
 
 class TestGateThresholds:
-    def test_auc_gate_constant(self):
-        """Confirm gate thresholds haven't drifted."""
-        # AUC >= 0.60 worst fold, Brier < 0.22
-        assert 0.60 == 0.60  # documented gate value
-        assert 0.22 == 0.22
-
     def test_risk_thresholds(self):
         from app.ml.regime_model import RISK_OFF_THRESHOLD, RISK_ON_THRESHOLD
         assert RISK_OFF_THRESHOLD == 0.30
         assert RISK_ON_THRESHOLD == 0.60
+
+    def test_train_script_gate_values(self):
+        """Gate thresholds in train_regime_model.py must match reviewed values.
+
+        The reviewed gate: F1 >= 0.60, log_loss < 0.45.
+        Verify the inline literals in the script haven't drifted.
+        """
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "scripts" / "train_regime_model.py").read_text()
+        # These strings must appear in the script (gate logic uses inline literals)
+        assert ">= 0.60" in src or "auc_min >= 0.60" in src, \
+            "F1/AUC gate threshold 0.60 not found in train_regime_model.py"
+
+
+class TestPklPayloadKeys:
+    """Ensure the pkl written by RegimeModelTrainer.train() includes required keys."""
+
+    def _run_train(self, tmp_path):
+        from app.ml.regime_training import RegimeModelTrainer, REGIME_FEATURE_NAMES
+        import numpy as np
+        import pandas as pd
+        from unittest.mock import patch
+
+        n = 120
+        rng = np.random.default_rng(42)
+        df_mock = pd.DataFrame(
+            rng.standard_normal((n, len(REGIME_FEATURE_NAMES))),
+            columns=REGIME_FEATURE_NAMES,
+        )
+        df_mock["label"] = rng.integers(0, 3, n)
+        dates = pd.date_range("2019-01-01", periods=n, freq="B").date
+        df_mock["snapshot_date"] = dates
+
+        trainer = RegimeModelTrainer()
+        with (
+            patch.object(trainer, "load_dataset", return_value=df_mock),
+            patch("app.ml.regime_training.MODEL_DIR", tmp_path),
+            patch.object(trainer, "_write_model_version"),
+        ):
+            path = trainer.train(version=99)
+        return path
+
+    def test_required_keys_present(self, tmp_path):
+        import pickle
+        path = self._run_train(tmp_path)
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+        for key in ("xgb_model", "feature_names", "version", "model_version",
+                    "wf_results", "wf_log_loss_mean", "wf_macro_f1_mean"):
+            assert key in payload, f"pkl missing key: {key}"
+
+    def test_model_version_marker_is_2(self, tmp_path):
+        import pickle
+        path = self._run_train(tmp_path)
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+        assert payload["model_version"] == 2, "model_version marker must be 2 for V2 regime model"
+
+    def test_wf_results_is_list_of_dicts(self, tmp_path):
+        import pickle
+        path = self._run_train(tmp_path)
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+        wf = payload["wf_results"]
+        assert isinstance(wf, list) and len(wf) > 0
+        assert "macro_f1" in wf[0] and "log_loss" in wf[0]

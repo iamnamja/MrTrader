@@ -278,3 +278,64 @@ class TestRiskLimitsDefaults:
         assert lim.MAX_ACCOUNT_DRAWDOWN_PCT == 0.05
         assert lim.MAX_OPEN_POSITIONS == 5
         assert lim.STOP_LOSS_BASE_PCT == 0.02
+
+
+# ─── Short stop direction ─────────────────────────────────────────────────────
+
+class TestShortStopDirection:
+    """Short stops must be ABOVE entry (loss if price rises)."""
+
+    def test_short_stop_is_above_entry(self, limits):
+        from app.agents.risk_rules import calculate_dynamic_stop_loss
+        stop = calculate_dynamic_stop_loss(100.0, limits=limits, direction="SELL_SHORT")
+        assert stop > 100.0, "Short stop must be above entry"
+
+    def test_long_stop_is_below_entry(self, limits):
+        from app.agents.risk_rules import calculate_dynamic_stop_loss
+        stop = calculate_dynamic_stop_loss(100.0, limits=limits, direction="BUY")
+        assert stop < 100.0, "Long stop must be below entry"
+
+    def test_short_stop_magnitude_matches_long(self, limits):
+        """Short stop distance should equal long stop distance (same stop_pct)."""
+        from app.agents.risk_rules import calculate_dynamic_stop_loss
+        long_stop = calculate_dynamic_stop_loss(100.0, limits=limits, direction="BUY")
+        short_stop = calculate_dynamic_stop_loss(100.0, limits=limits, direction="SELL_SHORT")
+        long_dist = 100.0 - long_stop
+        short_dist = short_stop - 100.0
+        assert abs(long_dist - short_dist) < 0.01, "Stop distance should be symmetric"
+
+    def test_short_stop_with_atr_still_above_entry(self, limits):
+        from app.agents.risk_rules import calculate_dynamic_stop_loss
+        stop = calculate_dynamic_stop_loss(50.0, atr=1.5, limits=limits, direction="SELL_SHORT")
+        assert stop > 50.0
+
+
+# ─── Sector concentration: direction-aware ────────────────────────────────────
+
+class TestSectorConcentrationShort:
+    """Sector concentration should apply to both long and short exposures."""
+
+    def test_long_position_adds_to_sector(self, limits):
+        from app.agents.risk_rules import validate_sector_concentration
+        ok, _ = validate_sector_concentration(
+            proposed_cost=4_000,
+            current_sector_value=0,
+            account_value=20_000,
+            sector="Tech",
+            limits=limits,
+        )
+        # 4k / 20k = 20% — exactly at limit → should pass (<=)
+        assert ok
+
+    def test_existing_exposure_plus_new_exceeds_limit(self, limits):
+        from app.agents.risk_rules import validate_sector_concentration
+        ok, msg = validate_sector_concentration(
+            proposed_cost=2_001,
+            current_sector_value=2_000,
+            account_value=20_000,
+            sector="Energy",
+            limits=limits,
+        )
+        # (2001 + 2000) / 20000 = 20.005% > 20%
+        assert not ok
+        assert "Energy" in msg
