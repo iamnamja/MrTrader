@@ -1399,6 +1399,49 @@ class PortfolioManager(BaseAgent):
             except Exception as _ple:
                 self.logger.debug("ProposalLog directional write failed (non-fatal): %s", _ple)
 
+            # NIS overlay: direction-aware — block_entry means OPPOSITE for shorts
+            try:
+                from app.news.intelligence_service import nis
+                from app.agents.premarket import premarket_intel
+                _macro_ctx = premarket_intel.macro_context
+                _sector = self._get_symbol_sector(sym)
+                _news_sig = await asyncio.to_thread(
+                    nis.get_stock_signal, sym, _sector, 24, _macro_ctx
+                )
+                if is_short:
+                    # For shorts: negative news (block_entry/size_down) = green light
+                    # Positive news (size_up) = headwind → reduce size
+                    if _news_sig.action_policy in ("size_up_light", "size_up_heavy"):
+                        old_qty = proposal["quantity"]
+                        proposal["quantity"] = max(1, int(old_qty * 0.5))
+                        self.logger.info(
+                            "NIS short headwind %s: positive news → halving qty %d→%d — %s",
+                            sym, old_qty, proposal["quantity"], _news_sig.rationale,
+                        )
+                    # block_entry on negative news = supports short, do nothing (allow)
+                else:
+                    # For longs: standard NIS logic
+                    if _news_sig.action_policy == "block_entry":
+                        self.logger.info(
+                            "NIS block_entry (long) %s [%s]: %s", sym, selector, _news_sig.rationale
+                        )
+                        continue
+                    if _news_sig.sizing_multiplier != 1.0:
+                        old_qty = proposal["quantity"]
+                        proposal["quantity"] = max(1, int(old_qty * _news_sig.sizing_multiplier))
+                        self.logger.info(
+                            "NIS sizing (long) %s: %.2f× (%d→%d) — %s",
+                            sym, _news_sig.sizing_multiplier, old_qty,
+                            proposal["quantity"], _news_sig.rationale,
+                        )
+                proposal["news_signal"] = {
+                    "action_policy": _news_sig.action_policy,
+                    "sizing_multiplier": _news_sig.sizing_multiplier,
+                    "rationale": _news_sig.rationale,
+                }
+            except Exception as _nis_exc:
+                self.logger.debug("NIS directional overlay failed for %s (non-fatal): %s", sym, _nis_exc)
+
             proposals.append(proposal)
 
         return proposals
