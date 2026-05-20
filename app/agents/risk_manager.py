@@ -465,8 +465,12 @@ class RiskManager(BaseAgent):
             p["symbol"]: abs(float(p.get("market_value") or (float(p.get("qty") or 0) * entry_price)))
             for p in positions if p.get("symbol")
         }
+        # Direction map for sign-adjusted correlation: long+short pairs hedge, not concentrate
+        _pos_directions = {p["symbol"]: (p.get("side") or "long") for p in positions if p.get("symbol")}
         ok, msg = validate_correlation_risk(
-            symbol, open_symbols, account_value, position_values, limits=self.limits
+            symbol, open_symbols, account_value, position_values, limits=self.limits,
+            proposed_direction=proposal.get("direction", "BUY"),
+            position_directions=_pos_directions,
         )
         reasoning["checks"].append({"rule": "correlation_risk", "ok": ok, "msg": msg})
         if not ok:
@@ -584,7 +588,7 @@ class RiskManager(BaseAgent):
         if proposal.get("trade_type") == "swing":
             beta_result = await asyncio.to_thread(
                 self._check_beta_exposure, symbol, trade_cost, positions,
-                account_value, self.limits,
+                account_value, self.limits, proposal,
             )
             reasoning["checks"].append({"rule": "beta_exposure", **beta_result})
             if not beta_result["ok"]:
@@ -595,7 +599,7 @@ class RiskManager(BaseAgent):
         if proposal.get("trade_type") == "swing":
             factor_result = self._check_factor_concentration(
                 symbol, trade_cost, positions, account_value,
-                self.limits.max_factor_concentration,
+                self.limits.max_factor_concentration, proposal,
             )
             reasoning["checks"].append({"rule": "factor_concentration", **factor_result})
             if not factor_result["ok"]:
@@ -710,26 +714,29 @@ class RiskManager(BaseAgent):
 
     def _check_beta_exposure(
         self, symbol: str, trade_cost: float, positions: list,
-        account_value: float, limits,
+        account_value: float, limits, proposal: dict = None,
     ) -> dict:
         """
         Compute current portfolio beta. If portfolio beta > max_portfolio_beta
         and the proposed stock's beta > high_beta_threshold, reject.
         """
         try:
-            # Portfolio beta = Σ(position_value × beta_i) / account_value
+            # Portfolio beta = Σ(signed_position_value × beta_i) / account_value
+            # Shorts have negative market_value from Alpaca → subtract beta (they hedge)
             portfolio_beta = 0.0
             for pos in positions:
                 pos_sym = pos.get("symbol", "")
-                pos_val = abs(float(pos.get("market_value") or 0))
+                pos_val = float(pos.get("market_value") or 0)  # signed: negative for shorts
                 pos_beta = self._compute_beta(pos_sym, lookback=63)
                 portfolio_beta += pos_val * pos_beta
             portfolio_beta = portfolio_beta / max(account_value, 1.0)
 
             new_beta = self._compute_beta(symbol, lookback=63)
-            prospective_beta = (portfolio_beta * account_value + trade_cost * new_beta) / max(
-                account_value + trade_cost, 1.0
-            )
+            # For SELL_SHORT, the proposed trade reduces beta exposure
+            _beta_sign = -1 if (proposal or {}).get("direction") == "SELL_SHORT" else 1
+            prospective_beta = (
+                portfolio_beta * account_value + _beta_sign * trade_cost * new_beta
+            ) / max(account_value + trade_cost, 1.0)
 
             if (portfolio_beta > limits.max_portfolio_beta
                     and new_beta > limits.high_beta_threshold):
@@ -749,19 +756,23 @@ class RiskManager(BaseAgent):
 
     def _check_factor_concentration(
         self, symbol: str, trade_cost: float, positions: list,
-        account_value: float, max_factor_conc: float,
+        account_value: float, max_factor_conc: float, proposal: dict = None,
     ) -> dict:
         """
         Use sector as a factor proxy. Reject if adding this position would push
-        the sector above max_factor_concentration of account value.
+        NET sector exposure above max_factor_concentration of account value.
+        Shorts subtract from sector exposure (market-neutral books don't double-count).
         """
         try:
             new_sector = self._sector_map.get(symbol, "UNKNOWN")
-            sector_value = trade_cost
+            # Proposed trade: shorts reduce sector exposure
+            _conc_sign = -1 if (proposal or {}).get("direction") == "SELL_SHORT" else 1
+            sector_value = _conc_sign * trade_cost
             for pos in positions:
                 pos_sym = pos.get("symbol", "")
                 if self._sector_map.get(pos_sym, "UNKNOWN") == new_sector:
-                    sector_value += abs(float(pos.get("market_value") or 0))
+                    # Use signed market_value: Alpaca returns negative for shorts
+                    sector_value += float(pos.get("market_value") or 0)
 
             sector_pct = sector_value / max(account_value, 1.0)
             if sector_pct > max_factor_conc:

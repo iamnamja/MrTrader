@@ -153,10 +153,17 @@ def validate_correlation_risk(
     position_values: Dict[str, float],
     lookback_days: int = 30,
     limits: RiskLimits = None,
+    proposed_direction: str = "BUY",
+    position_directions: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """
     Reject if the proposed symbol is too highly correlated with an existing
     position that already represents a meaningful slice of the portfolio.
+
+    Correlation is sign-adjusted for direction: a short proposed against an
+    existing long is a hedge (effective correlation is negated) and should not
+    be rejected on correlation grounds. Only same-direction high correlation is
+    penalised.
 
     Correlation is computed on daily close returns over the last `lookback_days`.
     Fails open (returns True) if data is unavailable.
@@ -190,6 +197,7 @@ def validate_correlation_risk(
             return True, f"Correlation check skipped — insufficient data for {symbol}"
 
         sym_returns = returns[symbol]
+        _prop_is_short = proposed_direction == "SELL_SHORT"
         for existing in open_symbols:
             if existing not in returns.columns:
                 continue
@@ -198,6 +206,12 @@ def validate_correlation_risk(
             if pos_pct < 0.05:
                 continue  # small positions don't drive sector risk
             corr = float(sym_returns.corr(returns[existing]))
+            # Sign-adjust: opposite directions mean the correlation is effectively negated
+            # (a short against a correlated long is a hedge, not a concentration risk)
+            _pos_dir = (position_directions or {}).get(existing, "long")
+            _pos_is_short = _pos_dir in ("short", "SELL_SHORT")
+            if _prop_is_short != _pos_is_short:
+                corr = -corr  # opposite directions → hedging relationship
             if corr > limits.max_correlation:
                 return (
                     False,
