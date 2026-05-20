@@ -1035,7 +1035,15 @@ class Trader(BaseAgent):
             except Exception:
                 pass
 
-        slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2) if intended_price > 0 else 0.0
+        # Slippage is direction-aware: for shorts, a lower fill price is worse (less proceeds)
+        # so slippage = intended - filled (positive = bad, negative = good, same sign as longs).
+        if intended_price > 0:
+            if is_short:
+                slippage_bps = round((intended_price - filled_price) / intended_price * 10000, 2)
+            else:
+                slippage_bps = round((filled_price - intended_price) / intended_price * 10000, 2)
+        else:
+            slippage_bps = 0.0
 
         await self._record_entry(
             symbol, shares, filled_price, intended_price, slippage_bps,
@@ -1443,7 +1451,17 @@ class Trader(BaseAgent):
                 if order_status in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
                     filled_price = float(filled_price)
                     intended = pending["intended_price"]
-                    slippage_bps = round((filled_price - intended) / intended * 10000, 2) if intended > 0 else 0.0
+                    _pend_short = (
+                        pending.get("direction") == "SELL_SHORT"
+                        or (pending.get("proposal") or {}).get("direction") == "SELL_SHORT"
+                    )
+                    if intended > 0:
+                        if _pend_short:
+                            slippage_bps = round((intended - filled_price) / intended * 10000, 2)
+                        else:
+                            slippage_bps = round((filled_price - intended) / intended * 10000, 2)
+                    else:
+                        slippage_bps = 0.0
 
                     # Phase 78a: cancel unfilled remainder on partial fills to prevent
                     # silent second fills creating untracked additional shares.
@@ -2180,7 +2198,7 @@ class Trader(BaseAgent):
                     from app.ml.walk_forward_stats import get_predicted_pnl as _wf_pnl2
                     _predicted = _wf_pnl2(_trade_type_2d)
                     if _predicted is not None:
-                        _shortfall = round(pnl - _predicted * (pos.get("quantity", qty) or qty), 4)
+                        _shortfall = round(pnl - _predicted * (pos.get("shares", qty) or qty), 4)
                         self.logger.info(
                             "2d shortfall %s trade#%d: live_pnl=%.2f predicted_per_share=%.4f shortfall=%.2f",
                             symbol, trade_id, pnl, _predicted, _shortfall,

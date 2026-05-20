@@ -116,7 +116,11 @@ class ComplianceTracker:
         return False, f"PDT: {count}/{PDT_MAX_DAY_TRADES} day trades in window — OK"
 
     def load_day_trades_from_db(self, db) -> None:
-        """Populate in-memory PDT state from DB on startup."""
+        """Populate in-memory PDT state from DB on startup.
+
+        Idempotent: clears the in-memory day_trades dict before populating so
+        repeated calls (e.g. periodic reconciliation) don't double-count.
+        """
         from app.database.models import Trade
         cutoff = _business_days_back(PDT_WINDOW_DAYS)
         try:
@@ -126,14 +130,32 @@ class ComplianceTracker:
                 .filter(Trade.closed_at >= datetime.combine(cutoff, datetime.min.time()))
                 .all()
             )
+            new_day_trades: Dict[str, List[str]] = {}
+            for t in trades:
+                if t.closed_at is None or t.entry_price is None or t.exit_price is None:
+                    continue
+                close_date = t.closed_at.date().isoformat()
+                # Day trade = opened and closed same calendar day
+                if t.created_at and t.created_at.date() == t.closed_at.date():
+                    new_day_trades.setdefault(close_date, []).append(t.symbol)
             with self._lock:
-                for t in trades:
-                    if t.closed_at is None or t.entry_price is None or t.exit_price is None:
-                        continue
-                    close_date = t.closed_at.date().isoformat()
-                    # Day trade = opened and closed same calendar day
-                    if t.created_at and t.created_at.date() == t.closed_at.date():
-                        self._day_trades.setdefault(close_date, []).append(t.symbol)
+                # Merge DB-loaded entries with any in-session records added after startup
+                # (in-session records have dates not in the DB yet, so a simple replace
+                # of DB-range keys is safe; out-of-range keys are kept as-is).
+                cutoff_str = cutoff.isoformat()
+                today_str = date.today().isoformat()
+                # Replace all window entries from DB; preserve today's live entries
+                for date_str in list(self._day_trades.keys()):
+                    if cutoff_str <= date_str < today_str:
+                        del self._day_trades[date_str]
+                for date_str, syms in new_day_trades.items():
+                    self._day_trades.setdefault(date_str, [])
+                    # Avoid duplicates: only add symbols not already present
+                    existing = set(self._day_trades[date_str])
+                    for sym in syms:
+                        if sym not in existing:
+                            self._day_trades[date_str].append(sym)
+                            existing.add(sym)
             logger.info("PDT state loaded: %d day trades in window", self.day_trade_count_window())
         except Exception as exc:
             logger.warning("Could not load PDT state from DB: %s", exc)
