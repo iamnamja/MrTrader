@@ -4052,3 +4052,30 @@ All WF runs from 2026-05-10 onwards use `universe_mode = "r1k_pit_union_partial"
 
 **Verdict: Factor composite score has no predictive signal.** Confirms Phase A kill criterion (1/69 features passed IC threshold). Factor weights are opinion, not evidence. The composite score cannot be fixed with reweighting — the individual features lack short-horizon (10d) predictive power. Action: deprioritize factor portfolio; PEAD (validated avg Sharpe 2.70) is the primary strategy.
 
+
+### Phase F — L/S Infrastructure WF (2026-05-20)
+
+**Config:** FactorPortfolioScorer, long_short=True, top_n_long=20, top_n_short=15, regime-gated
+
+| Fold | Test Period | Trades | Sharpe | Calmar |
+|------|------------|--------|--------|--------|
+| 1 | 2021-06-01 → 2022-05-21 | 87 | 0.51 | 0.79 |
+| 2 | 2022-06-01 → 2023-05-21 | 47 | 0.74 | 0.99 |
+| 3 | 2023-06-01 → 2024-05-20 | 96 | 1.49 | 2.43 |
+| 4 | 2024-05-31 → 2025-05-20 | 89 | **-0.98** | -0.93 |
+| 5 | 2025-05-31 → 2026-05-20 | 123 | 1.13 | 2.31 |
+| **AVG** | | **88** | **0.579** | |
+
+**Gate: FAILED** (avg 0.579 < 0.80; gate also requires min fold ≥ -0.30, Fold 4 = -0.98)
+
+**Vs prior baseline:** Long-only factor portfolio avg was 0.736 (post P0.2, pre-L/S). L/S slightly worse due to Fold 4 — the short leg added losses during the April 2025 tariff-shock recovery when shorted momentum stocks reversed sharply upward.
+
+**Fold 4 post-mortem (2024-05-31 → 2025-05-20):**
+- Overlaps April 2025 tariff shock: -10% SPY in 2 weeks, then +15% recovery
+- Short leg (bottom-N factor scores = quality/momentum laggards) reversed violently on recovery
+- Regime gate (SPY MA200) fired during the dip but not fast enough to cover existing shorts
+- 89 trades vs 96 in Fold 3 — not a data/liquidity gap, trades executed but P&L inverted
+
+**Decision per IC verdict (P0.3 above):** Factor composite has no predictive signal (IC = -0.0064). Fold 4 failure confirms this is not a gate problem — the factor scores themselves predicted the wrong direction. **Action: PEAD is the primary active strategy** (validated avg Sharpe ~2.70). Factor portfolio remains as long-sleeve infrastructure but is not the alpha source.
+
+**What changes:** Phase G (PEAD WF + paper trading) is now the primary path. Factor L/S infrastructure code stays (good engineering) but PEAD signals take capital priority.
