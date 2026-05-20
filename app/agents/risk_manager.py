@@ -415,10 +415,25 @@ class RiskManager(BaseAgent):
         # ── Rule 0c: Strategy budget cap ─────────────────────────────────────
         trade_type = proposal.get("trade_type", "swing")
         budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
+        # Alpaca positions don't carry trade_type — resolve from DB
+        try:
+            from app.database.models import Trade as _BudgetTrade
+            _bdb = get_session()
+            try:
+                _type_map = {
+                    t.symbol: (t.trade_type or "swing")
+                    for t in _bdb.query(_BudgetTrade)
+                    .filter(_BudgetTrade.status.in_(("ACTIVE", "PENDING_FILL")))
+                    .all()
+                }
+            finally:
+                _bdb.close()
+        except Exception:
+            _type_map = {}
         type_deployed = sum(
             abs(float(p.get("market_value") or 0))
             for p in positions
-            if (p.get("trade_type") or "swing") == trade_type
+            if _type_map.get(p.get("symbol"), "swing") == trade_type
         )
         type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
         if type_pct > budget_pct:
@@ -802,7 +817,7 @@ class RiskManager(BaseAgent):
                     sector_value += float(pos.get("market_value") or 0)
 
             sector_pct = sector_value / max(account_value, 1.0)
-            if sector_pct > max_factor_conc:
+            if abs(sector_pct) > max_factor_conc:
                 return {
                     "ok": False,
                     "msg": (f"Factor/sector '{new_sector}' concentration {sector_pct:.1%} "

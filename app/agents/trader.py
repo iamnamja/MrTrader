@@ -223,7 +223,7 @@ class Trader(BaseAgent):
                     "_partial_exited": True,
                 }
                 existing_today.status = "ACTIVE"
-                existing_today.quantity = qty
+                existing_today.quantity = abs(qty)
                 existing_today.exit_price = None
                 existing_today.pnl = None
                 existing_today.closed_at = None

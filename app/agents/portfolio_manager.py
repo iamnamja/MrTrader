@@ -2760,7 +2760,7 @@ class PortfolioManager(BaseAgent):
                         "entry_price": float(trade.entry_price or 0),
                         "target_price": float(trade.target_price or 0),
                         "atr": (
-                            float(trade.target_price or 0) - float(trade.entry_price or 0)
+                            abs(float(trade.target_price or 0) - float(trade.entry_price or 0))
                             if trade.target_price and trade.entry_price else 0.0
                         ),
                     }
