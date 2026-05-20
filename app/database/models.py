@@ -67,6 +67,48 @@ class Order(Base):
         return f"<Order {self.order_type} {self.status} {self.timestamp}>"
 
 
+def recompute_partial_pnl(db, trade_id: int, entry_price: float, direction: str) -> float:
+    """
+    Recompute cumulative partial-exit P&L for a trade from the Order ledger.
+
+    The Order table is the immutable record of every partial fill.  Using it
+    as the source of truth prevents the 'trade.pnl zeroed on reactivation' class
+    of bugs: even if trade.pnl was wiped, the Orders survive.
+
+    Called by:
+      - startup reconciler when reactivating a previously-closed Trade that has
+        remaining Alpaca shares (e.g. after partial exit + broker-side close + restart)
+      - _execute_exit 'no Alpaca position' fallback to add partial leg to final P&L
+      - _reconcile_positions to seed pos['_partial_pnl'] more robustly than trusting
+        the potentially-corrupted trade.pnl field
+
+    Args:
+        db: SQLAlchemy session
+        trade_id: Trade.id to query
+        entry_price: original entry price (used to compute per-order P&L)
+        direction: "BUY" or "SELL_SHORT"
+
+    Returns:
+        Total realized P&L from all PARTIAL_EXIT orders for this trade.
+    """
+    orders = (
+        db.query(Order)
+        .filter(
+            Order.trade_id == trade_id,
+            Order.order_type == "PARTIAL_EXIT",
+            Order.status == "FILLED",
+        )
+        .all()
+    )
+    total = 0.0
+    for o in orders:
+        if o.filled_price is not None and o.filled_qty:
+            leg = (entry_price - o.filled_price) * o.filled_qty if direction == "SELL_SHORT" \
+                  else (o.filled_price - entry_price) * o.filled_qty
+            total += leg
+    return total
+
+
 class Position(Base):
     """Position model - represents current open positions"""
     __tablename__ = "positions"

@@ -206,7 +206,13 @@ class ComplianceTracker:
         Record sale proceeds as unsettled cash.
         Equities settle T+1 (since May 2024).
         """
-        settle_date = (trade_date or date.today()) + timedelta(days=SETTLEMENT_DAYS)
+        # Walk forward by business days (T+1 settlement; weekend sales settle Monday)
+        _d = trade_date or date.today()
+        for _ in range(SETTLEMENT_DAYS):
+            _d += timedelta(days=1)
+            while _d.weekday() >= 5:
+                _d += timedelta(days=1)
+        settle_date = _d
         with self._lock:
             self._unsettled.append((settle_date, amount))
         logger.debug("Settlement: $%.2f to settle on %s", amount, settle_date)

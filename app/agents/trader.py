@@ -205,8 +205,17 @@ class Trader(BaseAgent):
                 _rem_short = _rem_dir == "SELL_SHORT"
                 _rem_stop = existing_today.stop_price or round(avg * (1.02 if _rem_short else 0.98), 2)
                 _rem_tgt = existing_today.target_price or round(avg * (0.94 if _rem_short else 1.06), 2)
+                # Recompute partial P&L from the immutable Order ledger rather than
+                # trusting trade.pnl which may have been zeroed by a prior reconcile cycle.
+                from app.database.models import recompute_partial_pnl
+                _entry_px = float(existing_today.entry_price or avg)
+                _prior_pnl = recompute_partial_pnl(db, existing_today.id, _entry_px, _rem_dir)
+                # If ledger returns 0 but trade.pnl has a value, fall back to trade.pnl
+                # (handles legacy rows written before Order-ledger fix was deployed)
+                if _prior_pnl == 0.0 and existing_today.pnl:
+                    _prior_pnl = float(existing_today.pnl)
                 self.active_positions[symbol] = {
-                    "entry_price":   float(existing_today.entry_price or avg),
+                    "entry_price":   _entry_px,
                     "stop_price":    float(_rem_stop),
                     "target_price":  float(_rem_tgt),
                     "highest_price": avg,
@@ -214,6 +223,7 @@ class Trader(BaseAgent):
                     "bars_held":     existing_today.bars_held or 0,
                     "trade_id":      existing_today.id,
                     "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
+                    "shares":        abs(qty),
                     "entry_date":    (
                         existing_today.created_at.date()
                         if existing_today.created_at else datetime.now(ET).date()
@@ -221,11 +231,13 @@ class Trader(BaseAgent):
                     "direction":     _rem_dir,
                     "proposal_uuid": getattr(existing_today, "proposal_id", None),
                     "_partial_exited": True,
+                    "_partial_pnl":    _prior_pnl,
                 }
                 existing_today.status = "ACTIVE"
                 existing_today.quantity = abs(qty)
                 existing_today.exit_price = None
-                existing_today.pnl = None
+                # Restore trade.pnl from the Order-ledger recompute so it stays consistent
+                existing_today.pnl = _prior_pnl if _prior_pnl != 0.0 else None
                 existing_today.closed_at = None
                 db.commit()
                 continue
@@ -2066,10 +2078,18 @@ class Trader(BaseAgent):
                         actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
                         trade.exit_price = actual_price
                         _fc_qty = pos.get("shares", trade.quantity or 0)
-                        if pos.get("direction") == "SELL_SHORT":
-                            trade.pnl = (pos["entry_price"] - actual_price) * _fc_qty
+                        _fc_dir = pos.get("direction", getattr(trade, "direction", "BUY") or "BUY")
+                        if _fc_dir == "SELL_SHORT":
+                            _final_leg = (pos["entry_price"] - actual_price) * _fc_qty
                         else:
-                            trade.pnl = (actual_price - pos["entry_price"]) * _fc_qty
+                            _final_leg = (actual_price - pos["entry_price"]) * _fc_qty
+                        # Accumulate any partial-exit P&L.  Use in-memory cache first;
+                        # fall back to Order ledger for robustness on stale in-memory state.
+                        from app.database.models import recompute_partial_pnl
+                        _partial = pos.get("_partial_pnl") or recompute_partial_pnl(
+                            db, trade.id, pos["entry_price"], _fc_dir
+                        )
+                        trade.pnl = _final_leg + _partial
                         trade.status = "FORCE_CLOSED_NO_POSITION"
                         trade.exit_reason = "force_closed_no_position"
                         trade.closed_at = datetime.now(ET)
