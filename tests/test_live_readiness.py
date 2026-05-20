@@ -191,3 +191,52 @@ class TestAlertConfigChecks:
 
         assert len(warnings) == 2
         assert len(blockers) == 0
+
+
+class TestDeflatedSharpe:
+    def _make_trades(self, pnls, days_ago=90):
+        trades = []
+        for pnl in pnls:
+            t = MagicMock()
+            t.pnl = pnl
+            t.created_at = datetime.utcnow() - timedelta(days=days_ago)
+            t.status = "CLOSED"
+            trades.append(t)
+        return trades
+
+    def test_passes_with_strong_positive_pnl(self):
+        trades = self._make_trades([100.0] * 30 + [-10.0] * 5)
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = trades
+        session.close = MagicMock()
+        with patch(f"{MODULE}.get_session", return_value=session):
+            r = ReadinessChecker()._check_deflated_sharpe()
+        assert r.passed is True
+
+    def test_fails_with_insufficient_trades(self):
+        trades = self._make_trades([10.0] * 5)
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = trades
+        session.close = MagicMock()
+        with patch(f"{MODULE}.get_session", return_value=session):
+            r = ReadinessChecker()._check_deflated_sharpe()
+        assert r.passed is False
+        assert "Insufficient" in r.detail
+
+    def test_fails_with_zero_std(self):
+        trades = self._make_trades([50.0] * 15)  # all same PnL → std=0
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = trades
+        session.close = MagicMock()
+        with patch(f"{MODULE}.get_session", return_value=session):
+            r = ReadinessChecker()._check_deflated_sharpe()
+        assert r.passed is False
+
+    def test_fails_with_negative_edge(self):
+        trades = self._make_trades([-50.0] * 20 + [10.0] * 5)
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = trades
+        session.close = MagicMock()
+        with patch(f"{MODULE}.get_session", return_value=session):
+            r = ReadinessChecker()._check_deflated_sharpe()
+        assert r.passed is False
