@@ -137,27 +137,34 @@ def validate_sector_concentration(
     account_value: float,
     sector: str = "UNKNOWN",
     limits: RiskLimits = None,
+    direction: str = "BUY",
 ) -> Tuple[bool, str]:
-    """Ensure no single sector exceeds MAX_SECTOR_CONCENTRATION_PCT."""
+    """Ensure no single sector exceeds MAX_SECTOR_CONCENTRATION_PCT.
+
+    Direction-aware: a SELL_SHORT in the same sector reduces gross net exposure,
+    so it is added as a negative contribution and evaluated on absolute sector pct.
+    """
     if limits is None:
         limits = RiskLimits()
 
     if account_value <= 0:
         return False, "Account value is zero or negative"
 
-    total_sector_value = current_sector_value + proposed_cost
-    sector_pct = total_sector_value / account_value
+    # Shorts reduce net sector exposure; use signed cost so hedging is allowed.
+    signed_cost = -proposed_cost if direction == "SELL_SHORT" else proposed_cost
+    total_sector_value = current_sector_value + signed_cost
+    sector_pct = abs(total_sector_value) / account_value
     max_pct = limits.MAX_SECTOR_CONCENTRATION_PCT
 
     if sector_pct > max_pct:
         return (
             False,
-            f"Sector '{sector}' would reach {sector_pct * 100:.1f}% of account, "
+            f"Sector '{sector}' would reach {sector_pct * 100:.1f}% (net) of account, "
             f"exceeds {max_pct * 100:.0f}% limit",
         )
     return (
         True,
-        f"Sector concentration OK ('{sector}' at {sector_pct * 100:.1f}%)",
+        f"Sector concentration OK ('{sector}' at {sector_pct * 100:.1f}% net)",
     )
 
 

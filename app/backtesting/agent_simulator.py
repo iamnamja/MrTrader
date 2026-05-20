@@ -807,7 +807,9 @@ class AgentSimulator:
             return False, msg
 
         sector_val = portfolio.sector_values.get(sector, 0.0)
-        ok, msg = validate_sector_concentration(trade_cost, sector_val, equity, sector, self.limits)
+        ok, msg = validate_sector_concentration(
+            trade_cost, sector_val, equity, sector, self.limits, direction=direction
+        )
         if not ok:
             return False, msg
 

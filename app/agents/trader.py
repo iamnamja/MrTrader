@@ -2061,6 +2061,11 @@ class Trader(BaseAgent):
         finally:
             db.close()
 
+        # Reg T / T+1: partial long-sale proceeds are unsettled until next business day
+        if not _partial_is_short:
+            from app.agents.compliance import compliance_tracker
+            compliance_tracker.record_sale_proceeds(current_price * partial_qty)
+
         self.logger.info(
             "PARTIAL EXIT %s: sold %d/%d shares @ $%.2f (%.0f%%) — stop → $%.2f | PnL=$%.2f",
             symbol, partial_qty, total_qty, current_price,
