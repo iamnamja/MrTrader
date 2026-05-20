@@ -275,6 +275,7 @@ def check_exit(
     min_hold_bars: int = 3,
     max_hold_bars: int = 20,
     db=None,
+    direction: str = "BUY",
 ) -> tuple[bool, str, float]:
     """
     Check whether an open position should be exited.
@@ -283,32 +284,51 @@ def check_exit(
         max_hold_bars: Safety-net cap. Default raised to 20 days (was 10).
                        PM re-scoring and technical signals drive exits before
                        this triggers in normal operation.
+        direction: "BUY" (long) or "SELL_SHORT". Inverts stop/target/trail logic for shorts.
 
     Returns:
         (should_exit, reason, updated_stop_price)
     """
     p = _get_params(db)
+    is_short = direction == "SELL_SHORT"
+
     # Never exit within the minimum hold period
     if bars_held < min_hold_bars:
         return False, "", stop_price
 
     # Safety-net cap: exit if held beyond max_hold_bars regardless of signals
     if bars_held >= max_hold_bars:
-        pnl_pct = (current_price - entry_price) / entry_price
+        if is_short:
+            pnl_pct = (entry_price - current_price) / entry_price
+        else:
+            pnl_pct = (current_price - entry_price) / entry_price
         return True, f"max_hold_{max_hold_bars}d (P&L={pnl_pct*100:+.1f}%)", stop_price
 
-    # Update trailing stop
-    pnl_pct = (current_price - entry_price) / entry_price
     new_stop = stop_price
-    if pnl_pct >= p["TRAIL_ACTIVATION"]:
-        trail_stop = highest_price * (1 - p["TRAIL_PCT"])
-        if trail_stop > stop_price:
-            new_stop = trail_stop
 
-    if current_price >= target_price:
-        return True, f"target_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
-    if current_price <= new_stop:
-        return True, f"stop_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
+    if is_short:
+        pnl_pct = (entry_price - current_price) / entry_price
+        # Trail: ratchet stop DOWN as price falls (highest_price tracks lowest reached)
+        if pnl_pct >= p["TRAIL_ACTIVATION"]:
+            trail_stop = highest_price * (1 + p["TRAIL_PCT"])
+            if trail_stop < stop_price:
+                new_stop = trail_stop
+        # Short: stop above entry (hit when price rises); target below entry (hit when price falls)
+        if current_price <= target_price:
+            return True, f"target_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
+        if current_price >= new_stop:
+            return True, f"stop_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
+    else:
+        pnl_pct = (current_price - entry_price) / entry_price
+        # Update trailing stop
+        if pnl_pct >= p["TRAIL_ACTIVATION"]:
+            trail_stop = highest_price * (1 - p["TRAIL_PCT"])
+            if trail_stop > stop_price:
+                new_stop = trail_stop
+        if current_price >= target_price:
+            return True, f"target_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
+        if current_price <= new_stop:
+            return True, f"stop_hit (P&L={pnl_pct*100:+.1f}%)", new_stop
 
     return False, "", new_stop
 

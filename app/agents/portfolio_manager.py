@@ -1396,6 +1396,7 @@ class PortfolioManager(BaseAgent):
             pass
 
         universe = self._get_universe()
+        self._swing_proposals = []  # always reset before early returns
         self.logger.info("PEAD scan: fetching bars for %d symbols (shorts_enabled=%s)...",
                          len(universe), _shorts_enabled)
         try:
@@ -1441,6 +1442,7 @@ class PortfolioManager(BaseAgent):
         """QualityShort scorer (shorts_only): short fundamentally deteriorating stocks."""
         from app.ml.short_scorers import QualityShortScorer
 
+        self._swing_proposals = []  # always reset before early returns
         universe = self._get_universe()
         self.logger.info("QualityShort scan: fetching bars for %d symbols...", len(universe))
         try:

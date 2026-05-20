@@ -89,7 +89,7 @@ def get_earnings_history_fmp(symbol: str) -> List[Dict]:
     return records
 
 
-def get_earnings_features_at(symbol: str, as_of: date) -> Dict[str, float]:
+def get_earnings_features_at(symbol: str, as_of: date) -> Dict[str, float] | None:
     """
     Return earnings features using only data known on or before *as_of*.
 
@@ -97,13 +97,10 @@ def get_earnings_features_at(symbol: str, as_of: date) -> Dict[str, float]:
       fmp_surprise_1q       — most recent quarterly EPS surprise before as_of
       fmp_surprise_2q_avg   — mean of last 2 surprises before as_of
       fmp_days_since_earnings — calendar days since last report before as_of
-    """
-    result = {
-        "fmp_surprise_1q": 0.0,
-        "fmp_surprise_2q_avg": 0.0,
-        "fmp_days_since_earnings": 90.0,
-    }
 
+    Returns None when no earnings records exist for the symbol (explicit sentinel
+    so callers can distinguish "no data" from "zero surprise").
+    """
     try:
         records = get_earnings_history_fmp(symbol)
         # Filter to reports on or before as_of
@@ -113,20 +110,19 @@ def get_earnings_features_at(symbol: str, as_of: date) -> Dict[str, float]:
             and datetime.strptime(r["date"], "%Y-%m-%d").date() <= as_of
         ]
         if not past:
-            return result
+            return None
 
-        result["fmp_surprise_1q"] = float(past[0]["surprise_pct"])
-        result["fmp_surprise_2q_avg"] = float(
-            sum(r["surprise_pct"] for r in past[:2]) / min(len(past), 2)
-        )
         last_date = datetime.strptime(past[0]["date"], "%Y-%m-%d").date()
-        result["fmp_days_since_earnings"] = float(
-            max(0, min(365, (as_of - last_date).days))
-        )
+        return {
+            "fmp_surprise_1q": float(past[0]["surprise_pct"]),
+            "fmp_surprise_2q_avg": float(
+                sum(r["surprise_pct"] for r in past[:2]) / min(len(past), 2)
+            ),
+            "fmp_days_since_earnings": float(max(0, min(365, (as_of - last_date).days))),
+        }
     except Exception as exc:
         logger.debug("FMP earnings features failed for %s: %s", symbol, exc)
-
-    return result
+        return None
 
 
 # ── Analyst grades ────────────────────────────────────────────────────────────

@@ -92,8 +92,8 @@ class TestFMPEarningsFeaturesAt:
                    return_value=_earnings_response()):
             # as_of = 2023-01-01 → all reports are in the future, nothing known
             result = get_earnings_features_at("AAPL", date(2023, 1, 1))
-        assert result["fmp_surprise_1q"] == 0.0
-        assert result["fmp_days_since_earnings"] == 90.0
+        # Returns None when no past earnings records exist (explicit no-data sentinel)
+        assert result is None
 
     def test_two_quarter_average(self):
         from app.data.fmp_provider import get_earnings_features_at
@@ -111,7 +111,8 @@ class TestFMPEarningsFeaturesAt:
         with patch("app.data.fmp_provider.get_earnings_history_fmp",
                    side_effect=Exception("fail")):
             result = get_earnings_features_at("AAPL", date(2024, 1, 1))
-        assert result["fmp_surprise_1q"] == 0.0
+        # Returns None on exception (explicit no-data sentinel)
+        assert result is None
 
 
 class TestFMPAnalystFeatures:

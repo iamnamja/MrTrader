@@ -840,6 +840,7 @@ class Trader(BaseAgent):
         proposal = self.approved_symbols.get(symbol, {})
         trade_type = proposal.get("trade_type", "swing")
         intended_price = result.entry_price
+        is_short = proposal.get("direction") == "SELL_SHORT"
 
         proposal_uuid = proposal.get("proposal_uuid")
         signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
@@ -868,15 +869,25 @@ class Trader(BaseAgent):
                 pass
 
             quote = alpaca.get_quote(symbol)
-            if quote and quote["ask"] > 0:
-                limit_price = round(quote["ask"] * (1 - limit_offset), 2)
-                intended_price = quote["ask"]
+            if is_short:
+                # Short entry: sell at bid + small offset (more aggressive = worse fill for us)
+                if quote and quote.get("bid", 0) > 0:
+                    limit_price = round(quote["bid"] * (1 + limit_offset), 2)
+                    intended_price = quote["bid"]
+                else:
+                    limit_price = round(intended_price * (1 + limit_offset), 2)
+                order_side = "sell"
             else:
-                limit_price = round(intended_price * (1 - limit_offset), 2)
+                if quote and quote["ask"] > 0:
+                    limit_price = round(quote["ask"] * (1 - limit_offset), 2)
+                    intended_price = quote["ask"]
+                else:
+                    limit_price = round(intended_price * (1 - limit_offset), 2)
+                order_side = "buy"
 
             try:
                 order = alpaca.place_limit_order(
-                    symbol, shares, "buy", limit_price, client_order_id=proposal_uuid,
+                    symbol, shares, order_side, limit_price, client_order_id=proposal_uuid,
                 )
             except Exception as exc:
                 self.logger.error("Limit entry order failed for %s: %s", symbol, exc)
@@ -919,7 +930,8 @@ class Trader(BaseAgent):
 
         try:
             order = alpaca.place_market_order(
-                symbol, shares, "buy", client_order_id=proposal_uuid,
+                symbol, shares, "sell" if is_short else "buy",
+                client_order_id=proposal_uuid,
             )
         except Exception as exc:
             self.logger.error("Market order failed for %s: %s", symbol, exc)
@@ -954,6 +966,7 @@ class Trader(BaseAgent):
         """Write PENDING_FILL Trade to DB before placing the order. Returns trade.id or None."""
         trade_type = proposal.get("trade_type", "swing")
         proposal_uuid = proposal.get("proposal_uuid")
+        _direction = proposal.get("direction", "BUY")
         # Prefer proposal-level stop/target (set by RM from signal generator);
         # fall back to result object, then to ATR-based defaults.
         _stop = (proposal.get("stop_price") or result.stop_price or 0.0)
@@ -966,7 +979,7 @@ class Trader(BaseAgent):
         try:
             trade = Trade(
                 symbol=symbol,
-                direction="BUY",
+                direction=_direction,
                 entry_price=intended_price,
                 quantity=shares,
                 status="PENDING_FILL",
@@ -1148,7 +1161,8 @@ class Trader(BaseAgent):
             else:
                 # Fallback: no PENDING_FILL found (e.g. reconciler path) — create fresh
                 trade = Trade(
-                    symbol=symbol, direction="BUY", entry_price=filled_price,
+                    symbol=symbol, direction=proposal.get("direction", "BUY"),
+                    entry_price=filled_price,
                     quantity=shares, status="ACTIVE", signal_type=signal_type,
                     trade_type=trade_type, stop_price=result.stop_price,
                     target_price=result.target_price, highest_price=filled_price,
@@ -1223,6 +1237,7 @@ class Trader(BaseAgent):
                 "trade_id":      trade.id,
                 "trade_type":    trade_type,
                 "entry_date":    datetime.now(ET).date(),
+                "direction":     proposal.get("direction", "BUY"),
             }
             # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
             _mhd = proposal.get("max_hold_days")
@@ -1390,10 +1405,18 @@ class Trader(BaseAgent):
                         except Exception as _cx:
                             self.logger.warning("Escalation cancel failed for %s: %s", symbol, _cx)
                         ask = float(quote["ask"])
-                        new_limit = round(ask * (1 + 0.0005), 2)  # 5bps THROUGH ask (marketable)
+                        _esc_is_short = pending.get("proposal", {}).get("direction") == "SELL_SHORT"
+                        # Marketable limit: for longs buy 5bps through ask; for shorts sell 5bps through bid
+                        if _esc_is_short:
+                            _bid = float(quote.get("bid") or ask)
+                            new_limit = round(_bid * (1 - 0.0005), 2)
+                            _esc_side = "sell"
+                        else:
+                            new_limit = round(ask * (1 + 0.0005), 2)
+                            _esc_side = "buy"
                         try:
                             new_order = alpaca.place_limit_order(
-                                symbol, pending["shares"], "buy", new_limit,
+                                symbol, pending["shares"], _esc_side, new_limit,
                             )
                             new_order_id = new_order.get("order_id")
                             old_limit = pending["limit_price"]
@@ -1456,10 +1479,17 @@ class Trader(BaseAgent):
                         alpaca.cancel_order(order_id)
                     except Exception as _cx:
                         self.logger.warning("Re-quote cancel failed for %s: %s", symbol, _cx)
-                    new_limit = round(fresh_ask * (1 - offset_pct), 2)
+                    _rq_is_short = pending.get("proposal", {}).get("direction") == "SELL_SHORT"
+                    if _rq_is_short:
+                        _fresh_bid = float(alpaca.get_quote(symbol).get("bid") or fresh_ask)
+                        new_limit = round(_fresh_bid * (1 + offset_pct), 2)
+                        _rq_side = "sell"
+                    else:
+                        new_limit = round(fresh_ask * (1 - offset_pct), 2)
+                        _rq_side = "buy"
                     try:
                         new_order = alpaca.place_limit_order(
-                            symbol, pending["shares"], "buy", new_limit,
+                            symbol, pending["shares"], _rq_side, new_limit,
                         )
                         new_order_id = new_order.get("order_id")
                         old_limit = pending["limit_price"]
@@ -1581,16 +1611,24 @@ class Trader(BaseAgent):
             return
 
         now = datetime.now(ET)
+        is_short = pos.get("direction") == "SELL_SHORT"
 
-        # Update highest price for trailing stop
-        highest = max(pos["highest_price"], current_price)
+        # For longs: track highest price for trailing stop.
+        # For shorts: track lowest price (the "best" level — equivalent of highest for longs).
+        if is_short:
+            highest = min(pos["highest_price"], current_price)
+        else:
+            highest = max(pos["highest_price"], current_price)
         pos["highest_price"] = highest
 
         # Periodic position status log — every ~30 min so we have a paper trail
         _last_log = pos.get("_last_status_log", 0)
         if now.timestamp() - _last_log >= 1800:
             pos["_last_status_log"] = now.timestamp()
-            pnl_now = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
+            if is_short:
+                pnl_now = (pos["entry_price"] - current_price) / pos["entry_price"] * 100
+            else:
+                pnl_now = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
             self.logger.info(
                 "POSITION STATUS %s | price=$%.2f entry=$%.2f stop=$%.2f target=$%.2f | "
                 "pnl=%.1f%% bars_held=%d",
@@ -1616,13 +1654,22 @@ class Trader(BaseAgent):
             except Exception:
                 pass
 
-        # Adverse-move warning: if down >3% from entry, log and tighten stop to breakeven
-        pnl_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
+        # Adverse-move warning: down >3% for longs, up >3% for shorts
+        if is_short:
+            pnl_pct = (pos["entry_price"] - current_price) / pos["entry_price"]
+        else:
+            pnl_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
         if pnl_pct <= -0.03 and not pos.get("_adverse_warned"):
             pos["_adverse_warned"] = True
-            breakeven_stop = round(pos["entry_price"] * 0.995, 4)  # near-breakeven
-            if breakeven_stop > pos["stop_price"]:
-                pos["stop_price"] = breakeven_stop
+            if is_short:
+                # For shorts: stop is above entry; tighten toward entry
+                breakeven_stop = round(pos["entry_price"] * 1.005, 4)
+                if breakeven_stop < pos["stop_price"]:
+                    pos["stop_price"] = breakeven_stop
+            else:
+                breakeven_stop = round(pos["entry_price"] * 0.995, 4)
+                if breakeven_stop > pos["stop_price"]:
+                    pos["stop_price"] = breakeven_stop
             self.logger.warning(
                 "%s: adverse move %.1f%% — stop moved to $%.2f",
                 symbol, pnl_pct * 100, pos["stop_price"],
@@ -1755,6 +1802,7 @@ class Trader(BaseAgent):
             highest_price=highest,
             bars_held=pos["bars_held"],
             max_hold_bars=max_hold,
+            direction=pos.get("direction", "BUY"),
         )
         pos["stop_price"] = new_stop  # keep trailing stop current
 
@@ -1811,17 +1859,24 @@ class Trader(BaseAgent):
             pos["_partial_exited"] = False
             return
 
-        order = alpaca.place_market_order(symbol, partial_qty, "sell")
+        _partial_is_short = pos.get("direction") == "SELL_SHORT"
+        _partial_side = "buy" if _partial_is_short else "sell"
+        order = alpaca.place_market_order(symbol, partial_qty, _partial_side)
         if not order:
             self.logger.error("Partial exit order failed for %s", symbol)
             pos["_partial_exited"] = False
             return
 
-        pnl = (current_price - pos["entry_price"]) * partial_qty
-
-        # Move stop on remaining shares to near-breakeven
-        breakeven_stop = round(pos["entry_price"] * 1.001, 4)
-        pos["stop_price"] = max(pos["stop_price"], breakeven_stop)
+        if _partial_is_short:
+            pnl = (pos["entry_price"] - current_price) * partial_qty
+            # Move stop toward entry for shorts (stop is above entry)
+            breakeven_stop = round(pos["entry_price"] * 0.999, 4)
+            pos["stop_price"] = min(pos["stop_price"], breakeven_stop)
+        else:
+            pnl = (current_price - pos["entry_price"]) * partial_qty
+            # Move stop on remaining shares to near-breakeven
+            breakeven_stop = round(pos["entry_price"] * 1.001, 4)
+            pos["stop_price"] = max(pos["stop_price"], breakeven_stop)
 
         db = get_session()
         try:
@@ -1881,7 +1936,11 @@ class Trader(BaseAgent):
                         # Try to get a real price; only fall back to entry_price if nothing available
                         actual_price = current_price or alpaca.get_latest_price(symbol) or pos["entry_price"]
                         trade.exit_price = actual_price
-                        trade.pnl = (actual_price - pos["entry_price"]) * pos.get("quantity", trade.quantity or 0)
+                        _fc_qty = pos.get("quantity", trade.quantity or 0)
+                        if pos.get("direction") == "SELL_SHORT":
+                            trade.pnl = (pos["entry_price"] - actual_price) * _fc_qty
+                        else:
+                            trade.pnl = (actual_price - pos["entry_price"]) * _fc_qty
                         trade.status = "FORCE_CLOSED_NO_POSITION"
                         trade.exit_reason = "force_closed_no_position"
                         trade.closed_at = datetime.now(ET)
@@ -1899,12 +1958,17 @@ class Trader(BaseAgent):
             self.active_positions.pop(symbol, None)
             return
 
-        order = alpaca.place_market_order(symbol, qty, "sell")
+        # Longs exit with "sell"; shorts cover with "buy"
+        exit_side = "buy" if pos.get("direction") == "SELL_SHORT" else "sell"
+        order = alpaca.place_market_order(symbol, qty, exit_side)
         if not order:
             self.logger.error("Exit order failed for %s", symbol)
             return
 
-        final_leg_pnl = (current_price - pos["entry_price"]) * qty
+        if pos.get("direction") == "SELL_SHORT":
+            final_leg_pnl = (pos["entry_price"] - current_price) * qty
+        else:
+            final_leg_pnl = (current_price - pos["entry_price"]) * qty
         partial_pnl = pos.get("_partial_pnl") or 0.0
         pnl = final_leg_pnl + partial_pnl
         trade_id = pos.get("trade_id")

@@ -174,6 +174,11 @@ class QualityShortScorer:
                 # Map to indexable subset (universe symbols only)
                 universe = set(scores.index)
                 latest = latest[latest["symbol"].isin(universe)]
+                # Staleness guard: reject fundamentals older than 120 days
+                _as_of_dt = pd.Timestamp(as_of_str)
+                latest = latest[
+                    (_as_of_dt - pd.to_datetime(latest["as_of_date"])).dt.days <= 120
+                ]
                 for _, row in latest.iterrows():
                     sym = row["symbol"]
                     if sym in long_set or sym == "SPY":
