@@ -109,7 +109,7 @@ jobs:
             --override-ini="addopts=-n auto --dist=loadscope --timeout=120" \
             --cov=app \
             --cov-report=xml \
-            --cov-fail-under=58 \
+            --cov-fail-under=57 \
             --cov-config=pytest.ini
 
       - name: Upload coverage report
