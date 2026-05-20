@@ -85,7 +85,26 @@ class _PortfolioState:
 
     @property
     def position_market_value(self) -> float:
+        # Uses entry price (no MTM) — kept for backward compat with live PM code paths.
         return sum(p.entry_price * p.quantity for p in self.positions.values())
+
+    def equity_mtm(self, today_closes: dict) -> float:
+        """Mark-to-market equity: longs at today's close, shorts as unrealized PnL.
+
+        For longs:  contribution = today_close * qty
+        For shorts: contribution = (entry_price - today_close) * qty
+                    (profit when price falls; cash already holds entry proceeds as margin)
+        Falls back to entry_price if today_close is unavailable for a symbol.
+        """
+        pmv = 0.0
+        for sym, pos in self.positions.items():
+            close = today_closes.get(sym, pos.entry_price)
+            is_short = getattr(pos, "direction", "long") == "short"
+            if is_short:
+                pmv += (pos.entry_price - close) * pos.quantity
+            else:
+                pmv += close * pos.quantity
+        return self.cash + pmv
 
     @property
     def equity(self) -> float:
@@ -139,6 +158,7 @@ class AgentSimulator:
         sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
         factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
         max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
+        short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -167,6 +187,7 @@ class AgentSimulator:
         self.sim_scan_interval_days = max(1, sim_scan_interval_days)
         self.factor_scorer = factor_scorer  # Phase D: optional callable override
         self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
+        self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -403,7 +424,15 @@ class AgentSimulator:
                 accepted_trades.extend(new_trades)
                 tx_costs_total += new_tx
 
-            equity_by_date[day] = portfolio.equity
+            # MTM equity: mark open positions to today's close (Bug fix: was entry_price forever)
+            _today_closes = {}
+            for _sym, _pos in portfolio.positions.items():
+                _df = symbols_data.get(_sym)
+                if _df is not None:
+                    _bar = self._bars_on(_df, day)
+                    if _bar is not None:
+                        _today_closes[_sym] = float(_bar["close"])
+            equity_by_date[day] = portfolio.equity_mtm(_today_closes)
             portfolio.daily_pnl = 0.0  # reset for next day
 
         # Force-close any remaining open positions at last bar close
@@ -954,9 +983,9 @@ class AgentSimulator:
             today_close = float(today_bar["close"])
             is_short = getattr(pos, "direction", "long") == "short"
 
-            # Daily borrow cost for short positions (0.5% annualised)
+            # Daily borrow cost for short positions (configurable annual rate, default 5%)
             if is_short:
-                borrow_cost = pos.entry_price * pos.quantity * 0.005 / 252
+                borrow_cost = pos.entry_price * pos.quantity * self.short_borrow_rate_annual / 252
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 
