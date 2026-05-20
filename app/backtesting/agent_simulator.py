@@ -824,7 +824,7 @@ class AgentSimulator:
             {"stop_price": p.stop_price, "entry_price": p.entry_price, "quantity": p.quantity}
             for p in portfolio.positions.values()
         ]
-        new_trade_risk = (entry_price - stop_price) * quantity
+        new_trade_risk = abs(entry_price - stop_price) * quantity
         ok, msg = validate_portfolio_heat(new_trade_risk, open_pos_dicts, equity, self.limits)
         if not ok:
             return False, msg
@@ -888,7 +888,8 @@ class AgentSimulator:
 
             # Phase 34: No-chase filter — skip large overnight gaps and extended entries
             # Not applied in factor portfolio mode (monthly rebalance enters regardless of daily gap)
-            if self.factor_scorer is None and bars_yesterday is not None and len(bars_yesterday) >= 14:
+            # Not applied to shorts: gapping up is favorable for a short entry (selling into strength)
+            if not is_short and self.factor_scorer is None and bars_yesterday is not None and len(bars_yesterday) >= 14:
                 try:
                     prior_close = float(bars_yesterday["close"].iloc[-1])
                     hi = bars_yesterday["high"].to_numpy(dtype=float)[-15:]
@@ -1105,8 +1106,8 @@ class AgentSimulator:
             net_pnl = gross_pnl - tx_cost
             pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
             if portfolio is not None:
-                # Return margin + realised P&L; deduct buy-to-cover cost
-                portfolio.cash += pos.entry_price * pos.quantity + gross_pnl - tx_cost
+                # Net cash: proceeds already booked at entry; cover cost = exit*qty
+                portfolio.cash += gross_pnl - tx_cost
 
         if portfolio is not None:
             portfolio.daily_pnl += net_pnl

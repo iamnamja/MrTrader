@@ -881,6 +881,7 @@ class Trader(BaseAgent):
         )
         if shares <= 0:
             self.logger.warning("%s: position sizer returned 0 shares — skipping", symbol)
+            self._release_intraday_slot(trade_type)
             return
 
         self.logger.info(
@@ -1993,8 +1994,8 @@ class Trader(BaseAgent):
             pos["stop_price"] = min(pos["stop_price"], breakeven_stop)
         else:
             pnl = (current_price - pos["entry_price"]) * partial_qty
-            # Move stop on remaining shares to near-breakeven
-            breakeven_stop = round(pos["entry_price"] * 1.001, 4)
+            # Move stop on remaining shares to near-breakeven (just below entry for longs)
+            breakeven_stop = round(pos["entry_price"] * 0.999, 4)
             pos["stop_price"] = max(pos["stop_price"], breakeven_stop)
 
         db = get_session()
