@@ -2175,9 +2175,10 @@ class Trader(BaseAgent):
                     entry_date and entry_date == today
                 ):
                     compliance_tracker.record_day_trade(symbol)
-                # Settlement: record proceeds as unsettled (T+1)
-                proceeds = current_price * qty
-                compliance_tracker.record_sale_proceeds(proceeds)
+                # Settlement: only long closes are sale proceeds (short covers are cash outflows)
+                if pos.get("direction") != "SELL_SHORT":
+                    proceeds = current_price * qty
+                    compliance_tracker.record_sale_proceeds(proceeds)
                 compliance_tracker.sweep_settled()
                 # Wash sale: flag if closed at a loss
                 if pnl < 0:

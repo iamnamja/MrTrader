@@ -583,7 +583,8 @@ class RiskManager(BaseAgent):
         # ── Rule 9: Correlation Check (swing only) ───────────────────────────
         if proposal.get("trade_type") == "swing" and positions:
             corr_result = await asyncio.to_thread(
-                self._check_correlation, symbol, positions, self.limits.max_correlation
+                self._check_correlation, symbol, positions, self.limits.max_correlation,
+                proposal.get("direction", "BUY"),
             )
             reasoning["checks"].append({"rule": "correlation", **corr_result})
             if not corr_result["ok"]:
@@ -646,12 +647,17 @@ class RiskManager(BaseAgent):
     # ─── Phase 19: Risk Intelligence Helpers ─────────────────────────────────
 
     def _check_correlation(
-        self, symbol: str, positions: list, max_corr: float
+        self, symbol: str, positions: list, max_corr: float,
+        proposed_direction: str = "BUY",
     ) -> dict:
         """
         Compute 60-day return correlation between proposed symbol and each open
         position. Returns ok=False with the worst offender if any exceed max_corr.
         Skips check (ok=True) if bars unavailable.
+
+        Direction-aware: a short proposal against a long position is a hedge —
+        effective correlation is negated so opposite-direction pairs don't
+        incorrectly trigger the concentration limit.
         """
         try:
             import numpy as np
@@ -665,6 +671,15 @@ class RiskManager(BaseAgent):
             returns_new = bars_new["close"].pct_change().dropna().values
             worst_corr, worst_sym = 0.0, ""
 
+            # Build direction map for existing positions
+            _existing_dirs = {
+                p["symbol"]: (
+                    p.get("side") or ("short" if float(p.get("qty") or p.get("quantity") or 0) < 0 else "long")
+                )
+                for p in positions if p.get("symbol")
+            }
+            _prop_is_short = proposed_direction == "SELL_SHORT"
+
             open_syms = [p["symbol"] for p in positions if p.get("symbol") != symbol]
             for open_sym in open_syms:
                 try:
@@ -676,6 +691,10 @@ class RiskManager(BaseAgent):
                     if n < 10:
                         continue
                     corr = float(np.corrcoef(returns_new[-n:], returns_open[-n:])[0, 1])
+                    # Opposite directions hedge each other — negate effective correlation
+                    _existing_is_short = _existing_dirs.get(open_sym) == "short"
+                    if _prop_is_short != _existing_is_short:
+                        corr = -corr
                     if corr > worst_corr:
                         worst_corr, worst_sym = corr, open_sym
                 except Exception:
