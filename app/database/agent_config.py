@@ -155,6 +155,36 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Number of short candidates from factor composite score (bottom-N).",
         "group": "Portfolio Manager",
     },
+    {
+        "key": "pm.ls_borrow_cost_annual_pct",
+        "default": 0.005,
+        "type": "float",
+        "min": 0.0,
+        "max": 0.10,
+        "description": "Annualised borrow cost for short positions (deducted daily). 0.005 = 0.5%/yr.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.ls_net_exposure_tolerance",
+        "default": 0.15,
+        "type": "float",
+        "min": 0.05,
+        "max": 0.40,
+        "description": (
+            "Allowed deviation from ls_net_exposure_pct before new entries are blocked. "
+            "0.15 means entries blocked if net exposure would be outside [target-15%, target+15%]."
+        ),
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.ls_max_short_notional_pct",
+        "default": 0.75,
+        "type": "float",
+        "min": 0.10,
+        "max": 1.50,
+        "description": "Hard cap on total short notional as fraction of NAV. 0.75 = 75% NAV max short.",
+        "group": "Portfolio Manager",
+    },
     # Trader / Strategy
     {
         "key": "strategy.partial_exit_pct",

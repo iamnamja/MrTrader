@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-18
+**Last updated:** 2026-05-20
 **Capital:** $100k (paper)
-**Status:** Phase E complete (P0 scripts written). Phase F (Long/Short infrastructure) is the next major build.
+**Status:** Phase F complete (L/S infrastructure built + WF run: avg 0.579, gate FAILED). **Phase G (PEAD) is the primary path** — factor IC = -0.0064 confirms no signal; PEAD avg Sharpe ~2.70 validated.
 
 ---
 
@@ -51,8 +51,8 @@ Full synthesis lives in `docs/QUANT_REVIEW_SYNTHESIS_2026_05_18.md`.
 
 ```
 Phase E (DONE)        IC + survivorship scripts                  2026-05-18
-Phase F (NEXT)        L/S infrastructure                          ~2 weeks
-Phase G               PEAD strategy                               ~1 week
+Phase F (DONE)        L/S infrastructure                          2026-05-20
+Phase G (NEXT)        PEAD strategy                               ~1 week
 Phase H               3-month paper trading gate                  3 months
 Phase I               Live $100k                                  after H passes
 ```
@@ -86,7 +86,9 @@ P0 bug audit (per LLM review synthesis):
 
 ---
 
-## Phase F — Long/Short Infrastructure 🔄 NEXT
+## Phase F — Long/Short Infrastructure ✅ COMPLETE (2026-05-20)
+
+**WF Result:** avg Sharpe 0.579, GATE FAILED (Fold 4 = -0.98 during April 2025 tariff shock). Factor IC = -0.0064 → no signal. L/S infrastructure stays as foundation for PEAD; factor portfolio deprioritized as alpha source.
 
 **Goal:** Convert the factor portfolio + (future) PEAD into a directional L/S engine.
 

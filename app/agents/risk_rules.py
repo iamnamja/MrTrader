@@ -30,6 +30,9 @@ class RiskLimits:
     max_portfolio_beta: float = 1.30           # max portfolio beta vs SPY
     high_beta_threshold: float = 1.20          # beta above which a stock is "high-beta"
     max_factor_concentration: float = 0.60     # max fraction of portfolio in same sector
+    ls_net_exposure_pct: float = 0.40          # target net long exposure (long-short)/NAV
+    ls_net_exposure_tolerance: float = 0.15    # allowed deviation from target before blocking
+    max_short_notional_pct: float = 0.75       # hard cap on total short notional / NAV
 
     @classmethod
     def from_db(cls, db) -> "RiskLimits":
@@ -57,6 +60,9 @@ class RiskLimits:
                 max_portfolio_beta=_get("risk.max_portfolio_beta", _d.max_portfolio_beta),
                 high_beta_threshold=_get("risk.high_beta_threshold", _d.high_beta_threshold),
                 max_factor_concentration=_get("risk.max_factor_concentration", _d.max_factor_concentration),
+                ls_net_exposure_pct=_get("pm.ls_net_exposure_pct", _d.ls_net_exposure_pct),
+                ls_net_exposure_tolerance=_get("pm.ls_net_exposure_tolerance", _d.ls_net_exposure_tolerance),
+                max_short_notional_pct=_get("pm.ls_max_short_notional_pct", _d.max_short_notional_pct),
             )
         except Exception as exc:
             logger.warning(
@@ -354,6 +360,67 @@ def validate_portfolio_heat(
         limits = RiskLimits()
     from app.strategy.portfolio_heat import validate_portfolio_heat as _check
     return _check(new_trade_risk, positions, account_value, limits.MAX_PORTFOLIO_HEAT_PCT)
+
+
+# ─── Rule 9: Net Exposure Gate ────────────────────────────────────────────────
+
+def validate_net_exposure(
+    proposed_notional: float,
+    proposed_direction: str,
+    current_long_notional: float,
+    current_short_notional: float,
+    account_value: float,
+    limits: RiskLimits = None,
+) -> Tuple[bool, str]:
+    """
+    Reject entries that push net exposure beyond target ± tolerance.
+
+    Net exposure = (long_notional - short_notional) / account_value.
+    Adding a long increases net; adding a short decreases net.
+    Fails open (returns True) when account_value is zero or negative.
+    """
+    if limits is None:
+        limits = RiskLimits()
+    if account_value <= 0:
+        return True, "Net exposure check skipped — account_value <= 0"
+
+    delta = proposed_notional if proposed_direction != "SELL_SHORT" else -proposed_notional
+    new_net = (current_long_notional - current_short_notional + delta) / account_value
+    lo = limits.ls_net_exposure_pct - limits.ls_net_exposure_tolerance
+    hi = limits.ls_net_exposure_pct + limits.ls_net_exposure_tolerance
+    if lo <= new_net <= hi:
+        return True, f"Net exposure {new_net:.1%} within target band [{lo:.1%}, {hi:.1%}]"
+    return (
+        False,
+        f"Net exposure {new_net:.1%} outside target band [{lo:.1%}, {hi:.1%}] — "
+        f"entry would push portfolio off target {limits.ls_net_exposure_pct:.1%}",
+    )
+
+
+# ─── Rule 10: Short Notional Cap ─────────────────────────────────────────────
+
+def validate_short_notional(
+    proposed_notional: float,
+    current_short_notional: float,
+    account_value: float,
+    limits: RiskLimits = None,
+) -> Tuple[bool, str]:
+    """
+    Hard cap on total short notional as a fraction of NAV.
+
+    Prevents unlimited leverage on the short side regardless of net-exposure target.
+    """
+    if limits is None:
+        limits = RiskLimits()
+    if account_value <= 0:
+        return True, "Short notional check skipped — account_value <= 0"
+    new_short_pct = (current_short_notional + proposed_notional) / account_value
+    if new_short_pct <= limits.max_short_notional_pct:
+        return True, f"Short notional {new_short_pct:.1%} within cap {limits.max_short_notional_pct:.1%}"
+    return (
+        False,
+        f"Short notional {new_short_pct:.1%} would exceed cap {limits.max_short_notional_pct:.1%}",
+    )
 
 
 # ─── Rule 8: Dynamic Stop Loss ────────────────────────────────────────────────

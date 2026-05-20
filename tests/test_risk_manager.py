@@ -385,3 +385,71 @@ class TestCorrelationFailOpen:
                 limits=limits,
             )
         assert ok, "Must fail open when yfinance returns empty DataFrame"
+
+
+# ─── Net exposure gate ────────────────────────────────────────────────────────
+
+class TestNetExposureGate:
+    """validate_net_exposure blocks entries that push net outside target ± tolerance."""
+
+    def test_long_entry_within_band_passes(self, limits):
+        from app.agents.risk_rules import validate_net_exposure
+        # long=40k, short=15k → net=25%; add 5k long → 30% → within [25%, 55%]
+        ok, msg = validate_net_exposure(5_000, "BUY", 40_000, 15_000, 100_000, limits)
+        assert ok
+
+    def test_short_entry_within_band_passes(self, limits):
+        from app.agents.risk_rules import validate_net_exposure
+        # long=50k, short=5k → net=45%; add 5k short → 40% → within [25%, 55%]
+        ok, _ = validate_net_exposure(5_000, "SELL_SHORT", 50_000, 5_000, 100_000, limits)
+        assert ok
+
+    def test_long_entry_pushes_above_hi_fails(self, limits):
+        from app.agents.risk_rules import validate_net_exposure
+        # long=60k, short=0 → net=60%; add 5k long → 65% → above 55%
+        ok, msg = validate_net_exposure(5_000, "BUY", 60_000, 0, 100_000, limits)
+        assert not ok
+        assert "outside" in msg
+
+    def test_short_entry_pushes_below_lo_fails(self, limits):
+        from app.agents.risk_rules import validate_net_exposure
+        # long=40k, short=15k → net=25%; add 5k short → 20% → below 25%
+        ok, msg = validate_net_exposure(5_000, "SELL_SHORT", 40_000, 15_000, 100_000, limits)
+        assert not ok
+
+    def test_zero_account_value_fails_open(self, limits):
+        from app.agents.risk_rules import validate_net_exposure
+        ok, msg = validate_net_exposure(5_000, "BUY", 0, 0, 0, limits)
+        assert ok
+        assert "skipped" in msg.lower()
+
+
+# ─── Short notional cap ───────────────────────────────────────────────────────
+
+class TestShortNotionalCap:
+    """validate_short_notional enforces hard cap on total short notional."""
+
+    def test_within_cap_passes(self, limits):
+        from app.agents.risk_rules import validate_short_notional
+        # 10k + 60k = 70k / 100k = 70% < 75%
+        ok, _ = validate_short_notional(10_000, 60_000, 100_000, limits)
+        assert ok
+
+    def test_exceeds_cap_fails(self, limits):
+        from app.agents.risk_rules import validate_short_notional
+        # 10k + 70k = 80k / 100k = 80% > 75%
+        ok, msg = validate_short_notional(10_000, 70_000, 100_000, limits)
+        assert not ok
+        assert "cap" in msg.lower()
+
+    def test_exactly_at_cap_passes(self, limits):
+        from app.agents.risk_rules import validate_short_notional
+        # 5k + 70k = 75k / 100k = 75% == cap
+        ok, _ = validate_short_notional(5_000, 70_000, 100_000, limits)
+        assert ok
+
+    def test_zero_account_value_fails_open(self, limits):
+        from app.agents.risk_rules import validate_short_notional
+        ok, msg = validate_short_notional(5_000, 0, 0, limits)
+        assert ok
+        assert "skipped" in msg.lower()
