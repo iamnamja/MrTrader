@@ -53,6 +53,8 @@ def _migrate_columns() -> None:
         ("daily_state",    "regime_score_premarket",   "REAL"),
         ("daily_state",    "regime_label_premarket",   "VARCHAR(15)"),
         ("daily_state",    "regime_last_updated_at",   "TIMESTAMP"),
+        # Phase J — direction on pending limit orders (needed for short-aware requote/escalation)
+        ("pending_limit_orders", "direction", "VARCHAR(15)"),
     ]
     with engine.connect() as conn:
         for table, col, col_def in migrations:
