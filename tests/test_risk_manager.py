@@ -339,3 +339,49 @@ class TestSectorConcentrationShort:
         # (2001 + 2000) / 20000 = 20.005% > 20%
         assert not ok
         assert "Energy" in msg
+
+
+# ─── validate_correlation: fail-open on yfinance errors ───────────────────────
+
+class TestCorrelationFailOpen:
+    """validate_correlation_risk must fail open (return True) when data is unavailable."""
+
+    def test_fail_open_on_yfinance_exception(self, limits):
+        from unittest.mock import patch
+        from app.agents.risk_rules import validate_correlation_risk
+        with patch("yfinance.download", side_effect=ConnectionError("network down")):
+            ok, msg = validate_correlation_risk(
+                symbol="AAPL",
+                open_symbols=["MSFT"],
+                account_value=20_000,
+                position_values={"MSFT": 2_000},
+                limits=limits,
+            )
+        assert ok, "Must fail open when yfinance throws"
+
+    def test_no_open_positions_skips_check(self, limits):
+        from app.agents.risk_rules import validate_correlation_risk
+        ok, msg = validate_correlation_risk(
+            symbol="AAPL",
+            open_symbols=[],
+            account_value=20_000,
+            position_values={},
+            limits=limits,
+        )
+        assert ok
+        assert "skipped" in msg.lower()
+
+    def test_fail_open_on_empty_dataframe(self, limits):
+        """If yfinance returns empty DataFrame, must not raise and must fail open."""
+        import pandas as pd
+        from unittest.mock import patch
+        from app.agents.risk_rules import validate_correlation_risk
+        with patch("yfinance.download", return_value=pd.DataFrame()):
+            ok, _ = validate_correlation_risk(
+                symbol="AAPL",
+                open_symbols=["MSFT"],
+                account_value=20_000,
+                position_values={"MSFT": 2_000},
+                limits=limits,
+            )
+        assert ok, "Must fail open when yfinance returns empty DataFrame"

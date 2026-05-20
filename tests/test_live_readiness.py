@@ -240,3 +240,91 @@ class TestDeflatedSharpe:
         with patch(f"{MODULE}.get_session", return_value=session):
             r = ReadinessChecker()._check_deflated_sharpe()
         assert r.passed is False
+
+
+# ─── Composite run() ──────────────────────────────────────────────────────────
+
+class TestReadinessRunComposite:
+    """End-to-end test of ReadinessChecker.run() with all external calls mocked."""
+
+    def _all_pass_mocks(self):
+        """Return a context-manager stack that makes every sub-check succeed."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+
+        session = MagicMock()
+        # Win rate: 80 wins, 20 losses
+        win_trades = [MagicMock(pnl=10.0, status="CLOSED",
+                                created_at=datetime.utcnow() - timedelta(days=60))
+                      for _ in range(80)]
+        loss_trades = [MagicMock(pnl=-5.0, status="CLOSED",
+                                 created_at=datetime.utcnow() - timedelta(days=60))
+                       for _ in range(20)]
+        all_trades = win_trades + loss_trades
+        session.query.return_value.filter.return_value.all.return_value = all_trades
+        session.query.return_value.filter.return_value.scalar.return_value = \
+            datetime.utcnow() - timedelta(days=MIN_PAPER_TRADE_DAYS + 1)
+        session.close = MagicMock()
+
+        alpaca_mock = MagicMock()
+        alpaca_mock.get_account.return_value = MagicMock(
+            equity=str(MIN_ACCOUNT_EQUITY + 1000)
+        )
+
+        stack.enter_context(patch(f"{MODULE}.settings",
+                                  trading_mode="paper", smtp_host="smtp.x.com",
+                                  slack_webhook_url="https://hooks.slack.com/x"))
+        stack.enter_context(patch(f"{MODULE}.check_db_connection", return_value=True))
+        stack.enter_context(patch(f"{MODULE}.get_redis_queue",
+                                  return_value=MagicMock(health_check=MagicMock(return_value=True))))
+        stack.enter_context(patch(f"{MODULE}.get_alpaca_client", return_value=alpaca_mock))
+        stack.enter_context(patch(f"{MODULE}.get_session", return_value=session))
+        stack.enter_context(patch(f"{MODULE}.kill_switch",
+                                  create=True, is_active=False))
+        return stack
+
+    def test_run_returns_required_keys(self):
+        checker = ReadinessChecker()
+        result = checker.run()
+        for key in ("ready", "timestamp", "summary", "blockers", "warnings", "passed", "all_checks"):
+            assert key in result, f"Missing key: {key}"
+
+    def test_run_ready_false_when_db_down(self):
+        with patch(f"{MODULE}.check_db_connection", return_value=False), \
+             patch(f"{MODULE}.settings", trading_mode="paper",
+                   smtp_host=None, slack_webhook_url=None), \
+             patch(f"{MODULE}.get_redis_queue", side_effect=Exception("no redis")), \
+             patch(f"{MODULE}.get_alpaca_client", side_effect=Exception("no alpaca")), \
+             patch(f"{MODULE}.get_session",
+                   return_value=MagicMock(
+                       query=MagicMock(return_value=MagicMock(
+                           filter=MagicMock(return_value=MagicMock(
+                               all=MagicMock(return_value=[]),
+                               scalar=MagicMock(return_value=None),
+                           ))
+                       )),
+                       close=MagicMock(),
+                   )), \
+             patch("app.agents.portfolio_manager.PortfolioManager",
+                   side_effect=Exception("no model")):
+            checker = ReadinessChecker()
+            result = checker.run()
+        assert result["ready"] is False
+        blocker_names = [b["check"] for b in result["blockers"]]
+        assert "db_connected" in blocker_names
+
+    def test_run_summary_format(self):
+        checker = ReadinessChecker()
+        result = checker.run()
+        assert "/" in result["summary"]
+        assert "checks passed" in result["summary"]
+
+    def test_smtp_slack_failures_are_warnings_not_blockers(self):
+        """smtp/slack not configured must not block ready=True for other passing checks."""
+        checker = ReadinessChecker()
+        result = checker.run()
+        warning_names = [w["check"] for w in result["warnings"]]
+        blocker_names = [b["check"] for b in result["blockers"]]
+        # smtp/slack should not appear in blockers even if they fail
+        assert "smtp_configured" not in blocker_names
+        assert "slack_configured" not in blocker_names
