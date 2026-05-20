@@ -636,7 +636,7 @@ class RiskManager(BaseAgent):
         reasoning["stop_loss"] = stop_loss
 
         # ── Wash sale warning (non-blocking) ─────────────────────────────────
-        is_wash, wash_msg = compliance_tracker.check_wash_sale(symbol)
+        is_wash, wash_msg = compliance_tracker.check_wash_sale(symbol, proposed_direction=_rm_dir)
         reasoning["checks"].append({"rule": "wash_sale", "ok": True, "msg": wash_msg})
         if is_wash:
             self.logger.warning("WASH SALE: %s", wash_msg)

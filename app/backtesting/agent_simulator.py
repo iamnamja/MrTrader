@@ -792,12 +792,13 @@ class AgentSimulator:
         quantity: int,
         portfolio: _PortfolioState,
         sector: str,
+        direction: str = "BUY",
     ) -> Tuple[bool, str]:
         """Run key RM rules against current portfolio state. Returns (ok, reason)."""
         trade_cost = entry_price * quantity
         equity = portfolio.equity_decision  # MTM-aware: avoids phantom equity from short opens
 
-        ok, msg = validate_buying_power(trade_cost, portfolio.buying_power, self.limits)
+        ok, msg = validate_buying_power(trade_cost, portfolio.buying_power, self.limits, direction=direction)
         if not ok:
             return False, msg
 
@@ -964,7 +965,10 @@ class AgentSimulator:
                 continue
 
             sector = sector_map.get(sym, "UNKNOWN")
-            ok, reason = self._rm_validate(sym, entry_price, stop_price, quantity, portfolio, sector)
+            ok, reason = self._rm_validate(
+                sym, entry_price, stop_price, quantity, portfolio, sector,
+                direction="SELL_SHORT" if is_short else "BUY",
+            )
             if not ok:
                 logger.debug("RM rejected %s on %s: %s", sym, day, reason)
                 continue

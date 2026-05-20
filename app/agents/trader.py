@@ -147,8 +147,8 @@ class Trader(BaseAgent):
                     days_since_entry = (datetime.now(ET).date() - entry_date).days
                     bars_held = max(t.bars_held or 0, days_since_entry)
                     _rec_dir = getattr(t, "direction", "BUY") or "BUY"
-                    # Cross-check DB direction against Alpaca qty sign; correct if mismatched
-                    _alpaca_short = float(pos.get("qty", 0)) < 0
+                    # Cross-check DB direction against Alpaca qty sign; use already-resolved qty
+                    _alpaca_short = qty < 0
                     if _alpaca_short and _rec_dir != "SELL_SHORT":
                         self.logger.warning(
                             "Reconcile %s: DB direction=%s but Alpaca qty<0 — correcting to SELL_SHORT",
@@ -2188,7 +2188,7 @@ class Trader(BaseAgent):
                 compliance_tracker.sweep_settled()
                 # Wash sale: flag if closed at a loss
                 if pnl < 0:
-                    compliance_tracker.record_loss_close(symbol)
+                    compliance_tracker.record_loss_close(symbol, direction=pos.get("direction", "BUY"))
             except Exception as _ce:
                 self.logger.debug("Compliance post-trade update failed: %s", _ce)
 
