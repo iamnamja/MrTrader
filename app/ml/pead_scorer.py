@@ -6,8 +6,8 @@ stocks with significant recent earnings surprises. Enters long on positive
 surprise, short on negative surprise.
 
 Typical PEAD signal:
-    Long:  EPS surprise > +5%, report within last 3 trading days
-    Short: EPS surprise < -5%, report within last 3 trading days
+    Long:  EPS surprise > +5%, report within last 3 calendar days
+    Short: EPS surprise < -5%, report within last 3 calendar days
     Hold 5 days (short-term momentum after announcement)
 
 Returns [(sym, conf, direction)] compatible with AgentSimulator.factor_scorer.
@@ -21,7 +21,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# How many calendar days after the earnings report to still enter
+# How many calendar days after the earnings report to still enter (3 cal ≈ 1-2 trading days)
 MAX_DAYS_AFTER_EARNINGS = 3
 
 # EPS surprise thresholds (fraction: 0.05 = 5%)

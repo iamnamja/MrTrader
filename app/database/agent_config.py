@@ -115,6 +115,17 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.pead_enable_shorts",
+        "default": "false",
+        "type": "str",
+        "description": (
+            "Enable PEAD short entries (EPS surprise < -5%). "
+            "Requires margin-enabled Alpaca account and short order routing to be wired. "
+            "Default false = longs only."
+        ),
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.ls_net_exposure_pct",
         "default": 0.40,
         "type": "float",
