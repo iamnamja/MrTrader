@@ -29,7 +29,6 @@ import pandas as pd
 from app.ml.factor_scorer import (
     compute_composite_score,
     select_top_n,
-    _zscore_cross,
 )
 
 logger = logging.getLogger(__name__)
