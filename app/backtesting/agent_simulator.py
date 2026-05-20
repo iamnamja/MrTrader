@@ -1046,48 +1046,97 @@ class AgentSimulator:
             else:
                 pos.highest_price = max(pos.highest_price, today_high)
 
-            # Use shared check_exit for both long and short (sim/live parity)
+            # P0.2 fix: Run intrabar H/L stop/target check FIRST, using the
+            # stop/target levels that were in effect at the START of today's bar
+            # (i.e. before any trailing-stop ratchet that would itself be informed
+            # by today's H/L → look-ahead). The trailing stop update from check_exit
+            # uses `highest_price` which already includes today's extreme, so it
+            # must not be allowed to retroactively pull the intrabar stop into
+            # today's range.
+            _orig_stop = pos.stop_price
+            _orig_target = pos.target_price
+            today_open = float(today_bar["open"])
+            should_exit = False
+            exit_reason = ""
+            fill_price = today_close  # default
+
+            if is_short:
+                # Short: stop above entry (breached when high >= stop),
+                # target below entry (hit when low <= target).
+                if today_open >= _orig_stop:
+                    # Gap-up through stop: fill at open (worse than stop)
+                    should_exit = True
+                    exit_reason = "stop_hit"
+                    fill_price = today_open
+                elif today_high >= _orig_stop:
+                    should_exit = True
+                    exit_reason = "stop_hit"
+                    fill_price = _orig_stop
+                elif today_open <= _orig_target:
+                    # Gap-down through target: fill at open (better than target)
+                    should_exit = True
+                    exit_reason = "target_hit"
+                    fill_price = today_open
+                elif today_low <= _orig_target:
+                    should_exit = True
+                    exit_reason = "target_hit"
+                    fill_price = _orig_target
+            else:
+                # Long: stop below entry (breached when low <= stop),
+                # target above entry (hit when high >= target).
+                if today_open <= _orig_stop:
+                    # Gap-down through stop: fill at open (worse than stop)
+                    should_exit = True
+                    exit_reason = "stop_hit"
+                    fill_price = today_open
+                elif today_low <= _orig_stop:
+                    should_exit = True
+                    exit_reason = "stop_hit"
+                    fill_price = _orig_stop
+                elif today_open >= _orig_target:
+                    # Gap-up through target: fill at open (better than target)
+                    should_exit = True
+                    exit_reason = "target_hit"
+                    fill_price = today_open
+                elif today_high >= _orig_target:
+                    should_exit = True
+                    exit_reason = "target_hit"
+                    fill_price = _orig_target
+
+            # If no intrabar stop/target breach, defer to check_exit for
+            # max-hold/trailing-stop-on-close logic and update the trailing stop
+            # for FUTURE bars (never applied retroactively to today's H/L).
             _check_dir = "SELL_SHORT" if is_short else "BUY"
             _max_hold = (self.max_hold_bars_override
                          if self.max_hold_bars_override is not None
                          else self.limits.MAX_OPEN_POSITIONS * 4)
-            should_exit, exit_reason, new_stop = check_exit(
-                symbol=sym,
-                current_price=today_close,
-                entry_price=pos.entry_price,
-                stop_price=pos.stop_price,
-                target_price=pos.target_price,
-                highest_price=pos.highest_price,
-                bars_held=pos.bars_held,
-                min_hold_bars=1,
-                max_hold_bars=_max_hold,
-                direction=_check_dir,
-            )
-            pos.stop_price = new_stop
-
-            # Intrabar stop/target override: use H/L to check for intrabar breach
             if not should_exit:
-                if is_short:
-                    if today_high >= pos.stop_price:
-                        should_exit = True
-                        exit_reason = "stop_hit"
-                        today_close = pos.stop_price
-                    elif today_low <= pos.target_price:
-                        should_exit = True
-                        exit_reason = "target_hit"
-                        today_close = pos.target_price
-                else:
-                    if today_low <= pos.stop_price:
-                        should_exit = True
-                        exit_reason = "stop_hit"
-                        today_close = pos.stop_price
-                    elif today_high >= pos.target_price:
-                        should_exit = True
-                        exit_reason = "target_hit"
-                        today_close = pos.target_price
+                ce_should_exit, ce_reason, new_stop = check_exit(
+                    symbol=sym,
+                    current_price=today_close,
+                    entry_price=pos.entry_price,
+                    stop_price=pos.stop_price,
+                    target_price=pos.target_price,
+                    highest_price=pos.highest_price,
+                    bars_held=pos.bars_held,
+                    min_hold_bars=1,
+                    max_hold_bars=_max_hold,
+                    direction=_check_dir,
+                )
+                # Persist any trailing-stop ratchet for the next bar.
+                pos.stop_price = new_stop
+                if ce_should_exit:
+                    should_exit = True
+                    exit_reason = ce_reason
+                    fill_price = today_close
+            else:
+                # Even though we're exiting intrabar, refresh the trailing stop
+                # state via check_exit so live/sim parity for the (unused) return.
+                # Not strictly necessary since position is closing this bar.
+                pass
 
             if should_exit:
-                trade, tx = self._close_position(pos, day, today_close, exit_reason, portfolio)
+                trade, tx = self._close_position(pos, day, fill_price, exit_reason, portfolio)
                 closed.append((trade, tx))
                 del portfolio.positions[sym]
 

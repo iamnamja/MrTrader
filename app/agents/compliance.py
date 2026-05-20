@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 PDT_EQUITY_THRESHOLD = 25_000.0   # below this, PDT rules apply
+PDT_CIRCUIT_BREAKER = 26_000.0   # block intraday when equity < this (buffer above PDT floor)
 PDT_MAX_DAY_TRADES = 3            # round-trips allowed per 5-business-day window
 PDT_WARN_AT = 2                   # warn (and block new intraday) when count reaches this
 PDT_WINDOW_DAYS = 5               # rolling business-day window
@@ -102,8 +103,14 @@ class ComplianceTracker:
     def is_pdt_blocked(self, account_equity: float) -> Tuple[bool, str]:
         """
         Return (blocked, reason).
-        Blocked if equity < $25k AND rolling day-trade count >= PDT_WARN_AT.
+        Blocked if equity < $26k circuit breaker (buffer above PDT $25k floor).
+        Also blocked if equity < $25k AND rolling day-trade count >= PDT_WARN_AT.
         """
+        if account_equity < PDT_CIRCUIT_BREAKER:
+            return True, (
+                f"PDT circuit breaker: equity ${account_equity:,.0f} < "
+                f"${PDT_CIRCUIT_BREAKER:,.0f} — blocking intraday to protect PDT status"
+            )
         if account_equity >= PDT_EQUITY_THRESHOLD:
             return False, f"equity ${account_equity:,.0f} ≥ PDT threshold — PDT check skipped"
         count = self.day_trade_count_window()
