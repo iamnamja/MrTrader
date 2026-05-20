@@ -146,18 +146,24 @@ class Trader(BaseAgent):
                     # DB value is only written on close so it's always 0 for active trades.
                     days_since_entry = (datetime.now(ET).date() - entry_date).days
                     bars_held = max(t.bars_held or 0, days_since_entry)
+                    _rec_dir = getattr(t, "direction", "BUY") or "BUY"
+                    _rec_short = _rec_dir == "SELL_SHORT"
+                    _rec_stop = t.stop_price or round(avg * (1.02 if _rec_short else 0.98), 2)
+                    _rec_tgt = t.target_price or round(avg * (0.94 if _rec_short else 1.06), 2)
                     self.active_positions[symbol] = {
                         "entry_price":   t.entry_price,
-                        "stop_price":    t.stop_price or avg * 0.98,
-                        "target_price":  t.target_price or avg * 1.06,
+                        "stop_price":    _rec_stop,
+                        "target_price":  _rec_tgt,
                         "highest_price": avg,
                         "atr":           0.0,
                         "bars_held":     bars_held,
                         "trade_id":      t.id,
                         "trade_type":    getattr(t, "trade_type", None) or "swing",
                         "entry_date":    entry_date,
+                        "direction":     _rec_dir,
+                        "proposal_uuid": getattr(t, "proposal_id", None),
                     }
-                    self.logger.info("Reconciled %s from DB trade id=%d", symbol, t.id)
+                    self.logger.info("Reconciled %s from DB trade id=%d dir=%s", symbol, t.id, _rec_dir)
                 continue
 
             # No DB record — create a synthetic ACTIVE trade using generate_signal for stop/target
@@ -180,10 +186,14 @@ class Trader(BaseAgent):
                     "Reconciliation: %s has existing trade id=%d today — treating as remnant, not creating new record",
                     symbol, existing_today.id,
                 )
+                _rem_dir = getattr(existing_today, "direction", "BUY") or "BUY"
+                _rem_short = _rem_dir == "SELL_SHORT"
+                _rem_stop = existing_today.stop_price or round(avg * (1.02 if _rem_short else 0.98), 2)
+                _rem_tgt = existing_today.target_price or round(avg * (0.94 if _rem_short else 1.06), 2)
                 self.active_positions[symbol] = {
                     "entry_price":   float(existing_today.entry_price or avg),
-                    "stop_price":    float(existing_today.stop_price or avg * 0.98),
-                    "target_price":  float(existing_today.target_price or avg * 1.06),
+                    "stop_price":    float(_rem_stop),
+                    "target_price":  float(_rem_tgt),
                     "highest_price": avg,
                     "atr":           0.0,
                     "bars_held":     existing_today.bars_held or 0,
@@ -193,6 +203,8 @@ class Trader(BaseAgent):
                         existing_today.created_at.date()
                         if existing_today.created_at else datetime.now(ET).date()
                     ),
+                    "direction":     _rem_dir,
+                    "proposal_uuid": getattr(existing_today, "proposal_id", None),
                     "_partial_exited": True,
                 }
                 existing_today.status = "ACTIVE"
@@ -227,26 +239,37 @@ class Trader(BaseAgent):
                         symbol,
                     )
 
-                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
-                if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
-                    result = generate_signal(symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False)
-                    stop = result.stop_price if result.stop_price and result.stop_price > 0 else round(avg * 0.98, 2)
-                    target = (result.target_price if result.target_price and result.target_price > 0
-                              else round(avg * 1.06, 2))
-                    # NONE means no rule-based pattern fired, but entry was ML-driven
-                    signal = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
-                    atr = result.atr
+                # Detect short from Alpaca: negative qty indicates a short position
+                _syn_dir = "SELL_SHORT" if qty < 0 else "BUY"
+                _syn_short = _syn_dir == "SELL_SHORT"
+
+                # generate_signal is long-only; for shorts use direction-aware fallbacks directly
+                atr = 0.0
+                signal = "ML_RANK"
+                if not _syn_short:
+                    bars = alpaca.get_bars(symbol, timeframe="1Day", limit=MIN_BARS)
+                    if bars is not None and not bars.empty and len(bars) >= MIN_BARS:
+                        result = generate_signal(
+                            symbol, bars, ml_score=0.6, check_regime=False, check_earnings=False
+                        )
+                        stop = (result.stop_price if result.stop_price and result.stop_price > 0
+                                else round(avg * 0.98, 2))
+                        target = (result.target_price if result.target_price and result.target_price > 0
+                                  else round(avg * 1.06, 2))
+                        signal = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
+                        atr = result.atr
+                    else:
+                        stop = round(avg * 0.98, 2)
+                        target = round(avg * 1.06, 2)
                 else:
-                    stop = round(avg * 0.98, 2)
-                    target = round(avg * 1.06, 2)
-                    signal = "ML_RANK"
-                    atr = 0.0
+                    stop = round(avg * 1.02, 2)   # 2% above entry for short stop
+                    target = round(avg * 0.94, 2)  # 6% below entry for short target
 
                 trade = Trade(
                     symbol=symbol,
-                    direction="BUY",
+                    direction=_syn_dir,
                     entry_price=avg,
-                    quantity=qty,
+                    quantity=abs(qty),
                     status="ACTIVE",
                     signal_type=signal,
                     trade_type=trade_type_rec,
@@ -268,6 +291,7 @@ class Trader(BaseAgent):
                     "trade_id":      trade.id,
                     "trade_type":    "swing",
                     "entry_date":    datetime.now(ET).date(),
+                    "direction":     _syn_dir,
                 }
                 self.logger.info(
                     "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
@@ -1278,6 +1302,7 @@ class Trader(BaseAgent):
                 "trade_type":    trade_type,
                 "entry_date":    datetime.now(ET).date(),
                 "direction":     _pos_dir,
+                "proposal_uuid": proposal.get("proposal_uuid"),
             }
             # Propagate per-proposal hold cap (e.g. PEAD hold-5) into the live position
             _mhd = proposal.get("max_hold_days")
@@ -2232,6 +2257,7 @@ class Trader(BaseAgent):
                                     "target_price": float(t.target_price or 0),
                                     "shares": int(t.quantity or 0),
                                     "trade_id": t.id,
+                                    "direction": getattr(t, "direction", "BUY") or "BUY",
                                 }
                 db.commit()
             finally:
