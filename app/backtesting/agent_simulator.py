@@ -240,7 +240,9 @@ class AgentSimulator:
 
         # Anchor trading_days to SPY's calendar if available (C3 fix: union of all symbol
         # indices includes stale/missing-bar days that inject zero-return artifacts into Sharpe).
-        _spy_data = symbols_data.get("SPY") or symbols_data.get("spy")
+        _spy_data = symbols_data.get("SPY")
+        if _spy_data is None:
+            _spy_data = symbols_data.get("spy")
         if _spy_data is not None and len(_spy_data) > 0:
             all_days = sorted({
                 d.date() if hasattr(d, "date") else d
