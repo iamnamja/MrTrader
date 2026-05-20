@@ -318,6 +318,7 @@ class RiskManager(BaseAgent):
         symbol = proposal.get("symbol", "")
         quantity = proposal.get("quantity", 0)
         entry_price = proposal.get("entry_price", 0.0)
+        direction = proposal.get("direction", "BUY")
         trade_cost = quantity * entry_price
 
         # ── Rule 0: Symbol halt check ────────────────────────────────────────
@@ -479,7 +480,8 @@ class RiskManager(BaseAgent):
         sector_exposure = get_sector_exposure(positions, self._sector_map)
         current_sector_value = sector_exposure.get(sector, 0.0)
         ok, msg = validate_sector_concentration(
-            trade_cost, current_sector_value, account_value, sector, self.limits
+            trade_cost, current_sector_value, account_value, sector, self.limits,
+            direction=direction,
         )
         reasoning["checks"].append({"rule": "sector_concentration", "ok": ok, "msg": msg})
         if not ok:

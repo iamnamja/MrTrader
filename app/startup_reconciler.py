@@ -227,8 +227,13 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     filled_price=filled_price,
                     filled_qty=filled_qty,
                     intended_price=intended_price,
-                    slippage_bps=round(
-                        (filled_price - intended_price) / intended_price * 10000, 2
+                    slippage_bps=(
+                        round(
+                            (intended_price - filled_price) / intended_price * 10000, 2
+                        ) if (trade.direction or "BUY") == "SELL_SHORT"
+                        else round(
+                            (filled_price - intended_price) / intended_price * 10000, 2
+                        )
                     ) if intended_price > 0 else 0.0,
                 )
                 db_session.add(db_order)
@@ -442,7 +447,8 @@ def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False) -> tupl
                 continue
             if close_side not in str(o.side).upper():
                 continue
-            if "FILLED" not in str(o.status).upper():
+            # Exact match to avoid treating PARTIALLY_FILLED as a complete close
+            if str(o.status).upper() != "FILLED":
                 continue
             filled_qty = int(o.filled_qty or 0)
             if target_qty > 0 and abs(filled_qty - target_qty) > max(5, target_qty * 0.2):
