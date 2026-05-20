@@ -82,6 +82,9 @@ class _PortfolioState:
     positions: Dict[str, _Position] = field(default_factory=dict)
     daily_pnl: float = 0.0
     sector_values: Dict[str, float] = field(default_factory=dict)
+    # MTM equity cached each bar before entries run — used for all sizing/RM decisions.
+    # None until first bar closes; falls back to entry-price equity if not set.
+    _cached_mtm_equity: float = field(default=None, repr=False)
 
     @property
     def position_market_value(self) -> float:
@@ -106,9 +109,24 @@ class _PortfolioState:
                 pmv += close * pos.quantity
         return self.cash + pmv
 
+    def update_mtm(self, today_closes: dict) -> float:
+        """Compute MTM equity and cache it for use in sizing/RM decisions this bar."""
+        self._cached_mtm_equity = self.equity_mtm(today_closes)
+        return self._cached_mtm_equity
+
     @property
     def equity(self) -> float:
         return self.cash + self.position_market_value
+
+    @property
+    def equity_decision(self) -> float:
+        """MTM-aware equity for position sizing and RM rules.
+        Uses the cached MTM equity if available (set by update_mtm each bar),
+        otherwise falls back to entry-price equity (safe at t=0 when no positions open).
+        """
+        if self._cached_mtm_equity is not None:
+            return self._cached_mtm_equity
+        return self.equity
 
     @property
     def buying_power(self) -> float:
@@ -220,12 +238,20 @@ class AgentSimulator:
 
         sector_map = sector_map or {}
 
-        # Collect all trading days across all symbols
-        all_days = sorted({
-            d.date() if hasattr(d, "date") else d
-            for df in symbols_data.values()
-            for d in df.index
-        })
+        # Anchor trading_days to SPY's calendar if available (C3 fix: union of all symbol
+        # indices includes stale/missing-bar days that inject zero-return artifacts into Sharpe).
+        _spy_data = symbols_data.get("SPY") or symbols_data.get("spy")
+        if _spy_data is not None and len(_spy_data) > 0:
+            all_days = sorted({
+                d.date() if hasattr(d, "date") else d
+                for d in _spy_data.index
+            })
+        else:
+            all_days = sorted({
+                d.date() if hasattr(d, "date") else d
+                for df in symbols_data.values()
+                for d in df.index
+            })
 
         if not all_days:
             return self._empty_result()
@@ -270,7 +296,17 @@ class AgentSimulator:
             _vix_closes = _vix_df["close"]
 
         for day_idx, day in enumerate(trading_days):
-            # 1. Advance bars_held for all open positions, mark equity
+            # 0. Compute today's closes for MTM equity (used for peak tracking + sizing/RM).
+            _today_closes = {}
+            for _sym, _pos in portfolio.positions.items():
+                _df = symbols_data.get(_sym)
+                if _df is not None:
+                    _bar = self._bars_on(_df, day)
+                    if _bar is not None:
+                        _today_closes[_sym] = float(_bar["close"])
+            portfolio.update_mtm(_today_closes)
+
+            # 1. Advance bars_held for all open positions
             for pos in portfolio.positions.values():
                 pos.bars_held += 1
 
@@ -279,8 +315,8 @@ class AgentSimulator:
             for trade, tx_cost in closed:
                 accepted_trades.append(trade)
                 tx_costs_total += tx_cost
-            if portfolio.equity > portfolio.peak_equity:
-                portfolio.peak_equity = portfolio.equity
+            if portfolio.equity_decision > portfolio.peak_equity:
+                portfolio.peak_equity = portfolio.equity_decision
 
             # 3. PM: score all symbols using bars up to yesterday.
             # When sim_scan_interval_days > 1, skip scoring on off-days
@@ -424,15 +460,16 @@ class AgentSimulator:
                 accepted_trades.extend(new_trades)
                 tx_costs_total += new_tx
 
-            # MTM equity: mark open positions to today's close (Bug fix: was entry_price forever)
-            _today_closes = {}
+            # Record MTM equity for this day (already computed at step 0 above).
+            # Re-run update_mtm with any new positions opened this bar so exits are included.
+            _today_closes_eod = {}
             for _sym, _pos in portfolio.positions.items():
                 _df = symbols_data.get(_sym)
                 if _df is not None:
                     _bar = self._bars_on(_df, day)
                     if _bar is not None:
-                        _today_closes[_sym] = float(_bar["close"])
-            equity_by_date[day] = portfolio.equity_mtm(_today_closes)
+                        _today_closes_eod[_sym] = float(_bar["close"])
+            equity_by_date[day] = portfolio.equity_mtm(_today_closes_eod)
             portfolio.daily_pnl = 0.0  # reset for next day
 
         # Force-close any remaining open positions at last bar close
@@ -756,7 +793,7 @@ class AgentSimulator:
     ) -> Tuple[bool, str]:
         """Run key RM rules against current portfolio state. Returns (ok, reason)."""
         trade_cost = entry_price * quantity
-        equity = portfolio.equity
+        equity = portfolio.equity_decision  # MTM-aware: avoids phantom equity from short opens
 
         ok, msg = validate_buying_power(trade_cost, portfolio.buying_power, self.limits)
         if not ok:
@@ -908,17 +945,17 @@ class AgentSimulator:
                     stop_price = entry_price * (1 + SWING_STOP_PCT)
                     target_price = entry_price * (1 - SWING_TARGET_PCT)
 
-            # Position sizing — use abs(confidence) for shorts
+            # Position sizing — use abs(confidence) for shorts; equity_decision is MTM-aware
             conf_for_sizing = abs(confidence)
             quantity = size_position(
-                account_equity=portfolio.equity,
+                account_equity=portfolio.equity_decision,
                 available_cash=portfolio.cash,
                 entry_price=entry_price,
                 stop_price=stop_price if not is_short else entry_price * (1 - SWING_STOP_PCT),
                 ml_score=conf_for_sizing,
             )
             # Apply RM position-size cap so the trade doesn't auto-reject
-            max_position_dollars = portfolio.equity * self.limits.MAX_POSITION_SIZE_PCT
+            max_position_dollars = portfolio.equity_decision * self.limits.MAX_POSITION_SIZE_PCT
             quantity = min(quantity, max(1, int(max_position_dollars / entry_price)))
             if quantity <= 0:
                 continue
@@ -983,9 +1020,10 @@ class AgentSimulator:
             today_close = float(today_bar["close"])
             is_short = getattr(pos, "direction", "long") == "short"
 
-            # Daily borrow cost for short positions (configurable annual rate, default 5%)
+            # Daily borrow cost for short positions (configurable annual rate, default 5%).
+            # Use today's close as current notional (M6 fix: entry_price understates HTB tail risk).
             if is_short:
-                borrow_cost = pos.entry_price * pos.quantity * self.short_borrow_rate_annual / 252
+                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 252
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 
