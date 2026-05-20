@@ -382,5 +382,5 @@ def get_sector_exposure(
     for pos in positions:
         symbol = pos.get("symbol", "")
         sector = sector_map.get(symbol, "UNKNOWN")
-        exposure[sector] = exposure.get(sector, 0.0) + float(pos.get("market_value", 0))
+        exposure[sector] = exposure.get(sector, 0.0) + abs(float(pos.get("market_value", 0)))
     return exposure
