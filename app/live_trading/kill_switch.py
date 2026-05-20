@@ -81,11 +81,16 @@ class KillSwitch:
 
         for pos in positions:
             symbol = pos["symbol"]
-            qty = int(pos.get("quantity") or pos.get("qty", 0))
+            raw_qty = int(pos.get("quantity") or pos.get("qty", 0))
+            # Negative qty means a short position in Alpaca; cover with "buy"
+            exit_side = "buy" if raw_qty < 0 else "sell"
+            flat_qty = abs(raw_qty)
+            if flat_qty == 0:
+                continue
             try:
-                alpaca.place_market_order(symbol, qty, "sell")
+                alpaca.place_market_order(symbol, flat_qty, exit_side)
                 closed.append(symbol)
-                logger.warning("KS: closed %s x%d", symbol, qty)
+                logger.warning("KS: closed %s x%d (%s)", symbol, flat_qty, exit_side)
             except Exception as exc:
                 logger.error("KS: failed to close %s — %s", symbol, exc)
                 errors.append({"symbol": symbol, "error": str(exc)})

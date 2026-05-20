@@ -64,6 +64,27 @@ def _migrate_columns() -> None:
                 # Column already exists — expected on every subsequent startup
                 conn.rollback()
 
+        # Postgres only: widen direction columns from VARCHAR(5/10) → VARCHAR(15)
+        # to accommodate "SELL_SHORT" (10 chars).  SQLite ignores VARCHAR lengths.
+        if _is_postgres:
+            widen = [
+                ("trades",          "direction"),
+                ("trade_proposals", "direction"),
+                ("proposal_log",    "direction"),
+                ("decision_audit",  "direction"),
+                ("swing_proposal_log", "direction"),
+                ("orders",          "direction"),
+            ]
+            for table, col in widen:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ALTER COLUMN {col} TYPE VARCHAR(15)"
+                    ))
+                    conn.commit()
+                    logger.info("Migration: widened %s.%s to VARCHAR(15)", table, col)
+                except Exception:
+                    conn.rollback()
+
 
 def get_session() -> Session:
     """Get a new database session"""
