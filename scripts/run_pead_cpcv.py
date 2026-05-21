@@ -168,7 +168,18 @@ def main() -> int:
     from app.utils.constants import RUSSELL_1000_TICKERS
     from scripts.walkforward.cpcv import run_cpcv
 
-    scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05, long_short=True)
+    # Best config found: long-only, no VIX gate, no priced-in filter.
+    # CPCV campaign (4 runs): Run 3 (this config) achieved mean=0.349 — the best result.
+    # Priced-in filter (Run 4) hurt: large announce-day gaps have strongest drift continuation.
+    scorer = PEADScorer(
+        long_threshold=0.05,
+        short_threshold=-0.05,
+        long_short=False,
+        vix_block_all=100.0,
+        vix_block_short=100.0,
+        vix_conf_ref=100.0,
+        max_announce_day_move=1.0,  # disabled — large gaps retain drift signal
+    )
     strategy = PEADStrategy(
         scorer=scorer,
         symbols=list(RUSSELL_1000_TICKERS),
