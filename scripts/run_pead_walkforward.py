@@ -55,7 +55,19 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05, long_short=True)
+    # Best config per CPCV + post-fix WF campaign:
+    # - long-only (short leg hurt across all CPCV runs)
+    # - T+5 hard close (max_hold_bars_override=5) to cap meme-era reversal losses
+    # - No VIX gate, no priced-in filter (both hurt in ablation)
+    scorer = PEADScorer(
+        long_threshold=0.05,
+        short_threshold=-0.05,
+        long_short=False,
+        vix_block_all=100.0,
+        vix_block_short=100.0,
+        vix_conf_ref=100.0,
+        max_announce_day_move=1.0,  # disabled
+    )
 
     wf = run_swing_walkforward(
         n_folds=5,
@@ -63,7 +75,8 @@ def main() -> int:
         use_opportunity_score=False,
         no_prefilters=True,
         feature_cache_disable=True,
-        scorer_instance=scorer,  # Phase G: inject PEAD scorer directly
+        scorer_instance=scorer,     # Phase G: inject PEAD scorer directly
+        max_hold_bars_override=5,   # T+5 hard close — limits meme-era reversals
     )
 
     avg_sh = wf.avg_sharpe

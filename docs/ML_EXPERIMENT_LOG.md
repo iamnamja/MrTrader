@@ -4188,3 +4188,31 @@ long-only for paper trading. Monitor live Sharpe over 60-90 trading days.
 **Next if pursuing CPCV pass:** Longer hold (5→10 days), higher threshold (>7%), or split by
 earnings quality (beat + guidance raise vs beat alone).
 
+## PEAD WF Post-P0.2-Fix Re-run (2026-05-21)
+
+Context: Original PEAD WF (avg=2.697) ran before P0.2 intrabar stop/target fix landed.
+Re-ran after fix to validate true signal strength. Config: `long_short=True`, no filters.
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021-06-01→2022-05-21 | **-0.843** | 42 |
+| 2 | 2022-06-01→2023-05-21 | 0.659 | 58 |
+| 3 | 2023-06-01→2024-05-20 | 1.525 | 42 |
+| 4 | 2024-05-31→2025-05-20 | 0.241 | 55 |
+| 5 | 2025-05-31→2026-05-20 | 0.429 | 53 |
+
+**Result: GATE FAILED** — avg=0.402, min=-0.843
+
+**Key finding:** P0.2 fix confirmed the 2.697 was inflated by look-ahead stop bug.
+Corrected number: 0.402. Fold 1 (2021 meme era) is the primary failure driver:
+earnings beats in 2021 triggered large initial moves that quickly reversed — the
+old simulator missed these stop-outs by only checking EOD close.
+
+**Fold 1 diagnosis:** 2021 meme era + pandemic reopening = high volatility, frequent
+gap-and-fade after earnings beats. Stocks crossed their stops intraday but recoverd
+by EOD — the pre-fix simulator didn't catch these. Post-fix correctly records losses.
+
+**Next step:** Exit redesign. T+5 hard close (max hold = 5 bars) + gap-invalidation
+stop (exit at open if overnight gap >X% against position). This limits meme-era
+reversals while keeping the drift window tight.
+
