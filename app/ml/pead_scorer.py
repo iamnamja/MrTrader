@@ -92,7 +92,9 @@ class PEADScorer:
                 continue
 
             # Only act within max_days_after of the report
-            if days_since > self.max_days_after:
+            # days_since=0 = announcement day (typically after-hours) — exclude to avoid
+            # entering before the surprise is in public prices at next open.
+            if days_since < 1 or days_since > self.max_days_after:
                 continue
 
             # Map surprise magnitude to confidence

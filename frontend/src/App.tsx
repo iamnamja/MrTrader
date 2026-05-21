@@ -903,16 +903,22 @@ function DecisionAuditTable({ rows }: { rows: DecisionAuditRow[] }) {
                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {r.block_reason ? r.block_reason.split(':')[0] : '—'}
                 </td>
-                <td style={{ ...s.td, color: r.outcome_pnl_pct != null ? clr(r.outcome_pnl_pct) : C.muted }}>
-                  {r.outcome_pnl_pct != null ? (r.outcome_pnl_pct >= 0 ? '+' : '') + (r.outcome_pnl_pct * 100).toFixed(2) + '%' : '—'}
+                <td style={{ ...s.td, color: (r.outcome_pnl_pct ?? r.outcome_1d_pct) != null ? clr(r.outcome_pnl_pct ?? r.outcome_1d_pct) : C.muted }}>
+                  {r.outcome_pnl_pct != null
+                    ? (r.outcome_pnl_pct >= 0 ? '+' : '') + (r.outcome_pnl_pct * 100).toFixed(2) + '%'
+                    : r.outcome_1d_pct != null
+                      ? (r.outcome_1d_pct >= 0 ? '+' : '') + (r.outcome_1d_pct * 100).toFixed(2) + '% 1d'
+                      : '—'}
                 </td>
               </tr>
-              {isExpanded && (r.top_features || r.block_reason) && (
+              {isExpanded && (r.top_features || r.block_reason || r.gate_category) && (
                 <tr key={r.id + '_exp'} style={{ background: C.surface2 }}>
                   <td colSpan={8} style={{ padding: '8px 12px', fontSize: 10, color: C.muted }}>
                     {r.block_reason && (
                       <div style={{ marginBottom: 4 }}>
                         <span style={{ color: C.red }}>Block: </span>{r.block_reason}
+                        {r.gate_category && <span style={{ color: C.muted, marginLeft: 8 }}>({r.gate_category})</span>}
+                        {r.price_at_decision != null && <span style={{ color: C.muted, marginLeft: 8 }}>@ ${r.price_at_decision.toFixed(2)}</span>}
                       </div>
                     )}
                     {r.top_features && (

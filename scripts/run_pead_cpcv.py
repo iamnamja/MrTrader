@@ -1,0 +1,212 @@
+"""
+Phase G: CPCV validation of the PEAD scorer.
+
+Combinatorial Purged Cross-Validation (k=6, paths=2 → C(6,2)=15 test paths).
+Higher statistical power than standard 5-fold WF; catches overfitting to specific
+fold boundaries.
+
+Usage:
+    python scripts/run_pead_cpcv.py
+"""
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from app.ml.retrain_config import MAX_THREADS as _max_threads
+os.environ.setdefault("OMP_NUM_THREADS", str(_max_threads))
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(_max_threads))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [pead_cpcv] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+CPCV_K = 6       # number of fold groups
+CPCV_PATHS = 2   # test groups per combination → C(6,2)=15 paths
+TOTAL_YEARS = 6
+
+
+class PEADStrategy:
+    """
+    Thin strategy adapter that runs AgentSimulator with PEADScorer for each CPCV fold.
+    Implements the interface expected by scripts/walkforward/cpcv.run_cpcv.
+    """
+
+    model_type = "pead"
+
+    def __init__(self, scorer, symbols, transaction_cost_pct=0.0005):
+        self.scorer = scorer
+        self.symbols = list(symbols)
+        self.transaction_cost_pct = transaction_cost_pct
+        self.symbols_data: Dict[str, pd.DataFrame] = {}
+        self.spy_prices = None
+        self.all_days_sorted = []
+
+    def fetch_data(self, start: datetime, end: datetime) -> None:
+        import yfinance as yf
+        from app.utils.constants import RUSSELL_1000_TICKERS
+        t0 = time.time()
+        syms = self.symbols or list(RUSSELL_1000_TICKERS)
+        logger.info("Downloading daily bars %s → %s for %d symbols", start.date(), end.date(), len(syms))
+        for sym in syms:
+            try:
+                df = yf.download(sym, start=start.date().isoformat(),
+                                 end=end.date().isoformat(), progress=False, auto_adjust=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                if len(df) >= 210:
+                    self.symbols_data[sym] = df
+            except Exception:
+                pass
+
+        spy_raw = yf.download("SPY", start=start.date().isoformat(),
+                              end=end.date().isoformat(), progress=False, auto_adjust=True)
+        if isinstance(spy_raw.columns, pd.MultiIndex):
+            spy_raw.columns = spy_raw.columns.get_level_values(0)
+        spy_raw.columns = [c.lower() for c in spy_raw.columns]
+        self.spy_prices = spy_raw["close"]
+
+        all_days = sorted({
+            d.date() if hasattr(d, "date") else d
+            for df in self.symbols_data.values()
+            for d in df.index
+        })
+        self.all_days_sorted = all_days
+        logger.info("Data loaded: %d symbols, %d days in %.1fs",
+                    len(self.symbols_data), len(all_days), time.time() - t0)
+
+    def run_fold(self, fold_idx, n_folds, tr_start, tr_end, te_start, te_end):
+        from app.backtesting.agent_simulator import AgentSimulator
+        from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
+        from scripts.walkforward.gates import FoldResult, compute_profit_factor, compute_calmar, compute_k_ratio, fold_years
+
+        extra = _hist_syms(tr_start, te_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
+        _synthetic = {"^VIX", "VIX", "SPY"}
+        fold_symbols_data = {
+            s: d for s, d in self.symbols_data.items()
+            if s in pit_members or s in _synthetic
+        }
+
+        sim = AgentSimulator(
+            model=None,
+            factor_scorer=self.scorer,
+            transaction_cost_pct=self.transaction_cost_pct,
+            no_prefilters=True,
+        )
+        result = sim.run(
+            fold_symbols_data,
+            start_date=te_start,
+            end_date=te_end,
+            spy_prices=self.spy_prices,
+        )
+
+        stop_exits = result.exit_breakdown.get("STOP", 0)
+        n_trades = int(result.total_trades)
+        stop_rate = float(stop_exits) / max(n_trades, 1)
+        trade_returns = getattr(result, "trade_returns", [])
+        equity_curve = getattr(result, "equity_curve", [])
+        years = fold_years(te_start, te_end)
+        sharpe = float(result.sharpe_ratio)
+        total_ret = float(result.total_return_pct)
+        max_dd = float(result.max_drawdown_pct)
+        win_rate = float(result.win_rate)
+
+        logger.info(
+            "Fold %d done — %d trades, Sharpe %.3f, return %.1f%%",
+            fold_idx, n_trades, sharpe, total_ret * 100,
+        )
+        return FoldResult(
+            fold=fold_idx,
+            train_start=tr_start, train_end=tr_end,
+            test_start=te_start, test_end=te_end,
+            trades=n_trades,
+            win_rate=win_rate,
+            sharpe=sharpe,
+            max_drawdown=max_dd,
+            total_return=total_ret,
+            stop_exit_rate=stop_rate,
+            model_version=0,
+            profit_factor=compute_profit_factor(trade_returns),
+            calmar_ratio=compute_calmar(total_ret, max_dd, years),
+            k_ratio=compute_k_ratio(equity_curve),
+        )
+
+
+def main() -> int:
+    from app.ml.pead_scorer import PEADScorer
+    from app.utils.constants import RUSSELL_1000_TICKERS
+    from scripts.walkforward.cpcv import run_cpcv
+
+    scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05, long_short=True)
+    strategy = PEADStrategy(
+        scorer=scorer,
+        symbols=list(RUSSELL_1000_TICKERS),
+        transaction_cost_pct=0.0005,
+    )
+
+    end_all = datetime.now()
+    start_all = end_all - timedelta(days=TOTAL_YEARS * 365 + 30)
+    strategy.fetch_data(start_all, end_all)
+
+    logger.info("Running PEAD CPCV: k=%d paths=%d → C(%d,%d)=%d test paths",
+                CPCV_K, CPCV_PATHS, CPCV_K, CPCV_PATHS,
+                len(list(__import__("itertools").combinations(range(CPCV_K), CPCV_PATHS))))
+
+    result = run_cpcv(
+        strategy=strategy,
+        purge_days=10,
+        embargo_days=10,
+        n_folds=CPCV_K,
+        n_paths=CPCV_PATHS,
+        total_years=TOTAL_YEARS,
+    )
+
+    result.print()
+
+    gate_detail = result.gate_detail()
+    gate_ok = all(v for _, v in gate_detail.values())
+    verdict = "CPCV GATE PASSED" if gate_ok else "CPCV GATE FAILED"
+    logger.info(
+        "PEAD CPCV %s — mean_sharpe=%.3f  p5=%.3f  p95=%.3f",
+        verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe,
+    )
+
+    try:
+        from app.notifications.notifier import _smtp_send
+        _smtp_send(
+            subject=f"MrTrader PEAD CPCV: {verdict} (mean={result.mean_sharpe:.3f})",
+            html_body=f"""
+<h2>PEAD CPCV Result</h2>
+<p><b>{verdict}</b></p>
+<ul>
+  <li>Mean Sharpe: {result.mean_sharpe:.3f} (gate: ≥0.80)</li>
+  <li>P5 Sharpe: {result.p5_sharpe:.3f} (gate: ≥-0.30)</li>
+  <li>P95 Sharpe: {result.p95_sharpe:.3f}</li>
+  <li>Gate detail: {gate_detail}</li>
+  <li>N paths: {len(result.path_sharpes)}</li>
+</ul>
+""",
+        )
+    except Exception as _e:
+        logger.warning("Email notification failed: %s", _e)
+
+    return 0 if gate_ok else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
