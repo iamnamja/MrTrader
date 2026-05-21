@@ -4337,4 +4337,5 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
 | v2 | +VIX≤30 gate + SPY 200DMA (bug fix: VIX was never wired) | 0.447 | 0.397 | 0.727 | 1.368 | -1.459 | 1.202 | FAIL — VIX gate didn't fire in calm-VIX 2024 |
 | v3 | top_n=10 + require positive 20d momentum | 0.566 | 0.119 | 1.312 | 1.550 | -1.294 | 1.145 | FAIL — F2/F3 jump, F1 hurt, F4 still deep |
 | v4 | top_n=10 + beat SPY 20d (relative momentum) | 0.112 | 0.182 | -0.327 | 1.492 | -1.887 | 1.098 | FAIL — SPY-rel backfired: 2022 bear kills F2 |
+| v5 | top_n=10 + 60d momentum | 0.500 | 0.178 | 0.644 | 2.164 | -1.841 | 1.354 | FAIL — F3 superb (2.16) but F4 worse than v3 |
 
