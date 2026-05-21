@@ -55,17 +55,16 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    # v7: Asymmetric thresholds + very tight short VIX gate (shorts only VIX≤16)
-    # Hypothesis: longs work broadly; shorts only safe in truly calm markets.
-    # VIX≤16 = ~40th percentile historically — true low-vol regime only.
-    # Higher short threshold (-10%) requires strong misses, filters noise.
+    # v5: Higher surprise threshold (10%) + T+5, L/S enabled
+    # Hypothesis: top-quintile surprises drift more reliably. 5% threshold lets in
+    # marginal beats that retail front-ran (2021) and macro overwhelmed (2024-25).
     scorer = PEADScorer(
-        long_threshold=0.05,
-        short_threshold=-0.10,      # require stronger negative surprise for shorts
+        long_threshold=0.10,        # 10% — top-quintile surprises only
+        short_threshold=-0.10,
         long_short=True,
-        vix_block_all=28.0,         # block all in elevated vol
-        vix_block_short=16.0,       # shorts only in genuinely calm markets
-        vix_conf_ref=14.0,
+        vix_block_all=30.0,
+        vix_block_short=20.0,
+        vix_conf_ref=15.0,
         max_announce_day_move=1.0,  # no priced-in filter
     )
 
