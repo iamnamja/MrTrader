@@ -4334,4 +4334,5 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
 | Ver | Config | avg | F1 | F2 | F3 | F4 | F5 | Result |
 |-----|--------|-----|----|----|----|----|----|--------|
 | v1 | baseline long-only top-20 | 0.410 | 0.193 | 0.727 | 1.368 | -1.459 | 1.222 | FAIL |
+| v2 | +VIX≤30 gate + SPY 200DMA (bug fix: VIX was never wired) | 0.447 | 0.397 | 0.727 | 1.368 | -1.459 | 1.202 | FAIL — VIX gate didn't fire in calm-VIX 2024 |
 

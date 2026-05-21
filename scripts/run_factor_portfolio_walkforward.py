@@ -27,16 +27,17 @@ logger = logging.getLogger(__name__)
 
 GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
 
-# v2: VIX block wired correctly.
-# The VIX gate in FactorPortfolioScorer already exists (vix_threshold=30) but was
-# never receiving VIX data because VIX is only downloaded when scorer_instance is not None.
-# Fix: pass scorer as scorer_instance so VIX is downloaded and the gate actually fires.
-# SPY 200DMA trend gate is also wired via regime_gate_ok() inside the scorer.
+# v3: top_n=10 (concentrate to highest-conviction names) + require positive 20d momentum.
+# Hypothesis: top-20 dilutes signal; in 2024 Mag7 era, equal-weight factor longs underperform.
+# Concentrating to top-10 captures the highest factor scores (likely includes momentum Mag7 names).
+# Positive-20d filter ensures we only enter stocks already trending up — filters out
+# "cheap but falling" value traps that hurt in 2024 (Mag7 concentration regime).
 SCORER_CONFIG = {
-    "top_n": 20,
-    "long_short": False,   # long-only: short leg destructive in 2021 meme era
-    "vix_threshold": 30.0, # block all entries when VIX > 30 (crisis mode)
-    "spy_ma_window": 200,  # also gates on SPY < 200DMA
+    "top_n": 10,
+    "long_short": False,
+    "vix_threshold": 30.0,
+    "spy_ma_window": 200,
+    "require_positive_momentum_days": 20,  # only buy stocks up over last 20 trading days
 }
 
 
@@ -47,8 +48,9 @@ def main() -> int:
     scorer = FactorPortfolioScorer(**SCORER_CONFIG)
 
     logger.info(
-        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX-gated(%.0f), SPY-200DMA",
+        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX≤%.0f, SPY-200DMA, mom%dd",
         SCORER_CONFIG["top_n"], SCORER_CONFIG["vix_threshold"],
+        SCORER_CONFIG.get("require_positive_momentum_days", 0),
     )
 
     wf = run_swing_walkforward(
