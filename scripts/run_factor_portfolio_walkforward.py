@@ -25,21 +25,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -1.00}
+GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
+
+# v2: VIX block wired correctly.
+# The VIX gate in FactorPortfolioScorer already exists (vix_threshold=30) but was
+# never receiving VIX data because VIX is only downloaded when scorer_instance is not None.
+# Fix: pass scorer as scorer_instance so VIX is downloaded and the gate actually fires.
+# SPY 200DMA trend gate is also wired via regime_gate_ok() inside the scorer.
+SCORER_CONFIG = {
+    "top_n": 20,
+    "long_short": False,   # long-only: short leg destructive in 2021 meme era
+    "vix_threshold": 30.0, # block all entries when VIX > 30 (crisis mode)
+    "spy_ma_window": 200,  # also gates on SPY < 200DMA
+}
 
 
 def main() -> int:
+    from app.ml.factor_scorer import FactorPortfolioScorer
     from scripts.walkforward_tier3 import run_swing_walkforward
 
-    logger.info("Factor portfolio walk-forward: 5 folds, 6yr, top-20, regime-gated")
+    scorer = FactorPortfolioScorer(**SCORER_CONFIG)
+
+    logger.info(
+        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX-gated(%.0f), SPY-200DMA",
+        SCORER_CONFIG["top_n"], SCORER_CONFIG["vix_threshold"],
+    )
 
     wf = run_swing_walkforward(
         n_folds=5,
         total_years=6,
         use_opportunity_score=False,
         no_prefilters=True,
-        use_factor_portfolio=True,
-        feature_cache_disable=True,  # factor scorer doesn't use FeatureCache
+        feature_cache_disable=True,
+        scorer_instance=scorer,  # triggers VIX download + wires vix_history to scorer
     )
 
     avg_sh = wf.avg_sharpe
@@ -60,6 +78,7 @@ def main() -> int:
         fold_rows = "\n".join(
             f"  Fold {f.fold}: Sharpe={f.sharpe:.3f}  trades={f.trades}" for f in wf.folds
         )
+        config_str = ", ".join(f"{k}={v}" for k, v in SCORER_CONFIG.items())
         _smtp_send(
             subject=f"MrTrader Factor Portfolio WF: {verdict} (avg={avg_sh:.3f})",
             html_body=f"""
@@ -70,6 +89,7 @@ def main() -> int:
   <li>Min fold: {min_sh:.3f} (gate: ≥-0.30)</li>
 </ul>
 <pre>{fold_rows}</pre>
+<p><small>Config: {config_str}</small></p>
 """,
         )
     except Exception as _e:

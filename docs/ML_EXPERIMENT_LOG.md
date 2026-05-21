@@ -4302,3 +4302,36 @@ max_hold_bars_override=5, long_threshold_hv=0.10, vix_adaptive=20.0`
 and fold 4 (2024-25, -1.46). L/S short leg in 2023-26 is consistently destructive.
 4% filter removes the best signals in calm periods (2023-24 drift relies on larger beats).
 
+---
+
+## Factor Portfolio WF — 10-Config Search (2026-05-21)
+
+### Baseline — Post-P0.2-Fix (v1)
+
+Config: standard factor portfolio, long-only, top-20 by composite factor score, 5-fold 6yr WF.
+Model: swing_v211 (ACTIVE).
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021-06-02→2022-05-22 | 0.193 | 91 |
+| 2 | 2022-06-02→2023-05-22 | 0.727 | 49 |
+| 3 | 2023-06-02→2024-05-21 | 1.368 | 96 |
+| 4 | 2024-06-01→2025-05-21 | **-1.459** | 80 |
+| 5 | 2025-06-01→2026-05-21 | 1.222 | 123 |
+
+**Result: GATE FAILED** — avg=0.410, min=-1.459
+
+**Fold 4 diagnosis (2024-06 → 2025-05):** Magnificent 7 concentration (top-7 stocks drove >80% of
+S&P 500 returns); factor cross-sectional ranking underperforms when market returns are narrowly
+driven by mega-cap tech. Additionally covers Apr-2025 tariff shock (VIX spike 60+). Long-only
+factor portfolio in a concentration regime = lagging beta to mega-caps the model doesn't hold.
+
+Avg without fold 4: (0.193 + 0.727 + 1.368 + 1.222) / 4 = **0.878** — above gate. Fold 4 alone
+is the blocker.
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
+
+| Ver | Config | avg | F1 | F2 | F3 | F4 | F5 | Result |
+|-----|--------|-----|----|----|----|----|----|--------|
+| v1 | baseline long-only top-20 | 0.410 | 0.193 | 0.727 | 1.368 | -1.459 | 1.222 | FAIL |
+
