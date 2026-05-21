@@ -55,21 +55,17 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    # Best config per CPCV + post-fix WF campaign:
-    # - long-only (short leg hurt across all CPCV runs)
-    # - T+5 hard close (max_hold_bars_override=5) to cap meme-era reversal losses
-    # - No VIX gate, no priced-in filter (both hurt in ablation)
-    # Best validated config (post-P0.2-fix): long-only + T+5 + VIX block 30
-    # avg=0.328 (best post-fix result). Gate requires 0.80; needs further work.
-    # Two structural failures: 2021 meme reversals (T+5 helps) + 2024-25 tariff (VIX block helps).
+    # v4: Long-only + tighter VIX gate (22) + T+5
+    # Hypothesis: VIX=30 block is too permissive for 2024-25. VIX=22 blocks more of
+    # the choppy tariff-era whipsaw periods (VIX often 18-25 in 2024-25).
     scorer = PEADScorer(
         long_threshold=0.05,
         short_threshold=-0.05,
         long_short=False,
-        vix_block_all=30.0,         # hard block: no new PEAD longs when VIX > 30
-        vix_block_short=100.0,
-        vix_conf_ref=100.0,         # no confidence scaling (hard block only)
-        max_announce_day_move=1.0,  # disabled
+        vix_block_all=22.0,
+        vix_block_short=22.0,
+        vix_conf_ref=13.0,
+        max_announce_day_move=0.08,  # mild priced-in filter
     )
 
     wf = run_swing_walkforward(
@@ -78,8 +74,8 @@ def main() -> int:
         use_opportunity_score=False,
         no_prefilters=True,
         feature_cache_disable=True,
-        scorer_instance=scorer,     # Phase G: inject PEAD scorer directly
-        max_hold_bars_override=5,   # T+5 hard close — limits meme-era reversals
+        scorer_instance=scorer,
+        max_hold_bars_override=5,
     )
 
     avg_sh = wf.avg_sharpe

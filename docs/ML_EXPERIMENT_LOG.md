@@ -4275,3 +4275,17 @@ to only trade strongest beats), (b) earnings quality filter (beat + raised guida
 (c) sector rotation (PEAD may work better in certain sectors), (d) shelve PEAD and
 focus on factor portfolio post-fix WF re-run instead.
 
+## PEAD Iteration Campaign — 10-Config Search (2026-05-21)
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; if all fail, pivot to factor.
+
+| Ver | Config | avg | F1(2021) | F2(22-23) | F3(23-24) | F4(24-25) | F5(25-26) | Result |
+|-----|--------|-----|----------|-----------|-----------|-----------|-----------|--------|
+| v3 | L/O+T5+VIX30 | 0.328 | 0.53 | 0.86 | 0.94 | -0.36 | -0.33 | FAIL |
+| v6 | L/S+T3+4%filter | -0.177 | 0.87 | 0.83 | -0.74 | -1.46 | -0.39 | FAIL |
+| v4 | L/O+T5+VIX22 | TBD | — | — | — | — | — | running |
+
+**v6 analysis:** 4% priced-in filter fixed fold 1 (0.87) but destroyed fold 3 (2023-24, -0.74)
+and fold 4 (2024-25, -1.46). L/S short leg in 2023-26 is consistently destructive.
+4% filter removes the best signals in calm periods (2023-24 drift relies on larger beats).
+
