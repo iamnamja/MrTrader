@@ -4340,4 +4340,6 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
 | v5 | top_n=10 + 60d momentum | 0.500 | 0.178 | 0.644 | 2.164 | -1.841 | 1.354 | FAIL — F3 superb (2.16) but F4 worse than v3 |
 | v6 | top_n=15 + 20d momentum | 0.522 | 0.052 | 1.312 | 1.709 | -1.952 | 1.488 | FAIL — worse than v3 on F1/F4 |
 | v7 | top_n=5 + 20d momentum | **0.645** | 0.288 | 1.182 | 1.713 | **-0.942** | 0.982 | FAIL — best so far! F4 best at -0.942. Monotonic: smaller top_n = better |
+| v8 | top_n=3 + 20d momentum | — | — | — | — | — | — | BUG: parallel download → MultiIndex → 0 trades all folds. Retry as v10. |
+| v9 | top_n=5, no momentum (ablation) | 0.413 | 0.127 | 0.645 | 1.690 | -1.292 | 0.896 | FAIL — confirms 20d filter adds +0.232 avg (+0.350 on F4) |
 

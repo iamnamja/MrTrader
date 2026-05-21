@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
 
-# v8: top_n=3 + 20d momentum. Pushing concentration further (v7 top_n=5 was best: avg=0.645).
-# Monotonic pattern confirmed: 20→15→10→5 yields 0.410→0.522→0.566→0.645.
-# Hypothesis: top-3 captures only the model's highest-conviction signals; idiosyncratic risk
-# increases but factor predictive power at the very top of the distribution is strongest.
+# v10: top_n=3 + 20d momentum. Retry of v8 (which crashed due to parallel download bug).
+# Monotonic pattern: top_n 20→15→10→5 yields avg 0.410→0.522→0.566→0.645.
+# v9 ablation confirmed: 20d momentum filter adds +0.232 avg, +0.350 on fold 4.
+# Running sequentially (not parallel with any other WF run) to avoid MultiIndex corruption.
 SCORER_CONFIG = {
     "top_n": 3,
     "long_short": False,
