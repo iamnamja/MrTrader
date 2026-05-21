@@ -228,6 +228,8 @@ class FactorPortfolioScorer:
         use_tier2: bool = True,
         vix_threshold: float = 30.0,
         spy_ma_window: int = 200,
+        require_positive_momentum_days: int = 0,  # 0=disabled; >0: require stock ret>0 over N days
+        require_spy_outperform_days: int = 0,     # 0=disabled; >0: require stock ret > SPY ret over N days
     ):
         self.top_n = top_n
         self.top_n_short = top_n_short
@@ -235,6 +237,8 @@ class FactorPortfolioScorer:
         self.use_tier2 = use_tier2
         self.vix_threshold = vix_threshold
         self.spy_ma_window = spy_ma_window
+        self.require_positive_momentum_days = require_positive_momentum_days
+        self.require_spy_outperform_days = require_spy_outperform_days
 
     def __call__(
         self,
@@ -297,6 +301,33 @@ class FactorPortfolioScorer:
         scores = compute_composite_score(as_of, closes, bars_by_sym, use_tier2=self.use_tier2)
         if scores.empty:
             return []
+
+        # Optional: filter out stocks with negative N-day momentum (trending down)
+        if self.require_positive_momentum_days > 0:
+            n = self.require_positive_momentum_days
+            eligible = [
+                sym for sym in scores.index
+                if sym in closes.columns and len(closes[sym].dropna()) >= n + 1
+                and float(closes[sym].dropna().iloc[-1]) > float(closes[sym].dropna().iloc[-(n + 1)])
+            ]
+            scores = scores.loc[scores.index.isin(eligible)]
+            if scores.empty:
+                return []
+
+        # Optional: filter out stocks underperforming SPY over N days (market-relative momentum)
+        if self.require_spy_outperform_days > 0 and "SPY" in closes.columns:
+            n = self.require_spy_outperform_days
+            spy_c = closes["SPY"].dropna()
+            if len(spy_c) >= n + 1:
+                spy_ret = float(spy_c.iloc[-1]) / float(spy_c.iloc[-(n + 1)]) - 1
+                eligible_rel = [
+                    sym for sym in scores.index
+                    if sym in closes.columns and len(closes[sym].dropna()) >= n + 1
+                    and (float(closes[sym].dropna().iloc[-1]) / float(closes[sym].dropna().iloc[-(n + 1)]) - 1) > spy_ret
+                ]
+                scores = scores.loc[scores.index.isin(eligible_rel)]
+                if scores.empty:
+                    return []
 
         s_min, s_max = float(scores.min()), float(scores.max())
         s_range = max(s_max - s_min, 1e-6)

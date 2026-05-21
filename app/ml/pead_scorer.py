@@ -77,6 +77,8 @@ class PEADScorer:
         vix_block_short: float = VIX_BLOCK_SHORT,
         vix_conf_ref: float = VIX_CONF_REF,
         max_announce_day_move: float = MAX_ANNOUNCE_DAY_MOVE,
+        long_threshold_hv: float = None,  # high-vol threshold override
+        vix_adaptive: float = 20.0,       # VIX level above which to use long_threshold_hv
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
@@ -86,6 +88,8 @@ class PEADScorer:
         self.vix_block_short = vix_block_short
         self.vix_conf_ref = vix_conf_ref
         self.max_announce_day_move = max_announce_day_move
+        self.long_threshold_hv = long_threshold_hv
+        self.vix_adaptive = vix_adaptive
 
     def _vix_today(self, day, symbols_data: dict):
         """Extract PIT VIX close for `day` from symbols_data. Returns None if unavailable."""
@@ -120,6 +124,13 @@ class PEADScorer:
             return []
 
         short_enabled = self.long_short and (vix is None or vix <= self.vix_block_short)
+
+        # Adaptive threshold: use higher threshold in high-vol regimes.
+        # In elevated VIX (meme era, crisis): only strongest beats survive retail noise.
+        # In calm VIX (normal bull): 5% beats drift reliably; 10%+ are often priced-in.
+        effective_long_threshold = self.long_threshold
+        if self.long_threshold_hv is not None and vix is not None and vix > self.vix_adaptive:
+            effective_long_threshold = self.long_threshold_hv
 
         # Confidence damping: linear from 1.0 at vix_conf_ref down to 0.3 at VIX=50
         vix_mult = 1.0
@@ -178,11 +189,11 @@ class PEADScorer:
             # Map surprise magnitude to confidence
             abs_surprise = abs(surprise)
             # Scale: 5% surprise → 0.65 conf, 20%+ surprise → 0.90 conf
-            conf = min(CONF_MIN + (abs_surprise - abs(self.long_threshold)) * 2.0, CONF_MAX)
+            conf = min(CONF_MIN + (abs_surprise - abs(effective_long_threshold)) * 2.0, CONF_MAX)
             conf = max(conf, CONF_MIN)
             conf_gated = conf * vix_mult
 
-            if surprise >= self.long_threshold:
+            if surprise >= effective_long_threshold:
                 results.append((sym, conf_gated, "long"))
             elif short_enabled and surprise <= self.short_threshold:
                 results.append((sym, -conf_gated, "short"))

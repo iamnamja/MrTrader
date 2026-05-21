@@ -55,7 +55,23 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05, long_short=True)
+    # v10 (best): Regime-adaptive threshold — 10% when VIX>20, 5% when VIX≤20
+    # Best config across 10 iterations (avg=0.346). Gate requires 0.80; PEAD campaign
+    # concluded — folds 4-5 (2024-present) negative under all configs (signal degraded).
+    # Insight from campaign: 2021 (high VIX) needs 10% to filter retail noise;
+    # 2023-24 (low VIX) needs 5% to capture standard drift (10% = AI-hype priced-in).
+    # VIX is already downloaded and wired to scorer via symbols_data.
+    scorer = PEADScorer(
+        long_threshold=0.05,        # base threshold for calm markets (VIX≤20)
+        short_threshold=-0.10,
+        long_short=False,           # no shorts — consistently destructive
+        vix_block_all=30.0,         # block crisis entries
+        vix_block_short=100.0,
+        vix_conf_ref=100.0,
+        max_announce_day_move=1.0,  # no priced-in filter
+        long_threshold_hv=0.10,     # high-vol threshold: VIX>20 → require 10% surprise
+        vix_adaptive=20.0,          # switch point
+    )
 
     wf = run_swing_walkforward(
         n_folds=5,
@@ -63,7 +79,8 @@ def main() -> int:
         use_opportunity_score=False,
         no_prefilters=True,
         feature_cache_disable=True,
-        scorer_instance=scorer,  # Phase G: inject PEAD scorer directly
+        scorer_instance=scorer,
+        max_hold_bars_override=5,
     )
 
     avg_sh = wf.avg_sharpe

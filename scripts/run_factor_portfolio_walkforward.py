@@ -25,21 +25,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -1.00}
+GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
+
+# v10: top_n=3 + 20d momentum. Retry of v8 (which crashed due to parallel download bug).
+# Monotonic pattern: top_n 20→15→10→5 yields avg 0.410→0.522→0.566→0.645.
+# v9 ablation confirmed: 20d momentum filter adds +0.232 avg, +0.350 on fold 4.
+# Running sequentially (not parallel with any other WF run) to avoid MultiIndex corruption.
+SCORER_CONFIG = {
+    "top_n": 3,
+    "long_short": False,
+    "vix_threshold": 30.0,
+    "spy_ma_window": 200,
+    "require_positive_momentum_days": 20,
+}
 
 
 def main() -> int:
+    from app.ml.factor_scorer import FactorPortfolioScorer
     from scripts.walkforward_tier3 import run_swing_walkforward
 
-    logger.info("Factor portfolio walk-forward: 5 folds, 6yr, top-20, regime-gated")
+    scorer = FactorPortfolioScorer(**SCORER_CONFIG)
+
+    logger.info(
+        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX≤%.0f, SPY-200DMA, mom%dd",
+        SCORER_CONFIG["top_n"], SCORER_CONFIG["vix_threshold"],
+        SCORER_CONFIG.get("require_positive_momentum_days", 0),
+    )
 
     wf = run_swing_walkforward(
         n_folds=5,
         total_years=6,
         use_opportunity_score=False,
         no_prefilters=True,
-        use_factor_portfolio=True,
-        feature_cache_disable=True,  # factor scorer doesn't use FeatureCache
+        feature_cache_disable=True,
+        scorer_instance=scorer,  # triggers VIX download + wires vix_history to scorer
     )
 
     avg_sh = wf.avg_sharpe
@@ -60,6 +79,7 @@ def main() -> int:
         fold_rows = "\n".join(
             f"  Fold {f.fold}: Sharpe={f.sharpe:.3f}  trades={f.trades}" for f in wf.folds
         )
+        config_str = ", ".join(f"{k}={v}" for k, v in SCORER_CONFIG.items())
         _smtp_send(
             subject=f"MrTrader Factor Portfolio WF: {verdict} (avg={avg_sh:.3f})",
             html_body=f"""
@@ -70,6 +90,7 @@ def main() -> int:
   <li>Min fold: {min_sh:.3f} (gate: ≥-0.30)</li>
 </ul>
 <pre>{fold_rows}</pre>
+<p><small>Config: {config_str}</small></p>
 """,
         )
     except Exception as _e:

@@ -577,8 +577,8 @@ def run_swing_walkforward(
     spy_prices = spy_raw["close"]
     symbols_data["SPY"] = spy_raw  # make SPY available to factor_scorer regime gate
 
-    # Download VIX for opportunity score (Phase 2a); stored in symbols_data so simulator sees it
-    if use_opportunity_score:
+    # Download VIX for opportunity score (Phase 2a) and for external scorer regime gates.
+    if use_opportunity_score or scorer_instance is not None:
         try:
             vix_raw = yf.download("^VIX", start=start_all.date().isoformat(),
                                   end=end_all.date().isoformat(), progress=False, auto_adjust=True)

@@ -4188,3 +4188,176 @@ long-only for paper trading. Monitor live Sharpe over 60-90 trading days.
 **Next if pursuing CPCV pass:** Longer hold (5→10 days), higher threshold (>7%), or split by
 earnings quality (beat + guidance raise vs beat alone).
 
+## PEAD WF Post-P0.2-Fix Re-run (2026-05-21)
+
+Context: Original PEAD WF (avg=2.697) ran before P0.2 intrabar stop/target fix landed.
+Re-ran after fix to validate true signal strength. Config: `long_short=True`, no filters.
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021-06-01→2022-05-21 | **-0.843** | 42 |
+| 2 | 2022-06-01→2023-05-21 | 0.659 | 58 |
+| 3 | 2023-06-01→2024-05-20 | 1.525 | 42 |
+| 4 | 2024-05-31→2025-05-20 | 0.241 | 55 |
+| 5 | 2025-05-31→2026-05-20 | 0.429 | 53 |
+
+**Result: GATE FAILED** — avg=0.402, min=-0.843
+
+**Key finding:** P0.2 fix confirmed the 2.697 was inflated by look-ahead stop bug.
+Corrected number: 0.402. Fold 1 (2021 meme era) is the primary failure driver:
+earnings beats in 2021 triggered large initial moves that quickly reversed — the
+old simulator missed these stop-outs by only checking EOD close.
+
+**Fold 1 diagnosis:** 2021 meme era + pandemic reopening = high volatility, frequent
+gap-and-fade after earnings beats. Stocks crossed their stops intraday but recoverd
+by EOD — the pre-fix simulator didn't catch these. Post-fix correctly records losses.
+
+**Next step:** Exit redesign. T+5 hard close (max hold = 5 bars) + gap-invalidation
+stop (exit at open if overnight gap >X% against position). This limits meme-era
+reversals while keeping the drift window tight.
+
+### WF v2 — Long-only + T+5 hard close (2026-05-21)
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021 meme era | +0.316 | 196 |
+| 2 | 2022-23 | +0.848 | 241 |
+| 3 | 2023-24 | +0.944 | 230 |
+| 4 | 2024-25 tariff | -0.721 | 220 |
+| 5 | 2025-26 | -0.291 | 222 |
+
+**Result: GATE FAILED** — avg=0.219, min=-0.721
+
+T+5 fixed fold 1 (meme era: -0.843→+0.316) but broke folds 4-5. Two effects:
+1. Trade count 4x higher (196 vs 42) — fast capital recycling generates more trades but
+   lower per-trade quality when entering marginal setups.
+2. Aug-2024 VIX spike (38) + Apr-2025 tariff shock (VIX=60) destroyed fold 4.
+
+**Next:** T+5 + VIX block at 30 (hard block, no new entries when VIX > 30).
+
+### WF v3 — Long-only + T+5 + VIX block 30 (2026-05-21)
+
+Bug fix: VIX was only downloaded when `use_opportunity_score=True`. Fixed to also
+download when `scorer_instance` is provided. Previous v3 run had no VIX data.
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021 meme era | +0.525 | 171 |
+| 2 | 2022-23 | +0.861 | 230 |
+| 3 | 2023-24 | +0.944 | 230 |
+| 4 | 2024-25 tariff | -0.358 | 220 |
+| 5 | 2025-26 | -0.331 | 221 |
+
+**Result: GATE FAILED** — avg=0.328, min=-0.358
+
+Significant improvement vs v2 (avg 0.219→0.328). VIX block helped fold 4 (-0.721→-0.358).
+Folds 4-5 remain negative — 2024-25 tariff shock + post-tariff period is a structural
+weakness for PEAD regardless of VIX gate (many entries still occur at VIX 15-29).
+
+### Post-Fix WF Campaign Summary
+
+| Version | Config | avg Sharpe | min Sharpe | Gate |
+|---------|--------|-----------|-----------|------|
+| Pre-fix | L/S, default hold | 2.697 | 2.490 | PASS (bugged) |
+| v1 post-fix | L/S, default hold | 0.402 | -0.843 | FAIL |
+| v2 | L/O + T+5 (no VIX data) | 0.219 | -0.721 | FAIL |
+| v3 (best) | L/O + T+5 + VIX≤30 | **0.328** | **-0.358** | FAIL |
+
+**Conclusion:** PEAD does not pass the 0.80 WF gate with any configuration tested.
+True corrected avg Sharpe is ~0.33, far from 0.80 gate. Two structural regime failures:
+1. 2021 meme era — post-earnings reversals (partially mitigated by T+5)
+2. 2024-25 tariff shock — macro uncertainty destroys drift signal even at low VIX
+
+**Recommendation:** Do NOT deploy PEAD to paper trading yet. The pre-fix 2.697 number
+that informed the deployment recommendation was a bug artifact. With corrected numbers,
+PEAD has no validated edge. Options: (a) investigate higher surprise threshold (>7-8%
+to only trade strongest beats), (b) earnings quality filter (beat + raised guidance),
+(c) sector rotation (PEAD may work better in certain sectors), (d) shelve PEAD and
+focus on factor portfolio post-fix WF re-run instead.
+
+## PEAD Iteration Campaign — 10-Config Search (2026-05-21)
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; if all fail, pivot to factor.
+
+| Ver | Config | avg | F1(2021) | F2(22-23) | F3(23-24) | F4(24-25) | F5(25-26) | Result |
+|-----|--------|-----|----------|-----------|-----------|-----------|-----------|--------|
+| v3 | L/O+T5+VIX30 | 0.328 | 0.53 | 0.86 | 0.94 | -0.36 | -0.33 | FAIL |
+| v6 | L/S+T3+4%filter | -0.177 | 0.87 | 0.83 | -0.74 | -1.46 | -0.39 | FAIL |
+| v4 | L/O+T5+VIX22+8%filter | 0.060 | 0.22 | 0.34 | 0.88 | -1.08 | -0.05 | FAIL |
+| v7 | L/S+T5+shortVIX≤16+10%short | 0.069 | -0.13 | 0.38 | 0.84 | -0.54 | -0.20 | FAIL |
+| v5 | L/S+T5+VIX30+10%threshold | 0.182 | **1.11** | **0.94** | -0.28 | -0.27 | -0.59 | FAIL |
+| v8 | L/O+T5+VIX30+10%threshold | 0.182 | 1.11 | 0.94 | -0.28 | -0.27 | -0.59 | FAIL (=v5) |
+| v9 | L/O+T5+VIX30+7%threshold | 0.246 | 0.71 | 0.80 | 0.13 | -0.22 | -0.19 | FAIL |
+| v10 | L/O+T5+VIX30+adaptive(10%@VIX>20,5%@VIX≤20) | **0.346** | 0.71 | **1.01** | 0.87 | -0.52 | -0.35 | FAIL (best) |
+
+**10-iteration campaign conclusion:** Folds 4-5 (2024-present) negative under ALL configs.
+PEAD signal has degraded in 2024+ (analyst calibration improved, AI earnings patterns anomalous,
+academic arbitrage crowding). Best config: v10 (adaptive threshold), avg=0.346. Still 0.454
+below gate. **Pivoting to factor portfolio WF post-P0.2-fix.**
+
+Best PEAD config for future reference: `long_threshold=0.05, long_short=False, vix_block_all=30,
+max_hold_bars_override=5, long_threshold_hv=0.10, vix_adaptive=20.0`
+
+**v6 analysis:** 4% priced-in filter fixed fold 1 (0.87) but destroyed fold 3 (2023-24, -0.74)
+and fold 4 (2024-25, -1.46). L/S short leg in 2023-26 is consistently destructive.
+4% filter removes the best signals in calm periods (2023-24 drift relies on larger beats).
+
+---
+
+## Factor Portfolio WF — 10-Config Search (2026-05-21)
+
+### Baseline — Post-P0.2-Fix (v1)
+
+Config: standard factor portfolio, long-only, top-20 by composite factor score, 5-fold 6yr WF.
+Model: swing_v211 (ACTIVE).
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021-06-02→2022-05-22 | 0.193 | 91 |
+| 2 | 2022-06-02→2023-05-22 | 0.727 | 49 |
+| 3 | 2023-06-02→2024-05-21 | 1.368 | 96 |
+| 4 | 2024-06-01→2025-05-21 | **-1.459** | 80 |
+| 5 | 2025-06-01→2026-05-21 | 1.222 | 123 |
+
+**Result: GATE FAILED** — avg=0.410, min=-1.459
+
+**Fold 4 diagnosis (2024-06 → 2025-05):** Magnificent 7 concentration (top-7 stocks drove >80% of
+S&P 500 returns); factor cross-sectional ranking underperforms when market returns are narrowly
+driven by mega-cap tech. Additionally covers Apr-2025 tariff shock (VIX spike 60+). Long-only
+factor portfolio in a concentration regime = lagging beta to mega-caps the model doesn't hold.
+
+Avg without fold 4: (0.193 + 0.727 + 1.368 + 1.222) / 4 = **0.878** — above gate. Fold 4 alone
+is the blocker.
+
+Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
+
+| Ver | Config | avg | F1 | F2 | F3 | F4 | F5 | Result |
+|-----|--------|-----|----|----|----|----|----|--------|
+| v1 | baseline long-only top-20 | 0.410 | 0.193 | 0.727 | 1.368 | -1.459 | 1.222 | FAIL |
+| v2 | +VIX≤30 gate + SPY 200DMA (bug fix: VIX was never wired) | 0.447 | 0.397 | 0.727 | 1.368 | -1.459 | 1.202 | FAIL — VIX gate didn't fire in calm-VIX 2024 |
+| v3 | top_n=10 + require positive 20d momentum | 0.566 | 0.119 | 1.312 | 1.550 | -1.294 | 1.145 | FAIL — F2/F3 jump, F1 hurt, F4 still deep |
+| v4 | top_n=10 + beat SPY 20d (relative momentum) | 0.112 | 0.182 | -0.327 | 1.492 | -1.887 | 1.098 | FAIL — SPY-rel backfired: 2022 bear kills F2 |
+| v5 | top_n=10 + 60d momentum | 0.500 | 0.178 | 0.644 | 2.164 | -1.841 | 1.354 | FAIL — F3 superb (2.16) but F4 worse than v3 |
+| v6 | top_n=15 + 20d momentum | 0.522 | 0.052 | 1.312 | 1.709 | -1.952 | 1.488 | FAIL — worse than v3 on F1/F4 |
+| v7 | top_n=5 + 20d momentum | **0.645** | 0.288 | 1.182 | 1.713 | **-0.942** | 0.982 | FAIL — best so far! F4 best at -0.942. Monotonic: smaller top_n = better |
+| v8 | top_n=3 + 20d momentum | — | — | — | — | — | — | BUG: parallel download → MultiIndex → 0 trades all folds. Retry as v10. |
+| v9 | top_n=5, no momentum (ablation) | 0.413 | 0.127 | 0.645 | 1.690 | -1.292 | 0.896 | FAIL — confirms 20d filter adds +0.232 avg (+0.350 on F4) |
+| v10 | top_n=3 + 20d momentum (final) | 0.701 | 0.756 | 0.679 | 2.191 | -1.427 | 1.304 | FAIL — best avg (0.701) but F4 regresses vs v7; sweet spot is top_n=5 |
+
+**10-iteration campaign conclusion:** Gate not passed (avg ≥ 0.80 AND min ≥ -0.30). Best avg = v10 (0.701). Best min fold = v7 (F4=-0.942). No config fixes fold 4.
+
+**Root cause:** Fold 4 (2024-06-01 → 2025-05-21) covers two overlapping regime failures:
+1. **Mag7 concentration** (2024): >80% of S&P 500 return from 7 stocks not well-represented in factor longs; equal-weight factor portfolio underperforms by definition.
+2. **Apr-2025 tariff shock**: Binary macro event (VIX=60+) destroys all factor longs regardless of quality.
+These are structural, not solvable by parameter tuning within the current model and universe.
+
+**Key learnings:**
+- 20d positive momentum filter: +0.232 avg Sharpe (most valuable single addition)
+- Optimal top_n: 5 (best F4 balance); 3 maximizes avg but worsens F4
+- VIX/SPY 200DMA gate: helps fold 1 but doesn't fire in calm-VIX 2024
+- SPY-relative momentum: counterproductive (2022 bear makes it select relative winners who still fall)
+
+**Recommended config for future use:** `top_n=5, long_short=False, vix_threshold=30, spy_ma_window=200, require_positive_momentum_days=20` (v7). Rationale: best F4 at -0.942, avg=0.645, 4/5 folds positive.
+
+**Next step:** Factor WF cannot pass the strict gate. Options: (a) retrain swing model on 2024-2025 data with momentum-aware features; (b) proceed to paper trading with v7 config on a relaxed gate; (c) investigate new ML model trained on current regime data.
+
