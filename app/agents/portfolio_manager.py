@@ -2595,6 +2595,15 @@ class PortfolioManager(BaseAgent):
             intra_gate_fail = self._check_intraday_entry_gates(symbol, features_by_symbol.get(symbol, {}))
             if intra_gate_fail:
                 self.logger.info("INTRADAY_ENTRY_GATE_BLOCKED %s: %s", symbol, intra_gate_fail)
+                try:
+                    from app.database.decision_audit import write_decision
+                    write_decision(symbol, "intraday", "block",
+                                   model_score=float(confidence),
+                                   block_reason=f"entry_gate: {str(intra_gate_fail)[:120]}",
+                                   price_at_decision=price,
+                                   top_features=self._top_features_for(symbol, "intraday"))
+                except Exception:
+                    pass
                 continue
 
             quantity = self._calculate_quantity(
@@ -2666,6 +2675,7 @@ class PortfolioManager(BaseAgent):
                                        model_score=float(confidence),
                                        block_reason=f"nis_block_entry: {_news_sig.rationale[:120]}",
                                        news_signal=_news_sig, macro_context=_macro_ctx,
+                                       price_at_decision=price,
                                        top_features=self._top_features_for(symbol, "intraday"))
                     except Exception:
                         pass
@@ -3286,6 +3296,15 @@ class PortfolioManager(BaseAgent):
             gate_fail = self._check_swing_entry_gates(symbol, price)
             if gate_fail:
                 self.logger.info("SWING_ENTRY_GATE_BLOCKED %s: %s", symbol, gate_fail)
+                try:
+                    from app.database.decision_audit import write_decision
+                    write_decision(symbol, "swing", "block",
+                                   model_score=float(confidence),
+                                   block_reason=f"entry_gate: {str(gate_fail)[:120]}",
+                                   price_at_decision=price,
+                                   top_features=self._top_features_for(symbol, "swing"))
+                except Exception:
+                    pass
                 continue
 
             quantity = self._calculate_quantity(
@@ -3345,6 +3364,7 @@ class PortfolioManager(BaseAgent):
                                        model_score=float(confidence),
                                        block_reason=f"nis_block_entry: {news_sig.rationale[:120]}",
                                        news_signal=news_sig, macro_context=macro_ctx,
+                                       price_at_decision=price,
                                        top_features=self._top_features_for(symbol, "swing"))
                     except Exception:
                         pass

@@ -127,6 +127,13 @@ class TestMaxDaysAfterFilter:
         result = _run(scorer, {"MSFT": feats})
         assert len(result) == 1
 
+    def test_same_day_announcement_excluded(self):
+        """days_since=0 means announcement day — must not enter before next open."""
+        scorer = _make_scorer(max_days_after=3)
+        feats = {"fmp_surprise_1q": 0.20, "fmp_days_since_earnings": 0}
+        result = _run(scorer, {"NVDA": feats})
+        assert result == [], "Must not trade on announcement day (after-hours release)"
+
 
 # ── Confidence scaling ────────────────────────────────────────────────────────
 

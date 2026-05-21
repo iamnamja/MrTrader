@@ -12,6 +12,15 @@ Typical PEAD signal:
 
 Returns [(sym, conf, direction)] compatible with AgentSimulator.factor_scorer.
 
+Regime gate (Phase G+):
+    VIX > VIX_BLOCK_ALL (30):  block all entries (crisis mode)
+    VIX > VIX_BLOCK_SHORT (20): block short leg only (squeeze risk in elevated vol)
+    VIX > VIX_CONF_REF (15): scale confidence down linearly (smooth, not cliff)
+
+The VIX gate is principled: 20/30 are long-run ~70th/90th VIX percentiles,
+not chosen from CPCV test data. Root cause: PEAD short leg inverts in
+risk-off regimes (2021 meme era, Aug-2024 spike, Apr-2025 tariff shock).
+
 Public API:
     PEADScorer(long_threshold, short_threshold, max_days_after, max_hold_days)
 """
@@ -32,12 +41,21 @@ SHORT_SURPRISE_THRESHOLD = -0.05
 CONF_MIN = 0.65
 CONF_MAX = 0.90
 
+# VIX regime thresholds (principled, not tuned to CPCV data)
+VIX_BLOCK_ALL = 30.0    # crisis — block all new PEAD entries
+VIX_BLOCK_SHORT = 20.0  # elevated vol — disable short leg (squeeze risk)
+VIX_CONF_REF = 15.0     # below this: full confidence; above: linear damping
+
 
 class PEADScorer:
     """PEAD signal generator for use as AgentSimulator.factor_scorer.
 
     Requires FMP earnings data to be cached (fmp_provider.get_earnings_features_at).
     Data is PIT-safe: only reports with report_date <= as_of are considered.
+
+    VIX-based regime gate is applied when VIX data is present in symbols_data
+    under key "^VIX" or "VIX". The gate runs fully PIT (only uses VIX close
+    up to and including `day`).
 
     Usage:
         scorer = PEADScorer()
@@ -50,11 +68,30 @@ class PEADScorer:
         short_threshold: float = SHORT_SURPRISE_THRESHOLD,
         max_days_after: int = MAX_DAYS_AFTER_EARNINGS,
         long_short: bool = True,
+        vix_block_all: float = VIX_BLOCK_ALL,
+        vix_block_short: float = VIX_BLOCK_SHORT,
+        vix_conf_ref: float = VIX_CONF_REF,
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
         self.max_days_after = max_days_after
         self.long_short = long_short
+        self.vix_block_all = vix_block_all
+        self.vix_block_short = vix_block_short
+        self.vix_conf_ref = vix_conf_ref
+
+    def _vix_today(self, day, symbols_data: dict):
+        """Extract PIT VIX close for `day` from symbols_data. Returns None if unavailable."""
+        import pandas as pd
+        _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
+        for key in ("^VIX", "VIX"):
+            vix_df = symbols_data.get(key)
+            if vix_df is not None and not vix_df.empty:
+                try:
+                    return float(vix_df.loc[:_ts].iloc[-1]["close"])
+                except Exception:
+                    pass
+        return None
 
     def __call__(
         self,
@@ -69,9 +106,24 @@ class PEADScorer:
         _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
         as_of = _ts.date()  # get_earnings_features_at requires datetime.date
 
+        # ── Regime gate ───────────────────────────────────────────────────────
+        vix = self._vix_today(day, symbols_data)
+        if vix is not None and vix > self.vix_block_all:
+            logger.debug("PEAD: VIX=%.1f > %.0f — blocking all entries (crisis)", vix, self.vix_block_all)
+            return []
+
+        short_enabled = self.long_short and (vix is None or vix <= self.vix_block_short)
+
+        # Confidence damping: linear from 1.0 at vix_conf_ref down to 0.3 at VIX=50
+        vix_mult = 1.0
+        if vix is not None and vix > self.vix_conf_ref:
+            vix_mult = max(0.3, self.vix_conf_ref / vix)
+
         results = []
 
         for sym, df in symbols_data.items():
+            if sym in ("^VIX", "VIX", "SPY"):
+                continue
             if df is None or df.empty:
                 continue
 
@@ -92,7 +144,9 @@ class PEADScorer:
                 continue
 
             # Only act within max_days_after of the report
-            if days_since > self.max_days_after:
+            # days_since=0 = announcement day (typically after-hours) — exclude to avoid
+            # entering before the surprise is in public prices at next open.
+            if days_since < 1 or days_since > self.max_days_after:
                 continue
 
             # Map surprise magnitude to confidence
@@ -100,11 +154,12 @@ class PEADScorer:
             # Scale: 5% surprise → 0.65 conf, 20%+ surprise → 0.90 conf
             conf = min(CONF_MIN + (abs_surprise - abs(self.long_threshold)) * 2.0, CONF_MAX)
             conf = max(conf, CONF_MIN)
+            conf_gated = conf * vix_mult
 
             if surprise >= self.long_threshold:
-                results.append((sym, conf, "long"))
-            elif self.long_short and surprise <= self.short_threshold:
-                results.append((sym, -conf, "short"))
+                results.append((sym, conf_gated, "long"))
+            elif short_enabled and surprise <= self.short_threshold:
+                results.append((sym, -conf_gated, "short"))
 
         # Sort by abs confidence descending
         results.sort(key=lambda x: abs(x[1]), reverse=True)

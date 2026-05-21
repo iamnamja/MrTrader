@@ -276,6 +276,7 @@ async def lifespan(app: FastAPI):
     # ── 9. Background warm-ups (non-blocking) ────────────────────────────────
     app.state.warm_task = asyncio.create_task(_warm_caches(), name="cache_warmup")
     app.state.market_task = asyncio.create_task(_refresh_market_data(), name="market_data")
+    app.state.wf_recon_task = asyncio.create_task(_schedule_wf_reconciliation(), name="wf_reconciliation")
 
     log.info("MrTrader application started successfully")
 
@@ -290,7 +291,7 @@ async def lifespan(app: FastAPI):
     from app.orchestrator import orchestrator
     await orchestrator.stop()
 
-    for task_name in ("news_monitor_task", "warm_task", "market_task"):
+    for task_name in ("news_monitor_task", "warm_task", "market_task", "wf_recon_task"):
         t = getattr(app.state, task_name, None)
         if t and not t.done():
             t.cancel()
@@ -298,6 +299,41 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(asyncio.shield(t), timeout=3.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+
+
+async def _schedule_wf_reconciliation() -> None:
+    """Run WF-6 live reconciliation on startup if stale (>7d), then weekly."""
+    log = logging.getLogger("mrtrader.startup")
+    _INTERVAL_DAYS = 7
+    while True:
+        try:
+            from datetime import date
+            from app.database.session import get_session
+            from app.database.models import WfLiveReconciliation
+            from app.analytics.wf_reconciliation import run_reconciliation
+            from sqlalchemy import desc as _desc
+            db = get_session()
+            try:
+                for strategy in ("swing", "intraday"):
+                    latest = (
+                        db.query(WfLiveReconciliation)
+                        .filter_by(strategy=strategy, status="complete")
+                        .order_by(_desc(WfLiveReconciliation.computed_at))
+                        .first()
+                    )
+                    stale = (
+                        latest is None
+                        or (date.today() - latest.computed_at.date()).days >= _INTERVAL_DAYS
+                    )
+                    if stale:
+                        log.info("WF reconciliation: running for strategy=%s (stale or missing)", strategy)
+                        await asyncio.to_thread(run_reconciliation, strategy, None, None, "scheduled")
+                        log.info("WF reconciliation: completed for strategy=%s", strategy)
+            finally:
+                db.close()
+        except Exception as exc:
+            log.warning("WF reconciliation background task error: %s", exc)
+        await asyncio.sleep(_INTERVAL_DAYS * 24 * 3600)
 
 
 async def _warm_caches() -> None:

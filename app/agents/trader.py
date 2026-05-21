@@ -2371,17 +2371,22 @@ class Trader(BaseAgent):
             len(intraday_symbols), intraday_symbols,
         )
 
+        exited: list[str] = []
         for symbol in intraday_symbols:
             try:
                 await self._execute_exit(symbol, alpaca.get_latest_price(symbol) or 0,
                                          "FORCE_CLOSE_EOD", alpaca)
+                exited.append(symbol)
             except Exception as exc:
                 self.logger.error("Force-close failed for %s: %s", symbol, exc)
 
-        await self.log_decision(
-            "INTRADAY_FORCE_CLOSED",
-            reasoning={"symbols": intraday_symbols, "count": len(intraday_symbols)},
-        )
+        # Only log symbols that actually exited — avoids ghost entries for positions
+        # that no longer exist in Alpaca (stale in-memory state).
+        if exited:
+            await self.log_decision(
+                "INTRADAY_FORCE_CLOSED",
+                reasoning={"symbols": exited, "count": len(exited)},
+            )
 
 
 # Module-level singleton

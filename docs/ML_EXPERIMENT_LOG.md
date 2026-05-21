@@ -4079,3 +4079,22 @@ All WF runs from 2026-05-10 onwards use `universe_mode = "r1k_pit_union_partial"
 **Decision per IC verdict (P0.3 above):** Factor composite has no predictive signal (IC = -0.0064). Fold 4 failure confirms this is not a gate problem — the factor scores themselves predicted the wrong direction. **Action: PEAD is the primary active strategy** (validated avg Sharpe ~2.70). Factor portfolio remains as long-sleeve infrastructure but is not the alpha source.
 
 **What changes:** Phase G (PEAD WF + paper trading) is now the primary path. Factor L/S infrastructure code stays (good engineering) but PEAD signals take capital priority.
+
+### Phase G — Same-Day Entry Fix (2026-05-20)
+
+**Bug found:** `PEADScorer` was allowing entries on `days_since_earnings=0` (announcement day).
+Since earnings are typically announced after market close, this could generate a signal for
+the same trading day — effectively entering before the surprise is reflected in prices.
+
+**Fix:** `app/ml/pead_scorer.py` now requires `days_since >= 1`:
+```python
+if days_since < 1 or days_since > self.max_days_after:
+    continue
+```
+
+**Impact on WF results:** Phase G standalone WF (avg=2.697) was run before this fix.
+Same-day signals were possible but rare (most earnings are released after market close,
+so `days_since` increments to 1 by the next trading day automatically). CPCV run with
+the fixed scorer will confirm robustness.
+
+**Test added:** `test_pead_scorer.py::TestMaxDaysAfterFilter::test_same_day_announcement_excluded`

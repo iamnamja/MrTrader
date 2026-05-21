@@ -256,12 +256,26 @@ async def get_open_positions():
     try:
         raw = await asyncio.to_thread(_alpaca().get_positions)
 
-        # Enrich with stop/target/signal from active DB trades
+        # Enrich with stop/target/signal from DB trades.
+        # Primary: ACTIVE rows. Fallback for orphan Alpaca positions: latest non-closed row.
         def _db_trade_meta():
             db = get_session()
             try:
-                trades = db.query(Trade).filter(Trade.status == "ACTIVE").all()
-                return {t.symbol: t for t in trades}
+                # Primary: all ACTIVE rows
+                active = db.query(Trade).filter(Trade.status == "ACTIVE").all()
+                result: dict = {t.symbol: t for t in active}
+                # Fallback: for symbols not covered by ACTIVE, pick latest non-ghost/non-closed row
+                _exclude = {"CLOSED", "RECONCILE_GHOST"}
+                fallback = (
+                    db.query(Trade)
+                    .filter(Trade.status.notin_(_exclude))
+                    .order_by(desc(Trade.created_at))
+                    .all()
+                )
+                for t in fallback:
+                    if t.symbol not in result:
+                        result[t.symbol] = t
+                return result
             except Exception:
                 return {}
             finally:
@@ -281,9 +295,14 @@ async def get_open_positions():
             if pnl is not None and avg and float(avg) > 0:
                 pnl_pct = round(float(pnl) / (float(avg) * int(qty)) * 100, 2)
             t = db_trades.get(pos["symbol"])
-            stop = float(t.stop_price) if t and t.stop_price and t.stop_price > 0 else None
-            target = float(t.target_price) if t and t.target_price and t.target_price > 0 else None
-            entry = float(t.entry_price) if t and t.entry_price else float(avg)
+            _avg = float(avg) if avg else 0.0
+            stop = float(t.stop_price) if t and t.stop_price and t.stop_price > 0 else (
+                round(_avg * 0.98, 2) if _avg > 0 else None
+            )
+            target = float(t.target_price) if t and t.target_price and t.target_price > 0 else (
+                round(_avg * 1.06, 2) if _avg > 0 else None
+            )
+            entry = float(t.entry_price) if t and t.entry_price else _avg
             rr = None
             if stop and target and entry and (entry - stop) > 0:
                 rr = round((target - entry) / (entry - stop), 2)

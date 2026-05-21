@@ -22,8 +22,12 @@ def _cache_key(trade_type: str) -> str:
     return f"wf_predicted_pnl:{trade_type}"
 
 
-def _model_name(trade_type: str) -> str:
-    return "intraday_selector" if trade_type == "intraday" else "portfolio_selector"
+def _model_names(trade_type: str) -> list[str]:
+    """Return candidate model_name values in preference order for a trade type."""
+    if trade_type == "intraday":
+        return ["intraday_selector", "intraday_meta", "intraday"]
+    # swing — prefer selector, fall back to base model which has WF fold stats
+    return ["portfolio_selector", "swing"]
 
 
 def get_predicted_pnl(trade_type: str, db_session=None) -> Optional[float]:
@@ -44,7 +48,7 @@ def get_predicted_pnl(trade_type: str, db_session=None) -> Optional[float]:
     try:
         predicted = _fetch_from_db(trade_type, db_session)
     except Exception as exc:
-        logger.debug("get_predicted_pnl(%s) DB error (non-fatal): %s", trade_type, exc)
+        logger.warning("get_predicted_pnl(%s) DB error (non-fatal): %s", trade_type, exc)
         predicted = None
 
     # Cache even None so we don't hammer DB on every trade when model is missing
@@ -63,15 +67,19 @@ def _fetch_from_db(trade_type: str, db_session=None) -> Optional[float]:
         close_session = True
 
     try:
-        row = (
-            db_session.query(ModelVersion)
-            .filter(
-                ModelVersion.model_name == _model_name(trade_type),
-                ModelVersion.status == "ACTIVE",
+        row = None
+        for mname in _model_names(trade_type):
+            row = (
+                db_session.query(ModelVersion)
+                .filter(
+                    ModelVersion.model_name == mname,
+                    ModelVersion.status == "ACTIVE",
+                )
+                .order_by(ModelVersion.version.desc())
+                .first()
             )
-            .order_by(ModelVersion.version.desc())
-            .first()
-        )
+            if row and row.performance and len(row.performance) > 1:
+                break  # found a model with meaningful performance data
         if row is None or not row.performance:
             return None
 
@@ -84,14 +92,36 @@ def _fetch_from_db(trade_type: str, db_session=None) -> Optional[float]:
                 return float(val)
 
         # Fall back: derive from avg_sharpe * avg_vol / sqrt(avg_trades_per_fold)
-        # This is an approximation only used when per-trade return isn't stored.
-        sharpe = perf.get("avg_sharpe") or perf.get("sharpe")
-        n_trades = perf.get("avg_trades") or perf.get("n_trades") or perf.get("total_trades")
+        # Try all key naming conventions written by different retrain pipelines.
+        sharpe = (
+            perf.get("avg_sharpe")
+            or perf.get("sharpe")
+            or perf.get("tier3_avg_sharpe")   # swing retrain writes this
+            or perf.get("tier3_sharpe")        # intraday retrain writes this
+        )
+        # Estimate n_trades from fold sharpe list length if direct count missing
+        fold_sharpes = perf.get("tier3_fold_sharpes") or []
+        n_trades = (
+            perf.get("avg_trades")
+            or perf.get("n_trades")
+            or perf.get("total_trades")
+            or (perf.get("n_test") and float(perf["n_test"]) / max(len(fold_sharpes), 1))
+        )
         if sharpe is not None and n_trades and float(n_trades) > 0:
             # Annualised Sharpe → daily Sharpe → per-trade %; rough heuristic
             daily_sharpe = float(sharpe) / (252 ** 0.5)
-            return round(daily_sharpe / float(n_trades) ** 0.5, 6)
+            estimated = round(daily_sharpe / float(n_trades) ** 0.5, 6)
+            logger.debug(
+                "get_predicted_pnl(%s): fallback estimate from sharpe=%.3f n_trades=%.1f → %.6f",
+                trade_type, float(sharpe), float(n_trades), estimated,
+            )
+            return estimated
 
+        logger.warning(
+            "get_predicted_pnl(%s): no usable performance keys in ModelVersion "
+            "(available: %s) — sim_predicted_pnl will be NULL",
+            trade_type, list(perf.keys()),
+        )
         return None
     finally:
         if close_session:

@@ -304,7 +304,10 @@ export interface DecisionAuditRow {
   news_materiality: number | null
   macro_risk_level: string | null
   outcome_pnl_pct: number | null
+  outcome_1d_pct: number | null
   top_features: Record<string, number> | null
+  gate_category: string | null
+  price_at_decision: number | null
 }
 
 export interface GateSummaryRow {

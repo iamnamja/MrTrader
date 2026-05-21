@@ -248,9 +248,13 @@ def get_recent_decisions(
                         "news_materiality": r.news_materiality,
                         "macro_risk_level": r.macro_risk_level,
                         "outcome_pnl_pct": r.outcome_pnl_pct,
+                        "outcome_1d_pct": r.outcome_1d_pct,
                         "vol_targeting_mult": r.vol_targeting_mult,
                         "regime_sizing_mult": r.regime_sizing_mult,
                         "regime_label": r.regime_label_at_decision,
+                        "top_features": r.top_features,
+                        "gate_category": r.gate_category,
+                        "price_at_decision": float(r.price_at_decision) if r.price_at_decision else None,
                     }
                     for r in rows
                 ],
