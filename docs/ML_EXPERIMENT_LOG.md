@@ -4288,7 +4288,15 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; if all fail, pivot 
 | v5 | L/S+T5+VIX30+10%threshold | 0.182 | **1.11** | **0.94** | -0.28 | -0.27 | -0.59 | FAIL |
 | v8 | L/O+T5+VIX30+10%threshold | 0.182 | 1.11 | 0.94 | -0.28 | -0.27 | -0.59 | FAIL (=v5) |
 | v9 | L/O+T5+VIX30+7%threshold | 0.246 | 0.71 | 0.80 | 0.13 | -0.22 | -0.19 | FAIL |
-| v10 | L/O+T5+VIX30+adaptive(10%@VIX>20,5%@VIX≤20) | TBD | — | — | — | — | — | running |
+| v10 | L/O+T5+VIX30+adaptive(10%@VIX>20,5%@VIX≤20) | **0.346** | 0.71 | **1.01** | 0.87 | -0.52 | -0.35 | FAIL (best) |
+
+**10-iteration campaign conclusion:** Folds 4-5 (2024-present) negative under ALL configs.
+PEAD signal has degraded in 2024+ (analyst calibration improved, AI earnings patterns anomalous,
+academic arbitrage crowding). Best config: v10 (adaptive threshold), avg=0.346. Still 0.454
+below gate. **Pivoting to factor portfolio WF post-P0.2-fix.**
+
+Best PEAD config for future reference: `long_threshold=0.05, long_short=False, vix_block_all=30,
+max_hold_bars_override=5, long_threshold_hv=0.10, vix_adaptive=20.0`
 
 **v6 analysis:** 4% priced-in filter fixed fold 1 (0.87) but destroyed fold 3 (2023-24, -0.74)
 and fold 4 (2024-25, -1.46). L/S short leg in 2023-26 is consistently destructive.
