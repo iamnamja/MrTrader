@@ -885,7 +885,7 @@ class AgentSimulator:
             if today_bar is None:
                 continue
 
-            entry_price = float(today_bar["open"])
+            entry_price = self._scalar(today_bar["open"])
             if entry_price <= 0:
                 continue
 
@@ -1053,7 +1053,7 @@ class AgentSimulator:
                 pos.highest_price = min(pos.highest_price, today_low)
             else:
                 pos.highest_price = max(pos.highest_price, today_high)
-            today_open = float(today_bar["open"])
+            today_open = self._scalar(today_bar["open"])
             should_exit = False
             exit_reason = ""
             fill_price = today_close  # default
@@ -1314,7 +1314,21 @@ class AgentSimulator:
         rows = df.loc[mask]
         if len(rows) == 0:
             return None
-        return rows.iloc[0]
+        row = rows.iloc[0]
+        # Flatten MultiIndex columns to scalars so callers can do float(bar["open"])
+        if isinstance(row.index, pd.MultiIndex):
+            row = pd.Series(
+                {col[0]: val for col, val in row.items()},
+                name=row.name,
+            )
+        return row
+
+    @staticmethod
+    def _scalar(val) -> float:
+        """Extract a scalar float from a value that may be a Series or array."""
+        if hasattr(val, "iloc"):
+            return float(val.iloc[0])
+        return float(val)
 
     @staticmethod
     def _normalize_reason(reason: str) -> str:
