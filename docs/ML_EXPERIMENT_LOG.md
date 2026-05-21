@@ -4286,7 +4286,8 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; if all fail, pivot 
 | v4 | L/O+T5+VIX22+8%filter | 0.060 | 0.22 | 0.34 | 0.88 | -1.08 | -0.05 | FAIL |
 | v7 | L/S+T5+shortVIX≤16+10%short | 0.069 | -0.13 | 0.38 | 0.84 | -0.54 | -0.20 | FAIL |
 | v5 | L/S+T5+VIX30+10%threshold | 0.182 | **1.11** | **0.94** | -0.28 | -0.27 | -0.59 | FAIL |
-| v8 | L/O+T5+VIX30+10%threshold | TBD | — | — | — | — | — | running |
+| v8 | L/O+T5+VIX30+10%threshold | 0.182 | 1.11 | 0.94 | -0.28 | -0.27 | -0.59 | FAIL (=v5) |
+| v9 | L/O+T5+VIX30+7%threshold | TBD | — | — | — | — | — | running |
 
 **v6 analysis:** 4% priced-in filter fixed fold 1 (0.87) but destroyed fold 3 (2023-24, -0.74)
 and fold 4 (2024-25, -1.46). L/S short leg in 2023-26 is consistently destructive.

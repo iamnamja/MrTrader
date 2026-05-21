@@ -55,15 +55,16 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    # v8: 10% threshold + long-only + VIX30 + T+5 (combine best elements)
-    # v5 showed 10% threshold gives fold1=1.11, fold2=0.94 (best folds 1-2 yet).
-    # Short leg destroyed folds 3-5 in v5. Remove it + add VIX30 from v3.
-    # Hypothesis: 10% quality filter + long-only + VIX gate fixes all problem folds.
+    # v9: 7% threshold + long-only + VIX30 + T+5
+    # Key insight from v5/v8: 10% threshold improves fold 1 (2021) but breaks fold 3 (2023-24).
+    # 5% threshold keeps fold 3 (0.94) but fold 1 is only 0.53.
+    # Hypothesis: 7% is the regime-adaptive sweet spot — filters 2021 noise while
+    # keeping 2023-24 moderate surprises that actually drift.
     scorer = PEADScorer(
-        long_threshold=0.10,        # top-quintile beats only
-        short_threshold=-0.10,
+        long_threshold=0.07,        # 7% — between 5% (too noisy) and 10% (too restrictive)
+        short_threshold=-0.07,
         long_short=False,           # no shorts — consistently destructive
-        vix_block_all=30.0,         # proven sweet spot from v3
+        vix_block_all=30.0,         # proven sweet spot
         vix_block_short=100.0,
         vix_conf_ref=100.0,
         max_announce_day_move=1.0,  # no priced-in filter
