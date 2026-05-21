@@ -59,13 +59,16 @@ def main() -> int:
     # - long-only (short leg hurt across all CPCV runs)
     # - T+5 hard close (max_hold_bars_override=5) to cap meme-era reversal losses
     # - No VIX gate, no priced-in filter (both hurt in ablation)
+    # Config v3: long-only + T+5 hard close + VIX block at 30
+    # Hypothesis: hard VIX block prevents entries during Aug-2024 (VIX=38) and
+    # Apr-2025 (VIX=60) tariff shock — the two periods that killed folds 4 & 5.
     scorer = PEADScorer(
         long_threshold=0.05,
         short_threshold=-0.05,
         long_short=False,
-        vix_block_all=100.0,
+        vix_block_all=30.0,         # hard block: no new PEAD longs when VIX > 30
         vix_block_short=100.0,
-        vix_conf_ref=100.0,
+        vix_conf_ref=100.0,         # no confidence scaling (hard block only)
         max_announce_day_move=1.0,  # disabled
     )
 

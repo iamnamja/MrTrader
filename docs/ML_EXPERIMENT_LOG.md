@@ -4216,3 +4216,26 @@ by EOD — the pre-fix simulator didn't catch these. Post-fix correctly records 
 stop (exit at open if overnight gap >X% against position). This limits meme-era
 reversals while keeping the drift window tight.
 
+### WF v2 — Long-only + T+5 hard close (2026-05-21)
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021 meme era | +0.316 | 196 |
+| 2 | 2022-23 | +0.848 | 241 |
+| 3 | 2023-24 | +0.944 | 230 |
+| 4 | 2024-25 tariff | -0.721 | 220 |
+| 5 | 2025-26 | -0.291 | 222 |
+
+**Result: GATE FAILED** — avg=0.219, min=-0.721
+
+T+5 fixed fold 1 (meme era: -0.843→+0.316) but broke folds 4-5. Two effects:
+1. Trade count 4x higher (196 vs 42) — fast capital recycling generates more trades but
+   lower per-trade quality when entering marginal setups.
+2. Aug-2024 VIX spike (38) + Apr-2025 tariff shock (VIX=60) destroyed fold 4.
+
+**Next:** T+5 + VIX block at 30 (hard block, no new entries when VIX > 30).
+
+### WF v3 — Long-only + T+5 + VIX block 30 (2026-05-21)
+
+Result: TBD — running
+
