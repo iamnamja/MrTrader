@@ -59,9 +59,9 @@ def main() -> int:
     # - long-only (short leg hurt across all CPCV runs)
     # - T+5 hard close (max_hold_bars_override=5) to cap meme-era reversal losses
     # - No VIX gate, no priced-in filter (both hurt in ablation)
-    # Config v3: long-only + T+5 hard close + VIX block at 30
-    # Hypothesis: hard VIX block prevents entries during Aug-2024 (VIX=38) and
-    # Apr-2025 (VIX=60) tariff shock — the two periods that killed folds 4 & 5.
+    # Best validated config (post-P0.2-fix): long-only + T+5 + VIX block 30
+    # avg=0.328 (best post-fix result). Gate requires 0.80; needs further work.
+    # Two structural failures: 2021 meme reversals (T+5 helps) + 2024-25 tariff (VIX block helps).
     scorer = PEADScorer(
         long_threshold=0.05,
         short_threshold=-0.05,

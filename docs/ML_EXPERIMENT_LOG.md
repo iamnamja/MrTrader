@@ -4237,5 +4237,41 @@ T+5 fixed fold 1 (meme era: -0.843→+0.316) but broke folds 4-5. Two effects:
 
 ### WF v3 — Long-only + T+5 + VIX block 30 (2026-05-21)
 
-Result: TBD — running
+Bug fix: VIX was only downloaded when `use_opportunity_score=True`. Fixed to also
+download when `scorer_instance` is provided. Previous v3 run had no VIX data.
+
+| Fold | Period | Sharpe | Trades |
+|------|--------|--------|--------|
+| 1 | 2021 meme era | +0.525 | 171 |
+| 2 | 2022-23 | +0.861 | 230 |
+| 3 | 2023-24 | +0.944 | 230 |
+| 4 | 2024-25 tariff | -0.358 | 220 |
+| 5 | 2025-26 | -0.331 | 221 |
+
+**Result: GATE FAILED** — avg=0.328, min=-0.358
+
+Significant improvement vs v2 (avg 0.219→0.328). VIX block helped fold 4 (-0.721→-0.358).
+Folds 4-5 remain negative — 2024-25 tariff shock + post-tariff period is a structural
+weakness for PEAD regardless of VIX gate (many entries still occur at VIX 15-29).
+
+### Post-Fix WF Campaign Summary
+
+| Version | Config | avg Sharpe | min Sharpe | Gate |
+|---------|--------|-----------|-----------|------|
+| Pre-fix | L/S, default hold | 2.697 | 2.490 | PASS (bugged) |
+| v1 post-fix | L/S, default hold | 0.402 | -0.843 | FAIL |
+| v2 | L/O + T+5 (no VIX data) | 0.219 | -0.721 | FAIL |
+| v3 (best) | L/O + T+5 + VIX≤30 | **0.328** | **-0.358** | FAIL |
+
+**Conclusion:** PEAD does not pass the 0.80 WF gate with any configuration tested.
+True corrected avg Sharpe is ~0.33, far from 0.80 gate. Two structural regime failures:
+1. 2021 meme era — post-earnings reversals (partially mitigated by T+5)
+2. 2024-25 tariff shock — macro uncertainty destroys drift signal even at low VIX
+
+**Recommendation:** Do NOT deploy PEAD to paper trading yet. The pre-fix 2.697 number
+that informed the deployment recommendation was a bug artifact. With corrected numbers,
+PEAD has no validated edge. Options: (a) investigate higher surprise threshold (>7-8%
+to only trade strongest beats), (b) earnings quality filter (beat + raised guidance),
+(c) sector rotation (PEAD may work better in certain sectors), (d) shelve PEAD and
+focus on factor portfolio post-fix WF re-run instead.
 
