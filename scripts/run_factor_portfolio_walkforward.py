@@ -27,17 +27,18 @@ logger = logging.getLogger(__name__)
 
 GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
 
-# v4: top_n=10 + require stock beats SPY over 20 days (market-relative momentum filter).
-# Hypothesis: In 2024 Mag7 concentration era, most stocks underperformed SPY even while
-# individually up. Requiring outperformance vs SPY naturally selects the Mag7 leaders
-# and other market-beating names — exactly the stocks that drove 2024 returns.
-# This is cross-sectional momentum (the strongest documented factor).
+# v5: top_n=10 + positive 60d momentum (longer window, more robust than 20d).
+# v3 (20d momentum) was the best config so far (avg=0.566). v4 (SPY-relative) backfired.
+# Hypothesis: 20-day window is noisy — stocks can be up 20d but down 60d (dead-cat bounce).
+# 60-day filter requires a sustained uptrend, filtering value traps more reliably.
+# Expected: F1 should recover (longer window = less sensitive to meme-era short-term moves);
+# F4 may improve further if 60d filter catches stocks already rolling over in mid-2024.
 SCORER_CONFIG = {
     "top_n": 10,
     "long_short": False,
     "vix_threshold": 30.0,
     "spy_ma_window": 200,
-    "require_spy_outperform_days": 20,  # only buy stocks that beat SPY over last 20 days
+    "require_positive_momentum_days": 60,  # only buy stocks up over last 60 trading days (~3mo)
 }
 
 
@@ -48,9 +49,9 @@ def main() -> int:
     scorer = FactorPortfolioScorer(**SCORER_CONFIG)
 
     logger.info(
-        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX≤%.0f, SPY-200DMA, SPY-rel-mom%dd",
+        "Factor portfolio walk-forward: 5 folds, 6yr, top-%d, VIX≤%.0f, SPY-200DMA, mom%dd",
         SCORER_CONFIG["top_n"], SCORER_CONFIG["vix_threshold"],
-        SCORER_CONFIG.get("require_spy_outperform_days", 0),
+        SCORER_CONFIG.get("require_positive_momentum_days", 0),
     )
 
     wf = run_swing_walkforward(
