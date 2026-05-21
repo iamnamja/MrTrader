@@ -4338,4 +4338,6 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
 | v3 | top_n=10 + require positive 20d momentum | 0.566 | 0.119 | 1.312 | 1.550 | -1.294 | 1.145 | FAIL — F2/F3 jump, F1 hurt, F4 still deep |
 | v4 | top_n=10 + beat SPY 20d (relative momentum) | 0.112 | 0.182 | -0.327 | 1.492 | -1.887 | 1.098 | FAIL — SPY-rel backfired: 2022 bear kills F2 |
 | v5 | top_n=10 + 60d momentum | 0.500 | 0.178 | 0.644 | 2.164 | -1.841 | 1.354 | FAIL — F3 superb (2.16) but F4 worse than v3 |
+| v6 | top_n=15 + 20d momentum | 0.522 | 0.052 | 1.312 | 1.709 | -1.952 | 1.488 | FAIL — worse than v3 on F1/F4 |
+| v7 | top_n=5 + 20d momentum | **0.645** | 0.288 | 1.182 | 1.713 | **-0.942** | 0.982 | FAIL — best so far! F4 best at -0.942. Monotonic: smaller top_n = better |
 

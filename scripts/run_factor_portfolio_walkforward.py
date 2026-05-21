@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 
 GATE = {"min_avg_sharpe": 0.80, "min_fold_sharpe": -0.30}
 
-# v6: top_n=15 + 20d momentum. Exploring top_n dimension between v3(10) and v1(20).
-# v3 (top_n=10, 20d mom) avg=0.566 best so far. v5 (60d) avg=0.500 < v3.
-# Hypothesis: top_n=10 may be too few in some folds (low diversity); 15 balances
-# concentration vs diversification while keeping the 20d momentum quality filter.
+# v8: top_n=3 + 20d momentum. Pushing concentration further (v7 top_n=5 was best: avg=0.645).
+# Monotonic pattern confirmed: 20→15→10→5 yields 0.410→0.522→0.566→0.645.
+# Hypothesis: top-3 captures only the model's highest-conviction signals; idiosyncratic risk
+# increases but factor predictive power at the very top of the distribution is strongest.
 SCORER_CONFIG = {
-    "top_n": 15,
+    "top_n": 3,
     "long_short": False,
     "vix_threshold": 30.0,
     "spy_ma_window": 200,
