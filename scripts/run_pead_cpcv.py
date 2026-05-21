@@ -79,6 +79,20 @@ class PEADStrategy:
             spy_raw.columns = spy_raw.columns.get_level_values(0)
         spy_raw.columns = [c.lower() for c in spy_raw.columns]
         self.spy_prices = spy_raw["close"]
+        self.symbols_data["SPY"] = spy_raw
+
+        # Download VIX for regime gating in PEADScorer
+        try:
+            vix_raw = yf.download("^VIX", start=start.date().isoformat(),
+                                  end=end.date().isoformat(), progress=False, auto_adjust=True)
+            if isinstance(vix_raw.columns, pd.MultiIndex):
+                vix_raw.columns = vix_raw.columns.get_level_values(0)
+            vix_raw.columns = [c.lower() for c in vix_raw.columns]
+            if len(vix_raw) > 0:
+                self.symbols_data["^VIX"] = vix_raw
+                logger.info("VIX data loaded: %d days", len(vix_raw))
+        except Exception as e:
+            logger.warning("VIX download failed (regime gate disabled): %s", e)
 
         all_days = sorted({
             d.date() if hasattr(d, "date") else d
@@ -94,8 +108,10 @@ class PEADStrategy:
         from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
         from scripts.walkforward.gates import FoldResult, compute_profit_factor, compute_calmar, compute_k_ratio, fold_years
 
-        extra = _hist_syms(tr_start, te_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
+        # Use te_start (not te_end) for PIT universe — avoids leaking symbols that
+        # joined the index mid-test-period into the universe at test start.
+        extra = _hist_syms(tr_start, te_start, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, te_start, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in self.symbols_data.items()

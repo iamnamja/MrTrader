@@ -307,7 +307,7 @@ async def _schedule_wf_reconciliation() -> None:
     _INTERVAL_DAYS = 7
     while True:
         try:
-            from datetime import date, timedelta
+            from datetime import date
             from app.database.session import get_session
             from app.database.models import WfLiveReconciliation
             from app.analytics.wf_reconciliation import run_reconciliation
