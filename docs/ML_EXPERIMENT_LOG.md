@@ -4342,4 +4342,22 @@ Gate: avg ≥ 0.80, min ≥ -0.30. Running up to 10 configs; documenting below.
 | v7 | top_n=5 + 20d momentum | **0.645** | 0.288 | 1.182 | 1.713 | **-0.942** | 0.982 | FAIL — best so far! F4 best at -0.942. Monotonic: smaller top_n = better |
 | v8 | top_n=3 + 20d momentum | — | — | — | — | — | — | BUG: parallel download → MultiIndex → 0 trades all folds. Retry as v10. |
 | v9 | top_n=5, no momentum (ablation) | 0.413 | 0.127 | 0.645 | 1.690 | -1.292 | 0.896 | FAIL — confirms 20d filter adds +0.232 avg (+0.350 on F4) |
+| v10 | top_n=3 + 20d momentum (final) | 0.701 | 0.756 | 0.679 | 2.191 | -1.427 | 1.304 | FAIL — best avg (0.701) but F4 regresses vs v7; sweet spot is top_n=5 |
+
+**10-iteration campaign conclusion:** Gate not passed (avg ≥ 0.80 AND min ≥ -0.30). Best avg = v10 (0.701). Best min fold = v7 (F4=-0.942). No config fixes fold 4.
+
+**Root cause:** Fold 4 (2024-06-01 → 2025-05-21) covers two overlapping regime failures:
+1. **Mag7 concentration** (2024): >80% of S&P 500 return from 7 stocks not well-represented in factor longs; equal-weight factor portfolio underperforms by definition.
+2. **Apr-2025 tariff shock**: Binary macro event (VIX=60+) destroys all factor longs regardless of quality.
+These are structural, not solvable by parameter tuning within the current model and universe.
+
+**Key learnings:**
+- 20d positive momentum filter: +0.232 avg Sharpe (most valuable single addition)
+- Optimal top_n: 5 (best F4 balance); 3 maximizes avg but worsens F4
+- VIX/SPY 200DMA gate: helps fold 1 but doesn't fire in calm-VIX 2024
+- SPY-relative momentum: counterproductive (2022 bear makes it select relative winners who still fall)
+
+**Recommended config for future use:** `top_n=5, long_short=False, vix_threshold=30, spy_ma_window=200, require_positive_momentum_days=20` (v7). Rationale: best F4 at -0.942, avg=0.645, 4/5 folds positive.
+
+**Next step:** Factor WF cannot pass the strict gate. Options: (a) retrain swing model on 2024-2025 data with momentum-aware features; (b) proceed to paper trading with v7 config on a relaxed gate; (c) investigate new ML model trained on current regime data.
 
