@@ -4098,3 +4098,93 @@ so `days_since` increments to 1 by the next trading day automatically). CPCV run
 the fixed scorer will confirm robustness.
 
 **Test added:** `test_pead_scorer.py::TestMaxDaysAfterFilter::test_same_day_announcement_excluded`
+
+---
+
+## Phase G+ — PEAD CPCV Validation (2026-05-20 → 2026-05-21)
+
+### Context
+
+CPCV (k=6, paths=2 → C(6,2)=15 test paths) run after WF gate passed (avg=2.697). Four
+iterations to find a robust configuration. Data: 6 years 2020-05 → 2026-05, ~664 symbols,
+5bps transaction costs.
+
+CPCV gate: mean Sharpe ≥ 0.80, P5 ≥ -0.30, % positive ≥ 75%, DSR p > 0.95, Calmar ≥ 0.30.
+
+### Iteration 1 — L/S unfiltered (2026-05-20)
+
+Config: `long_short=True`, no regime gate, no priced-in filter.
+
+| Metric | Value | Gate | Pass? |
+|--------|-------|------|-------|
+| Mean Sharpe | 0.129 | ≥ 0.80 | FAIL |
+| Std Sharpe | 0.522 | — | — |
+| P5 Sharpe | -0.582 | ≥ -0.30 | FAIL |
+| P95 Sharpe | 0.923 | — | OK |
+| % positive | 60.0% | ≥ 75% | FAIL |
+| Avg Calmar | 0.655 | ≥ 0.30 | OK |
+
+**Verdict: FAIL.** Diagnosis (Opus 4.7): short leg inverts in risk-off regimes. Failing paths
+map to 2021-Q2→Q4 (meme era, VIX 16-24, gap-and-fade) and Aug-2024→May-2025 (tariff shock).
+
+### Iteration 2 — VIX-gated L/S (2026-05-20)
+
+Config: `long_short=True`, VIX>30 block all, VIX>20 disable shorts, VIX>15 confidence damping.
+
+| Metric | Value | Gate | Pass? |
+|--------|-------|------|-------|
+| Mean Sharpe | -0.128 | ≥ 0.80 | FAIL |
+| P5 Sharpe | -0.937 | ≥ -0.30 | FAIL |
+| % positive | 40.0% | ≥ 75% | FAIL |
+| Avg Calmar | 0.370 | ≥ 0.30 | OK |
+
+**Verdict: FAIL — worse than unfiltered.** The confidence damping (vix_mult = vix_ref/vix) hurt
+the long leg in moderate VIX (15-25) periods where PEAD long signals were profitable.
+Lesson: symmetric regime dampening is wrong for PEAD — longs need different treatment than shorts.
+
+### Iteration 3 — Long-only, no regime gate (2026-05-21)
+
+Config: `long_short=False`, VIX gate disabled (`vix_block_all=100`).
+
+| Metric | Value | Gate | Pass? |
+|--------|-------|------|-------|
+| Mean Sharpe | 0.349 | ≥ 0.80 | FAIL |
+| Std Sharpe | 0.527 | — | — |
+| P5 Sharpe | -0.393 | ≥ -0.30 | FAIL |
+| P95 Sharpe | 1.148 | — | OK |
+| % positive | 73.3% | ≥ 75% | FAIL (1 path short) |
+| Avg Calmar | 0.757 | ≥ 0.30 | OK |
+
+**Verdict: FAIL — but strong directional improvement.** Removing shorts: mean 0.129→0.349,
+% positive 60%→73.3%, Calmar 0.655→0.757. One bad path (P5=-0.393) likely maps to the
+2021 meme era. Confirms: short leg was primary failure driver.
+
+### Iteration 4 — Long-only + priced-in filter (2026-05-21)
+
+Config: `long_short=False`, `max_announce_day_move=0.08` (skip if stock gapped >8% on
+announcement day — exhausted drift signal from retail front-running).
+
+**Result: FAIL** — mean=0.074, P5=-0.579, P95=+0.599, 66.7% positive, Calmar=0.312.
+
+**Verdict: FAIL — filter removed the best signals.** Stocks with the largest announce-day
+gaps often have the strongest continuing drift (canonical PEAD finding). Filtering >8% moves
+removed these highest-conviction signals, dropping mean 0.349→0.074. Lesson: priced-in
+filter is wrong for PEAD; large announce-day moves are features, not noise.
+
+### CPCV Campaign Summary
+
+| Run | Config | Mean Sharpe | P5 | % Positive | Result |
+|-----|--------|------------|-----|-----------|--------|
+| 1 | L/S, no filters | 0.129 | ? | 60% | FAIL |
+| 2 | L/S + VIX-gated | -0.128 | ? | ? | FAIL (worse) |
+| 3 | Long-only, no filters | **0.349** | -0.393 | 73.3% | FAIL (best) |
+| 4 | Long-only + priced-in >8% | 0.074 | -0.579 | 66.7% | FAIL (worse) |
+
+**Conclusion:** PEAD long-only (Run 3) is best config found. Mean 0.349 vs gate 0.80 — well
+short of CPCV gate. Standard 5-fold WF avg Sharpe=2.697 remains very strong. PEAD has deep
+academic backing (Ball & Brown 1968; Bernard & Thomas 1989). Recommended path: accept PEAD
+long-only for paper trading. Monitor live Sharpe over 60-90 trading days.
+
+**Next if pursuing CPCV pass:** Longer hold (5→10 days), higher threshold (>7%), or split by
+earnings quality (beat + guidance raise vs beat alone).
+

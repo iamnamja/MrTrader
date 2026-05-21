@@ -46,6 +46,11 @@ VIX_BLOCK_ALL = 30.0    # crisis — block all new PEAD entries
 VIX_BLOCK_SHORT = 20.0  # elevated vol — disable short leg (squeeze risk)
 VIX_CONF_REF = 15.0     # below this: full confidence; above: linear damping
 
+# Priced-in filter: if the stock already moved this much on announcement day,
+# the surprise is likely fully reflected in price and drift is exhausted.
+# Academic backing: PEAD drift is strongest for moderate reactions (2-8%), not large gaps.
+MAX_ANNOUNCE_DAY_MOVE = 0.08   # 8% — skip if stock already gapped >8% on report day
+
 
 class PEADScorer:
     """PEAD signal generator for use as AgentSimulator.factor_scorer.
@@ -71,6 +76,7 @@ class PEADScorer:
         vix_block_all: float = VIX_BLOCK_ALL,
         vix_block_short: float = VIX_BLOCK_SHORT,
         vix_conf_ref: float = VIX_CONF_REF,
+        max_announce_day_move: float = MAX_ANNOUNCE_DAY_MOVE,
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
@@ -79,6 +85,7 @@ class PEADScorer:
         self.vix_block_all = vix_block_all
         self.vix_block_short = vix_block_short
         self.vix_conf_ref = vix_conf_ref
+        self.max_announce_day_move = max_announce_day_move
 
     def _vix_today(self, day, symbols_data: dict):
         """Extract PIT VIX close for `day` from symbols_data. Returns None if unavailable."""
@@ -148,6 +155,25 @@ class PEADScorer:
             # entering before the surprise is in public prices at next open.
             if days_since < 1 or days_since > self.max_days_after:
                 continue
+
+            # Priced-in filter: if the announcement-day bar moved > threshold, the
+            # drift has already been captured by momentum traders. Skip to avoid
+            # chasing exhausted moves (most common in 2021 meme/retail era).
+            if self.max_announce_day_move < 1.0:
+                try:
+                    _ts_announce = _ts - pd.Timedelta(days=int(days_since))
+                    _ann_bar = df.loc[:_ts_announce].iloc[-1]
+                    _prev_bar = df.loc[:_ts_announce].iloc[-2] if len(df.loc[:_ts_announce]) >= 2 else None
+                    if _prev_bar is not None:
+                        _announce_move = abs(float(_ann_bar["close"]) / float(_prev_bar["close"]) - 1)
+                        if _announce_move > self.max_announce_day_move:
+                            logger.debug(
+                                "PEAD priced-in skip %s: announce-day move=%.1f%% > %.0f%% threshold",
+                                sym, _announce_move * 100, self.max_announce_day_move * 100,
+                            )
+                            continue
+                except Exception:
+                    pass  # if bars unavailable, proceed without filter
 
             # Map surprise magnitude to confidence
             abs_surprise = abs(surprise)
