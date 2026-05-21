@@ -55,16 +55,17 @@ def main() -> int:
     except Exception as _warm_err:
         logger.warning("FMP cache pre-warm failed (non-fatal): %s", _warm_err)
 
-    # v5: Higher surprise threshold (10%) + T+5, L/S enabled
-    # Hypothesis: top-quintile surprises drift more reliably. 5% threshold lets in
-    # marginal beats that retail front-ran (2021) and macro overwhelmed (2024-25).
+    # v8: 10% threshold + long-only + VIX30 + T+5 (combine best elements)
+    # v5 showed 10% threshold gives fold1=1.11, fold2=0.94 (best folds 1-2 yet).
+    # Short leg destroyed folds 3-5 in v5. Remove it + add VIX30 from v3.
+    # Hypothesis: 10% quality filter + long-only + VIX gate fixes all problem folds.
     scorer = PEADScorer(
-        long_threshold=0.10,        # 10% — top-quintile surprises only
+        long_threshold=0.10,        # top-quintile beats only
         short_threshold=-0.10,
-        long_short=True,
-        vix_block_all=30.0,
-        vix_block_short=20.0,
-        vix_conf_ref=15.0,
+        long_short=False,           # no shorts — consistently destructive
+        vix_block_all=30.0,         # proven sweet spot from v3
+        vix_block_short=100.0,
+        vix_conf_ref=100.0,
         max_announce_day_move=1.0,  # no priced-in filter
     )
 
