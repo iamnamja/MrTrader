@@ -1392,6 +1392,9 @@ class PortfolioManager(BaseAgent):
                         proposal_uuid=proposal["proposal_uuid"],
                         direction=trade_direction,
                         entry_price=price,
+                        stop_price=proposal.get("stop_loss"),
+                        target_price=proposal.get("profit_target"),
+                        quantity=proposal.get("quantity"),
                         regime_score_at_scan=_regime.get("regime_score"),
                         regime_label_at_scan=_regime.get("regime_label"),
                     )
