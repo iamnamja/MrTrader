@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-22
 **Capital:** $100k (paper)
-**Status:** Phase F complete (L/S infrastructure built + WF run: avg 0.579, gate FAILED). **Phase G (PEAD) is the primary path** — factor IC = -0.0064 confirms no signal; PEAD avg Sharpe ~2.70 validated.
+**Status:** Kill criterion triggered 2026-05-22 (model WF avg=-0.275, 4/5 folds negative). **Staying single-name L/S. Active plan: Phase 0-7 alignment + alpha recovery (Opus 4.7 reviewed).** See section below.
 
 ---
 
@@ -148,6 +148,171 @@ pm.ls_net_exposure_tolerance = 0.15
 - 5-fold, 6-year WF on R1K
 - Gate: avg Sharpe ≥ 0.80, min fold ≥ -0.30 (same as factor)
 - IC check: ≥ 0.02 on forward 5d returns to surprise score
+
+---
+
+## STRATEGIC DECISION — 2026-05-22: Stay Single-Name L/S, Fix Alignment
+
+**Kill criterion triggered:** Model WF avg=-0.275 (folds: -0.842, -0.469, -0.624, +1.074, -0.513). 4/5 negative.
+
+**Decision:** Do NOT pivot to ETFs. The kill criterion result is not evidence that single-name L/S has no alpha — it is evidence that the training/WF pipeline was misaligned (see root causes below). Fix the alignment first, then re-evaluate.
+
+**Root causes identified (Opus 4.7 review, 2026-05-22):**
+1. WF has always evaluated `FactorPortfolioScorer` (rules-based), never `model.predict`. Spearman=0.035 between the two — completely independent systems.
+2. Training objective (triple-barrier labels) ≠ WF objective (AgentSimulator ATR-stop P&L). Different things were optimized vs evaluated.
+3. Universe survivorship bias not audited.
+4. Feature construction parity between training/WF/live not verified.
+5. LambdaRank single-row predict = 0.0 (fixed 2026-05-22).
+6. TSNormalizerState empty for LambdaRank causing all-zero inference (fixed 2026-05-22).
+
+---
+
+## Phase 0 — Freeze, Audit, Instrument (1-2 days) ← NEXT
+
+**Goal:** Stop changing behavior until misalignments are measurable.
+
+### 0.1 — Canonical contract (`app/ml/contracts.py`)
+- `@dataclass FeatureRow`: symbol, asof_ts, feature_name→value, label, label_meta
+- `@dataclass ScoreRow`: symbol, asof_ts, raw_score, normalized_score, rank
+- `schema_hash()` — hash of feature names + dtypes + order
+- Training, WF, live PM all import this. Mismatch = startup fail.
+
+### 0.2 — Parity test harness (`tests/parity/test_training_wf_live_parity.py`)
+- 5 fixed (symbol, date) pairs spanning 2019–2025
+- Assert: training pipeline features == WF features == live PM features (within 1e-9)
+- Assert: schema_hash identical across all three paths
+- **Start by expecting failure — every diff surfaces a real bug.**
+
+### 0.3 — Structured logging in all three paths
+- After feature construction: log schema_hash, row count, NaN count
+- After normalization: log normalizer ID, feature mean/std
+- After model.predict: log score distribution, top-10 symbols
+- **Files:** `app/ml/training.py`, `scripts/run_model_walkforward.py`, `app/agents/portfolio_manager.py`
+
+---
+
+## Phase 1 — Catalog All Misalignments (2 days)
+
+**Goal:** Evidence-backed list of everything broken. No fixes yet.
+
+### 1.1 — Feature construction audit → `docs/feature_audit.md`
+For every feature: source, lookback, training code path, inference code path, PIT compliance.
+- Rolling z-scores: cross-section in training vs cs_normalize on N symbols in live?
+- Fundamentals: lagged by report date or filing date?
+- Sector/industry: static-as-of-today (survivorship) or PIT?
+
+### 1.2 — Label audit → `docs/label_audit.md`
+Compute correlation: triple-barrier label vs AgentSimulator P&L for same trades.
+**Expected:** correlation < 0.3 → training objective is provably wrong → Phase 2 mandatory.
+
+### 1.3 — Universe/survivorship audit → `docs/universe_audit.md`
+Is "Russell 1000" today's membership backfilled, or PIT? Count delisted symbols in training.
+**Script:** `scripts/audit_survivorship.py` (already written)
+
+### 1.4-1.6 — Normalization, inference path, execution audits
+- cs_normalize on 5 symbols ≠ cs_normalize on 750 — live scoring is wrong
+- AgentSimulator vs live: stops, slippage, sizing, rebalance cadence
+- Live PM inference paths: selection (full universe) vs reeval (single symbol)
+
+---
+
+## Phase 2 — Replace Training Objective (3-5 days)
+
+**Goal:** Train the model to predict what WF and live actually reward.
+
+### 2.1 — Canonical label: forward N-day residual return vs sector
+- `app/ml/labels.py` (new): `compute_residual_return_label(prices, sectors, horizon=5)`
+- N matches live holding period (~5-10 days for swing)
+- Continuous label (not binary triple-barrier)
+
+### 2.2 — LambdaRank group = (date, universe), gain = return decile rank
+- `app/ml/training.py`: group per date, continuous residual label
+- **Pass criterion:** Training IC (rank corr predicted vs realized 5d residual) > 0.02
+
+### 2.3 — Retrain swing_v215
+- Log in `docs/ML_EXPERIMENT_LOG.md` with IC, fold Sharpes, gate result
+
+---
+
+## Phase 3 — Lockstep WF (2-3 days)
+
+**Goal:** WF evaluates exactly the same code as training, on PIT-correct universe.
+
+### 3.1 — Single feature builder (`app/ml/features.py`)
+One function: `build_feature_matrix(symbols, asof_date)` → DataFrame with schema_hash.
+Training, WF, live PM all call this. Delete duplicate code.
+
+### 3.2 — PIT universe in WF
+Top-1000 by trailing 60d ADV at each rebalance date. No symbol before IPO or after delisting.
+**File:** `scripts/run_model_walkforward.py`
+
+### 3.3 — WF calls model.predict on FULL universe each day
+cs_normalize on K symbols ≠ cs_normalize on 750. WF must score entire eligible universe, take top-K.
+**File:** `app/backtesting/agent_simulator.py` — inject `signal_fn(date, universe) -> Series[score]`
+
+### 3.4 — Parity test green
+Phase 0.2 test passes for all 5 (symbol, date) pairs across training/WF/live.
+
+---
+
+## Phase 4 — Honest WF Diagnosis (2 days)
+
+Run aligned WF with v215. Required outputs regardless of pass/fail:
+- **Per-fold IC:** rank corr predicted score vs realized 5d residual
+- **Decile P&L:** top-decile minus bottom-decile per fold
+- **Hit rate by sector and VIX bucket**
+- **Attribution:** selection vs sizing vs stops
+
+**Decision rules:**
+- IC > 0.02 but P&L < gate → execution/sizing issue → Phase 5
+- IC ≈ 0 → signal issue → Phase 7
+- IC > 0.02 + decile P&L > SPY but full WF < SPY → stops destroying alpha → Phase 5
+
+---
+
+## Phase 5 — Execution Alignment (2-3 days, if IC > 0 but P&L < gate)
+
+- Strip simulator to pure mode: equal-weight top-K long/bottom-K short, hold N days, no stops
+- Sweep: ATR multiplier {1.5, 2.5, none}, holding period {3, 5, 10, 20}, K {5, 10, 20, 50}
+- Find config where pure mode beats SPY; layer stops back only if they improve it
+- Align live PM to winning config
+
+---
+
+## Phase 6 — Pre-Production Validation
+
+- CPCV on v215 with lockstep pipeline
+- 6-month strict holdout (most recent, not used in training)
+- 1-week live shadow mode: log proposals without executing, verify match to WF
+- **Pass:** holdout Sharpe within 1σ of CPCV median
+
+---
+
+## Phase 7 — Signal Engineering (if IC ≈ 0 in Phase 4)
+
+Feature additions in priority order:
+1. Earnings surprise / drift (PIT EPS vs estimate)
+2. Short interest / days-to-cover (weekly, PIT)
+3. Analyst revision breadth (PIT)
+4. Cross-sectional residual momentum (12-1, sector-neutralized)
+5. Quality: accruals, ROIC trend (PIT fundamentals)
+6. Microstructure: realized vol-of-vol, Amihud illiquidity
+
+Each addition: must improve fold IC ≥ 0.005 to stay.
+
+---
+
+## Sequencing Rationale
+
+| Phase | Blocks | Why |
+|-------|--------|-----|
+| 0 | All | Without contracts + parity tests, every fix is unverifiable |
+| 1 | 2,3 | Must know all misalignments before choosing fix order |
+| 2 | 3,4 | Model must predict the right thing before WF can validate it |
+| 3 | 4 | WF must call same code as training before result is meaningful |
+| 4 | 5,6,7 | Diagnosis determines which branch to take |
+| 5/7 | 6 | Don't validate until execution OR signal is fixed |
+| 6 | Live | Don't risk capital until CPCV + holdout + shadow pass |
 
 ---
 
