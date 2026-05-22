@@ -2809,6 +2809,16 @@ class PortfolioManager(BaseAgent):
                     import numpy as np
                     x = np.nan_to_num(x)
                     x = self._normalize_for_inference(x, [trade.symbol], self.model)
+                    # Guard: if normalization zeroed out the entire feature vector,
+                    # TSNormalizer failed (e.g. sklearn version mismatch). Skip rather
+                    # than predict on empty features, which returns ~0 and triggers exit.
+                    if x.size > 0 and np.all(x == 0):
+                        self.logger.warning(
+                            "Re-score %s: feature vector all-zeros after normalization "
+                            "(TSNorm may have version mismatch) — skipping, holding position.",
+                            trade.symbol,
+                        )
+                        continue
                     _, probs = self.model.predict(x)
                     results[trade.symbol] = {
                         "score": float(probs[0]),
@@ -2832,7 +2842,7 @@ class PortfolioManager(BaseAgent):
         _n_positions = len(swing_trades)
         _n_scored = len(scores)
         _n_near_zero = sum(1 for info in scores.values() if info["score"] < 0.05)
-        if _n_scored > 0 and _n_near_zero >= max(2, _n_scored * 0.5):
+        if _n_scored > 0 and _n_near_zero >= max(1, _n_scored * 0.5):
             self.logger.warning(
                 "SCORING ANOMALY: %d/%d positions scored near-zero (< 0.05) in same cycle. "
                 "Likely a scorer failure, not genuine degradation. Aborting position review "
