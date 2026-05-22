@@ -101,6 +101,9 @@ class PortfolioManager(BaseAgent):
             n_workers=SWING_RETRAIN["n_workers"],
             feature_keep_list=SWING_RETRAIN.get("feature_keep_list", None),
         )
+        # Last-known-good scores per symbol (persisted across review cycles).
+        # Used to detect suspicious near-zero scores from scorer failures.
+        self._last_good_score: dict = {}  # symbol -> (score, timestamp)
         self._analyzed_today: bool = False       # 08:00 pre-market analysis done
         self._selected_today: bool = False       # 09:50 proposals sent
         self._selected_intraday_today: bool = False  # legacy compat (missed-task check)
@@ -2823,6 +2826,30 @@ class PortfolioManager(BaseAgent):
 
         scores = await asyncio.to_thread(_score_positions)
 
+        # Safety: if the majority of positions scored suspiciously low simultaneously,
+        # treat this as a scoring failure rather than genuine degradation.
+        # Genuine degradation would rarely affect every open position at once.
+        _n_positions = len(swing_trades)
+        _n_scored = len(scores)
+        _n_near_zero = sum(1 for info in scores.values() if info["score"] < 0.05)
+        if _n_scored > 0 and _n_near_zero >= max(2, _n_scored * 0.5):
+            self.logger.warning(
+                "SCORING ANOMALY: %d/%d positions scored near-zero (< 0.05) in same cycle. "
+                "Likely a scorer failure, not genuine degradation. Aborting position review "
+                "to avoid false mass-exit. Will retry in next review cycle.",
+                _n_near_zero, _n_scored,
+            )
+            return
+
+        # Safety: if no positions were scored at all (all failed), hold everything.
+        if not scores and _n_positions > 0:
+            self.logger.warning(
+                "Re-scoring returned no results for %d open position(s). "
+                "Holding all positions — scorer may be failing.",
+                _n_positions,
+            )
+            return
+
         exit_threshold = EXIT_THRESHOLD
         try:
             from app.database.session import get_session as _gs
@@ -2838,6 +2865,7 @@ class PortfolioManager(BaseAgent):
         # Build direction map from the queried trades for score interpretation below
         _trade_direction = {t.symbol: (getattr(t, "direction", "BUY") or "BUY") for t in swing_trades}
 
+        from datetime import datetime as _dt
         for symbol, info in scores.items():
             score = info["score"]
             _is_short_pos = _trade_direction.get(symbol) == "SELL_SHORT"
@@ -2845,6 +2873,24 @@ class PortfolioManager(BaseAgent):
             # high score → short thesis is failing → EXIT; low score → short working → hold.
             if _is_short_pos:
                 score = 1.0 - score
+
+            # Check if this score is a suspicious sudden collapse vs. last known good.
+            # A genuine degradation rarely drops from >0.55 to <0.05 in one cycle.
+            _last = self._last_good_score.get(symbol)
+            _suspicious = score < 0.05 and _last is not None and _last[0] >= 0.45
+            if _suspicious:
+                self.logger.warning(
+                    "SCORE ANOMALY %s: score collapsed %.2f → %.2f in one cycle "
+                    "(last good score %.2f at %s). Holding position, not exiting. "
+                    "Will re-check next cycle.",
+                    symbol, _last[0], score, _last[0], _last[1].strftime("%H:%M"),
+                )
+                continue  # skip exit decision for this symbol this cycle
+
+            # Update last-known-good if score looks valid (above noise floor)
+            if score >= 0.10:
+                self._last_good_score[symbol] = (score, _dt.now())
+
             action = None
             reason = None
 
