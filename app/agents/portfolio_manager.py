@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from app.agents.base import BaseAgent
 from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
-from app.ml.schema_log import log_features, log_normalize, log_predict, schema_hash as _schema_hash
+from app.ml.schema_log import log_features, log_normalize, log_predict
 from app.ml.cs_normalize import cs_normalize, cs_normalize_branch_a
 from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FEATURE_NAMES as _INTRADAY_FEATURE_NAMES
 from app.ml.model import PortfolioSelectorModel

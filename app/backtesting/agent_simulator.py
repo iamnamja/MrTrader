@@ -17,7 +17,6 @@ This is one step above Tier 2 (StrategySimulator) because:
 
 import logging
 import os
-import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -28,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from app.ml.schema_log import log_features, log_normalize, log_predict, schema_hash as _schema_hash
+from app.ml.schema_log import log_features, log_normalize, log_predict
 
 from app.backtesting.metrics import Trade
 from app.backtesting.strategy_simulator import SimResult, STARTING_CAPITAL, TRANSACTION_COST
