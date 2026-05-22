@@ -26,8 +26,11 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
+import multiprocessing
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass, field
@@ -1095,6 +1098,34 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+def _cleanup_workers(signum=None, frame=None) -> None:
+    """Kill any surviving multiprocessing worker processes on exit/interrupt."""
+    for child in multiprocessing.active_children():
+        try:
+            child.terminate()
+        except Exception:
+            pass
+    for child in multiprocessing.active_children():
+        try:
+            child.join(timeout=1.0)
+            if child.is_alive():
+                child.kill()
+        except Exception:
+            pass
+    if signum is not None:
+        raise SystemExit(130)
+
+
+# Register cleanup on normal exit and on Ctrl-C / SIGTERM so WF workers never
+# survive as orphaned processes when a run is interrupted.
+atexit.register(_cleanup_workers)
+signal.signal(signal.SIGINT, _cleanup_workers)
+try:
+    signal.signal(signal.SIGTERM, _cleanup_workers)
+except (AttributeError, ValueError):
+    pass  # SIGTERM unavailable in some Windows console contexts
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
