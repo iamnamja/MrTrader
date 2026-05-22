@@ -1,6 +1,6 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-20
+**Last updated:** 2026-05-22
 **Capital:** $100k (paper)
 **Status:** Phase F complete (L/S infrastructure built + WF run: avg 0.579, gate FAILED). **Phase G (PEAD) is the primary path** — factor IC = -0.0064 confirms no signal; PEAD avg Sharpe ~2.70 validated.
 
@@ -179,6 +179,223 @@ Only after Phase H passes. Start small (e.g. $25k of $100k); scale up after 4 we
 | StrategyContract abstraction (ChatGPT P2 suggestion) | Eng | Not blocking — refactor after L/S validated |
 | Factor decomposition vs SPY + AQR MOM + QMJ | Quant | Required before live; alpha t-stat > 2 gate |
 | Sector rotation floor benchmark | Quant | 11 SPDRs, top-3 by 6mo momentum, monthly rebalance |
+
+---
+
+## Phase Plan G-Pre → K: Foundation Hardening (2026-05-22, Opus 4.7 Reviewed)
+
+### Background & Diagnosis
+
+After Factor IC = -0.0064, PEAD avg 0.346, and Factor Portfolio best 0.701 (all gate FAILED), a
+4-LLM synthesis + Opus 4.7 architectural review identified the root causes in descending probability:
+
+| # | Root Cause | Est. Probability |
+|---|---|---|
+| 1 | **Label-evaluation mismatch**: training on triple-barrier 5d, evaluating on ATR-stop simulator Sharpe — these are different objectives | 70% |
+| 2 | **Score artifact mismatch**: WF measures FactorPortfolioScorer callable, not model.predict; Spearman correlation unknown | 50% |
+| 3 | **Feature pipeline asymmetry**: train and WF features computed via different code paths; never diffed | 30% |
+| 4 | **Genuine no-edge**: momentum/quality/value doesn't work on R1K post-2020 at 5bps costs | 30% |
+| 5 | **Survivorship/PIT leakage** | 10% |
+
+> Note: these are not mutually exclusive — likely 2-3 are simultaneously true.
+
+**Kill criterion (define now, before sunk-cost bias):** If after G-Pre + Phase G, SPDR rotation
+beats our system by > 0.2 Sharpe → pivot sector rotation as primary strategy and deprioritize
+single-name picker development.
+
+---
+
+### Phase G-Pre.0 — Fold Reproduction by Hand (½ day, FIRST)
+
+Pick Fold 3 (well-behaved). Trace one stock, one trade:
+- Compute features via training pipeline code path
+- Compute same features via WF code path
+- Feed both to scorer and model.predict
+- Trace AgentSimulator P&L for that trade (entry price, stop, exit price, P&L)
+
+If P&L cannot be reproduced within 1bp → **stop everything and fix the reproduction gap before proceeding.**
+
+---
+
+### Phase G-Pre.1 — Score Reconciliation (2 hours, BLOCKING)
+
+For 20 random (date, universe) tuples sampled from WF fold windows:
+```python
+scorer_ranks = FactorPortfolioScorer(**SCORER_CONFIG)(day, symbols_data, vix_history)
+model_ranks  = model.predict(wf_features_for_day)
+spearman = scipy.stats.spearmanr(scorer_ranks, model_ranks).statistic
+top10_overlap = len(set(top10_scorer) & set(top10_model))
+```
+**Pass criterion:** Spearman ≥ 0.85 AND top-10 overlap ≥ 7/10 on ≥ 90% of dates.
+
+**If fails:** all prior WF numbers are measuring the scorer, not the model. Re-run all experiments
+using `model.predict` rank to understand what the model actually does.
+
+---
+
+### Phase G-Pre.2 — Label Construction Decision (THE critical fork)
+
+Current: triple-barrier labels (5d, +2σ/-1σ) → evaluated by AgentSimulator ATR-stop Sharpe.
+These are different objective functions. The model optimizes for one thing; WF grades another.
+
+**Option A (cleanest, ~4 hrs compute):** Replace triple-barrier with simulator-derived labels.
+For each (symbol, date), forward-simulate with same ATR stops used in WF. Label = realized P&L.
+This makes training and evaluation measure the same thing.
+
+**Option B (1 day):** Replace with forward return matching typical simulator holding period.
+Measure mean holding period from recent WF run logs. If ~7d, use r_{t+7} as continuous label
+and train LambdaRank on those. Simpler but doesn't capture stop-out effects.
+
+**Decision rule:** If IC of triple-barrier model on 10d forward returns stays at ≈ 0 after
+G-Pre.1 reconciliation → must switch to Option A or B. Do not proceed to Phase H with broken labels.
+
+---
+
+### Phase G-Pre.3 — Feature Equality + PIT + Universe (parallelizable, 1 day)
+
+**Feature equality:**
+- Pickle train feature DataFrame from retrain artifacts at one fold start date
+- Recompute same features via WF code path at same (symbol, date) index
+- `pd.testing.assert_frame_equal(train_df, wf_df, rtol=1e-6)` on intersection
+- Known failure modes: z-score window size, cross-sectional rank denominator, NaN handling
+
+**PIT spot-check (30 min):**
+```python
+for (symbol, date) in random_sample_10:
+    fundamentals = wf_pipeline.get(symbol, date)
+    filing_date = FMP.get_filing_date(symbol, fundamentals['quarter'])
+    assert filing_date <= date - timedelta(days=1)  # T-1 minimum
+```
+Any failure = full fundamentals stack is leaked.
+
+**Also:** shuffle fundamentals dates by ±90 days for one fold. If Sharpe changes by < 0.05,
+fundamentals were not contributing signal (consistent with IC = -0.0064).
+
+**Universe consistency:**
+```python
+symmetric_diff = train_universe ^ pit_union_universe
+assert len(symmetric_diff) / len(train_universe) < 0.05  # < 5%
+```
+
+**G-Pre.4:** Run `scripts/audit_survivorship.py` and `scripts/compute_factor_ic.py`.
+
+---
+
+### Phase G — Benchmarks (run in parallel with G-Pre, 1–2 days)
+
+Two naive baselines. **These must be run before building anything more complex.**
+
+**G.1 — SPDR Sector Rotation (50 LOC):**
+- 11 SPDR ETFs: XLK, XLF, XLV, XLY, XLP, XLE, XLI, XLB, XLU, XLRE, XLC
+- Rank by 6-month total return with 1-month skip (r_{t-7m to t-1m})
+- Top-3, equal-weight, monthly rebalance, 5bps costs
+- 5-fold, 6-year WF, same gate (avg Sharpe ≥ 0.80)
+- Also compute: equal-weight 11-SPDR portfolio as second floor
+- **If top-3 rotation passes gate → it becomes primary strategy; pivot immediately**
+
+**G.2 — Pure 12-1 Momentum Picker (30 LOC):**
+- Rank R1K by 12-month return minus last 1 month
+- Top-N longs, bottom-N shorts (test both long-only and L/S)
+- Also test: 6-1 momentum, 3-1 momentum as variants
+- 5-fold, 6-year WF
+- **Purpose:** if pure 12-1 outperforms factor composite → composite weighting destroys the signal
+
+**G.3 — Fold 4 calibration check (10 min):**
+- Run equal-weight SPY (or SPY itself) through Fold 4 only
+- If SPY Sharpe in Fold 4 ≈ -0.5 or worse → gate floor of -0.30 on Fold 4 is impossible without
+  explicit short exposure; gate needs adjustment
+
+---
+
+### Phase H — Regime Allocator (1 week, only after G-Pre resolves labels)
+
+**Do not build this until G-Pre.2 label decision is made. An allocator on a broken picker
+modulates noise, not alpha.**
+
+**Inputs (max 4 features — hard limit):**
+- % of R1K universe above 200DMA (breadth) ↑ → exposure ↑
+- Cross-sectional return dispersion (std dev of 20d returns) ↑ → exposure ↓
+- VIX/VXV ratio (term structure, not level) ↑ → exposure ↓
+- Credit spread proxy: HYG/IEF total return ratio ↑ → exposure ↑
+- **Do NOT include NIS** (circular — NIS is our own constructed signal)
+- SPY 50d/200d MA state can substitute breadth if breadth unavailable
+
+**Model: logistic regression with L2, NOT a decision tree.**
+Reasoning: ~15 years × 252 days = 3,800 obs, but effective ~40 regime episodes (autocorrelated).
+A decision tree with 3 splits memorizes 8 leaves on 40 episodes.
+
+**Better alternative:** continuous exposure scalar with hand-set monotonic coefficients:
+```python
+exposure = sigmoid(-2 * z_dispersion - 1.5 * z_vixts + 0.5 * z_breadth - 1.0 * z_credit_spread)
+```
+Tune ~3 coefficients only. Enforce sign constraints — reject any fit that violates direction.
+
+**Train/freeze split:** 2007-2017 train, validate 2018-2020 (includes COVID), freeze 2021-2026.
+(Not 2007-2019 freeze: COVID + 2022 rate shock are the most informative regime episodes.)
+
+**Wiring:** Weekly rebalance of target gross exposure. Cap day-over-day change at 5pp.
+Daily application via position sizing multiplier into PM.
+
+**Overfitting safeguards:**
+- Coefficient sign constraints enforced
+- Max 4 features — period
+- Sensitivity: drop one year, refit, compare paths — if 2020 exposure changes > 20% when dropping
+  2008, model is unstable
+- Smoothness penalty on day-over-day exposure changes
+
+---
+
+### Phase I — Retry with Allocator + Label Fix
+
+After G-Pre.2 fixes labels and Phase H builds allocator:
+- Re-run Factor Portfolio WF with new labels + allocator
+- Re-run L/S WF with new labels + allocator
+- Gate: avg Sharpe ≥ 0.80, min fold ≥ -0.30
+
+---
+
+### Phase J — PEAD Retry with Allocator
+
+After Phase I passes (or independently, same allocator):
+- PEAD had avg 0.346 — failed because Fold 4 drowned event signal
+- With allocator reducing gross exposure in Fold 4, signal may survive
+
+---
+
+### Required WF Output Additions (apply to all future runs)
+
+Every WF run must output these (currently missing):
+
+1. **P&L attribution per fold:** `total = alpha - costs - stop_losses + carry`
+2. **Transaction cost sensitivity:** run 5bps, 10bps, 15bps variants. If Sharpe collapses at 15bps → edge is fictitious.
+3. **Bootstrap CIs on fold Sharpe:** with 5 folds × 250 days, Sharpe stderr ≈ ±0.4. Report 95% CI.
+4. **Null-strategy distribution:** 100 random-pick portfolios (random N stocks, equal-weight) through same WF. Factor model must beat 80th percentile.
+5. **Fold 4 SPY benchmark:** always report SPY Sharpe in Fold 4 alongside strategy Sharpe.
+
+---
+
+### Kill Criterion (Pre-registered 2026-05-22 BEFORE running model WF)
+
+> If, after model-based WF with per-fold artifacts and verified feature parity:
+> - Mean WF Sharpe < 0.40 AND
+> - Mean WF Sharpe < (EW-all-11-SPDR mean Sharpe − 0.20) AND
+> - At least 2 of 5 folds are negative
+>
+> Then: **STOP single-name picker development**. Pivot to ETF-level strategy
+> (EW-all-11 base + drawdown overlay + regime-conditional cash tilt).
+> Archive swing_v* model family with post-mortem in ML_EXPERIMENT_LOG.
+>
+> If 0.40 <= Sharpe < 0.80: continue with label/feature work, cap at 4 more weeks
+> before second go/no-go.
+>
+> If Sharpe >= 0.80 with passing diagnostics: paper trading prep.
+
+---
+
+### Phase K — Paper Trading Gate (3 months)
+
+Same criteria as before. Note: 3 months has stderr ~0.5 on Sharpe — treat as smoke test, not
+statistical validation. Be explicit about this in reporting.
 
 ---
 
