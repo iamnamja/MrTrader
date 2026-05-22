@@ -37,7 +37,7 @@ EXIT_REQUESTS_QUEUE = "trader_exit_requests"     # PM → Trader
 REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"     # Trader → PM
 TOP_N_STOCKS = 10
 TOP_N_INTRADAY = 5             # fewer intraday picks per session
-MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
+MIN_CONFIDENCE = 0.40          # minimum model probability to propose a trade (aligned with WF)
 EXIT_THRESHOLD = 0.35          # re-score below this → exit signal
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
 # Intraday scan windows (ET hour, minute). Shifted 11:00→10:45 to avoid lunch;
@@ -3908,6 +3908,11 @@ class PortfolioManager(BaseAgent):
         earlier), which used cross-sectional normalization. This ensures
         backwards compatibility during the v184→v185 transition.
         """
+        # LambdaRank has its own internal StandardScaler (fit on raw features at training).
+        # Applying cs_normalize before predict would corrupt the feature distribution.
+        if getattr(model, "model_type", "") == "lambdarank":
+            return X
+
         ts_state = getattr(model, "_ts_norm_state", None)
         # An empty TSNormalizerState (n_features=0, no history) is set by LambdaRank
         # training which intentionally skips TSNorm. Treat it as absent so we fall

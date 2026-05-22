@@ -667,7 +667,15 @@ class AgentSimulator:
         rather than date.today().toordinal(). This is intentional — in the sim each
         historical day accumulates its own per-symbol trailing history, whereas live
         PM always processes today as window N.
+
+        LambdaRank exception: the model's internal StandardScaler handles normalization
+        at predict-time. External cs_normalize would double-normalize and corrupt the
+        feature distribution (scaler was fit on raw features, not cs-normalized features).
         """
+        # LambdaRank has its own internal StandardScaler; do not apply external normalization.
+        if getattr(self.model, "model_type", "") == "lambdarank":
+            return X
+
         ts_state = getattr(self.model, "_ts_norm_state", None)
         if ts_state is not None:
             try:

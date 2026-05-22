@@ -225,3 +225,29 @@ def test_pm_score_regime_score_defaults_to_neutral_when_date_missing():
 
     assert len(captured_scores) >= 1
     assert captured_scores[0] == pytest.approx(0.5)
+
+
+# ── Test 7: LambdaRank skips cs_normalize (double-normalization fix) ──────────
+
+def test_lambdarank_model_skips_external_normalization():
+    """LambdaRank must NOT have cs_normalize applied before predict.
+
+    The model's internal StandardScaler handles normalization. Applying
+    cs_normalize first corrupts the feature distribution the scaler expects.
+    """
+    model = _make_model(has_ts_norm=False)
+    model.model_type = "lambdarank"
+
+    sim = AgentSimulator(model=model)
+    day = date(2024, 1, 15)
+
+    X = np.random.default_rng(99).random((5, 2)).astype(np.float32)
+    syms = ["A", "B", "C", "D", "E"]
+
+    with patch("app.backtesting.agent_simulator.cs_normalize") as mock_cs:
+        result = sim._normalize_for_inference(X, syms, day)
+
+    # cs_normalize must NOT be called for LambdaRank
+    mock_cs.assert_not_called()
+    # Features must be returned unchanged
+    np.testing.assert_array_equal(result, X)
