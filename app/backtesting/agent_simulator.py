@@ -17,6 +17,7 @@ This is one step above Tier 2 (StrategySimulator) because:
 
 import logging
 import os
+import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from app.ml.schema_log import log_features, log_normalize, log_predict, schema_hash as _schema_hash
 
 from app.backtesting.metrics import Trade
 from app.backtesting.strategy_simulator import SimResult, STARTING_CAPITAL, TRANSACTION_COST
@@ -548,6 +550,7 @@ class AgentSimulator:
 
         sym_list = list(features_by_symbol.keys())
         model_feat_names = getattr(self.model, "feature_names", None)
+        _wf_run_id = getattr(self, "_wf_run_id", "wf-unknown")
         try:
             if model_feat_names:
                 X = np.array([
@@ -557,9 +560,14 @@ class AgentSimulator:
             else:
                 X = np.array([list(features_by_symbol[s].values()) for s in sym_list])
             X = np.nan_to_num(X, nan=0.0)
+            _feat_names = list(model_feat_names) if model_feat_names else []
+            _feat_hash = log_features("wf", _wf_run_id, day, _feat_names, X, sym_list)
             X = self._normalize_for_inference(X, sym_list, day)
+            log_normalize("wf", _wf_run_id, day, "cs_normalize", len(sym_list), X)
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
+            _model_ver = str(getattr(self.model, "version", "unknown"))
+            log_predict("wf", _wf_run_id, day, _model_ver, _feat_hash, probas, sym_list)
         except Exception as exc:
             logger.warning("PM score failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
@@ -619,12 +627,17 @@ class AgentSimulator:
         if not sym_list:
             return []
 
+        _wf_run_id = getattr(self, "_wf_run_id", "wf-unknown")
         try:
             X = np.nan_to_num(np.vstack(rows), nan=0.0)
             sym_arr = np.array(sym_list)
+            _feat_hash = log_features("wf-cached", _wf_run_id, day, list(model_feat_names), X, sym_list)
             X = self._normalize_for_inference(X, sym_arr, day)
+            log_normalize("wf-cached", _wf_run_id, day, "cs_normalize", len(sym_list), X)
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
+            _model_ver = str(getattr(self.model, "version", "unknown"))
+            log_predict("wf-cached", _wf_run_id, day, _model_ver, _feat_hash, probas, sym_list)
         except Exception as exc:
             logger.warning("PM score (cached) failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
