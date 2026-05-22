@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from app.agents.base import BaseAgent
 from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
+from app.ml.schema_log import log_features, log_normalize, log_predict
 from app.ml.cs_normalize import cs_normalize, cs_normalize_branch_a
 from app.ml.intraday_features import BRANCH_B_FEATURES as _INTRADAY_BRANCH_B, FEATURE_NAMES as _INTRADAY_FEATURE_NAMES
 from app.ml.model import PortfolioSelectorModel
@@ -36,7 +37,7 @@ EXIT_REQUESTS_QUEUE = "trader_exit_requests"     # PM → Trader
 REEVAL_REQUESTS_QUEUE = "pm_reeval_requests"     # Trader → PM
 TOP_N_STOCKS = 10
 TOP_N_INTRADAY = 5             # fewer intraday picks per session
-MIN_CONFIDENCE = 0.55          # minimum model probability to propose a trade
+MIN_CONFIDENCE = 0.40          # minimum model probability to propose a trade (aligned with WF)
 EXIT_THRESHOLD = 0.35          # re-score below this → exit signal
 POSITION_RISK_PCT = 0.02       # base risk per trade (2% of strategy budget)
 # Intraday scan windows (ET hour, minute). Shifted 11:00→10:45 to avoid lunch;
@@ -2810,8 +2811,14 @@ class PortfolioManager(BaseAgent):
                     else:
                         x = [list(feats.values())]
                     import numpy as np
+                    from datetime import date as _date
                     x = np.nan_to_num(x)
+                    _live_feat_names = list(model_feature_names) if model_feature_names else []
+                    _live_run_id = f"live-{_date.today().isoformat()}"
+                    _live_asof = _date.today()
+                    _feat_hash = log_features("live", _live_run_id, _live_asof, _live_feat_names, np.array(x), [trade.symbol])
                     x = self._normalize_for_inference(x, [trade.symbol], self.model)
+                    log_normalize("live", _live_run_id, _live_asof, "cs_normalize", 1, np.array(x))
                     # Safety net: if normalization produced all-zeros (e.g. bad data),
                     # refuse to predict rather than returning ~0 and triggering an exit.
                     if x.size > 0 and np.all(x == 0):
@@ -2821,6 +2828,8 @@ class PortfolioManager(BaseAgent):
                         )
                         continue
                     _, probs = self.model.predict(x)
+                    _model_ver = str(getattr(self.model, "version", "unknown"))
+                    log_predict("live", _live_run_id, _live_asof, _model_ver, _feat_hash, np.array(probs), [trade.symbol])
                     results[trade.symbol] = {
                         "score": float(probs[0]),
                         "trade_id": trade.id,
@@ -3899,6 +3908,11 @@ class PortfolioManager(BaseAgent):
         earlier), which used cross-sectional normalization. This ensures
         backwards compatibility during the v184→v185 transition.
         """
+        # LambdaRank has its own internal StandardScaler (fit on raw features at training).
+        # Applying cs_normalize before predict would corrupt the feature distribution.
+        if getattr(model, "model_type", "") == "lambdarank":
+            return X
+
         ts_state = getattr(model, "_ts_norm_state", None)
         # An empty TSNormalizerState (n_features=0, no history) is set by LambdaRank
         # training which intentionally skips TSNorm. Treat it as absent so we fall

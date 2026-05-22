@@ -167,6 +167,8 @@ class SwingStrategy:
             feature_cache=feature_cache,
             sim_scan_interval_days=self.sim_scan_interval_days,
         )
+        import uuid as _uuid
+        sim._wf_run_id = f"wf-fold{fold_idx}-{_uuid.uuid4().hex[:8]}"
         result = sim.run(
             fold_symbols_data,
             start_date=te_start,

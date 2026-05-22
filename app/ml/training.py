@@ -875,6 +875,15 @@ class ModelTrainer:
             "Train: %d samples | Test: %d samples | Features: %d",
             len(X_train), len(X_test), len(feature_names),
         )
+        try:
+            from app.ml.schema_log import log_features as _log_features
+            import uuid as _uuid
+            from datetime import date as _dt_date
+            _train_run_id = f"train-{_uuid.uuid4().hex[:8]}"
+            _asof = _dt_date.today()
+            _log_features("train", _train_run_id, _asof, feature_names, X_train, None)
+        except Exception:
+            pass
         if getattr(self, "_benign_enabled", False):
             logger.info(
                 "P1 BenignFilter active: threshold=%.2f, features=%d (keep-list)",

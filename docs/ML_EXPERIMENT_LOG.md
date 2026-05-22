@@ -4361,3 +4361,55 @@ These are structural, not solvable by parameter tuning within the current model 
 
 **Next step:** Factor WF cannot pass the strict gate. Options: (a) retrain swing model on 2024-2025 data with momentum-aware features; (b) proceed to paper trading with v7 config on a relaxed gate; (c) investigate new ML model trained on current regime data.
 
+---
+
+## Phase 0 — Alignment Recovery — 2026-05-22
+
+**Strategic decision:** Stay single-name L/S. Fix training/WF/live alignment gaps first before any new training. Root cause of WF avg=-0.275 (kill criterion) is never-aligned pipeline, not absence of alpha.
+
+### Completed (PR #249 — merged)
+
+**Phase 0.3-lite — Schema logging wired to all paths:**
+- `app/ml/schema_log.py`: JSON Lines logging (features / normalize / predict) at each checkpoint per path ("wf", "wf-cached", "live", "train")
+- `app/backtesting/agent_simulator._pm_score`: logs schema_hash, n_features, n_nan, sample_first3, top-5 scores (path="wf")
+- `app/backtesting/agent_simulator._pm_score_cached`: same (path="wf-cached")
+- `app/agents/portfolio_manager._score_positions`: same (path="live")
+- `app/ml/training.train_model`: logs training feature matrix (path="train")
+
+**Phase 0.1 — FeatureVector contract:**
+- `app/ml/contracts.py`: Immutable typed container with schema_hash enforcement, `from_dict()`, `from_row()`, `reorder()`. All paths will adopt.
+
+**Phase 0.2 — 4-path parity test suite:**
+- `tests/parity/test_training_wf_live_parity.py`: 8 tests, frozen synthetic bar fixtures, no network
+- Tests pass: schema_hash stability, feature names identical, FeatureCache reorder correctness, no unexpected NaN
+
+### Phase 1 Alignment Audit — Findings (2026-05-22)
+
+Run `python -X utf8 scripts/audit_alignment.py` to regenerate.
+
+| Category | Severity | Finding |
+|---|---|---|
+| 1.4 Normalization | **CRITICAL** | cs_normalize N varies: training=700+ rows, WF=100–200 rows/day, live PM=5–20 rows. Z-scores incomparable across paths. LambdaRank uses cs_normalize at WF/live but SKIPS it at training — hardest misalignment. |
+| 1.5 Inference | MEDIUM | Live PM min_confidence=0.55 ≠ WF min_confidence=0.40. Selection set differs → WF not representing live behavior. |
+| 1.3 Universe | HIGH | Training PIT universe check: `_build_rolling_matrix` uses `fetch_fundamentals=True` default. WF uses pit_union correctly. |
+| 1.2 Labels | OK | ATR_MULT_TARGET=1.5, ATR_MULT_STOP=0.5 — match WF simulator. |
+| 1.6 Execution | OK | Entry uses open price, stop checks intrabar low. Matches expected. |
+
+**Root cause summary of kill criterion:**
+1. LambdaRank trains without normalization (cross-sectional, correct)
+2. WF scores on N=100–200 symbols/day via cs_normalize (incompatible with training)
+3. Live PM scores on N=5–20 open positions via cs_normalize (further incompatible)
+4. Result: model signal is noise when N is small — all three N-values produce different feature distributions
+
+**Fix plan (Phase 3 — Lockstep WF):**
+- WF must score on full universe each day (same N as training, ~750 symbols), then select top/bottom N for proposals
+- Live PM must score on full watchlist (~500 symbols), not just open positions
+- FeatureCache already pre-computes full universe — the scored set should be `all cached symbols`, not just `open positions`
+
+### Next Steps
+
+1. **Phase 2**: Replace swing labels with residual-return labels (market-neutral). Retrain v215.
+2. **Phase 3**: Lockstep WF — `_pm_score` scores full fold universe → select top_n from ranked list
+3. **Phase 4**: Run aligned WF → honest IC / decile P&L / attribution
+4. **Phase 5**: Per Phase 4 diagnosis: execution alignment or signal engineering
+
