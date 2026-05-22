@@ -26,6 +26,18 @@ _ALERT_COOLDOWN = 300  # 5 minutes
 _WARN_LOSING_DAYS = 2
 _BLOCK_LOSING_DAYS = 3
 
+# Exit reasons that indicate reconciler / ghost / housekeeping closes — these
+# do NOT represent real realized P&L for the session and must be excluded
+# when summing today's trade pnl.
+_EXCLUDED_EXIT_REASONS = {
+    "reconcile_ghost_expired",
+    "RECONCILE_GHOST_EXPIRED",
+    "force_closed_no_position",
+    "FORCE_CLOSED_NO_POSITION",
+    "reconcile_superseded",
+    "RECONCILE_SUPERSEDED",
+}
+
 
 class LiveTradingMonitor:
     """Comprehensive health checks and threshold alerts for live trading."""
@@ -52,35 +64,85 @@ class LiveTradingMonitor:
             positions = []
             alpaca_ok = False
 
+        # Pull intraday equity history for drawdown computation (best effort).
+        equity_curve: List[float] = []
+        if alpaca_ok:
+            try:
+                hist = alpaca.get_portfolio_history(period="1D", timeframe="5Min")
+                if hist and hist.get("equity"):
+                    equity_curve = [e for e in hist["equity"] if e and e > 0]
+            except Exception as exc:
+                logger.debug("Portfolio history fetch failed: %s", exc)
+
         db = get_session()
         try:
             today_str = date.today().isoformat()
             metric: Optional[RiskMetric] = db.query(RiskMetric).filter_by(date=today_str).first()
 
             today_start = datetime.combine(date.today(), datetime.min.time())
+            # FIX: filter by closed_at (not created_at) so we count trades that
+            # actually realized P&L today, and exclude ghost/reconciler closes
+            # that produce spurious pnl values.
             trades_today = (
                 db.query(Trade)
-                .filter(Trade.created_at >= today_start, Trade.status == "CLOSED")
+                .filter(
+                    Trade.closed_at >= today_start,
+                    Trade.status == "CLOSED",
+                    Trade.exit_reason.notin_(_EXCLUDED_EXIT_REASONS),
+                )
                 .all()
             )
 
             portfolio_value = float(account.get("portfolio_value", 0)) or 1.0
-            pnl_today = sum(t.pnl for t in trades_today if t.pnl) or 0.0
-            pnl_today_pct = (pnl_today / portfolio_value) * 100
+            last_equity = account.get("last_equity")
+            equity = float(account.get("equity", portfolio_value))
 
-            max_drawdown = (metric.max_drawdown or 0.0) if metric else 0.0
+            # Authoritative source for today's P&L is the broker: equity vs
+            # last_equity (start-of-day equity). Fall back to summing DB
+            # trades only when Alpaca didn't return last_equity.
+            db_pnl = sum(t.pnl for t in trades_today if t.pnl) or 0.0
+            if last_equity is not None and last_equity > 0:
+                pnl_today = round(equity - float(last_equity), 2)
+                pnl_today_pct = ((equity - float(last_equity)) / float(last_equity)) * 100
+                pnl_source = "alpaca_equity_delta"
+            else:
+                pnl_today = round(db_pnl, 2)
+                pnl_today_pct = (db_pnl / portfolio_value) * 100
+                pnl_source = "db_trades"
+
+            # Max drawdown: prefer intraday equity-curve based DD from Alpaca;
+            # fall back to RiskMetric (legacy) if curve unavailable.
+            if equity_curve:
+                peak = equity_curve[0]
+                max_dd_frac = 0.0
+                for v in equity_curve:
+                    if v > peak:
+                        peak = v
+                    dd = (peak - v) / peak if peak > 0 else 0.0
+                    if dd > max_dd_frac:
+                        max_dd_frac = dd
+                max_drawdown = max_dd_frac
+                dd_source = "alpaca_history"
+            else:
+                max_drawdown = (metric.max_drawdown or 0.0) if metric else 0.0
+                dd_source = "risk_metric" if metric else "unavailable"
 
             health = {
                 "timestamp":       datetime.utcnow().isoformat(),
                 "alpaca_connected": alpaca_ok,
                 "account_value":   portfolio_value,
+                "equity":          equity,
+                "last_equity":     float(last_equity) if last_equity is not None else None,
                 "buying_power":    float(account.get("buying_power", 0)),
                 "cash":            float(account.get("cash", 0)),
                 "open_positions":  len(positions),
                 "trades_today":    len(trades_today),
                 "pnl_today":       round(pnl_today, 2),
                 "pnl_today_pct":   round(pnl_today_pct, 2),
+                "pnl_today_db":    round(db_pnl, 2),
+                "pnl_source":      pnl_source,
                 "max_drawdown_pct": round(max_drawdown * 100, 2),
+                "max_drawdown_source": dd_source,
                 "status":          self._determine_status(pnl_today_pct, max_drawdown),
             }
         finally:

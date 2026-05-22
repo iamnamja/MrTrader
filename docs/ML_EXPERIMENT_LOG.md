@@ -4406,10 +4406,26 @@ Run `python -X utf8 scripts/audit_alignment.py` to regenerate.
 - Live PM must score on full watchlist (~500 symbols), not just open positions
 - FeatureCache already pre-computes full universe — the scored set should be `all cached symbols`, not just `open positions`
 
+### v215 Walk-Forward Results — 2026-05-22
+
+**Run:** Clean re-run (test isolation fixed, no MagicMock contamination). 5 folds, 6 years. 872 trades.
+
+| Metric | Result | Gate | Status |
+|--------|--------|------|--------|
+| Avg Sharpe | — | ≥ 0.80 | ❌ FAIL |
+| Min fold Sharpe | **-0.617** | > -0.30 | ❌ FAIL |
+| Avg Calmar ratio | **1.029** | > 0.30 | ✅ OK |
+| Avg win rate | 44.7% | — | — |
+| DSR (N=200) | z=-56.77, p=0.000 | p > 0.95 | ❌ FAIL |
+
+**Verdict: FAIL.** Calmar=1.029 is actually decent (drawdown-adjusted), but Sharpe fails and DSR is catastrophic (z=-56 means the performance is inconsistent/noisy across the simulated paths). The normalization misalignment fix (cs_normalize bypass for LambdaRank) was correct but insufficient — the underlying signal still isn't passing.
+
+**Root cause hypothesis:** Even with normalization fixed, the LambdaRank model was trained at N=750 (full universe cross-section) but scored at WF on N=100–200 symbols/day — the cross-sectional ranking context is still mismatched. Full lockstep scoring fix (Phase 3) is the next required step before any further training.
+
 ### Next Steps
 
-1. **Phase 2**: Replace swing labels with residual-return labels (market-neutral). Retrain v215.
-2. **Phase 3**: Lockstep WF — `_pm_score` scores full fold universe → select top_n from ranked list
+1. **Phase 3**: Lockstep WF — `_pm_score` scores full fold universe → select top_n from ranked list (fixes N-mismatch)
+2. **Phase 2** (after Phase 3 validates signal exists): Replace swing labels with residual-return labels (market-neutral). Retrain.
 3. **Phase 4**: Run aligned WF → honest IC / decile P&L / attribution
 4. **Phase 5**: Per Phase 4 diagnosis: execution alignment or signal engineering
 

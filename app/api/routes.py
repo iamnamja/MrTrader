@@ -1125,7 +1125,17 @@ async def get_monitor_history(days: int = 7):
                 .order_by(AuditLog.timestamp.desc())
                 .all()
             )
-            return {"history": [r.details for r in rows if r.details]}
+            # Deduplicate: keep only the latest entry per calendar date
+            seen: set = set()
+            deduped = []
+            for r in rows:
+                if not r.details:
+                    continue
+                day = str(r.details.get("date", r.timestamp.date()))
+                if day not in seen:
+                    seen.add(day)
+                    deduped.append(r.details)
+            return {"history": deduped}
         finally:
             db.close()
     except Exception as exc:
