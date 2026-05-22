@@ -1976,7 +1976,8 @@ class ModelTrainer:
         with multiprocessing.Manager() as _mgr:
             _progress_q = _mgr.Queue()
 
-            with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+            executor = ProcessPoolExecutor(max_workers=self.n_workers)
+            try:
                 futures = {
                     executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
                     for symbol, df in trading_symbols.items()
@@ -2023,6 +2024,25 @@ class ModelTrainer:
                                 }, _f)
                         except Exception as _exc:
                             logger.debug("Checkpoint save failed: %s", _exc)
+            finally:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                procs = getattr(executor, "_processes", None) or {}
+                for p in list(procs.values()):
+                    try:
+                        if p.is_alive():
+                            p.terminate()
+                    except Exception:
+                        pass
+                for p in list(procs.values()):
+                    try:
+                        p.join(timeout=2.0)
+                        if p.is_alive():
+                            p.kill()
+                    except Exception:
+                        pass
 
         # Delete checkpoint on successful completion
         try:
