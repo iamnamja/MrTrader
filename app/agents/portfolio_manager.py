@@ -2809,13 +2809,11 @@ class PortfolioManager(BaseAgent):
                     import numpy as np
                     x = np.nan_to_num(x)
                     x = self._normalize_for_inference(x, [trade.symbol], self.model)
-                    # Guard: if normalization zeroed out the entire feature vector,
-                    # TSNormalizer failed (e.g. sklearn version mismatch). Skip rather
-                    # than predict on empty features, which returns ~0 and triggers exit.
+                    # Safety net: if normalization produced all-zeros (e.g. bad data),
+                    # refuse to predict rather than returning ~0 and triggering an exit.
                     if x.size > 0 and np.all(x == 0):
                         self.logger.warning(
-                            "Re-score %s: feature vector all-zeros after normalization "
-                            "(TSNorm may have version mismatch) — skipping, holding position.",
+                            "Re-score %s: feature vector all-zeros after normalization — skipping, holding position.",
                             trade.symbol,
                         )
                         continue
@@ -3899,6 +3897,11 @@ class PortfolioManager(BaseAgent):
         backwards compatibility during the v184→v185 transition.
         """
         ts_state = getattr(model, "_ts_norm_state", None)
+        # An empty TSNormalizerState (n_features=0, no history) is set by LambdaRank
+        # training which intentionally skips TSNorm. Treat it as absent so we fall
+        # through to cs_normalize rather than getting 0 rows from transform.
+        if ts_state is not None and (ts_state.n_features == 0 and not ts_state.history):
+            ts_state = None
         if ts_state is not None:
             try:
                 from app.ml.ts_normalize import transform as _ts_transform
