@@ -47,7 +47,8 @@ def _build_closes_and_bars(day, symbols_data: dict):
         if df is None or df.empty or "close" not in df.columns:
             continue
         if hasattr(df.index[0], "date"):
-            mask = df.index.date < day
+            _day_date = day.date() if hasattr(day, "date") else day
+            mask = df.index.date < _day_date
         else:
             mask = df.index < pd.Timestamp(day)
         past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
@@ -66,7 +67,7 @@ def _build_closes_and_bars(day, symbols_data: dict):
         if sym not in close_cols:
             continue
         if hasattr(df.index[0], "date"):
-            bars_by_sym[sym] = df.loc[df.index.date < day]
+            bars_by_sym[sym] = df.loc[df.index.date < _day_date]
         else:
             bars_by_sym[sym] = df.loc[df.index < pd.Timestamp(day)]
 

@@ -258,7 +258,8 @@ class FactorPortfolioScorer:
         for sym, df in symbols_data.items():
             if df is None or df.empty or "close" not in df.columns:
                 continue
-            mask = df.index.date < day if hasattr(df.index[0], "date") else df.index < pd.Timestamp(day)
+            _day_d = day.date() if hasattr(day, "date") else day
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < pd.Timestamp(day)
             past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
             if len(past) >= 60:
                 close_cols[sym] = past
@@ -292,7 +293,7 @@ class FactorPortfolioScorer:
             return []
 
         bars_by_sym = {
-            sym: df.loc[df.index.date < day] if hasattr(df.index[0], "date")
+            sym: df.loc[df.index.date < _day_d] if hasattr(df.index[0], "date")
             else df.loc[df.index < pd.Timestamp(day)]
             for sym, df in symbols_data.items()
             if sym in close_cols

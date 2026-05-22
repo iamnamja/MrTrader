@@ -185,6 +185,36 @@ async def trigger_one_cycle():
     return {"status": "cycle_started", "message": "Agent pipeline running in background — check session log"}
 
 
+@router.post("/trigger-swing-analysis")
+async def trigger_swing_analysis():
+    """Force-run today's swing premarket analysis and send proposals.
+
+    Bypasses the time-of-day routing in select_instruments() so it works
+    even after the 09:45 ET cutoff. Use when the scheduled premarket run
+    failed (e.g. scorer crash) and proposals need to be recovered mid-session.
+    """
+    _log("INFO", "Manual swing premarket analysis triggered by user")
+
+    async def _run():
+        try:
+            pm = orchestrator.agents.get("portfolio_manager")
+            if pm:
+                _log("INFO", "Forcing swing premarket analysis (bypassing time-of-day gate)...")
+                pm._analyzed_today = False   # reset flag so premarket reruns
+                pm._selected_today = False   # reset so proposals are re-sent
+                await pm._analyze_swing_premarket()
+                await pm._send_swing_proposals()
+                _log("INFO", "Swing analysis complete — proposals sent to queue")
+            else:
+                _log("WARNING", "PM agent not registered — start the app first")
+        except Exception as exc:
+            logger.error("Manual swing analysis error: %s", exc)
+            _log("ERROR", f"Swing analysis failed: {exc}")
+
+    asyncio.create_task(_run())
+    return {"status": "swing_analysis_started", "message": "Swing premarket analysis running — check session log for proposals"}
+
+
 @router.post("/trigger-retraining")
 async def trigger_retraining():
     """Manually kick off ML model retraining."""

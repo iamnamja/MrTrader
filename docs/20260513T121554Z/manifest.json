@@ -1,0 +1,18 @@
+{
+  "script": "diag_feature_ic.py",
+  "git_sha": "7bd818b",
+  "start": "2019-01-01",
+  "end": "2026-11-08",
+  "horizons": [
+    5,
+    10,
+    20
+  ],
+  "workers": 8,
+  "min_symbols_per_day": 30,
+  "max_symbols": 100,
+  "sacred_holdout_start": "2026-11-09",
+  "n_features": 10,
+  "feature_names_hash": 6132290917110574984,
+  "runtime_seconds": 1138.3
+}

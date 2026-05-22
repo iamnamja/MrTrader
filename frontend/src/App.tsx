@@ -2067,6 +2067,8 @@ function SessionPanel({ toast }: { toast: (msg: string, type?: 'success' | 'erro
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <CtrlBtn label="Run One Cycle" color={C.blue} busy={busy}
               onClick={() => act('Run One Cycle', api.triggerCycle, 'Cycle started — watch session log')} />
+            <CtrlBtn label="Run Swing Analysis" color={C.blue} busy={busy}
+              onClick={() => act('Run Swing Analysis', api.triggerSwingAnalysis, 'Swing analysis running — proposals will queue when complete')} />
             <CtrlBtn label="Run Intraday Scan" color={C.yellow} busy={busy}
               onClick={() => act('Run Intraday Scan', api.triggerIntradayScan, 'Intraday scan started — takes ~5-7 min, watch logs')} />
             <CtrlBtn label="Retrain ML Model" color={C.accent} busy={busy}

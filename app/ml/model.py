@@ -977,7 +977,13 @@ class LambdaRankModel:
         X_scaled = self.scaler.transform(X)
         raw_scores = self.model.predict(X_scaled).astype(float)
         lo, hi = raw_scores.min(), raw_scores.max()
-        probabilities = (raw_scores - lo) / (hi - lo + 1e-9)
+        if hi - lo < 1e-6:
+            # Single-row or all-identical scores: min-max collapses to 0.
+            # LambdaRank scores are relative; use sigmoid on the raw score so
+            # single-symbol rescoring (reeval) returns a meaningful value.
+            probabilities = 1.0 / (1.0 + np.exp(-raw_scores))
+        else:
+            probabilities = (raw_scores - lo) / (hi - lo)
         t = threshold if threshold is not None else self.predict_threshold
         predictions = (probabilities >= t).astype(int)
         return predictions, probabilities

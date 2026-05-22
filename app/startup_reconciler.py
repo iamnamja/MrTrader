@@ -122,6 +122,22 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 if ghost.symbol not in alpaca_positions:
                     _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
                     exit_price, exit_order_id = _lookup_close_fill(alpaca, ghost.symbol, ghost.quantity, _ghost_short)
+
+                    # Fallback: if Alpaca order lookup returned no fill, use the most
+                    # recent bar close so the DB always has an exit price (source of truth).
+                    if exit_price is None:
+                        try:
+                            bars = alpaca.get_bars(ghost.symbol, timeframe="1D", limit=2)
+                            if bars is not None and not bars.empty:
+                                exit_price = float(bars["close"].iloc[-1])
+                                exit_order_id = "fallback_last_close"
+                                logger.warning(
+                                    "Trade#%d %s: no Alpaca fill found — using last bar close $%.4f as exit price",
+                                    ghost.id, ghost.symbol, exit_price,
+                                )
+                        except Exception as _fb_exc:
+                            logger.debug("Bar fallback failed for %s: %s", ghost.symbol, _fb_exc)
+
                     ghost.status = "CLOSED"
                     ghost.exit_reason = "reconcile_ghost_expired"
                     ghost.closed_at = datetime.utcnow()
@@ -138,8 +154,9 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                             ghost.id, ghost.symbol, exit_price, ghost.pnl or 0, exit_order_id or "?",
                         )
                     else:
-                        logger.info(
-                            "Closing stale RECONCILE_GHOST Trade#%d %s (no Alpaca sell found)",
+                        logger.warning(
+                            "Closing stale RECONCILE_GHOST Trade#%d %s with no exit price — "
+                            "check Alpaca manually and backfill exit_price in DB.",
                             ghost.id, ghost.symbol,
                         )
         except Exception as exc:
@@ -307,6 +324,17 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             _price_match = recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05
             _dir_match = (getattr(recent_trade, "direction", "BUY") or "BUY") == _alpaca_dir if recent_trade else False
             if _price_match and _dir_match:
+                # If the trade was already closed with a recorded exit_price, Alpaca is
+                # showing a stale position (order pending settlement). Do NOT reactivate —
+                # the DB close is authoritative and wiping exit_price would destroy the record.
+                if recent_trade.exit_price is not None:
+                    logger.info(
+                        "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
+                        "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
+                        symbol, qty, avg, recent_trade.id, float(recent_trade.exit_price),
+                    )
+                    continue
+
                 # Entry prices within 5% and direction matches — same position, reactivate
                 logger.warning(
                     "UNTRACKED POSITION: %s x%d @ $%.2f — reactivating Trade#%d (was %s) "
@@ -322,7 +350,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 _partial = recompute_partial_pnl(db_session, recent_trade.id, _entry, _dir)
                 recent_trade.status = "ACTIVE"
                 recent_trade.quantity = abs(qty)
-                recent_trade.exit_price = None
+                recent_trade.exit_price = None   # safe: only reached when exit_price was None
                 recent_trade.pnl = _partial or None  # preserve realized partial; None if no partials
                 recent_trade.closed_at = None
                 recent_trade.exit_reason = None

@@ -37,6 +37,7 @@ export const api = {
   pauseTrading: () => post('/api/orchestrator/pause-trading'),
   resumeTrading: () => post('/api/orchestrator/resume-trading'),
   triggerCycle: () => post('/api/orchestrator/trigger-cycle'),
+  triggerSwingAnalysis: () => post('/api/orchestrator/trigger-swing-analysis'),
   triggerRetraining: () => post('/api/orchestrator/trigger-retraining'),
   triggerIntradayScan: () => post('/api/orchestrator/trigger-intraday-scan'),
   pauseJob: (id: string) => post(`/api/orchestrator/jobs/${id}/pause`),
