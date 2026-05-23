@@ -109,7 +109,7 @@ SWING_RETRAIN: dict = dict(
     walk_forward_years=6,
     exclude_risk_off_days=True,
     use_union_label=False,
-    feature_keep_list=PHASE_C_FEATURE_KEEP_LIST,  # restrict to 14 IC-validated features
+    feature_keep_list=PHASE_C_V2_FEATURE_KEEP_LIST,  # v216: +sector-neutral momentum (19 features)
 )
 
 # ── Option C (label horizon) ─────────────────────────────────────────────────
@@ -124,7 +124,7 @@ SWING_RETRAIN: dict = dict(
 # label (in addition to the top-20% Sharpe-normalized cut). Currently swing has
 # NO absolute hurdle; this is a new opt-in gate. Scales linearly with horizon
 # (5d:0.003 → 10d:0.006 → 15d:0.009). Set to 0.0 to disable.
-LABEL_HORIZON_DAYS: int = 5
+LABEL_HORIZON_DAYS: int = 20  # v216: 20d aligns with 40-bar max_hold_bars (was 5d — too noisy)
 LABEL_ABS_HURDLE_5D: float = 0.0  # 0.0 = disabled (default). 0.003 = 0.3% per 5d.
 
 # ── Option B (regime-split training) ─────────────────────────────────────────
