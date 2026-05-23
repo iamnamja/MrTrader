@@ -1348,13 +1348,18 @@ class PortfolioManager(BaseAgent):
             if quantity <= 0:
                 continue
 
+            # ATR-based stops matching WF simulator (ATR_STOP_MULT=0.5, ATR_TARGET_MULT=1.5).
+            _feats_dir = (self._last_swing_features or {}).get(sym, {})
+            _atr_dir = float(_feats_dir.get("atr_norm", 0.015))
+            _stop_pct_dir = float(np.clip(0.5 * _atr_dir, 0.005, 0.08))
+            _tgt_pct_dir = float(np.clip(1.5 * _atr_dir, 0.01, 0.16))
             if is_short:
-                stop_loss = round(price * 1.05, 2)       # 5% above entry
-                profit_target = round(price * 0.95, 2)   # 5% below entry
+                stop_loss = round(price * (1 + _stop_pct_dir), 2)   # above entry for shorts
+                profit_target = round(price * (1 - _tgt_pct_dir), 2)
                 trade_direction = "SELL_SHORT"
             else:
-                stop_loss = round(price * 0.98, 2)
-                profit_target = round(price * 1.05, 2)
+                stop_loss = round(price * (1 - _stop_pct_dir), 2)
+                profit_target = round(price * (1 + _tgt_pct_dir), 2)
                 trade_direction = "BUY"
 
             proposal: dict = {
@@ -3397,14 +3402,20 @@ class PortfolioManager(BaseAgent):
                         "Vol-targeting swing %s: qty=%d mult=%.2f (atr_norm=%.4f)",
                         symbol, quantity, _swing_vt_mult, _atr_norm_sw,
                     )
+            # ATR-based stops matching WF simulator (ATR_STOP_MULT=0.5, ATR_TARGET_MULT=1.5).
+            # atr_norm = ATR/price from features; fallback to 1.5% if unavailable.
+            _feats_sw = (self._last_swing_features or {}).get(symbol, {})
+            _atr_norm_sw = float(_feats_sw.get("atr_norm", 0.015))
+            _stop_pct_sw = float(np.clip(0.5 * _atr_norm_sw, 0.005, 0.08))
+            _tgt_pct_sw = float(np.clip(1.5 * _atr_norm_sw, 0.01, 0.16))
             proposal: Dict[str, Any] = {
                 "symbol": symbol,
                 "direction": "BUY",
                 "quantity": quantity,
                 "entry_price": price,
                 "confidence": float(confidence),
-                "stop_loss": round(price * 0.98, 2),
-                "profit_target": round(price * 1.05, 2),
+                "stop_loss": round(price * (1 - _stop_pct_sw), 2),
+                "profit_target": round(price * (1 + _tgt_pct_sw), 2),
                 "source_agent": "portfolio_manager",
                 "trade_type": "swing",
                 "proposal_uuid": str(uuid.uuid4()),

@@ -26,8 +26,11 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
+import multiprocessing
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass, field
@@ -717,6 +720,23 @@ def run_swing_walkforward(
                 logger.warning("Feature cache build failed, falling back to live compute: %s", _exc)
                 _feature_cache = None
 
+            # Lockstep diagnostic: verify cache breadth before sim runs.
+            # If symbols_with(mid_day) << len(fold_symbols_data), cache is sparse
+            # (date-key mismatch or worker crash) and WF results will be invalid.
+            if _feature_cache is not None and _feature_cache.n_symbols > 0:
+                _mid = _test_days[len(_test_days) // 2]
+                _n_on_mid = len(_feature_cache.symbols_with(_mid))
+                logger.info(
+                    "Fold %d cache breadth: %d/%d symbols populated; mid-fold day %s has %d symbols scored",
+                    fold_idx, _feature_cache.n_symbols, len(fold_symbols_data), _mid, _n_on_mid,
+                )
+                if _n_on_mid < len(fold_symbols_data) * 0.5:
+                    logger.warning(
+                        "Fold %d: only %d/%d symbols available on %s — "
+                        "lockstep scoring will be degraded. Check for date-key mismatch or worker crashes.",
+                        fold_idx, _n_on_mid, len(fold_symbols_data), _mid,
+                    )
+
         _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
         if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
@@ -1096,6 +1116,34 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _cleanup_workers(signum=None, frame=None) -> None:
+    """Kill any surviving multiprocessing worker processes on exit/interrupt."""
+    for child in multiprocessing.active_children():
+        try:
+            child.terminate()
+        except Exception:
+            pass
+    for child in multiprocessing.active_children():
+        try:
+            child.join(timeout=1.0)
+            if child.is_alive():
+                child.kill()
+        except Exception:
+            pass
+    if signum is not None:
+        raise SystemExit(130)
+
+
+# Register cleanup on normal exit and on Ctrl-C / SIGTERM so WF workers never
+# survive as orphaned processes when a run is interrupted.
+atexit.register(_cleanup_workers)
+signal.signal(signal.SIGINT, _cleanup_workers)
+try:
+    signal.signal(signal.SIGTERM, _cleanup_workers)
+except (AttributeError, ValueError):
+    pass  # SIGTERM unavailable in some Windows console contexts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward Tier 3 validation")
     parser.add_argument("--model", choices=["swing", "intraday", "both"], default="both")
@@ -1133,9 +1181,9 @@ def main() -> int:
                         help="Round-trip transaction cost in bps for swing (default: 5bps)")
     parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
                         help="Round-trip transaction cost in bps for intraday (default: 15bps)")
-    parser.add_argument("--swing-purge-days", type=int, default=10,
+    parser.add_argument("--swing-purge-days", type=int, default=15,
                         help="Calendar days to skip between train_end and test_start for swing "
-                             "(prevents 5-day label leakage; default: 10)")
+                             "(must be >= FORWARD_DAYS_LONG=15 to prevent label leakage; default: 15)")
     parser.add_argument("--swing-embargo-days", type=int, default=None,
                         help="WF-1: Calendar days to skip after test_end before next fold trains "
                              "(defaults to --swing-purge-days if not set)")

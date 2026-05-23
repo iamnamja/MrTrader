@@ -4406,10 +4406,58 @@ Run `python -X utf8 scripts/audit_alignment.py` to regenerate.
 - Live PM must score on full watchlist (~500 symbols), not just open positions
 - FeatureCache already pre-computes full universe — the scored set should be `all cached symbols`, not just `open positions`
 
+### v215 Walk-Forward Results — 2026-05-22
+
+**Run:** Clean re-run (test isolation fixed, no MagicMock contamination). 5 folds, 6 years. 872 trades.
+
+| Metric | Result | Gate | Status |
+|--------|--------|------|--------|
+| Avg Sharpe | — | ≥ 0.80 | ❌ FAIL |
+| Min fold Sharpe | **-0.617** | > -0.30 | ❌ FAIL |
+| Avg Calmar ratio | **1.029** | > 0.30 | ✅ OK |
+| Avg win rate | 44.7% | — | — |
+| DSR (N=200) | z=-56.77, p=0.000 | p > 0.95 | ❌ FAIL |
+
+**Verdict: FAIL.** Calmar=1.029 is actually decent (drawdown-adjusted), but Sharpe fails and DSR is catastrophic (z=-56 means the performance is inconsistent/noisy across the simulated paths). The normalization misalignment fix (cs_normalize bypass for LambdaRank) was correct but insufficient — the underlying signal still isn't passing.
+
+**Root cause hypothesis:** Even with normalization fixed, the LambdaRank model was trained at N=750 (full universe cross-section) but scored at WF on N=100–200 symbols/day — the cross-sectional ranking context is still mismatched. Full lockstep scoring fix (Phase 3) is the next required step before any further training.
+
+### Phase 3 — WF Realism Fixes (2026-05-22)
+
+Opus 4.7 deep-dive audit identified 10 gaps. Fixed in this session:
+
+**C1 — Stop/target mismatch (CRITICAL)**
+Live PM hardcoded `price * 0.98 / 1.05` (fixed 2%/5%) while WF used ATR-based stops (0.5× / 1.5× ATR). Fixed: PM now computes stops from `atr_norm` feature (`clip(0.5 * atr_norm, 0.5%, 8%)` stop, `clip(1.5 * atr_norm, 1%, 16%)` target). Applies to both long and short (SELL_SHORT) proposal paths.
+
+**Lockstep WF (proposal pool widening)**
+`_pm_score_cached` was capping proposals at `top_n` (10) before Trader/RM filtering. Added `proposal_pool_size` param (default: `max(top_n*5, 50)`) so RM/signal gates have headroom. Fixed O(N²) `vol_pcts.index()` lookup — now uses vectorized `np.argsort`.
+
+**H7 — Label leakage via purge gap (HIGH)**
+`--swing-purge-days` default raised from 10 → 15 (must be ≥ `FORWARD_DAYS_LONG=15`). Previous default allowed last 5 days of training labels to overlap with test fold.
+
+**H4/H5 — VIX and SPY same-day look-ahead (HIGH)**
+`_vix_at()` changed from `<= day` to `< day` (use yesterday's close at entry time). All 4 SPY gate lookups changed from `spy_dates <= day` to `spy_dates < day`.
+
+**C1b — Misleading normalize log**
+`log_normalize` for LambdaRank now logs `"none_lambdarank"` instead of `"cs_normalize"` (LambdaRank bypasses external normalization).
+
+**Cache breadth diagnostic**
+WF now logs `cache.n_symbols` and `symbols_with(mid_fold_day)` after each cache build, to catch sparse-cache or date-key-mismatch failures.
+
+**Open gaps (not yet fixed):**
+- C2: Sizing mismatch (live PM has regime/vol-targeting multipliers WF lacks) — medium complexity
+- C3: Survivorship bias (requires Polygon/Norgate data — data infrastructure change)
+- C4: Entry price slippage (open vs 09:50 fill — ~1-3%/yr drag)
+- H1: No stop slippage (~5-15 bps per stop exit)
+- H2: Transaction costs likely 2× too low (~0.8%/yr)
+- H8: DSR n_trials understated (true n >> 100)
+- M1: Regime score history not passed to WF (every day = 0.5)
+- M9: `validate_correlation_risk` not called in WF `_rm_validate`
+
 ### Next Steps
 
-1. **Phase 2**: Replace swing labels with residual-return labels (market-neutral). Retrain v215.
-2. **Phase 3**: Lockstep WF — `_pm_score` scores full fold universe → select top_n from ranked list
-3. **Phase 4**: Run aligned WF → honest IC / decile P&L / attribution
-4. **Phase 5**: Per Phase 4 diagnosis: execution alignment or signal engineering
+1. **Run v215 WF with all realism fixes** — to see if the fixes materially change results
+2. **If still FAIL**: investigate C2 (sizing) and M1 (regime scores) 
+3. **Phase 2** (after WF shows signal exists): residual-return labels, retrain
+4. **Long-term**: C3 (survivorship) requires data vendor change
 

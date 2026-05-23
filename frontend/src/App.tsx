@@ -3010,7 +3010,7 @@ function MonitorPanel() {
           {[
             { label: 'Status', value: String(health.status ?? '—').toUpperCase(), color: statusColor(health.status) },
             { label: 'Account Value', value: `$${Number(health.account_value ?? 0).toLocaleString()}` },
-            { label: 'P&L Today', value: `$${Number(health.pnl_today ?? 0).toFixed(2)}` },
+            { label: 'P&L Today', value: fmt$(Number(health.pnl_today ?? 0)) },
             { label: 'P&L Today %', value: `${Number(health.pnl_today_pct ?? 0).toFixed(2)}%` },
             { label: 'Max Drawdown', value: `${Number(health.max_drawdown_pct ?? 0).toFixed(2)}%` },
             { label: 'Open Positions', value: String(health.open_positions ?? 0) },
@@ -3051,7 +3051,7 @@ function MonitorPanel() {
                   <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                     <td style={{ padding: '6px 12px' }}>{String(row.date ?? '—')}</td>
                     <td style={{ padding: '6px 12px', color: Number(row.pnl_today ?? 0) >= 0 ? C.green : C.red }}>
-                      ${Number(row.pnl_today ?? 0).toFixed(2)}
+                      {fmt$(Number(row.pnl_today ?? 0))}
                     </td>
                     <td style={{ padding: '6px 12px' }}>{Number(row.pnl_today_pct ?? 0).toFixed(2)}%</td>
                     <td style={{ padding: '6px 12px' }}>{String(row.trades_today ?? 0)}</td>

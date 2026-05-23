@@ -119,10 +119,10 @@ class TestPMScoring:
         assert len(proposals) == 0  # all filtered out
 
     def test_top_n_limits_proposals(self):
-        """PM should not propose more than top_n symbols per day."""
+        """_pm_score pool is capped at proposal_pool_size (>= top_n), not top_n."""
         model = _mock_model(0.9)
         from app.backtesting.agent_simulator import AgentSimulator
-        sim = AgentSimulator(model=model, min_confidence=0.5, top_n=3)
+        sim = AgentSimulator(model=model, min_confidence=0.5, top_n=3, proposal_pool_size=5)
         n = 260
         syms = {f"S{i}": _daily_bars(n, "2022-01-03", base=100 + i) for i in range(10)}
         day = date(2023, 1, 9)
@@ -132,7 +132,7 @@ class TestPMScoring:
         with patch.object(sim, "_get_feature_engineer", return_value=mock_fe):
             proposals = sim._pm_score(day, syms)
 
-        assert len(proposals) <= 3
+        assert len(proposals) <= sim.proposal_pool_size
 
 
 # ── Tests: Trader Signal Gate ──────────────────────────────────────────────────

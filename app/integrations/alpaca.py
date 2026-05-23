@@ -86,6 +86,10 @@ class AlpacaClient:
                 "buying_power": float(account.buying_power),
                 "portfolio_value": float(account.portfolio_value),
                 "equity": float(account.equity),
+                "last_equity": float(account.last_equity) if account.last_equity is not None else None,
+                "long_market_value": float(account.long_market_value) if account.long_market_value is not None else 0.0,
+                "short_market_value": float(account.short_market_value) if account.short_market_value is not None else 0.0,
+                "daytrade_count": int(account.daytrade_count) if account.daytrade_count is not None else 0,
                 "account_blocked": account.account_blocked,
                 "status": account.status,
             }
@@ -130,6 +134,33 @@ class AlpacaClient:
             }
         except Exception as e:
             logger.debug(f"Position not found for {symbol}: {e}")
+            return None
+
+    def get_portfolio_history(
+        self, period: str = "1D", timeframe: str = "5Min"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch portfolio equity history from Alpaca.
+
+        Returns a dict with `timestamp`, `equity`, `profit_loss`,
+        `profit_loss_pct`, `base_value`, `timeframe`, or ``None`` if
+        the endpoint is unavailable.
+        """
+        try:
+            from alpaca.trading.requests import GetPortfolioHistoryRequest
+            _rate_limiter.acquire()
+            req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+            h = self.trading_client.get_portfolio_history(req)
+            return {
+                "timestamp": list(getattr(h, "timestamp", []) or []),
+                "equity": [float(x) for x in (getattr(h, "equity", []) or []) if x is not None],
+                "profit_loss": [float(x) for x in (getattr(h, "profit_loss", []) or []) if x is not None],
+                "profit_loss_pct": [float(x) for x in (getattr(h, "profit_loss_pct", []) or []) if x is not None],
+                "base_value": float(getattr(h, "base_value", 0.0) or 0.0),
+                "timeframe": getattr(h, "timeframe", timeframe),
+            }
+        except Exception as e:
+            logger.debug(f"Portfolio history unavailable: {e}")
             return None
 
     def place_market_order(

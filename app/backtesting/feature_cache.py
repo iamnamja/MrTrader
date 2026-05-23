@@ -305,7 +305,8 @@ def build_feature_cache(
     if executor == "process":
         pool_kwargs["initializer"] = _init_worker
 
-    with PoolClass(**pool_kwargs) as pool:
+    pool = PoolClass(**pool_kwargs)
+    try:
         futures = {pool.submit(_build_symbol_rows, *_submit_args(sym)): sym for sym in syms}
         for future in as_completed(futures):
             sym = futures[future]
@@ -328,6 +329,29 @@ def build_feature_cache(
                     "Feature cache: %d / %d symbols done (%.0f MB so far)",
                     completed, n_syms, cache.memory_mb,
                 )
+    finally:
+        # Guarantee worker cleanup on any exit path (success, exception, KeyboardInterrupt).
+        # The `with` context manager only calls shutdown(wait=True) on normal exit — if the
+        # parent is interrupted, non-daemon ProcessPoolExecutor workers survive as orphans.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        if isinstance(pool, ProcessPoolExecutor):
+            procs = getattr(pool, "_processes", None) or {}
+            for p in list(procs.values()):
+                try:
+                    if p.is_alive():
+                        p.terminate()
+                except Exception:
+                    pass
+            for p in list(procs.values()):
+                try:
+                    p.join(timeout=2.0)
+                    if p.is_alive():
+                        p.kill()
+                except Exception:
+                    pass
 
     logger.info(
         "Feature cache built: %d symbols, %.0f MB, %d trading days covered",
