@@ -59,3 +59,29 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 **Rationale**: Removes the dependency on absolute return prediction (hard). L/S only requires relative ranking (easier). Eliminates directional beta. Enables full capital utilization in both bull and bear markets.
 
 **Consequences**: Phase 4 must implement dollar-neutral construction with borrow filter.
+
+---
+
+## 2026-05-23 — Execute Phase 4 First If L2 Decile Sharpe >= 0.60
+
+**Context**: Null benchmark showed random portfolio Sharpe = +0.669 vs v216 WF = -0.91 (z=-9.87). The execution layer is 9.87 sigma worse than random chance. L2 decile spread is running to determine if underlying signal exists.
+
+**Decision (pending L2 result)**: If L2 Sharpe >= 0.60, skip Phase 3 (label redesign) and go directly to Phase 4 (execution fix: remove ATR stops, increase position count, L/S conversion).
+
+**Rationale**: With execution destroying 1.5+ Sharpe units vs random, fixing execution is higher ROI than fixing labels. The 2021 IC = +0.023 suggests signal exists in bull regimes. The execution pathology (ATR stops + low position count) is the dominant failure mode.
+
+**If L2 < 0.20**: No signal exists. Must rebuild features. Phase 3 before Phase 4.
+
+---
+
+## 2026-05-23 — Remove ATR Stops From Swing Strategy
+
+**Context**: Null benchmark (no stops) achieves Sharpe +0.669. WF (with ATR stops) achieves -0.91.
+
+**Decision**: The ATR stop mechanism should be disabled for initial Phase 4 testing. The stops are creating a negative feedback loop:
+1. Low IC → random win rate ~50%
+2. ATR stop triggers on small adverse moves, cutting many positions early  
+3. Remaining positions run longer but the overall win rate < breakeven for 2:1 R:R
+4. Net effect: stops increase transaction costs while not improving win rate
+
+**Do NOT**: Add wider stops or tighter stops as a fix. The stop mechanism itself needs testing without stops first. If L2 without stops shows Sharpe > 0.60, that is the baseline.
