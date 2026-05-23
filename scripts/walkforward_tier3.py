@@ -1242,9 +1242,10 @@ def main() -> int:
                         help="Round-trip transaction cost in bps for swing (default: 5bps)")
     parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
                         help="Round-trip transaction cost in bps for intraday (default: 15bps)")
-    parser.add_argument("--swing-purge-days", type=int, default=15,
-                        help="Calendar days to skip between train_end and test_start for swing "
-                             "(must be >= FORWARD_DAYS_LONG=15 to prevent label leakage; default: 15)")
+    parser.add_argument("--swing-purge-days", type=int, default=85,
+                        help="Calendar days to skip between train_end and test_start for swing. "
+                             "Must be >= 60d feature lookback + 20d label horizon + 5d buffer = 85d. "
+                             "Old default was 15 (too short, caused train/test overlap). Default: 85")
     parser.add_argument("--swing-embargo-days", type=int, default=None,
                         help="WF-1: Calendar days to skip after test_end before next fold trains "
                              "(defaults to --swing-purge-days if not set)")
