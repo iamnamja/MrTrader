@@ -4603,3 +4603,42 @@ Three WF runs completed. All fail gate. Key progression:
 **Honest conclusion:** v215 (5-day LambdaRank labels, 0.5×ATR stops) has insufficient signal for 40-bar tight-stop swing trading. The model has weak directional edge (Folds 3-4: +0.27-+0.54) but consistently fails in bear/volatile regimes. Baseline +0.036 was an artifact of 32-week holds + 8% circuit-breaker stops.
 
 **v216 is the path forward.** See design section below.
+
+---
+
+### WF Simulation Bug Fixes — Deep Code Review (2026-05-23)
+
+5-pass deep code review using Opus 4.7 (autonomous, while v216 retrain ran in background). Found and fixed **10 correctness bugs** that were corrupting all prior WF results to varying degrees. PR #256.
+
+**Impact on prior results:** All previous WF Sharpe numbers were affected by these bugs. The corrections generally move results in both directions (some bugs inflated Sharpe, others deflated it), so no simple "add X to all prior numbers" adjustment is valid. v216 will be the first WF run against the corrected simulation.
+
+#### Bug Summary
+
+| # | Severity | File | Description | Direction of Bias |
+|---|----------|------|-------------|-------------------|
+| 1 | 🔴 High | `agent_simulator.py` | **Look-ahead MTM**: today's close used for sizing/RM at open | Overstates returns on up-days, understates on down-days |
+| 2 | 🔴 High | `strategy_simulator.py` | **Sharpe annualization**: `min(N,252)` understated ~9% for 1-yr folds; missing ddof=1 | Understated Sharpe |
+| 3 | 🔴 High | `walkforward_tier3.py`, `gates.py` | **DSR missing `sqrt(V[SR])`**: Bailey & López de Prado formula truncated | DSR p-values unit-wrong |
+| 4 | 🔴 High | `walkforward_tier3.py`, `gates.py` | **DSR n_obs = trade count** (~50-100) not trading days (~1000) | Overstated V[SR] by 10-20× |
+| 5 | 🔴 High | `cpcv.py` | **CPCV training look-ahead**: future folds in train set for early test folds | Inflated CPCV Sharpe |
+| 6 | 🔴 High | `agent_simulator.py` | **Force-close used `df.iloc[-1]`**: liquidated at last bar in full history, not fold end | Systematic exit-price error |
+| 7 | 🟠 Med | `feature_cache.py` | **Sector ETF same-day close** in sector-neutral momentum features | Minor look-ahead |
+| 8 | 🟠 Med | `agent_simulator.py` | **Halt day MTM snap** to entry price → spurious daily return | Inflated variance, depressed Sharpe |
+| 9 | 🟠 Med | `agent_simulator.py` | **Short daily series** fell back to per-trade returns @ daily annualization | Wrong Sharpe in short folds |
+| 10 | 🟡 Low | `agent_simulator.py` | **`profit_factor` ~1e9** for zero-loser folds | Misleading gate metrics |
+
+#### Design Issues Documented (no code change)
+- `WalkForwardReport.is_true_walkforward = False` + warning banner — WF is a generalization test, not a true expanding-window retrain
+- `portfolio_heat.py` — known gap: linear heat sum ignores position correlation
+- `_pm_score` — look-ahead audit: confirmed clean throughout
+
+#### v216 WF — First Honest Run
+v216 model trained with:
+- `label_scheme=lambdarank`, `LABEL_HORIZON_DAYS=20` (20-day cross-sectional rank)
+- `PHASE_C_V2_FEATURE_KEEP_LIST` (19 features — adds `momentum_20d_sector_neutral`, `momentum_60d_sector_neutral`)
+- WF defaults: `atr_stop_mult=1.5`, `atr_target_mult=3.0`, `max_hold_bars=40`
+- **All 10 simulation bugs fixed** — first truly honest WF run
+
+WF launched: `python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --record-results --swing-model-version 216`
+Results: **PENDING** (WF running, ~90 min total)
+
