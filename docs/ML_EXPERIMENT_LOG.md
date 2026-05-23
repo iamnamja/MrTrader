@@ -4805,3 +4805,14 @@ For a universe of ~750 large-cap names, delistings are ~20-30/year → affects <
 ### Decision
 
 **DEFER to Phase 3** (label redesign). The dominant problem is execution pathology (9.87σ below random). Survivorship correction would change cross-sectional ranking by a small amount (~1-2% of training samples). Phase 3 fix: when `future_bar` is empty, use last available price as realized return instead of `continue`.
+
+---
+
+## Phase 1.5 — Hyperparameter Trial Registry Audit — 2026-05-23
+
+**Result**: Already correct. No changes needed.
+
+- `N_TRIALS_TESTED = 200` in `app/ml/retrain_config.py` (updated 2026-05-12, covers iterations 1-6, phases 18-87, R-series)
+- DSR `n_obs` fix already in place: `walkforward_tier3.py:867,1079` uses `len(equity) - 1` (daily return observations), not fold count
+- `total_obs` in `WFResult` aggregates `n_obs` across all folds correctly
+- DSR is being computed correctly for all future WF runs
