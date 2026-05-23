@@ -4548,3 +4548,13 @@ Added `ENTRY_SLIPPAGE_PCT = 0.0003` (3bps). Longs pay more, shorts receive less.
 This is conservative but realistic and counteracts any MOO alpha inflation.
 
 **Status:** WF v215 with all 13 fixes (Rounds 1-3) pending after current runs finish.
+
+### Known Gap: Training Entry Price vs Backtest Entry Price (C1 — deferred to v216)
+
+Opus audit identified a fundamental label/entry mismatch:
+- **Training labels**: entry_price = close[window_end_day]. ATR stop/target computed from this close.
+- **Backtest entry**: entry_price = open[window_end_day + 1] (next-day MOO).
+- **Impact**: For names with overnight gaps (e.g. +2%), the backtest enters at a higher price. Stop/target levels are re-anchored to the open, testing a slightly different scenario than what the label measured.
+- **Direction of bias**: Unclear. Large gap-ups into long entries = tighter effective target headroom but also tighter stop (both anchored to higher open). Net effect depends on gap distribution.
+- **Why not fixed now**: Requires retraining. Training would need to use `open[w_end+1]` as entry_price for every sample, which changes all historical labels. v215 is already trained.
+- **Fix for v216**: Change `entry_price = float(df.loc[idx == w_end_date, "close"].iloc[0])` → use `open` of the day AFTER `w_end_date`. Also start the bar-walk (for triple_barrier) at bar_offset=1 with the full next bar (same as now) since entry is at open of that bar.
