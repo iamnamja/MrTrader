@@ -57,7 +57,8 @@ ATR_TARGET_MULT = 1.5  # 1.5× ATR — matches training label target
 SWING_STOP_PCT = 0.02  # fallback only when ATR unavailable
 SWING_TARGET_PCT = 0.06
 TX_COST_PCT = TRANSACTION_COST  # 5bps per side
-STOP_SLIPPAGE_PCT = 0.0005  # 5bps adverse slippage on stop-triggered exits (realistic stop-order fill)
+STOP_SLIPPAGE_PCT = 0.0005   # 5bps adverse slippage on stop-triggered exits (realistic stop-order fill)
+ENTRY_SLIPPAGE_PCT = 0.0003  # 3bps MOO slippage vs printed open (market-on-open fills)
 DEFAULT_MAX_HOLD_BARS = 40  # ~8 weeks; decoupled from MAX_OPEN_POSITIONS to avoid L/S position-count bloat
 
 
@@ -212,7 +213,8 @@ class AgentSimulator:
         self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
         # Lockstep: how many top-ranked candidates to forward to Trader/RM before entry cap.
         # Must be > top_n so that RM/signal gates have headroom to filter and still fill positions.
-        self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 5, 50)
+        # Wide pool so RM/technical gates have headroom after filtering (prev: top_n*5 was too narrow)
+        self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 20, 200)
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -324,8 +326,7 @@ class AgentSimulator:
             for trade, tx_cost in closed:
                 accepted_trades.append(trade)
                 tx_costs_total += tx_cost
-            if portfolio.equity_decision > portfolio.peak_equity:
-                portfolio.peak_equity = portfolio.equity_decision
+            # peak_equity is updated at EOD (after MTM); not mid-bar to avoid inflating DD gate
 
             # 3. PM: score all symbols using bars up to yesterday.
             # When sim_scan_interval_days > 1, skip scoring on off-days
@@ -934,9 +935,12 @@ class AgentSimulator:
             if today_bar is None:
                 continue
 
-            entry_price = self._scalar(today_bar["open"])
-            if entry_price <= 0:
+            _raw_open = self._scalar(today_bar["open"])
+            if _raw_open <= 0:
                 continue
+            # MOO fills slip vs printed open; longs pay more, shorts receive less
+            entry_price = (_raw_open * (1 + ENTRY_SLIPPAGE_PCT) if direction == "long"
+                           else _raw_open * (1 - ENTRY_SLIPPAGE_PCT))
 
             # Phase 34: No-chase filter — skip large overnight gaps and extended entries
             # Not applied in factor portfolio mode (monthly rebalance enters regardless of daily gap)
@@ -996,9 +1000,24 @@ class AgentSimulator:
                     stop_price = entry_price * (1 + 0.20)   # 20% circuit-breaker above entry
                     target_price = entry_price * 0.50       # effectively never fires
                 else:
-                    # Short: stop is above entry, target is below entry
-                    stop_price = entry_price * (1 + SWING_STOP_PCT)
-                    target_price = entry_price * (1 - SWING_TARGET_PCT)
+                    # Short: ATR-based stops mirror the long path (clip bounds match training labels)
+                    _short_atr_stop_pct = SWING_STOP_PCT    # fallback if ATR unavailable
+                    _short_atr_tgt_pct = SWING_TARGET_PCT
+                    if bars_yesterday is not None and len(bars_yesterday) >= 14:
+                        try:
+                            _sh = bars_yesterday["high"].to_numpy(dtype=float)
+                            _sl = bars_yesterday["low"].to_numpy(dtype=float)
+                            _sc = bars_yesterday["close"].to_numpy(dtype=float)
+                            _tr = np.maximum(_sh[1:] - _sl[1:],
+                                             np.maximum(abs(_sh[1:] - _sc[:-1]),
+                                                        abs(_sl[1:] - _sc[:-1])))
+                            _s_atr_pct = float(np.mean(_tr[-14:])) / max(float(_sc[-1]), 1e-6)
+                            _short_atr_stop_pct = float(np.clip(self.atr_stop_mult * _s_atr_pct, 0.0075, 0.04))
+                            _short_atr_tgt_pct = float(np.clip(self.atr_target_mult * _s_atr_pct, 0.015, 0.08))
+                        except Exception:
+                            pass
+                    stop_price = entry_price * (1 + _short_atr_stop_pct)
+                    target_price = entry_price * (1 - _short_atr_tgt_pct)
 
             # Position sizing: size_position requires stop_price < entry_price (long semantics).
             # For shorts, flip the stop so risk-per-share = |entry - stop| is preserved.

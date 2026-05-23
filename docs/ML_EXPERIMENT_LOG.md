@@ -4502,3 +4502,49 @@ Daily short borrow cost used trading-day denominator (/252) but real borrow accr
 Fixed to /365. Impact: ~45% higher borrow cost for short positions.
 
 **Status:** v215 WF with these fixes queued. WF running concurrently with fix implementation.
+
+### v215 WF Baseline (pre-Opus round-2 fixes) — 2026-05-23
+
+**Code:** `feat/phase-0-alignment` (pre-PR #251/#252) — has Phase 0 realism fixes but NOT the 9 Opus-identified bugs.
+**Run:** 5 folds, 6 years, --record-results
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Gate |
+|------|------------|--------|------|--------|--------|------|
+| 1 | 2021-06-08 → 2022-05-23 | 197 | 43.1% | -0.17 | -0.17 | ✅ |
+| 2 | 2022-06-08 → 2023-05-23 | 154 | 39.6% | **-0.60** | -0.75 | ❌ |
+| 3 | 2023-06-08 → 2024-05-22 | 251 | 48.2% | **+0.80** | +0.87 | ✅ (at gate) |
+| 4 | 2024-06-07 → 2025-05-22 | 231 | 44.6% | +0.04 | +0.05 | ✅ |
+| 5 | 2025-06-07 → 2026-05-22 | 210 | 39.5% | +0.10 | +0.07 | ✅ |
+| **Avg** | | **1043** | **43.0%** | **+0.036** | **+0.013** | ❌ FAIL |
+
+**Gate:** avg Sharpe +0.036 < 0.80, min -0.602 < -0.30, DSR p=0.000. All 4 gates fail.
+
+**Notable:** Fold 3 (2023-06→2024-05, bull market) hits exactly +0.80. Signal exists in trending regimes. Folds 2 (bear) and 4-5 (mixed/volatile) fail badly. This is consistent with the L/S motivation — factor model struggles in non-trending regimes.
+
+**Status of fixes at time of run:** Proposal pool widened, purge 15d, VIX `_vix_at()` strict `<`. NOT fixed: ATR stops alignment, shorts sizing, stop slippage, borrow cost, VIX look-ahead in 3 other callers.
+
+**Next:** Compare against v215 post-PR-#251 (6 Opus bugs fixed) and v215 post-PR-#252 (all 9 fixes).
+
+### Phase 0 Alignment — Opus 4.7 Deep Audit Round 3 (2026-05-23)
+
+Third Opus 4.7 audit, focused on remaining realism gaps after Round 2 fixes. 4 fixes applied in PR `feat/wf-realism-round3`:
+
+**Fix 1 — Shorts use flat SWING_STOP_PCT (2%/6%) not ATR [HIGH — M2]**
+The short entry path (lines ~1000-1001) bypassed `_trader_signal` and used hardcoded 2% stop / 6% target.
+Training labels for short signals use the same 0.5×ATR clip bounds as longs. With flat 2% stops, short positions in volatile names had stops 2-4× wider than training assumed → label/sim mismatch.
+Fixed: short path now computes ATR from prior bars and applies `clip(0.5×atr, 0.0075, 0.04)` stop, `clip(1.5×atr, 0.015, 0.08)` target — same as long path.
+
+**Fix 2 — Proposal pool too narrow (top_n×5=50) undersells capital deployment [HIGH — H4]**
+With 50 candidates forwarded and ~80% rejection rate from EMA/RSI/volume filters, many days could fill fewer positions than `MAX_OPEN_POSITIONS`. Under-deployment biases Sharpe (fewer trades = more cash drag).
+Fixed: default pool widened to `max(top_n*20, 200)`.
+
+**Fix 3 — Mid-bar peak_equity update inflates drawdown gate leniency [MEDIUM — M1]**
+`peak_equity` was updated at two points: (a) after exits (mid-bar, reflecting unrealized MTM) and (b) at EOD (after full MTM settlement). The mid-bar update made the drawdown gate think the peak was higher, allowing larger drawdowns than the gate intended.
+Fixed: removed mid-bar update; peak updates only at EOD after MTM settlement.
+
+**Fix 4 — No entry slippage on market-on-open fills [MEDIUM — M4]**
+Entry fills used exact printed open price. Real MOO orders slip 2-5bps for Russell 1000 names.
+Added `ENTRY_SLIPPAGE_PCT = 0.0003` (3bps). Longs pay more, shorts receive less.
+This is conservative but realistic and counteracts any MOO alpha inflation.
+
+**Status:** WF v215 with all 13 fixes (Rounds 1-3) pending after current runs finish.
