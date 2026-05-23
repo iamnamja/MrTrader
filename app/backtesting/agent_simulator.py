@@ -212,9 +212,9 @@ class AgentSimulator:
         self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
         self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
         # Lockstep: how many top-ranked candidates to forward to Trader/RM before entry cap.
-        # Must be > top_n so that RM/signal gates have headroom to filter and still fill positions.
-        # Wide pool so RM/technical gates have headroom after filtering (prev: top_n*5 was too narrow)
-        self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 20, 200)
+        # 5× top_n gives RM/technical gates headroom without reaching into low-conviction tail.
+        # Widening to 20× degraded win rate (rank 50-200 names have no edge vs noise stops).
+        self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 5, 50)
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
