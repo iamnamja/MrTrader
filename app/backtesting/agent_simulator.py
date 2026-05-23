@@ -477,24 +477,44 @@ class AgentSimulator:
 
             # Record MTM equity for this day (already computed at step 0 above).
             # Re-run update_mtm with any new positions opened this bar so exits are included.
+            # Bug fix (WF deep-review pass 5): when a symbol has no bar today (halt, holiday,
+            # delisting mid-fold), equity_mtm previously fell back to entry_price — producing
+            # a spurious "snap to entry" that inflated daily-return volatility (and depressed
+            # Sharpe / inflated max_dd). We now carry forward the last known close strictly
+            # prior to today so a halt day contributes zero return, as it should.
             _today_closes_eod = {}
             for _sym, _pos in portfolio.positions.items():
                 _df = symbols_data.get(_sym)
-                if _df is not None:
-                    _bar = self._bars_on(_df, day)
-                    if _bar is not None:
-                        _today_closes_eod[_sym] = float(_bar["close"])
+                if _df is None:
+                    continue
+                _bar = self._bars_on(_df, day)
+                if _bar is not None:
+                    _today_closes_eod[_sym] = float(_bar["close"])
+                else:
+                    # Carry-forward: last close strictly before today
+                    _prior = self._bars_up_to(_df, day, exclude_today=True)
+                    if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
+                        _today_closes_eod[_sym] = float(_prior["close"].iloc[-1])
+                    # else: equity_mtm will fall back to entry_price (no prior bar at all)
             equity_by_date[day] = portfolio.equity_mtm(_today_closes_eod)
             if equity_by_date[day] > portfolio.peak_equity:
                 portfolio.peak_equity = equity_by_date[day]
             portfolio.daily_pnl = 0.0  # reset for next day
 
-        # Force-close any remaining open positions at last bar close
+        # Force-close any remaining open positions at last bar close.
+        # Bug fix (WF deep-review pass 5): previously used df["close"].iloc[-1] which is the
+        # last close in the FULL dataframe — including bars AFTER end_date (look-ahead).
+        # Fold dataframes typically carry the full history (training + test + lookahead),
+        # so iloc[-1] could be weeks past the fold's test window. We now restrict to the
+        # last close on-or-before end_date.
         for sym, pos in list(portfolio.positions.items()):
             df = symbols_data.get(sym)
             if df is None or len(df) == 0:
                 continue
-            exit_price = float(df["close"].iloc[-1])
+            _prior = self._bars_up_to(df, end_date, exclude_today=False)
+            if _prior is None or len(_prior) == 0 or "close" not in _prior.columns:
+                continue
+            exit_price = float(_prior["close"].iloc[-1])
             trade, tx = self._close_position(pos, end_date, exit_price, "FORCE_CLOSE", portfolio)
             accepted_trades.append(trade)
             tx_costs_total += tx
@@ -1319,8 +1339,16 @@ class AgentSimulator:
         avg_pnl = sum(t.pnl_pct for t in accepted_trades) / max(len(accepted_trades), 1)
         avg_hold = sum(t.hold_bars for t in accepted_trades) / max(len(accepted_trades), 1)
         gross_win = sum(t.pnl_pct for t in winners) if winners else 0.0
-        gross_loss = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
-        profit_factor = gross_win / gross_loss
+        gross_loss_raw = abs(sum(t.pnl_pct for t in losers)) if losers else 0.0
+        # Bug fix (WF deep-review pass 5): previously divided by max(loss, 1e-9), which
+        # exploded to ~1e9 when there were zero losing trades — producing a misleading
+        # "infinite edge" metric. We now report 0.0 when there are no winners, and a
+        # large but finite sentinel (999.0) when there are winners but no losers (small
+        # folds; "undefined" PF). This is consistent with common backtest libraries.
+        if gross_loss_raw <= 0:
+            profit_factor = 0.0 if gross_win <= 0 else 999.0
+        else:
+            profit_factor = gross_win / gross_loss_raw
 
         exit_breakdown = defaultdict(int)
         for t in accepted_trades:

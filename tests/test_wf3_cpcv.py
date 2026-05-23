@@ -147,7 +147,12 @@ class TestCombinationsCount:
         assert comb(4, 1) == 4
 
     def test_run_cpcv_produces_correct_number_of_paths(self):
-        """run_cpcv with k=4, paths=1 should produce C(4,1)=4 path_sharpes."""
+        """run_cpcv with k=4, paths=1 should produce 3 path_sharpes (not 4).
+
+        After the look-ahead fix, fold 0 is skipped as a test target because it has
+        no causal training history (no prior folds). C(4,1)=4 combinations, but the
+        combination containing fold 0 produces zero usable test folds → only 3 paths.
+        """
         from scripts.walkforward.cpcv import run_cpcv
         from scripts.walkforward.gates import FoldResult
 
@@ -179,8 +184,12 @@ class TestCombinationsCount:
             allow_sacred_holdout=True,  # unit test: strategy is mocked
         )
         from math import comb
-        assert result.n_combinations == comb(4, 1)
-        assert len(result.path_sharpes) == comb(4, 1)
+        # After the CPCV look-ahead fix, combinations whose test fold has no causal
+        # training history are dropped entirely. Fold 0 has no prior folds → skipped.
+        # C(4,1)=4 combinations, but 1 is dropped → 3 usable paths in n_combinations
+        # and path_sharpes.
+        assert result.n_combinations == comb(4, 1) - 1
+        assert len(result.path_sharpes) == comb(4, 1) - 1
 
 
 # ---------------------------------------------------------------------------
