@@ -58,6 +58,7 @@ SWING_STOP_PCT = 0.02  # fallback only when ATR unavailable
 SWING_TARGET_PCT = 0.06
 TX_COST_PCT = TRANSACTION_COST  # 5bps per side
 STOP_SLIPPAGE_PCT = 0.0005  # 5bps adverse slippage on stop-triggered exits (realistic stop-order fill)
+DEFAULT_MAX_HOLD_BARS = 40  # ~8 weeks; decoupled from MAX_OPEN_POSITIONS to avoid L/S position-count bloat
 
 
 @dataclass
@@ -615,7 +616,7 @@ class AgentSimulator:
         if "vol_percentile_52w" in cache.feature_names and self.max_vol_pct is not None:
             vol_col_idx = cache.feature_names.index("vol_percentile_52w")
 
-        for sym, idx_map in cache.date_index.items():
+        for sym, idx_map in sorted(cache.date_index.items()):
             row_idx = idx_map.get(day)
             if row_idx is None:
                 continue
@@ -1155,7 +1156,7 @@ class AgentSimulator:
             _check_dir = "SELL_SHORT" if is_short else "BUY"
             _max_hold = (self.max_hold_bars_override
                          if self.max_hold_bars_override is not None
-                         else self.limits.MAX_OPEN_POSITIONS * 4)
+                         else DEFAULT_MAX_HOLD_BARS)
             if not should_exit:
                 ce_should_exit, ce_reason, new_stop = check_exit(
                     symbol=sym,
