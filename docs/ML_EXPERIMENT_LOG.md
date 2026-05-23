@@ -4461,3 +4461,44 @@ WF now logs `cache.n_symbols` and `symbols_with(mid_fold_day)` after each cache 
 3. **Phase 2** (after WF shows signal exists): residual-return labels, retrain
 4. **Long-term**: C3 (survivorship) requires data vendor change
 
+
+### Phase 0 Alignment — Opus 4.7 Deep Audit Round 2 (2026-05-22)
+
+Second Opus 4.7 audit of `agent_simulator.py` and `walkforward_tier3.py`. Fixes applied in PR `feat/wf-realism-opus-fixes`:
+
+**Fix 1 — VIX look-ahead (3 remaining callers) [P0-4]**
+Prior session fixed `_vix_at()` to use `< day`. This session found 3 additional callers still using `<= day`:
+- Line 360: `vix_fear_threshold` gate
+- Line 378: `pm_abstention_vix` gate
+- Line 423: opportunity score VIX component
+All changed to strict `<`. Entry decisions happen at market open; today's VIX close is unknowable.
+
+**Fix 2 — ATR stops not actually applied in generate_signal (P1-13) [CRITICAL]**
+`generate_signal()` lines 810-813 used hardcoded `close*(1-0.08)` and `close*(1-0.06)` stop floors,
+NOT `self.atr_stop_mult`. This contradicted the Phase 0 C1 fix (which only fixed the live PM path).
+Training labels use 0.5×ATR stops (~1-3% for typical swing names), but WF was testing with 6-8% stops.
+Model trained for tight stops being tested with 4-16× wider stops = complete train/test mismatch.
+Fixed: `atr_stop_pct = clip(atr_stop_mult * atr_pct, 0.5%, 10%)` with structural floors as soft minimum.
+
+**Fix 3 — Shorts always sized to 0 (P0-5)**
+`size_position()` returns 0 when `stop_price >= entry_price` (long assumption built into guard).
+For shorts, `stop = entry * 1.02` which always triggers this guard → all shorts rejected silently.
+Fixed: `stop_for_sizing = 2*entry - stop` for shorts, preserving risk-per-share while satisfying guard.
+This is critical for the L/S Phase F architecture — without it, the "L/S" WF was long-only.
+
+**Fix 4 — peak_equity stale by one day (P0-6)**
+`peak_equity` was only updated when positions were closed, not after EOD MTM settlement.
+Drawdown checks on next day used a stale peak → drawdown gate fired too early (deflates Sharpe).
+Fixed: update `portfolio.peak_equity` immediately after `equity_by_date[day]` is computed.
+
+**Fix 5 — Stop fill slippage missing (P2-18)**
+Stop exits filled at exactly trigger price. Real stop orders fill at the next available bid/ask after
+trigger, typically 5-10 bps worse in a moving market. Added 5bps adverse slippage constant
+`STOP_SLIPPAGE_PCT` applied to all stop-triggered exits (long and short, intrabar and gap-through).
+Direction: deflates Sharpe conservatively (realistic direction of bias).
+
+**Fix 6 — Borrow cost /252 vs /365 (P1-11)**
+Daily short borrow cost used trading-day denominator (/252) but real borrow accrues calendar-daily.
+Fixed to /365. Impact: ~45% higher borrow cost for short positions.
+
+**Status:** v215 WF with these fixes queued. WF running concurrently with fix implementation.

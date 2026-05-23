@@ -57,6 +57,7 @@ ATR_TARGET_MULT = 1.5  # 1.5× ATR — matches training label target
 SWING_STOP_PCT = 0.02  # fallback only when ATR unavailable
 SWING_TARGET_PCT = 0.06
 TX_COST_PCT = TRANSACTION_COST  # 5bps per side
+STOP_SLIPPAGE_PCT = 0.0005  # 5bps adverse slippage on stop-triggered exits (realistic stop-order fill)
 
 
 @dataclass
@@ -357,7 +358,7 @@ class AgentSimulator:
                     try:
                         vix_idx = _vix_closes.index
                         vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
-                        vix_today = _vix_closes.loc[vix_dates <= day]
+                        vix_today = _vix_closes.loc[vix_dates < day]
                         if len(vix_today) > 0:
                             vix_val = float(vix_today.iloc[-1])
                             if vix_val > self.vix_fear_threshold:
@@ -375,7 +376,7 @@ class AgentSimulator:
                     if self.pm_abstention_vix > 0 and _vix_closes is not None:
                         vix_idx = _vix_closes.index
                         vix_dates = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
-                        vix_today = _vix_closes.loc[vix_dates <= day]
+                        vix_today = _vix_closes.loc[vix_dates < day]
                         if len(vix_today) > 0 and float(vix_today.iloc[-1]) >= self.pm_abstention_vix:
                             _skip_entries = True
                             logger.debug("PM abstention (VIX) on %s: %.1f >= %.1f",
@@ -420,7 +421,7 @@ class AgentSimulator:
                         if _vix_closes is not None:
                             vix_idx = _vix_closes.index
                             vix_dates_v = vix_idx.date if hasattr(vix_idx, 'date') else pd.DatetimeIndex(vix_idx).date
-                            vix_hist = _vix_closes.loc[vix_dates_v <= day]
+                            vix_hist = _vix_closes.loc[vix_dates_v < day]
                             if len(vix_hist) > 0:
                                 vix_level = float(vix_hist.iloc[-1])
                                 vix_score = float(np.clip(1.0 - (vix_level - 15.0) / 20.0, 0.0, 1.0))
@@ -477,6 +478,8 @@ class AgentSimulator:
                     if _bar is not None:
                         _today_closes_eod[_sym] = float(_bar["close"])
             equity_by_date[day] = portfolio.equity_mtm(_today_closes_eod)
+            if equity_by_date[day] > portfolio.peak_equity:
+                portfolio.peak_equity = equity_by_date[day]
             portfolio.daily_pnl = 0.0  # reset for next day
 
         # Force-close any remaining open positions at last bar close
@@ -804,13 +807,17 @@ class AgentSimulator:
                 ema_slow_p = float(bars_up_to_day["close"].ewm(span=50, adjust=False).mean().iloc[-2])
                 is_ema_crossover = ema_fast_v > ema_slow_v and ema_fast_p <= ema_slow_p
 
+                # ATR-based stop — must match training label ATR_STOP_MULT (0.5×).
+                # Hard-coded % floors are replaced: they were far wider than training
+                # stop thresholds, causing train/test mismatch.
+                atr_stop_pct = float(np.clip(self.atr_stop_mult * atr_pct, 0.005, 0.10))
                 if is_ema_crossover:
-                    # Momentum: stop below 10-bar pivot low (breakout level)
+                    # Momentum: never go tighter than 10-bar pivot low (structure level)
                     pivot_low = float(np.min(low[-11:-1])) if len(low) >= 11 else close * 0.97
-                    stop_price = max(pivot_low * 0.995, close * (1 - 0.08))
+                    stop_price = max(pivot_low * 0.995, close * (1 - atr_stop_pct))
                 else:
-                    # Pullback/RSI-dip: stop below EMA20 with small buffer
-                    stop_price = max(ema20 * 0.995, close * (1 - 0.06))
+                    # Pullback/RSI-dip: never go tighter than EMA20 with small buffer
+                    stop_price = max(ema20 * 0.995, close * (1 - atr_stop_pct))
 
                 # Target: 1.5× ATR above entry (fixed — matches training labels)
                 target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01, 0.16))
@@ -992,15 +999,15 @@ class AgentSimulator:
                     stop_price = entry_price * (1 + SWING_STOP_PCT)
                     target_price = entry_price * (1 - SWING_TARGET_PCT)
 
-            # Position sizing — use abs(confidence) for shorts; equity_decision is MTM-aware
+            # Position sizing: size_position requires stop_price < entry_price (long semantics).
+            # For shorts, flip the stop so risk-per-share = |entry - stop| is preserved.
             conf_for_sizing = abs(confidence)
-            # Pass the already-correct stop_price (above entry for shorts, below for longs)
-            # so size_position gets the right risk-per-share in both directions.
+            stop_for_sizing = (2 * entry_price - stop_price) if is_short else stop_price
             quantity = size_position(
                 account_equity=portfolio.equity_decision,
                 available_cash=portfolio.cash,
                 entry_price=entry_price,
-                stop_price=stop_price,
+                stop_price=stop_for_sizing,
                 ml_score=conf_for_sizing,
             )
             # Apply RM position-size cap so the trade doesn't auto-reject
@@ -1077,7 +1084,7 @@ class AgentSimulator:
             # Daily borrow cost for short positions (configurable annual rate, default 5%).
             # Use today's close as current notional (M6 fix: entry_price understates HTB tail risk).
             if is_short:
-                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 252
+                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 365
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 
@@ -1103,14 +1110,14 @@ class AgentSimulator:
                 # Short: stop above entry (breached when high >= stop),
                 # target below entry (hit when low <= target).
                 if today_open >= _orig_stop:
-                    # Gap-up through stop: fill at open (worse than stop)
+                    # Gap-up through stop: fill at open (worse than stop) + slippage
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = today_open
+                    fill_price = today_open * (1 + STOP_SLIPPAGE_PCT)
                 elif today_high >= _orig_stop:
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = _orig_stop
+                    fill_price = _orig_stop * (1 + STOP_SLIPPAGE_PCT)
                 elif today_open <= _orig_target:
                     # Gap-down through target: fill at open (better than target)
                     should_exit = True
@@ -1124,14 +1131,14 @@ class AgentSimulator:
                 # Long: stop below entry (breached when low <= stop),
                 # target above entry (hit when high >= target).
                 if today_open <= _orig_stop:
-                    # Gap-down through stop: fill at open (worse than stop)
+                    # Gap-down through stop: fill at open (worse than stop) + slippage
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = today_open
+                    fill_price = today_open * (1 - STOP_SLIPPAGE_PCT)
                 elif today_low <= _orig_stop:
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = _orig_stop
+                    fill_price = _orig_stop * (1 - STOP_SLIPPAGE_PCT)
                 elif today_open >= _orig_target:
                     # Gap-up through target: fill at open (better than target)
                     should_exit = True
