@@ -518,6 +518,17 @@ class AgentSimulator:
         When a FeatureCache is available, dispatches to _pm_score_cached for
         O(1) feature lookup instead of re-computing features per symbol.
         When factor_scorer is set, delegates entirely to the callable.
+
+        Look-ahead audit (deep-review pass 3, VERIFIED CORRECT):
+        Features for the day-T scoring decision are built from bars STRICTLY
+        BEFORE day T (`_bars_up_to(df, day, exclude_today=True)` — see line
+        ~542 below and feature_cache.py mask `df.index.date < day`). The
+        resulting proposals are then filled at day T's open inside
+        `_process_entries`. This is actually conservative: a real EOD->MOO
+        workflow would be allowed to use day-T's close to decide T+1's open
+        entry. The simulator uses one day LESS information than the live
+        system could legitimately consume — there is no leakage.
+        Sector-ETF override likewise uses strict `<` (see feature_cache.py).
         """
         # Phase D: factor portfolio path — bypasses ML model entirely
         if self.factor_scorer is not None:

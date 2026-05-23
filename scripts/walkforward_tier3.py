@@ -229,6 +229,15 @@ class FoldResult:
 class WalkForwardReport:
     model_type: str
     folds: List[FoldResult] = field(default_factory=list)
+    # WF design note (deep-review pass 3): the harness loads ONE pre-trained
+    # model via _load_model() and re-scores it across every fold's test window.
+    # This is a GENERALIZATION TEST — "does this single model hold up across
+    # multiple out-of-sample regimes?" — not a true expanding-window walk-forward
+    # (which would retrain on [train_start, fold_train_end] inside each fold).
+    # The flag below makes that distinction explicit for downstream consumers
+    # (reporting, ML_EXPERIMENT_LOG, DSR interpretation). Set to True only when
+    # a per-fold retrain has actually been performed.
+    is_true_walkforward: bool = False
 
     @property
     def avg_sharpe(self) -> float:
@@ -563,10 +572,20 @@ def run_swing_walkforward(
     from app.backtesting.agent_simulator import AgentSimulator
 
     report = WalkForwardReport(model_type="swing")
+    # Design note (deep-review pass 3): one pre-trained model is loaded here and
+    # reused across all n_folds test windows. This is a generalization test, not
+    # a true expanding-window WF with per-fold retrain. `is_true_walkforward`
+    # stays False; downstream reporting/DSR consumers should treat fold Sharpes
+    # as OOS evaluations of the SAME model, not of independently-fit models.
     model, version = _load_model("swing", version=model_version)
     if model is None:
         _err("No swing model found — retrain first.")
         return report
+    _warn(
+        f"NOTE: Using pre-trained swing model v{version} for all {n_folds} folds — "
+        "this is a generalization test, not a true expanding-window walk-forward "
+        "(no per-fold retrain). See WalkForwardReport.is_true_walkforward."
+    )
 
     from app.utils.constants import RUSSELL_1000_TICKERS
     from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
@@ -887,10 +906,18 @@ def run_intraday_walkforward(
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
 
     report = WalkForwardReport(model_type="intraday")
+    # Design note (deep-review pass 3): same single-model-across-folds convention
+    # as the swing harness. See run_swing_walkforward for rationale.
     model, version = _load_model("intraday", version=model_version)
     if model is None:
         _err("No intraday model found — retrain first.")
         return report
+
+    _warn(
+        f"NOTE: Using pre-trained intraday model v{version} for all {n_folds} folds — "
+        "this is a generalization test, not a true expanding-window walk-forward "
+        "(no per-fold retrain). See WalkForwardReport.is_true_walkforward."
+    )
 
     from app.utils.constants import RUSSELL_1000_TICKERS
     from app.data.universe_history import members_at as _members_at
