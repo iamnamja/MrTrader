@@ -4749,3 +4749,59 @@ This is the definitive finding: **the execution layer (ATR stops, position sizin
 2. **If L2 < 0.60**: signal is marginal or absent. Need Phase 3 (label redesign).
 3. **The 85d purge fix and label redesign are secondary** — execution pathology is the dominant effect. Fixing purge changes WF by maybe ±0.1 Sharpe. Fixing stops/sizing could change by ±1.5 Sharpe.
 
+
+---
+
+## Phase 1.6 — Fold 2 Trade Volume Audit — 2026-05-23
+
+**Script**: `scripts/audit_fold2_trades.py`
+**Output**: `data/diagnostics/fold2_audit/20260523T202445/`
+
+### Fold Trade Counts
+
+| Fold | Test Period | Trades | Sharpe | CS Vol (20d) |
+|------|-------------|--------|--------|--------------|
+| 1 | 2021-06-04 to 2022-05-24 | 308 | -1.02 | 0.0312 |
+| 2 | 2022-06-04 to 2023-05-24 | **95** | -2.27 | 0.0244 |
+| 3 | 2023-06-04 to 2024-05-23 | 324 | -0.43 | 0.0192 |
+| 4 | 2024-06-03 to 2025-05-23 | 324 | -0.08 | 0.0220 |
+| 5 | 2025-06-03 to 2026-05-23 | 312 | -0.75 | 0.0212 |
+
+### Findings
+
+**Fold 2 = post-peak-inflation, aggressive Fed hiking period (June 2022 - May 2023)**
+
+- Vol is only **1.04x** higher than other folds — NOT a high-vol explanation
+- Symbol coverage: 769 vs 750 avg — NOT a data sparsity explanation
+- **Root cause: opportunity score gate** (`score < 0.35 = skip`, ON by default)
+  - Model trained on 2020-2022 bull-market data assigns low scores to 2022 bear-market patterns
+  - Gate suppresses the majority of entries during this regime
+  - ATR stops then cut the few that do enter
+- Also note: v216 WF used `purge=10d` not the fixed `85d` — results have potential leakage
+
+### Phase 4 Requirements
+
+Both suppressors must be disabled for isolation testing:
+1. `--no-pm-opportunity-score` (disable opportunity score gate)
+2. No ATR stops (remove stop-loss mechanism entirely)
+
+This is critical: if only stops are removed but score gate remains active, Fold 2 will still have near-zero trades and the signal measurement will be contaminated by regime suppression.
+
+---
+
+## Phase 1.3 — Survivorship Bias Audit — 2026-05-23
+
+**Script**: `scripts/audit_survivorship.py`
+**Output**: `docs/survivorship_audit_20260523.md`
+
+### Findings
+
+**Cache coverage**: 14/24 known delisted S&P 500 names present in cache. Verdict: ACCEPTABLE.
+
+**Secondary issue (training.py:358)**: Even when a delisted stock IS in the cache, if it delists between `t` and `t+20d`, `future_bar` is empty → sample skipped. We never train on "stock about to delist" paired with large negative forward return.
+
+For a universe of ~750 large-cap names, delistings are ~20-30/year → affects <4% of samples. Impact is upward bias in label distribution (worst performing samples removed).
+
+### Decision
+
+**DEFER to Phase 3** (label redesign). The dominant problem is execution pathology (9.87σ below random). Survivorship correction would change cross-sectional ranking by a small amount (~1-2% of training samples). Phase 3 fix: when `future_bar` is empty, use last available price as realized return instead of `continue`.

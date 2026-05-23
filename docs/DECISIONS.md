@@ -85,3 +85,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 4. Net effect: stops increase transaction costs while not improving win rate
 
 **Do NOT**: Add wider stops or tighter stops as a fix. The stop mechanism itself needs testing without stops first. If L2 without stops shows Sharpe > 0.60, that is the baseline.
+
+---
+
+## 2026-05-23 — Fold 2 Diagnosis: Opportunity Score Gate + ATR Stops (Phase 1.6)
+
+**Context**: v216 WF Fold 2 (test: 2022-06-04..2023-05-24) had 95 trades vs 300+ in all other folds. Fold 2 covers the post-peak-inflation, aggressive-Fed-hiking period.
+
+**Findings**:
+1. Cross-sectional vol in Fold 2 = 1.04x other folds — NOT dramatically higher (test starts after the worst of the 2022 crash)
+2. Symbol coverage: 769 vs 750 avg — similar, NOT a data sparsity issue
+3. Primary suppressor: **opportunity score gate** (`score < 0.35 = skip`, `0.35-0.65 = cap at 2 candidates`). Model trained on 2020-2022 bull data assigns low scores to 2022 bear-market patterns → gate skips most entries
+4. Secondary suppressor: ATR stops cut the few entries that pass the gate before HOLD_DAYS
+
+**Decision**: Phase 4 isolation test must disable BOTH mechanisms:
+- `--no-pm-opportunity-score` (disable opportunity score gate)
+- Remove ATR stops (already decided)
+
+**Note**: v216 WF used purge=10d not 85d. All v216 results have potential leakage and must be re-run with purge=85d post-Phase 4.
