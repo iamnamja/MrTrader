@@ -4523,8 +4523,6 @@ Fixed to /365. Impact: ~45% higher borrow cost for short positions.
 
 **Status of fixes at time of run:** Proposal pool widened, purge 15d, VIX `_vix_at()` strict `<`. NOT fixed: ATR stops alignment, shorts sizing, stop slippage, borrow cost, VIX look-ahead in 3 other callers.
 
-**Next:** Compare against v215 post-PR-#251 (6 Opus bugs fixed) and v215 post-PR-#252 (all 9 fixes).
-
 ### Phase 0 Alignment — Opus 4.7 Deep Audit Round 3 (2026-05-23)
 
 Third Opus 4.7 audit, focused on remaining realism gaps after Round 2 fixes. 4 fixes applied in PR `feat/wf-realism-round3`:
@@ -4547,7 +4545,7 @@ Entry fills used exact printed open price. Real MOO orders slip 2-5bps for Russe
 Added `ENTRY_SLIPPAGE_PCT = 0.0003` (3bps). Longs pay more, shorts receive less.
 This is conservative but realistic and counteracts any MOO alpha inflation.
 
-**Status:** WF v215 with all 13 fixes (Rounds 1-3) pending after current runs finish.
+**Status:** PR #253 merged. See "v215 WF Post-All-Fixes" section above for results (-0.571 avg Sharpe). PR #254 reverts pool to 50. PR #255 implements v216 design.
 
 ### Known Gap: Training Entry Price vs Backtest Entry Price (C1 — deferred to v216)
 
@@ -4558,3 +4556,17 @@ Opus audit identified a fundamental label/entry mismatch:
 - **Direction of bias**: Unclear. Large gap-ups into long entries = tighter effective target headroom but also tighter stop (both anchored to higher open). Net effect depends on gap distribution.
 - **Why not fixed now**: Requires retraining. Training would need to use `open[w_end+1]` as entry_price for every sample, which changes all historical labels. v215 is already trained.
 - **Fix for v216**: Change `entry_price = float(df.loc[idx == w_end_date, "close"].iloc[0])` → use `open` of the day AFTER `w_end_date`. Also start the bar-walk (for triple_barrier) at bar_offset=1 with the full next bar (same as now) since entry is at open of that bar.
+
+### v215 WF All-Fixes Summary — 2026-05-23
+
+Three WF runs completed. All fail gate. Key progression:
+
+| Run | Code State | Avg Sharpe | Win% | Notes |
+|-----|-----------|-----------|------|-------|
+| Baseline | Pre-#251 (wide 8% stops, max_hold=160) | **+0.036** | 43% | Misleading — 32-week holds mask noise |
+| Post-#251+#252 | ATR stops, max_hold=40, slippage, borrow/365 | **-0.459** | 31% | Honest — tight stops + fast turnover reveals weak signal |
+| Post-#253 | +short ATR stops, entry slippage, pool=200 | **-0.571** | 31% | Worse — pool=200 brings in low-conviction tail |
+
+**Honest conclusion:** v215 (5-day LambdaRank labels, 0.5×ATR stops) has insufficient signal for 40-bar tight-stop swing trading. The model has weak directional edge (Folds 3-4: +0.27-+0.54) but consistently fails in bear/volatile regimes. Baseline +0.036 was an artifact of 32-week holds + 8% circuit-breaker stops.
+
+**v216 is the path forward.** See design section below.
