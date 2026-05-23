@@ -386,22 +386,18 @@ def main() -> None:
         logger.error("No bar data loaded — exiting")
         return
 
-    # Load VIX + macro (same as feature pipeline)
+    # Load macro history (includes VIX, HYG, IEF, RSP, SPY columns)
     vix_history: Optional[pd.Series] = None
     macro_history: Optional[pd.DataFrame] = None
     try:
-        from app.data.vix_history import load_vix_history
-        vix_history = load_vix_history()
-        logger.info("VIX history loaded: %d days", len(vix_history))
-    except Exception as e:
-        logger.warning("VIX history unavailable: %s", e)
-    try:
-        from app.ml.retrain_config import MACRO_FEATURE_NAMES
         from app.data.macro_history import load_macro_history
         macro_history = load_macro_history()
         logger.info("Macro history loaded: %d days", len(macro_history))
+        if "vix" in macro_history.columns:
+            vix_history = macro_history["vix"].dropna()
+            logger.info("VIX series extracted: %d days", len(vix_history))
     except Exception as e:
-        logger.warning("Macro history unavailable: %s", e)
+        logger.warning("Macro/VIX history unavailable: %s", e)
 
     # Build score panel
     score_panel = _build_score_panel_simple(
