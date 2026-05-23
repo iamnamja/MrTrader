@@ -26,16 +26,22 @@ MIN_WORST_REGIME_SHARPE = -0.5
 
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
     """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
-    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction."""
+    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction.
+
+    Bug fix (WF deep-review pass 2): E[SR_max] must be multiplied by sqrt(V[SR]); the
+    prior implementation omitted that scaling factor. `n_obs` is the number of return
+    observations (trading days), not the number of trades.
+    """
     if n_trials <= 1 or n_obs <= 1:
         return sharpe, 0.5
     euler_mascheroni = 0.5772156649
-    sr_star = (
+    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
+    sr_var_sqrt = math.sqrt(sr_var)
+    sr_star = sr_var_sqrt * (
         (1 - euler_mascheroni) * norm.ppf(1 - 1.0 / n_trials)
         + euler_mascheroni * norm.ppf(1 - 1.0 / (n_trials * math.e))
     )
-    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
-    dsr_z = (sharpe - sr_star) / math.sqrt(sr_var)
+    dsr_z = (sharpe - sr_star) / sr_var_sqrt
     return dsr_z, float(norm.cdf(dsr_z))
 
 
@@ -101,6 +107,8 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Number of return observations (trading days) for DSR (0 = unknown).
+    n_obs: int = 0
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated by the walk-forward engine when --compute-fold-ic is passed.
     # Not a gate — used to monitor feature decay between train and test.
@@ -145,6 +153,12 @@ class WalkForwardReport:
         return sum(f.trades for f in self.folds)
 
     @property
+    def total_obs(self) -> int:
+        """Total return observations (trading days) across folds; falls back to total_trades."""
+        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
+        return obs if obs > 0 else self.total_trades
+
+    @property
     def avg_profit_factor(self) -> float:
         pfs = [f.profit_factor for f in self.folds if f.profit_factor > 0]
         return float(np.mean(pfs)) if pfs else 0.0
@@ -168,7 +182,7 @@ class WalkForwardReport:
         return float(min(all_regime_sharpes)) if all_regime_sharpes else None
 
     def gate_passed(self) -> bool:
-        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_obs)
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         wrs = self.worst_regime_sharpe
@@ -183,7 +197,7 @@ class WalkForwardReport:
         )
 
     def gate_detail(self) -> dict:
-        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_trades)
+        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_obs)
         wrs = self.worst_regime_sharpe
         return {
             "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= SHARPE_GATE),

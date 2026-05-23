@@ -7,6 +7,19 @@ Each position risks (entry_price - stop_price) * qty dollars.
 If stop_price is unavailable we estimate risk as FALLBACK_RISK_PCT of trade cost.
 
 Hard limit: total heat must stay below MAX_PORTFOLIO_HEAT_PCT of account value.
+
+KNOWN GAP — CORRELATION BLINDSPOT (deep-review pass 3, documented not fixed):
+The heat figure is a simple linear SUM of per-position risk. It implicitly
+assumes (a) every position can hit its full stop loss simultaneously, and
+(b) zero correlation between positions. In a long-only book during a broad
+market drawdown, (b) is badly violated — 5 large-cap longs are typically
+~0.7+ pairwise correlated, so the joint left-tail loss can approach the
+arithmetic sum of stops. The 6% cap therefore OVER-states diversification
+benefit and UNDER-states true tail risk; conversely in a hedged L/S book
+it over-states risk. A correlation-aware version would multiply by
+sqrt(w' Σ w)/sum(|w|·stop) or use an ex-ante portfolio-VaR estimate.
+Tracked for future risk-model upgrade; do not "fix" by tightening the cap
+without redesigning the metric.
 """
 from __future__ import annotations
 

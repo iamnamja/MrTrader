@@ -318,26 +318,33 @@ class StrategySimulator:
 
     @staticmethod
     def _sharpe(returns: List[float], periods: int = 252) -> float:
+        # Annualized Sharpe ratio. `periods` is the annualization factor (e.g. 252 trading days/yr).
+        # Bug fix (WF deep-review pass 2): previously used sqrt(min(len(arr), periods)) which
+        # under-stated Sharpe for any fold with fewer than `periods` observations (e.g. a 1-year
+        # fold with ~210 daily returns produced a ~9% downward bias; shorter folds worse).
+        # The annualization factor must be sqrt(periods); sample size already enters via the
+        # std denominator (with ddof=1 for the unbiased sample-standard-deviation estimate).
         if len(returns) < 2:
             return 0.0
         arr = np.array(returns, dtype=float)
-        std = float(arr.std())
+        std = float(arr.std(ddof=1))
         if std <= 0:
             return 0.0
-        return float(arr.mean() / std * math.sqrt(min(len(arr), periods)))
+        return float(arr.mean() / std * math.sqrt(periods))
 
     @staticmethod
     def _sortino(returns: List[float], periods: int = 252) -> float:
+        # Annualized Sortino. Same annualization-factor fix as _sharpe above.
         if len(returns) < 2:
             return 0.0
         arr = np.array(returns, dtype=float)
         downside = arr[arr < 0]
         if len(downside) < 2:
-            return float(arr.mean() * math.sqrt(min(len(arr), periods))) if arr.mean() > 0 else 0.0
-        down_std = float(downside.std())
+            return float(arr.mean() * math.sqrt(periods)) if arr.mean() > 0 else 0.0
+        down_std = float(downside.std(ddof=1))
         if down_std <= 0:
             return 0.0
-        return float(arr.mean() / down_std * math.sqrt(min(len(arr), periods)))
+        return float(arr.mean() / down_std * math.sqrt(periods))
 
     @staticmethod
     def _max_drawdown(equity: List[float]) -> float:

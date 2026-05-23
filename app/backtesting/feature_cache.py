@@ -130,10 +130,13 @@ def _build_symbol_rows(
             if sector_etf_records and _sector_etf_ticker:
                 etf_bars = sector_etf_records.get(_sector_etf_ticker)
                 if etf_bars:
+                    # Bug fix (WF deep-review pass 2): strict `<` to avoid using today's
+                    # sector-ETF close for a decision made at today's open. Prior `<=`
+                    # leaked the as-of-day sector close into momentum/sector_neutral features.
                     as_of_str = str(day)
                     idx20 = idx5 = None
                     for i, (d, _) in enumerate(etf_bars):
-                        if d <= as_of_str:
+                        if d < as_of_str:
                             idx20 = i
                     idx5 = idx20
                     if idx20 is not None and idx20 >= 20:

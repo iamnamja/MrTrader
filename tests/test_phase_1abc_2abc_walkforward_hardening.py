@@ -187,8 +187,10 @@ class TestDeflatedSharpeRatio:
 
     def test_dsr_low_sharpe_not_significant(self):
         from scripts.walkforward_tier3 import _deflated_sharpe_ratio
-        _, p = _deflated_sharpe_ratio(sharpe=0.5, n_trials=15, n_obs=100)
-        assert p < 0.95, "Sharpe=0.5 with 100 obs and 15 trials should not be significant"
+        # After WF deep-review pass-2 DSR fix (restored sqrt(V) scaling on E[SR_max]),
+        # a small Sharpe over few observations is not significant. Use SR=0.1, T=30.
+        _, p = _deflated_sharpe_ratio(sharpe=0.1, n_trials=15, n_obs=30)
+        assert p < 0.95, "Sharpe=0.1 with 30 obs and 15 trials should not be significant"
 
     def test_gate_passed_checks_dsr(self):
         """WalkForwardReport.gate_passed() requires DSR p > 0.95 in addition to Sharpe."""

@@ -67,16 +67,37 @@ MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)
 
 def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
     """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
-    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction."""
+    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction.
+
+    Formula (per B&LP 2014, eq. 8-10):
+      V[SR]      = (1 + 0.5·SR²) / (T - 1)              # IID-normal variance of SR estimator
+      E[SR_max]  = sqrt(V[SR]) · [ (1-γ)·Φ⁻¹(1-1/N)
+                                  + γ·Φ⁻¹(1-1/(N·e)) ]   # selection-bias correction
+      DSR_z      = (SR_obs - E[SR_max]) / sqrt(V[SR])
+
+    Bug fix (WF deep-review pass 2): previous implementation omitted the sqrt(V[SR])
+    scaling factor on E[SR_max], so the deflation term carried wrong units and
+    massively overstated DSR for high-T runs. The numerator and denominator of
+    DSR_z must use the same variance scaling.
+
+    Args:
+      sharpe:   The observed (annualized) Sharpe ratio.
+      n_trials: Number of model variants tried historically (selection-bias N).
+      n_obs:    Number of return OBSERVATIONS used to compute SR (i.e. number of
+                daily returns / trading days in the test window). NOT trade count —
+                using trade count here under-states T and produces an inflated DSR.
+                Callers must pass total trading days, not total_trades.
+    """
     if n_trials <= 1 or n_obs <= 1:
         return sharpe, 0.5
     euler_mascheroni = 0.5772156649
-    sr_star = (
+    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
+    sr_var_sqrt = math.sqrt(sr_var)
+    sr_star = sr_var_sqrt * (
         (1 - euler_mascheroni) * norm.ppf(1 - 1.0 / n_trials)
         + euler_mascheroni * norm.ppf(1 - 1.0 / (n_trials * math.e))
     )
-    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
-    dsr_z = (sharpe - sr_star) / math.sqrt(sr_var)
+    dsr_z = (sharpe - sr_star) / sr_var_sqrt
     return dsr_z, float(norm.cdf(dsr_z))
 
 
@@ -179,6 +200,10 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Number of return observations (trading days) in this fold's equity curve.
+    # Used to compute T for the Deflated Sharpe Ratio. 0 means "unknown" — callers
+    # that aggregate folds should sum this across folds for the DSR n_obs argument.
+    n_obs: int = 0
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated when --compute-fold-ic is passed. Not a gate — used to monitor
     # feature decay between train and test.
@@ -204,6 +229,15 @@ class FoldResult:
 class WalkForwardReport:
     model_type: str
     folds: List[FoldResult] = field(default_factory=list)
+    # WF design note (deep-review pass 3): the harness loads ONE pre-trained
+    # model via _load_model() and re-scores it across every fold's test window.
+    # This is a GENERALIZATION TEST — "does this single model hold up across
+    # multiple out-of-sample regimes?" — not a true expanding-window walk-forward
+    # (which would retrain on [train_start, fold_train_end] inside each fold).
+    # The flag below makes that distinction explicit for downstream consumers
+    # (reporting, ML_EXPERIMENT_LOG, DSR interpretation). Set to True only when
+    # a per-fold retrain has actually been performed.
+    is_true_walkforward: bool = False
 
     @property
     def avg_sharpe(self) -> float:
@@ -220,6 +254,13 @@ class WalkForwardReport:
     @property
     def total_trades(self) -> int:
         return sum(f.trades for f in self.folds)
+
+    @property
+    def total_obs(self) -> int:
+        """Total number of return observations (trading days) across all folds.
+        Falls back to total_trades only when no fold reported n_obs (legacy)."""
+        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
+        return obs if obs > 0 else self.total_trades
 
     @property
     def avg_profit_factor(self) -> float:
@@ -241,7 +282,7 @@ class WalkForwardReport:
     PAPER_MIN_FOLD_SHARPE = -0.40
 
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
@@ -256,7 +297,7 @@ class WalkForwardReport:
 
     def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
         """Return per-gate pass/fail dict for logging and tests."""
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
@@ -284,7 +325,7 @@ class WalkForwardReport:
               f"{'OK' if detail['min_sharpe'][1] else 'FAIL'}")
         print(f"  Avg win rate:    {self.avg_win_rate:.1%}")
         print(f"  Total trades:    {self.total_trades}")
-        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         print(f"  DSR (N={dsr_n} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
               f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
         if self.avg_profit_factor > 0 and not paper_gate:
@@ -531,10 +572,20 @@ def run_swing_walkforward(
     from app.backtesting.agent_simulator import AgentSimulator
 
     report = WalkForwardReport(model_type="swing")
+    # Design note (deep-review pass 3): one pre-trained model is loaded here and
+    # reused across all n_folds test windows. This is a generalization test, not
+    # a true expanding-window WF with per-fold retrain. `is_true_walkforward`
+    # stays False; downstream reporting/DSR consumers should treat fold Sharpes
+    # as OOS evaluations of the SAME model, not of independently-fit models.
     model, version = _load_model("swing", version=model_version)
     if model is None:
         _err("No swing model found — retrain first.")
         return report
+    _warn(
+        f"NOTE: Using pre-trained swing model v{version} for all {n_folds} folds — "
+        "this is a generalization test, not a true expanding-window walk-forward "
+        "(no per-fold retrain). See WalkForwardReport.is_true_walkforward."
+    )
 
     from app.utils.constants import RUSSELL_1000_TICKERS
     from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
@@ -813,6 +864,7 @@ def run_swing_walkforward(
             profit_factor=pf,
             calmar_ratio=calmar,
             k_ratio=kr,
+            n_obs=max(len(equity) - 1, 0),  # daily returns count for DSR
         )
 
     from concurrent.futures import ThreadPoolExecutor
@@ -854,10 +906,18 @@ def run_intraday_walkforward(
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
 
     report = WalkForwardReport(model_type="intraday")
+    # Design note (deep-review pass 3): same single-model-across-folds convention
+    # as the swing harness. See run_swing_walkforward for rationale.
     model, version = _load_model("intraday", version=model_version)
     if model is None:
         _err("No intraday model found — retrain first.")
         return report
+
+    _warn(
+        f"NOTE: Using pre-trained intraday model v{version} for all {n_folds} folds — "
+        "this is a generalization test, not a true expanding-window walk-forward "
+        "(no per-fold retrain). See WalkForwardReport.is_true_walkforward."
+    )
 
     from app.utils.constants import RUSSELL_1000_TICKERS
     from app.data.universe_history import members_at as _members_at
@@ -1016,6 +1076,7 @@ def run_intraday_walkforward(
             profit_factor=pf,
             calmar_ratio=calmar,
             k_ratio=kr,
+            n_obs=max(len(equity) - 1, 0),  # daily returns count for DSR
         )
 
     fold_args = [

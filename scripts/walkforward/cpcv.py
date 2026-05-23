@@ -215,15 +215,41 @@ def run_cpcv(
 
         for ti in test_indices:
             tr_start, tr_end, te_start, te_end = all_boundaries[ti]
-            # Use the earliest train fold's start as training start
-            # (simplified: use train fold immediately before test fold)
-            best_train = sorted(train_indices)[-1]  # latest train fold before test
+            # WF deep-review pass 4 fix: previously used
+            #   best_train = sorted(train_indices)[-1]
+            #   real_tr_end = all_boundaries[best_train][1]
+            # which selected the LATEST train fold index regardless of whether it
+            # came before or after the test fold. For test_indices like (0, 1) it
+            # extended training all the way to the end of fold 5 — a massive
+            # look-ahead leak (training data contained future folds, including
+            # other tests in the same combo).
+            #
+            # Correct CPCV requires training only on fold indices strictly less
+            # than this test fold's index, then leaving a purge gap before
+            # te_start. Other train folds at indices > ti are dropped for this
+            # particular test fold (they remain usable as training when the
+            # paired test fold in the combo is processed).
+            prior_train = [j for j in train_indices if j < ti]
+            if not prior_train:
+                # No causal training history available for this test fold (e.g.
+                # ti == 0). Skip — this is the standard CPCV behavior when the
+                # earliest folds appear in test_indices.
+                continue
+            best_train = max(prior_train)
             real_tr_start = all_boundaries[0][0]  # expanding: always from start
-            real_tr_end = all_boundaries[best_train][1]
+            tr_end_candidate = all_boundaries[best_train][1]
+            # Apply purge gap: train must end at least `purge_days` calendar days
+            # before te_start. The engine's per-fold purge is bypassed here because
+            # we override train_end manually, so enforce the gap explicitly.
+            from datetime import timedelta as _td
+            max_tr_end = te_start - _td(days=max(purge_days, 0) + 1)
+            real_tr_end = min(tr_end_candidate, max_tr_end)
+            if real_tr_end <= real_tr_start:
+                continue
 
             try:
                 fold = strategy.run_fold(
-                    combo_idx * len(test_indices) + ti + 1,
+                    combo_idx * len(all_boundaries) + ti + 1,
                     n_folds,
                     real_tr_start,
                     real_tr_end,
