@@ -4639,6 +4639,27 @@ v216 model trained with:
 - WF defaults: `atr_stop_mult=1.5`, `atr_target_mult=3.0`, `max_hold_bars=40`
 - **All 10 simulation bugs fixed** — first truly honest WF run
 
-WF launched: `python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --record-results --swing-model-version 216`
-Results: **PENDING** (WF running, ~90 min total)
+WF run via `retrain_cron.py --swing-only` (uses correct LambdaRank + feature_keep_list config from retrain_config.py).
+
+**v216 WF Results (2026-05-23, completed ~11:36):**
+
+| Fold | Train End | Test Period | Trades | Sharpe | Calmar | PF |
+|------|-----------|-------------|--------|--------|--------|----|
+| 1/5 | 2021-05-24 | 2021-06-04→2022-05-24 | 308 | -1.02 | -0.74 | 0.00 |
+| 2/5 | 2022-05-24 | 2022-06-04→2023-05-24 | 95 | -2.27 | -1.05 | 0.00 |
+| 3/5 | 2023-05-24 | 2023-06-04→2024-05-23 | 324 | -0.43 | -0.40 | 0.00 |
+| 4/5 | 2024-05-23 | 2024-06-03→2025-05-23 | 324 | -0.08 | -0.10 | 0.00 |
+| 5/5 | 2025-05-23 | 2025-06-03→2026-05-23 | 312 | -0.75 | -0.47 | 0.00 |
+| **avg** | | | **253** | **-0.91** | **-0.55** | **0.00** |
+
+**Verdict: ❌ GATE FAILED** (avg Sharpe -0.91, gate requires > 0.80; all folds negative; PF=0.00 throughout)
+v215 restored as active champion.
+
+**Key observations:**
+- PF=0.00 on ALL folds — no net profit in any fold (every fold was a net loser)
+- Fold 2 only 95 trades vs 300+ in others — worth investigating signal dropout in 2022-2023
+- All Calmar ratios deeply negative — substantial drawdowns in every period
+- LambdaRank 20-day rank label does not produce a trading edge in this simulation
+
+**Conclusion:** This confirms the Opus synthesis finding (10-15% probability of deployable alpha). The LambdaRank approach with current features has no demonstrated edge after proper simulation. Proceed to Phase 1: Signal Diagnostics (rank-IC analysis) before any further retraining.
 
