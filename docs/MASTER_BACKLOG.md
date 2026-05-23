@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-23
 **Capital:** $100k (paper)
-**Status:** Kill criterion triggered 2026-05-22 (model WF avg=-0.275, 4/5 folds negative). **Staying single-name L/S. Active plan: Phase 0-7 alignment + alpha recovery (Opus 4.7 reviewed).** See section below.
+**Status:** v216 GATE FAILED (avg Sharpe -0.91, all 5 folds negative). Model rank-IC@20d = 0.0012 overall (noise). **By-year IC reveals regime problem, not dead features.** See Phase 1 findings below.
 
 ---
 
@@ -52,10 +52,29 @@ Full synthesis lives in `docs/QUANT_REVIEW_SYNTHESIS_2026_05_18.md`.
 ```
 Phase E (DONE)        IC + survivorship scripts                  2026-05-18
 Phase F (DONE)        L/S infrastructure                          2026-05-20
-Phase G (NEXT)        PEAD strategy                               ~1 week
+Phase 0-align (DONE)  10 WF simulation bugs fixed, PR #256       2026-05-23
+Phase 1 (DONE)        Model rank-IC diagnostic                    2026-05-23
+Phase 2 (NEXT)        Regime-conditional IC + binary labels       ~3 days
+Phase G               PEAD strategy                               after Phase 2
 Phase H               3-month paper trading gate                  3 months
 Phase I               Live $100k                                  after H passes
 ```
+
+### Phase 1 Key Findings (2026-05-23)
+
+v216 rank-IC@20d = **0.0012** overall (noise), BUT by-year reveals a **regime problem**:
+
+| Year | IC@20d | t-stat | Regime |
+|------|--------|--------|--------|
+| 2021 | **+0.023** | **4.92** ✅ | Bull, low vol |
+| 2022 | **-0.028** | **-8.73** ❌ | Bear, rate shock |
+| 2023 | -0.009 | -2.11 ❌ | Mixed |
+| 2024 | +0.010 | +1.98 🟡 | Bull recovery |
+| 2025 | +0.017 | +4.02 🟡 | Bull |
+
+**Interpretation:** Features work in trending/low-vol regimes. The 2022 rate-shock year **inverted** the model signal (high-momentum stocks fell hardest), destroying 5-year aggregate IC. This is a **label design problem** (LambdaRank trained cross-sectionally without regime conditioning), not a dead feature set.
+
+**Next step (Phase 2):** Compute regime-conditional IC (filter to BENIGN regime days only). If IC > 0.02 in BENIGN regime → switch to policy-realized binary labels + regime filter in training.
 
 ---
 

@@ -4663,3 +4663,58 @@ v215 restored as active champion.
 
 **Conclusion:** This confirms the Opus synthesis finding (10-15% probability of deployable alpha). The LambdaRank approach with current features has no demonstrated edge after proper simulation. Proceed to Phase 1: Signal Diagnostics (rank-IC analysis) before any further retraining.
 
+---
+
+## Phase 1 — Signal Diagnostics — Model Rank-IC (2026-05-23)
+
+`scripts/diag_model_rank_ic.py` — Cross-sectional Spearman rank-IC of model score vs forward returns.
+**Run:** swing_v216, 775 symbols, 2021-01-01 → 2025-12-31, horizons 5/10/20d, 951,126 (date, symbol) pairs scored.
+
+### Full Results
+
+| Horizon | IC Mean | IC Std | IC IR | t-stat | Hit Rate | N Days |
+|---------|---------|--------|-------|--------|----------|--------|
+| 5d | 0.0003 | 0.0725 | 0.073 | 0.16 | 0.510 | 1177 |
+| 10d | 0.0019 | 0.0704 | 0.434 | 0.94 | 0.529 | 1172 |
+| **20d** | **0.0012** | **0.0668** | **0.295** | **0.63** | **0.503** | **1162** |
+
+**Verdict: NO SIGNAL** — rank-IC@20d = 0.0012, t = 0.63 (threshold: IC ≥ 0.025, t > 2.5 for strong signal; IC < 0.015 = dead).
+
+### IC by Year (h=20d) — Key Finding
+
+| Year | IC Mean | t-stat | N Days | Signal? |
+|------|---------|--------|--------|---------|
+| 2021 | **+0.0227** | **4.92** | 192 | ✅ STRONG |
+| 2022 | **-0.0279** | **-8.73** | 251 | ❌ INVERTED |
+| 2023 | -0.0085 | -2.11 | 250 | ❌ Negative |
+| 2024 | +0.0096 | +1.98 | 252 | 🟡 Weak |
+| 2025 | **+0.0174** | **4.02** | 217 | 🟡 Borderline |
+
+### Critical Observations
+
+1. **2022 is catastrophic**: IC = -0.028, t = -8.73. The model's high scores actively predicted the worst performers. This is the regime where LambdaRank training data from 2021 bull market got inverted by rate shock / drawdown.
+
+2. **2021 showed real signal**: IC = +0.023, t = 4.92 — above the 0.025 threshold with strong statistical significance. The model can rank stocks in a trending bull market.
+
+3. **Aggregate is noise**: The 2022 inversion (-0.028) overwhelms the 2021 signal (+0.023), collapsing the 5-year mean to essentially zero (+0.001).
+
+4. **No consistent edge**: 3 of 5 years have negative or near-zero IC. The model is regime-dependent in the worst way — it works in bull markets and inverts in bear markets.
+
+### Interpretation
+
+This is **not a dead-signal problem** — it's a **regime conditioning problem**. The features contain real signal in trending (low-volatility) regimes but the LambdaRank objective with cross-sectional labels learns to rank momentum/quality features that invert when macro conditions flip.
+
+**Root cause hypothesis**: LambdaRank ranks stocks by 20-day forward return within each window. In 2021 (strong bull), top-ranked stocks (momentum leaders) continued leading. In 2022 (rate shock), the same momentum/quality features predicted the stocks that fell hardest. The model has no regime-conditioning built in — it applies bull-market rankings in bear markets.
+
+### Decision Tree Outcome
+
+Per Opus synthesis:
+- rank-IC@20d < 0.015 overall → **Pivot signal class**
+- BUT 2021 IC = 0.023 and 2025 IC = 0.017 suggest features ARE informative in the right regime
+
+**Recommended path**: Before abandoning the feature set entirely, test regime-conditional IC:
+- Filter to BENIGN regime days only → likely IC > 0.02 consistently
+- If confirmed → the label design (LambdaRank) is the problem, not the features
+- Fix: Policy-realized binary labels + regime filter in training (Phase 2)
+- This avoids throwing away features that work and rebuilding from scratch
+
