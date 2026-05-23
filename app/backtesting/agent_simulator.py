@@ -178,6 +178,7 @@ class AgentSimulator:
         factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
         max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
         short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
+        proposal_pool_size: Optional[int] = None,  # Lockstep: candidates forwarded to Trader/RM (default: max(top_n*5, 50))
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -207,6 +208,9 @@ class AgentSimulator:
         self.factor_scorer = factor_scorer  # Phase D: optional callable override
         self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
         self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
+        # Lockstep: how many top-ranked candidates to forward to Trader/RM before entry cap.
+        # Must be > top_n so that RM/signal gates have headroom to filter and still fill positions.
+        self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 5, 50)
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -339,7 +343,7 @@ class AgentSimulator:
                     try:
                         spy_idx = _spy_closes.index
                         spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        spy_hist = _spy_closes.loc[spy_dates < day]
                         if len(spy_hist) >= 200:
                             spy_ema200 = float(spy_hist.ewm(span=200, adjust=False).mean().iloc[-1])
                             spy_close = float(spy_hist.iloc[-1])
@@ -379,7 +383,7 @@ class AgentSimulator:
                     if not _skip_entries and self.pm_abstention_spy_ma_days > 0 and _spy_closes is not None:
                         spy_idx = _spy_closes.index
                         spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        spy_hist = _spy_closes.loc[spy_dates < day]
                         if len(spy_hist) >= self.pm_abstention_spy_ma_days:
                             spy_ma = float(spy_hist.tail(self.pm_abstention_spy_ma_days).mean())
                             if float(spy_hist.iloc[-1]) < spy_ma:
@@ -390,7 +394,7 @@ class AgentSimulator:
                     if not _skip_entries and self.pm_abstention_spy_5d and _spy_closes is not None:
                         spy_idx = _spy_closes.index
                         spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                        spy_hist = _spy_closes.loc[spy_dates <= day]
+                        spy_hist = _spy_closes.loc[spy_dates < day]
                         if len(spy_hist) >= 6:
                             spy_5d_ret = float(spy_hist.iloc[-1]) / float(spy_hist.iloc[-6]) - 1.0
                             if spy_5d_ret <= 0:
@@ -405,7 +409,7 @@ class AgentSimulator:
                 try:
                     spy_idx = _spy_closes.index
                     spy_dates = spy_idx.date if hasattr(spy_idx, 'date') else pd.DatetimeIndex(spy_idx).date
-                    spy_hist = _spy_closes.loc[spy_dates <= day]
+                    spy_hist = _spy_closes.loc[spy_dates < day]
                     if len(spy_hist) >= 20:
                         spy_close = float(spy_hist.iloc[-1])
                         spy_ma20 = float(spy_hist.tail(20).mean())
@@ -562,7 +566,8 @@ class AgentSimulator:
             _feat_names = list(model_feat_names) if model_feat_names else []
             _feat_hash = log_features("wf", _wf_run_id, day, _feat_names, X, sym_list)
             X = self._normalize_for_inference(X, sym_list, day)
-            log_normalize("wf", _wf_run_id, day, "cs_normalize", len(sym_list), X)
+            _norm_name = "none_lambdarank" if getattr(self.model, "model_type", "") == "lambdarank" else "cs_normalize"
+            log_normalize("wf", _wf_run_id, day, _norm_name, len(sym_list), X)
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
             _model_ver = str(getattr(self.model, "version", "unknown"))
@@ -571,18 +576,20 @@ class AgentSimulator:
             logger.warning("PM score failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
-        ranked = sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
+        order = np.argsort(probas)[::-1]
+        sym_arr = np.array(sym_list)
         proposals = []
-        for sym, prob in ranked:
-            if float(prob) < self.min_confidence:
-                continue
-            # Phase 26d: vol filter — skip stocks in top vol_percentile_52w bucket
+        for idx in order:
+            sym = sym_arr[idx]
+            prob = float(probas[idx])
+            if prob < self.min_confidence:
+                break
             if self.max_vol_pct is not None:
                 vol_pct = features_by_symbol[sym].get("vol_percentile_52w", 0.0)
                 if vol_pct > self.max_vol_pct / 100.0:
                     continue
-            proposals.append((sym, float(prob)))
-            if len(proposals) >= self.top_n:
+            proposals.append((sym, prob))
+            if len(proposals) >= self.proposal_pool_size:
                 break
         return proposals
 
@@ -631,8 +638,9 @@ class AgentSimulator:
             X = np.nan_to_num(np.vstack(rows), nan=0.0)
             sym_arr = np.array(sym_list)
             _feat_hash = log_features("wf-cached", _wf_run_id, day, list(model_feat_names), X, sym_list)
+            _norm_name = "none_lambdarank" if getattr(self.model, "model_type", "") == "lambdarank" else "cs_normalize"
             X = self._normalize_for_inference(X, sym_arr, day)
-            log_normalize("wf-cached", _wf_run_id, day, "cs_normalize", len(sym_list), X)
+            log_normalize("wf-cached", _wf_run_id, day, _norm_name, len(sym_list), X)
             vix_now = self._vix_at(vix_history, day)
             _, probas = self.model.predict_with_vix(X, vix_level=vix_now)
             _model_ver = str(getattr(self.model, "version", "unknown"))
@@ -641,18 +649,27 @@ class AgentSimulator:
             logger.warning("PM score (cached) failed on %s (%s): %s", day, type(exc).__name__, exc)
             return []
 
+        # Lockstep: score full universe (len=N), return proposal_pool_size candidates so
+        # Trader/RM gates have headroom to filter and still fill _max_pos_today slots.
+        # Fix O(N²): build vol_pcts array aligned to sym_list, then reindex after sort.
+        vol_arr = np.array(vol_pcts)
+        order = np.argsort(probas)[::-1]
         proposals = []
-        for i, (sym, prob) in enumerate(
-            sorted(zip(sym_list, probas), key=lambda x: x[1], reverse=True)
-        ):
-            if float(prob) < self.min_confidence:
+        for idx in order:
+            sym = sym_list[idx]
+            prob = float(probas[idx])
+            if prob < self.min_confidence:
+                break  # sorted desc — remaining will be lower
+            if self.max_vol_pct is not None and vol_arr[idx] > self.max_vol_pct / 100.0:
                 continue
-            if self.max_vol_pct is not None:
-                if vol_pcts[sym_list.index(sym)] > self.max_vol_pct / 100.0:
-                    continue
-            proposals.append((sym, float(prob)))
-            if len(proposals) >= self.top_n:
+            proposals.append((sym, prob))
+            if len(proposals) >= self.proposal_pool_size:
                 break
+
+        logger.debug(
+            "PM score (cached) %s: %d symbols scored → %d proposals (pool=%d, top_n=%d)",
+            day, len(sym_list), len(proposals), self.proposal_pool_size, self.top_n,
+        )
         return proposals
 
     # ─── Inference helpers ─────────────────────────────────────────────────────
@@ -693,13 +710,17 @@ class AgentSimulator:
         return cs_normalize(X)
 
     def _vix_at(self, vix_history: Optional["pd.Series"], day: date) -> Optional[float]:
-        """Return last available VIX close on or before `day`. None if unavailable."""
+        """Return last available VIX close BEFORE `day` (strictly < day).
+
+        Using today's close would be look-ahead: entry decisions happen at open,
+        but VIX close is only known at market close. Use yesterday's close.
+        """
         if vix_history is None or vix_history.empty:
             return None
         try:
             idx = vix_history.index
             idx_dates = [i.date() if hasattr(i, "date") else i for i in idx]
-            candidates = [(d, v) for d, v in zip(idx_dates, vix_history.values) if d <= day]
+            candidates = [(d, v) for d, v in zip(idx_dates, vix_history.values) if d < day]
             if candidates:
                 return float(candidates[-1][1])
         except Exception:
