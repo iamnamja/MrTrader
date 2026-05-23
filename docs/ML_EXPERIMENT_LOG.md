@@ -4816,3 +4816,62 @@ For a universe of ~750 large-cap names, delistings are ~20-30/year → affects <
 - DSR `n_obs` fix already in place: `walkforward_tier3.py:867,1079` uses `len(equity) - 1` (daily return observations), not fold count
 - `total_obs` in `WFResult` aggregates `n_obs` across all folds correctly
 - DSR is being computed correctly for all future WF runs
+
+---
+
+## Phase 2.1 — L2 Decile Spread Backtest — 2026-05-23
+
+**Script**: `scripts/diag_decile_spread.py --model-version 216`
+**Bug fixed**: `model.predict()` returns `(predictions, probabilities)` tuple — script now correctly unpacks probabilities
+**Output**: `data/diagnostics/decile_spread/20260523T205509/`
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| L/S Sharpe (overall) | **0.397** |
+| Long-only Sharpe | 0.555 |
+| Short-only Sharpe | -0.587 |
+| Avg L/S return/20d period | +0.93% |
+| Monotonicity fraction | 0.444 |
+| N dates | 1,175 |
+
+### By Year
+
+| Year | L/S Sharpe | Long Sharpe | Short Sharpe | Notes |
+|------|------------|-------------|--------------|-------|
+| 2021 | **+1.097** | +1.245 | -1.235 | Bull market — signal strong |
+| 2022 | +0.086 | +0.054 | +0.008 | Bear market — near zero |
+| 2023 | **-1.290** | -0.001 | -0.548 | Signal inverts — Mag7 rally, short squeeze |
+| 2024 | -0.186 | +1.131 | -1.137 | Long works, short hurts |
+| 2025 | **+1.096** | +1.102 | -0.426 | Strong signal returns |
+
+### Decile Means (overall 20d return by decile, 1=lowest score, 10=highest)
+D1=2.06%, D2=1.04%, D3=1.09%, D4=1.27%, D5=1.28%, D6=1.11%, D7=1.04%, D8=0.85%, D9=0.77%, D10=2.99%
+
+**D1=2.06% is a red flag**: short candidates also rally — model is a long-side specialist, not a true cross-sectional ranker. Bottom decile mean-reverts in recovery regimes.
+
+### Verdict per Decision Tree
+L2 Sharpe = 0.40 → MARGINAL (0.20-0.60) → Phase 3 path per original tree.
+
+### Opus 4.7 Override: Run Phase 4 FIRST
+
+Despite L2 = 0.40, Opus 4.7 recommends **Phase 4 first** because:
+1. Execution pathology destroys ~1.6 Sharpe units (null benchmark = -9.87σ)
+2. Phase 3 without clean execution baseline = flying blind (can't measure label improvements)
+3. Phase 4 is cheap (config change, 1-2 days). Phase 3 is weeks.
+4. Signal clearly exists in bull regimes (2021/2025: Sharpe +1.1). Short side is the problem.
+
+Phase 4 spec (from Opus 4.7):
+- `--no-pm-opportunity-score` (disable opportunity score gate)
+- Remove ATR stops entirely
+- Position count: n=40 long, n=40 short (match null benchmark)
+- Re-run v216 WF with 85d purge (correct leakage from 10d)
+- Expected: WF Sharpe moves from -0.91 to roughly 0.0 to +0.4
+
+### Opus 4.7 Phase 3 Design (after Phase 4 baseline)
+- Labels: long-side only, top-quintile binary (drop full cross-sectional rank)
+- Horizon: 10d (not 20d) — doubles training samples, halves purge
+- Training window: rolling 3-year (not expanding) — prevents 2020-2021 bull regime dominance
+- Features: add breadth (% universe above 50/200dma), cross-sectional dispersion, earnings-revision momentum; kill sign-flipping features
+- Short side: separate model with quality overlay (negative EPS revision + below 200dma + high SI), NOT symmetric decile rank

@@ -1,0 +1,624 @@
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+........................................................................ [ 14%]
+........................................................................ [ 18%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 29%]
+........................................................................ [ 33%]
+........................................................................ [ 37%]
+........................................................................ [ 40%]
+........................................................................ [ 44%]
+........................................................................ [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 55%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 66%]
+........................................................................ [ 70%]
+........................................................................ [ 74%]
+........................................................................ [ 77%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 88%]
+........................................................................ [ 92%]
+........................................................................ [ 96%]
+.............................................sss........................ [100%]
+============================== warnings summary ===============================
+app\database\models.py:6
+  C:\Projects\MrTrader\app\database\models.py:6: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+venv\Lib\site-packages\websockets\legacy\__init__.py:6
+  C:\Projects\MrTrader\venv\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/test_agent_config.py::TestConfigAPI::test_get_schema
+  C:\Projects\MrTrader\tests\conftest.py:81: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_agent_config.py: 2 warnings
+tests/test_api_contracts.py: 20 warnings
+tests/test_claude_ai.py: 1 warning
+tests/test_health_monitor.py: 1 warning
+tests/test_performance_review.py: 1 warning
+tests/test_watchlist.py: 2 warnings
+  C:\Projects\MrTrader\app\api\routes.py:550: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_agent_config.py: 1 warning
+tests/test_api_contracts.py: 16 warnings
+  C:\Projects\MrTrader\app\api\routes.py:197: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_agent_config.py: 1 warning
+tests/test_api_contracts.py: 16 warnings
+  C:\Projects\MrTrader\app\api\routes.py:226: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_agent_config.py: 2 warnings
+tests/test_api_contracts.py: 20 warnings
+tests/test_claude_ai.py: 1 warning
+tests/test_fred_client.py: 1 warning
+tests/test_ml_enrichment.py: 18 warnings
+tests/test_model_improvement_iter3_4.py: 2 warnings
+tests/test_phase19_pressure_choch_whale.py: 13 warnings
+tests/test_phase36_fmp_provider.py: 2 warnings
+tests/test_phase37_options_features.py: 3 warnings
+tests/test_phase38_news_sentiment.py: 2 warnings
+tests/test_phase43_sample_weights.py: 6 warnings
+tests/test_phase64_nis_features.py: 3 warnings
+tests/test_phase89_trend_features.py: 6 warnings
+tests/test_phase_f5_swing_features.py: 7 warnings
+tests/test_portfolio_manager.py: 11 warnings
+tests/test_watchlist.py: 1 warning
+  C:\Projects\MrTrader\app\strategy\regime_detector.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "fetched_at": datetime.utcnow().isoformat() + "Z",
+
+tests/test_agent_config.py: 3 warnings
+tests/test_e2e_round_trip.py: 20 warnings
+tests/test_integration_db.py: 6 warnings
+tests/test_regime_r3_integration.py: 3 warnings
+tests/test_watchlist.py: 1510 warnings
+tests/strategy/test_benign_gate.py: 3 warnings
+  C:\Projects\MrTrader\venv\Lib\site-packages\sqlalchemy\sql\schema.py:3592: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return util.wrap_callable(lambda ctx: fn(), fn)  # type: ignore
+
+tests/test_api_contracts.py: 20 warnings
+  C:\Projects\MrTrader\tests\test_api_contracts.py:32: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat()}
+
+tests/test_api_contracts.py::TestHealthEndpoints::test_system_health
+tests/test_dashboard.py::TestDashboardRoutes::test_system_health_endpoint
+  C:\Projects\MrTrader\app\api\routes.py:575: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow().isoformat(),
+
+tests/test_api_contracts.py::TestTradesEndpoint::test_trades_schema_fields
+  C:\Projects\MrTrader\tests\test_api_contracts.py:188: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    trade.created_at = datetime.utcnow()
+
+tests/test_api_contracts.py::TestTradesEndpoint::test_trades_schema_fields
+  C:\Projects\MrTrader\tests\test_api_contracts.py:189: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    trade.closed_at = datetime.utcnow()
+
+tests/test_api_contracts.py::TestKillSwitch::test_activate_kill_switch
+  C:\Projects\MrTrader\tests\test_api_contracts.py:261: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "activated_at": datetime.utcnow().isoformat(),
+
+tests/test_api_contracts.py::TestKillSwitch::test_kill_switch_idempotent
+  C:\Projects\MrTrader\tests\test_api_contracts.py:281: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "activated_at": datetime.utcnow().isoformat(),
+
+tests/test_api_contracts.py::TestCircuitBreaker::test_trips_on_consecutive_losses
+tests/test_api_contracts.py::TestCircuitBreaker::test_trips_on_network_errors
+tests/test_api_contracts.py::TestCircuitBreaker::test_manual_reset
+tests/test_integration_pipeline.py::TestCircuitBreakerIntegration::test_trader_skips_scan_when_cb_open
+tests/test_phase17.py::TestStrategyCircuitBreaker::test_auto_pause_on_low_win_rate
+tests/test_phase17.py::TestStrategyCircuitBreaker::test_global_breaker_independent_of_strategy
+tests/test_phase17.py::TestStrategyCircuitBreaker::test_strategy_win_rate_none_below_threshold
+tests/test_phase17.py::TestStrategyCircuitBreaker::test_resume_clears_history
+  C:\Projects\MrTrader\app\agents\circuit_breaker.py:235: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self._open_at = datetime.utcnow()
+
+tests/test_dashboard.py::TestSchemas::test_trade_response
+  C:\Projects\MrTrader\tests\test_dashboard.py:45: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    quantity=10, status="ACTIVE", created_at=datetime.utcnow(),
+
+tests/test_dashboard.py::TestSchemas::test_agent_decision_response
+  C:\Projects\MrTrader\tests\test_dashboard.py:54: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(), reasoning={"symbol": "AAPL"},
+
+tests/test_dashboard.py::TestSchemas::test_dashboard_summary_response
+  C:\Projects\MrTrader\tests\test_dashboard.py:61: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_dashboard.py::TestSchemas::test_system_health_response
+  C:\Projects\MrTrader\tests\test_dashboard.py:74: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    overall="DEGRADED", timestamp=datetime.utcnow().isoformat(),
+
+tests/test_dashboard.py::TestSchemas::test_optional_fields_default_to_none
+  C:\Projects\MrTrader\tests\test_dashboard.py:85: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    quantity=1, status="PENDING", created_at=datetime.utcnow(),
+
+tests/test_dashboard.py: 1 warning
+tests/test_e2e_round_trip.py: 9 warnings
+tests/test_phase32_agent_integration.py: 2 warnings
+  C:\Projects\MrTrader\app\api\websocket.py:45: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_e2e_round_trip.py::test_rm_approves_valid_proposal
+tests/test_e2e_round_trip.py::test_rm_rejects_when_kill_switch_active
+tests/test_e2e_round_trip.py::test_rm_rejects_over_position_limit
+tests/test_e2e_round_trip.py::test_full_pm_rm_trader_pipeline
+  C:\Projects\MrTrader\app\agents\risk_manager.py:143: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    proposed_at=_dt.utcnow(),
+
+tests/test_e2e_round_trip.py::test_rm_approves_valid_proposal
+tests/test_e2e_round_trip.py::test_rm_rejects_when_kill_switch_active
+tests/test_e2e_round_trip.py::test_rm_rejects_over_position_limit
+tests/test_e2e_round_trip.py::test_full_pm_rm_trader_pipeline
+  C:\Projects\MrTrader\app\agents\risk_manager.py:186: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = _dt.utcnow()
+
+tests/test_e2e_round_trip.py::test_rm_approves_valid_proposal
+tests/test_e2e_round_trip.py::test_full_pm_rm_trader_pipeline
+  C:\Projects\MrTrader\app\agents\risk_manager.py:241: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "approved_at": datetime.utcnow().isoformat(),
+
+tests/test_e2e_round_trip.py: 9 warnings
+tests/test_phase32_agent_integration.py: 2 warnings
+  C:\Projects\MrTrader\app\agents\base.py:37: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_e2e_round_trip.py::test_rm_rejects_over_position_limit
+  C:\Projects\MrTrader\app\agents\risk_rules.py:218: FutureWarning: The default fill_method='pad' in DataFrame.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+    returns = closes.pct_change().dropna()
+
+tests/test_e2e_round_trip.py::test_intraday_market_order_creates_trade
+tests/test_integration_pipeline.py::TestStartupReconciler::test_clean_startup
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_skipped_for_recent_trade_on_empty_alpaca
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_orphaned_order
+  C:\Projects\MrTrader\app\startup_reconciler.py:80: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ghost_cutoff = datetime.utcnow() - timedelta(minutes=ghost_min_age_minutes)
+
+tests/test_e2e_round_trip.py::test_intraday_market_order_creates_trade
+tests/test_integration_pipeline.py::TestStartupReconciler::test_clean_startup
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_skipped_for_recent_trade_on_empty_alpaca
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_orphaned_order
+  C:\Projects\MrTrader\app\startup_reconciler.py:281: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    lookback_cutoff = datetime.utcnow() - timedelta(days=7)
+
+tests/test_health_monitor.py::TestDailySessionSummary::test_returns_summary_dict
+tests/test_health_monitor.py::TestDailySessionSummary::test_sets_last_summary
+tests/test_health_monitor.py::TestDailySessionSummary::test_persists_to_audit_log
+  C:\Projects\MrTrader\app\live_trading\monitoring.py:110: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_health_monitor.py::TestDailySessionSummary::test_returns_summary_dict
+tests/test_health_monitor.py::TestDailySessionSummary::test_sets_last_summary
+tests/test_health_monitor.py::TestDailySessionSummary::test_persists_to_audit_log
+  C:\Projects\MrTrader\app\live_trading\monitoring.py:127: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_health_monitor.py::TestMonitorEndpoints::test_history_endpoint_returns_200
+tests/test_health_monitor.py::TestMonitorEndpoints::test_history_returns_list
+  C:\Projects\MrTrader\app\api\routes.py:1097: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+tests/test_integration_db.py: 12 warnings
+tests/test_integration_pipeline.py: 4 warnings
+tests/test_phase15_analytics.py: 7 warnings
+  C:\Projects\MrTrader\tests\conftest.py:137: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_integration_db.py::TestTradeModel::test_update_trade_to_closed
+  C:\Projects\MrTrader\tests\test_integration_db.py:33: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    t.closed_at = datetime.utcnow()
+
+tests/test_integration_db.py::TestAuditLogModel::test_create_audit_log
+tests/test_integration_db.py::TestAuditLogModel::test_multiple_audit_logs_ordered
+tests/test_integration_db.py::TestAuditLogModel::test_multiple_audit_logs_ordered
+  C:\Projects\MrTrader\tests\conftest.py:163: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_integration_db.py::TestConfigurationModel::test_upsert_config
+tests/test_phase32_agent_integration.py::TestRiskManagerIntradayRules::test_intraday_stop_loss_tighter_than_swing
+  C:\Projects\MrTrader\app\database\config_store.py:50: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    row.updated_at = datetime.utcnow()
+
+tests/test_integration_pipeline.py::TestApprovalWorkflowStateMachine::test_approval_when_criteria_met
+  C:\Projects\MrTrader\app\approval_workflow.py:86: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    session.approved_at = datetime.utcnow()
+
+tests/test_integration_pipeline.py::TestApprovalWorkflowStateMachine::test_approval_when_criteria_met
+  C:\Projects\MrTrader\app\approval_workflow.py:97: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_integration_pipeline.py::TestApprovalWorkflowStateMachine::test_approval_when_criteria_met
+  C:\Projects\MrTrader\app\approval_workflow.py:105: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "approved_at": datetime.utcnow().isoformat(),
+
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_start_at_stage_1
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_advance_stage
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_cannot_advance_past_max
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_prevents_advance
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_allows_advance_when_healthy
+  C:\Projects\MrTrader\app\live_trading\capital_manager.py:90: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self._stage_start = datetime.utcnow()
+
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_advance_stage
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_cannot_advance_past_max
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_cannot_advance_past_max
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_cannot_advance_past_max
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_cannot_advance_past_max
+  C:\Projects\MrTrader\app\live_trading\capital_manager.py:109: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self._stage_start = datetime.utcnow()
+
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_prevents_advance
+  C:\Projects\MrTrader\tests\test_integration_pipeline.py:103: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    cm._stage_start = datetime.utcnow() - timedelta(days=10)
+
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_prevents_advance
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_allows_advance_when_healthy
+  C:\Projects\MrTrader\app\live_trading\capital_manager.py:29: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return (datetime.utcnow() - start_time).days if start_time else 0
+
+tests/test_integration_pipeline.py::TestCapitalManagerStateMachine::test_health_gate_allows_advance_when_healthy
+  C:\Projects\MrTrader\tests\test_integration_pipeline.py:112: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    cm._stage_start = datetime.utcnow() - timedelta(days=5)
+
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_sets_active
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_then_reset
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_closes_positions
+tests/test_phase75_kill_switch.py::TestKillSwitchCancelsOrders::test_activate_cancels_open_orders
+  C:\Projects\MrTrader\app\live_trading\kill_switch.py:121: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "activated_at": datetime.utcnow().isoformat(),
+
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_sets_active
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_then_reset
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_then_reset
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_closes_positions
+  C:\Projects\MrTrader\app\live_trading\kill_switch.py:147: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    db.add(AuditLog(action=action, details=details, timestamp=datetime.utcnow()))
+
+tests/test_integration_pipeline.py::TestKillSwitchStateMachine::test_activate_then_reset
+  C:\Projects\MrTrader\app\live_trading\kill_switch.py:133: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "reset_at": datetime.utcnow().isoformat()},
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+  C:\Projects\MrTrader\tests\test_integration_pipeline.py:233: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    old_ts = datetime.utcnow() - timedelta(minutes=30)
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+  C:\Projects\MrTrader\app\startup_reconciler.py:112: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "detected_at": datetime.utcnow().isoformat(),
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+  C:\Projects\MrTrader\app\startup_reconciler.py:114: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_ghost_position
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+  C:\Projects\MrTrader\app\startup_reconciler.py:127: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ghost.closed_at = datetime.utcnow()
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_skipped_for_recent_trade_on_empty_alpaca
+  C:\Projects\MrTrader\app\startup_reconciler.py:91: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (datetime.utcnow() - trade_age_anchor).total_seconds() / 60.0,
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_ghost_detection_fires_for_old_trade_on_empty_alpaca
+  C:\Projects\MrTrader\tests\test_integration_pipeline.py:265: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    old.created_at = datetime.utcnow() - timedelta(minutes=30)
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_orphaned_order
+  C:\Projects\MrTrader\app\startup_reconciler.py:404: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "detected_at": datetime.utcnow().isoformat()},
+
+tests/test_integration_pipeline.py::TestStartupReconciler::test_detects_orphaned_order
+  C:\Projects\MrTrader\app\startup_reconciler.py:405: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_live_readiness.py::TestPaperTradeDays::test_passes_when_old_enough
+  C:\Projects\MrTrader\tests\test_live_readiness.py:133: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    old_trade = MagicMock(created_at=datetime.utcnow() - timedelta(days=75))  # > 60d threshold
+
+tests/test_live_readiness.py::TestPaperTradeDays::test_passes_when_old_enough
+tests/test_live_readiness.py::TestPaperTradeDays::test_fails_when_too_new
+  C:\Projects\MrTrader\app\live_trading\readiness.py:162: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    days = (datetime.utcnow() - oldest.created_at).days
+
+tests/test_live_readiness.py::TestPaperTradeDays::test_fails_when_too_new
+  C:\Projects\MrTrader\tests\test_live_readiness.py:143: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    new_trade = MagicMock(created_at=datetime.utcnow() - timedelta(days=3))
+
+tests/test_live_readiness.py: 80 warnings
+  C:\Projects\MrTrader\tests\test_live_readiness.py:202: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    t.created_at = datetime.utcnow() - timedelta(days=days_ago)
+
+tests/test_live_readiness.py::TestDeflatedSharpe::test_passes_with_strong_positive_pnl
+tests/test_live_readiness.py::TestDeflatedSharpe::test_fails_with_negative_edge
+  C:\Projects\MrTrader\app\live_trading\readiness.py:295: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    days_span = max((datetime.utcnow() - first_trade).days, 1)
+
+tests/test_ml_enrichment.py::TestFeatureEngineerEnriched::test_sector_momentum_zero_without_fetch
+tests/test_ml_enrichment.py::TestGetSectorMomentum::test_returns_float
+tests/test_phase19.py::TestCorrelationCheck::test_no_positions_skips
+  C:\Projects\MrTrader\app\integrations\alpaca.py:275: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    _start = datetime.utcnow() - timedelta(days=int(limit * 1.5))
+
+tests/test_ml_enrichment.py::TestFeatureEngineerEnriched::test_defaults_when_fundamentals_fetcher_raises
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_returns_list_with_scores
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_positive_article_score_is_1
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_negative_article_score_is_minus1
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_returns_empty_on_api_error
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_uses_cache
+tests/test_phase38_news_sentiment.py::TestFetchNews::test_returns_empty_on_non_200
+tests/test_phase89_trend_features.py::TestFeatureEngineerPhase89::test_phase89_keys_present
+  C:\Projects\MrTrader\app\ml\news_features.py:58: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    cutoff = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+tests/test_model_improvement_iter3_4.py: 2 warnings
+tests/test_phase19_pressure_choch_whale.py: 18 warnings
+  C:\Projects\MrTrader\app\ml\features.py:290: RuntimeWarning: invalid value encountered in divide
+    dx = np.where(di_sum > 0, 100 * np.abs(plus_di - minus_di) / di_sum, 0.0)
+
+tests/test_nis.py::TestNewsIntelligenceService::test_get_macro_context_neutral_on_nis_failure
+  C:\Projects\MrTrader\app\news\signal.py:75: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return cls(as_of=datetime.utcnow(), rationale="NIS unavailable — no adjustment")
+
+tests/test_nis.py: 10 warnings
+  C:\Projects\MrTrader\app\news\signal.py:108: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    evaluated_at=datetime.utcnow(),
+
+tests/test_orchestrator.py::TestAgentOrchestrator::test_get_status_structure
+tests/test_orchestrator.py::TestAgentOrchestrator::test_get_status_agents_present
+  C:\Projects\MrTrader\app\orchestrator.py:280: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_orchestrator.py::TestRetrainingSubprocess::test_retraining_spawns_subprocess_on_success
+tests/test_orchestrator.py::TestRetrainingSubprocess::test_retraining_logs_error_on_nonzero_exit
+tests/test_orchestrator.py::TestRetrainingSubprocess::test_retraining_gate_fail_exit_code_2_not_logged_as_error
+  C:\Projects\MrTrader\app\orchestrator.py:150: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    log_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+tests/test_orchestrator_routes.py: 218 warnings
+  C:\Projects\MrTrader\app\api\orchestrator_routes.py:26: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_performance_review.py::TestPerformanceReviewEndpoint::test_endpoint_returns_200
+tests/test_performance_review.py::TestPerformanceReviewEndpoint::test_endpoint_accepts_days_param
+  C:\Projects\MrTrader\app\analytics\performance_review.py:35: FutureWarning: Calling float on a single element Series is deprecated and will raise a TypeError in the future. Use float(ser.iloc[0]) instead
+    return round(float(df["Close"].iloc[-1]) / float(df["Close"].iloc[0]) * 100 - 100, 2)
+
+tests/test_phase15_analytics.py::TestSignalAttribution::test_empty_returns_empty_dict
+tests/test_phase15_analytics.py::TestSignalAttribution::test_groups_by_signal_type
+tests/test_phase15_analytics.py::TestSignalAttribution::test_unknown_signal_type_bucketed
+tests/test_phase15_analytics.py::TestAnalyticsEndpoints::test_signal_attribution_endpoint
+tests/test_phase15_analytics.py::TestAnalyticsEndpoints::test_analytics_days_param
+  C:\Projects\MrTrader\app\analytics\signal_attribution.py:28: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    since = datetime.utcnow() - timedelta(days=days)
+
+tests/test_phase15_analytics.py::TestDrawdownAnalyzer::test_empty_database
+tests/test_phase15_analytics.py::TestDrawdownAnalyzer::test_per_symbol_grouping
+tests/test_phase15_analytics.py::TestAnalyticsEndpoints::test_drawdown_endpoint
+  C:\Projects\MrTrader\app\analytics\drawdown_analyzer.py:23: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    since = datetime.utcnow() - timedelta(days=days)
+
+tests/test_phase15_analytics.py::TestDrawdownAnalyzer::test_consecutive_loss_sequence_detected
+  C:\Projects\MrTrader\tests\test_phase15_analytics.py:186: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_phase15_analytics.py::TestWeeklyReport::test_report_generates_without_error
+tests/test_phase15_analytics.py::TestWeeklyReport::test_report_contains_spy_benchmark
+  C:\Projects\MrTrader\scripts\generate_weekly_report.py:140: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    f"*Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC by MrTrader*",
+
+tests/test_phase22.py::TestWeeklyReport::test_report_has_required_keys
+tests/test_phase22.py::TestWeeklyReport::test_report_includes_live_signal_quality
+  C:\Projects\MrTrader\app\agents\performance_monitor.py:254: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "generated_at": datetime.utcnow().isoformat(),
+
+tests/test_phase33_backtest.py: 8 warnings
+tests/test_phase44_model_improvements.py: 4 warnings
+tests/test_regime_classifier.py: 9 warnings
+  C:\Projects\MrTrader\venv\Lib\site-packages\sklearn\linear_model\_logistic.py:452: DeprecationWarning: scipy.optimize: The `disp` and `iprint` options of the L-BFGS-B solver are deprecated and will be removed in SciPy 1.18.0.
+    opt_res = optimize.minimize(
+
+tests/test_phase34_paper_review.py::TestReviewScript::test_enable_paper_mode_logs_audit
+tests/test_phase34_paper_review.py::TestReviewScript::test_enable_paper_mode_rolls_back_on_error
+  C:\Projects\MrTrader\scripts\review_paper_trading.py:228: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    details={"enabled_at": datetime.utcnow().isoformat(),
+
+tests/test_phase34_paper_review.py::TestReviewScript::test_enable_paper_mode_logs_audit
+tests/test_phase34_paper_review.py::TestReviewScript::test_enable_paper_mode_rolls_back_on_error
+  C:\Projects\MrTrader\scripts\review_paper_trading.py:230: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow(),
+
+tests/test_phase42_paper_validation.py: 62 warnings
+  C:\Projects\MrTrader\tests\test_phase42_paper_validation.py:10: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    trades.append({"pnl": win_pnl, "entry_price": entry, "closed_at": datetime.utcnow().isoformat()})
+
+tests/test_phase42_paper_validation.py: 36 warnings
+  C:\Projects\MrTrader\tests\test_phase42_paper_validation.py:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    trades.append({"pnl": loss_pnl, "entry_price": entry, "closed_at": datetime.utcnow().isoformat()})
+
+tests/test_phase81_83.py::TestDeadmanHeartbeat::test_write_heartbeat_upserts_row
+  C:\Projects\MrTrader\app\agents\portfolio_manager.py:726: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    row = ProcessHeartbeat(process_name="portfolio_manager", started_at=_dt.utcnow())
+
+tests/test_phase81_83.py::TestDeadmanHeartbeat::test_write_heartbeat_upserts_row
+  C:\Projects\MrTrader\app\agents\portfolio_manager.py:728: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    row.last_beat = _dt.utcnow()
+
+tests/test_phase_b4_mlops.py::TestAucDriftAlert::test_drift_logged_when_auc_below_threshold
+tests/test_phase_b4_mlops.py::TestAucDriftAlert::test_no_drift_warning_when_auc_above_threshold
+tests/test_phase_b4_mlops.py::TestAucDriftAlert::test_no_drift_warning_when_auc_missing
+  C:\Projects\MrTrader\app\ml\training.py:2824: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    training_date=datetime.utcnow(),
+
+tests/test_phase_f3_reconciliation.py::TestRunReconciliation::test_writes_complete_row
+  C:\Projects\MrTrader\tests\test_phase_f3_reconciliation.py:102: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    fake_row.computed_at = datetime.utcnow()
+
+tests/test_regime_r3_integration.py::TestGetRegimeContext::test_returns_dict_with_score
+  C:\Projects\MrTrader\tests\test_regime_r3_integration.py:110: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    base = now_naive if now_naive is not None else datetime.utcnow()
+
+tests/test_wf3_cpcv.py::TestCombinationsCount::test_run_cpcv_produces_correct_number_of_paths
+  C:\Projects\MrTrader\venv\Lib\site-packages\numpy\core\fromnumeric.py:3504: RuntimeWarning: Mean of empty slice.
+    return _methods._mean(a, axis=axis, dtype=dtype,
+
+tests/test_wf3_cpcv.py::TestCombinationsCount::test_run_cpcv_produces_correct_number_of_paths
+  C:\Projects\MrTrader\venv\Lib\site-packages\numpy\core\_methods.py:129: RuntimeWarning: invalid value encountered in scalar divide
+    ret = ret.dtype.type(ret / rcount)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+---------- coverage: platform win32, python 3.12.10-final-0 ----------
+Name                                          Stmts   Miss  Cover   Missing
+---------------------------------------------------------------------------
+app\__init__.py                                   1      0   100%
+app\__main__.py                                  10     10     0%   12-27
+app\agents\__init__.py                            5      0   100%
+app\agents\base.py                               40      1    98%   21
+app\agents\circuit_breaker.py                   124     24    81%   148, 180-209
+app\agents\compliance.py                        159     24    85%   99-100, 116-123, 143, 157, 167-168, 195, 198, 212-229
+app\agents\news_monitor.py                       84     31    63%   79-83, 102, 109-114, 120-152
+app\agents\performance_monitor.py               145     37    74%   83, 100, 105-120, 182-196, 261-263, 268-270, 275-277, 291
+app\agents\portfolio_manager.py                2108   1726    18%   79-80, 143-144, 148-158, 177-178, 188-189, 194-198, 214-254, 267-306, 309-608, 618-651, 679-715, 730-732, 745-795, 803-805, 813-840, 850-902, 910-960, 968-999, 1038-1063, 1069-1086, 1135-1136, 1145-1278, 1305-1447, 1456-1508, 1518-1552, 1564-1572, 1583-1767, 1779-1821, 1857, 1860, 1882, 1886-1887, 1908-1909, 1921, 1940-1942, 1950-1965, 1988-2057, 2068-2091, 2113-2115, 2127-2738, 2755-2935, 2943-3015, 3025-3094, 3127-3128, 3147, 3161-3162, 3182-3203, 3212-3236, 3244-3267, 3273-3453, 3457-3467, 3476-3514, 3522-3534, 3552-3582, 3623-3625, 3658-3805, 3825-3846, 3887-3891, 3895-3896, 3902-3903, 3908-3909
+app\agents\premarket.py                         379    132    65%   96-97, 110, 118-125, 133-134, 136-139, 143-145, 149-152, 156-160, 164-168, 176-177, 200-215, 243-252, 271, 278-280, 287, 317-318, 351, 354-382, 390, 395, 399, 407, 421-439, 448-453, 473-483, 490-494, 512, 522-523, 553, 560-561, 578-581, 610-611, 680-682, 698-700
+app\agents\risk_manager.py                      522    154    70%   82-83, 114-125, 147-148, 157-172, 184, 190-209, 222, 225, 262, 287-289, 315-316, 329-330, 343-346, 353-357, 362-363, 380-385, 395-396, 402, 417-421, 443-444, 452-456, 468-469, 475-476, 488-489, 511-512, 519-520, 526-527, 547-548, 560-570, 592-597, 607-609, 613-620, 630-631, 641-642, 651-653, 670-671, 716, 720, 725, 728-729, 741-743, 757, 808-810, 843-845, 877-878, 881-882, 893-894, 912, 915-916, 924-933, 950-951, 955-956
+app\agents\risk_rules.py                        150     31    79%   84, 112, 148, 196, 215, 223-253, 268, 300, 329, 376, 386
+app\agents\trader.py                           1302    802    38%   64-65, 105-379, 390-391, 396-397, 426-432, 446-447, 453, 460-476, 481-488, 503-549, 558-578, 601-602, 610, 613-614, 623-624, 639-660, 663-683, 686-688, 694-700, 703-707, 715-728, 730-762, 766-771, 775-780, 794-795, 798-799, 811-874, 888-891, 903-905, 935-937, 950-951, 956-961, 967, 974-977, 1018-1022, 1035-1036, 1042, 1046, 1067, 1069, 1091-1094, 1106-1108, 1114-1120, 1131-1133, 1162-1164, 1177-1179, 1196, 1224-1225, 1246-1251, 1269-1286, 1294-1295, 1312-1315, 1322-1325, 1369, 1389-1391, 1431-1432, 1444, 1460, 1464, 1478-1479, 1512-1513, 1529-1661, 1679-1680, 1693-1737, 1756, 1764, 1774, 1797-1800, 1804, 1808-1822, 1834-1902, 1922, 1924, 1928, 1931-1934, 1947-1948, 1969-1973, 1976-1980, 1992-2074, 2089-2284, 2304-2306, 2320-2338, 2350-2351, 2354, 2363-2364, 2378-2379
+app\ai\__init__.py                                2      0   100%
+app\ai\claude_client.py                          59     13    78%   34-39, 112-114, 126, 148-150
+app\alerts\__init__.py                            2      0   100%
+app\alerts\email_sender.py                       37      0   100%
+app\analytics\__init__.py                         0      0   100%
+app\analytics\drawdown_analyzer.py               39      1    97%   91
+app\analytics\performance_review.py              69      4    94%   36-38, 109
+app\analytics\signal_attribution.py              21      0   100%
+app\analytics\tearsheet.py                       38     38     0%   4-83
+app\analytics\wf_reconciliation.py              114     12    89%   35, 51, 166-182, 206-207, 264
+app\api\__init__.py                               0      0   100%
+app\api\cache.py                                 23      3    87%   46-48
+app\api\config_routes.py                         31      0   100%
+app\api\nis_routes.py                            94     71    24%   34-80, 88-121, 129-168, 180-189, 198-203, 209-216, 226-260
+app\api\orchestrator_routes.py                  149     73    51%   83-85, 91, 97, 103-104, 123-125, 131-133, 139-144, 150-155, 167-185, 191-205, 240-242, 252-275
+app\api\routes.py                               713    311    56%   67-84, 94-95, 98-99, 105, 151-152, 167-168, 173, 212, 214, 217, 265-266, 289, 337-338, 371-373, 395-396, 400-419, 433-435, 451-492, 500-520, 538-539, 567-568, 611-612, 614-616, 627-629, 632-634, 665-695, 740-768, 789-802, 808-833, 842-843, 854-856, 865-867, 882-884, 903-904, 911-924, 933-935, 941-974, 980-1028, 1051-1053, 1062-1064, 1073-1075, 1081-1087, 1112-1114, 1155-1157, 1165-1178, 1184-1217, 1223-1301, 1307-1364, 1370, 1376, 1398-1405, 1432, 1447, 1468-1470, 1479, 1506-1508
+app\api\schemas.py                               77      0   100%
+app\api\watchlist_routes.py                      75      2    97%   86, 90
+app\api\websocket.py                             48     14    71%   57-68, 74, 78, 82
+app\approval_workflow.py                         76     21    72%   53, 115-123, 132-134, 137-160
+app\backtesting\__init__.py                       4      0   100%
+app\backtesting\agent_simulator.py              756    256    66%   92, 107, 119, 129, 247, 259, 266, 289, 291, 298, 338-350, 352-363, 369-400, 404-444, 448-449, 453-454, 481, 509-513, 519, 529, 537-538, 547, 563-565, 574-576, 590-644, 665-666, 685-687, 726, 768-769, 777-779, 781-783, 803, 807, 814, 833, 857, 870-877, 881, 886, 890, 905, 909-910, 914-926, 933-934, 941, 945-952, 969, 987-988, 1025, 1029, 1039-1041, 1045, 1066-1083, 1089-1091, 1098-1100, 1164-1169, 1249-1257, 1309, 1318, 1331
+app\backtesting\feature_cache.py                154     33    79%   86, 100-106, 116, 128, 131-155, 165-166, 197, 252, 259-260, 272-273
+app\backtesting\intraday_agent_simulator.py     474    186    61%   189, 195, 207-209, 211-232, 240-259, 265-287, 291-318, 322-330, 335-336, 340-341, 346-386, 392-400, 409, 414, 437, 448, 453, 467, 469, 482-483, 485, 492, 502, 505-509, 513-520, 539, 603, 614-616, 635, 639, 644, 648, 652, 665, 675, 745-752, 792-795, 807
+app\backtesting\intraday_backtest.py            115      9    92%   125, 146-148, 220-223, 236
+app\backtesting\metrics.py                       70      0   100%
+app\backtesting\strategy_simulator.py           200     18    91%   199, 215, 264-279, 339
+app\backtesting\swing_backtest.py               106     10    91%   99, 107-108, 123, 127-128, 133, 140, 178, 182
+app\calendars\__init__.py                         0      0   100%
+app\calendars\earnings.py                       150     61    59%   100-101, 106, 117-160, 218-244
+app\calendars\macro.py                           87      4    95%   120, 123, 144-145
+app\config.py                                    69      0   100%
+app\data\__init__.py                              2      0   100%
+app\data\alpaca_provider.py                      79     50    37%   24, 47, 63-85, 95-136, 143
+app\data\base.py                                 37      8    78%   101-106, 112, 124
+app\data\cache.py                               182     37    80%   73-77, 85, 105-107, 118, 124-127, 139-140, 159-160, 163, 171, 191-195, 207, 213-216, 219-221, 264-265, 280-281
+app\data\fmp_fundamentals.py                    316    144    54%   98-99, 106-132, 136-144, 148-152, 157-167, 179-275, 285, 298, 324-326, 361-362, 391-394, 410-422, 438-439, 448-449, 452-454, 461, 465, 512, 526-527, 560, 563, 592, 596
+app\data\fmp_provider.py                        148     31    79%   77-78, 166-167, 203-204, 234, 237-239, 251-260, 278, 290-300, 317
+app\data\intraday_cache.py                       85     20    76%   34, 48, 51-61, 81, 87-89, 118-119, 125
+app\data\macro_history.py                       106     68    36%   53, 61-63, 72-119, 132-133, 143-147, 160-183, 201-214
+app\data\polygon_financials.py                   77     16    79%   68-69, 80-81, 137-138, 145-154
+app\data\polygon_provider.py                    184     47    74%   67, 107-109, 114, 135-136, 139-141, 166, 171, 186-212, 230-231, 238, 247-249, 271, 278, 287-289, 310, 321-323
+app\data\polygon_s3.py                          123     40    67%   115-139, 166, 168-170, 203, 211-213, 218-230
+app\data\registry.py                             34      4    88%   70-71, 77-78
+app\data\universe_history.py                     82     18    78%   31-37, 45-46, 50-51, 58-59, 65, 131-132, 149-150
+app\data\yfinance_provider.py                    98     33    66%   83-84, 89-99, 117, 133, 141-143, 169-193
+app\database\__init__.py                          3      0   100%
+app\database\agent_config.py                     40      5    88%   443-445, 465-466
+app\database\config_store.py                     25      2    92%   31-32
+app\database\daily_summary.py                    52     52     0%   12-132
+app\database\db.py                                1      1     0%   6
+app\database\decision_audit.py                  205    170    17%   40-87, 104-121, 172, 196-197, 214-264, 273-317, 325-357, 365-403, 411-437, 450-550
+app\database\gate_categories.py                  12     12     0%   15-77
+app\database\models.py                          541     17    97%   45, 67, 125, 143, 160, 178, 191, 205, 227, 242, 263, 472, 514, 612, 645, 889, 911
+app\database\session.py                          50     34    32%   27-31, 36-39, 44-88, 99-106
+app\indicators\__init__.py                        0      0   100%
+app\indicators\technical.py                      68      0   100%
+app\live_trading\__init__.py                      0      0   100%
+app\live_trading\backtest_readiness.py          132     68    48%   178-243, 247-270
+app\live_trading\capital_manager.py              65     11    83%   33, 74, 95, 125-131, 134-135, 138-139
+app\live_trading\kill_switch.py                 100     28    72%   40-43, 51-59, 78-80, 85, 91, 96-98, 110-113, 140-141, 149-150
+app\live_trading\monitoring.py                  140     68    51%   44-92, 130-131, 145, 186, 190, 194, 206-237, 241-245, 249-267, 281-282
+app\live_trading\paper_validator.py              78      2    97%   170, 177
+app\live_trading\readiness.py                   183     57    69%   49, 61-84, 106-115, 121-122, 125-130, 133-138, 160, 170-171, 174-186, 204-205, 221-222, 239-248, 281, 298, 314-315, 337, 349-350
+app\macro\__init__.py                             2      0   100%
+app\macro\fred_client.py                        127     27    79%   88, 90, 99, 108, 116, 133-134, 147, 153-155, 173, 186-188, 192-204
+app\main.py                                     271     65    76%   56, 63-66, 71, 74-75, 132-133, 164-166, 168, 181, 185-189, 198-199, 211-212, 220-221, 264-265, 272-274, 323-324, 328-329, 386-391, 402-407, 412-417, 422-429, 434, 453-454, 459-460, 469-470
+app\ml\__init__.py                                0      0   100%
+app\ml\cs_normalize.py                           22      0   100%
+app\ml\diagnostics\__init__.py                    0      0   100%
+app\ml\diagnostics\ic.py                        162     37    77%   68-69, 71, 76, 79-80, 82, 98, 109-110, 131, 146, 199, 214, 223, 229-253
+app\ml\factor_scorer.py                         168    168     0%   12-329
+app\ml\feature_store.py                         105     17    84%   87-92, 118-120, 141-142, 159, 175, 191-192, 211-216
+app\ml\features.py                              989    203    79%   113-115, 184, 201, 214, 218, 244-245, 254, 293, 304, 319, 396-398, 533-534, 550-551, 558-559, 568-569, 578-579, 592-593, 605-606, 617-618, 620-635, 649, 654-655, 668, 682-685, 697-698, 737-739, 769-771, 782-784, 810-812, 837, 846-847, 862-864, 880, 888, 900, 905-908, 920-921, 942, 969, 978, 989, 999, 1007-1011, 1035-1037, 1050-1052, 1060, 1068-1077, 1098, 1107, 1117-1123, 1138, 1145, 1156, 1171, 1178, 1188, 1200, 1208, 1217, 1230, 1241, 1255, 1262, 1278-1285, 1295, 1305, 1312-1317, 1328, 1333-1336, 1359, 1366-1369, 1381-1383, 1391-1394, 1408-1411, 1440-1447, 1464-1471, 1487-1489, 1506-1508, 1527-1530, 1550-1551, 1563, 1571, 1589-1594, 1619-1621, 1684-1687, 1706-1709
+app\ml\fundamental_fetcher.py                   364    123    66%   73-76, 78-83, 91, 107-110, 127-128, 140, 148-150, 159-179, 184-196, 229-230, 247-344, 365-366, 369-370, 433-434, 481-483, 504-505, 507, 565-566, 608-609, 644-652
+app\ml\intraday_features.py                     380     44    88%   174, 296-300, 334-335, 343-344, 378-379, 387-388, 397-398, 414-415, 446-448, 457-462, 482-484, 491-492, 505-506, 520-522, 542-544, 555, 567, 622, 635, 641, 656, 702
+app\ml\intraday_training.py                     589    258    56%   163, 167-179, 194, 202-225, 236-243, 248-267, 277-316, 347-348, 363-364, 369-372, 405, 408-413, 416, 420-429, 435-438, 441-448, 464-485, 494-513, 518-556, 570-581, 589-603, 631, 709-710, 713, 723, 733-734, 749, 778, 786, 794-796, 801-816, 832, 851-852, 856-857, 864-906, 913-920, 936, 948-949, 954-955, 971, 975, 980, 1017-1018, 1030, 1034, 1048
+app\ml\meta_model.py                            107    107     0%   15-197
+app\ml\model.py                                 609    391    36%   25-26, 57, 73-90, 105-107, 184-186, 193-201, 216-220, 233-244, 246-254, 256-264, 286-288, 318, 324-329, 342-343, 368, 379-381, 462-490, 498-510, 535, 624-632, 635-642, 661-691, 696-703, 706-716, 719-724, 727-732, 735-739, 766-777, 780-790, 812-834, 839-846, 849-864, 867-871, 874-879, 882-886, 904, 943-966, 971-983, 986-1003, 1013, 1016-1019, 1022-1027, 1030-1048, 1075-1086, 1089, 1120-1186, 1191-1209, 1212-1226, 1235, 1238-1250, 1253-1258, 1261-1265
+app\ml\news_features.py                         135     47    65%   77-78, 88, 118-172, 194, 200-201, 206-208, 210, 288-290
+app\ml\options_features.py                       93      8    91%   68, 74, 161-162, 189-190, 208-209
+app\ml\pead_scorer.py                            45     45     0%   18-111
+app\ml\regime_classifier.py                     172     65    62%   164, 177, 214, 256-261, 276-289, 293-298, 302, 313-333, 337-344, 347-363, 367-373
+app\ml\regime_features.py                       223     51    77%   158, 163-169, 202-237, 242, 245, 330, 369-372, 391-392, 409-411, 416, 418, 425-429
+app\ml\regime_model.py                          137     29    79%   37-40, 57-61, 80-82, 101, 131-133, 136, 142, 193, 195, 207-229
+app\ml\regime_score_pit.py                       88     37    58%   58, 125-127, 152-216
+app\ml\regime_training.py                       144     53    63%   71-123, 266-306, 318-345
+app\ml\retrain_config.py                         58      1    98%   339
+app\ml\sample_weights.py                         35      4    89%   101-103, 113, 119
+app\ml\short_scorers.py                         344    344     0%   21-547
+app\ml\training.py                             1567    938    40%   186-187, 189, 192, 318-319, 327, 334-335, 338, 342, 345, 352-398, 405-447, 459, 462, 475, 479-481, 506-507, 509, 514-524, 540-552, 560-581, 605-611, 625-636, 655-656, 694-695, 697-698, 700-701, 730-731, 799, 803-813, 828-845, 852-866, 879, 887-890, 895-896, 907-909, 911-919, 926-927, 931-932, 943, 945, 949-952, 961, 977-985, 992-993, 1022-1028, 1032-1034, 1084-1155, 1162-1165, 1198-1199, 1210-1215, 1234, 1263-1270, 1281-1295, 1342, 1351, 1356, 1362-1364, 1370, 1373-1376, 1390-1401, 1424-1728, 1745-1747, 1768-1770, 1799-1819, 1824, 1862-1863, 1870-1871, 1886-1887, 1902-1903, 1908-1909, 1924-1925, 1984-1985, 2000-2001, 2007-2016, 2021-2022, 2029-2030, 2042-2075, 2078-2082, 2101-2122, 2156-2175, 2179-2222, 2294, 2298, 2303-2306, 2311, 2322-2324, 2330, 2338, 2354-2356, 2371-2429, 2447-2533, 2550-2609, 2627-2713, 2717-2725, 2734-2735, 2742-2754, 2769, 2777, 2788-2802, 2810-2812, 2819-2820, 2847-2849, 2861-2892
+app\ml\ts_normalize.py                          150     10    93%   214-219, 221-223, 332
+app\ml\walk_forward_stats.py                     53     13    75%   46-48, 61-63, 88-95, 98
+app\news\__init__.py                              0      0   100%
+app\news\intelligence_service.py                104     26    75%   47, 82-84, 117, 153, 188-209, 216-244, 267-270
+app\news\llm_scorer.py                          120     15    88%   50-51, 66, 69-70, 80-81, 105-110, 138-139
+app\news\signal.py                               62      1    98%   55
+app\news\sources\__init__.py                      0      0   100%
+app\news\sources\finnhub_source.py              100     18    82%   68-70, 110, 116-117, 174, 184, 193, 226-244
+app\notifications\__init__.py                     0      0   100%
+app\notifications\notifier.py                   128    128     0%   14-286
+app\orchestrator.py                             160     42    74%   124-125, 137-144, 168-170, 174-184, 197-198, 236-242, 247-263, 276-277
+app\portfolio\__init__.py                         0      0   100%
+app\portfolio\optimizer.py                       55     55     0%   7-112
+app\risk\__init__.py                              0      0   100%
+app\risk\regime_gate.py                          94     12    87%   72-80, 108-109, 163
+app\scheduler.py                                 35      0   100%
+app\startup_reconciler.py                       209    108    48%   55-57, 59-61, 78-79, 129-136, 145-146, 161-162, 164, 171-178, 191-268, 287-376, 407-408, 412-414, 446-459, 484-486
+app\strategy\__init__.py                          0      0   100%
+app\strategy\benign_gate.py                     129     31    76%   30-32, 174-176, 187-211, 223, 236-238, 257-258, 268, 283-285
+app\strategy\earnings_filter.py                  55      4    93%   69-75, 87
+app\strategy\entry_quality.py                    67      4    94%   104-108, 163-167
+app\strategy\mean_reversion.py                   44     17    61%   31-36, 63-79
+app\strategy\portfolio_heat.py                   27      0   100%
+app\strategy\position_sizer.py                   36      2    94%   73, 90
+app\strategy\regime_detector.py                  94      2    98%   116-117
+app\strategy\signals.py                         255     88    65%   51-64, 82, 86, 90, 94, 125-126, 140, 170-171, 179-200, 225-256, 302, 310-320, 325-327, 329, 331, 385-423, 482
+app\trading_modes.py                             33     10    70%   36, 40, 46-50, 54-55, 60
+app\utils\__init__.py                             0      0   100%
+app\utils\constants.py                           10      0   100%
+---------------------------------------------------------------------------
+TOTAL                                         21085   8803    58%
+
+Required test coverage of 58.0% reached. Total coverage: 58.25%
+1941 passed, 3 skipped, 2364 warnings in 465.03s (0:07:45)
