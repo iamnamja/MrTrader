@@ -210,7 +210,7 @@ class TestStrategyConstruction:
             symbols=["AAPL", "MSFT"],
         )
         assert s.version == 1
-        assert s.atr_stop_mult == 0.5  # default
+        assert s.atr_stop_mult == 1.5  # v216 default: 1.5×ATR (outside daily noise for LambdaRank)
 
     def test_intraday_strategy_constructible(self):
         from scripts.walkforward.strategies.intraday import IntradayStrategy
