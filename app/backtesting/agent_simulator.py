@@ -58,6 +58,7 @@ SWING_STOP_PCT = 0.02  # fallback only when ATR unavailable
 SWING_TARGET_PCT = 0.06
 TX_COST_PCT = TRANSACTION_COST  # 5bps per side
 STOP_SLIPPAGE_PCT = 0.0005  # 5bps adverse slippage on stop-triggered exits (realistic stop-order fill)
+DEFAULT_MAX_HOLD_BARS = 40  # ~8 weeks; decoupled from MAX_OPEN_POSITIONS to avoid L/S position-count bloat
 
 
 @dataclass
@@ -615,7 +616,7 @@ class AgentSimulator:
         if "vol_percentile_52w" in cache.feature_names and self.max_vol_pct is not None:
             vol_col_idx = cache.feature_names.index("vol_percentile_52w")
 
-        for sym, idx_map in cache.date_index.items():
+        for sym, idx_map in sorted(cache.date_index.items()):
             row_idx = idx_map.get(day)
             if row_idx is None:
                 continue
@@ -807,10 +808,10 @@ class AgentSimulator:
                 ema_slow_p = float(bars_up_to_day["close"].ewm(span=50, adjust=False).mean().iloc[-2])
                 is_ema_crossover = ema_fast_v > ema_slow_v and ema_fast_p <= ema_slow_p
 
-                # ATR-based stop — must match training label ATR_STOP_MULT (0.5×).
-                # Hard-coded % floors are replaced: they were far wider than training
-                # stop thresholds, causing train/test mismatch.
-                atr_stop_pct = float(np.clip(self.atr_stop_mult * atr_pct, 0.005, 0.10))
+                # ATR-based stop — must match training label bounds exactly.
+                # training.py:261: clip(0.5*atr_pct, ATR_MIN_TARGET/2, ATR_MAX_TARGET/2)
+                #                = clip(0.5*atr_pct, 0.0075, 0.04)
+                atr_stop_pct = float(np.clip(self.atr_stop_mult * atr_pct, 0.0075, 0.04))
                 if is_ema_crossover:
                     # Momentum: never go tighter than 10-bar pivot low (structure level)
                     pivot_low = float(np.min(low[-11:-1])) if len(low) >= 11 else close * 0.97
@@ -819,8 +820,8 @@ class AgentSimulator:
                     # Pullback/RSI-dip: never go tighter than EMA20 with small buffer
                     stop_price = max(ema20 * 0.995, close * (1 - atr_stop_pct))
 
-                # Target: 1.5× ATR above entry (fixed — matches training labels)
-                target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.01, 0.16))
+                # Target: 1.5× ATR — clip matches training.py:260: clip(1.5*atr_pct, 0.015, 0.08)
+                target_pct = float(np.clip(self.atr_target_mult * atr_pct, 0.015, 0.08))
                 target_price = close * (1 + target_pct)
             except Exception:
                 stop_price = close * (1 - SWING_STOP_PCT)
@@ -1155,7 +1156,7 @@ class AgentSimulator:
             _check_dir = "SELL_SHORT" if is_short else "BUY"
             _max_hold = (self.max_hold_bars_override
                          if self.max_hold_bars_override is not None
-                         else self.limits.MAX_OPEN_POSITIONS * 4)
+                         else DEFAULT_MAX_HOLD_BARS)
             if not should_exit:
                 ce_should_exit, ce_reason, new_stop = check_exit(
                     symbol=sym,
