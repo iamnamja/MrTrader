@@ -53,8 +53,10 @@ def test_dsr_n_default_uses_module_constant():
 def test_higher_dsr_n_lowers_p_value():
     """Higher n_trials makes selection bias harder to correct — DSR p-value drops."""
     from scripts.walkforward_tier3 import _deflated_sharpe_ratio
-    _, p_low_n = _deflated_sharpe_ratio(1.0, n_trials=15, n_obs=500)
-    _, p_high_n = _deflated_sharpe_ratio(1.0, n_trials=200, n_obs=500)
+    # Use modest SR / sample so p-values are not both saturated at 1.0 after the
+    # WF deep-review pass-2 DSR fix (which restored the sqrt(V) scaling on E[SR_max]).
+    _, p_low_n = _deflated_sharpe_ratio(0.15, n_trials=15, n_obs=200)
+    _, p_high_n = _deflated_sharpe_ratio(0.15, n_trials=200, n_obs=200)
     assert p_high_n < p_low_n
 
 

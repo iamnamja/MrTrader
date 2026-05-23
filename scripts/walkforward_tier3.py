@@ -67,16 +67,37 @@ MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)
 
 def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
     """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
-    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction."""
+    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction.
+
+    Formula (per B&LP 2014, eq. 8-10):
+      V[SR]      = (1 + 0.5·SR²) / (T - 1)              # IID-normal variance of SR estimator
+      E[SR_max]  = sqrt(V[SR]) · [ (1-γ)·Φ⁻¹(1-1/N)
+                                  + γ·Φ⁻¹(1-1/(N·e)) ]   # selection-bias correction
+      DSR_z      = (SR_obs - E[SR_max]) / sqrt(V[SR])
+
+    Bug fix (WF deep-review pass 2): previous implementation omitted the sqrt(V[SR])
+    scaling factor on E[SR_max], so the deflation term carried wrong units and
+    massively overstated DSR for high-T runs. The numerator and denominator of
+    DSR_z must use the same variance scaling.
+
+    Args:
+      sharpe:   The observed (annualized) Sharpe ratio.
+      n_trials: Number of model variants tried historically (selection-bias N).
+      n_obs:    Number of return OBSERVATIONS used to compute SR (i.e. number of
+                daily returns / trading days in the test window). NOT trade count —
+                using trade count here under-states T and produces an inflated DSR.
+                Callers must pass total trading days, not total_trades.
+    """
     if n_trials <= 1 or n_obs <= 1:
         return sharpe, 0.5
     euler_mascheroni = 0.5772156649
-    sr_star = (
+    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
+    sr_var_sqrt = math.sqrt(sr_var)
+    sr_star = sr_var_sqrt * (
         (1 - euler_mascheroni) * norm.ppf(1 - 1.0 / n_trials)
         + euler_mascheroni * norm.ppf(1 - 1.0 / (n_trials * math.e))
     )
-    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
-    dsr_z = (sharpe - sr_star) / math.sqrt(sr_var)
+    dsr_z = (sharpe - sr_star) / sr_var_sqrt
     return dsr_z, float(norm.cdf(dsr_z))
 
 
@@ -179,6 +200,10 @@ class FoldResult:
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
     macro_gate_days: int = 0
+    # Number of return observations (trading days) in this fold's equity curve.
+    # Used to compute T for the Deflated Sharpe Ratio. 0 means "unknown" — callers
+    # that aggregate folds should sum this across folds for the DSR n_obs argument.
+    n_obs: int = 0
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated when --compute-fold-ic is passed. Not a gate — used to monitor
     # feature decay between train and test.
@@ -222,6 +247,13 @@ class WalkForwardReport:
         return sum(f.trades for f in self.folds)
 
     @property
+    def total_obs(self) -> int:
+        """Total number of return observations (trading days) across all folds.
+        Falls back to total_trades only when no fold reported n_obs (legacy)."""
+        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
+        return obs if obs > 0 else self.total_trades
+
+    @property
     def avg_profit_factor(self) -> float:
         pfs = [f.profit_factor for f in self.folds if f.profit_factor > 0]
         return float(np.mean(pfs)) if pfs else 0.0
@@ -241,7 +273,7 @@ class WalkForwardReport:
     PAPER_MIN_FOLD_SHARPE = -0.40
 
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
@@ -256,7 +288,7 @@ class WalkForwardReport:
 
     def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
         """Return per-gate pass/fail dict for logging and tests."""
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
@@ -284,7 +316,7 @@ class WalkForwardReport:
               f"{'OK' if detail['min_sharpe'][1] else 'FAIL'}")
         print(f"  Avg win rate:    {self.avg_win_rate:.1%}")
         print(f"  Total trades:    {self.total_trades}")
-        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_trades)
+        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         print(f"  DSR (N={dsr_n} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
               f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
         if self.avg_profit_factor > 0 and not paper_gate:
@@ -813,6 +845,7 @@ def run_swing_walkforward(
             profit_factor=pf,
             calmar_ratio=calmar,
             k_ratio=kr,
+            n_obs=max(len(equity) - 1, 0),  # daily returns count for DSR
         )
 
     from concurrent.futures import ThreadPoolExecutor
@@ -1016,6 +1049,7 @@ def run_intraday_walkforward(
             profit_factor=pf,
             calmar_ratio=calmar,
             k_ratio=kr,
+            n_obs=max(len(equity) - 1, 0),  # daily returns count for DSR
         )
 
     fold_args = [

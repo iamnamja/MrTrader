@@ -1289,11 +1289,16 @@ class AgentSimulator:
             (eq_vals[i] - eq_vals[i-1]) / max(eq_vals[i-1], 1e-9)
             for i in range(1, len(eq_vals))
         ]
-        ret_series = daily_rets if len(daily_rets) >= 2 else [t.pnl_pct for t in accepted_trades]
-
+        # Sharpe/Sortino must be computed from a daily return series (so the sqrt(252)
+        # annualization applies). Falling back to per-trade returns mixes periodicity
+        # and produces a meaningless annualized number — return 0 instead.
         from app.backtesting.strategy_simulator import StrategySimulator
-        sharpe = StrategySimulator._sharpe(ret_series, 252)
-        sortino = StrategySimulator._sortino(ret_series, 252)
+        if len(daily_rets) >= 2:
+            sharpe = StrategySimulator._sharpe(daily_rets, 252)
+            sortino = StrategySimulator._sortino(daily_rets, 252)
+        else:
+            sharpe = 0.0
+            sortino = 0.0
         max_dd = StrategySimulator._max_drawdown(eq_vals)
         calmar = ann_return / max(max_dd, 1e-9)
 

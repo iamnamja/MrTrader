@@ -35,8 +35,11 @@ def test_dsr_n_trials_documented():
 def test_deflated_sharpe_increases_with_n_trials():
     """DSR p-value must decrease (harder to pass) as n_trials increases."""
     from scripts.walkforward_tier3 import _deflated_sharpe_ratio
-    _, p_low = _deflated_sharpe_ratio(0.8, n_trials=15, n_obs=1000)
-    _, p_high = _deflated_sharpe_ratio(0.8, n_trials=200, n_obs=1000)
+    # After WF deep-review pass-2 DSR fix (restored sqrt(V) scaling), SR=0.8 with
+    # T=1000 saturates both p-values at 1.0. Use a smaller signal so the deflation
+    # term materially moves the p-value between the two n_trials values.
+    _, p_low = _deflated_sharpe_ratio(0.1, n_trials=15, n_obs=100)
+    _, p_high = _deflated_sharpe_ratio(0.1, n_trials=200, n_obs=100)
     assert p_high < p_low, (
         f"Expected p_value(N=200)={p_high:.4f} < p_value(N=15)={p_low:.4f}. "
         "More trials → harder DSR threshold → lower p-value for same observed Sharpe."
