@@ -307,15 +307,20 @@ class AgentSimulator:
             _vix_closes = _vix_df["close"]
 
         for day_idx, day in enumerate(trading_days):
-            # 0. Compute today's closes for MTM equity (used for peak tracking + sizing/RM).
-            _today_closes = {}
+            # 0. Bug fix (look-ahead): cache MTM equity for sizing/RM decisions made at
+            # TODAY'S OPEN. Previously used today's close for the cached equity, which
+            # leaked future information into position sizing and risk-rule validation.
+            # We now use the last available close STRICTLY BEFORE today (i.e. yesterday's
+            # close) — the latest information available to the decision-maker at the open.
+            _prior_closes = {}
             for _sym, _pos in portfolio.positions.items():
                 _df = symbols_data.get(_sym)
-                if _df is not None:
-                    _bar = self._bars_on(_df, day)
-                    if _bar is not None:
-                        _today_closes[_sym] = float(_bar["close"])
-            portfolio.update_mtm(_today_closes)
+                if _df is None:
+                    continue
+                _prior = self._bars_up_to(_df, day, exclude_today=True)
+                if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
+                    _prior_closes[_sym] = float(_prior["close"].iloc[-1])
+            portfolio.update_mtm(_prior_closes)
 
             # 1. Advance bars_held for all open positions
             for pos in portfolio.positions.values():
