@@ -15,11 +15,11 @@ import pytest
 
 
 class TestLabelHorizon:
-    def test_default_horizon_is_5(self):
-        """Default LABEL_HORIZON_DAYS preserves legacy 5d label."""
+    def test_default_horizon_is_20(self):
+        """v216: LABEL_HORIZON_DAYS=20 aligns training horizon with 40-bar backtest hold."""
         from app.ml import retrain_config
         importlib.reload(retrain_config)
-        assert retrain_config.LABEL_HORIZON_DAYS == 5
+        assert retrain_config.LABEL_HORIZON_DAYS == 20
 
     def test_10d_label_uses_correct_shift(self, monkeypatch):
         """When LABEL_HORIZON_DAYS=10, train_model mutates FORWARD_DAYS to 10."""

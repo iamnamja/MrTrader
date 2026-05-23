@@ -4545,7 +4545,40 @@ Entry fills used exact printed open price. Real MOO orders slip 2-5bps for Russe
 Added `ENTRY_SLIPPAGE_PCT = 0.0003` (3bps). Longs pay more, shorts receive less.
 This is conservative but realistic and counteracts any MOO alpha inflation.
 
-**Status:** PR #253 merged. See "v215 WF Post-All-Fixes" section above for results (-0.571 avg Sharpe). PR #254 reverts pool to 50. PR #255 implements v216 design.
+**Status:** PRs #251-#255 all merged. See WF results summary below. v216 retrain in progress.
+
+### v215 WF Post-PR-#251+#252 Results — 2026-05-23
+
+**Code:** main post-PR #251+#252. Key changes from baseline: (1) ATR stops tightened 8%→0.75-4%, (2) max_hold_bars 160→40, (3) stop slippage 5bps, (4) borrow/365.
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar | Gate |
+|------|------------|--------|------|--------|--------|------|
+| 1 | 2021-06-08 → 2022-05-23 | 282 | 29.1% | -1.51 | -0.78 | ❌ |
+| 2 | 2022-06-08 → 2023-05-23 | 232 | 25.0% | -1.50 | -0.89 | ❌ |
+| 3 | 2023-06-08 → 2024-05-22 | 360 | 35.3% | +0.28 | +0.27 | ❌ |
+| 4 | 2024-06-07 → 2025-05-22 | 302 | 36.8% | +0.54 | +0.55 | ❌ |
+| 5 | 2025-06-07 → 2026-05-22 | 314 | 29.9% | -0.11 | -0.10 | ❌ |
+| **Avg** | | **1490** | **31%** | **-0.459** | **-0.188** | ❌ FAIL |
+
+**Root cause:** `max_hold_bars` 160→40 (4× faster turnover) + ATR stops tightened to 0.75-4% reveals that v215 lacks the precision signal needed to overcome tight stop friction. Baseline +0.036 was misleading (32-week holds + 8% circuit-breaker = patience buffer masking weak signal).
+
+**Conclusion:** v215 fails with realistic parameters. WF is now trustworthy. v216 is the path forward.
+
+### v216 Design — Label Horizon Alignment (Opus 4.7 recommendation, 2026-05-23)
+
+**Hypothesis:** v215 was trained on 5-day `lambdarank` labels but tested with 40-bar max_hold_bars. Misalignment between training horizon (5d) and backtest horizon (40 bars = 8 weeks) means the model predicts the wrong thing. A 0.5×ATR stop (~0.75-1.5% for Russell 1000) is within one day's random noise, causing noise stop-outs regardless of model quality.
+
+**v216 changes (3 config lines, no code edits):**
+1. `retrain_config.py:LABEL_HORIZON_DAYS = 20` (was 5). `training.py` auto-propagates to `FORWARD_DAYS`, `STEP_DAYS`, `EMBARGO_WINDOWS`. 20-day label ≈ mid-point of 40-bar hold; long enough for trends to develop, short enough to have ≥10k training rows.
+2. `retrain_config.py:feature_keep_list = PHASE_C_V2_FEATURE_KEEP_LIST` (was `PHASE_C_FEATURE_KEEP_LIST`). Adds `momentum_20d_sector_neutral` + `momentum_60d_sector_neutral` to the 14-feature set (→19 features). Per existing retrain_config docstring, these directly address the concentrated sector-bet bias causing Fold 2/4 losses.
+3. `swing.py:atr_stop_mult = 1.5, atr_target_mult = 3.0` (was 0.5, 1.5). Since LambdaRank `lambdarank` label scheme does NOT use ATR stops in training (no `_atr_label_thresholds()` call for that branch), changing WF stops doesn't create label/sim mismatch. 1.5×ATR puts the stop outside typical daily noise bands; 3.0×ATR target → 1:2 R:R.
+
+**Training command:**
+```
+python scripts/train_model.py --no-fundamentals --workers 8 --allow-sacred-holdout 2>&1 | tee logs/retrain_swing_v216.log
+```
+
+**Expected direction:** avg Sharpe in [+0.0, +0.5]. If still negative → regime gating (inference-only) needed. If folds 1/2 still deeply negative while 3/4 improve → sector-neutral features are working but regime gating needed next.
 
 ### Known Gap: Training Entry Price vs Backtest Entry Price (C1 — deferred to v216)
 

@@ -25,8 +25,8 @@ class SwingStrategy:
         model,
         version: int,
         symbols: List[str],
-        atr_stop_mult: float = 0.5,
-        atr_target_mult: float = 1.5,
+        atr_stop_mult: float = 1.5,   # v216: 1.5×ATR for ranker model (LambdaRank doesn't use triple_barrier stops)
+        atr_target_mult: float = 3.0,  # v216: 3.0×ATR target for 1:2 R:R
         meta_model=None,
         pm_abstention_vix: float = 0.0,
         pm_abstention_spy_ma_days: int = 0,
