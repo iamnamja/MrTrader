@@ -64,8 +64,10 @@ def _make_model(*, has_ts_norm: bool, has_sibling: bool = False,
 
 
 def _make_vix_series(value: float, day: date) -> pd.Series:
-    idx = pd.DatetimeIndex([pd.Timestamp(day)])
-    return pd.Series([value], index=idx)
+    # Include a prior-day entry so _vix_at (strictly < day) can find a value.
+    prior = pd.Timestamp(day) - pd.Timedelta(days=1)
+    idx = pd.DatetimeIndex([prior, pd.Timestamp(day)])
+    return pd.Series([value, value], index=idx)
 
 
 # ── Test 1: TS norm called when state present ─────────────────────────────────
