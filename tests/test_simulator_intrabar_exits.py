@@ -88,20 +88,22 @@ def _exit(sim, direction: str, entry: float, stop: float, target: float,
 class TestLongIntrabarStop:
     def test_low_touches_stop_fills_at_stop(self):
         sim = _make_sim()
-        # low=94 < stop=95: should fill at stop (95), not close (97)
+        # low=94 < stop=95: fill at stop minus 5bps slippage
+        from app.backtesting.agent_simulator import STOP_SLIPPAGE_PCT
         trade = _exit(sim, "long", entry=100, stop=95, target=110,
                       bar_open=99, bar_high=100, bar_low=94, bar_close=97)
         assert trade is not None
-        assert trade.exit_price == pytest.approx(95.0), "should fill at stop_price"
+        assert trade.exit_price == pytest.approx(95.0 * (1 - STOP_SLIPPAGE_PCT)), "fill at stop minus slippage"
         assert "stop" in trade.exit_reason.lower()
 
     def test_gap_down_through_stop_fills_at_open(self):
         sim = _make_sim()
-        # open=93 < stop=95: gap-down → fill at open
+        # open=93 < stop=95: gap-down → fill at open minus 5bps slippage
+        from app.backtesting.agent_simulator import STOP_SLIPPAGE_PCT
         trade = _exit(sim, "long", entry=100, stop=95, target=110,
                       bar_open=93, bar_high=94, bar_low=92, bar_close=93)
         assert trade is not None
-        assert trade.exit_price == pytest.approx(93.0), "gap-down: fill at open"
+        assert trade.exit_price == pytest.approx(93.0 * (1 - STOP_SLIPPAGE_PCT)), "gap-down: fill at open minus slippage"
         assert "stop" in trade.exit_reason.lower()
 
     def test_high_touches_target_fills_at_target(self):
@@ -135,20 +137,22 @@ class TestLongIntrabarStop:
 class TestShortIntrabarStop:
     def test_high_touches_stop_fills_at_stop(self):
         sim = _make_sim()
-        # Short: stop above entry (210), high=211 → cover at stop (210)
+        # Short: stop above entry (210), high=211 → cover at stop plus 5bps slippage
+        from app.backtesting.agent_simulator import STOP_SLIPPAGE_PCT
         trade = _exit(sim, "short", entry=200, stop=210, target=185,
                       bar_open=202, bar_high=211, bar_low=199, bar_close=205)
         assert trade is not None
-        assert trade.exit_price == pytest.approx(210.0), "short stop: fill at stop"
+        assert trade.exit_price == pytest.approx(210.0 * (1 + STOP_SLIPPAGE_PCT)), "short stop: fill at stop plus slippage"
         assert "stop" in trade.exit_reason.lower()
 
     def test_gap_up_through_stop_fills_at_open(self):
         sim = _make_sim()
-        # Short: open=215 >= stop=210 → gap-up: fill at open (worse than stop)
+        # Short: open=215 >= stop=210 → gap-up: fill at open plus 5bps slippage
+        from app.backtesting.agent_simulator import STOP_SLIPPAGE_PCT
         trade = _exit(sim, "short", entry=200, stop=210, target=185,
                       bar_open=215, bar_high=217, bar_low=213, bar_close=215)
         assert trade is not None
-        assert trade.exit_price == pytest.approx(215.0), "short gap-up: fill at open"
+        assert trade.exit_price == pytest.approx(215.0 * (1 + STOP_SLIPPAGE_PCT)), "short gap-up: fill at open plus slippage"
         assert "stop" in trade.exit_reason.lower()
 
     def test_low_touches_target_fills_at_target(self):
