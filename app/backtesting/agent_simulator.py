@@ -1070,7 +1070,7 @@ class AgentSimulator:
                     target_price = entry_price * 0.01  # never triggers
                 else:
                     stop_price = entry_price * 0.0001  # never triggers (long stops below entry)
-                    target_price = entry_price * 100.0 # never triggers
+                    target_price = entry_price * 100.0  # never triggers
 
             # Position sizing: size_position requires stop_price < entry_price (long semantics).
             # For shorts, flip the stop so risk-per-share = |entry - stop| is preserved.
