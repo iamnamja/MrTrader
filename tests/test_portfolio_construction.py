@@ -183,3 +183,70 @@ class TestComputeEqualWeights:
         weights = compute_equal_weights(syms, total_equity=5_000.0)
         vals = list(weights.values())
         assert all(abs(v - vals[0]) < 1e-9 for v in vals)
+
+
+# ---------------------------------------------------------------------------
+# Phase RB.2 — inverse-vol sizing tests
+# ---------------------------------------------------------------------------
+
+from app.strategy.portfolio_construction import compute_inverse_vol_weights
+
+
+def _bars_with_vol(n=60, vol=0.01, seed=0):
+    """Create synthetic close series with given daily vol."""
+    rng = np.random.default_rng(seed)
+    rets = rng.normal(0, vol, n)
+    prices = 100.0 * np.cumprod(1 + rets)
+    idx = pd.date_range("2023-01-03", periods=n, freq="B")
+    return pd.DataFrame({"close": prices, "open": prices, "high": prices,
+                         "low": prices, "volume": [1_000_000] * n}, index=idx)
+
+
+class TestInverseVolWeights:
+    def test_low_vol_gets_higher_weight(self):
+        syms = ["HIGH", "LOW"]
+        bars = {
+            "HIGH": _bars_with_vol(60, vol=0.03, seed=1),
+            "LOW": _bars_with_vol(60, vol=0.005, seed=2),
+        }
+        as_of = date(2023, 4, 1)
+        weights = compute_inverse_vol_weights(syms, bars, as_of, total_equity=10000.0)
+        assert weights["LOW"] > weights["HIGH"]
+
+    def test_weights_sum_to_gross_exposure(self):
+        syms = [f"S{i}" for i in range(5)]
+        bars = {s: _bars_with_vol(60, vol=0.01 * (i + 1), seed=i) for i, s in enumerate(syms)}
+        as_of = date(2023, 4, 1)
+        weights = compute_inverse_vol_weights(syms, bars, as_of, total_equity=50000.0,
+                                              gross_exposure_multiplier=0.7)
+        assert abs(sum(weights.values()) - 50000.0 * 0.7) < 1.0
+
+    def test_cap_limits_extreme_weights(self):
+        # One symbol has very low vol (would get huge weight without cap)
+        syms = ["LOWVOL", "NORM"]
+        bars = {
+            "LOWVOL": _bars_with_vol(60, vol=0.0001, seed=10),
+            "NORM": _bars_with_vol(60, vol=0.02, seed=11),
+        }
+        as_of = date(2023, 4, 1)
+        eq_weight = 5000.0  # 10000 / 2
+        weights = compute_inverse_vol_weights(syms, bars, as_of, total_equity=10000.0,
+                                              min_weight_mult=0.5, max_weight_mult=2.0)
+        assert weights["LOWVOL"] <= eq_weight * 2.0 + 1.0  # capped at 2x
+
+    def test_fallback_to_equal_weight_insufficient_history(self):
+        # Only 5 bars — insufficient for 20d lookback
+        syms = ["A", "B"]
+        idx = pd.date_range("2023-01-03", periods=5, freq="B")
+        short_bars = pd.DataFrame({"close": [100.0] * 5, "open": [100.0] * 5,
+                                   "high": [100.0] * 5, "low": [100.0] * 5,
+                                   "volume": [1_000_000] * 5}, index=idx)
+        bars = {"A": short_bars, "B": short_bars}
+        weights = compute_inverse_vol_weights(syms, bars, date(2023, 1, 15),
+                                              total_equity=10000.0)
+        # Should fall back to equal weight
+        assert abs(weights.get("A", 0) - weights.get("B", 0)) < 1.0
+
+    def test_empty_symbols_returns_empty(self):
+        weights = compute_inverse_vol_weights([], {}, date(2023, 1, 1), total_equity=10000.0)
+        assert weights == {}
