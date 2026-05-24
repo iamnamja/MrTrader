@@ -5243,4 +5243,3 @@ WF fold 1 (2022-2023 bear): Sharpe -0.24 even for momentum baseline — regime g
 3. **CPCV gate calibration**: P5 > -0.30 may be too strict for long-only equity — industry standard is typically P5 > -0.5 or -1.0. Document this and check vs Opus guidance.
 
 **PR**: to be filed with momentum baseline changes.
-
