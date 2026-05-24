@@ -1216,12 +1216,14 @@ class AgentSimulator:
 
         # 5. Regime multiplier
         gross_mult = self.rebalance_regime_fn(day) if self.rebalance_regime_fn else 1.0
-        regime_label = "UNKNOWN"
-        if self.rebalance_regime_fn:
-            try:
-                regime_label = str(gross_mult)
-            except Exception:
-                pass
+        if not self.rebalance_regime_fn:
+            regime_label = "UNSET"
+        elif gross_mult >= 0.95:
+            regime_label = "BULL"
+        elif gross_mult <= 0.35:
+            regime_label = "BEAR"
+        else:
+            regime_label = "NEUTRAL"
 
         # 6. Close drops
         tx_costs = 0.0

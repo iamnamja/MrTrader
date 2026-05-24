@@ -154,6 +154,69 @@ def _fold_years(test_start: date, test_end: date) -> float:
     return max((test_end - test_start).days / 365.0, 1 / 365.0)
 
 
+def _make_regime_gate_fn(
+    symbols_data: dict,
+    spy_ma_days: int = 200,
+    vix_bull: float = 20.0,
+    vix_bear: float = 30.0,
+    bull_mult: float = 1.0,
+    neutral_mult: float = 0.7,
+    bear_mult: float = 0.3,
+):
+    """Return a callable(day: date) -> float that gives gross exposure multiplier.
+
+    Regime rules (PIT-safe — uses data strictly before *day*):
+      BULL:    SPY > SPY_MA(spy_ma_days) AND VIX < vix_bull  -> bull_mult
+      BEAR:    SPY < SPY_MA(spy_ma_days) OR  VIX >= vix_bear -> bear_mult
+      NEUTRAL: otherwise                                      -> neutral_mult
+    """
+    import pandas as _pd
+
+    spy_df = symbols_data.get("SPY") if "SPY" in symbols_data else symbols_data.get("spy")
+    vix_df = symbols_data.get("^VIX") if "^VIX" in symbols_data else symbols_data.get("VIX")
+
+    spy_close: "_pd.Series | None" = spy_df["close"] if spy_df is not None else None
+    vix_close: "_pd.Series | None" = vix_df["close"] if vix_df is not None else None
+
+    spy_ma: "_pd.Series | None" = (
+        spy_close.rolling(spy_ma_days, min_periods=max(spy_ma_days // 2, 1)).mean()
+        if spy_close is not None else None
+    )
+
+    def _regime_fn(day: date) -> float:
+        # PIT: use data strictly before the rebalance day
+        _day_ts = _pd.Timestamp(day)
+
+        spy_val = vix_val = spy_ma_val = None
+        if spy_close is not None:
+            _spy_hist = spy_close[spy_close.index < _day_ts]
+            if len(_spy_hist) > 0:
+                spy_val = float(_spy_hist.iloc[-1])
+        if spy_ma is not None:
+            _ma_hist = spy_ma[spy_ma.index < _day_ts]
+            if len(_ma_hist) > 0:
+                spy_ma_val = float(_ma_hist.iloc[-1])
+        if vix_close is not None:
+            _vix_hist = vix_close[vix_close.index < _day_ts]
+            if len(_vix_hist) > 0:
+                vix_val = float(_vix_hist.iloc[-1])
+
+        # Determine regime
+        above_ma = (spy_val is not None and spy_ma_val is not None
+                    and spy_val > spy_ma_val)
+        vix_low = vix_val is not None and vix_val < vix_bull
+        vix_high = vix_val is not None and vix_val >= vix_bear
+        spy_below = not above_ma if (spy_val is not None and spy_ma_val is not None) else False
+
+        if above_ma and vix_low:
+            return bull_mult      # BULL
+        if spy_below or vix_high:
+            return bear_mult      # BEAR
+        return neutral_mult       # NEUTRAL
+
+    return _regime_fn
+
+
 # ── Console helpers ───────────────────────────────────────────────────────────
 
 def _ok(msg):
@@ -582,6 +645,10 @@ def run_swing_walkforward(
     rebalance_add_threshold: int = 15,
     rebalance_drop_threshold: int = 30,
     rebalance_min_adv: float = 20_000_000.0,
+    rebalance_regime_gate: bool = False,
+    rebalance_regime_vix_bull: float = 20.0,
+    rebalance_regime_vix_bear: float = 30.0,
+    rebalance_regime_spy_ma_days: int = 200,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -806,6 +873,16 @@ def run_swing_walkforward(
                         fold_idx, _n_on_mid, len(fold_symbols_data), _mid,
                     )
 
+        # Phase RB.1: build regime gate fn if requested (PIT-safe, uses fold's SPY+VIX)
+        _regime_gate_fn = None
+        if rebalance_mode and rebalance_regime_gate:
+            _regime_gate_fn = _make_regime_gate_fn(
+                fold_symbols_data,
+                spy_ma_days=rebalance_regime_spy_ma_days,
+                vix_bull=rebalance_regime_vix_bull,
+                vix_bear=rebalance_regime_vix_bear,
+            )
+
         _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
         if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
@@ -857,6 +934,7 @@ def run_swing_walkforward(
             rebalance_add_threshold=rebalance_add_threshold,
             rebalance_drop_threshold=rebalance_drop_threshold,
             rebalance_min_adv=rebalance_min_adv,
+            rebalance_regime_fn=_regime_gate_fn,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1265,6 +1343,15 @@ def main() -> int:
                         help="Drop a symbol if its rank > this (default: 30)")
     parser.add_argument("--rebalance-min-adv", type=float, default=20_000_000.0,
                         help="Min avg daily dollar volume for liquidity filter (default: 20M)")
+    parser.add_argument("--rebalance-regime-gate", action="store_true", default=False,
+                        help="Phase RB.1: scale gross exposure by regime "
+                             "(Bull=100%%, Neutral=70%%, Bear=30%%)")
+    parser.add_argument("--rebalance-regime-vix-bull", type=float, default=20.0,
+                        help="VIX threshold below which regime is BULL (default: 20)")
+    parser.add_argument("--rebalance-regime-vix-bear", type=float, default=30.0,
+                        help="VIX threshold at/above which regime is BEAR (default: 30)")
+    parser.add_argument("--rebalance-regime-spy-ma-days", type=int, default=200,
+                        help="SPY MA lookback for regime detection (default: 200)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1517,6 +1604,10 @@ def main() -> int:
             rebalance_add_threshold=args.rebalance_add_threshold,
             rebalance_drop_threshold=args.rebalance_drop_threshold,
             rebalance_min_adv=args.rebalance_min_adv,
+            rebalance_regime_gate=args.rebalance_regime_gate,
+            rebalance_regime_vix_bull=args.rebalance_regime_vix_bull,
+            rebalance_regime_vix_bear=args.rebalance_regime_vix_bear,
+            rebalance_regime_spy_ma_days=args.rebalance_regime_spy_ma_days,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
