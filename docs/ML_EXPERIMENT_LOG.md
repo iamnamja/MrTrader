@@ -5177,3 +5177,34 @@ Fold 1 (bear market) Sharpe remains negative (-0.24) — inv-vol doesn't fix reg
 Or: CPCV with ≥10 paths to validate robustness before considering paper trading.
 
 **PR**: #268 (feat/phase-rb2-inv-vol)
+
+---
+
+## Phase RB.2 CPCV — Critical Failure (2026-05-24) ❌
+
+### Setup
+- k=6, paths=2 → C(6,4)=15 → 14 test paths actually generated
+- Same REBALANCE harness as RB.2: regime gate + inv-vol sizing
+- Gate: mean path Sharpe ≥ 0.80
+
+### Results
+| Metric | Value | Gate | Result |
+|--------|-------|------|--------|
+| Mean path Sharpe | **-1.264** | ≥ 0.80 | ❌ FAIL |
+| % positive paths | **21.4%** (3/14) | ≥ 75% | ❌ FAIL |
+| DSR p-value | **0.000** | > 0.95 | ❌ FAIL |
+
+### Root Cause (Opus diagnosis)
+WF +1.649 was **selection bias** — the 3 WF folds all landed in 2024–2026 bull tape where cross-sectional momentum ranking works well. CPCV forces the model through all 14 combinations of 6 time segments, including 2021 chop and 2022 bear. v216 learned momentum/quality factors that only pay in trending bull regimes; rank stability collapses in other regimes.
+
+**Key insight**: 3-fold WF with lucky window placement inflated the metric. CPCV is the correct validation.
+
+### Opus Recommendation: Run Momentum Baseline CPCV
+Before any retrain, run a trivial 60d momentum ranker through the IDENTICAL REBALANCE harness (same regime gate, same inv-vol, same 20d cadence):
+- If baseline CPCV mean Sharpe also negative → **architecture problem** (top-30, 20d cadence, or universe)
+- If baseline CPCV mean Sharpe ≥ 0.3 → **v216 is the weak link**, retrain with shorter labels + IC audit
+
+"It's a 30-minute test that saves weeks."
+
+**Next**: Run momentum baseline CPCV with `--rebalance-momentum-baseline` flag (just implemented).
+

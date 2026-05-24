@@ -1206,6 +1206,32 @@ def run_intraday_walkforward(
 
 # ── WF-3: CPCV helpers ────────────────────────────────────────────────────────
 
+def _momentum_baseline_scorer(lookback_days: int = 60):
+    """Return a factor_scorer callable that ranks symbols by trailing return (PIT-safe)."""
+    import pandas as _pd
+
+    def _scorer(day, symbols_data, vix_history=None):
+        ts = _pd.Timestamp(day)
+        scores = []
+        for sym, df in symbols_data.items():
+            if sym in ("SPY", "^VIX", "VIX"):
+                continue
+            if df is None or df.empty:
+                continue
+            close_col = "close" if "close" in df.columns else "Close"
+            if close_col not in df.columns:
+                continue
+            hist = df[df.index < ts][close_col]
+            if len(hist) < lookback_days + 1:
+                continue
+            ret = float(hist.iloc[-1] / hist.iloc[-(lookback_days + 1)] - 1)
+            scores.append((sym, ret))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores
+
+    return _scorer
+
+
 def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     """Run CPCV for swing model and print the result."""
     from scripts.walkforward.cpcv import run_cpcv
@@ -1216,6 +1242,12 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         _warn("CPCV: no swing model found — skipping")
         return
     syms = symbols or list(RUSSELL_1000_TICKERS)
+
+    _factor_scorer = None
+    if getattr(args, "rebalance_momentum_baseline", False):
+        _factor_scorer = _momentum_baseline_scorer(lookback_days=60)
+        print("  CPCV: momentum baseline mode — bypassing v216, using 60d trailing return ranker")
+
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
         atr_stop_mult=args.stop_mult, atr_target_mult=args.target_mult,
@@ -1231,6 +1263,23 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         feature_cache_executor=args.feature_cache_executor,
         feature_cache_disable=args.feature_cache_disable,
         sim_scan_interval_days=args.sim_scan_interval_days,
+        rebalance_mode=getattr(args, "rebalance_mode", False),
+        rebalance_days=getattr(args, "rebalance_days", 20),
+        rebalance_target_n=getattr(args, "rebalance_target_n", 30),
+        rebalance_sector_cap=getattr(args, "rebalance_sector_cap", 0.30),
+        rebalance_add_threshold=getattr(args, "rebalance_add_threshold", 15),
+        rebalance_drop_threshold=getattr(args, "rebalance_drop_threshold", 30),
+        rebalance_min_adv=getattr(args, "rebalance_min_adv", 0.0),
+        rebalance_regime_gate=getattr(args, "rebalance_regime_gate", False),
+        rebalance_regime_spy_ma_days=getattr(args, "rebalance_regime_spy_ma_days", 200),
+        rebalance_regime_vix_bull=getattr(args, "rebalance_regime_vix_bull", 20.0),
+        rebalance_regime_vix_bear=getattr(args, "rebalance_regime_vix_bear", 30.0),
+        rebalance_inv_vol=getattr(args, "rebalance_inv_vol", False),
+        rebalance_inv_vol_lookback=getattr(args, "rebalance_inv_vol_lookback", 20),
+        rebalance_inv_vol_min_mult=getattr(args, "rebalance_inv_vol_min_mult", 0.5),
+        rebalance_inv_vol_max_mult=getattr(args, "rebalance_inv_vol_max_mult", 2.0),
+        factor_scorer=_factor_scorer,
+        no_atr_stops=getattr(args, "no_atr_stops", False),
     )
     strategy.model_type = "swing"
     from datetime import datetime, timedelta
@@ -1368,6 +1417,9 @@ def main() -> int:
                         help="Min weight vs equal weight (default: 0.5x)")
     parser.add_argument("--rebalance-inv-vol-max-mult", type=float, default=2.0,
                         help="Max weight vs equal weight (default: 2.0x)")
+    parser.add_argument("--rebalance-momentum-baseline", action="store_true", default=False,
+                        help="CPCV diagnostic: replace v216 with 60d trailing-return momentum ranker "
+                             "(same REBALANCE harness, same regime gate + inv-vol sizing)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
