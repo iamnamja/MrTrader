@@ -115,6 +115,19 @@ class Settings(BaseSettings):
     opp_score_breadth_weight: float = 0.15
     opp_score_dispersion_weight: float = 0.10
 
+    # Phase RA — REBALANCE execution mode
+    execution_mode: str = "SIGNAL"            # "SIGNAL" | "REBALANCE"
+    rebalance_days: int = 20                  # trading days between rebalances
+    target_positions: int = 30
+    sector_cap: float = 0.30
+    add_rank_threshold: int = 15
+    drop_rank_threshold: int = 30
+    min_avg_daily_dollar_vol: float = 20_000_000.0
+    regime_exposure_bull: float = 1.0
+    regime_exposure_neutral: float = 0.7
+    regime_exposure_bear: float = 0.3
+    rebalance_max_rotation_pct: float = 0.25  # max fraction of book to rotate in one cycle
+
     # Application
     log_level: str = "INFO"
     debug: bool = False

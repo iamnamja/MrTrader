@@ -144,5 +144,22 @@ class RegimeDetector:
             return 0.75
         return 1.0
 
+    def gross_exposure_multiplier(self) -> float:
+        """Phase RA: gross portfolio exposure for REBALANCE mode.
+
+        Maps regime to configured exposure targets:
+          LOW (bull)    → regime_exposure_bull    (default 1.00)
+          MEDIUM (neut) → regime_exposure_neutral  (default 0.70)
+          HIGH (bear)   → regime_exposure_bear     (default 0.30)
+        """
+        from app.config import settings
+        regime = self.get_regime()
+        mapping = {
+            REGIME_LOW: settings.regime_exposure_bull,
+            REGIME_MEDIUM: settings.regime_exposure_neutral,
+            REGIME_HIGH: settings.regime_exposure_bear,
+        }
+        return mapping.get(regime, settings.regime_exposure_neutral)
+
 
 regime_detector = RegimeDetector()
