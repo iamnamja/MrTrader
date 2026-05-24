@@ -267,7 +267,10 @@ class WalkForwardReport:
 
     @property
     def avg_profit_factor(self) -> float:
-        pfs = [f.profit_factor for f in self.folds if f.profit_factor > 0]
+        # Cap at 5.0 before averaging: PF=999 sentinel (all-wins fold) would otherwise
+        # inflate the mean far above the gate threshold, giving a spurious pass.
+        MAX_PF = 5.0
+        pfs = [min(f.profit_factor, MAX_PF) for f in self.folds if f.profit_factor > 0]
         return float(np.mean(pfs)) if pfs else 0.0
 
     @property
@@ -685,8 +688,11 @@ def run_swing_walkforward(
     for fold_idx in range(n_folds):
         train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
         test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
-        # test_end is the raw segment boundary; next fold's train must start after embargo
-        raw_test_end_dt = train_end_dt + timedelta(days=segment_days)
+        # test_end must leave embargo_days gap before the next fold's train_end,
+        # otherwise fold N's test rows (with their lookback features) bleed into
+        # fold N+1's training set.  Without this offset, adjacent folds abut and
+        # embargo_days has no effect.
+        raw_test_end_dt = train_end_dt + timedelta(days=segment_days - _embargo)
         # For all but the last fold, ensure next train starts at least embargo_days after test_end
         # (enforced implicitly: next fold's train_end is the next segment boundary,
         #  so expanding window naturally excludes the test window of the current fold)

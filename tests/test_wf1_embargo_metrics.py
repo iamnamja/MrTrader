@@ -164,6 +164,13 @@ class TestWalkForwardReportAggregation:
         report = _make_report([(0.9, 0.0, 0.0, 0.0)])
         assert report.avg_profit_factor == 0.0
 
+    def test_avg_profit_factor_caps_sentinel_at_5(self):
+        # PF=999 sentinel (all-wins fold) must be capped before averaging
+        # to prevent one lucky small fold from inflating the mean past the gate.
+        report = _make_report([(0.9, 999.0, 0.5, 0.1), (0.9, 1.0, 0.5, 0.1)])
+        # capped: (5.0 + 1.0) / 2 = 3.0  (not (999+1)/2 = 500)
+        assert abs(report.avg_profit_factor - 3.0) < 1e-9
+
     def test_avg_calmar(self):
         report = _make_report([(0.9, 1.5, 0.4, 0.1), (0.9, 1.5, 0.6, 0.1)])
         assert abs(report.avg_calmar - 0.5) < 1e-9
@@ -266,32 +273,32 @@ class TestEmbargoBoundaries:
     """Verify embargo_days creates the correct post-test gap in fold boundaries."""
 
     def test_embargo_creates_post_test_gap(self):
-        """Check fold boundary tuple includes embargo gap after test_end."""
-        from datetime import datetime, timedelta
-        import scripts.walkforward_tier3 as wf
+        """Fold N's test_end must be embargo_days before fold N+1's train_end.
 
-        # Replicate the boundary calculation from run_swing_walkforward
+        With the fixed formula raw_test_end_dt = train_end_dt + segment_days - embargo,
+        fold 0 test ends at fold_1_train_end - embargo_days, creating the proper gap.
+        """
+        from datetime import datetime, timedelta
+
         total_years = 3
         n_folds = 2
         purge_days = 10
         embargo_days = 5
 
         end_all = datetime(2024, 1, 1)
-        start_all = end_all - timedelta(days=total_years * 365 + 30)
         segment_days = int(total_years * 365 / (n_folds + 1))
         _embargo = embargo_days
 
-        fold_idx = 0
-        train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
-        test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
-        raw_test_end_dt = train_end_dt + timedelta(days=segment_days)
+        # Fold 0
+        fold0_train_end = end_all - timedelta(days=segment_days * n_folds)
+        fold0_test_end = fold0_train_end + timedelta(days=segment_days - _embargo)
 
-        # Next fold's train must start at least embargo_days after raw test_end
-        next_train_start = raw_test_end_dt + timedelta(days=_embargo + 1)
+        # Fold 1's train_end (the segment boundary)
+        fold1_train_end = end_all - timedelta(days=segment_days * (n_folds - 1))
 
-        # The gap between raw_test_end and next_train_start should be embargo_days
-        gap = (next_train_start - raw_test_end_dt).days - 1
-        assert gap == embargo_days
+        # Gap between fold 0 test end and fold 1 train end should equal embargo_days
+        gap = (fold1_train_end - fold0_test_end).days
+        assert gap == embargo_days, f"Expected gap={embargo_days}, got {gap}"
 
     def test_embargo_defaults_to_purge_days(self):
         """When embargo_days is None, it should equal purge_days."""
