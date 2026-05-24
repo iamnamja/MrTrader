@@ -1091,8 +1091,11 @@ class AgentSimulator:
                 continue
 
             sector = sector_map.get(sym, "UNKNOWN")
+            # When no_atr_stops is on, sentinel stop_price is unrealistic for risk sizing.
+            # Use the same synthetic 5% stop that was used for quantity sizing.
+            _rm_stop = stop_for_sizing if self.no_atr_stops else stop_price
             ok, reason = self._rm_validate(
-                sym, entry_price, stop_price, quantity, portfolio, sector,
+                sym, entry_price, _rm_stop, quantity, portfolio, sector,
                 direction="SELL_SHORT" if is_short else "BUY",
             )
             if not ok:
