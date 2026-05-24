@@ -868,7 +868,9 @@ def run_swing_walkforward(
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
         # WF-1: compute additional metrics
-        trade_rets = getattr(result, "trade_returns", []) or []
+        trade_rets = (getattr(result, "trade_returns", None)
+                      or [t.pnl_pct for t in (getattr(result, "trades", None) or [])
+                          if t.exit_reason != "OPEN"])
         pf = _compute_profit_factor(trade_rets)
         fold_yrs = _fold_years(te_start, te_end)
         calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
@@ -1080,7 +1082,9 @@ def run_intraday_walkforward(
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
         # WF-1: additional metrics
-        trade_rets = getattr(result, "trade_returns", []) or []
+        trade_rets = (getattr(result, "trade_returns", None)
+                      or [t.pnl_pct for t in (getattr(result, "trades", None) or [])
+                          if t.exit_reason != "OPEN"])
         pf = _compute_profit_factor(trade_rets)
         fold_yrs = _fold_years(te_start, te_end)
         calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
