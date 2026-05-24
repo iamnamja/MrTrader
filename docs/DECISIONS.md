@@ -134,3 +134,39 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 **If Phase 4 WF Sharpe > +0.3**: proceed to Phase 3 with confidence.
 **If Phase 4 WF Sharpe < 0**: investigate execution bug before any label work.
+
+---
+
+## 2026-05-24 — Opus 4.7 WF Code Audit: 10 Critical/Major Bugs Found
+
+**Context**: After Phase 4 v2 WF (avg Sharpe +0.046, 78 trades) and L2 Sharpe=0.397, commissioned a thorough Opus 4.7 audit of walkforward_tier3.py and agent_simulator.py looking for bugs, look-ahead, and realism issues.
+
+**Findings (prioritized)**:
+
+1. **CRITICAL — Embargo never enforced in fold boundaries** (walkforward_tier3.py L689)
+   - `raw_test_end_dt = train_end_dt + segment_days` → fold N test ends exactly where fold N+1 trains. Embargo_days was logged but had zero effect on boundary math.
+   - **Fix**: `raw_test_end_dt = train_end_dt + segment_days - embargo_days`
+
+2. **MAJOR — no_atr_stops defeated by check_exit trailing ratchet** (agent_simulator.py L1250)
+   - When `no_atr_stops=True`, sentinel stop prices replaced with real trailing stops on first profitable bar, defeating the phase 4 isolation.
+   - **Fix**: Only persist `new_stop` from check_exit when `not self.no_atr_stops`
+
+3. **MAJOR — PF=999 sentinel inflates avg_profit_factor gate** (walkforward_tier3.py L269-271)
+   - `avg_profit_factor` averaged PF=999 (all-wins fold) with real PFs, yanking mean far above gate threshold.
+   - **Fix**: Cap individual PFs at 5.0 before averaging
+
+4. **MAJOR — Silent trade loss when end-date data missing** (agent_simulator.py L514)
+   - FORCE_CLOSE silently skipped positions with no bar data — trade never recorded, affecting trade count and equity.
+   - **Fix**: Exit at entry_price with warning log when no bar data available
+
+5. **MAJOR (deferred) — Calmar=0 "not computed" free-passes gate** (walkforward_tier3.py L292)
+   - `avg_calmar == 0` was treated as "skip gate" rather than "gate fail". Ambiguous sentinel.
+   - **Decision**: Document for future fix; change sentinel to NaN requires broader test updates.
+
+6. **MAJOR (deferred) — Short buying power check uses full notional** (agent_simulator.py L889)
+   - Short entries checked against cash balance using full notional (Reg-T 100%), over-rejecting shorts.
+   - **Decision**: Defer; only affects short-side entries. Long-only Phase 3 is unaffected.
+
+**Fixes implemented**: Items 1-4 committed in feat/wf-opus-audit branch.
+
+**Consequences**: Previous WF results (all phases) used the defective embargo formula. Re-running Phase 4 v3 with corrected boundaries is required to get clean results. Embargo fix shrinks test windows by ~85 days each fold — with purge=85 and embargo=85, effective test window is 456-85=371 trading days per fold.

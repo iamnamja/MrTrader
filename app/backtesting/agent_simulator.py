@@ -511,12 +511,16 @@ class AgentSimulator:
         # last close on-or-before end_date.
         for sym, pos in list(portfolio.positions.items()):
             df = symbols_data.get(sym)
-            if df is None or len(df) == 0:
-                continue
-            _prior = self._bars_up_to(df, end_date, exclude_today=False)
-            if _prior is None or len(_prior) == 0 or "close" not in _prior.columns:
-                continue
-            exit_price = float(_prior["close"].iloc[-1])
+            exit_price = None
+            if df is not None and len(df) > 0:
+                _prior = self._bars_up_to(df, end_date, exclude_today=False)
+                if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
+                    exit_price = float(_prior["close"].iloc[-1])
+            if exit_price is None:
+                # Symbol has no data at fold end (delisted/gap) — exit at entry price
+                # to record the trade rather than silently discarding it.
+                logger.warning("FORCE_CLOSE: no bar data for %s at %s — closing at entry", sym, end_date)
+                exit_price = pos.entry_price
             trade, tx = self._close_position(pos, end_date, exit_price, "FORCE_CLOSE", portfolio)
             accepted_trades.append(trade)
             tx_costs_total += tx
@@ -1246,8 +1250,12 @@ class AgentSimulator:
                     max_hold_bars=_max_hold,
                     direction=_check_dir,
                 )
-                # Persist any trailing-stop ratchet for the next bar.
-                pos.stop_price = new_stop
+                # Persist trailing-stop ratchet only when ATR stops are active.
+                # When no_atr_stops=True, sentinels must not be replaced with real
+                # trailing values — otherwise the first profitable bar defeats the
+                # no-stop isolation.
+                if not self.no_atr_stops:
+                    pos.stop_price = new_stop
                 if ce_should_exit:
                     should_exit = True
                     exit_reason = ce_reason
