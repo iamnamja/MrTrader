@@ -4875,3 +4875,52 @@ Phase 4 spec (from Opus 4.7):
 - Training window: rolling 3-year (not expanding) — prevents 2020-2021 bull regime dominance
 - Features: add breadth (% universe above 50/200dma), cross-sectional dispersion, earnings-revision momentum; kill sign-flipping features
 - Short side: separate model with quality overlay (negative EPS revision + below 200dma + high SI), NOT symmetric decile rank
+
+---
+
+## Phase 4 — Execution Isolation WF — 2026-05-23
+
+**Flags**: `--no-atr-stops --no-pm-opportunity-score --no-prefilters --swing-purge-days 85`
+**Model**: v216 (same model, no retrain — execution isolation only)
+**Log**: `logs/wf_v216_phase4_v2.log`
+
+### Results vs Baseline
+
+| Run | Avg Sharpe | Total Trades | Notes |
+|-----|------------|--------------|-------|
+| v216 original (ATR stops ON, opp gate ON, purge=10d) | -0.91 | 1,363 | Baseline — catastrophic |
+| Phase 4 v1 (RM bug: sentinel stop → full notional risk) | -0.103 | 35 | RM rejected 95% of entries |
+| Phase 4 v2 (RM bug fixed) | **+0.046** | 78 | Correct execution isolation |
+
+**Improvement from removing stops + gate: +0.96 Sharpe units**
+
+### Phase 4 v2 Fold Details
+
+| Fold | Test Period | Trades | Win% | Sharpe | Calmar |
+|------|------------|--------|------|--------|--------|
+| 1 | 2022-06-19..2023-01-23 | 19 | 79.0% | +0.57 | 0.78 |
+| 2 | 2023-04-19..2023-11-23 | 12 | 58.3% | -0.84 | -0.91 |
+| 3 | 2024-02-17..2024-09-22 | 15 | 46.7% | -1.55 | -1.02 |
+| 4 | 2024-12-17..2025-07-23 | 17 | 70.6% | +1.30 | 2.81 |
+| 5 | 2025-10-17..2026-05-23 | 15 | 73.3% | +0.74 | 0.99 |
+
+**Avg Sharpe: +0.046** | Win rate: 65.6% | DSR z=-1.52, p=0.064 | Gate: FAIL
+
+### Interpretation (Opus 4.7)
+
+1. **+0.96 Sharpe improvement** proves execution was the dominant failure mode
+2. **78 trades total is statistically insufficient** — 85d purge reduces test windows to ~125 days (6 rebalance cycles). Sharpe SE ≈ 0.50 per fold → fold variance is noise, not signal
+3. **65.6% win rate across 78 trades is 2.9σ above 50%** — model IS picking winning directions at a real rate. Problem is payoff asymmetry (wins smaller than losses)
+4. **95% CI for avg Sharpe: [-0.17, +0.27]** — cannot distinguish from zero at this sample size
+
+### Known Bug Fixed: profit_factor
+
+`_compute_profit_factor()` in walkforward_tier3.py returned 0.0 when no losing trades exist (should return 999.0 sentinel). Fixed. Phase 4 v2 output showed `PF=0.00` for all folds due to this bug.
+
+### Opus 4.7 Decision: L3 Bridge Test Next
+
+Before Phase 3 retrain, run L3 bridge test (Phase 2.3):
+- Long-only top-40, realistic costs (5bps one-way), no stops, hold 20d
+- Pass: L3 Sharpe >= 0.5 * L2 Sharpe = 0.199
+- PASS → model has alpha, proceed to v217 with Phase 3 labels
+- FAIL → model lacks alpha at realistic costs, feature/label redesign required

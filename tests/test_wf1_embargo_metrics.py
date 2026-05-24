@@ -30,8 +30,9 @@ class TestComputeProfitFactor:
         # wins=3, losses=1 => pf=3.0
         assert abs(self._pf([1.0, 1.0, 1.0, -1.0]) - 3.0) < 1e-9
 
-    def test_no_losses_returns_zero(self):
-        assert self._pf([1.0, 2.0]) == 0.0
+    def test_no_losses_returns_sentinel(self):
+        # All wins, no losses: undefined PF, report 999.0 sentinel (not 0.0)
+        assert self._pf([1.0, 2.0]) == 999.0
 
     def test_empty_returns_zero(self):
         assert self._pf([]) == 0.0

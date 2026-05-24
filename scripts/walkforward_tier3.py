@@ -105,13 +105,16 @@ def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[fl
 
 def _compute_profit_factor(trade_returns: list) -> float:
     """Profit factor = sum(positive returns) / sum(abs(negative returns)).
-    Returns 0.0 if no trades or no losses (cannot compute).
+    Returns 0.0 if no trades (cannot compute).
+    Returns 999.0 if wins > 0 but no losses (infinite edge, small fold).
     """
     if not trade_returns:
         return 0.0
     wins = sum(r for r in trade_returns if r > 0)
     losses = sum(abs(r) for r in trade_returns if r < 0)
-    return float(wins / losses) if losses > 0 else 0.0
+    if losses > 0:
+        return float(wins / losses)
+    return 999.0 if wins > 0 else 0.0
 
 
 def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
