@@ -93,7 +93,6 @@ def _build_score_panel(model, bars: Dict[str, pd.DataFrame], horizon: int, worke
     t0 = time.time()
     cache = build_feature_cache(
         bars, workers=workers,
-        progress_interval=50,
     )
     logger.info("Feature cache built in %.1fs", time.time() - t0)
 
