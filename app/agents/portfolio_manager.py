@@ -82,8 +82,6 @@ def _confidence_scalar(prob: float) -> float:
     return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
-
-
 class PortfolioManager(RebalanceMixin, BaseAgent):
     """
     Runs on a 60-second heartbeat.
