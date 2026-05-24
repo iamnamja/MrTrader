@@ -18,8 +18,15 @@ class Trade:
     pnl: float
     pnl_pct: float
     hold_bars: int            # bars held (days for swing, 5-min bars for intraday)
-    exit_reason: str          # "TARGET", "STOP", "FORCE_CLOSE", "TRAIL"
+    exit_reason: str          # "TARGET", "STOP", "FORCE_CLOSE", "TRAIL", "REBALANCE_DROP"
     trade_type: str = "swing"
+    # Phase RA — REBALANCE attribution fields (None for SIGNAL-mode trades)
+    source: str = "SIGNAL"              # "SIGNAL" | "REBALANCE"
+    rank_at_entry: object = None        # int: 1-indexed rank within capped list
+    score_at_entry: object = None       # float: raw model score
+    regime_at_entry: object = None      # str: "LOW"/"MEDIUM"/"HIGH"
+    gross_exposure_mult: object = None  # float: regime multiplier applied
+    rebalance_date: object = None       # date: the scheduled rebalance day
 
 
 @dataclass
