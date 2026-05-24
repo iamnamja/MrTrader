@@ -5035,3 +5035,44 @@ v216 is a valid signal source (L3 confirms alpha) but the WF execution layer isn
 - Signal filters remain; frequency improvement from shorter hold period
 
 Note: PF=0.00 for all folds — profit factor compute requires at least one loss trade. With 6 trades/fold, all-wins possible. PF sentinel (999→capped 5.0) works correctly but was never triggered here.
+
+---
+
+## Phase RA — REBALANCE Execution Mode WF Baseline (2026-05-24) ✅
+
+**Root cause of v3 failure confirmed**: RSI/EMA signal triggers are architecturally mismatched with LambdaRank (a cross-sectional portfolio selection model). L3 Bridge Test proved alpha exists when model is used correctly. Fix: REBALANCE execution mode — score all 665 symbols every 20 calendar days, rotate portfolio to top-N with hysteresis bands.
+
+**Model**: v216 (LambdaRank, 18 features, 20d cross-sectional rank)  
+**Config**: `--rebalance-mode --rebalance-days 20 --rebalance-target-n 30 --rebalance-min-adv 0 --no-atr-stops`  
+**Log**: `logs/p0_swing_v216_rebalance_wf.log`  
+**WF structure**: 3 folds, 5yr, 750 symbols, purge=85d, embargo=85d
+
+### Fold Details
+
+| Fold | Test Window | Trades | Win% | Sharpe | DD | Calmar |
+|------|-------------|--------|------|--------|----|--------|
+| 1 | 2022-11-19 → 2023-08-31 | 116 | 26.7% | -0.24 | 22.2% | -0.26 |
+| 2 | 2024-02-18 → 2024-11-29 | 112 | 35.7% | +2.85 | 7.6% | +6.82 |
+| 3 | 2025-05-19 → 2026-02-28 | 104 | 30.8% | +1.90 | 5.2% | +5.11 |
+
+**Avg Sharpe: +1.502** (gate: >0.80) ✅  
+**Min fold Sharpe: -0.244** (gate: >-0.30) ✅  
+**DSR**: z=+22.141, p=1.000 (gate: p>0.95) ✅  
+**Avg Calmar: +3.891** (gate: >0.30) ✅  
+**Total trades: 332** (~110/fold vs 7/fold before — 16× improvement)
+
+### Verdict: ✅ GATE PASSED
+
+### Key Observations
+
+- **Trade count problem solved**: 110 trades/fold vs 7/fold in v3 — statistically meaningful sample
+- **Fold 1 weakness**: Bear/recovery period (Nov 2022–Aug 2023), 22.2% DD. Win rate 26.7% — model not well-suited for this regime without regime-gating
+- **Fold 2+3 strong**: Recent periods Sharpe 2.85 and 1.90 with low DD — model is working as designed
+- **PF=0.00 in all folds**: Bug — profit factor computation needs investigation. Does not affect gate verdict (Sharpe/DSR/Calmar all pass)
+- **Next step**: Phase RB — inverse-volatility sizing + NIS modulation to improve Fold 1 DD and consistency
+
+### Architecture Validated
+
+REBALANCE mode aligns execution with model design: score cross-sectionally, hold top-N, rotate on schedule. The 20d horizon model should drive 20d rebalance cadence. This is how quantitative equity funds deploy portfolio selection models.
+
+**PR**: #265 (feat/rebalance-execution)
