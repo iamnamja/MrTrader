@@ -5076,3 +5076,55 @@ Note: PF=0.00 for all folds — profit factor compute requires at least one loss
 REBALANCE mode aligns execution with model design: score cross-sectionally, hold top-N, rotate on schedule. The 20d horizon model should drive 20d rebalance cadence. This is how quantitative equity funds deploy portfolio selection models.
 
 **PR**: #265 (feat/rebalance-execution)
+
+---
+
+## Phase RB.1 — Regime Gate WF (2026-05-24) ✅
+
+**Change**: Regime gate applied to gross exposure at each rebalance event.
+- BULL (SPY > 200d MA AND VIX < 20): 100% gross exposure
+- NEUTRAL (otherwise): 70% gross exposure  
+- BEAR (SPY < 200d MA OR VIX ≥ 30): 30% gross exposure
+
+**Model**: v216 (LambdaRank, 18 features, 20d horizon)  
+**Config**: `--rebalance-mode --rebalance-days 20 --rebalance-target-n 30 --rebalance-min-adv 0 --no-atr-stops --rebalance-regime-gate`  
+**Log**: `logs/p0_swing_v216_rb1_regime_gate_wf.log`
+
+### Fold Details
+
+| Fold | Test Window | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|-------------|--------|------|--------|----|----|--------|
+| 1 | 2022-11-19 → 2023-08-31 | 124 | 25.8% | -0.25 | 17.5% | 0.89 | -0.22 |
+| 2 | 2024-02-18 → 2024-11-29 | 116 | 34.5% | +2.67 |  7.6% | 3.08 | +6.02 |
+| 3 | 2025-05-19 → 2026-02-28 | 104 | 30.8% | +1.90 |  5.2% | 2.32 | +5.11 |
+
+**Avg Sharpe: +1.440** (gate: >0.80) ✅  
+**Min fold Sharpe: -0.252** (gate: >-0.30) ✅  
+**DSR**: z=+21.639, p=1.000 ✅  
+**Avg PF: 2.10** (gate: >1.10) ✅ ← first time PF computed correctly  
+**Avg Calmar: +3.637** ✅  
+**Total trades: 344**
+
+### Phase RA → RB.1 Comparison
+
+| Metric | Phase RA (baseline) | Phase RB.1 (regime gate) | Delta |
+|--------|---------------------|--------------------------|-------|
+| Avg Sharpe | +1.502 | +1.440 | -0.062 |
+| Fold 1 DD | 22.2% | **17.5%** | **-4.7pp ↓ 21%** |
+| Fold 2 DD | 7.6% | 7.6% | unchanged |
+| Fold 3 DD | 5.2% | 5.2% | unchanged |
+| Avg PF | 0.00 (bug) | 2.10 | fixed |
+| Avg Calmar | 3.89 | 3.64 | -0.25 |
+
+### Verdict: ✅ GATE PASSED — Marginal improvement
+
+**Fold 1 DD reduced 22.2% → 17.5% (-21%)** — regime gate working as intended.  
+The reduction is smaller than Opus's predicted 60-70%, indicating the 2022-2023 period was neither a clean "bear" (the regime flipped between BULL/BEAR across the fold) nor purely correlated market stress. The gate trimmed exposure during the worst drawdown windows but did NOT prevent the negative Sharpe.
+
+**Cost**: Avg Sharpe -0.062 (acceptable), Calmar -0.25. The regime gate is slightly conservative.
+
+**PF fix confirmed**: All three folds now show real profit factor. Fold 1 PF=0.89 (losses outpace wins — consistent with negative Sharpe). Fold 2/3 PF=3.08/2.32 (strong positive edge).
+
+**Next**: Phase RB.2 — inverse-volatility sizing on top of regime gate.
+
+**PR**: #266 (feat/phase-rb-regime-gate)
