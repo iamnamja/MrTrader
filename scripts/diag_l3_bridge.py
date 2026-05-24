@@ -46,11 +46,7 @@ L3_PASS_RATIO = 0.5  # L3 must achieve >= 50% of L2 Sharpe
 
 
 def _load_model(version: int):
-    from app.ml.model import LambdaRankModel
-    from app.ml.training import ModelTrainer
-    from pathlib import Path
     import pickle
-
     model_dir = ROOT / "app" / "ml" / "models"
     candidates = sorted(model_dir.glob(f"swing_v{version}*.pkl"), key=lambda p: p.stat().st_mtime)
     if not candidates:
@@ -59,84 +55,93 @@ def _load_model(version: int):
     logger.info("Loading model: %s", path)
     with open(path, "rb") as f:
         obj = pickle.load(f)
-    if isinstance(obj, dict) and "model" in obj:
-        return obj["model"], obj.get("feature_names", [])
-    return obj, []
+    if hasattr(obj, "is_trained"):
+        return obj
+    from app.ml.model import PortfolioSelectorModel
+    m = PortfolioSelectorModel(model_type="xgboost")
+    m.load(str(model_dir), version, model_name="swing")
+    return m
 
 
-def _load_bars(start: str, end: str, max_symbols: Optional[int] = None) -> Dict[str, pd.DataFrame]:
-    cache_dir = ROOT / "data" / "cache" / "daily"
-    result = {}
-    for pq in sorted(cache_dir.glob("*.parquet")):
-        sym = pq.stem
-        if sym.startswith("^"):
-            continue
-        try:
-            df = pd.read_parquet(pq)
-            df.index = pd.to_datetime(df.index)
-            df = df.loc[start:end]
-            if len(df) >= 60:
-                result[sym] = df
-        except Exception:
-            continue
-        if max_symbols and len(result) >= max_symbols:
-            break
-    logger.info("Loaded bars: %d symbols", len(result))
-    return result
+def _load_bars(start: date, end: date, workers: int,
+               max_symbols: Optional[int]) -> Dict[str, pd.DataFrame]:
+    from app.data.universe_history import pit_union
+    from app.data import get_provider
+    symbols = pit_union("russell1000", start=start, end=end)
+    if max_symbols:
+        symbols = symbols[:max_symbols]
+    logger.info("Fetching bars: %d symbols %s -> %s", len(symbols), start, end)
+    provider = get_provider("polygon")
+    bars_map = provider.get_daily_bars_bulk(symbols, start=start, end=end)
+    logger.info("Got bars for %d symbols", len(bars_map))
+    return bars_map
 
 
-def _build_score_panel(model, bars: Dict[str, pd.DataFrame], horizon: int, workers: int) -> pd.DataFrame:
+def _build_score_panel(
+    bars_map: Dict[str, pd.DataFrame],
+    model,
+    start: date,
+    end: date,
+    workers: int,
+    vix_history,
+    macro_history,
+    horizon: int,
+) -> pd.DataFrame:
     """Score every symbol on every rebalance date using the model."""
+    from datetime import timedelta
     from app.backtesting.feature_cache import build_feature_cache
 
-    logger.info("Building feature cache: %d symbols x ? days", len(bars))
+    feature_names = list(model.feature_names) if model.feature_names else []
+    if not feature_names:
+        raise ValueError("Model has no feature_names")
+
+    trading_days: List[date] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            trading_days.append(d)
+        d += timedelta(days=1)
+
+    logger.info("Building feature cache: %d symbols x %d days", len(bars_map), len(trading_days))
     t0 = time.time()
     cache = build_feature_cache(
-        bars, workers=workers,
+        symbols_data=bars_map,
+        trading_days=trading_days,
+        feature_names=feature_names,
+        vix_history=vix_history,
+        macro_history=macro_history,
+        workers=workers,
     )
     logger.info("Feature cache built in %.1fs", time.time() - t0)
 
-    # Get sorted trading dates from bars
-    all_dates = sorted({
-        d.date() if hasattr(d, "date") else d
-        for sym_bars in bars.values()
-        for d in sym_bars.index
-    })
-
     close_by_sym: Dict[str, pd.Series] = {}
-    for sym, df in bars.items():
+    for sym, df in bars_map.items():
         col = "close" if "close" in df.columns else "Close"
         if col in df.columns:
-            s = df[col].copy()
-            s.index = pd.to_datetime(s.index)
-            close_by_sym[sym] = s
+            close_by_sym[sym] = df[col].sort_index()
 
-    records = []
+    # collect all scored (day, sym, feature_vec) triples
+    by_day: Dict[date, list] = {}
+    for sym, date_index in cache.date_index.items():
+        for day, row_idx in date_index.items():
+            feat_vec = cache.matrix[sym][row_idx]
+            by_day.setdefault(day, []).append((sym, feat_vec))
+
+    all_dates = sorted(by_day.keys())
     rebalance_dates = all_dates[::horizon]
     logger.info("Scoring %d rebalance dates", len(rebalance_dates))
 
+    records = []
     for day in rebalance_dates:
-        day_ts = pd.Timestamp(day)
-        pairs = []
-        for sym, feat_map in cache.items():
-            if day not in feat_map:
-                continue
-            feats = feat_map[day]
-            if feats is None:
-                continue
-            vec = [float(feats.get(k, 0.0)) for k in sorted(feats.keys())]
-            if not vec:
-                continue
-            pairs.append((sym, vec))
-
+        pairs = by_day.get(day, [])
         if len(pairs) < 5:
             continue
-
         syms_day = [p[0] for p in pairs]
         X = np.stack([p[1] for p in pairs]).astype(np.float32)
         X = np.nan_to_num(X)
         _, scores = model.predict(X)
 
+        day_ts = pd.Timestamp(day)
         for sym, score in zip(syms_day, scores):
             if sym not in close_by_sym:
                 continue
@@ -214,24 +219,43 @@ def main():
     parser.add_argument("--out-dir", default="data/diagnostics/l3_bridge")
     args = parser.parse_args()
 
+    from datetime import datetime as _dt
+
     out_dir = ROOT / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    from datetime import datetime
-    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    ts = _dt.now().strftime("%Y%m%dT%H%M%S")
     run_dir = out_dir / ts
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"=== L3 Bridge Test — v{args.model_version} ===")
+    print(f"=== L3 Bridge Test - v{args.model_version} ===")
     print(f"  Long top-{args.top_n}, hold {args.horizon}d, cost {args.cost_bps}bps one-way")
     print(f"  Pass criterion: L3 Sharpe >= {L3_PASS_RATIO} * L2 Sharpe ({L3_PASS_RATIO * SHARPE_L2:.3f})")
     print()
 
-    model, _ = _load_model(args.model_version)
+    start_dt = date.fromisoformat(args.start)
+    end_dt = date.fromisoformat(args.end)
+
+    model = _load_model(args.model_version)
 
     max_sym = args.max_symbols if args.max_symbols > 0 else None
-    bars = _load_bars(args.start, args.end, max_symbols=max_sym)
+    bars = _load_bars(start_dt, end_dt, args.workers, max_symbols=max_sym)
 
-    df = _build_score_panel(model, bars, args.horizon, args.workers)
+    from app.data.macro_history import load_macro_history
+    macro = load_macro_history()
+    vix_history = macro.get("vix") if hasattr(macro, "get") else (
+        macro["vix"] if "vix" in macro.columns else None
+    )
+
+    df = _build_score_panel(
+        bars_map=bars,
+        model=model,
+        start=start_dt,
+        end=end_dt,
+        workers=args.workers,
+        vix_history=vix_history,
+        macro_history=macro,
+        horizon=args.horizon,
+    )
     logger.info("Score panel: %d rows, %d dates, %d symbols",
                 len(df), df["date"].nunique(), df["symbol"].nunique())
 
