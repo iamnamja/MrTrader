@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -39,6 +39,24 @@ class SwingStrategy:
         feature_cache_executor: str = "process",
         feature_cache_disable: bool = False,
         sim_scan_interval_days: int = 1,
+        # Rebalance params (passed through to AgentSimulator)
+        rebalance_mode: bool = False,
+        rebalance_days: int = 20,
+        rebalance_target_n: int = 30,
+        rebalance_sector_cap: float = 0.30,
+        rebalance_add_threshold: int = 15,
+        rebalance_drop_threshold: int = 30,
+        rebalance_min_adv: float = 20_000_000.0,
+        rebalance_regime_gate: bool = False,
+        rebalance_regime_spy_ma_days: int = 200,
+        rebalance_regime_vix_bull: float = 20.0,
+        rebalance_regime_vix_bear: float = 30.0,
+        rebalance_inv_vol: bool = False,
+        rebalance_inv_vol_lookback: int = 20,
+        rebalance_inv_vol_min_mult: float = 0.5,
+        rebalance_inv_vol_max_mult: float = 2.0,
+        factor_scorer: Optional[Callable[..., Any]] = None,
+        no_atr_stops: bool = False,
     ):
         self.model = model
         self.version = version
@@ -57,6 +75,23 @@ class SwingStrategy:
         self.feature_cache_executor = feature_cache_executor
         self.feature_cache_disable = feature_cache_disable
         self.sim_scan_interval_days = sim_scan_interval_days
+        self.rebalance_mode = rebalance_mode
+        self.rebalance_days = rebalance_days
+        self.rebalance_target_n = rebalance_target_n
+        self.rebalance_sector_cap = rebalance_sector_cap
+        self.rebalance_add_threshold = rebalance_add_threshold
+        self.rebalance_drop_threshold = rebalance_drop_threshold
+        self.rebalance_min_adv = rebalance_min_adv
+        self.rebalance_regime_gate = rebalance_regime_gate
+        self.rebalance_regime_spy_ma_days = rebalance_regime_spy_ma_days
+        self.rebalance_regime_vix_bull = rebalance_regime_vix_bull
+        self.rebalance_regime_vix_bear = rebalance_regime_vix_bear
+        self.rebalance_inv_vol = rebalance_inv_vol
+        self.rebalance_inv_vol_lookback = rebalance_inv_vol_lookback
+        self.rebalance_inv_vol_min_mult = rebalance_inv_vol_min_mult
+        self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
+        self.factor_scorer = factor_scorer
+        self.no_atr_stops = no_atr_stops
         self.symbols_data: Dict[str, pd.DataFrame] = {}
         self.spy_prices: Optional[pd.Series] = None
 
@@ -84,7 +119,7 @@ class SwingStrategy:
         spy_raw.columns = [c.lower() for c in spy_raw.columns]
         self.spy_prices = spy_raw["close"]
 
-        if self.use_opportunity_score:
+        if self.use_opportunity_score or self.rebalance_regime_gate:
             try:
                 vix_raw = yf.download("^VIX", start=start.date().isoformat(),
                                       end=end.date().isoformat(), progress=False, auto_adjust=True)
@@ -95,6 +130,10 @@ class SwingStrategy:
                     self.symbols_data["^VIX"] = vix_raw
             except Exception as exc:
                 logger.warning("VIX download failed: %s", exc)
+
+        # Make SPY available to _make_regime_gate_fn and factor_scorer
+        if self.rebalance_mode:
+            self.symbols_data["SPY"] = spy_raw
 
         logger.info("Swing data loaded: %d symbols in %.1fs", len(self.symbols_data), time.time() - t0)
 
@@ -152,6 +191,16 @@ class SwingStrategy:
                 logger.warning("Feature cache build failed, falling back to live compute: %s", exc)
                 feature_cache = None
 
+        _regime_gate_fn = None
+        if self.rebalance_mode and self.rebalance_regime_gate:
+            from scripts.walkforward_tier3 import _make_regime_gate_fn
+            _regime_gate_fn = _make_regime_gate_fn(
+                fold_symbols_data,
+                spy_ma_days=self.rebalance_regime_spy_ma_days,
+                vix_bull=self.rebalance_regime_vix_bull,
+                vix_bear=self.rebalance_regime_vix_bear,
+            )
+
         sim = AgentSimulator(
             model=self.model,
             atr_stop_mult=self.atr_stop_mult,
@@ -166,6 +215,20 @@ class SwingStrategy:
             earnings_blackout=self.earnings_blackout,
             feature_cache=feature_cache,
             sim_scan_interval_days=self.sim_scan_interval_days,
+            factor_scorer=self.factor_scorer,
+            no_atr_stops=self.no_atr_stops,
+            rebalance_mode=self.rebalance_mode,
+            rebalance_days=self.rebalance_days,
+            rebalance_target_n=self.rebalance_target_n,
+            rebalance_sector_cap=self.rebalance_sector_cap,
+            rebalance_add_threshold=self.rebalance_add_threshold,
+            rebalance_drop_threshold=self.rebalance_drop_threshold,
+            rebalance_min_adv=self.rebalance_min_adv,
+            rebalance_regime_fn=_regime_gate_fn,
+            rebalance_inv_vol=self.rebalance_inv_vol,
+            rebalance_inv_vol_lookback=self.rebalance_inv_vol_lookback,
+            rebalance_inv_vol_min_mult=self.rebalance_inv_vol_min_mult,
+            rebalance_inv_vol_max_mult=self.rebalance_inv_vol_max_mult,
         )
         import uuid as _uuid
         sim._wf_run_id = f"wf-fold{fold_idx}-{_uuid.uuid4().hex[:8]}"
