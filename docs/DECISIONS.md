@@ -103,3 +103,34 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 - Remove ATR stops (already decided)
 
 **Note**: v216 WF used purge=10d not 85d. All v216 results have potential leakage and must be re-run with purge=85d post-Phase 4.
+
+---
+
+## 2026-05-23 — Phase 4 Before Phase 3 (Opus 4.7 Override)
+
+**Context**: L2 decile spread returned Sharpe=0.397 (marginal, 0.20-0.60 range). Original decision tree said "Phase 3 first." Opus 4.7 reviewed all findings.
+
+**Decision**: Run Phase 4 (execution fix) BEFORE Phase 3 (label redesign).
+
+**Rationale**:
+1. Null benchmark shows execution destroys ~1.6 Sharpe vs random. Phase 4 is a config change (1-2 days), Phase 3 is weeks.
+2. Cannot measure label improvements through WF when execution layer masks signal. Phase 4 first establishes honest baseline.
+3. Signal clearly exists in right regime (2021/2025 L/S Sharpe = +1.1). Short side is the structural problem, not features.
+4. 2023 inversion (-1.29) is a crowded-short squeeze in narrow Mag7 rally — short-side failure, not long-side.
+
+**Phase 4 Spec**:
+- Disable opportunity score gate (`--no-pm-opportunity-score`)
+- Remove ATR stops
+- Position count: n=40 long, n=40 short
+- Re-run v216 WF with 85d purge
+
+**Phase 3 Spec (after Phase 4 baseline)**:
+- Long-only labels: top-quintile binary (drop full cross-sectional rank)
+- 10d horizon (not 20d) — doubles training samples
+- Rolling 3-year window (not expanding)
+- Add regime features as inputs (breadth, dispersion, VIX term structure)
+- Kill sign-flipping features (per-year IC audit)
+- Short side: separate model with quality overlay, NOT symmetric decile rank
+
+**If Phase 4 WF Sharpe > +0.3**: proceed to Phase 3 with confidence.
+**If Phase 4 WF Sharpe < 0**: investigate execution bug before any label work.

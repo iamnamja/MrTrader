@@ -182,6 +182,7 @@ class AgentSimulator:
         max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
         short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
         proposal_pool_size: Optional[int] = None,  # Lockstep: candidates forwarded to Trader/RM (default: max(top_n*5, 50))
+        no_atr_stops: bool = False,  # Phase 4: disable ATR stops entirely (hold to HOLD_DAYS target)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -191,6 +192,7 @@ class AgentSimulator:
         self.transaction_cost_pct = transaction_cost_pct
         self.atr_stop_mult = atr_stop_mult
         self.atr_target_mult = atr_target_mult
+        self.no_atr_stops = no_atr_stops
         self.max_vol_pct = max_vol_pct  # Phase 26d: block entries above this vol_percentile_52w
         self.regime_bear_max_positions = regime_bear_max_positions
         self.vix_fear_threshold = vix_fear_threshold
@@ -1055,10 +1057,26 @@ class AgentSimulator:
                     stop_price = entry_price * (1 + _short_atr_stop_pct)
                     target_price = entry_price * (1 - _short_atr_tgt_pct)
 
+            # Phase 4 isolation: override stops so positions hold to max_hold_bars.
+            # Use a very tight synthetic stop for sizing only (5% risk) so quantities
+            # are conservative, then widen actual stop to "never triggers."
+            if self.no_atr_stops:
+                if is_short:
+                    stop_price = entry_price * 100.0   # never triggers (short stops above entry)
+                    target_price = entry_price * 0.01  # never triggers
+                else:
+                    stop_price = entry_price * 0.0001  # never triggers (long stops below entry)
+                    target_price = entry_price * 100.0  # never triggers
+
             # Position sizing: size_position requires stop_price < entry_price (long semantics).
             # For shorts, flip the stop so risk-per-share = |entry - stop| is preserved.
             conf_for_sizing = abs(confidence)
-            stop_for_sizing = (2 * entry_price - stop_price) if is_short else stop_price
+            if self.no_atr_stops:
+                # Use synthetic 5% stop for sizing to avoid infinite position sizes
+                sizing_stop = entry_price * (1 + 0.05) if is_short else entry_price * (1 - 0.05)
+                stop_for_sizing = sizing_stop
+            else:
+                stop_for_sizing = (2 * entry_price - stop_price) if is_short else stop_price
             quantity = size_position(
                 account_equity=portfolio.equity_decision,
                 available_cash=portfolio.cash,
@@ -1073,8 +1091,11 @@ class AgentSimulator:
                 continue
 
             sector = sector_map.get(sym, "UNKNOWN")
+            # When no_atr_stops is on, sentinel stop_price is unrealistic for risk sizing.
+            # Use the same synthetic 5% stop that was used for quantity sizing.
+            _rm_stop = stop_for_sizing if self.no_atr_stops else stop_price
             ok, reason = self._rm_validate(
-                sym, entry_price, stop_price, quantity, portfolio, sector,
+                sym, entry_price, _rm_stop, quantity, portfolio, sector,
                 direction="SELL_SHORT" if is_short else "BUY",
             )
             if not ok:

@@ -105,13 +105,16 @@ def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[fl
 
 def _compute_profit_factor(trade_returns: list) -> float:
     """Profit factor = sum(positive returns) / sum(abs(negative returns)).
-    Returns 0.0 if no trades or no losses (cannot compute).
+    Returns 0.0 if no trades (cannot compute).
+    Returns 999.0 if wins > 0 but no losses (infinite edge, small fold).
     """
     if not trade_returns:
         return 0.0
     wins = sum(r for r in trade_returns if r > 0)
     losses = sum(abs(r) for r in trade_returns if r < 0)
-    return float(wins / losses) if losses > 0 else 0.0
+    if losses > 0:
+        return float(wins / losses)
+    return 999.0 if wins > 0 else 0.0
 
 
 def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
@@ -567,6 +570,7 @@ def run_swing_walkforward(
     use_factor_portfolio: bool = False,  # Phase D: bypass ML model, use factor composite scorer
     scorer_instance=None,  # Phase G: inject any callable scorer directly (overrides use_factor_portfolio)
     max_hold_bars_override: Optional[int] = None,  # Phase H+: force per-position hold cap
+    no_atr_stops: bool = False,  # Phase 4: disable ATR stops entirely
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -831,6 +835,7 @@ def run_swing_walkforward(
             factor_scorer=_factor_scorer_inst,
             limits=_sim_limits,
             max_hold_bars_override=max_hold_bars_override,
+            no_atr_stops=no_atr_stops,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1218,6 +1223,9 @@ def main() -> int:
                         help="ATR stop multiplier (default: 0.5)")
     parser.add_argument("--target-mult", type=float, default=1.5,
                         help="ATR target multiplier (default: 1.5)")
+    parser.add_argument("--no-atr-stops", action="store_true", default=False,
+                        help="Phase 4: disable ATR stops entirely. Positions hold to max_hold_bars."
+                             " Overrides --stop-mult. Use with --no-pm-opportunity-score for clean signal isolation.")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1462,6 +1470,7 @@ def main() -> int:
             feature_cache_executor=args.feature_cache_executor,
             feature_cache_disable=args.feature_cache_disable,
             sim_scan_interval_days=args.sim_scan_interval_days,
+            no_atr_stops=args.no_atr_stops,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)

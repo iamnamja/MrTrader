@@ -139,7 +139,7 @@ def _build_score_panel(
         syms_day = [p[0] for p in pairs]
         X = np.stack([p[1] for p in pairs]).astype(np.float32)
         X = np.nan_to_num(X)
-        scores = model.predict(X)
+        _, scores = model.predict(X)  # (predictions, probabilities) — use probabilities
 
         for sym, score in zip(syms_day, scores):
             if sym not in close_by_sym:
