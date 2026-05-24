@@ -574,6 +574,14 @@ def run_swing_walkforward(
     scorer_instance=None,  # Phase G: inject any callable scorer directly (overrides use_factor_portfolio)
     max_hold_bars_override: Optional[int] = None,  # Phase H+: force per-position hold cap
     no_atr_stops: bool = False,  # Phase 4: disable ATR stops entirely
+    # Phase RA — REBALANCE mode
+    rebalance_mode: bool = False,
+    rebalance_days: int = 20,
+    rebalance_target_n: int = 30,
+    rebalance_sector_cap: float = 0.30,
+    rebalance_add_threshold: int = 15,
+    rebalance_drop_threshold: int = 30,
+    rebalance_min_adv: float = 20_000_000.0,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -842,6 +850,13 @@ def run_swing_walkforward(
             limits=_sim_limits,
             max_hold_bars_override=max_hold_bars_override,
             no_atr_stops=no_atr_stops,
+            rebalance_mode=rebalance_mode,
+            rebalance_days=rebalance_days,
+            rebalance_target_n=rebalance_target_n,
+            rebalance_sector_cap=rebalance_sector_cap,
+            rebalance_add_threshold=rebalance_add_threshold,
+            rebalance_drop_threshold=rebalance_drop_threshold,
+            rebalance_min_adv=rebalance_min_adv,
         )
         result = sim.run(
             fold_symbols_data,
@@ -853,7 +868,9 @@ def run_swing_walkforward(
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
         # WF-1: compute additional metrics
-        trade_rets = getattr(result, "trade_returns", []) or []
+        trade_rets = (getattr(result, "trade_returns", None)
+                      or [t.pnl_pct for t in (getattr(result, "trades", None) or [])
+                          if t.exit_reason != "OPEN"])
         pf = _compute_profit_factor(trade_rets)
         fold_yrs = _fold_years(te_start, te_end)
         calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
@@ -1065,7 +1082,9 @@ def run_intraday_walkforward(
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
         # WF-1: additional metrics
-        trade_rets = getattr(result, "trade_returns", []) or []
+        trade_rets = (getattr(result, "trade_returns", None)
+                      or [t.pnl_pct for t in (getattr(result, "trades", None) or [])
+                          if t.exit_reason != "OPEN"])
         pf = _compute_profit_factor(trade_rets)
         fold_yrs = _fold_years(te_start, te_end)
         calmar = _compute_calmar(result.total_return_pct, result.max_drawdown_pct, fold_yrs)
@@ -1232,6 +1251,20 @@ def main() -> int:
     parser.add_argument("--no-atr-stops", action="store_true", default=False,
                         help="Phase 4: disable ATR stops entirely. Positions hold to max_hold_bars."
                              " Overrides --stop-mult. Use with --no-pm-opportunity-score for clean signal isolation.")
+    parser.add_argument("--rebalance-mode", action="store_true", default=False,
+                        help="Phase RA: use top-N portfolio rebalance instead of signal entries")
+    parser.add_argument("--rebalance-days", type=int, default=20,
+                        help="Calendar days between rebalances (default: 20)")
+    parser.add_argument("--rebalance-target-n", type=int, default=30,
+                        help="Target number of positions in rebalance mode (default: 30)")
+    parser.add_argument("--rebalance-sector-cap", type=float, default=0.30,
+                        help="Max sector weight in rebalance portfolio (default: 0.30)")
+    parser.add_argument("--rebalance-add-threshold", type=int, default=15,
+                        help="Add a symbol if its rank <= this (default: 15)")
+    parser.add_argument("--rebalance-drop-threshold", type=int, default=30,
+                        help="Drop a symbol if its rank > this (default: 30)")
+    parser.add_argument("--rebalance-min-adv", type=float, default=20_000_000.0,
+                        help="Min avg daily dollar volume for liquidity filter (default: 20M)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1477,6 +1510,13 @@ def main() -> int:
             feature_cache_disable=args.feature_cache_disable,
             sim_scan_interval_days=args.sim_scan_interval_days,
             no_atr_stops=args.no_atr_stops,
+            rebalance_mode=args.rebalance_mode,
+            rebalance_days=args.rebalance_days,
+            rebalance_target_n=args.rebalance_target_n,
+            rebalance_sector_cap=args.rebalance_sector_cap,
+            rebalance_add_threshold=args.rebalance_add_threshold,
+            rebalance_drop_threshold=args.rebalance_drop_threshold,
+            rebalance_min_adv=args.rebalance_min_adv,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)

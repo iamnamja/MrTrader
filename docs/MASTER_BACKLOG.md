@@ -78,6 +78,78 @@ v216 rank-IC@20d = **0.0012** overall (noise), BUT by-year reveals a **regime pr
 
 ---
 
+## STRATEGIC PIVOT — 2026-05-24: Rebalancing Execution Architecture
+
+**Context:** After Phase 4 v3 WF (all bugs fixed, Sharpe=-0.036, 7 trades/fold), Opus 4.7 analysis identified the root problem: the execution layer (RSI/EMA signal triggers) is architecturally mismatched with LambdaRank, which is a cross-sectional portfolio selection model. L3 Bridge Test confirmed alpha exists at Sharpe=0.577 when the model is used correctly (rank → pick top-N → rebalance). Fix the execution layer, not the model.
+
+**Design decisions (Opus 4.7, 2026-05-24):**
+
+| Decision | Detail |
+|----------|--------|
+| Execution mode | `REBALANCE` (new PM mode alongside existing `SIGNAL`) |
+| Rebalance cadence | 20 trading days (matches 20d label horizon) |
+| Target positions | N=30 at $20k, N=50 at $100k+ |
+| Long/short | Long-only first; shadow-track 3 short candidate sets |
+| Short deployment | $50k+ account, separate short model (not LambdaRank bottom-N) |
+| Position sizing | Cascade: regime gate → inverse-vol base → NIS modulation |
+| Regime exposure | Bull=100%, Neutral=70%, Bear=30% invested |
+| Exit logic | 20d hold baseline + profit harvest (+12% in ≤7d) + NIS exit (<-0.4) + regime-flip forced rebalance; NO price stops |
+| Score weighting | Deferred — LambdaRank scores are ordinal, not calibrated expected returns |
+
+**Why no price stops:** 8% stop on a 20d-horizon model fires on noise (typical R1000 20d vol = 12-18%). Replace with NIS-based exits (information-driven, not price-noise-driven).
+
+**Why no LambdaRank bottom-N as short book:** L2 L/S (0.397) < L3 long-only (0.577) proves the bottom ranking is not a good short signal. Bottom-ranked stocks are "mediocre" not "likely to fall" — and mediocre has positive drift (equity risk premium) working against shorts.
+
+---
+
+## Phase RA — Rebalancing Baseline ← ACTIVE NEXT
+
+**Goal:** Replace signal-triggered execution with ranking-based rebalance. Reproduce L3 alpha (0.577) inside the WF framework. Pass criteria: WF avg Sharpe ≥ 0.50, ≥30 trades/fold.
+
+**What to build:**
+1. `app/strategy/portfolio_construction.py` — liquidity filter, sector cap (30%), hysteresis (add at rank ≤15, drop at rank ≥30), equal-weight sizing
+2. PM `REBALANCE` mode — on rebalance date: score all symbols → apply constraints → compute target set → emit close/open orders
+3. Config flags: `EXECUTION_MODE`, `REBALANCE_DAYS=20`, `TARGET_POSITIONS=30`, `SECTOR_CAP=0.30`
+4. Attribution logging: per-trade decomposition into selection/exit/cost components
+5. Regime gate (Layer 1): Bull=100%, Neutral=70%, Bear=30% gross exposure
+
+**WF validation:** Run `walkforward_tier3.py` with rebalance mode. Expect ~11 rebalance events × ~6 rotations × 2 sides = ~130 fills/fold. Sharpe computed on daily equity curve, not per-trade.
+
+---
+
+## Phase RB — Sizing Overlay (after RA passes WF)
+
+1. Inverse-volatility base weights (60d realized vol, cap 0.5×–2× equal-weight)
+2. NIS modulation: NIS > +0.4 → ×1.25 size; NIS < -0.4 → exit position
+3. Renormalize to regime gross target
+
+---
+
+## Phase RC — Exit Overlays (after RB validated)
+
+1. Profit harvest: +12% in ≤7 days → rotate to next unheld ranked name; cap rotations at 25% of book per window
+2. NIS-driven exits (already in RB; formalize as explicit exit event)
+3. Regime-flip forced rebalance: bull→bear → immediate rebalance + de-risk to 30%
+
+---
+
+## Phase RD — Shadow Short Infrastructure (parallel to RA-RC)
+
+Track three short candidate sets (shadow P&L only, no live trades):
+1. Bottom-30 of LambdaRank (naive null)
+2. Bottom-30 filtered by NIS < -0.4
+3. High-short-interest + negative momentum names
+
+Store with `is_shadow=True`, `shadow_strategy` enum. Daily P&L persistence. After 6-12 months data → decide short deployment.
+
+---
+
+## Phase RE — Short Deployment (deferred, $50k+)
+
+Separate short model with different features: accruals (Sloan), leverage deterioration, dilution, high short-interest + rising days-to-cover. Deploy after Phase RD data justifies. Operationally viable at $50k+.
+
+---
+
 ## Phase D — Factor Portfolio Integration ✅ COMPLETE (2026-05-18) — superseded by L/S pivot
 
 - PRs #224 / #225 merged: `app/ml/factor_scorer.py` + PM routing + SPY>MA200 + VIX<30 gate

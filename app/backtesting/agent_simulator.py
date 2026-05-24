@@ -183,6 +183,15 @@ class AgentSimulator:
         short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
         proposal_pool_size: Optional[int] = None,  # Lockstep: candidates forwarded to Trader/RM (default: max(top_n*5, 50))
         no_atr_stops: bool = False,  # Phase 4: disable ATR stops entirely (hold to HOLD_DAYS target)
+        # Phase RA — REBALANCE mode
+        rebalance_mode: bool = False,        # bypass signal layer; use top-N rebalance
+        rebalance_days: int = 20,            # rebalance every N simulation bars
+        rebalance_target_n: int = 30,        # target number of long positions
+        rebalance_sector_cap: float = 0.30,
+        rebalance_add_threshold: int = 15,
+        rebalance_drop_threshold: int = 30,
+        rebalance_min_adv: float = 20_000_000.0,
+        rebalance_regime_fn=None,            # callable(day) -> float multiplier; None = 1.0
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -217,6 +226,17 @@ class AgentSimulator:
         # 5× top_n gives RM/technical gates headroom without reaching into low-conviction tail.
         # Widening to 20× degraded win rate (rank 50-200 names have no edge vs noise stops).
         self.proposal_pool_size = proposal_pool_size if proposal_pool_size is not None else max(self.top_n * 5, 50)
+
+        # Phase RA — REBALANCE mode state
+        self.rebalance_mode = rebalance_mode
+        self.rebalance_days = rebalance_days
+        self.rebalance_target_n = rebalance_target_n
+        self.rebalance_sector_cap = rebalance_sector_cap
+        self.rebalance_add_threshold = rebalance_add_threshold
+        self.rebalance_drop_threshold = rebalance_drop_threshold
+        self.rebalance_min_adv = rebalance_min_adv
+        self.rebalance_regime_fn = rebalance_regime_fn  # callable(day)->float or None
+        self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
         self._feature_engineer = None
@@ -468,8 +488,17 @@ class AgentSimulator:
                 _skip_entries = True
                 logger.debug("BenignGate blocked entries on %s (adverse regime)", day)
 
-            # 5. Trader signal + RM rules + entry
-            if proposals and not _skip_entries:
+            # 5. Entry: REBALANCE mode or SIGNAL mode
+            if self.rebalance_mode:
+                if self._rebalance_bar_idx % self.rebalance_days == 0:
+                    new_trades, new_tx = self._process_rebalance(
+                        day, symbols_data, portfolio, sector_map,
+                        vix_history=_vix_closes,
+                    )
+                    accepted_trades.extend(new_trades)
+                    tx_costs_total += new_tx
+                self._rebalance_bar_idx += 1
+            elif proposals and not _skip_entries:
                 new_trades, new_tx = self._process_entries(
                     day, proposals, symbols_data, portfolio, sector_map,
                     max_positions=_max_pos_today, vix_history=_vix_closes,
@@ -1136,6 +1165,165 @@ class AgentSimulator:
             tx_costs_total += tx_cost
 
         return entered_trades, tx_costs_total
+
+    # ─── Phase RA: REBALANCE mode entry ────────────────────────────────────────
+
+    def _process_rebalance(
+        self,
+        day: date,
+        symbols_data: Dict[str, pd.DataFrame],
+        portfolio: _PortfolioState,
+        sector_map: Dict[str, str],
+        vix_history=None,
+    ) -> Tuple[List, float]:
+        """Score all symbols, compute target portfolio, close drops, open adds."""
+        from app.strategy.portfolio_construction import (
+            apply_sector_cap,
+            compute_equal_weights,
+            compute_target_portfolio,
+            liquidity_filter,
+        )
+
+        # 1. Score
+        scored = self._pm_score(day, symbols_data, vix_history)
+        if not scored:
+            return [], 0.0
+        ranked_symbols = [s for s, _ in scored]
+        score_of = {s: float(sc) for s, sc in scored}
+
+        # 2. Liquidity filter (PIT-safe)
+        eligible = liquidity_filter(
+            symbols_data, as_of=day,
+            min_avg_daily_dollar_vol=self.rebalance_min_adv,
+        )
+        ranked_eligible = [s for s in ranked_symbols if s in eligible] or ranked_symbols
+
+        # 3. Sector cap
+        capped = apply_sector_cap(
+            ranked_eligible, sector_map,
+            cap=self.rebalance_sector_cap,
+            n_target=self.rebalance_target_n,
+        )
+
+        # 4. Hysteresis target
+        current_holdings = list(portfolio.positions.keys())
+        delta = compute_target_portfolio(
+            capped, current_holdings,
+            n_target=self.rebalance_target_n,
+            add_rank_threshold=self.rebalance_add_threshold,
+            drop_rank_threshold=self.rebalance_drop_threshold,
+        )
+
+        # 5. Regime multiplier
+        gross_mult = self.rebalance_regime_fn(day) if self.rebalance_regime_fn else 1.0
+        regime_label = "UNKNOWN"
+        if self.rebalance_regime_fn:
+            try:
+                regime_label = str(gross_mult)
+            except Exception:
+                pass
+
+        # 6. Close drops
+        tx_costs = 0.0
+        closed_trades: List = []
+        for sym in delta.to_drop:
+            if sym not in portfolio.positions:
+                continue
+            pos = portfolio.positions[sym]
+            df = symbols_data.get(sym)
+            exit_price = pos.entry_price
+            if df is not None:
+                prior = self._bars_up_to(df, day, exclude_today=False)
+                if prior is not None and len(prior) > 0:
+                    close_col = "close" if "close" in prior.columns else "Close"
+                    if close_col in prior.columns:
+                        exit_price = float(prior[close_col].iloc[-1])
+            cost = exit_price * pos.quantity * self.transaction_cost_pct
+            tx_costs += cost
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            net_pnl = gross_pnl - cost - pos.entry_price * pos.quantity * self.transaction_cost_pct
+            portfolio.cash += exit_price * pos.quantity - cost
+            del portfolio.positions[sym]
+            closed_trades.append(Trade(
+                symbol=sym,
+                entry_date=pos.entry_date,
+                exit_date=day,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                quantity=pos.quantity,
+                pnl=net_pnl,
+                pnl_pct=(exit_price / pos.entry_price - 1.0),
+                hold_bars=pos.bars_held,
+                exit_reason="REBALANCE_DROP",
+                source="REBALANCE",
+                rank_at_entry=pos.confidence,
+                regime_at_entry=regime_label,
+                gross_exposure_mult=gross_mult,
+                rebalance_date=day,
+            ))
+
+        # 7. Open adds
+        equity = portfolio.equity_decision
+        weights = compute_equal_weights(delta.to_add, equity, gross_mult)
+        rank_of = {s: i + 1 for i, s in enumerate(ranked_eligible)}
+        entered_trades: List = []
+
+        for sym in delta.to_add:
+            if sym in portfolio.positions:
+                continue
+            dollar_size = weights.get(sym, 0.0)
+            if dollar_size <= 0:
+                continue
+            df = symbols_data.get(sym)
+            if df is None:
+                continue
+            prior = self._bars_up_to(df, day, exclude_today=True)
+            if prior is None or len(prior) == 0:
+                continue
+            open_col = "open" if "open" in prior.columns else "Open"
+            close_col = "close" if "close" in prior.columns else "Close"
+            if open_col not in prior.columns and close_col not in prior.columns:
+                continue
+            entry_price = float(prior[open_col if open_col in prior.columns else close_col].iloc[-1])
+            if entry_price <= 0:
+                continue
+            qty = max(1, int(dollar_size / entry_price))
+            cost = entry_price * qty * self.transaction_cost_pct
+            if portfolio.cash < entry_price * qty + cost:
+                continue
+            portfolio.cash -= entry_price * qty + cost
+            tx_costs += cost
+            # Sentinel stop/target (no ATR stops in rebalance mode by design)
+            portfolio.positions[sym] = _Position(
+                symbol=sym,
+                entry_date=day,
+                entry_price=entry_price,
+                stop_price=entry_price * 0.0001,   # sentinel — never triggers
+                target_price=entry_price * 100.0,  # sentinel — never triggers
+                quantity=qty,
+                highest_price=entry_price,
+                confidence=float(rank_of.get(sym, 999)),
+            )
+            entered_trades.append(Trade(
+                symbol=sym,
+                entry_date=day,
+                exit_date=None,
+                entry_price=entry_price,
+                exit_price=None,
+                quantity=qty,
+                pnl=0.0,
+                pnl_pct=0.0,
+                hold_bars=0,
+                exit_reason="OPEN",
+                source="REBALANCE",
+                rank_at_entry=rank_of.get(sym),
+                score_at_entry=score_of.get(sym),
+                regime_at_entry=regime_label,
+                gross_exposure_mult=gross_mult,
+                rebalance_date=day,
+            ))
+
+        return closed_trades + entered_trades, tx_costs
 
     # ─── Exit simulation ───────────────────────────────────────────────────────
 

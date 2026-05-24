@@ -18,6 +18,7 @@ from typing import Any, Coroutine, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.agents.base import BaseAgent
+from app.agents.portfolio_manager_rebalance import RebalanceMixin
 from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
 from app.ml.schema_log import log_features, log_normalize, log_predict
@@ -81,7 +82,7 @@ def _confidence_scalar(prob: float) -> float:
     return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
-class PortfolioManager(BaseAgent):
+class PortfolioManager(RebalanceMixin, BaseAgent):
     """
     Runs on a 60-second heartbeat.
     09:30: swing model selection (daily bars)
@@ -91,6 +92,9 @@ class PortfolioManager(BaseAgent):
 
     def __init__(self):
         super().__init__("portfolio_manager")
+        from app.config import settings
+        self.execution_mode: str = settings.execution_mode
+        self._init_rebalance_state()
         self.feature_engineer = FeatureEngineer()
         self.model = PortfolioSelectorModel(model_type="xgboost")           # swing
         self.intraday_model = PortfolioSelectorModel(model_type="xgboost")  # intraday
@@ -403,10 +407,17 @@ class PortfolioManager(BaseAgent):
                     and not self._analyzed_today
                 ):
                     self._analyzed_today = True
-                    await self._run_task(
-                        "swing_premarket_analysis", 8, 0,
-                        self._analyze_swing_premarket(),
-                    )
+                    if self.execution_mode == "REBALANCE":
+                        if self._should_rebalance(now.date()):
+                            await self._run_task(
+                                "rebalance_cycle", 8, 0,
+                                self._run_rebalance_cycle(now.date()),
+                            )
+                    else:
+                        await self._run_task(
+                            "swing_premarket_analysis", 8, 0,
+                            self._analyze_swing_premarket(),
+                        )
 
                 # ── 09:00–09:29: pre-market intelligence ─────────────────────
                 if (
