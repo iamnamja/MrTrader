@@ -4924,3 +4924,67 @@ Before Phase 3 retrain, run L3 bridge test (Phase 2.3):
 - Pass: L3 Sharpe >= 0.5 * L2 Sharpe = 0.199
 - PASS → model has alpha, proceed to v217 with Phase 3 labels
 - FAIL → model lacks alpha at realistic costs, feature/label redesign required
+
+---
+
+## Phase 2.3 — L3 Bridge Test (2026-05-24)
+
+**Script**: `scripts/diag_l3_bridge.py`
+**Config**: Long top-40, equal-weight, hold 20d, 5bps one-way costs, 2021-01-01 to 2025-12-31, 775 symbols
+
+### Results
+
+| Year | Sharpe |
+|------|--------|
+| 2021 | +1.288 |
+| 2022 | +0.365 |
+| 2023 | -0.016 |
+| 2024 | +0.373 |
+| 2025 | +1.308 |
+
+**L3 Sharpe: +0.577** | L2 Sharpe: 0.397 | Pass threshold: 0.199 | **PASS**
+
+Annual return: 41.6% | N periods: 59 rebalance dates
+
+### Interpretation
+
+- L3 (0.577) > L2 (0.397): long-only portfolio construction IMPROVES on the raw decile spread. This means the short side in L2 was drag — concentrating in top decile outperforms L/S.
+- 2022 Sharpe = +0.365: model held up in bear market (long-only regime).
+- 2023 Sharpe = -0.016: near-flat. Not blown up by Mag7 squeeze (unlike short side which was -1.29).
+- Signal exists and survives realistic costs. Phase 3 retrain is fully validated.
+
+### Decision: Proceed to Phase 3 v217 Retrain
+
+Pre-conditions met:
+- L2 Sharpe = 0.397 (marginal but positive signal)
+- L3 Sharpe = 0.577 (survives costs, L3 > L2)
+- Execution bugs identified and fixed (PR #262)
+
+**v217 spec**:
+- Long-only top-quintile labels (binary: top 20% = 1, rest = 0)
+- 10d horizon (doubles training samples vs 20d)
+- Rolling 3yr training window
+- Add: breadth features, cross-sectional dispersion, VIX term structure
+- Kill: sign-flipping features (per-year IC audit first)
+- No short model until v217 long-only baseline established
+
+---
+
+## Opus 4.7 WF Code Audit (2026-05-24)
+
+Commissioned thorough audit of `walkforward_tier3.py` + `agent_simulator.py`. 10 major/critical bugs found.
+
+### Critical Fixes (PR #262, committed)
+
+1. **Embargo boundary math wrong** — fold test windows never had embargo gap
+2. **no_atr_stops trailing ratchet** — sentinels replaced by real stops after first profitable bar
+3. **PF=999 inflated avg gate** — all-wins fold polluted average, now capped at 5.0
+4. **Silent trade loss** — FORCE_CLOSE skipped positions with no bar data
+
+### Deferred Fixes (documented in DECISIONS.md)
+
+5. Calmar=0 "not computed" sentinel passes gate (NaN refactor needed)
+6. Short buying-power check uses full notional (over-rejects shorts)
+7. 2-tuple proposal direction defaults to long
+
+**All previous WF results used defective embargo boundaries.** Phase 4 v3 re-run required with corrected code.
