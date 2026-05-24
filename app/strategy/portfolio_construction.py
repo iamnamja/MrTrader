@@ -196,3 +196,74 @@ def compute_equal_weights(
         return {}
     per_position = (total_equity * gross_exposure_multiplier) / len(symbols)
     return {sym: per_position for sym in symbols}
+
+
+def compute_inverse_vol_weights(
+    symbols: Sequence[str],
+    bars_map: Mapping[str, "pd.DataFrame"],
+    as_of: date,
+    total_equity: float,
+    gross_exposure_multiplier: float = 1.0,
+    vol_lookback_days: int = 20,
+    min_weight_mult: float = 0.5,
+    max_weight_mult: float = 2.0,
+) -> Dict[str, float]:
+    """Inverse-volatility dollar allocation capped at min/max multiples of equal weight.
+
+    Steps (all PIT-safe — uses bars strictly before as_of):
+      1. Compute realized vol = std(daily returns) over vol_lookback_days per symbol.
+      2. Invert: raw_weight[i] = 1 / vol[i].
+      3. Normalize so weights sum to 1.
+      4. Cap each weight at [equal_weight * min_weight_mult, equal_weight * max_weight_mult].
+      5. Re-normalize after capping.
+      6. Multiply by total_equity * gross_exposure_multiplier for dollar allocations.
+
+    Falls back to equal-weight for symbols with insufficient history.
+    """
+    import pandas as _pd
+
+    symbols = list(symbols)
+    if not symbols or total_equity <= 0:
+        return {}
+
+    equal_w = 1.0 / len(symbols)
+    _day_ts = _pd.Timestamp(as_of)
+
+    vol_by_sym: Dict[str, float] = {}
+    for sym in symbols:
+        df = bars_map.get(sym)
+        if df is None:
+            continue
+        close_col = "close" if "close" in df.columns else "Close"
+        if close_col not in df.columns:
+            continue
+        hist = df[df.index < _day_ts][close_col]
+        if len(hist) < vol_lookback_days + 1:
+            continue
+        rets = hist.iloc[-(vol_lookback_days + 1):].pct_change().dropna()
+        if len(rets) < 2:
+            continue
+        v = float(rets.std())
+        if v > 0:
+            vol_by_sym[sym] = v
+
+    # Fall back to equal weight if vol unavailable for any symbol
+    if not vol_by_sym or len(vol_by_sym) < len(symbols):
+        return compute_equal_weights(symbols, total_equity, gross_exposure_multiplier)
+
+    # Inverse-vol raw weights
+    raw = {s: 1.0 / vol_by_sym[s] for s in symbols}
+    total_raw = sum(raw.values())
+    norm_w = {s: raw[s] / total_raw for s in symbols}
+
+    # Cap at [equal_w * min_mult, equal_w * max_mult]
+    lo = equal_w * min_weight_mult
+    hi = equal_w * max_weight_mult
+    capped = {s: max(lo, min(hi, norm_w[s])) for s in symbols}
+
+    # Re-normalize after capping
+    total_capped = sum(capped.values())
+    final_w = {s: capped[s] / total_capped for s in symbols}
+
+    gross = total_equity * gross_exposure_multiplier
+    return {s: final_w[s] * gross for s in symbols}

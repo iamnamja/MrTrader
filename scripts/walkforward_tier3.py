@@ -649,6 +649,10 @@ def run_swing_walkforward(
     rebalance_regime_vix_bull: float = 20.0,
     rebalance_regime_vix_bear: float = 30.0,
     rebalance_regime_spy_ma_days: int = 200,
+    rebalance_inv_vol: bool = False,
+    rebalance_inv_vol_lookback: int = 20,
+    rebalance_inv_vol_min_mult: float = 0.5,
+    rebalance_inv_vol_max_mult: float = 2.0,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -935,6 +939,10 @@ def run_swing_walkforward(
             rebalance_drop_threshold=rebalance_drop_threshold,
             rebalance_min_adv=rebalance_min_adv,
             rebalance_regime_fn=_regime_gate_fn,
+            rebalance_inv_vol=rebalance_inv_vol,
+            rebalance_inv_vol_lookback=rebalance_inv_vol_lookback,
+            rebalance_inv_vol_min_mult=rebalance_inv_vol_min_mult,
+            rebalance_inv_vol_max_mult=rebalance_inv_vol_max_mult,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1352,6 +1360,14 @@ def main() -> int:
                         help="VIX threshold at/above which regime is BEAR (default: 30)")
     parser.add_argument("--rebalance-regime-spy-ma-days", type=int, default=200,
                         help="SPY MA lookback for regime detection (default: 200)")
+    parser.add_argument("--rebalance-inv-vol", action="store_true", default=False,
+                        help="Phase RB.2: use inverse-volatility position sizing")
+    parser.add_argument("--rebalance-inv-vol-lookback", type=int, default=20,
+                        help="Lookback days for realized vol estimate (default: 20)")
+    parser.add_argument("--rebalance-inv-vol-min-mult", type=float, default=0.5,
+                        help="Min weight vs equal weight (default: 0.5x)")
+    parser.add_argument("--rebalance-inv-vol-max-mult", type=float, default=2.0,
+                        help="Max weight vs equal weight (default: 2.0x)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1608,6 +1624,10 @@ def main() -> int:
             rebalance_regime_vix_bull=args.rebalance_regime_vix_bull,
             rebalance_regime_vix_bear=args.rebalance_regime_vix_bear,
             rebalance_regime_spy_ma_days=args.rebalance_regime_spy_ma_days,
+            rebalance_inv_vol=args.rebalance_inv_vol,
+            rebalance_inv_vol_lookback=args.rebalance_inv_vol_lookback,
+            rebalance_inv_vol_min_mult=args.rebalance_inv_vol_min_mult,
+            rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
         )
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)

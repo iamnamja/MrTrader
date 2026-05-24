@@ -192,6 +192,10 @@ class AgentSimulator:
         rebalance_drop_threshold: int = 30,
         rebalance_min_adv: float = 20_000_000.0,
         rebalance_regime_fn=None,            # callable(day) -> float multiplier; None = 1.0
+        rebalance_inv_vol: bool = False,     # Phase RB.2: use inverse-vol sizing
+        rebalance_inv_vol_lookback: int = 20,
+        rebalance_inv_vol_min_mult: float = 0.5,
+        rebalance_inv_vol_max_mult: float = 2.0,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -236,6 +240,10 @@ class AgentSimulator:
         self.rebalance_drop_threshold = rebalance_drop_threshold
         self.rebalance_min_adv = rebalance_min_adv
         self.rebalance_regime_fn = rebalance_regime_fn  # callable(day)->float or None
+        self.rebalance_inv_vol = rebalance_inv_vol
+        self.rebalance_inv_vol_lookback = rebalance_inv_vol_lookback
+        self.rebalance_inv_vol_min_mult = rebalance_inv_vol_min_mult
+        self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -1180,6 +1188,7 @@ class AgentSimulator:
         from app.strategy.portfolio_construction import (
             apply_sector_cap,
             compute_equal_weights,
+            compute_inverse_vol_weights,
             compute_target_portfolio,
             liquidity_filter,
         )
@@ -1266,7 +1275,17 @@ class AgentSimulator:
 
         # 7. Open adds
         equity = portfolio.equity_decision
-        weights = compute_equal_weights(delta.to_add, equity, gross_mult)
+        if self.rebalance_inv_vol:
+            weights = compute_inverse_vol_weights(
+                delta.to_add, symbols_data, as_of=day,
+                total_equity=equity,
+                gross_exposure_multiplier=gross_mult,
+                vol_lookback_days=self.rebalance_inv_vol_lookback,
+                min_weight_mult=self.rebalance_inv_vol_min_mult,
+                max_weight_mult=self.rebalance_inv_vol_max_mult,
+            )
+        else:
+            weights = compute_equal_weights(delta.to_add, equity, gross_mult)
         rank_of = {s: i + 1 for i, s in enumerate(ranked_eligible)}
         entered_trades: List = []
 
