@@ -11,7 +11,7 @@ already holds.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

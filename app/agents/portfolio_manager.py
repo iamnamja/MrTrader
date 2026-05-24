@@ -18,6 +18,7 @@ from typing import Any, Coroutine, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.agents.base import BaseAgent
+from app.agents.portfolio_manager_rebalance import RebalanceMixin
 from app.agents.news_monitor import news_monitor
 from app.ml.features import FeatureEngineer
 from app.ml.schema_log import log_features, log_normalize, log_predict
@@ -81,7 +82,6 @@ def _confidence_scalar(prob: float) -> float:
     return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
-from app.agents.portfolio_manager_rebalance import RebalanceMixin
 
 
 class PortfolioManager(RebalanceMixin, BaseAgent):

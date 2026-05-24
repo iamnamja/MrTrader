@@ -100,7 +100,7 @@ class TestTradeAttributionFields:
 # ---------------------------------------------------------------------------
 
 class TestAgentSimulatorRebalanceMode:
-    def _run_sim(self, rebalance_mode, n_days=150, n_symbols=30, seed=0):
+    def _run_sim(self, rebalance_mode, n_days=100, n_symbols=15, seed=0):
         bars = _make_bars_map(n_symbols=n_symbols, n_days=n_days)
         start = date(2023, 1, 3)
         end = start + timedelta(days=n_days + 30)

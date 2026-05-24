@@ -1244,7 +1244,6 @@ class AgentSimulator:
             net_pnl = gross_pnl - cost - pos.entry_price * pos.quantity * self.transaction_cost_pct
             portfolio.cash += exit_price * pos.quantity - cost
             del portfolio.positions[sym]
-            from app.backtesting.metrics import Trade
             closed_trades.append(Trade(
                 symbol=sym,
                 entry_date=pos.entry_date,
@@ -1305,7 +1304,6 @@ class AgentSimulator:
                 highest_price=entry_price,
                 confidence=float(rank_of.get(sym, 999)),
             )
-            from app.backtesting.metrics import Trade
             entered_trades.append(Trade(
                 symbol=sym,
                 entry_date=day,
