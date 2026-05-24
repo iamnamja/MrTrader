@@ -5128,3 +5128,52 @@ The reduction is smaller than Opus's predicted 60-70%, indicating the 2022-2023 
 **Next**: Phase RB.2 — inverse-volatility sizing on top of regime gate.
 
 **PR**: #266 (feat/phase-rb-regime-gate)
+
+---
+
+## Phase RB.2 — Inverse-Vol Sizing WF (2026-05-24) ✅
+
+**Change**: Inverse-volatility position sizing on top of RB.1 regime gate.
+- Compute 20d realized vol per symbol at each rebalance date (PIT-safe)
+- Weight inversely proportional to vol, normalized, capped 0.5×–2× vs equal weight
+- Falls back to equal-weight if insufficient history
+
+**Model**: v216 (LambdaRank, 18 features, 20d horizon)  
+**Config**: `--rebalance-mode --rebalance-days 20 --rebalance-target-n 30 --rebalance-min-adv 0 --no-atr-stops --rebalance-regime-gate --rebalance-inv-vol`  
+**Log**: `logs/p0_swing_v216_rb2_inv_vol_wf.log`
+
+### Fold Details
+
+| Fold | Test Window | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|-------------|--------|------|--------|----|----|--------|
+| 1 | 2022-11-19 → 2023-08-31 | 130 | 25.4% | -0.24 | 15.6% | 0.91 | -0.24 |
+| 2 | 2024-02-18 → 2024-11-29 | 122 | 34.4% | +2.96 |  4.3% | 3.13 | +10.21 |
+| 3 | 2025-05-19 → 2026-02-28 | 110 | 31.8% | +2.23 |  4.5% | 2.58 |  +6.81 |
+
+**Avg Sharpe: +1.649** (gate: >0.80) ✅  
+**Min fold Sharpe: -0.237** (gate: >-0.30) ✅  
+**DSR**: z=+23.201, p=1.000 ✅  
+**Avg PF: 2.21** ✅  
+**Avg Calmar: +5.594** ✅  
+**Total trades: 362**
+
+### Progressive Improvement (RA → RB.1 → RB.2)
+
+| Metric | Phase RA | Phase RB.1 | Phase RB.2 | Total gain |
+|--------|----------|------------|------------|------------|
+| Avg Sharpe | +1.502 | +1.440 | **+1.649** | +0.147 |
+| Fold 1 DD | 22.2% | 17.5% | **15.6%** | -6.6pp (-30%) |
+| Fold 2 DD | 7.6% | 7.6% | **4.3%** | -3.3pp (-43%) |
+| Fold 3 DD | 5.2% | 5.2% | **4.5%** | -0.7pp (-13%) |
+| Avg Calmar | 3.89 | 3.64 | **5.59** | +1.70 |
+
+### Verdict: ✅ GATE PASSED — Best results so far
+
+Inverse-vol sizing improved all metrics simultaneously: higher Sharpe (+0.21 vs RB.1), lower DD across all folds, and Calmar ratio nearly doubled (3.64 → 5.59). Fold 2 DD halved (7.6% → 4.3%) which is striking — inv-vol is dampening concentration risk in volatile names during bull markets.
+
+Fold 1 (bear market) Sharpe remains negative (-0.24) — inv-vol doesn't fix regime exposure, it just sizes within it. The regime gate + inv-vol together are the right combination.
+
+**Next**: Phase RB.3 — NIS modulation (×1.25 for high-NIS symbols). Low priority per Opus.  
+Or: CPCV with ≥10 paths to validate robustness before considering paper trading.
+
+**PR**: #268 (feat/phase-rb2-inv-vol)
