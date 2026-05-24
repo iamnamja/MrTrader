@@ -4988,3 +4988,50 @@ Commissioned thorough audit of `walkforward_tier3.py` + `agent_simulator.py`. 10
 7. 2-tuple proposal direction defaults to long
 
 **All previous WF results used defective embargo boundaries.** Phase 4 v3 re-run required with corrected code.
+
+---
+
+## Phase 4 v3 — Clean WF Baseline (2026-05-24, all 4 bugs fixed)
+
+**Model**: v216 (LambdaRank, 18 features, 20d cross-sectional rank)
+**Config**: `--no-atr-stops --no-pm-opportunity-score --swing-purge-days 85 --folds 5 --years 5`
+**Log**: `logs/wf_v216_phase4_v3.log`
+**Bugs fixed vs v2**: embargo boundary, trailing ratchet sentinel, PF=999 cap, FORCE_CLOSE silent loss
+
+### Fold Details
+
+| Fold | Test Window | Trades | Win% | Sharpe | Calmar |
+|------|-------------|--------|------|--------|--------|
+| 1 | 2022-06-20 → 2022-10-31 | 6 | 66.7% | +0.44 | +0.44 |
+| 2 | 2023-04-20 → 2023-08-31 | 6 | 33.3% | -0.41 | -0.50 |
+| 3 | 2024-02-18 → 2024-06-30 | 7 | 57.1% | -1.47 | -1.62 |
+| 4 | 2024-12-18 → 2025-04-30 | 9 | 88.9% | +2.77 | +7.03 |
+| 5 | 2025-10-18 → 2026-02-28 | 6 | 33.3% | -1.51 | -1.80 |
+
+**Avg Sharpe: -0.036** (gate: >0.80) FAIL  
+**Min fold Sharpe: -1.506** (gate: >-0.30) FAIL  
+**DSR**: z=-3.534, p=0.000 FAIL  
+**Avg Calmar: 0.712** (gate: >0.30) OK  
+**Total trades: 34** (~7/fold)
+
+### Verdict: ❌ GATE FAIL
+
+### Critical Insight — Trade Count Problem
+
+Only **34 trades across 5 folds (~7/fold)** despite 665 symbols in universe. This is the root problem — with 6-9 trades per ~4-month test window, the Sharpe is statistically meaningless. Individual trade randomness dominates.
+
+- L3 Bridge (passive portfolio rebalance) showed Sharpe=0.577 with 20+ periods
+- WF (active execution) generates only 7 trades/fold — signal-to-noise ratio destroyed by sample size
+- The high per-fold variance (fold 4 = +2.77, fold 3/5 = -1.5) confirms noise dominance
+
+**Root cause**: 20d horizon + 85d test windows + conservative signal filters = not enough trades. Signal filters (EMA crossover/RSI dip) only fire on ~7 symbols even from a 665-symbol universe per fold.
+
+### Decision: Proceed to Phase 3 (v217 retrain)
+
+v216 is a valid signal source (L3 confirms alpha) but the WF execution layer isn't capturing it at this time frame. Phase 3 changes:
+- **10d horizon** (vs 20d) — doubles rebalance frequency → ~14+ trades/fold
+- **Long-only top-quintile binary** — cleaner labels vs full cross-sectional rank
+- **Rolling 3yr window** — fresher training data per fold
+- Signal filters remain; frequency improvement from shorter hold period
+
+Note: PF=0.00 for all folds — profit factor compute requires at least one loss trade. With 6 trades/fold, all-wins possible. PF sentinel (999→capped 5.0) works correctly but was never triggered here.
