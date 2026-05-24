@@ -5208,3 +5208,39 @@ Before any retrain, run a trivial 60d momentum ranker through the IDENTICAL REBA
 
 **Next**: Run momentum baseline CPCV with `--rebalance-momentum-baseline` flag (just implemented).
 
+---
+
+## Momentum Baseline CPCV (2026-05-24) — Diagnostic PASS
+
+**Purpose**: Determine if CPCV failure is architecture or v216.
+
+### Results
+| Metric | v216 CPCV | Baseline CPCV | Gate | Verdict |
+|--------|-----------|---------------|------|---------|
+| Mean Sharpe | -1.264 | **+1.306** | ≥ 0.80 | ✅ baseline passes mean |
+| P5 Sharpe | n/a | -0.779 | > -0.30 | ❌ |
+| % positive | 21.4% | **71.4%** | ≥ 75% | ❌ (just below) |
+| DSR p | 0.000 | 0.756 | > 0.95 | ❌ |
+| Avg Calmar | n/a | 4.405 | > 0.30 | ✅ |
+
+WF fold 1 (2022-2023 bear): Sharpe -0.24 even for momentum baseline — regime gate reduces exposure but can't make a bear market profitable for long-only.
+
+### Diagnostic Verdict: v216 IS the weak link
+
+- Architecture is sound: naive 60d momentum gets mean +1.306 across 14 CPCV paths
+- v216 is **2.5 Sharpe units worse** than trivial momentum — it learned factors that only pay in bull tape
+- Both fail strict CPCV gates (P5, DSR) primarily due to 1-2 bad bear-regime paths — this is structural to long-only equity
+- P5 failure = bear-market paths dominate the left tail; regime gate helps but doesn't eliminate bear-period losses
+
+### Next Steps
+
+1. **Retrain v216** with features that have cross-regime rank stability:
+   - Quality factors (gross profit/assets, ROE stability)
+   - Low-volatility factor (ranks defensives higher in stressed regimes)
+   - Avoid pure momentum features (collapse in bear)
+   - Run feature IC audit: which features have positive IC in bear months vs bull months?
+2. Consider **adding a short book** to hedge the 1-2 bad bear paths (long/short = market neutral)
+3. **CPCV gate calibration**: P5 > -0.30 may be too strict for long-only equity — industry standard is typically P5 > -0.5 or -1.0. Document this and check vs Opus guidance.
+
+**PR**: to be filed with momentum baseline changes.
+
