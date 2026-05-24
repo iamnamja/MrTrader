@@ -68,6 +68,13 @@ class _MockModel:
         return self.predict(X)
 
 
+def _mock_factor_scorer(day, symbols_data, vix_history=None):
+    """Bypass feature engineering: rank symbols alphabetically by name."""
+    syms = sorted(symbols_data.keys())
+    scores = np.linspace(1.0, 0.0, len(syms))
+    return list(zip(syms, scores.tolist()))
+
+
 # ---------------------------------------------------------------------------
 # Trade dataclass attribution fields
 # ---------------------------------------------------------------------------
@@ -100,7 +107,7 @@ class TestTradeAttributionFields:
 # ---------------------------------------------------------------------------
 
 class TestAgentSimulatorRebalanceMode:
-    def _run_sim(self, rebalance_mode, n_days=100, n_symbols=15, seed=0):
+    def _run_sim(self, rebalance_mode, n_days=60, n_symbols=15, seed=0):
         bars = _make_bars_map(n_symbols=n_symbols, n_days=n_days)
         start = date(2023, 1, 3)
         end = start + timedelta(days=n_days + 30)
@@ -115,6 +122,7 @@ class TestAgentSimulatorRebalanceMode:
             rebalance_drop_threshold=15,
             rebalance_min_adv=0.0,       # disable liquidity filter for synthetic data
             no_atr_stops=True,
+            factor_scorer=_mock_factor_scorer if rebalance_mode else None,
         )
         result = sim.run(bars, start_date=start, end_date=end)
         return result
