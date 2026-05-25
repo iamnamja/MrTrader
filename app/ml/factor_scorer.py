@@ -654,3 +654,311 @@ class IcCompositeScorer:
             key=lambda x: x[1],
             reverse=True,
         )
+
+
+# ── Phase 90 — Regime-Conditional Composite (v220) ───────────────────────────
+# Two-composite switch driven by market breadth (% symbols above 200d MA).
+# Composite A: momentum-tilted (active when breadth > 60% — blow-off/trending regime)
+# Composite B: quality-tilted (v219 weights, active otherwise)
+#
+# Diagnosis (Opus 4.7, 2026-05-25): v219 fails Fold 1 because quality features
+# (profit_margin, operating_margin, pe_ratio) are wrong for late-cycle blow-off.
+# Pure momentum baseline scores +0.60 in Fold 1 vs v219's -0.37.
+
+# Composite A weights — momentum-tilted (Opus 4.7 design, 2026-05-25)
+_V220A_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.23,
+    "momentum_252d_ex1m":       0.21,
+    "price_to_52w_high":        0.13,
+    "volume_trend":             0.08,
+    "operating_margin":         0.05,
+    "range_expansion":          0.05,
+    "downtrend":                0.05,
+    "vol_regime":               0.04,
+    "reversal_5d_vol_weighted": 0.04,
+    "price_to_52w_low":         0.03,
+    "profit_margin":            0.03,
+    "pe_ratio":                 0.03,  # inverted: lower PE = better
+    "vrp":                      0.03,
+}
+# Already sums to 1.0; assert to catch future drift
+assert abs(sum(_V220A_WEIGHTS_RAW.values()) - 1.0) < 1e-9, "V220A weights must sum to 1.0"
+V220A_WEIGHTS: dict[str, float] = dict(_V220A_WEIGHTS_RAW)
+
+# Composite B = v219 (imported above as V219_IC_WEIGHTS)
+
+
+def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int = 200) -> float:
+    """Compute % of symbols with close > MA(ma_days) as of as_of_ts.
+
+    Returns float [0, 1] or NaN if insufficient data.
+    """
+    above = 0
+    total = 0
+    for sym in closes.columns:
+        if sym in ("SPY", "^VIX", "VIX"):
+            continue
+        col = closes[sym].dropna()
+        past = col[col.index <= as_of_ts]
+        if len(past) < ma_days:
+            continue
+        total += 1
+        ma_val = float(past.iloc[-ma_days:].mean())
+        if float(past.iloc[-1]) > ma_val:
+            above += 1
+    if total < 50:
+        return float("nan")
+    return above / total
+
+
+class IcCompositeV220Scorer:
+    """Phase 90 regime-conditional composite scorer (v220).
+
+    Switches between momentum-tilted (Composite A) and quality-tilted (Composite B = v219)
+    based on market breadth signal (% symbols above 200d MA).
+
+    Breadth > 60% (with 5pp hysteresis): use Composite A (momentum-tilted)
+    Breadth < 55%: use Composite B (quality-tilted)
+
+    This directly addresses Fold 1 (Jun 2021-May 2022) failure where quality features
+    selected wrong names vs the momentum baseline (+0.60).
+    """
+
+    # Switch thresholds with hysteresis
+    BREADTH_A_THRESHOLD = 0.60  # enter momentum regime
+    BREADTH_B_THRESHOLD = 0.55  # exit momentum regime (5pp deadband)
+
+    def __init__(self) -> None:
+        self._fmp_fundamentals: Optional[pd.DataFrame] = None
+        self._fmp_loaded: bool = False
+        # Regime state: True = Composite A (momentum), False = Composite B (quality)
+        self._in_momentum_regime: bool = False
+        # EMA of breadth (span=5 ≈ 3-day half-life)
+        self._breadth_ema: Optional[float] = None
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if not self._fmp_loaded:
+            try:
+                from app.data.fmp_fundamentals import load_pit_fundamentals
+                self._fmp_fundamentals = load_pit_fundamentals(as_of)
+            except Exception:
+                self._fmp_fundamentals = None
+            self._fmp_loaded = True
+        return self._fmp_fundamentals if self._fmp_fundamentals is not None else pd.DataFrame()
+
+    def _update_breadth(self, raw_breadth: float) -> float:
+        """Update EMA of breadth with hysteresis and return smoothed value."""
+        if not np.isfinite(raw_breadth):
+            return self._breadth_ema if self._breadth_ema is not None else 0.5
+        alpha = 2.0 / (5 + 1)  # span=5 EMA
+        if self._breadth_ema is None:
+            self._breadth_ema = raw_breadth
+        else:
+            self._breadth_ema = alpha * raw_breadth + (1 - alpha) * self._breadth_ema
+        return self._breadth_ema
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        import pandas as pd
+
+        _day_d = day.date() if hasattr(day, "date") else day
+        as_of_ts = pd.Timestamp(day)
+
+        close_cols = {}
+        for sym, df in symbols_data.items():
+            if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
+            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            if len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+
+        # Compute breadth and update regime state
+        raw_breadth = _compute_breadth(closes, as_of_ts)
+        breadth_smooth = self._update_breadth(raw_breadth)
+
+        if self._in_momentum_regime:
+            if breadth_smooth < self.BREADTH_B_THRESHOLD:
+                self._in_momentum_regime = False
+        else:
+            if breadth_smooth > self.BREADTH_A_THRESHOLD:
+                self._in_momentum_regime = True
+
+        # Select weights based on regime
+        weights = V220A_WEIGHTS if self._in_momentum_regime else V219_IC_WEIGHTS
+
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols if sym in symbols_data
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+
+        # Reuse compute_v219_score but override weights
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, weights, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+    @property
+    def active_regime(self) -> str:
+        return "momentum" if self._in_momentum_regime else "quality"
+
+
+def _compute_weighted_score(
+    as_of: pd.Timestamp,
+    closes: pd.DataFrame,
+    bars: dict,
+    weights: dict[str, float],
+    fundamentals: Optional[pd.DataFrame] = None,
+) -> pd.Series:
+    """Compute IC-weighted composite score with arbitrary weights dict.
+
+    Shares feature computation logic with compute_v219_score but accepts
+    an externally-provided weights dict (supports both v219 and v220A).
+    """
+    # Re-use compute_v219_score, then re-weight
+    # This avoids duplicating feature computation logic.
+    # compute_v219_score returns a Series; we recompute from raw features using the given weights.
+
+    fund = fundamentals if fundamentals is not None else pd.DataFrame()
+    raw_features: dict[str, dict[str, float]] = {k: {} for k in weights}
+
+    as_of_ts = pd.Timestamp(as_of)
+
+    # Extract VIX value for VRP computation (PIT-safe: use last available before as_of)
+    _vix_val: Optional[float] = None
+    for _vix_col in ("^VIX", "VIX"):
+        if _vix_col in closes.columns:
+            _past_vix = closes[_vix_col].dropna()
+            _past_vix = _past_vix[_past_vix.index <= as_of_ts]
+            if len(_past_vix) > 0:
+                _vix_val = float(_past_vix.iloc[-1])
+            break
+
+    for sym in closes.columns:
+        if sym in ("SPY", "^VIX", "VIX"):
+            continue
+        col = closes[sym].dropna()
+        if len(col) < 60:
+            continue
+        mask = col.index <= as_of_ts
+        past = col[mask]
+        if len(past) < 60:
+            continue
+        idx = len(past)
+
+        # momentum_252d_ex1m
+        if "momentum_252d_ex1m" in raw_features and idx >= 252:
+            c_now = float(past.iloc[-21]) if idx >= 21 else float(past.iloc[-1])
+            c_start = float(past.iloc[-252])
+            if c_start > 1e-9:
+                raw_features["momentum_252d_ex1m"][sym] = (c_now / c_start) - 1.0
+
+        # price_to_52w_high
+        if "price_to_52w_high" in raw_features and idx >= 252:
+            h52 = float(past.iloc[-252:].max())
+            if h52 > 1e-9:
+                raw_features["price_to_52w_high"][sym] = float(past.iloc[-1]) / h52
+
+        # price_to_52w_low
+        if "price_to_52w_low" in raw_features and idx >= 252:
+            l52 = float(past.iloc[-252:].min())
+            if l52 > 1e-9:
+                raw_features["price_to_52w_low"][sym] = float(past.iloc[-1]) / l52
+
+        # vol_regime
+        if "vol_regime" in raw_features:
+            vr = _vol_regime(past, idx)
+            if not np.isnan(vr):
+                raw_features["vol_regime"][sym] = -vr
+
+        # ix_momentum_vol
+        if "ix_momentum_vol" in raw_features:
+            mom = raw_features.get("momentum_252d_ex1m", {}).get(sym, float("nan"))
+            if not np.isnan(mom) and sym in raw_features.get("vol_regime", {}):
+                raw_features["ix_momentum_vol"][sym] = mom * (1.0 + raw_features["vol_regime"][sym])
+
+        # reversal_5d_vol_weighted
+        if "reversal_5d_vol_weighted" in raw_features:
+            rv = _reversal_5d_vw(bars.get(sym), idx)
+            if not np.isnan(rv):
+                raw_features["reversal_5d_vol_weighted"][sym] = rv
+
+        # downtrend
+        if "downtrend" in raw_features:
+            dt = _downtrend_score(past, idx)
+            if not np.isnan(dt):
+                raw_features["downtrend"][sym] = dt
+
+        # range_expansion
+        if "range_expansion" in raw_features and sym in bars:
+            df_b = bars[sym]
+            if df_b is not None and len(df_b) >= 21:
+                try:
+                    rng_5 = float(df_b["high"].iloc[-5:].max() - df_b["low"].iloc[-5:].min())
+                    rng_20 = float(df_b["high"].iloc[-20:].max() - df_b["low"].iloc[-20:].min())
+                    if rng_20 > 1e-9:
+                        raw_features["range_expansion"][sym] = rng_5 / rng_20
+                except Exception:
+                    pass
+
+        # volume_trend
+        if "volume_trend" in raw_features and sym in bars:
+            df_b = bars[sym]
+            if df_b is not None and "volume" in df_b.columns and len(df_b) >= 60:
+                try:
+                    vol_5 = float(df_b["volume"].iloc[-5:].mean())
+                    vol_60 = float(df_b["volume"].iloc[-60:].mean())
+                    if vol_60 > 1e-9:
+                        raw_features["volume_trend"][sym] = vol_5 / vol_60
+                except Exception:
+                    pass
+
+        # vrp (requires VIX)
+        if "vrp" in raw_features and _vix_val is not None:
+            vrp_val = _vrp_score(past, _vix_val, idx)
+            if not np.isnan(vrp_val):
+                raw_features["vrp"][sym] = vrp_val
+
+    # Fundamentals
+    if not fund.empty:
+        for feat, sign in [("profit_margin", 1), ("operating_margin", 1), ("pe_ratio", -1)]:
+            if feat in raw_features and feat in fund.columns:
+                for sym, val in fund[feat].items():
+                    if sym in closes.columns and not np.isnan(val):
+                        raw_features[feat][sym] = sign * val
+
+    if not any(raw_features.values()):
+        return pd.Series(dtype=float)
+
+    score_df_parts: list[pd.Series] = []
+    for feat, w in weights.items():
+        if w <= 0:
+            continue
+        vals = pd.Series(raw_features.get(feat, {})).dropna()
+        if len(vals) < 5:
+            continue
+        z = _zscore_cross(vals) * w
+        score_df_parts.append(z)
+
+    if not score_df_parts:
+        return pd.Series(dtype=float)
+
+    combined = pd.concat(score_df_parts, axis=1).sum(axis=1, min_count=1).dropna()
+    return combined
