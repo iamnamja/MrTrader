@@ -414,7 +414,6 @@ def _reversal_5d_vw(df: pd.DataFrame, as_of_idx: int) -> float:
     window = df.iloc[max(0, as_of_idx - 5): as_of_idx]
     if window.empty or window["volume"].sum() < 1:
         return float("nan")
-    vwap = (window["close"] * window["volume"]).sum() / window["volume"].sum()
     c_now = float(df["close"].iloc[as_of_idx - 1])
     c_start = float(df["close"].iloc[max(0, as_of_idx - 5)])
     if c_start < 1e-9:
