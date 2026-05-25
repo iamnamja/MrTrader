@@ -39,7 +39,7 @@ def main() -> int:
     args = parser.parse_args()
 
     from app.ml.retrain_config import (
-        PHASE_C_PLUS_FEATURE_KEEP_LIST, PHASE_C_V2_FEATURE_KEEP_LIST,
+        BENIGN_SWING_FEATURES,
         SWING_GATE, MAX_WORKERS,
     )
     from app.ml.training import ModelTrainer
@@ -49,10 +49,11 @@ def main() -> int:
     model_type = "xgboost" if args.use_xgboost else "lambdarank"
     label_scheme = "triple_barrier" if args.use_xgboost else "lambdarank"
 
-    # v209a: revert to 17-feature clean baseline (drop sector-neutral features
-    # that hurt v208 — Opus analysis shows they landed HPO in a worse basin).
-    # Switch back to PHASE_C_PLUS_FEATURE_KEEP_LIST for this run.
-    feature_list = PHASE_C_PLUS_FEATURE_KEEP_LIST
+    # v217: IC-audited 17-feature cross-regime set (2026-05-24 audit).
+    # Drops bull-tape-only factors (gross_margin, revenue_growth, near_52w_high,
+    # trend_consistency_63d); adds counter-trend (reversal_5d_vol_weighted,
+    # downtrend) and WQ alphas (wq_alpha35/40/43) with positive 2022 bear-year IC.
+    feature_list = BENIGN_SWING_FEATURES
     n_feats = len(feature_list)
 
     db = get_session()
@@ -61,7 +62,7 @@ def main() -> int:
     finally:
         db.close()
 
-    logger.info("v209b: %s, %d features, NDCG@3 HPO seed=42, num_leaves<=31, prev_active=v%s",
+    logger.info("v217: %s, %d features, NDCG@3 HPO seed=42, num_leaves<=31, prev_active=v%s",
                 model_type, n_feats, prev)
     logger.info("Features: %s", feature_list)
 
