@@ -5243,3 +5243,47 @@ WF fold 1 (2022-2023 bear): Sharpe -0.24 even for momentum baseline — regime g
 3. **CPCV gate calibration**: P5 > -0.30 may be too strict for long-only equity — industry standard is typically P5 > -0.5 or -1.0. Document this and check vs Opus guidance.
 
 **PR**: to be filed with momentum baseline changes.
+
+---
+
+## v217 IC Audit + v218 Training (2026-05-24/25) — Gate Bug Discovered ❌→🔄
+
+### IC Audit Summary
+Two independent Opus 4.7 audits of 72 features × 8 years × 3 horizons. Consensus 17-feature v217 set selected for cross-regime rank stability (positive or neutral 2022 bear-year IC).
+
+Dropped from Phase C+ set (bull-tape-only, negative 2022 IC):
+- gross_margin: IC_IR -8.03, 2022 IC = -0.0389
+- revenue_growth: IC_IR -2.88, 2022 IC = -0.0190
+- near_52w_high: removed (collinear with price_to_52w_high)
+- trend_consistency_63d: IC_IR -2.10, 2022 IC = -0.0144
+- ix_quality_at_high, ix_vrp_range: interaction terms dependent on removed features
+
+Added (positive 2022 IC, diversified):
+- reversal_5d_vol_weighted (counter-trend): bear IC +0.031
+- downtrend (counter-trend): bear IC +0.028
+- wq_alpha35, wq_alpha40, wq_alpha43: WorldQuant alphas, positive 2022 IC
+
+### v218 Training
+- Trained 2026-05-25 with correct `run_v201_lambdarank_plus.py` + BENIGN_SWING_FEATURES
+- Model type: LambdaRank (XGBRanker), 17 features, HPO seed=42, NDCG@3
+- **WF gate result: FAILED (avg Sharpe -0.675, folds [-1.573, -0.437, 0.319, -1.796, 0.11])**
+
+### Root Cause: Gate Mode Mismatch Bug (Opus 4.7 diagnosis, 2026-05-25)
+
+The WF gate was running v218 in **scan mode** (individual trade entries + ATR stops), not **rebalance mode** (top-30 portfolio, 20-day cadence). This is a category error:
+- LambdaRank outputs are **relative ranks within a query group**, not calibrated trade-success probabilities
+- Scan mode generates ~300 individual trades per fold from a ranker that expects to be used for portfolio construction
+- The "failure" result is noise, not signal — we cannot conclude anything about v217 feature quality from these numbers
+
+**This same bug was present since v200.** v216 "passed" scan-mode WF (+1.649) by luck (3 folds landing in 2024-2026 bull tape) then failed CPCV (-1.264). The scan-mode gate has zero signal for LambdaRank models.
+
+### Fix (PR #273, 2026-05-25)
+- `run_v201_lambdarank_plus.py` refactored: `_run_gate()` now uses `rebalance_mode=True`, `rebalance_regime_gate=True`, `rebalance_inv_vol=True`, `use_opportunity_score=False` for LambdaRank models
+- Added `--gate-only <version>` flag: re-run gate on existing model without retraining
+- Added regression test `tests/ml/test_lambdarank_gate_mode.py` (4 tests)
+
+### Next: Re-gate v218 in rebalance mode
+```
+python scripts/run_v201_lambdarank_plus.py --gate-only 218
+```
+If rebalance-mode gate passes (avg Sharpe ≥ 0.80) → proceed to CPCV.
