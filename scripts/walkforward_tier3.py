@@ -724,6 +724,8 @@ def run_swing_walkforward(
     rebalance_inv_vol_lookback: int = 20,
     rebalance_inv_vol_min_mult: float = 0.5,
     rebalance_inv_vol_max_mult: float = 2.0,
+    rebalance_spy_vol_damper: bool = False,
+    rebalance_spy_vol_damper_scale: float = 0.50,
     # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
@@ -1048,6 +1050,8 @@ def run_swing_walkforward(
             rebalance_inv_vol_lookback=rebalance_inv_vol_lookback,
             rebalance_inv_vol_min_mult=rebalance_inv_vol_min_mult,
             rebalance_inv_vol_max_mult=rebalance_inv_vol_max_mult,
+            rebalance_spy_vol_damper=rebalance_spy_vol_damper,
+            rebalance_spy_vol_damper_scale=rebalance_spy_vol_damper_scale,
         )
         result = sim.run(
             fold_symbols_data,
