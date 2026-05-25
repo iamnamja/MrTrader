@@ -5401,3 +5401,52 @@ Signal candidates:
 
 Decision rule: flat/50% gross when dispersion gate fires. 
 Target: Fold 1 and Fold 4 go flat or near-flat → mean Sharpe lifts to ~+0.80-1.0.
+
+### Phase 89 WF Results (2026-05-25) ❌ GATE NOT MET — WORSE THAN BASELINE
+
+**Command:** same as v219 + `--rebalance-factor-stability-gate`
+
+| Fold | v219 (no FS gate) | v219 + FS gate | Delta |
+|------|-------------------|----------------|-------|
+| 1 | -0.37 | **-0.58** | -0.21 ❌ |
+| 2 | +0.97 | **+0.01** | -0.96 ❌ |
+| 3 | +1.07 | **+1.47** | +0.40 |
+| 4 | -0.36 | **-0.23** | +0.13 |
+| 5 | +1.21 | **+1.51** | +0.30 |
+| **Mean** | +0.504 | **+0.435** | -0.07 |
+| Trades | 886 | 726 | -160 |
+
+Gate made things worse overall. Net -0.07 Sharpe despite helping Folds 3/4/5.
+
+### Opus 4.7 Post-Mortem (2026-05-25) — GATE DESIGN REJECTED
+
+**Root cause of failure: Trailing indicator ~80 days late at every regime turn.**
+
+The rolling realized IC gate has ~80 days of structural lag (20d fwd window + 63d lookback midpoint). Regime turns in 2022 and 2022-recovery happened in days. The gate:
+- Entered Fold 2 (Jun 2022-May 2023) with IC depressed from the 2022 bear-market grind → throttled exposure precisely at the Oct 2022 bottom and Q4 2022 recovery, which was the bulk of Fold 2's +0.97 Sharpe → degraded to +0.01
+- Entered Fold 1 (Jun 2021-May 2022) with IC elevated from prior trending regime → full exposure INTO the Feb-May 2022 selloff, then de-risked after damage done
+
+**Additional design flaws (Opus):**
+1. ±0.02 IC thresholds are inside the noise band by 10x (SE of IC estimate ≈ 0.28 with ~12 non-overlapping rebalances in 63d)
+2. The 0.5 "halve gross" state is active most of the time (IC ≈ 0 is the default). This is a "halve gross perpetually" machine, not a regime gate.
+3. Trade count dropped 18% while Sharpe dropped — gate cut good trades, not bad ones.
+4. Two multiplicative gates (SPY+VIX × FS gate) create jointly suffocating throttling.
+
+**Scorer PIT-safety confirmed:** `IcCompositeScorer.__call__` applies strict `< _day_d` masking before z-scoring. No full-fold normalization leakage.
+
+**Decision: Factor stability gate (rolling realized IC) is rejected. The fundamental design is wrong — trailing IC is not a leading regime indicator.**
+
+### What NOT To Do Next
+
+- Do NOT tune the IC threshold or lookback (noise band is 10x threshold; any apparent improvement is overfit)
+- Do NOT keep the 0.5 middle state
+- Do NOT re-run CPCV before fixing the regime identification problem
+
+### Revised Phase 89 Direction
+
+Opus recommended alternatives in order of confidence:
+1. **Cross-sectional return dispersion** (std of 20-day returns across universe, z-scored vs trailing year). Dispersion collapse precedes IC collapse. Less lagging.
+2. **Score-decay rate** (how fast today's top decile falls out of top decile over 5/10/20 days). Rising decay = rotation → reduce gross.
+3. **Top-decile persistence** (overlap between today's top-decile by score and 20d-ago top-decile). Simple, interpretable.
+
+Next implementation: try dispersion gate (fewer parameters, more intuitive, likely forward-leaning vs trailing IC).
