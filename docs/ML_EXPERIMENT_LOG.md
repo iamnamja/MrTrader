@@ -5287,3 +5287,56 @@ The WF gate was running v218 in **scan mode** (individual trade entries + ATR st
 python scripts/run_v201_lambdarank_plus.py --gate-only 218
 ```
 If rebalance-mode gate passes (avg Sharpe ≥ 0.80) → proceed to CPCV.
+
+---
+
+## Phase 88 — IC-Weighted Factor Composite v219 (2026-05-25) 🔄
+
+### Decision to pivot from LambdaRank
+
+Opus 4.7 verdict (2026-05-25): Kill LambdaRank v218. Stop trying to make it happen on rebalance mode.
+
+Evidence:
+- v218 rebalance-mode gate: mean +0.502 (3 of 5 folds positive, min -0.214)
+- Fold 3 (+1.88) masks real mean of ~+0.16 across other 4 folds
+- 60d momentum baseline (85d purge): mean +0.798, beats v218 raw
+- Both strategies print ~+1.9 Sharpe on 2023-2024 AI bull fold — confirms regime luck, not ML edge
+- v218 ~200 trades/fold vs baseline ~110: 1.8× turnover at worse Sharpe → net Sharpe ≈ 0 after 5bps costs
+- Opus: "the simple thing wins. Stop trying to make LambdaRank happen on rebalance mode."
+
+### Phase 88 Design: Deterministic IC Composite
+
+No ML training. No HPO. No overfitting risk.
+Weights = h20 IC IR from 2026-05-24 audit, normalized to sum=1, negatives clipped to 0.
+
+| Feature | h20 IC IR | Weight |
+|---------|-----------|--------|
+| ix_momentum_vol | 2.31 | 14.5% |
+| momentum_252d_ex1m | 2.23 | 14.0% |
+| price_to_52w_low | 2.22 | 13.9% |
+| profit_margin | 1.26 | 7.9% |
+| operating_margin | 1.07 | 6.7% |
+| pe_ratio (inverted) | 0.88 | 5.5% |
+| price_to_52w_high | 0.94 | 5.9% |
+| volume_trend | 0.88 | 5.5% |
+| reversal_5d_vol_weighted | 0.63 | 3.9% |
+| downtrend | 0.45 | 2.8% |
+| wq_alpha43 | 0.76 | 4.8% (omitted — complex formula) |
+| range_expansion | 0.18 | 1.1% |
+| vol_regime | 0.24 | 1.5% |
+| vrp | 0.06 | 0.4% |
+| vol_percentile_52w | -0.13 | 0% (negative IC, excluded) |
+
+WQ alphas (wq_alpha35/40/43) omitted — complex formulas; weight redistributed proportionally.
+
+### Implementation (PR #274)
+- `app/ml/factor_scorer.py`: Added `IcCompositeScorer`, `compute_v219_score`, `V219_IC_WEIGHTS`
+- `scripts/walkforward_tier3.py`: Added `--rebalance-ic-composite` flag
+- Tests: `tests/ml/test_ic_composite_scorer.py` (8 tests, all pass)
+
+### WF Command
+```
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v219_ic_composite_5fold.log
+```
+
+Gate target: avg Sharpe >= 0.80, beats momentum baseline (+0.80 equivalent on same folds).
