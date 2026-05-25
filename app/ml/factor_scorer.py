@@ -966,7 +966,7 @@ def _compute_weighted_score(
 
 
 # =============================================================================
-# Phase 91 — v221 scorer: v219 with fundamentals down-weighted 70%
+# Phase 91 ï¿½ v221 scorer: v219 with fundamentals down-weighted 70%
 # =============================================================================
 
 _V221_IC_WEIGHTS_RAW: dict[str, float] = {
@@ -989,13 +989,19 @@ V221_IC_WEIGHTS: dict[str, float] = {k: v / _V221_TOTAL for k, v in _V221_IC_WEI
 
 
 class IcCompositeV221Scorer:
-    def _get_fundamentals(self, as_of_ts):
-        from app.ml.fundamentals_store import FundamentalsStore
-        try:
-            store = FundamentalsStore()
-            return store.get_latest_as_of(as_of_ts)
-        except Exception:
-            return pd.DataFrame()
+    def __init__(self) -> None:
+        self._fmp_fundamentals = None
+        self._fmp_loaded = False
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if not self._fmp_loaded:
+            try:
+                from app.data.fmp_fundamentals import load_pit_fundamentals
+                self._fmp_fundamentals = load_pit_fundamentals(as_of)
+            except Exception:
+                self._fmp_fundamentals = None
+            self._fmp_loaded = True
+        return self._fmp_fundamentals if self._fmp_fundamentals is not None else pd.DataFrame()
 
     def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
         _day_d = day.date() if hasattr(day, "date") else day
