@@ -92,9 +92,11 @@ class TestIcCompositeScorer:
         """--rebalance-ic-composite flag must be parseable from the CLI."""
         import sys
         import subprocess
+        from pathlib import Path
+        repo_root = Path(__file__).parents[2]
         result = subprocess.run(
             [sys.executable, "scripts/walkforward_tier3.py", "--help"],
-            capture_output=True, text=True, cwd="c:/Projects/MrTrader"
+            capture_output=True, text=True, cwd=str(repo_root)
         )
         assert "rebalance-ic-composite" in result.stdout, \
             "--rebalance-ic-composite flag not found in CLI help"
