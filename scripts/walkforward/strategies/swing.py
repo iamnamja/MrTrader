@@ -55,6 +55,10 @@ class SwingStrategy:
         rebalance_inv_vol_lookback: int = 20,
         rebalance_inv_vol_min_mult: float = 0.5,
         rebalance_inv_vol_max_mult: float = 2.0,
+        # Phase 89: factor stability gate (WF path only; CPCV path wired in Phase 90)
+        rebalance_factor_stability_gate: bool = False,
+        rebalance_factor_stability_lookback: int = 63,
+        rebalance_factor_stability_ic_threshold: float = 0.02,
         factor_scorer: Optional[Callable[..., Any]] = None,
         no_atr_stops: bool = False,
     ):
@@ -90,6 +94,9 @@ class SwingStrategy:
         self.rebalance_inv_vol_lookback = rebalance_inv_vol_lookback
         self.rebalance_inv_vol_min_mult = rebalance_inv_vol_min_mult
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
+        self.rebalance_factor_stability_gate = rebalance_factor_stability_gate
+        self.rebalance_factor_stability_lookback = rebalance_factor_stability_lookback
+        self.rebalance_factor_stability_ic_threshold = rebalance_factor_stability_ic_threshold
         self.factor_scorer = factor_scorer
         self.no_atr_stops = no_atr_stops
         self.symbols_data: Dict[str, pd.DataFrame] = {}
