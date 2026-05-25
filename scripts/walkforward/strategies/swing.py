@@ -59,6 +59,10 @@ class SwingStrategy:
         rebalance_factor_stability_gate: bool = False,
         rebalance_factor_stability_lookback: int = 63,
         rebalance_factor_stability_ic_threshold: float = 0.02,
+        # Phase 89 v2: dispersion gate
+        rebalance_dispersion_gate: bool = False,
+        rebalance_dispersion_k: int = 5,
+        rebalance_dispersion_L: int = 126,
         factor_scorer: Optional[Callable[..., Any]] = None,
         no_atr_stops: bool = False,
     ):
@@ -97,6 +101,9 @@ class SwingStrategy:
         self.rebalance_factor_stability_gate = rebalance_factor_stability_gate
         self.rebalance_factor_stability_lookback = rebalance_factor_stability_lookback
         self.rebalance_factor_stability_ic_threshold = rebalance_factor_stability_ic_threshold
+        self.rebalance_dispersion_gate = rebalance_dispersion_gate
+        self.rebalance_dispersion_k = rebalance_dispersion_k
+        self.rebalance_dispersion_L = rebalance_dispersion_L
         self.factor_scorer = factor_scorer
         self.no_atr_stops = no_atr_stops
         self.symbols_data: Dict[str, pd.DataFrame] = {}

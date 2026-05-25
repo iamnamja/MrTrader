@@ -724,10 +724,14 @@ def run_swing_walkforward(
     rebalance_inv_vol_lookback: int = 20,
     rebalance_inv_vol_min_mult: float = 0.5,
     rebalance_inv_vol_max_mult: float = 2.0,
-    # Phase 89: factor stability gate (rolling realized rank-IC filter)
+    # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
     rebalance_factor_stability_ic_threshold: float = 0.02,
+    # Phase 89 v2: cross-sectional return dispersion gate
+    rebalance_dispersion_gate: bool = False,
+    rebalance_dispersion_k: int = 5,
+    rebalance_dispersion_L: int = 126,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -962,7 +966,7 @@ def run_swing_walkforward(
                 vix_bear=rebalance_regime_vix_bear,
             )
 
-        # Phase 89: factor stability gate — combined multiplicatively with SPY+VIX gate
+        # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag)
         if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
             _regime_gate_fn = _make_combined_regime_fn(
                 fold_symbols_data,
@@ -972,6 +976,16 @@ def run_swing_walkforward(
                 ic_threshold=rebalance_factor_stability_ic_threshold,
                 te_start=te_start,
                 te_end=te_end,
+            )
+
+        # Phase 89 v2: cross-sectional dispersion gate (concurrent ~5d lag signal)
+        if rebalance_mode and rebalance_dispersion_gate:
+            from app.ml.dispersion_gate import make_combined_dispersion_regime_fn
+            _regime_gate_fn = make_combined_dispersion_regime_fn(
+                fold_symbols_data,
+                spy_vix_fn=_regime_gate_fn,
+                k=rebalance_dispersion_k,
+                L=rebalance_dispersion_L,
             )
 
         _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
@@ -1372,6 +1386,9 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
         rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
         rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
+        rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
+        rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
+        rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
         factor_scorer=_factor_scorer,
         no_atr_stops=getattr(args, "no_atr_stops", False),
     )
@@ -1525,6 +1542,13 @@ def main() -> int:
                         help="Phase 89: lookback days for rolling realized IC (default: 63)")
     parser.add_argument("--rebalance-factor-stability-ic-threshold", type=float, default=0.02,
                         help="Phase 89: IC threshold for gate on/off (default: 0.02)")
+    parser.add_argument("--rebalance-dispersion-gate", action="store_true", default=False,
+                        help="Phase 89 v2: cross-sectional return dispersion gate. "
+                             "DRR=MAD(5d returns)/126d-baseline; throttles 1.5x-2.5x, floored at 10%%.")
+    parser.add_argument("--rebalance-dispersion-k", type=int, default=5,
+                        help="Phase 89 v2: dispersion return window in trading days (default: 5)")
+    parser.add_argument("--rebalance-dispersion-L", type=int, default=126,
+                        help="Phase 89 v2: dispersion baseline lookback in trading days (default: 126)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1788,6 +1812,9 @@ def main() -> int:
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
+            rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
+            rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
+            rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
