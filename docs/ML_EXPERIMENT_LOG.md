@@ -5516,3 +5516,36 @@ Two-composite switch. NOT a gate. Selects which IC weights to use based on regim
 4. WF flag: `--rebalance-ic-composite-v220`
 5. Test: verify Fold 1 uses Composite A and Fold 2 uses Composite B on sample dates
 6. Run 5-fold WF, compare all folds vs v219 baseline
+
+### Implementation Complete — 2026-05-25 (PR #278)
+
+**Key changes (all in `app/ml/factor_scorer.py`):**
+- `_V220A_WEIGHTS_RAW`: Composite A momentum-tilted weights (sum=1.0):
+  - `ix_momentum_vol=0.23`, `momentum_252d_ex1m=0.21` (combined 44% vs ~28% in v219)
+  - `price_to_52w_high=0.13`, `volume_trend=0.08`, `range_expansion=0.05`
+  - Quality features retained but down-weighted: `profit_margin=0.03`, `operating_margin=0.05`, `pe_ratio=0.03`
+- `_compute_breadth(closes, as_of_ts, ma_days=200)`: computes % symbols above 200d MA (PIT-safe, shift(1))
+- `IcCompositeV220Scorer`: 
+  - `BREADTH_A_THRESHOLD=0.60`, `BREADTH_B_THRESHOLD=0.55` (5pp hysteresis deadband)
+  - `_breadth_ema` EMA-smoothed with span=5 to prevent day-to-day noise
+  - State tracked across calls (`_in_momentum_regime` bool)
+- `_compute_weighted_score()`: generic weighted composite (shared by both A and B paths)
+  - Bug fixed: VRP feature was missing `vix_val` argument — now extracts VIX from closes if present
+- CLI: `--rebalance-ic-composite-v220` wired in both WF and CPCV paths
+
+**Tests: 17 unit tests in `tests/ml/test_ic_composite_v220.py`**
+- Breadth signal: uptrend→1.0, downtrend→0.0, insufficient symbols→NaN, insufficient history→NaN
+- Weight properties: sums to 1.0, all positive, momentum > 44%, v220A > v219 momentum share
+- Scorer: returns ranked list, scores in range, regime property, high/low breadth regime detection
+- Hysteresis: < 3 switches over 50-day sideways period
+- PIT safety: corrupting same-day close does not change scores
+- CLI: `--rebalance-ic-composite-v220` in help output
+
+**Status: PR #278 — CI running — 🔄 Pending WF results**
+
+### WF Run Command
+```bash
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v220 --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v220_regime_conditional_5fold.log
+```
+
+### WF Results — 🔄 Pending (run after PR #278 merges)
