@@ -906,27 +906,28 @@ def _compute_weighted_score(
             if not np.isnan(dt):
                 raw_features["downtrend"][sym] = dt
 
-        # range_expansion
+        # range_expansion — 5d ATR / 20d ATR (matches compute_v219_score definition)
         if "range_expansion" in raw_features and sym in bars:
             df_b = bars[sym]
-            if df_b is not None and len(df_b) >= 21:
+            if df_b is not None and len(df_b) >= 20 and "high" in df_b.columns and "low" in df_b.columns:
                 try:
-                    rng_5 = float(df_b["high"].iloc[-5:].max() - df_b["low"].iloc[-5:].min())
-                    rng_20 = float(df_b["high"].iloc[-20:].max() - df_b["low"].iloc[-20:].min())
-                    if rng_20 > 1e-9:
-                        raw_features["range_expansion"][sym] = rng_5 / rng_20
+                    tr = (df_b["high"] - df_b["low"]).abs()
+                    atr5 = float(tr.iloc[-5:].mean())
+                    atr20 = float(tr.iloc[-20:].mean())
+                    if atr20 > 1e-9:
+                        raw_features["range_expansion"][sym] = atr5 / atr20
                 except Exception:
                     pass
 
-        # volume_trend
+        # volume_trend — 20d/60d ratio (matches compute_v219_score definition)
         if "volume_trend" in raw_features and sym in bars:
             df_b = bars[sym]
             if df_b is not None and "volume" in df_b.columns and len(df_b) >= 60:
                 try:
-                    vol_5 = float(df_b["volume"].iloc[-5:].mean())
+                    vol_20 = float(df_b["volume"].iloc[-20:].mean())
                     vol_60 = float(df_b["volume"].iloc[-60:].mean())
                     if vol_60 > 1e-9:
-                        raw_features["volume_trend"][sym] = vol_5 / vol_60
+                        raw_features["volume_trend"][sym] = vol_20 / vol_60
                 except Exception:
                     pass
 
@@ -962,3 +963,76 @@ def _compute_weighted_score(
 
     combined = pd.concat(score_df_parts, axis=1).sum(axis=1, min_count=1).dropna()
     return combined
+
+
+# =============================================================================
+# Phase 91 � v221 scorer: v219 with fundamentals down-weighted 70%
+# =============================================================================
+
+_V221_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          2.3095,
+    "momentum_252d_ex1m":       2.2334,
+    "price_to_52w_low":         2.2233,
+    "profit_margin":            1.2582 * 0.30,
+    "operating_margin":         1.0727 * 0.30,
+    "pe_ratio":                 0.8842 * 0.30,
+    "price_to_52w_high":        0.9442,
+    "volume_trend":             0.8840,
+    "reversal_5d_vol_weighted": 0.6254,
+    "downtrend":                0.4532,
+    "vol_regime":               0.2386,
+    "range_expansion":          0.1795,
+    "vrp":                      0.0566,
+}
+_V221_TOTAL = sum(_V221_IC_WEIGHTS_RAW.values())
+V221_IC_WEIGHTS: dict[str, float] = {k: v / _V221_TOTAL for k, v in _V221_IC_WEIGHTS_RAW.items()}
+
+
+class IcCompositeV221Scorer:
+    def _get_fundamentals(self, as_of_ts):
+        from app.ml.fundamentals_store import FundamentalsStore
+        try:
+            store = FundamentalsStore()
+            return store.get_latest_as_of(as_of_ts)
+        except Exception:
+            return pd.DataFrame()
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        _day_d = day.date() if hasattr(day, "date") else day
+        as_of_ts = pd.Timestamp(day)
+
+        close_cols = {}
+        for sym, df in symbols_data.items():
+            if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
+            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            if len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols if sym in symbols_data
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, V221_IC_WEIGHTS, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
