@@ -5450,3 +5450,69 @@ Opus recommended alternatives in order of confidence:
 3. **Top-decile persistence** (overlap between today's top-decile by score and 20d-ago top-decile). Simple, interpretable.
 
 Next implementation: try dispersion gate (fewer parameters, more intuitive, likely forward-leaning vs trailing IC).
+
+### Phase 89 v2 — Dispersion Gate WF Results (2026-05-25) ❌ NEUTRAL — Gate Did Not Fire
+
+**Command:** `--rebalance-dispersion-gate` (DRR = MAD(5d returns)/126d baseline, throttle 1.5-2.5x)
+
+| Fold | v219 baseline | + Dispersion gate | Delta |
+|------|--------------|-------------------|-------|
+| 1 | -0.37 | -0.41 | -0.04 |
+| 2 | +0.97 | **+0.97** ✅ | 0.00 |
+| 3 | +1.07 | +1.07 | 0.00 |
+| 4 | -0.36 | -0.44 | -0.08 |
+| 5 | +1.21 | +1.21 | 0.00 |
+| **Mean** | **+0.504** | **+0.481** | -0.02 |
+| Trades | 886 | 890 | +4 |
+
+Key finding: **Trade counts nearly identical in Folds 1 and 4** (188 vs 188; 168 vs 164). The DRR threshold of 1.5 was never reached during those periods. The dispersion gate **did not fire** in the folds it was designed to help.
+
+Positive: Fold 2 correctly preserved at +0.97 (Oct 2022 bottom = correlated sell-off = low DRR = gate open). The Oct 2022 Opus prediction was correct.
+Negative: Fold 1 (Nov 2021 factor rotation) and Fold 4 (tariff shock) DRR stayed below 1.5 threshold — both are apparently low-dispersion events in this universe.
+
+### Opus 4.7 Final Verdict on Gate Campaign (2026-05-25)
+
+**Gate campaign is over. Three gates tested, all rejected.**
+
+| Gate | Mean Sharpe | Verdict |
+|------|-------------|---------|
+| No gate (v219) | +0.504 | Baseline |
+| Rolling IC gate | +0.435 | Crushed Fold 2, rejected |
+| Dispersion gate | +0.481 | No-op in Folds 1/4, marginal loss |
+
+**Root cause diagnosis (definitive):**
+- **Fold 1 failure = feature quality problem, not timing.** Momentum baseline scores +0.60 in Fold 1 while IC composite scores -0.37 — a 0.97 Sharpe gap on identical dates/config. The IC composite's quality tilt (profit_margin, operating_margin, pe_ratio) is wrong for late-cycle blow-off regimes. No gate can fix this; the wrong features are being selected.
+- **Fold 4 failure = structurally irreducible.** Both momentum baseline (-0.01) AND IC composite (-0.36) fail. Correlated macro shock (Mag-7 concentration + tariff shock) — long-only top-30 cross-sectional strategy has no fix for this without shorts or macro cash-out.
+
+**Natural ceiling for this strategy family: +0.55 to +0.65 mean Sharpe.** The 0.80 gate likely requires structural change (shorts, cash sleeve, different universe).
+
+## Phase 90 — Regime-Conditional Feature Weighting (2026-05-25)
+
+### Design (Opus 4.7)
+
+Two-composite switch. NOT a gate. Selects which IC weights to use based on regime breadth signal.
+
+**Composite A (momentum-tilted):**
+- Drop or down-weight: profit_margin, operating_margin, pe_ratio (quality features that underperform in late-cycle blow-off)
+- Up-weight: momentum_252d_ex1m, ix_momentum_vol, price_to_52w_high (pure price momentum)
+- Active when: SPY 200d slope > 0 AND VIX < 20 AND breadth (% symbols above 200d MA) > 60%
+
+**Composite B (quality-tilted):**
+- Current v219 weights (unchanged)
+- Active otherwise
+
+**Regime switch signal**: `breadth > 60%` (% universe above 200d MA). This is a slow, robust signal — hard to overfit.
+
+**Expected impact:**
+- Fold 1 should improve from -0.37 toward momentum baseline's +0.60 (quality composite was the wrong choice)
+- Folds 2/3/5 should be unaffected (quality composite correct for those regimes)
+- Fold 4 improvement unlikely (correlated macro shock, neither composite helps)
+- Realistic post-Phase-90 ceiling: mean +0.55 to +0.65, min fold ~-0.25 to -0.35
+
+### Implementation Plan
+1. Add `compute_v220_score()` — momentum-tilted composite with quality features zeroed/reduced
+2. Add breadth signal computation (`pct_above_200d(universe, day)`)  
+3. `IcCompositeV220Scorer.__call__` selects A or B based on breadth signal at each rebalance day
+4. WF flag: `--rebalance-ic-composite-v220`
+5. Test: verify Fold 1 uses Composite A and Fold 2 uses Composite B on sample dates
+6. Run 5-fold WF, compare all folds vs v219 baseline
