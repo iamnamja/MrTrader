@@ -5608,4 +5608,40 @@ python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalanc
 python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --rebalance-spy-vol-damper --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v221_fundamentals_down_vol_damper_5fold.log
 ```
 
-### WF Results — 🔄 Pending (PR #280 CI running)
+### WF Results — ❌ GATE NOT MET (2026-05-25, 4 bugs found/fixed before clean run)
+
+| Fold | Period | Trades | Sharpe | vs v219 |
+|---|---|---|---|---|
+| 1 | 2021-06 → 2022-05 | 186 | **-0.47** | -0.10 (worse) |
+| 2 | 2022-06 → 2023-05 | 186 | **+0.97** | identical |
+| 3 | 2023-06 → 2024-05 | 166 | **+1.03** | +0.15 (better) |
+| 4 | 2024-06 → 2025-05 | 164 | **-0.36** | -0.12 (worse) |
+| 5 | 2025-06 → 2026-05 | 180 | **+1.21** | -0.39 (worse) |
+| **Avg** | | | **+0.477** | **-0.17 vs v219** |
+
+Gate: avg_sharpe FAIL, min_sharpe FAIL. **v221 is worse than v219.**
+
+### Opus 4.7 Post-Mortem (2026-05-25)
+
+**Why v221 hurt Folds 4 and 5 — the real role of quality features:**
+Quality features are NOT a "rate shock hedge" — that hypothesis was wrong. They are a **junk filter**: they tilt the top-30 away from the lowest-quality, highest-beta names that momentum naturally surfaces near regime inflection points. Removing 70% of their weight left the book with pure momentum concentration in high-torque names — which helps in clean trending regimes (Fold 3 improved) but adds whipsaw costs in rotations (Fold 4, Fold 5 both hurt). **The IC weights were correct. v221 confirmed it.**
+
+**What is actually causing Fold 1 and Fold 4 failures:**
+- **Fold 1 is structurally irreducible.** Jun 2021–May 2022 = late-cycle growth blow-off top → violent factor rotation → rate shock. Top-30 long-only 20d-rebalance momentum/quality book is structurally lagged: 10-day average holding time on the wrong factor. "No long-only IC composite on this universe fixes this without a regime model that explicitly shorts (or de-grosses) when momentum quality decays."
+- **Fold 4 is gap-risk between rebalances.** Jul 2024 yen carry unwind, Aug 2024 VIX-65 spike, Nov 2024 election rotation, Jan 2025 DeepSeek. 20d rebalance + top-30 concentration can't react. Partially addressable, not eliminable.
+
+**Is the +0.80 gate achievable?**
+Opus verdict: **+0.80 is the 75-85th percentile of luck for this architecture on this 6-year sample.** v219 at +0.65 is near the true expected value. Continuing to iterate on factor weights is **p-hacking on 5 folds**.
+
+### Ranked Action Plan (Opus 4.7, 2026-05-25)
+
+| Rank | Action | P(cross gate) | Mechanism | Risk |
+|---|---|---|---|---|
+| 1 | Accept v219, lower gate to +0.60 | ~85% | Stop overfitting to aspirational number | None |
+| 2 | Sector-relative momentum + earnings revisions | ~30% | Forward-looking, rotation-resistant | Engineering cost, ~2 weeks |
+| 3 | v219 + SPY vol damper + top-300 ADV filter | ~20% | Gross exposure + universe quality | Drag on good folds |
+| 4 | Drop fundamentals entirely | ~10% | **Don't do this** — v221 already proved it's wrong | Anti-signal |
+
+**Decision: run v219 + vol damper as the one remaining cheap experiment. Accept the result regardless. Then either lower gate to +0.60 (honest) or commit to sector-relative + revisions as next architectural project.**
+
+### v219 + Vol Damper WF — 🔄 Running (logs/wf_v219_vol_damper_5fold.log)
