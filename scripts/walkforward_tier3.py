@@ -1352,6 +1352,10 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         from app.ml.factor_scorer import IcCompositeScorer
         _factor_scorer = IcCompositeScorer()
         print("  CPCV: IC composite mode — Phase 88 deterministic IC-weighted scorer (v219 weights)")
+    elif getattr(args, "rebalance_ic_composite_v220", False):
+        from app.ml.factor_scorer import IcCompositeV220Scorer
+        _factor_scorer = IcCompositeV220Scorer()
+        print("  CPCV: IC composite v220 mode — Phase 90 regime-conditional two-composite scorer")
 
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
@@ -1534,6 +1538,10 @@ def main() -> int:
     parser.add_argument("--rebalance-ic-composite", action="store_true", default=False,
                         help="Phase 88: use IC-weighted deterministic factor composite (v219) "
                              "instead of ML model. Weights from 2026-05-24 IC audit h20 IC IR.")
+    parser.add_argument("--rebalance-ic-composite-v220", action="store_true", default=False,
+                        help="Phase 90: regime-conditional two-composite switch. Composite A "
+                             "(momentum-tilted, breadth>60%%) vs Composite B (quality/v219). "
+                             "5pp hysteresis deadband, EMA-smoothed breadth signal.")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1823,6 +1831,10 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeScorer
             _swing_kwargs["scorer_instance"] = IcCompositeScorer()
             print("  WF: IC composite mode — Phase 88 deterministic IC-weighted scorer (v219 weights)")
+        elif getattr(args, "rebalance_ic_composite_v220", False):
+            from app.ml.factor_scorer import IcCompositeV220Scorer
+            _swing_kwargs["scorer_instance"] = IcCompositeV220Scorer()
+            print("  WF: IC composite v220 mode — Phase 90 regime-conditional two-composite scorer")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
