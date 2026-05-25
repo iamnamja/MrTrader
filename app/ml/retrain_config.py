@@ -232,27 +232,39 @@ BENIGN_REGIME_THRESHOLD: float = 0.5
 # P1 feature keep-lists. When BENIGN_FILTER_ENABLED=True, the worker retains ONLY
 # features in the relevant list after computing the full feature dict.
 # Verified against app/ml/features.py output — names must match exactly.
+#
+# v217 feature set (2026-05-24): 17 cross-regime rank-stable features selected via
+# IC audit (Spearman IC vs 20d forward returns, 2019-2026, regime-split by year).
+# Selection criteria: positive 2022 bear-year IC OR meaningful overall IC IR.
+# Dropped from v216: gross_margin (-0.039 2022 IC), revenue_growth (-0.019 2022),
+# trend_consistency_63d (-0.014 2022), momentum_60d_sector_neutral (≈0 overall),
+# ix_vrp_range (≈0 overall), near_52w_high (redundant with price_to_52w_high),
+# ix_quality_at_high (redundant interaction).
 BENIGN_SWING_FEATURES: tuple = (
-    # Momentum (8)
-    "rsi_14", "macd_histogram", "momentum_5d", "momentum_20d", "momentum_60d",
-    "momentum_252d_ex1m", "price_change_pct", "consecutive_days",
-    # Trend (7)
-    "price_above_ema20", "price_above_ema50", "ema20_dist", "ema50_dist",
-    "adx_14", "uptrend", "downtrend",
-    # Volatility (5)
-    "atr_norm", "volatility", "vol_percentile_52w", "vol_regime", "parkinson_vol",
-    # Volume (3)
-    "volume_ratio", "volume_trend", "vwap_distance_20d",
-    # 52-week position (2)
-    "price_to_52w_high", "price_to_52w_low",
-    # Regime / macro (5)
-    "vix_term_ratio", "spy_above_ma50", "spy_above_ma200",
-    "breadth_rsp_spy_ratio_20d", "credit_hyg_ief_20d",
-    # Sector (2)
-    "sector_momentum", "sector_momentum_5d",
-    # Fundamentals (3) — only used when FMP parquet present
-    "pe_ratio", "profit_margin", "revenue_growth",
-)  # 35 total
+    # Momentum (4) — regime-stable, positive IC in 2022 bear
+    "momentum_252d_ex1m",
+    "ix_momentum_vol",
+    "price_to_52w_high",
+    "price_to_52w_low",
+    # Counter-trend / mean-reversion (3) — positive 2022 IC, orthogonal to momentum
+    "reversal_5d_vol_weighted",
+    "downtrend",
+    "range_expansion",
+    # Quality / fundamentals (3) — FMP PIT-correct values; positive 2022 IC
+    "operating_margin",
+    "profit_margin",
+    "pe_ratio",
+    # Risk / volatility regime (3)
+    "vol_regime",
+    "vrp",
+    "vol_percentile_52w",
+    # Flow (1)
+    "volume_trend",
+    # WorldQuant alphas (3) — positive 2022 IC, diversified signal
+    "wq_alpha35",
+    "wq_alpha40",
+    "wq_alpha43",
+)  # 17 total — v217
 
 BENIGN_INTRADAY_FEATURES: tuple = (
     # Momentum (6)
