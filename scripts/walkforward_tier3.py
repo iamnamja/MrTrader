@@ -1246,7 +1246,11 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     _factor_scorer = None
     if getattr(args, "rebalance_momentum_baseline", False):
         _factor_scorer = _momentum_baseline_scorer(lookback_days=60)
-        print("  CPCV: momentum baseline mode — bypassing v216, using 60d trailing return ranker")
+        print("  CPCV: momentum baseline mode — bypassing ML model, using 60d trailing return ranker")
+    elif getattr(args, "rebalance_ic_composite", False):
+        from app.ml.factor_scorer import IcCompositeScorer
+        _factor_scorer = IcCompositeScorer()
+        print("  CPCV: IC composite mode — Phase 88 deterministic IC-weighted scorer (v219 weights)")
 
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
@@ -1420,6 +1424,9 @@ def main() -> int:
     parser.add_argument("--rebalance-momentum-baseline", action="store_true", default=False,
                         help="CPCV diagnostic: replace v216 with 60d trailing-return momentum ranker "
                              "(same REBALANCE harness, same regime gate + inv-vol sizing)")
+    parser.add_argument("--rebalance-ic-composite", action="store_true", default=False,
+                        help="Phase 88: use IC-weighted deterministic factor composite (v219) "
+                             "instead of ML model. Weights from 2026-05-24 IC audit h20 IC IR.")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1681,6 +1688,13 @@ def main() -> int:
             rebalance_inv_vol_min_mult=args.rebalance_inv_vol_min_mult,
             rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
         )
+        if getattr(args, "rebalance_momentum_baseline", False):
+            _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
+            print("  WF: momentum baseline mode — 60d trailing return ranker")
+        elif getattr(args, "rebalance_ic_composite", False):
+            from app.ml.factor_scorer import IcCompositeScorer
+            _swing_kwargs["scorer_instance"] = IcCompositeScorer()
+            print("  WF: IC composite mode — Phase 88 deterministic IC-weighted scorer (v219 weights)")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
