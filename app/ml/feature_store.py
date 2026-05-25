@@ -57,6 +57,9 @@ class FeatureStore:
 
     def _init_db(self) -> None:
         with self._conn() as conn:
+            # WAL mode allows concurrent readers+writers without exclusive locks,
+            # preventing "database is locked" when parallel test workers init simultaneously.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS features (
                     symbol      TEXT NOT NULL,
