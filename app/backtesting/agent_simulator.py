@@ -1235,6 +1235,8 @@ class AgentSimulator:
             regime_label = "BULL"
         elif gross_mult <= 0.35:
             regime_label = "BEAR"
+        else:
+            regime_label = "NEUTRAL"
 
         # 5b. SPY concurrent vol damper (Phase 91): when SPY 21d realized vol > 80th pct of
         # trailing 252d rolling vols, halve gross_mult. Defensive only — reduces size when the
@@ -1257,8 +1259,6 @@ class AgentSimulator:
                             if _pct_rank > 0.80:
                                 gross_mult *= self.rebalance_spy_vol_damper_scale
                                 regime_label += "+HIGHVOL"
-        else:
-            regime_label = "NEUTRAL"
 
         # 6. Close drops
         tx_costs = 0.0
