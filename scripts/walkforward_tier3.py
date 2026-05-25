@@ -217,6 +217,77 @@ def _make_regime_gate_fn(
     return _regime_fn
 
 
+def _make_combined_regime_fn(
+    fold_symbols_data: dict,
+    scorer_instance,
+    *,
+    spy_vix_fn=None,
+    lookback_days: int = 63,
+    ic_threshold: float = 0.02,
+    te_start,
+    te_end,
+):
+    """
+    Phase 89: Return a combined regime multiplier = SPY/VIX gate × factor stability gate.
+
+    Builds a FactorStabilityGate from all available fold data (train + test window),
+    then returns a callable (day) -> float that multiplies both gates together.
+    This is PIT-safe: the FactorStabilityGate uses shift(fwd_window) internally
+    so no future forward returns leak into the gate state.
+    """
+    import pandas as _pd
+    from datetime import date as _date
+    from app.ml.factor_stability_gate import FactorStabilityGate
+
+    # Build price DataFrame from fold_symbols_data (adj close)
+    price_dict = {}
+    for sym, df in fold_symbols_data.items():
+        if sym in ("SPY", "^VIX", "VIX") or df is None or "close" not in df.columns:
+            continue
+        price_dict[sym] = df["close"]
+
+    if len(price_dict) < 50:
+        # Not enough symbols; fall back to SPY+VIX gate only
+        return spy_vix_fn
+
+    prices = _pd.DataFrame(price_dict)
+
+    # Score all symbols on every training day to build a scores_at_rebalance matrix.
+    # We call scorer_instance for each day in the fold's training range.
+    # Use a coarse 5-day step to avoid re-scoring 665 symbols on every single day.
+    all_dates = sorted(prices.index)
+    score_rows = {}
+    for dt in all_dates[::5]:
+        day = dt.date() if hasattr(dt, "date") else dt
+        scored = scorer_instance(day, fold_symbols_data)
+        if scored:
+            row = {sym: score for sym, score, *_ in scored}
+            score_rows[_pd.Timestamp(day)] = row
+
+    if len(score_rows) < 20:
+        return spy_vix_fn
+
+    scores_df = _pd.DataFrame(score_rows).T.sort_index()
+    scores_df = scores_df.reindex(prices.index).ffill()
+
+    try:
+        fs_gate = FactorStabilityGate(
+            scores_df,
+            prices,
+            lookback_days=lookback_days,
+            ic_threshold=ic_threshold,
+        )
+    except Exception:
+        return spy_vix_fn
+
+    def _combined_fn(day: _date) -> float:
+        spy_mult = spy_vix_fn(day) if spy_vix_fn is not None else 1.0
+        fs_mult = fs_gate(day)
+        return spy_mult * fs_mult
+
+    return _combined_fn
+
+
 # ── Console helpers ───────────────────────────────────────────────────────────
 
 def _ok(msg):
@@ -653,6 +724,10 @@ def run_swing_walkforward(
     rebalance_inv_vol_lookback: int = 20,
     rebalance_inv_vol_min_mult: float = 0.5,
     rebalance_inv_vol_max_mult: float = 2.0,
+    # Phase 89: factor stability gate (rolling realized rank-IC filter)
+    rebalance_factor_stability_gate: bool = False,
+    rebalance_factor_stability_lookback: int = 63,
+    rebalance_factor_stability_ic_threshold: float = 0.02,
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -885,6 +960,18 @@ def run_swing_walkforward(
                 spy_ma_days=rebalance_regime_spy_ma_days,
                 vix_bull=rebalance_regime_vix_bull,
                 vix_bear=rebalance_regime_vix_bear,
+            )
+
+        # Phase 89: factor stability gate — combined multiplicatively with SPY+VIX gate
+        if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
+            _regime_gate_fn = _make_combined_regime_fn(
+                fold_symbols_data,
+                scorer_instance,
+                spy_vix_fn=_regime_gate_fn,
+                lookback_days=rebalance_factor_stability_lookback,
+                ic_threshold=rebalance_factor_stability_ic_threshold,
+                te_start=te_start,
+                te_end=te_end,
             )
 
         _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
@@ -1282,6 +1369,9 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_inv_vol_lookback=getattr(args, "rebalance_inv_vol_lookback", 20),
         rebalance_inv_vol_min_mult=getattr(args, "rebalance_inv_vol_min_mult", 0.5),
         rebalance_inv_vol_max_mult=getattr(args, "rebalance_inv_vol_max_mult", 2.0),
+        rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
+        rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
+        rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
         factor_scorer=_factor_scorer,
         no_atr_stops=getattr(args, "no_atr_stops", False),
     )
@@ -1427,6 +1517,14 @@ def main() -> int:
     parser.add_argument("--rebalance-ic-composite", action="store_true", default=False,
                         help="Phase 88: use IC-weighted deterministic factor composite (v219) "
                              "instead of ML model. Weights from 2026-05-24 IC audit h20 IC IR.")
+    parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
+                        help="Phase 89: add cross-sectional factor stability gate (rolling realized "
+                             "rank-IC filter). Multiplied on top of SPY+VIX gate. "
+                             "Requires --rebalance-ic-composite or --rebalance-momentum-baseline.")
+    parser.add_argument("--rebalance-factor-stability-lookback", type=int, default=63,
+                        help="Phase 89: lookback days for rolling realized IC (default: 63)")
+    parser.add_argument("--rebalance-factor-stability-ic-threshold", type=float, default=0.02,
+                        help="Phase 89: IC threshold for gate on/off (default: 0.02)")
     parser.add_argument("--meta-model-version", type=int, default=0,
                         help="Swing MetaLabelModel version to load (0 = none)")
     parser.add_argument("--intraday-meta-model-version", type=int, default=0,
@@ -1687,6 +1785,9 @@ def main() -> int:
             rebalance_inv_vol_lookback=args.rebalance_inv_vol_lookback,
             rebalance_inv_vol_min_mult=args.rebalance_inv_vol_min_mult,
             rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
+            rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
+            rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
+            rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
