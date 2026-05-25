@@ -196,6 +196,8 @@ class AgentSimulator:
         rebalance_inv_vol_lookback: int = 20,
         rebalance_inv_vol_min_mult: float = 0.5,
         rebalance_inv_vol_max_mult: float = 2.0,
+        rebalance_spy_vol_damper: bool = False,  # Phase 91: halve gross_mult when SPY 21d vol > 80th pct
+        rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -244,6 +246,8 @@ class AgentSimulator:
         self.rebalance_inv_vol_lookback = rebalance_inv_vol_lookback
         self.rebalance_inv_vol_min_mult = rebalance_inv_vol_min_mult
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
+        self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
+        self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -1231,6 +1235,28 @@ class AgentSimulator:
             regime_label = "BULL"
         elif gross_mult <= 0.35:
             regime_label = "BEAR"
+
+        # 5b. SPY concurrent vol damper (Phase 91): when SPY 21d realized vol > 80th pct of
+        # trailing 252d rolling vols, halve gross_mult. Defensive only — reduces size when the
+        # cross-section is noisy, not a directional signal.
+        if self.rebalance_spy_vol_damper:
+            import numpy as _np
+            _as_of_ts = pd.Timestamp(day)
+            _spy_df = symbols_data.get("SPY")
+            if _spy_df is not None:
+                _spy_col = "close" if "close" in _spy_df.columns else "Close"
+                if _spy_col in _spy_df.columns:
+                    _spy_past = _spy_df[_spy_col][_spy_df.index <= _as_of_ts].dropna()
+                    if len(_spy_past) >= 273:  # 252 + 21 minimum
+                        _log_rets = _np.log(_spy_past / _spy_past.shift(1)).dropna()
+                        _vol_21 = float(_log_rets.iloc[-21:].std() * _np.sqrt(252))
+                        _rolling_21 = _log_rets.rolling(21).std() * _np.sqrt(252)
+                        _hist_vols = _rolling_21.dropna().iloc[-252:]
+                        if len(_hist_vols) >= 50:
+                            _pct_rank = float((_vol_21 > _hist_vols).mean())
+                            if _pct_rank > 0.80:
+                                gross_mult *= self.rebalance_spy_vol_damper_scale
+                                regime_label += "+HIGHVOL"
         else:
             regime_label = "NEUTRAL"
 

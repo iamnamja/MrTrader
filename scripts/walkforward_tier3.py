@@ -988,7 +988,11 @@ def run_swing_walkforward(
                 L=rebalance_dispersion_L,
             )
 
-        _factor_scorer_inst = scorer_instance  # Phase G: externally injected scorer takes priority
+        # Deepcopy scorer so each fold gets independent mutable state (e.g. IcCompositeV220Scorer
+        # tracks _in_momentum_regime + _breadth_ema across calls — sharing one instance across
+        # ThreadPoolExecutor folds causes races and state contamination between folds).
+        import copy
+        _factor_scorer_inst = copy.deepcopy(scorer_instance) if scorer_instance is not None else None
         if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
             _factor_scorer_inst = FactorPortfolioScorer(
@@ -1356,6 +1360,10 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         from app.ml.factor_scorer import IcCompositeV220Scorer
         _factor_scorer = IcCompositeV220Scorer()
         print("  CPCV: IC composite v220 mode — Phase 90 regime-conditional two-composite scorer")
+    elif getattr(args, "rebalance_ic_composite_v221", False):
+        from app.ml.factor_scorer import IcCompositeV221Scorer
+        _factor_scorer = IcCompositeV221Scorer()
+        print("  CPCV: IC composite v221 mode — Phase 91 fundamentals-downweighted scorer")
 
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
@@ -1387,6 +1395,8 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_inv_vol_lookback=getattr(args, "rebalance_inv_vol_lookback", 20),
         rebalance_inv_vol_min_mult=getattr(args, "rebalance_inv_vol_min_mult", 0.5),
         rebalance_inv_vol_max_mult=getattr(args, "rebalance_inv_vol_max_mult", 2.0),
+        rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
+        rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
         rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
         rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
         rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
@@ -1532,6 +1542,11 @@ def main() -> int:
                         help="Min weight vs equal weight (default: 0.5x)")
     parser.add_argument("--rebalance-inv-vol-max-mult", type=float, default=2.0,
                         help="Max weight vs equal weight (default: 2.0x)")
+    parser.add_argument("--rebalance-spy-vol-damper", action="store_true", default=False,
+                        help="Phase 91: halve gross_mult when SPY 21d realized vol > 80th pct "
+                             "of trailing 252d rolling vols. Defensive sizing only.")
+    parser.add_argument("--rebalance-spy-vol-damper-scale", type=float, default=0.50,
+                        help="Phase 91: gross_mult scale factor in high-vol regime (default: 0.50)")
     parser.add_argument("--rebalance-momentum-baseline", action="store_true", default=False,
                         help="CPCV diagnostic: replace v216 with 60d trailing-return momentum ranker "
                              "(same REBALANCE harness, same regime gate + inv-vol sizing)")
@@ -1542,6 +1557,9 @@ def main() -> int:
                         help="Phase 90: regime-conditional two-composite switch. Composite A "
                              "(momentum-tilted, breadth>60%%) vs Composite B (quality/v219). "
                              "5pp hysteresis deadband, EMA-smoothed breadth signal.")
+    parser.add_argument("--rebalance-ic-composite-v221", action="store_true", default=False,
+                        help="Phase 91: v219 with fundamentals down-weighted 70%%. Stateless. "
+                             "Fixes quality-feature drag in rate-shock / blow-off folds.")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1817,6 +1835,8 @@ def main() -> int:
             rebalance_inv_vol_lookback=args.rebalance_inv_vol_lookback,
             rebalance_inv_vol_min_mult=args.rebalance_inv_vol_min_mult,
             rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
+            rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
+            rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
@@ -1835,6 +1855,10 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeV220Scorer
             _swing_kwargs["scorer_instance"] = IcCompositeV220Scorer()
             print("  WF: IC composite v220 mode — Phase 90 regime-conditional two-composite scorer")
+        elif getattr(args, "rebalance_ic_composite_v221", False):
+            from app.ml.factor_scorer import IcCompositeV221Scorer
+            _swing_kwargs["scorer_instance"] = IcCompositeV221Scorer()
+            print("  WF: IC composite v221 mode — Phase 91 fundamentals-downweighted scorer")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
