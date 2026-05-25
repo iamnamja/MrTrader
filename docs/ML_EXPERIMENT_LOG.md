@@ -5541,11 +5541,71 @@ Two-composite switch. NOT a gate. Selects which IC weights to use based on regim
 - PIT safety: corrupting same-day close does not change scores
 - CLI: `--rebalance-ic-composite-v220` in help output
 
-**Status: PR #278 — CI running — 🔄 Pending WF results**
+**Status: PR #278 merged ✅**
 
-### WF Run Command
+### WF Results — ❌ GATE NOT MET (2026-05-25)
+
+| Fold | Period | Trades | Sharpe | vs v219 |
+|---|---|---|---|---|
+| 1 | 2021-06 → 2022-05 | 196 | **-0.48** | -0.11 (worse) |
+| 2 | 2022-06 → 2023-05 | 188 | **+0.40** | -0.57 (much worse) |
+| 3 | 2023-06 → 2024-05 | 176 | **+0.86** | -0.02 (similar) |
+| 4 | 2024-06 → 2025-05 | 174 | **-0.12** | +0.12 (better) |
+| 5 | 2025-06 → 2026-05 | 192 | **+1.00** | -0.60 (worse) |
+| **Avg** | | | **+0.33** | **-0.32 vs v219** |
+
+Gate: avg_sharpe FAIL, min_sharpe FAIL. DSR p=1.000 OK.
+
+**v220 underperformed v219 on 4 of 5 folds. Phase 90 failed.**
+
+### Post-Mortem (Opus 4.7 deep audit, 2026-05-25) — PR #280
+
+**Root cause #1 (CRITICAL): Stateful scorer shared across parallel fold threads.**
+`IcCompositeV220Scorer._in_momentum_regime` and `_breadth_ema` are shared mutable state. All 5 folds run in `ThreadPoolExecutor` and share one instance → race condition. State from Fold 1's 2021 bull market contaminates Fold 5's regime flag. **v220 WF results are not trustworthy.** Fixed: `copy.deepcopy(scorer_instance)` per fold in `_run_swing_fold`.
+
+**Root cause #2 (HIGH): Silent feature redefinitions in `_compute_weighted_score`.**
+- `volume_trend`: was `5/60d` (should be `20/60d` to match `compute_v219_score`)
+- `range_expansion`: was `high.max()-low.min()` range (should be `5d ATR / 20d ATR`)
+These silent changes affected every fold via Composite B (which was supposed to be v219). Fixed: both definitions now match `compute_v219_score` exactly.
+
+**Design flaw: Phase 90 breadth-switch is conceptually identical to prior gates.**
+- Breadth > 60% → momentum composite. But 60% breadth is typical in any uptrend. The switch fires for most of Fold 1 and most of Fold 2/3/5. No targeted regime differentiation.
+- Composite A barely differs from B (momentum weight +44% vs +28% = 16pp delta on 2 features).
+- Switching adds lag and transition tax without enough alpha delta to compensate.
+**Opus verdict: stop adding regime switches on top of v219. Each adds parameters and gives the same lagged signal in a different costume.**
+
+### Phase 90 CLOSED — Moving to Phase 91
+
+---
+
+## Phase 91 — v221: Fundamentals Down-Weighted + SPY Vol Damper (2026-05-25)
+
+### Design (Opus 4.7, 2026-05-25)
+
+**Hypothesis (from Opus analysis):** Quality features (profit_margin, operating_margin, pe_ratio) have positive average IC over 2019-2024 but persistently hurt during rate-shock and late-cycle blow-off periods (exactly Fold 1 and Fold 4). Down-weighting by 70% keeps the signal contribution without paying the full cost when regime turns against them.
+
+**v221 weights:** v219 weights with fundamentals × 0.30, then re-normalized to sum to 1.0.
+- Effect: momentum/technical features get ~12% relative boost via re-normalization
+- No regime switching → no lag, no state bugs, no threshold tuning
+
+**SPY concurrent vol damper:** When SPY 21d realized vol > 80th percentile of trailing 252d rolling vols, multiply `gross_mult` by 0.50. Defensive sizing only — reduces exposure when cross-section is uninformative. Targets Fold 1 (Jan-Feb 2022 vol spike) and Fold 4 (2024-2025 macro shock).
+
+**Bug fixes in this PR (PR #280):**
+1. `copy.deepcopy(scorer_instance)` per fold — prevents state contamination
+2. `_compute_weighted_score`: `volume_trend` 20/60d, `range_expansion` 5d ATR / 20d ATR
+
+### Implementation (PR #280)
+- `IcCompositeV221Scorer`: stateless, uses `_compute_weighted_score(V221_IC_WEIGHTS)`
+- `rebalance_spy_vol_damper` flag wired through agent_simulator → swing strategy → WF harness
+- CLI: `--rebalance-ic-composite-v221` and `--rebalance-spy-vol-damper`
+
+### WF Run Commands
 ```bash
-python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v220 --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v220_regime_conditional_5fold.log
+# v221 alone (fundamentals -70%, no vol damper)
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v221_fundamentals_down_5fold.log
+
+# v221 + vol damper
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --rebalance-spy-vol-damper --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v221_fundamentals_down_vol_damper_5fold.log
 ```
 
-### WF Results — 🔄 Pending (run after PR #278 merges)
+### WF Results — 🔄 Pending (PR #280 CI running)
