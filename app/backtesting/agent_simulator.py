@@ -226,7 +226,11 @@ class AgentSimulator:
         rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
         # Phase 2 — L/S extension
         enable_shorts: bool = False,        # False = pure long-only (backward-compat default)
-        short_target_n: int = 30,           # number of short positions
+        spy_beta_hedge: bool = False,       # True = short SPY sized to long-book rolling beta (Option A)
+        spy_beta_lookback: int = 60,        # rolling days for beta computation
+        spy_beta_cap: float = 1.5,          # cap realized beta at this value
+        spy_hedge_max_gross: float = 0.30,  # max SPY short gross as fraction of equity
+        short_target_n: int = 30,           # number of short positions (individual names)
         long_gross: float = 0.95,           # long book gross as fraction of equity
         short_gross: float = 0.55,          # short book gross as fraction of equity
         short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
@@ -286,6 +290,10 @@ class AgentSimulator:
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
         # Phase 2 — L/S state
         self.enable_shorts = enable_shorts
+        self.spy_beta_hedge = spy_beta_hedge
+        self.spy_beta_lookback = spy_beta_lookback
+        self.spy_beta_cap = spy_beta_cap
+        self.spy_hedge_max_gross = spy_hedge_max_gross
         self.short_target_n = short_target_n
         self.long_gross = long_gross
         self.short_gross = short_gross
@@ -1577,6 +1585,103 @@ class AgentSimulator:
                     gross_exposure_mult=short_mult,
                     rebalance_date=day,
                 ))
+
+        # 9. SPY beta hedge (Option A — replaces individual short book when spy_beta_hedge=True)
+        if self.spy_beta_hedge:
+            import numpy as _np
+
+            # Close any existing SPY hedge position first (sizing changes each rebalance)
+            _SPY_HEDGE_KEY = "__SPY_HEDGE__"
+            if _SPY_HEDGE_KEY in portfolio.positions:
+                hedge_pos = portfolio.positions[_SPY_HEDGE_KEY]
+                hedge_trades, hedge_cost = self._rebalance_drop_position(
+                    _SPY_HEDGE_KEY, hedge_pos, {_SPY_HEDGE_KEY: symbols_data.get("SPY", pd.DataFrame())},
+                    portfolio, day, regime_label,
+                )
+                closed_trades.extend(hedge_trades)
+                tx_costs += hedge_cost
+
+            # Compute rolling realized beta of the current long book vs SPY
+            spy_df = symbols_data.get("SPY")
+            if spy_df is not None and not spy_df.empty:
+                _as_of_ts = pd.Timestamp(day)
+                spy_col = "close" if "close" in spy_df.columns else "Close"
+                spy_hist = spy_df[spy_df.index < _as_of_ts][spy_col].dropna()
+
+                long_syms = [s for s, p in portfolio.positions.items()
+                             if getattr(p, "direction", "long") == "long" and s != _SPY_HEDGE_KEY]
+
+                beta = 1.0  # default if insufficient history
+                if len(spy_hist) >= self.spy_beta_lookback + 5 and long_syms:
+                    spy_rets = spy_hist.pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                    book_rets_list = []
+                    for sym in long_syms:
+                        sdf = symbols_data.get(sym)
+                        if sdf is None:
+                            continue
+                        sc = "close" if "close" in sdf.columns else "Close"
+                        if sc not in sdf.columns:
+                            continue
+                        sh = sdf[sdf.index < _as_of_ts][sc].dropna().pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                        if len(sh) >= self.spy_beta_lookback // 2:
+                            book_rets_list.append(sh)
+                    if book_rets_list:
+                        book_rets = pd.concat(book_rets_list, axis=1).mean(axis=1)
+                        aligned = pd.concat([spy_rets, book_rets], axis=1).dropna()
+                        if len(aligned) >= 20:
+                            cov = _np.cov(aligned.iloc[:, 1], aligned.iloc[:, 0])
+                            beta = float(cov[0, 1] / cov[1, 1]) if cov[1, 1] > 0 else 1.0
+                            beta = min(self.spy_beta_cap, max(0.0, beta))
+
+                # Size the hedge: equity × beta × short_mult, capped at spy_hedge_max_gross
+                _short_mult = self.short_regime_fn(day) if self.short_regime_fn else 1.0
+                hedge_gross = min(
+                    equity * beta * _short_mult,
+                    equity * self.spy_hedge_max_gross
+                )
+
+                # Open new SPY short hedge
+                spy_today = self._bars_on(spy_df, day)
+                if spy_today is not None and hedge_gross > 100.0:
+                    spy_open_col = "open" if "open" in spy_today.index else "Open"
+                    spy_close_col = "close" if "close" in spy_today.index else "Close"
+                    hedge_price = float(spy_today[spy_open_col if spy_open_col in spy_today.index else spy_close_col])
+                    if hedge_price > 0:
+                        hedge_qty = max(1, int(hedge_gross / hedge_price))
+                        hedge_cost_tx = hedge_price * hedge_qty * self.transaction_cost_pct
+                        hedge_notional = hedge_price * hedge_qty
+                        portfolio.cash += hedge_notional - hedge_cost_tx
+                        portfolio.short_collateral += hedge_notional
+                        tx_costs += hedge_cost_tx
+                        portfolio.positions[_SPY_HEDGE_KEY] = _Position(
+                            symbol=_SPY_HEDGE_KEY,
+                            entry_date=day,
+                            entry_price=hedge_price,
+                            stop_price=hedge_price * 1.30,
+                            target_price=hedge_price * 0.70,
+                            quantity=hedge_qty,
+                            highest_price=hedge_price,
+                            confidence=0.0,
+                            direction="short",
+                        )
+                        entered_trades.append(Trade(
+                            symbol=_SPY_HEDGE_KEY,
+                            entry_date=day,
+                            exit_date=None,
+                            entry_price=hedge_price,
+                            exit_price=None,
+                            quantity=hedge_qty,
+                            pnl=0.0,
+                            pnl_pct=0.0,
+                            hold_bars=0,
+                            exit_reason="OPEN_SPY_HEDGE",
+                            source="REBALANCE",
+                            rank_at_entry=None,
+                            score_at_entry=beta,
+                            regime_at_entry=regime_label,
+                            gross_exposure_mult=_short_mult,
+                            rebalance_date=day,
+                        ))
 
         return closed_trades + entered_trades, tx_costs
 

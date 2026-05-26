@@ -806,6 +806,9 @@ def run_swing_walkforward(
     short_min_adv: float = 50_000_000.0,
     short_add_threshold: int = 15,
     short_drop_threshold: int = 30,
+    spy_beta_hedge: bool = False,
+    spy_beta_lookback: int = 60,
+    spy_hedge_max_gross: float = 0.30,
     # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
@@ -1172,6 +1175,9 @@ def run_swing_walkforward(
             short_drop_threshold=short_drop_threshold,
             short_regime_fn=_short_regime_fn if enable_shorts else None,
             long_regime_fn=_long_regime_fn if enable_shorts else None,
+            spy_beta_hedge=spy_beta_hedge,
+            spy_beta_lookback=spy_beta_lookback,
+            spy_hedge_max_gross=spy_hedge_max_gross,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1710,6 +1716,14 @@ def main() -> int:
                         help="Hysteresis: add short if rank-from-bottom <= this (default: 15)")
     parser.add_argument("--short-drop-threshold", type=int, default=30,
                         help="Hysteresis: drop short if rank-from-bottom > this (default: 30)")
+    parser.add_argument("--spy-beta-hedge", action="store_true", default=False,
+                        help="Phase 2b: replace individual short book with SPY short sized to "
+                             "rolling 60d realized beta of the long book. No stock-specific alpha "
+                             "claim; pure market-exposure hedge. Requires --enable-shorts.")
+    parser.add_argument("--spy-beta-lookback", type=int, default=60,
+                        help="Rolling days for beta computation (default: 60)")
+    parser.add_argument("--spy-hedge-max-gross", type=float, default=0.30,
+                        help="Max SPY short gross as fraction of equity (default: 0.30 = 30%%)")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1994,6 +2008,9 @@ def main() -> int:
             short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),
             short_add_threshold=getattr(args, "short_add_threshold", 15),
             short_drop_threshold=getattr(args, "short_drop_threshold", 30),
+            spy_beta_hedge=getattr(args, "spy_beta_hedge", False),
+            spy_beta_lookback=getattr(args, "spy_beta_lookback", 60),
+            spy_hedge_max_gross=getattr(args, "spy_hedge_max_gross", 0.30),
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),

@@ -5918,3 +5918,48 @@ IC composite iteration is exhausted at +0.45–+0.475. The path forward:
 Next action: implement MASTER_BACKLOG Phase 2.
 
 ---
+
+## Phase 2 — v221 L/S: Bottom-30 Short Sleeve — 2026-05-26
+
+### Design
+- Long: top-30 by v221 IC score, 95% gross, asymmetric long_mult (bull=1.0, bear=0.30)
+- Short: bottom-30 by v221 IC score (reversed ranking), 55% gross, short_mult (bull=0.30, bear=1.0)
+- Borrow cost: 5%/yr; tighter ADV filter ($50M) for shorts
+
+### Bug Fix Campaign (discovered during this run)
+- **BUG-LS1** (CRITICAL): `equity_mtm` did not subtract `short_collateral`. Short proceeds sat in cash (+55k on open) without liability offset → equity curve inflated by 55k → artificial Sharpe +3.3 across all folds. Fixed: `equity_mtm = cash - short_collateral + long_mtm + short_upnl`. Added 2 regression tests.
+- **BUG-LS2**: DataFrame `or` ambiguity crash in fold loop — fixed with explicit None checks.
+
+### Results (corrected)
+
+| Fold | Period | Long-only v221 | L/S v221 | Delta |
+|------|--------|---------------|---------|-------|
+| 1 | Jun21–May22 (rate shock) | +0.16 | **+0.63** | +0.47 |
+| 2 | Jun22–May23 (bear) | -0.32 | **+0.06** | +0.38 |
+| 3 | Jun23–May24 (Mag7 bull) | +1.13 | **+0.21** | **-0.92** |
+| 4 | Jun24–May25 (rotation) | +0.62 | **-0.17** | **-0.79** |
+| 5 | Jun25–May26 (bull) | +0.77 | **+0.62** | -0.15 |
+| **Avg** | | **+0.475** | **+0.270** | **-0.205** |
+
+**Gate result: FAIL** (avg 0.270 < 0.80; avg PF 1.056 < 1.1; avg Calmar 0.275 < 0.30)
+
+### Opus 4.7 Diagnosis
+**IC bottom-N is a beta proxy, not a short alpha signal.**
+- F1/F2 lift (+0.47/+0.38) = beta capture (when market falls, bottom names fall more)
+- F3/F4 drag (-0.92/-0.79) = squeeze tail risk: low-momentum/quality names are exactly the high-beta junk that squeezes in bull markets (Jan 2024 small-cap, "junk rally" episodes)
+- Win rate barely changed (33% → 32%) but Sharpe collapses = losses are asymmetric tail, not frequency
+- Even with asymmetric gate (bull → short_mult=0.30, so 16.5% gross), borrow + rebalance friction on a flat-to-positive short basket in bull destroys alpha
+
+**The clinching evidence**: shorts "work" only when the market is down. That is beta hedging masquerading as alpha.
+
+### Next Experiment: Phase 2b — SPY Beta Hedge
+
+Instead of bottom-30 individual shorts, short SPY sized to the long book's rolling 60d realized beta.
+- No stock-specific squeeze risk, no HTB borrow blowup
+- Caps at 30% gross short notional
+- Uses same asymmetric regime gate (bull=0.30, bear=1.0)
+- If this preserves F3/F4 alpha while hedging bear regime exposure → deployable
+
+**Decision gate**: avg Sharpe > +0.55, no fold below 0.0, F3 preserves ≥ +0.80.
+
+---
