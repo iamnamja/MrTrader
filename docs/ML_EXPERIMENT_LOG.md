@@ -6052,12 +6052,41 @@ Gate: avg_sharpe FAIL | min_sharpe FAIL (-0.50 < -0.30) | PF FAIL
 **Real problem**: IC composite LONG book underperforms in 2024 AI/Mag7 bull. The scorer uses quality/value tilt that lags pure momentum/growth stocks. **Not a short-side problem** — the shorts ARE working as a bear-episode hedge. Need to add momentum/growth signal to the LONG book IC composite.
 
 ### Phase v224: Momentum-Enhanced IC Composite (2026-05-26)
-**Verdict:** 🔄 Running  
+**Verdict:** ❌ GATE FAIL — momentum hurt F2, made avg WORSE than v221  
 Changes vs v221:
 - Added `mom_63d` (3-month momentum, weight ~1.80): captures AI/growth trend persistence
 - Halved `reversal_5d_vol_weighted` and `downtrend` (contrarian signals hurt in trending markets)
 - Same L/S + SPY hedge configuration
 Command: `--rebalance-ic-composite-v224 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30`  
-Log: `logs/wf_v224_momentum.log` (job brgigllm7)  
-Expected: F2 improves to 0.0→+0.30 (3m momentum captures 2024 AI names), F1/F3 +0.1–0.2
+Log: `logs/wf_v224_momentum.log` (job brgigllm7)
+
+| Fold | Period | Trades | Win% | Sharpe | PF | Calmar |
+|------|--------|--------|------|--------|----|--------|
+| 1 | 2022-11→2023-09 | 455 | 66.8% | **+0.84** | 1.16 | 1.40 |
+| 2 | 2024-02→2024-12 | 298 | 62.1% | **-0.43** | 0.80 | -0.62 |
+| 3 | 2025-05→2026-03 | 426 | 67.4% | **+0.42** | 1.23 | 0.33 |
+| **Avg** | | **1179** | **65.4%** | **+0.278** | **1.063** | **0.370** |
+
+Gate: avg_sharpe FAIL (0.278 < 0.80) | min_fold FAIL (-0.43 < -0.30) | F2 got WORSE vs v221 (-0.43 vs -0.06)
+
+**Post-mortem**: Adding `mom_63d` (3m momentum) makes the long book MORE procyclical. In Aug 2024 VIX spike (yen carry unwind, VIX→65+), high-momentum/growth names crashed hardest. The BEAR regime switched shorts to 100% but the long book was now loaded with names that fell hardest in the spike. v221's quality/value tilt was ACCIDENTALLY defensive — it was a junk filter that kept high-beta momentum names out of the long book, providing implicit bear-episode protection.
+
+**Key learning**: Do NOT add momentum features to the IC composite. The quality/value tilt in v221 IS the bear-regime protection. The real problem (F2 = -0.06 in 2024 bull) is not fixable by adding momentum — adding momentum makes it worse in the tail event.
+
+---
+
+### Phase seccap50: v221 + Sector Cap 50% (2026-05-26)
+**Verdict:** 🔄 Running  
+Hypothesis: Default 30% sector cap may allow overconcentration in a few sectors. Raising to 50% gives the scorer more room to concentrate in high-IC sectors while still providing some diversification.
+Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30 --rebalance-sector-cap 0.50`  
+Log: `logs/wf_v221_seccap50_fix.log`  
+Note: First run (seccap50) failed with BUG-LS3 recurrence. Root cause found: yfinance MultiIndex flattening produces duplicate "close" columns for some symbols. Fixed in commit bd1723b (dedup in download code + defensive iloc[:, 0] in scorer).
+
+### Phase v225: v221 + Reduced BULL Shorts (bottom-5) (2026-05-26)
+**Verdict:** 🔜 Planned  
+Hypothesis: In BULL regime, bottom-10 shorts bleed steadily (low-quality names with positive beta rally in bull markets). Reduce to bottom-5 to cut gross short bleed while keeping bear-episode convexity.  
+Opus 4.7 recommendation: "C+E: asymmetric exits + reduced BULL short count. Rationale: C fixes payoff shape; E specifically de-risks F2 bull-regime short bleed."  
+Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30 --short-target-n 10 --short-bull-n 5`  
+Expected: F2 improves toward 0.0 → +0.30 (less short bleed in 2024 bull), F1/F3 unchanged or slightly better (full 10 shorts in BEAR episodes)
+
 
