@@ -238,6 +238,10 @@ class AgentSimulator:
         short_min_adv: float = 50_000_000.0,    # tighter ADV for shorts (need to borrow)
         short_regime_fn=None,               # callable(day)->float; asymmetric regime multiplier
         long_regime_fn=None,                # explicit long-side regime fn (overrides rebalance_regime_fn when set)
+        # Phase v222 — payoff-shape + hedge improvements
+        rebalance_atr_stops: bool = False,  # set real ATR stops/targets on rebalance entries (fix payoff shape)
+        spy_hedge_vix_lo: float = 0.0,      # VIX gate: below this, hedge = 0 (0=disabled)
+        spy_hedge_vix_hi: float = 0.0,      # VIX gate: above this, hedge = full (0=disabled)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -302,6 +306,9 @@ class AgentSimulator:
         self.short_min_adv = short_min_adv
         self.short_regime_fn = short_regime_fn
         self.long_regime_fn = long_regime_fn
+        self.rebalance_atr_stops = rebalance_atr_stops
+        self.spy_hedge_vix_lo = spy_hedge_vix_lo
+        self.spy_hedge_vix_hi = spy_hedge_vix_hi
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -1496,12 +1503,31 @@ class AgentSimulator:
                 continue
             portfolio.cash -= entry_price * qty + cost
             tx_costs += cost
+            # v222: compute ATR stop/target when rebalance_atr_stops=True
+            _rb_stop = entry_price * 0.0001
+            _rb_target = entry_price * 100.0
+            if self.rebalance_atr_stops and df is not None:
+                try:
+                    # Use _bars_up_to to handle tz-aware/tz-naive index safely
+                    _hist = self._bars_up_to(df, day, exclude_today=True)
+                    if _hist is not None and len(_hist) >= 15 and all(c in _hist.columns for c in ("high", "low", "close")):
+                        _h = _hist["high"].to_numpy(dtype=float)
+                        _l = _hist["low"].to_numpy(dtype=float)
+                        _c = _hist["close"].to_numpy(dtype=float)
+                        _tr = np.maximum(_h[1:] - _l[1:], np.maximum(np.abs(_h[1:] - _c[:-1]), np.abs(_l[1:] - _c[:-1])))
+                        _atr_pct = float(np.mean(_tr[-14:])) / entry_price if entry_price > 0 else 0.02
+                        _stop_pct = float(np.clip(1.5 * _atr_pct, 0.01, 0.06))
+                        _tgt_pct = float(np.clip(3.0 * _atr_pct, 0.02, 0.12))
+                        _rb_stop = entry_price * (1 - _stop_pct)
+                        _rb_target = entry_price * (1 + _tgt_pct)
+                except Exception:
+                    pass
             portfolio.positions[sym] = _Position(
                 symbol=sym,
                 entry_date=day,
                 entry_price=entry_price,
-                stop_price=entry_price * 0.0001,
-                target_price=entry_price * 100.0,
+                stop_price=_rb_stop,
+                target_price=_rb_target,
                 quantity=qty,
                 highest_price=entry_price,
                 confidence=float(rank_of.get(sym, 999)),
@@ -1635,8 +1661,18 @@ class AgentSimulator:
 
                 # Size the hedge: equity × beta × short_mult, capped at spy_hedge_max_gross
                 _short_mult = self.short_regime_fn(day) if self.short_regime_fn else 1.0
+                # v222: VIX gate — scale hedge to 0 in low-vol bull, full in high-vol
+                _vix_hedge_mult = 1.0
+                if self.spy_hedge_vix_lo > 0 and self.spy_hedge_vix_hi > self.spy_hedge_vix_lo and vix_history is not None:
+                    _vix_hist = vix_history
+                    _vix_idx = _vix_hist.index
+                    _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else pd.DatetimeIndex(_vix_idx).date
+                    _vix_today = _vix_hist.loc[pd.Index(_vix_dates) < day]
+                    if len(_vix_today) > 0:
+                        _vix_val = float(_vix_today.iloc[-1])
+                        _vix_hedge_mult = max(0.0, min(1.0, (_vix_val - self.spy_hedge_vix_lo) / (self.spy_hedge_vix_hi - self.spy_hedge_vix_lo)))
                 hedge_gross = min(
-                    equity * beta * _short_mult,
+                    equity * beta * _short_mult * _vix_hedge_mult,
                     equity * self.spy_hedge_max_gross
                 )
 

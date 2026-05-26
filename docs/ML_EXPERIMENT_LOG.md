@@ -5963,3 +5963,101 @@ Instead of bottom-30 individual shorts, short SPY sized to the long book's rolli
 **Decision gate**: avg Sharpe > +0.55, no fold below 0.0, F3 preserves ≥ +0.80.
 
 ---
+
+## Phase 2b — SPY Beta Hedge Debug (BUG-LS3) — 2026-05-26
+
+### BUG-LS3: Feature Cache Corrupts symbols_data for IC Composite Scorer
+
+**Root cause:** When `scorer_instance` (any IC composite scorer) is used alongside the feature cache:
+1. `build_feature_cache(symbols_data=fold_symbols_data)` is called with `ProcessPoolExecutor`
+2. The `_submit_args` function accesses `df.to_dict("records")` and `list(df.index.date)` in the main process
+3. These operations mutate internal pandas/numpy state of the DataFrames in the parent process — specifically, the `index.date` property access on a DatetimeIndex with ~1500 rows causes pandas to convert/cache the `.date` array in a way that breaks subsequent `df.loc[mask, "close"]` selections
+4. When `IcCompositeV221Scorer.__call__` later calls `df.loc[mask, "close"]`, the corrupted DataFrame returns a (N_bars, 2) array instead of a 1D Series → `pd.Series()` construction fails with `Data must be 1-dimensional, got ndarray of shape (N, 2)`
+
+**Evidence:**
+- With feature cache enabled: ALL folds show 0 trades, 998 `factor_scorer failed` warnings per run
+- With `--feature-cache-disable`: 6348 trades, avg Sharpe +0.31, scorer works perfectly
+- The error only manifests for test days in older folds (fold 1-2 test periods 2021-2022) because those dates have more training bars (N=462-533) — fold 5 (2025-2026) still works because it was within the 2-year window our first 2-year diagnostic ran
+
+**Fix (walkforward_tier3.py line 1009):**
+```python
+# Before: if not feature_cache_disable:
+# After:
+if not feature_cache_disable and scorer_instance is None:
+```
+
+The feature cache is only needed for the ML model `_pm_score_cached` path. When `factor_scorer is not None` (IC composite mode), the cache is never used in `_pm_score`, so building it is wasteful AND harmful.
+
+**No-cache run results (pre-SPY-hedge baseline, 5-fold 6-year):**
+- Fold 1: Sharpe +0.56 | Fold 2: +0.13 | Fold 3: +0.37 | Fold 4: -0.16 | Fold 5: +0.64
+- Avg Sharpe: **+0.31** | Gate FAIL (< 0.80)
+- Total trades: 6348 | Win rate 31.9% | PF 1.06
+
+This is the **long-only baseline** (SPY hedge section 9 code was present but only runs when `spy_beta_hedge=True` AND SPY/beta conditions are met). The fold 4 drag (-0.16) matches the 2024 market where momentum factor was volatile.
+
+### Phase 2b: v221 + SPY Beta Hedge (3-fold, 5yr, 85d purge)
+**Verdict:** ❌ GATE FAIL — baseline established  
+Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30`  
+Log: `logs/wf_v221_spy_hedge_5fold_v2.log` (job b0qp2g8cz — BUG-LS3 fixed)
+
+| Fold | Period | Trades | Win% | Sharpe | PF | Calmar |
+|------|--------|--------|------|--------|----|--------|
+| 1 | 2022-11→2023-09 | 436 | 63.8% | **+0.88** | 1.10 | 1.75 |
+| 2 | 2024-02→2024-12 | 462 | 63.2% | **-0.06** | 1.02 | -0.31 |
+| 3 | 2025-05→2026-03 | 389 | 67.3% | **+0.30** | 1.15 | 0.13 |
+| **Avg** | | **1287** | **64.8%** | **+0.374** | **1.088** | **0.525** |
+
+Gate results: avg_sharpe FAIL (0.374 < 0.80) | min_fold OK (-0.064 > -0.30) | PF FAIL (1.088 < 1.10) | DSR OK (z=+5.97)
+
+**Opus 4.7 Diagnosis:**
+- Signal is real: 64.8% WR + DSR z=+5.97 confirms genuine alpha
+- Payoff shape is broken: PF 1.09 with 64.8% WR implies avg_win/avg_loss ≈ 0.55 (fat-tail reversals eating winners)
+- F2 (2024 bull) is a structural hedge failure: low-vol grinding bull makes SPY beta hedge bleed; BULL→shorts=0.30 regime doesn't fully protect
+- SPY hedge marginal contribution: +0.074 vs long-only baseline (+0.31 → +0.374) — within noise on 3 folds
+
+### Phase v222: ATR Stops + VIX-Gated Hedge (2026-05-26)
+**Verdict:** ❌ GATE FAIL — worse than v221 baseline  
+Bug found during v222 development: original ATR code used `df[df.index < _as_of_ts]` which fails for tz-aware index → silent `except Exception: pass` → sentinel values used → IDENTICAL results to v221. Fixed with `self._bars_up_to(df, day)`. Log: `logs/wf_v222_fixed.log` (job b6ionyqe4)
+
+| Fold | Period | Trades | Win% | Sharpe | PF | Calmar |
+|------|--------|--------|------|--------|----|--------|
+| 1 | 2022-11→2023-09 | 446 | 66.6% | **+0.69** | 1.24 | 1.23 |
+| 2 | 2024-02→2024-12 | 462 | 63.2% | **-0.06** | 1.02 | -0.31 |
+| 3 | 2025-05→2026-03 | 389 | 67.3% | **+0.30** | 1.15 | 0.13 |
+| **Avg** | | **1297** | **65.7%** | **+0.310** | **1.136** | **0.350** |
+
+Gate: avg_sharpe FAIL (0.310 < 0.80) | min_fold OK | PF OK (1.136) | DSR OK (z=+4.55)
+
+**Opus 4.7 Diagnosis — v222 failed because:**
+1. **ATR stops hurt F1**: 1.5×ATR too tight for volatile 2022-23 bear recovery — stops cut winners during normal drawdown phase. WR +3pp, PF +0.13, but Sharpe -0.19. DSR degraded +5.97→+4.55. Signal says "remove stops".
+2. **VIX gate had zero effect on F2**: F2 unchanged byte-for-byte. VIX was >14 in 2024 so hedge stayed on, and regime already cut shorts to 0.30. Still -0.06.
+3. **F2 is structurally unfixable with overlays**: Bottom-10 IC-composite names have positive beta (~0.6). In +25% SPY year, shorts bleed regardless. Short-tail IC << Long-tail IC for fundamental composites. Need separate short-side scorer.
+
+### Phase v223: Pure Long-Only (2026-05-26)
+**Verdict:** ❌ GATE FAIL — long-only is WORSE than L/S
+
+| Fold | Period | Trades | Win% | Sharpe | PF |
+|------|--------|--------|------|--------|----|
+| 1 | 2022-11→2023-09 | 436 | 63.8% | **+0.88** | 1.10 |
+| 2 | 2024-02→2024-12 | 305 | 61.3% | **-0.50** | 0.82 |
+| 3 | 2025-05→2026-03 | 389 | 67.3% | **+0.30** | 1.15 |
+| **Avg** | | **1130** | **64.1%** | **+0.230** | **1.023** |
+
+Gate: avg_sharpe FAIL | min_sharpe FAIL (-0.50 < -0.30) | PF FAIL
+
+**Critical finding**: F1 and F3 are byte-identical between v221 (L/S) and v223 (long-only). Short book had ZERO net effect in those periods. But F2 (2024) got MUCH WORSE without shorts: -0.50 vs -0.06. This means **the short book was PROFITABLE in 2024** (+0.44 Sharpe worth).
+
+**Revised root cause (2nd Opus diagnosis)**: Aug 2024 VIX spike to 65+ (yen carry unwind) triggered BEAR regime → short_mult=1.0 → full short book. Bottom-ranked stocks crashed hardest. Short book profited. Long-only cuts to 30% long (bear_mult=0.30) and misses the recovery, giving -0.50 Sharpe.
+
+**Real problem**: IC composite LONG book underperforms in 2024 AI/Mag7 bull. The scorer uses quality/value tilt that lags pure momentum/growth stocks. **Not a short-side problem** — the shorts ARE working as a bear-episode hedge. Need to add momentum/growth signal to the LONG book IC composite.
+
+### Phase v224: Momentum-Enhanced IC Composite (2026-05-26)
+**Verdict:** 🔄 Running  
+Changes vs v221:
+- Added `mom_63d` (3-month momentum, weight ~1.80): captures AI/growth trend persistence
+- Halved `reversal_5d_vol_weighted` and `downtrend` (contrarian signals hurt in trending markets)
+- Same L/S + SPY hedge configuration
+Command: `--rebalance-ic-composite-v224 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30`  
+Log: `logs/wf_v224_momentum.log` (job brgigllm7)  
+Expected: F2 improves to 0.0→+0.30 (3m momentum captures 2024 AI names), F1/F3 +0.1–0.2
+

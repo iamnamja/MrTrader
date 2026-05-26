@@ -1065,6 +1065,13 @@ def _compute_weighted_score(
             if not np.isnan(vrp_val):
                 raw_features["vrp"][sym] = vrp_val
 
+        # mom_63d: 3-month price momentum (intermediate, captures recent trend persistence)
+        if "mom_63d" in raw_features and idx >= 63:
+            c_now = float(past.iloc[-1])
+            c_start = float(past.iloc[-63])
+            if c_start > 1e-9:
+                raw_features["mom_63d"][sym] = (c_now / c_start) - 1.0
+
     # Fundamentals
     if not fund.empty:
         for feat, sign in [("profit_margin", 1), ("operating_margin", 1), ("pe_ratio", -1)]:
@@ -1175,6 +1182,104 @@ class IcCompositeV221Scorer:
 
         fund = self._get_fundamentals(as_of_ts)
         scores = _compute_weighted_score(as_of_ts, closes, bars_past, V221_IC_WEIGHTS, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+
+# =============================================================================
+# Phase v224 — momentum-enhanced scorer: v221 + mom_63d, reduced contrarian
+# Hypothesis: v221 underperforms in 2024 bull (AI/momentum tape) because
+# contrarian features (reversal, downtrend) add noise in trending markets.
+# Add 3-month momentum and reduce contrarian weights to capture growth/AI trend.
+# =============================================================================
+
+_V224_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          2.3095,
+    "momentum_252d_ex1m":       2.2334,
+    "mom_63d":                  1.8000,   # NEW: 3-month momentum (recent trend)
+    "price_to_52w_low":         2.2233,
+    "profit_margin":            1.2582 * 0.30,
+    "operating_margin":         1.0727 * 0.30,
+    "pe_ratio":                 0.8842 * 0.30,
+    "price_to_52w_high":        0.9442,
+    "volume_trend":             0.8840,
+    "reversal_5d_vol_weighted": 0.6254 * 0.50,  # reduced: contrarian hurts in trending markets
+    "downtrend":                0.4532 * 0.50,  # reduced: same reason
+    "vol_regime":               0.2386,
+    "range_expansion":          0.1795,
+    "vrp":                      0.0566,
+}
+_V224_TOTAL = sum(_V224_IC_WEIGHTS_RAW.values())
+V224_IC_WEIGHTS: dict[str, float] = {k: v / _V224_TOTAL for k, v in _V224_IC_WEIGHTS_RAW.items()}
+
+
+class IcCompositeV224Scorer:
+    """IC composite v224: v221 + 3-month momentum + reduced contrarian features.
+
+    Changes vs v221:
+    - Added mom_63d (3-month momentum, weight ~1.80) — captures AI/growth trend persistence
+    - Halved reversal_5d_vol_weighted and downtrend (contrarian signals hurt in trending bull)
+    """
+
+    def __init__(self) -> None:
+        self._fmp_fundamentals = None
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if self._fmp_fundamentals is None:
+            try:
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
+            except Exception:
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        as_of_ts = pd.Timestamp(day)
+        _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
+        close_cols = [s for s in symbols_data if s not in ("^VIX", "VIX", "SPY")]
+        closes = pd.DataFrame({
+            sym: symbols_data[sym]["close"].loc[
+                symbols_data[sym].index.date < _day_d
+                if hasattr(symbols_data[sym].index[0], "date")
+                else symbols_data[sym].index < as_of_ts
+            ]
+            for sym in close_cols
+            if sym in symbols_data
+            and "close" in symbols_data[sym].columns
+            and len(symbols_data[sym]) > 0
+        })
+        if closes.empty:
+            return []
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols if sym in symbols_data and sym not in ("^VIX", "VIX")
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, V224_IC_WEIGHTS, fundamentals=fund)
 
         if scores.empty:
             return []

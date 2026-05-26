@@ -809,6 +809,9 @@ def run_swing_walkforward(
     spy_beta_hedge: bool = False,
     spy_beta_lookback: int = 60,
     spy_hedge_max_gross: float = 0.30,
+    spy_hedge_vix_lo: float = 0.0,
+    spy_hedge_vix_hi: float = 0.0,
+    rebalance_atr_stops: bool = False,
     # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
@@ -1005,8 +1008,11 @@ def run_swing_walkforward(
             if s in pit_members or s in _synthetic
         }
         # Build per-fold feature cache (pre-computes all (sym, day) features in parallel)
+        # Skip when scorer_instance is set: factor_scorer bypasses the cache in _pm_score,
+        # so building it is wasteful AND causes (N, 2) shape corruption in fold_symbols_data
+        # (BUG-LS3: feature cache ProcessPoolExecutor mutates shared DataFrame state).
         _feature_cache = None
-        if not feature_cache_disable:
+        if not feature_cache_disable and scorer_instance is None:
             try:
                 from app.backtesting.feature_cache import build_feature_cache as _build_fc
                 import os as _os
@@ -1178,6 +1184,9 @@ def run_swing_walkforward(
             spy_beta_hedge=spy_beta_hedge,
             spy_beta_lookback=spy_beta_lookback,
             spy_hedge_max_gross=spy_hedge_max_gross,
+            spy_hedge_vix_lo=spy_hedge_vix_lo,
+            spy_hedge_vix_hi=spy_hedge_vix_hi,
+            rebalance_atr_stops=rebalance_atr_stops,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1699,6 +1708,9 @@ def main() -> int:
                         help="Phase 92: hybrid — v221 base weights (fundamentals x0.30) + v220 "
                              "breadth-regime switch (bull>60%%: momentum tilt, shock<55%%: v221). "
                              "Best-of-both: shock-regime quality + bull-market momentum.")
+    parser.add_argument("--rebalance-ic-composite-v224", action="store_true", default=False,
+                        help="Phase v224: momentum-enhanced — v221 + mom_63d (3m momentum), "
+                             "reduced contrarian weights (reversal/downtrend x0.5).")
     # Phase 2 — L/S extension
     parser.add_argument("--enable-shorts", action="store_true", default=False,
                         help="Phase 2: add short sleeve to IC composite rebalance. "
@@ -1724,6 +1736,12 @@ def main() -> int:
                         help="Rolling days for beta computation (default: 60)")
     parser.add_argument("--spy-hedge-max-gross", type=float, default=0.30,
                         help="Max SPY short gross as fraction of equity (default: 0.30 = 30%%)")
+    parser.add_argument("--spy-hedge-vix-lo", type=float, default=0.0,
+                        help="v222: VIX gate low (hedge=0 below this). 0=disabled. Recommended: 14")
+    parser.add_argument("--spy-hedge-vix-hi", type=float, default=0.0,
+                        help="v222: VIX gate high (hedge=full above this). 0=disabled. Recommended: 22")
+    parser.add_argument("--rebalance-atr-stops", action="store_true", default=False,
+                        help="v222: set 1.5×ATR stop / 3.0×ATR target on rebalance long entries (fix payoff shape)")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -2011,6 +2029,9 @@ def main() -> int:
             spy_beta_hedge=getattr(args, "spy_beta_hedge", False),
             spy_beta_lookback=getattr(args, "spy_beta_lookback", 60),
             spy_hedge_max_gross=getattr(args, "spy_hedge_max_gross", 0.30),
+            spy_hedge_vix_lo=getattr(args, "spy_hedge_vix_lo", 0.0),
+            spy_hedge_vix_hi=getattr(args, "spy_hedge_vix_hi", 0.0),
+            rebalance_atr_stops=getattr(args, "rebalance_atr_stops", False),
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
@@ -2037,6 +2058,10 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeV222Scorer
             _swing_kwargs["scorer_instance"] = IcCompositeV222Scorer()
             print("  WF: IC composite v222 mode — Phase 92 hybrid (v221 base + v220 breadth switch)")
+        elif getattr(args, "rebalance_ic_composite_v224", False):
+            from app.ml.factor_scorer import IcCompositeV224Scorer
+            _swing_kwargs["scorer_instance"] = IcCompositeV224Scorer()
+            print("  WF: IC composite v224 mode — momentum-enhanced (v221 + mom_63d, reduced contrarian)")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
