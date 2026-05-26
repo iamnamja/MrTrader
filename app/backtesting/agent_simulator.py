@@ -1286,7 +1286,7 @@ class AgentSimulator:
             cost = exit_price * pos.quantity * self.transaction_cost_pct
             tx_costs += cost
             gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-            net_pnl = gross_pnl - cost - pos.entry_price * pos.quantity * self.transaction_cost_pct
+            net_pnl = gross_pnl - cost  # BUG-29 fix: only deduct exit tx; entry tx already paid at open
             portfolio.cash += exit_price * pos.quantity - cost
             del portfolio.positions[sym]
             closed_trades.append(Trade(
