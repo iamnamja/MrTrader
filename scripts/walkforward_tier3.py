@@ -801,6 +801,7 @@ def run_swing_walkforward(
     # Phase 2: L/S extension
     enable_shorts: bool = False,
     short_target_n: int = 30,
+    short_bull_n: Optional[int] = None,  # BULL-regime short count (None = use short_target_n)
     long_gross: float = 0.95,
     short_gross: float = 0.55,
     short_min_adv: float = 50_000_000.0,
@@ -1180,6 +1181,7 @@ def run_swing_walkforward(
             rebalance_spy_vol_damper_scale=rebalance_spy_vol_damper_scale,
             enable_shorts=enable_shorts,
             short_target_n=short_target_n,
+            short_bull_n=short_bull_n,
             long_gross=long_gross,
             short_gross=short_gross,
             short_min_adv=short_min_adv,
@@ -1724,6 +1726,8 @@ def main() -> int:
                              "shorts scale UP in bear market, DOWN in bull.")
     parser.add_argument("--short-target-n", type=int, default=30,
                         help="Number of short positions (default: 30)")
+    parser.add_argument("--short-bull-n", type=int, default=None,
+                        help="Override short count in BULL regime (None = use --short-target-n)")
     parser.add_argument("--long-gross", type=float, default=0.95,
                         help="Long book gross as fraction of equity (default: 0.95 = 95%%)")
     parser.add_argument("--short-gross", type=float, default=0.55,
@@ -2027,6 +2031,7 @@ def main() -> int:
             rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
             enable_shorts=getattr(args, "enable_shorts", False),
             short_target_n=getattr(args, "short_target_n", 30),
+            short_bull_n=getattr(args, "short_bull_n", None),
             long_gross=getattr(args, "long_gross", 0.95),
             short_gross=getattr(args, "short_gross", 0.55),
             short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),

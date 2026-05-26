@@ -231,6 +231,7 @@ class AgentSimulator:
         spy_beta_cap: float = 1.5,          # cap realized beta at this value
         spy_hedge_max_gross: float = 0.30,  # max SPY short gross as fraction of equity
         short_target_n: int = 30,           # number of short positions (individual names)
+        short_bull_n: Optional[int] = None, # BULL-regime short count override (None = use short_target_n)
         long_gross: float = 0.95,           # long book gross as fraction of equity
         short_gross: float = 0.55,          # short book gross as fraction of equity
         short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
@@ -299,6 +300,7 @@ class AgentSimulator:
         self.spy_beta_cap = spy_beta_cap
         self.spy_hedge_max_gross = spy_hedge_max_gross
         self.short_target_n = short_target_n
+        self.short_bull_n = short_bull_n
         self.long_gross = long_gross
         self.short_gross = short_gross
         self.short_add_threshold = short_add_threshold
@@ -1370,10 +1372,18 @@ class AgentSimulator:
             cap=self.rebalance_sector_cap,
             n_target=self.rebalance_target_n,
         )
+        # Determine effective short count — optionally reduce in BULL regime to cut bleed
+        _eff_short_n = self.short_target_n
+        if self.short_bull_n is not None and self.enable_shorts:
+            _long_fn = self.long_regime_fn or self.rebalance_regime_fn
+            _pre_long_mult = _long_fn(day) if _long_fn else 1.0
+            if _pre_long_mult >= 0.95:  # BULL regime
+                _eff_short_n = self.short_bull_n
+
         short_capped = apply_sector_cap_shorts(
             short_ranked_eligible, sector_map,
             cap=self.rebalance_sector_cap,
-            n_target=self.short_target_n,
+            n_target=_eff_short_n,
         ) if self.enable_shorts else []
 
         # 4. Hysteresis target — separate current holdings for each book
@@ -1390,7 +1400,7 @@ class AgentSimulator:
         )
         short_delta = compute_target_portfolio_shorts(
             short_capped, current_shorts,
-            n_target=self.short_target_n,
+            n_target=_eff_short_n,
             add_rank_threshold=self.short_add_threshold,
             drop_rank_threshold=self.short_drop_threshold,
         ) if self.enable_shorts else None
