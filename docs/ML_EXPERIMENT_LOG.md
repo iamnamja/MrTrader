@@ -5644,4 +5644,71 @@ Opus verdict: **+0.80 is the 75-85th percentile of luck for this architecture on
 
 **Decision: run v219 + vol damper as the one remaining cheap experiment. Accept the result regardless. Then either lower gate to +0.60 (honest) or commit to sector-relative + revisions as next architectural project.**
 
-### v219 + Vol Damper WF — 🔄 Running (logs/wf_v219_vol_damper_5fold.log)
+### v219 + Vol Damper WF — ❌ GATE FAILED (2026-05-25)
+
+**Command:** `python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite --rebalance-regime-gate --rebalance-inv-vol --rebalance-spy-vol-damper --no-prefilters --swing-purge-days 10 --swing-embargo-days 10`
+
+| Fold | Period | Sharpe | vs v219 |
+|------|--------|--------|---------|
+| 1 | 2021-06-06→2022-05-16 | **-0.67** | ↓ worse (-0.30) |
+| 2 | 2022-06-06→2023-05-16 | +1.11 | ↑ better |
+| 3 | 2023-06-06→2024-05-15 | +1.07 | ↑ better |
+| 4 | 2024-06-05→2025-05-15 | **-0.31** | ↓ worse |
+| 5 | 2025-06-05→2026-05-15 | +1.18 | ↓ worse (-0.42) |
+| **Avg** | | **+0.476** | ↓ WORSE than v219 +0.65 |
+
+Gate: avg_sharpe FAIL (0.476 < 0.80), min_sharpe FAIL (-0.67 < -0.30)
+
+**Why it failed (Opus 4.7 analysis):**
+- Vol damper fires on realized vol spike — but Fold 1 (2021-22 rate shock) was a *slow regime change*, not a vol spike at the top. Damper fired mid-drawdown, cutting exposure into the Oct 2022 rebound. Classic vol-targeting procyclical whipsaw.
+- Fold 4 (tariff shock) was a *gap event* — damper fired post-gap, cut size into the recovery.
+- Fold 5 had several vol pops that resolved upward quickly; damper cut at the bottoms, missed snapbacks.
+- Realized vol is lagging at swing horizons. The existing SPY MA200 + VIX gate already handles regime; damper double-counts and adds noise.
+
+**Opus architectural verdict (final):**
+- v219 at +0.65 is the ceiling for this long-only architecture. Three interventions (v220 regime switch, v221 fundamentals downweight, vol damper) all confirmed it.
+- Do NOT ship v219 at full $20k — expected live Sharpe ~0.30-0.45 ≈ SPY long, but with single-name and factor-rotation risk.
+- Do NOT lower gate to +0.60 to rationalize shipping. Paper-trade or ship at 25% gross ($5k notional) as live-data validation only.
+
+**Ranked next steps (Opus):**
+
+| Rank | Change | P(gate pass) | Notes |
+|------|--------|--------------|-------|
+| 1 | **SPY beta-hedge overlay** (long top-30 / short SPY at portfolio beta) | 40–50% | Directly fixes fold 1+4 failure mode; crosses the signal/market-beta divide; operationally simple on Alpaca with margin |
+| 2 | **Full long-short** (long top-30 / short bottom-30) | 50–60% | Highest P(pass) but needs borrow, short universe filter, more ops complexity |
+| 3 | **Cross-sectional factor neutralization** (neutralize size/sector/beta before ranking) | 25–30% | Well-understood, targets fold 1 directly |
+| 4 | **Momentum-quality crash filter** (drop names with >X% 20d drawdown from selection) | 15–20% | Name-level, low risk |
+
+**Decision: Phase 92 — SPY Beta-Hedge Overlay on v219 scores. Design with Opus 4.7 before implementation.**
+
+---
+
+## WF Harness Bug Fix Batch 1 — 2026-05-25
+
+Opus 4.7 full audit identified 26 bugs in the WF harness. This batch fixes the ones affecting factor-scorer (v219/v220/v221) runs.
+
+### Bugs Fixed
+
+| Bug | File | Description | Impact |
+|-----|------|-------------|--------|
+| BUG-2 | `walkforward_tier3.py` | `pit_union` used `te_end` (look-ahead) instead of `tr_end` → test-window symbols entered PIT universe | Survivorship / look-ahead bias in universe |
+| BUG-3 | `factor_scorer.py` | `_compute_breadth` skipped short-history symbols from denominator → breadth biased UPWARD in bear markets when delisted names accumulate | Regime gate fired too late in drawdowns |
+| BUG-8 | `factor_scorer.py` | v220/v221 `__call__` excluded `^VIX` from `close_cols` → `_compute_weighted_score` couldn't compute VRP feature → always NaN | VRP silently zero for all v220/v221 runs |
+| BUG-9 | `factor_scorer.py` | v220/v221 `_get_fundamentals` called nonexistent `load_pit_fundamentals` → import always failed silently → fundamentals always empty DataFrame | Quality features (profit_margin, operating_margin, pe_ratio) all NaN for every v220/v221 run |
+| BUG-11/12 | `agent_simulator.py` | Rebalance exits used today's close (look-ahead); entries used yesterday's open → both now use today's open via `_bars_on(df, day)` | Entry/exit price bias ~0.2-0.5% per trade |
+| BUG-21 | `walkforward_tier3.py` | Sector map loaded inside `sim.run()` per fold via repeated yfinance → now loaded once before fold loop, passed to `sim.run()` | Sector cap was a no-op (yfinance calls failed in WF context) |
+
+### Sector Map Cache
+- Added `app/data/sector_map.py`: loads from `data/sector_map.parquet`, falls back to yfinance for misses, graceful `UNKNOWN` fallback.
+
+### Impact Assessment
+**BUG-8 and BUG-9 are most significant for v220/v221:** Every v220 and v221 WF run to date had VRP silently disabled AND fundamentals silently empty. The IC weights for `vrp` (~5.7%) and `profit_margin + operating_margin + pe_ratio` (~17% combined) contributed zero signal. This means v220 and v221 results are not comparable to their intended design. **Re-run required.**
+
+**BUG-3** biases breadth upward → regime switch to defensive fires later → fold 1 losses partly attributable to this. **Re-run v219 required.**
+
+### What to Re-Run
+1. v219 clean baseline (5-fold) — verify +0.65 holds under clean harness
+2. v220 (regime-conditional composite) — first clean run ever
+3. v221 (fundamentals -70%) — first clean run ever
+
+---
