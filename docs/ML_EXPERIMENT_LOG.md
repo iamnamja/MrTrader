@@ -5712,3 +5712,37 @@ Opus 4.7 full audit identified 26 bugs in the WF harness. This batch fixes the o
 3. v221 (fundamentals -70%) — first clean run ever
 
 ---
+
+## WF Harness Bug Fix Batch 2 — Opus 4.7 Re-Audit — 2026-05-26
+
+Opus 4.7 re-audit after Batch 1 fixes confirmed Batch 1 fixes are correct. Found additional bugs:
+
+### New Bugs Found
+
+| Bug | Priority | File | Description | Impact |
+|-----|----------|------|-------------|--------|
+| BUG-29 | High | `agent_simulator.py` | REBALANCE_DROP `net_pnl` double-charged entry tx cost: `gross - exit_cost - entry*qty*tx_pct`. Entry tx already paid at open. | Trade P&L reporting understated by ~5bps/position; equity curve unaffected (cash accounting was correct) |
+| BUG-26 | High | `agent_simulator.py` | Short cash double-deduction: receives `trade_cost - tx_cost` then subtracts `trade_cost` for margin. | Long-only runs unaffected. All L/S results invalid. |
+| BUG-24 | Medium | `walkforward_tier3.py` | Fold purge/embargo in calendar days not trading days → actual gap ~70% of nominal (weekend washout) | Minor: 3 of 10 purge days fall on weekends |
+| BUG-35 | Medium | `agent_simulator.py` | Calmar uses 365-day annualization, Sharpe uses 252 → cross-metric comparison invalid | Calmar ratio not used in gate; Sharpe correct |
+| BUG-31 | Low | `walkforward_tier3.py` | FactorStabilityGate builds IC on train+test window (test dates leak into gate calibration) | DEPRECATED flag only, not active in any v219/v220/v221 run |
+
+### Confirmed Fixed (Opus verified against correct branch)
+- BUG-2 (pit_union tr_end): ✅ Confirmed in file  
+- BUG-3 (breadth denominator): ✅ Confirmed in file — total += 1 before len(past) check
+- BUG-8 (VIX in close_cols): ✅ Confirmed for v220 and v221
+- BUG-9 (fundamentals PIT): ✅ Confirmed for v220 and v221
+- BUG-11/12 (today's open for entry/exit): ✅ Confirmed — _bars_on(df, day) in both paths
+
+### BUG-29 Fix Applied
+`net_pnl = gross_pnl - exit_cost` only. Committed in same PR #286.
+
+### Opus Overall Verdict (after Batch 1)
+**Long-only v219 is directionally trustworthy** for go/no-go decisions (±0.10 Sharpe noise from remaining issues). v220/v221 need re-runs. L/S configs need BUG-26 fix before any result is valid.
+
+### Remaining Not-Fixed (lower priority)
+- BUG-26: Short cash bug — L/S configs only; no current L/S WF runs planned
+- BUG-24: Calendar vs trading day purge — very minor Sharpe impact, not fixing now
+- BUG-35: Calmar annualization mismatch — Calmar not in WF gate, OK
+
+---
