@@ -217,6 +217,78 @@ def _make_regime_gate_fn(
     return _regime_fn
 
 
+def build_asymmetric_regime_fns(
+    spy_df,
+    vix_series,
+    spy_ma_days: int = 200,
+    vix_bull_threshold: float = 15.0,
+    vix_bear_threshold: float = 25.0,
+):
+    """Build separate (long_fn, short_fn) with asymmetric regime logic.
+
+    Long book multipliers  (same as symmetric gate):
+      BULL (SPY>MA200 AND VIX<15) → 1.0
+      BEAR (SPY<MA200 OR VIX>25)  → 0.30
+      NEUTRAL                     → 0.70
+
+    Short book multipliers  (inverse — shorts earn in bear, costly in bull):
+      BULL (SPY>MA200 AND VIX<15) → 0.30  (shorts fight equity premium)
+      BEAR (SPY<MA200 OR VIX>25)  → 1.0   (shorts earn, increase exposure)
+      NEUTRAL                     → 0.70
+
+    Both functions are PIT-safe: use data strictly before the query day.
+    Pre-registered thresholds (not tuned on WF folds) to prevent overfitting.
+    """
+    import pandas as _pd
+
+    spy_close = spy_df["close"] if spy_df is not None and "close" in spy_df.columns else None
+    spy_ma = (
+        spy_close.rolling(spy_ma_days, min_periods=max(spy_ma_days // 2, 1)).mean()
+        if spy_close is not None else None
+    )
+
+    # Accept both Series and DataFrame for vix
+    if isinstance(vix_series, _pd.DataFrame):
+        vix_s = vix_series["close"] if "close" in vix_series.columns else vix_series.iloc[:, 0]
+    else:
+        vix_s = vix_series
+
+    def _get_regime(day):
+        _day_ts = _pd.Timestamp(day)
+        spy_val = spy_ma_val = vix_val = None
+        if spy_close is not None:
+            h = spy_close[spy_close.index < _day_ts]
+            if len(h):
+                spy_val = float(h.iloc[-1])
+        if spy_ma is not None:
+            h = spy_ma[spy_ma.index < _day_ts]
+            if len(h):
+                spy_ma_val = float(h.iloc[-1])
+        if vix_s is not None:
+            h = vix_s[vix_s.index < _day_ts]
+            if len(h):
+                vix_val = float(h.iloc[-1])
+        above_ma = (spy_val is not None and spy_ma_val is not None and spy_val > spy_ma_val)
+        vix_ok = vix_val is not None and vix_val < vix_bull_threshold
+        vix_hi = vix_val is not None and vix_val >= vix_bear_threshold
+        spy_below = not above_ma if (spy_val is not None and spy_ma_val is not None) else False
+        if above_ma and vix_ok:
+            return "BULL"
+        if spy_below or vix_hi:
+            return "BEAR"
+        return "NEUTRAL"
+
+    def long_fn(day):
+        r = _get_regime(day)
+        return {"BULL": 1.0, "NEUTRAL": 0.70, "BEAR": 0.30}[r]
+
+    def short_fn(day):
+        r = _get_regime(day)
+        return {"BULL": 0.30, "NEUTRAL": 0.70, "BEAR": 1.0}[r]
+
+    return long_fn, short_fn
+
+
 def _make_combined_regime_fn(
     fold_symbols_data: dict,
     scorer_instance,
@@ -726,6 +798,14 @@ def run_swing_walkforward(
     rebalance_inv_vol_max_mult: float = 2.0,
     rebalance_spy_vol_damper: bool = False,
     rebalance_spy_vol_damper_scale: float = 0.50,
+    # Phase 2: L/S extension
+    enable_shorts: bool = False,
+    short_target_n: int = 30,
+    long_gross: float = 0.95,
+    short_gross: float = 0.55,
+    short_min_adv: float = 50_000_000.0,
+    short_add_threshold: int = 15,
+    short_drop_threshold: int = 30,
     # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
@@ -973,6 +1053,8 @@ def run_swing_walkforward(
 
         # Phase RB.1: build regime gate fn if requested (PIT-safe, uses fold's SPY+VIX)
         _regime_gate_fn = None
+        _long_regime_fn = None
+        _short_regime_fn = None
         if rebalance_mode and rebalance_regime_gate:
             _regime_gate_fn = _make_regime_gate_fn(
                 fold_symbols_data,
@@ -980,6 +1062,18 @@ def run_swing_walkforward(
                 vix_bull=rebalance_regime_vix_bull,
                 vix_bear=rebalance_regime_vix_bear,
             )
+            if enable_shorts:
+                # Build asymmetric per-side regime fns (pre-registered thresholds, not tuned on folds)
+                _spy_df = fold_symbols_data.get("SPY") or fold_symbols_data.get("spy")
+                _vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
+                if _spy_df is not None and _vix_s is not None:
+                    _long_regime_fn, _short_regime_fn = build_asymmetric_regime_fns(
+                        _spy_df, _vix_s,
+                        spy_ma_days=rebalance_regime_spy_ma_days,
+                    )
+                else:
+                    logger.warning("Fold %d: SPY/VIX unavailable — asymmetric regime fns will use defaults", fold_idx)
 
         # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag)
         if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
@@ -1065,6 +1159,15 @@ def run_swing_walkforward(
             rebalance_inv_vol_max_mult=rebalance_inv_vol_max_mult,
             rebalance_spy_vol_damper=rebalance_spy_vol_damper,
             rebalance_spy_vol_damper_scale=rebalance_spy_vol_damper_scale,
+            enable_shorts=enable_shorts,
+            short_target_n=short_target_n,
+            long_gross=long_gross,
+            short_gross=short_gross,
+            short_min_adv=short_min_adv,
+            short_add_threshold=short_add_threshold,
+            short_drop_threshold=short_drop_threshold,
+            short_regime_fn=_short_regime_fn if enable_shorts else None,
+            long_regime_fn=_long_regime_fn if enable_shorts else None,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1586,6 +1689,23 @@ def main() -> int:
                         help="Phase 92: hybrid — v221 base weights (fundamentals x0.30) + v220 "
                              "breadth-regime switch (bull>60%%: momentum tilt, shock<55%%: v221). "
                              "Best-of-both: shock-regime quality + bull-market momentum.")
+    # Phase 2 — L/S extension
+    parser.add_argument("--enable-shorts", action="store_true", default=False,
+                        help="Phase 2: add short sleeve to IC composite rebalance. "
+                             "Shorts bottom-N from the same IC scorer. Asymmetric regime gate: "
+                             "shorts scale UP in bear market, DOWN in bull.")
+    parser.add_argument("--short-target-n", type=int, default=30,
+                        help="Number of short positions (default: 30)")
+    parser.add_argument("--long-gross", type=float, default=0.95,
+                        help="Long book gross as fraction of equity (default: 0.95 = 95%%)")
+    parser.add_argument("--short-gross", type=float, default=0.55,
+                        help="Short book gross as fraction of equity (default: 0.55 = 55%%)")
+    parser.add_argument("--short-min-adv", type=float, default=50_000_000.0,
+                        help="Minimum ADV for short candidates in $ (default: 50M; higher than long 20M)")
+    parser.add_argument("--short-add-threshold", type=int, default=15,
+                        help="Hysteresis: add short if rank-from-bottom <= this (default: 15)")
+    parser.add_argument("--short-drop-threshold", type=int, default=30,
+                        help="Hysteresis: drop short if rank-from-bottom > this (default: 30)")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1863,6 +1983,13 @@ def main() -> int:
             rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
             rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
             rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
+            enable_shorts=getattr(args, "enable_shorts", False),
+            short_target_n=getattr(args, "short_target_n", 30),
+            long_gross=getattr(args, "long_gross", 0.95),
+            short_gross=getattr(args, "short_gross", 0.55),
+            short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),
+            short_add_threshold=getattr(args, "short_add_threshold", 15),
+            short_drop_threshold=getattr(args, "short_drop_threshold", 30),
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),

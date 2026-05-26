@@ -89,6 +89,9 @@ class _PortfolioState:
     # MTM equity cached each bar before entries run — used for all sizing/RM decisions.
     # None until first bar closes; falls back to entry-price equity if not set.
     _cached_mtm_equity: float = field(default=None, repr=False)
+    # Collateral reserved for open short positions (short entry notional).
+    # Prevents the same dollars being used to size both long and short books.
+    short_collateral: float = 0.0
 
     @property
     def position_market_value(self) -> float:
@@ -198,6 +201,16 @@ class AgentSimulator:
         rebalance_inv_vol_max_mult: float = 2.0,
         rebalance_spy_vol_damper: bool = False,  # Phase 91: halve gross_mult when SPY 21d vol > 80th pct
         rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
+        # Phase 2 — L/S extension
+        enable_shorts: bool = False,        # False = pure long-only (backward-compat default)
+        short_target_n: int = 30,           # number of short positions
+        long_gross: float = 0.95,           # long book gross as fraction of equity
+        short_gross: float = 0.55,          # short book gross as fraction of equity
+        short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
+        short_drop_threshold: int = 30,     # hysteresis: drop short when rank-from-bottom > this
+        short_min_adv: float = 50_000_000.0,    # tighter ADV for shorts (need to borrow)
+        short_regime_fn=None,               # callable(day)->float; asymmetric regime multiplier
+        long_regime_fn=None,                # explicit long-side regime fn (overrides rebalance_regime_fn when set)
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -248,6 +261,16 @@ class AgentSimulator:
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
         self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
+        # Phase 2 — L/S state
+        self.enable_shorts = enable_shorts
+        self.short_target_n = short_target_n
+        self.long_gross = long_gross
+        self.short_gross = short_gross
+        self.short_add_threshold = short_add_threshold
+        self.short_drop_threshold = short_drop_threshold
+        self.short_min_adv = short_min_adv
+        self.short_regime_fn = short_regime_fn
+        self.long_regime_fn = long_regime_fn
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -1180,6 +1203,78 @@ class AgentSimulator:
 
     # ─── Phase RA: REBALANCE mode entry ────────────────────────────────────────
 
+    def _effective_cash(self, portfolio: "_PortfolioState") -> float:
+        """Cash available for new LONG opens, net of short collateral reserve.
+
+        Short entries receive cash proceeds but simultaneously reserve collateral
+        equal to the entry notional. Without this, the same dollars would be used
+        to size both books (Opus BUG-2/#7).
+        """
+        return portfolio.cash - portfolio.short_collateral
+
+    def _rebalance_drop_position(
+        self,
+        sym: str,
+        pos: "_Position",
+        symbols_data: Dict[str, pd.DataFrame],
+        portfolio: "_PortfolioState",
+        day: "date",
+        regime_label: str,
+    ) -> tuple:
+        """Close a single position (long or short) at today's open. Returns (trades, tx_cost).
+
+        Separated from _process_rebalance to enable unit-testing of P&L sign (Opus BUG-1).
+        """
+        from app.backtesting.agent_simulator import Trade  # noqa: local import avoids circular
+        is_short = getattr(pos, "direction", "long") == "short"
+        df = symbols_data.get(sym)
+        exit_price = pos.entry_price
+        if df is not None:
+            today_bar = self._bars_on(df, day)
+            if today_bar is not None:
+                open_col = "open" if "open" in today_bar.index else "Open"
+                close_col = "close" if "close" in today_bar.index else "Close"
+                if open_col in today_bar.index:
+                    exit_price = float(today_bar[open_col])
+                elif close_col in today_bar.index:
+                    exit_price = float(today_bar[close_col])
+
+        cost = exit_price * pos.quantity * self.transaction_cost_pct
+
+        if is_short:
+            # Cover: P&L = (entry - exit) × qty — profit when price falls.
+            # Short entry already added proceeds to cash and reserved collateral.
+            # On cover: pay exit notional + exit tx; release collateral reserve.
+            gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            net_pnl = gross_pnl - cost  # entry tx already charged at entry (BUG-29 parity)
+            collateral = pos.entry_price * pos.quantity
+            portfolio.cash -= exit_price * pos.quantity + cost   # pay to cover + exit tx
+            portfolio.short_collateral = max(0.0, portfolio.short_collateral - collateral)
+        else:
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            net_pnl = gross_pnl - cost  # entry tx already charged at entry (BUG-29 fix)
+            portfolio.cash += exit_price * pos.quantity - cost
+
+        del portfolio.positions[sym]
+        trade = Trade(
+            symbol=sym,
+            entry_date=pos.entry_date,
+            exit_date=day,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            quantity=pos.quantity,
+            pnl=net_pnl,
+            pnl_pct=(exit_price / pos.entry_price - 1.0) * (-1 if is_short else 1),
+            hold_bars=pos.bars_held,
+            exit_reason="REBALANCE_DROP",
+            source="REBALANCE",
+            rank_at_entry=pos.confidence,
+            regime_at_entry=regime_label,
+            gross_exposure_mult=1.0,
+            rebalance_date=day,
+        )
+        return [trade], cost
+
     def _process_rebalance(
         self,
         day: date,
@@ -1188,13 +1283,24 @@ class AgentSimulator:
         sector_map: Dict[str, str],
         vix_history=None,
     ) -> Tuple[List, float]:
-        """Score all symbols, compute target portfolio, close drops, open adds."""
+        """Score all symbols, compute target portfolio, close drops, open adds.
+
+        When enable_shorts=True:
+          - Long book: top-N from scored list, long_regime_fn multiplier
+          - Short book: bottom-N (reversed list), short_regime_fn multiplier
+          - Separate liquidity/sector-cap/hysteresis for each book
+          - Per-side dollar budgets from split_gross_budgets
+          - Short collateral tracked to prevent double-counting
+        """
         from app.strategy.portfolio_construction import (
             apply_sector_cap,
+            apply_sector_cap_shorts,
             compute_equal_weights,
             compute_inverse_vol_weights,
             compute_target_portfolio,
+            compute_target_portfolio_shorts,
             liquidity_filter,
+            split_gross_budgets,
         )
 
         # 1. Score
@@ -1204,43 +1310,70 @@ class AgentSimulator:
         ranked_symbols = [s for s, _ in scored]
         score_of = {s: float(sc) for s, sc in scored}
 
-        # 2. Liquidity filter (PIT-safe)
-        eligible = liquidity_filter(
+        # 2. Liquidity filter (PIT-safe) — tighter threshold for shorts
+        long_eligible = liquidity_filter(
             symbols_data, as_of=day,
             min_avg_daily_dollar_vol=self.rebalance_min_adv,
         )
-        ranked_eligible = [s for s in ranked_symbols if s in eligible] or ranked_symbols
+        short_eligible = liquidity_filter(
+            symbols_data, as_of=day,
+            min_avg_daily_dollar_vol=self.short_min_adv if self.enable_shorts else self.rebalance_min_adv,
+        ) if self.enable_shorts else set()
 
-        # 3. Sector cap
+        ranked_eligible = [s for s in ranked_symbols if s in long_eligible] or ranked_symbols
+
+        # Short ranking = reverse of long ranking (worst-first), filtered by short_eligible
+        worst_first = list(reversed(ranked_symbols))
+        short_ranked_eligible = [s for s in worst_first if s in short_eligible] if self.enable_shorts else []
+
+        # 3. Sector cap (both books)
         capped = apply_sector_cap(
             ranked_eligible, sector_map,
             cap=self.rebalance_sector_cap,
             n_target=self.rebalance_target_n,
         )
+        short_capped = apply_sector_cap_shorts(
+            short_ranked_eligible, sector_map,
+            cap=self.rebalance_sector_cap,
+            n_target=self.short_target_n,
+        ) if self.enable_shorts else []
 
-        # 4. Hysteresis target
-        current_holdings = list(portfolio.positions.keys())
+        # 4. Hysteresis target — separate current holdings for each book
+        current_longs = [s for s, p in portfolio.positions.items()
+                         if getattr(p, "direction", "long") == "long"]
+        current_shorts = [s for s, p in portfolio.positions.items()
+                          if getattr(p, "direction", "long") != "long"]
+
         delta = compute_target_portfolio(
-            capped, current_holdings,
+            capped, current_longs,
             n_target=self.rebalance_target_n,
             add_rank_threshold=self.rebalance_add_threshold,
             drop_rank_threshold=self.rebalance_drop_threshold,
         )
+        short_delta = compute_target_portfolio_shorts(
+            short_capped, current_shorts,
+            n_target=self.short_target_n,
+            add_rank_threshold=self.short_add_threshold,
+            drop_rank_threshold=self.short_drop_threshold,
+        ) if self.enable_shorts else None
 
-        # 5. Regime multiplier
-        gross_mult = self.rebalance_regime_fn(day) if self.rebalance_regime_fn else 1.0
-        if not self.rebalance_regime_fn:
-            regime_label = "UNSET"
-        elif gross_mult >= 0.95:
-            regime_label = "BULL"
-        elif gross_mult <= 0.35:
-            regime_label = "BEAR"
-        else:
-            regime_label = "NEUTRAL"
+        # 5. Per-side regime multipliers (asymmetric gate)
+        long_fn = self.long_regime_fn or self.rebalance_regime_fn
+        long_mult = long_fn(day) if long_fn else 1.0
+        short_mult = self.short_regime_fn(day) if (self.enable_shorts and self.short_regime_fn) else (
+            1.0 if self.enable_shorts else 0.0
+        )
 
-        # 5b. SPY concurrent vol damper (Phase 91): when SPY 21d realized vol > 80th pct of
-        # trailing 252d rolling vols, halve gross_mult. Defensive only — reduces size when the
-        # cross-section is noisy, not a directional signal.
+        def _regime_label(mult: float) -> str:
+            if mult >= 0.95:
+                return "BULL"
+            if mult <= 0.35:
+                return "BEAR"
+            return "NEUTRAL"
+
+        regime_label = _regime_label(long_mult)
+
+        # 5b. SPY vol damper (applies to long book only — shorts benefit from high vol)
         if self.rebalance_spy_vol_damper:
             import numpy as _np
             _as_of_ts = pd.Timestamp(day)
@@ -1249,7 +1382,7 @@ class AgentSimulator:
                 _spy_col = "close" if "close" in _spy_df.columns else "Close"
                 if _spy_col in _spy_df.columns:
                     _spy_past = _spy_df[_spy_col][_spy_df.index <= _as_of_ts].dropna()
-                    if len(_spy_past) >= 273:  # 252 + 21 minimum
+                    if len(_spy_past) >= 273:
                         _log_rets = _np.log(_spy_past / _spy_past.shift(1)).dropna()
                         _vol_21 = float(_log_rets.iloc[-21:].std() * _np.sqrt(252))
                         _rolling_21 = _log_rets.rolling(21).std() * _np.sqrt(252)
@@ -1257,85 +1390,64 @@ class AgentSimulator:
                         if len(_hist_vols) >= 50:
                             _pct_rank = float((_vol_21 > _hist_vols).mean())
                             if _pct_rank > 0.80:
-                                gross_mult *= self.rebalance_spy_vol_damper_scale
+                                long_mult *= self.rebalance_spy_vol_damper_scale
                                 regime_label += "+HIGHVOL"
 
-        # 6. Close drops
-        # BUG-12 FIX: exit at today's OPEN (same convention as entry, BUG-11 fix).
-        # Previously used today's close (exclude_today=False), creating a 1-day
-        # asymmetry: entry filled at yesterday's open, exit filled at today's close.
-        # Decision is made using data through yesterday; both legs now execute at
-        # today's open, which is the first price available post-decision.
+        # 6. Close drops (both books) — direction-aware P&L via _rebalance_drop_position
         tx_costs = 0.0
         closed_trades: List = []
-        for sym in delta.to_drop:
+
+        all_drops = list(delta.to_drop)
+        if short_delta is not None:
+            all_drops += list(short_delta.to_drop)
+
+        for sym in all_drops:
             if sym not in portfolio.positions:
                 continue
             pos = portfolio.positions[sym]
-            df = symbols_data.get(sym)
-            exit_price = pos.entry_price
-            if df is not None:
-                today_bar = self._bars_on(df, day)
-                if today_bar is not None:
-                    open_col = "open" if "open" in today_bar.index else "Open"
-                    close_col = "close" if "close" in today_bar.index else "Close"
-                    if open_col in today_bar.index:
-                        exit_price = float(today_bar[open_col])
-                    elif close_col in today_bar.index:
-                        exit_price = float(today_bar[close_col])
-            cost = exit_price * pos.quantity * self.transaction_cost_pct
+            trades, cost = self._rebalance_drop_position(sym, pos, symbols_data, portfolio, day, regime_label)
+            closed_trades.extend(trades)
             tx_costs += cost
-            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-            net_pnl = gross_pnl - cost  # BUG-29 fix: only deduct exit tx; entry tx already paid at open
-            portfolio.cash += exit_price * pos.quantity - cost
-            del portfolio.positions[sym]
-            closed_trades.append(Trade(
-                symbol=sym,
-                entry_date=pos.entry_date,
-                exit_date=day,
-                entry_price=pos.entry_price,
-                exit_price=exit_price,
-                quantity=pos.quantity,
-                pnl=net_pnl,
-                pnl_pct=(exit_price / pos.entry_price - 1.0),
-                hold_bars=pos.bars_held,
-                exit_reason="REBALANCE_DROP",
-                source="REBALANCE",
-                rank_at_entry=pos.confidence,
-                regime_at_entry=regime_label,
-                gross_exposure_mult=gross_mult,
-                rebalance_date=day,
-            ))
 
-        # 7. Open adds
+        # 7. Open long adds
         equity = portfolio.equity_decision
+        if self.enable_shorts:
+            long_budget, short_budget = split_gross_budgets(
+                equity,
+                net_target=self.long_gross - self.short_gross,
+                gross_target=self.long_gross + self.short_gross,
+                long_regime_mult=long_mult,
+                short_regime_mult=short_mult,
+            )
+        else:
+            long_budget = equity * long_mult
+            short_budget = 0.0
+
         if self.rebalance_inv_vol:
-            weights = compute_inverse_vol_weights(
+            long_weights = compute_inverse_vol_weights(
                 delta.to_add, symbols_data, as_of=day,
                 total_equity=equity,
-                gross_exposure_multiplier=gross_mult,
+                gross_exposure_multiplier=long_mult,
                 vol_lookback_days=self.rebalance_inv_vol_lookback,
                 min_weight_mult=self.rebalance_inv_vol_min_mult,
                 max_weight_mult=self.rebalance_inv_vol_max_mult,
             )
         else:
-            weights = compute_equal_weights(delta.to_add, equity, gross_mult)
+            long_weights = compute_equal_weights(delta.to_add, equity, long_mult)
+
         rank_of = {s: i + 1 for i, s in enumerate(ranked_eligible)}
+        short_rank_of = {s: i + 1 for i, s in enumerate(short_ranked_eligible)}
         entered_trades: List = []
 
         for sym in delta.to_add:
             if sym in portfolio.positions:
                 continue
-            dollar_size = weights.get(sym, 0.0)
+            dollar_size = long_weights.get(sym, 0.0)
             if dollar_size <= 0:
                 continue
             df = symbols_data.get(sym)
             if df is None:
                 continue
-            # BUG-11 FIX: entry at today's OPEN, not yesterday's open.
-            # Previously _bars_up_to(exclude_today=True).iloc[-1] gave yesterday's open.
-            # Decision uses data through yesterday; execution is at today's open
-            # (consistent with BUG-12 exit fix and with _process_entries convention).
             today_bar = self._bars_on(df, day)
             if today_bar is None:
                 continue
@@ -1348,20 +1460,21 @@ class AgentSimulator:
                 continue
             qty = max(1, int(dollar_size / entry_price))
             cost = entry_price * qty * self.transaction_cost_pct
-            if portfolio.cash < entry_price * qty + cost:
+            # Use effective cash (net of short collateral) to prevent double-spend (Opus BUG-2)
+            if self._effective_cash(portfolio) < entry_price * qty + cost:
                 continue
             portfolio.cash -= entry_price * qty + cost
             tx_costs += cost
-            # Sentinel stop/target (no ATR stops in rebalance mode by design)
             portfolio.positions[sym] = _Position(
                 symbol=sym,
                 entry_date=day,
                 entry_price=entry_price,
-                stop_price=entry_price * 0.0001,   # sentinel — never triggers
-                target_price=entry_price * 100.0,  # sentinel — never triggers
+                stop_price=entry_price * 0.0001,
+                target_price=entry_price * 100.0,
                 quantity=qty,
                 highest_price=entry_price,
                 confidence=float(rank_of.get(sym, 999)),
+                direction="long",
             )
             entered_trades.append(Trade(
                 symbol=sym,
@@ -1378,9 +1491,69 @@ class AgentSimulator:
                 rank_at_entry=rank_of.get(sym),
                 score_at_entry=score_of.get(sym),
                 regime_at_entry=regime_label,
-                gross_exposure_mult=gross_mult,
+                gross_exposure_mult=long_mult,
                 rebalance_date=day,
             ))
+
+        # 8. Open short adds (only when enable_shorts=True)
+        if self.enable_shorts and short_delta is not None:
+            short_n = max(1, len(short_delta.to_add)) if short_delta.to_add else 1
+            short_per_pos = short_budget / short_n if short_delta.to_add else 0.0
+
+            for sym in short_delta.to_add:
+                if sym in portfolio.positions:
+                    continue
+                if short_per_pos <= 0:
+                    continue
+                df = symbols_data.get(sym)
+                if df is None:
+                    continue
+                today_bar = self._bars_on(df, day)
+                if today_bar is None:
+                    continue
+                open_col = "open" if "open" in today_bar.index else "Open"
+                close_col = "close" if "close" in today_bar.index else "Close"
+                if open_col not in today_bar.index and close_col not in today_bar.index:
+                    continue
+                entry_price = float(today_bar[open_col if open_col in today_bar.index else close_col])
+                if entry_price <= 0:
+                    continue
+                qty = max(1, int(short_per_pos / entry_price))
+                cost = entry_price * qty * self.transaction_cost_pct
+                notional = entry_price * qty
+                # Short entry: receive proceeds in cash; reserve same as collateral
+                portfolio.cash += notional - cost   # proceeds received, tx paid
+                portfolio.short_collateral += notional  # reserve prevents double-spend
+                tx_costs += cost
+                portfolio.positions[sym] = _Position(
+                    symbol=sym,
+                    entry_date=day,
+                    entry_price=entry_price,
+                    stop_price=entry_price * 1.20,   # soft sentinel (20% above entry)
+                    target_price=entry_price * 0.70, # soft sentinel (30% below entry)
+                    quantity=qty,
+                    highest_price=entry_price,
+                    confidence=float(short_rank_of.get(sym, 999)),
+                    direction="short",
+                )
+                entered_trades.append(Trade(
+                    symbol=sym,
+                    entry_date=day,
+                    exit_date=None,
+                    entry_price=entry_price,
+                    exit_price=None,
+                    quantity=qty,
+                    pnl=0.0,
+                    pnl_pct=0.0,
+                    hold_bars=0,
+                    exit_reason="OPEN_SHORT",
+                    source="REBALANCE",
+                    rank_at_entry=short_rank_of.get(sym),
+                    score_at_entry=score_of.get(sym),
+                    regime_at_entry=regime_label,
+                    gross_exposure_mult=short_mult,
+                    rebalance_date=day,
+                ))
 
         return closed_trades + entered_trades, tx_costs
 
