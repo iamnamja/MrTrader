@@ -66,9 +66,21 @@ class TestComputeBreadth:
         result = _compute_breadth(closes, as_of)
         assert np.isnan(result)
 
-    def test_insufficient_history_returns_nan(self):
-        """< 200 days of history → NaN."""
+    def test_insufficient_history_returns_zero_breadth(self):
+        """< 200 days of history → 0.0 breadth (all symbols counted as below MA).
+
+        BUG-3 fix: short-history symbols are counted in denominator but not numerator,
+        so 80 symbols with 100 days → 0/80 = 0.0 (not NaN — we have sufficient universe
+        coverage, we just know none are above their 200d MA yet).
+        """
         closes = _make_closes(n_days=100, n_syms=80)
+        as_of = closes.index[-1]
+        result = _compute_breadth(closes, as_of)
+        assert result == 0.0
+
+    def test_tiny_universe_returns_nan(self):
+        """< 50 symbols → NaN (universe too small for reliable regime signal)."""
+        closes = _make_closes(n_days=100, n_syms=10)
         as_of = closes.index[-1]
         result = _compute_breadth(closes, as_of)
         assert np.isnan(result)
