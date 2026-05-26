@@ -260,7 +260,8 @@ class FactorPortfolioScorer:
                 continue
             _day_d = day.date() if hasattr(day, "date") else day
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < pd.Timestamp(day)
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if len(past) >= 60:
                 close_cols[sym] = past
 
@@ -615,7 +616,8 @@ class IcCompositeScorer:
             if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if len(past) >= 60:
                 close_cols[sym] = past
 
@@ -779,7 +781,8 @@ class IcCompositeV220Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation
@@ -897,7 +900,8 @@ class IcCompositeV222Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past
@@ -1158,7 +1162,8 @@ class IcCompositeV221Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation

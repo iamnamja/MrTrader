@@ -871,6 +871,8 @@ def run_swing_walkforward(
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.columns = [c.lower() for c in df.columns]
+            if df.columns.duplicated().any():
+                df = df.loc[:, ~df.columns.duplicated()]
             if len(df) >= 210:
                 symbols_data[sym] = df
         except Exception:
@@ -881,6 +883,8 @@ def run_swing_walkforward(
     if isinstance(spy_raw.columns, pd.MultiIndex):
         spy_raw.columns = spy_raw.columns.get_level_values(0)
     spy_raw.columns = [c.lower() for c in spy_raw.columns]
+    if spy_raw.columns.duplicated().any():
+        spy_raw = spy_raw.loc[:, ~spy_raw.columns.duplicated()]
     spy_prices = spy_raw["close"]
     symbols_data["SPY"] = spy_raw  # make SPY available to factor_scorer regime gate
 
@@ -892,6 +896,8 @@ def run_swing_walkforward(
             if isinstance(vix_raw.columns, pd.MultiIndex):
                 vix_raw.columns = vix_raw.columns.get_level_values(0)
             vix_raw.columns = [c.lower() for c in vix_raw.columns]
+            if vix_raw.columns.duplicated().any():
+                vix_raw = vix_raw.loc[:, ~vix_raw.columns.duplicated()]
             if len(vix_raw) >= 5:
                 symbols_data["^VIX"] = vix_raw
                 logger.info("VIX history loaded: %d rows (for opportunity score)", len(vix_raw))
