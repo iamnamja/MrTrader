@@ -872,6 +872,17 @@ def run_swing_walkforward(
             _embargo,  # carry embargo into the fold runner for logging
         ))
 
+    # BUG-21 FIX: Load sector map once for all folds so sector cap (30%) actually fires.
+    # Previously sector_map was never passed to sim.run() → apply_sector_cap was a no-op.
+    _wf_sector_map: dict = {}
+    try:
+        from app.data.sector_map import get_sector_map as _get_sector_map
+        _all_syms = [s for s in symbols_data if s not in {"^VIX", "VIX", "SPY"}]
+        _wf_sector_map = _get_sector_map(_all_syms)
+        logger.info("Walk-forward: sector map loaded for %d symbols", len(_wf_sector_map))
+    except Exception as _exc_sm:
+        logger.warning("Walk-forward: sector map unavailable — sector cap will be a no-op: %s", _exc_sm)
+
     # Load sector ETF bars once for all folds (PIT sector-neutral features)
     _sector_etf_bars_wf: Optional[dict] = None
     _etf_hist_path_wf = Path("data/sector_etf/sector_etf_history.parquet")
@@ -899,10 +910,12 @@ def run_swing_walkforward(
         # Synthetic symbols (^VIX, VIX, SPY) bypass the filter — they're needed for
         # regime gates and opportunity score regardless of index membership.
         # WF-A2/A3: PIT filter using Russell 1000 (matches training universe).
-        # pit_union() captures members at both fold endpoints (catches mid-fold adds/removes)
-        # plus DB-sourced historical names for survivorship-bias correction.
-        extra = _hist_syms(tr_start, te_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
+        # BUG-2 FIX: universe frozen at tr_end (training end), NOT te_end.
+        # Using te_end leaked test-window index additions (high-momentum names joining
+        # the index mid-test are included from day 1 → look-ahead survivorship bias).
+        # extra also capped at tr_end for the same reason.
+        extra = _hist_syms(tr_start, tr_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, tr_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in symbols_data.items()
@@ -1058,6 +1071,7 @@ def run_swing_walkforward(
             start_date=te_start,
             end_date=te_end,
             spy_prices=spy_prices,
+            sector_map=_wf_sector_map,  # BUG-21 FIX: sector cap now active
         )
         elapsed = time.time() - t_fold
         stop_exits = result.exit_breakdown.get("STOP", 0)
