@@ -5576,6 +5576,24 @@ These silent changes affected every fold via Composite B (which was supposed to 
 
 ### Phase 90 CLOSED — Moving to Phase 91
 
+### v220 Clean Re-Run (Post Bug-Fix) — ❌ GATE NOT MET (2026-05-26)
+
+**First honest run with VRP + fundamentals wired (BUG-8/9 fixed). Command:** `--rebalance-ic-composite-v220`
+**Log:** `logs/wf_v220_clean_5fold.log`
+
+| Fold | Period | Trades | Sharpe | vs v219 |
+|------|--------|--------|--------|---------|
+| 1 | 2021-06-07→2022-05-17 | 644 | **-0.02** | +0.10 (better) |
+| 2 | 2022-06-07→2023-05-17 | 598 | **-0.02** | -0.25 (worse) |
+| 3 | 2023-06-07→2024-05-16 | 528 | **+1.38** | +0.65 (better) |
+| 4 | 2024-06-06→2025-05-16 | 570 | **+0.27** | -0.07 (worse) |
+| 5 | 2025-06-06→2026-05-16 | 518 | **+0.76** | -0.31 (worse) |
+| **Avg** | | **2858** | **+0.474** | +0.024 vs v219 |
+
+Gate: avg_sharpe FAIL (0.474 < 0.80). Min fold OK (-0.02 > -0.30).
+
+**Opus 4.7 verdict:** +0.024 delta vs v219 is noise (SE ~0.2-0.3 on 5 folds). Sideways with added complexity. Fold 3 improvement (+0.65) is from momentum tilt correctly firing in 2023-24 AI bull market. Fold 2 and Fold 5 losses are from regime-flip timing friction and internal factor conflict (momentum names with weak fundamentals now penalized via wired fundamentals). **Do not promote v220. Regime-conditional adds complexity for zero net Sharpe gain.**
+
 ---
 
 ## Phase 91 — v221: Fundamentals Down-Weighted + SPY Vol Damper (2026-05-25)
