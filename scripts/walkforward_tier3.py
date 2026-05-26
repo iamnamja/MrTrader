@@ -1064,8 +1064,12 @@ def run_swing_walkforward(
             )
             if enable_shorts:
                 # Build asymmetric per-side regime fns (pre-registered thresholds, not tuned on folds)
-                _spy_df = fold_symbols_data.get("SPY") or fold_symbols_data.get("spy")
-                _vix_df = fold_symbols_data.get("^VIX") or fold_symbols_data.get("VIX")
+                _spy_df = fold_symbols_data.get("SPY")
+                if _spy_df is None:
+                    _spy_df = fold_symbols_data.get("spy")
+                _vix_df = fold_symbols_data.get("^VIX")
+                if _vix_df is None:
+                    _vix_df = fold_symbols_data.get("VIX")
                 _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
                 if _spy_df is not None and _vix_s is not None:
                     _long_regime_fn, _short_regime_fn = build_asymmetric_regime_fns(
