@@ -1382,6 +1382,10 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         from app.ml.factor_scorer import IcCompositeV221Scorer
         _factor_scorer = IcCompositeV221Scorer()
         print("  CPCV: IC composite v221 mode — Phase 91 fundamentals-downweighted scorer")
+    elif getattr(args, "rebalance_ic_composite_v222", False):
+        from app.ml.factor_scorer import IcCompositeV222Scorer
+        _factor_scorer = IcCompositeV222Scorer()
+        print("  CPCV: IC composite v222 mode — Phase 92 hybrid (v221 base + v220 breadth switch)")
 
     strategy = SwingStrategy(
         model=model, version=version, symbols=syms,
@@ -1578,6 +1582,10 @@ def main() -> int:
     parser.add_argument("--rebalance-ic-composite-v221", action="store_true", default=False,
                         help="Phase 91: v219 with fundamentals down-weighted 70%%. Stateless. "
                              "Fixes quality-feature drag in rate-shock / blow-off folds.")
+    parser.add_argument("--rebalance-ic-composite-v222", action="store_true", default=False,
+                        help="Phase 92: hybrid — v221 base weights (fundamentals x0.30) + v220 "
+                             "breadth-regime switch (bull>60%%: momentum tilt, shock<55%%: v221). "
+                             "Best-of-both: shock-regime quality + bull-market momentum.")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1877,6 +1885,10 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeV221Scorer
             _swing_kwargs["scorer_instance"] = IcCompositeV221Scorer()
             print("  WF: IC composite v221 mode — Phase 91 fundamentals-downweighted scorer")
+        elif getattr(args, "rebalance_ic_composite_v222", False):
+            from app.ml.factor_scorer import IcCompositeV222Scorer
+            _swing_kwargs["scorer_instance"] = IcCompositeV222Scorer()
+            print("  WF: IC composite v222 mode — Phase 92 hybrid (v221 base + v220 breadth switch)")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
