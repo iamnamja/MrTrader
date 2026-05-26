@@ -5805,3 +5805,71 @@ Opus 4.7 re-audit after Batch 1 fixes confirmed Batch 1 fixes are correct. Found
 - BUG-35: Calmar annualization mismatch — Calmar not in WF gate, OK
 
 ---
+
+## v221 Clean Re-Run (Post Bug-Fix) — ❌ GATE NOT MET (2026-05-26)
+
+**First honest run with quality features actually active (BUG-9 fixed). Command:** `--rebalance-ic-composite-v221`
+**Log:** `logs/wf_v221_clean_5fold.log`
+
+| Fold | Period | Trades | Sharpe | vs v219 | vs v220 |
+|------|--------|--------|--------|---------|---------|
+| 1 | 2021-06-07→2022-05-17 | 634 | **-0.08** | +0.04 | -0.06 |
+| 2 | 2022-06-07→2023-05-17 | 594 | **+0.46** | +0.23 | +0.48 |
+| 3 | 2023-06-07→2024-05-16 | 532 | **+0.72** | -0.01 | -0.66 |
+| 4 | 2024-06-06→2025-05-16 | 550 | **+0.45** | +0.11 | +0.18 |
+| 5 | 2025-06-06→2026-05-16 | 512 | **+0.84** | -0.23 | +0.08 |
+| **Avg** | | **2822** | **+0.475** | +0.025 | +0.001 |
+
+Gate: avg_sharpe FAIL (0.475 < 0.80). Min fold OK (-0.084 > -0.30).
+
+**Note:** Prior buggy v221 result (-0.477 avg, min -0.47) was completely different because quality features were always NaN (BUG-9). The REAL v221 is actually competitive with v219.
+
+### 3-Way Clean Comparison
+
+| Version | Avg Sharpe | Min Fold | Champion Folds | Weakness |
+|---------|------------|----------|----------------|----------|
+| v219 | +0.450 | -0.12 | Fold 5 (+1.07) | Rate-shock folds |
+| v220 | +0.474 | -0.02 | Fold 3 (+1.38) | Folds 2/5 regime friction |
+| **v221** | **+0.475** | **-0.084** | **Folds 2/4** | Fold 3 slightly weaker |
+
+### Opus 4.7 Verdict — Champion: v221
+
+**v221 is the honest champion** — not because of headline Sharpe (all three are within noise), but because it wins on the *right* folds (Fold 2 = rate shock, Fold 4 = macro shock). Those are the regimes that kill live P&L. v220's Fold 3 win (+1.38) is the easy bull regime — lowest marginal value. v221's robustness profile is better.
+
+**Revised architectural verdict** (comparing buggy to clean):
+- Prior buggy v221 avg was -0.477 (appeared "worse" than v219). Clean v221 is +0.475 (essentially tied). **The prior verdict that v221 hurt was entirely due to BUG-8/9 (VRP + fundamentals never wired).** Quality features at 30% weight HELP in shock regimes once actually active.
+- All three versions in the +0.450–0.475 range. This is the honest IC-composite ceiling.
+
+**Expected live Sharpe:** 0.25–0.35 (30-50% OOS decay from WF). Max DD: 15-22%. Not deployable as primary strategy — paper-trade only at current level.
+
+### Next Experiment: v222 (Hybrid)
+
+**Opus recommendation:** v222 = v221 base weights + v220's breadth-regime switch. Rationale: they're orthogonal — v221 fixes the base factor loading for shock regimes, v220's breadth switch adjusts conditionally for bull markets. Expected lift: +0.10 to +0.20 Sharpe. If v222 < 0.60, architectural pivot to Phase 2 (binary labels + L/S).
+
+---
+
+## Phase 92 (New) — v222: v221 Weights + Breadth-Regime Switch — 2026-05-26
+
+### Design
+- Base: v221 IC weights (fundamentals ×0.30, re-normalized)
+- Regime: v220's breadth-conditional switch (EMA-smoothed breadth >60% → Composite A momentum, <55% → Composite B = v221)
+- No vol damper (confirmed procyclical and lagging)
+- Stateless within regime; regime switch has 5pp hysteresis deadband
+
+### Implementation Plan
+Add `IcCompositeV222Scorer` to `app/ml/factor_scorer.py`:
+- Inherits breadth-EMA + regime-switch logic from `IcCompositeV220Scorer`
+- Swaps Composite B weights from `V219_IC_WEIGHTS` → `V221_IC_WEIGHTS`
+- Composite A (momentum tilt) stays same as v220A
+
+### Run Command
+```bash
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite-v222 --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10 2>&1 | tee logs/wf_v222_hybrid_5fold.log
+```
+
+### Decision Tree
+- v222 avg Sharpe ≥ 0.70 → run 10d cadence variant
+- v222 avg Sharpe 0.60–0.70 → try 10d cadence once, then pivot
+- v222 avg Sharpe < 0.60 → STOP IC-composite iteration, pivot to MASTER_BACKLOG Phase 2
+
+---
