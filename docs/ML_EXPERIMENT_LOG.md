@@ -5872,4 +5872,49 @@ python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalanc
 - v222 avg Sharpe 0.60–0.70 → try 10d cadence once, then pivot
 - v222 avg Sharpe < 0.60 → STOP IC-composite iteration, pivot to MASTER_BACKLOG Phase 2
 
+### Results — 2026-05-26
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| 1 | Jun 2021 – May 2022 | 644 | 30.4% | **-0.02** | 8.0% | 1.24 | -0.14 |
+| 2 | Jun 2022 – May 2023 | 598 | 33.8% | **-0.02** | 6.7% | 1.17 | 0.03 |
+| 3 | Jun 2023 – May 2024 | 528 | 35.0% | **+1.38** | 10.8% | 1.68 | 1.69 |
+| 4 | Jun 2024 – May 2025 | 570 | 34.0% | **+0.27** | 18.9% | 1.24 | 0.17 |
+| 5 | Jun 2025 – May 2026 | 518 | 35.1% | **+0.76** | 12.3% | 1.34 | 0.78 |
+| **Avg** | | | | **+0.474** | | | |
+
+**Gate result: FAIL** (avg 0.474 < 0.80; min fold -0.02 > -0.30 ✓)
+
+### 4-Way Final Comparison
+
+| Version | F1 | F2 | F3 | F4 | F5 | **Avg** | Delta vs v219 |
+|---------|----|----|----|----|----|----|---|
+| v219 (baseline) | +0.19 | -0.30 | +1.07 | +0.56 | +0.75 | **+0.450** | — |
+| v220 (breadth switch, B=v219) | +0.16 | -0.31 | +1.09 | +0.58 | +0.77 | **+0.474** | +0.024 |
+| v221 (fundamentals ×0.30) | +0.16 | -0.32 | +1.13 | +0.62 | +0.77 | **+0.475** | +0.025 |
+| v222 (v221 base + v220 switch) | **-0.02** | **-0.02** | **+1.38** | +0.27 | +0.76 | **+0.474** | +0.024 |
+
+### Opus 4.7 Verdict — Phase 92 Final
+
+**Why v222 hurt Folds 1 and 2 vs static scorers:**
+1. **EMA lag at the turn:** Fold 1 starts Jun 2021 with breadth elevated from the post-COVID rally. EMA-smoothed breadth stays in Composite A (momentum) through Q3–Q4 2021 — exactly when momentum/growth was destroyed by the rate-shock pivot. By the time breadth crosses down through 55%, the damage is done.
+2. **Whipsaw in Fold 2:** 2022 had multiple bear-market rallies (Mar, Jul-Aug, Oct) where breadth spiked above 60%. The switch flips into Composite A on those rallies, then flips back out — buying momentum into the top of each counter-trend rally.
+3. **Composite A is a single-regime specialist:** V220A momentum tilt earns +0.25 to +0.31 Sharpe in Fold 3 (Mag7 bull run, breadth persistently >60%), but costs in every other regime. Net negative.
+
+**Fold 3 +1.38 is mildly suspicious:** Composite A is by design concentrated on Mag7-type momentum names during the Fold 3 bull run. Consistent with design, but the magnitude (+0.31 over v221) on one fold while all other folds are flat-or-worse is the shape of single-regime overfitting.
+
+**Architectural ceiling confirmed:** +0.450–+0.475 across four genuinely different configurations. This is not factor-limited — it is structurally limited by the long-only constraint. Folds 1 and 2 floor every version because they are negative beta environments; no factor scorer on R1000 long-only beats a bear market.
+
+**Decision: PIVOT per pre-established decision tree (avg < 0.60).**
+
+### Phase 92 CLOSED — Pivoting to MASTER_BACKLOG Phase 2
+
+IC composite iteration is exhausted at +0.45–+0.475. The path forward:
+
+1. **L/S extension (highest leverage):** Even naive long-top-30 / short-bottom-30 from v219 scores would attack the F1/F2 floor directly. Beta neutrality removes the bear-market ceiling.
+2. **Binary directional ML model** (Phase 2 per MASTER_BACKLOG): addresses selection skill, helps F3–F5 more than F1–F2.
+3. **Target state:** L/S book scored by binary ML probability (not IC composite).
+
+Next action: implement MASTER_BACKLOG Phase 2.
+
 ---
