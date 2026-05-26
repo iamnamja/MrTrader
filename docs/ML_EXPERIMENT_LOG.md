@@ -5707,9 +5707,50 @@ Opus 4.7 full audit identified 26 bugs in the WF harness. This batch fixes the o
 **BUG-3** biases breadth upward → regime switch to defensive fires later → fold 1 losses partly attributable to this. **Re-run v219 required.**
 
 ### What to Re-Run
-1. v219 clean baseline (5-fold) — verify +0.65 holds under clean harness
+1. ✅ v219 clean baseline (5-fold) — DONE: avg +0.450 (was +0.650 buggy)
 2. v220 (regime-conditional composite) — first clean run ever
 3. v221 (fundamentals -70%) — first clean run ever
+
+---
+
+## v219 Post-Fix Honest Baseline — 2026-05-26 ❌ GATE NOT MET
+
+**Command:** `python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 --rebalance-mode --rebalance-ic-composite --rebalance-regime-gate --rebalance-inv-vol --no-prefilters --swing-purge-days 10 --swing-embargo-days 10`
+
+**Log:** `logs/wf_v219_clean_postfix_5fold.log`
+
+### Results
+
+| Fold | Period | Trades | Sharpe | Win% | DD | PF | Calmar |
+|------|--------|--------|--------|------|----|----|--------|
+| 1 | 2021-06-06→2022-05-16 | 634 | **-0.12** | 31.7% | 10.1% | 1.19 | -0.23 |
+| 2 | 2022-06-06→2023-05-16 | 602 | **+0.23** | 33.6% | 6.4% | 1.23 | 0.24 |
+| 3 | 2023-06-06→2024-05-15 | 556 | **+0.73** | 35.4% | 11.3% | 1.57 | 1.00 |
+| 4 | 2024-06-05→2025-05-15 | 550 | **+0.34** | 32.4% | 18.3% | 1.23 | 0.38 |
+| 5 | 2025-06-05→2026-05-15 | 572 | **+1.07** | 34.6% | 7.8% | 1.59 | 2.05 |
+| **Avg** | | **2914** | **+0.450** | | | | |
+
+Gate: avg_sharpe FAIL (0.450 < 0.80). Min fold OK (-0.12 > -0.30).
+
+### Comparison to Buggy v219 (+0.650)
+
+| Fold | Buggy SR | Clean SR | Delta | Driver |
+|------|----------|----------|-------|--------|
+| 1 | -0.37 | -0.12 | **+0.25** | BUG-2 (no look-ahead universe during 2022 selloff) |
+| 2 | ~+0.85 | +0.23 | -0.62 | BUG-11/12 (lost overnight gap look-ahead) |
+| 3 | ~+1.10 | +0.73 | -0.37 | BUG-11/12 |
+| 4 | -0.24 | +0.34 | **+0.58** | BUG-21 (sector cap now active → prevents Mag7 concentration) |
+| 5 | ~+1.91 | +1.07 | -0.84 | BUG-11/12 |
+
+**Trade count: 930 → 2914 (+3x).** BUG-21 fix (sector cap now active) forces rotation away from tech concentration → more rebalance events, broader sector exposure. This is correct behavior, not overtrading.
+
+### Opus 4.7 Analysis
+
+**Key finding:** BUG-11/12 (entry/exit timing look-ahead) was the dominant bug — captured an overnight gap that doesn't exist in live trading, inflating Sharpe ~+0.30 to +0.40. BUG-21 (sector cap) is a mixed blessing: it hurt Folds 2/3/5 (forced out top-scoring tech names) but dramatically helped Fold 4 (prevented Mag7 concentration blowup into tariff shock).
+
+**Is +0.450 better than +0.650?** Yes — it's honest. Min fold -0.12 (vs -0.37 buggy) means the strategy is now more robust across all regimes. The 0.80 gate fails on headline but the min-fold gate passes for the first time.
+
+**Architectural verdict:** +0.450 is the honest ceiling of the current IC-composite long-only architecture. To clear 0.80 gate, need: (a) regime-conditional factor weights, (b) 10d rebalance (shorter cadence captures more signal turnover at correct cost model), or (c) momentum-quality interaction term. Pure factor stacking is exhausted.
 
 ---
 
