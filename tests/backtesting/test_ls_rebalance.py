@@ -299,6 +299,54 @@ class TestRegimeGateAsymmetry:
         assert short_mult <= 0.60, f"Bull regime: short_mult should be ≤ 0.60, got {short_mult:.2f}"
 
 
+class TestEquityMtmShortCollateral:
+    """Test: equity_mtm must subtract short_collateral to avoid Sharpe inflation."""
+
+    def test_short_open_does_not_inflate_equity(self):
+        """Opening a short should not increase equity (cash goes up but collateral offsets it)."""
+        from app.backtesting.agent_simulator import _PortfolioState, _Position
+
+        portfolio = _PortfolioState(cash=100_000.0, peak_equity=100_000.0)
+        equity_before = portfolio.equity_mtm({})
+        assert abs(equity_before - 100_000.0) < 1.0
+
+        # Simulate opening a 10k short at $100/share (100 qty)
+        portfolio.cash += 10_000.0 - 5.0   # proceeds received, 5 tx
+        portfolio.short_collateral += 10_000.0
+        portfolio.positions["S000"] = _Position(
+            symbol="S000", entry_date=None, entry_price=100.0,
+            stop_price=115.0, target_price=80.0, quantity=100,
+            highest_price=100.0, confidence=1.0, direction="short",
+        )
+        equity_after = portfolio.equity_mtm({"S000": 100.0})  # price unchanged
+        # Equity should only decrease by tx cost, NOT increase by short proceeds
+        assert equity_after < equity_before, "Opening a short must not increase equity"
+        assert abs(equity_after - (equity_before - 5.0)) < 1.0, (
+            f"Equity after short open should be equity_before - tx_cost = {equity_before - 5.0:.0f}, "
+            f"got {equity_after:.0f}"
+        )
+
+    def test_profitable_short_increases_equity_mtm(self):
+        """When a short position gains (price falls), equity_mtm should increase."""
+        from app.backtesting.agent_simulator import _PortfolioState, _Position
+
+        portfolio = _PortfolioState(cash=110_000.0, peak_equity=100_000.0, short_collateral=10_000.0)
+        portfolio.positions["S000"] = _Position(
+            symbol="S000", entry_date=None, entry_price=100.0,
+            stop_price=115.0, target_price=80.0, quantity=100,
+            highest_price=100.0, confidence=1.0, direction="short",
+        )
+        equity_at_entry = portfolio.equity_mtm({"S000": 100.0})  # price at entry
+        equity_at_profit = portfolio.equity_mtm({"S000": 90.0})  # price fell 10%
+        assert equity_at_profit > equity_at_entry, (
+            f"Short gained when price fell: equity should increase. "
+            f"Before={equity_at_entry:.0f} After={equity_at_profit:.0f}"
+        )
+        assert abs((equity_at_profit - equity_at_entry) - 1000.0) < 1.0, (
+            f"10 × 100 qty = 1000 unrealized gain, got {equity_at_profit - equity_at_entry:.0f}"
+        )
+
+
 class TestLongOnlyRegression:
     """Test 8: with enable_shorts=False, results must be identical to the old long-only mode."""
 

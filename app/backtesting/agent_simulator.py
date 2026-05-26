@@ -95,26 +95,44 @@ class _PortfolioState:
 
     @property
     def position_market_value(self) -> float:
-        # Uses entry price (no MTM) — kept for backward compat with live PM code paths.
-        return sum(p.entry_price * p.quantity for p in self.positions.values())
+        """Entry-price PMV for LONG positions only.
+
+        Short positions contribute via unrealized P&L = (entry - close) × qty, not raw notional.
+        Including short entry notional here would double-count (proceeds already in cash;
+        short_collateral tracks the reserved amount separately).
+        """
+        return sum(
+            p.entry_price * p.quantity
+            for p in self.positions.values()
+            if getattr(p, "direction", "long") == "long"
+        )
 
     def equity_mtm(self, today_closes: dict) -> float:
         """Mark-to-market equity: longs at today's close, shorts as unrealized PnL.
 
-        For longs:  contribution = today_close * qty
-        For shorts: contribution = (entry_price - today_close) * qty
-                    (profit when price falls; cash already holds entry proceeds as margin)
-        Falls back to entry_price if today_close is unavailable for a symbol.
+        Accounting model:
+          cash = free cash + short_proceeds_received - long_cost_paid - tx_costs
+          short_collateral = sum(entry_price × qty) for all open shorts
+                           (reserved from cash; must be subtracted to get true equity)
+          long MTM = today_close × qty (or entry_price fallback)
+          short unrealized PnL = (entry_price - today_close) × qty (positive when price falls)
+
+          equity_mtm = cash - short_collateral + long_mtm + short_unrealized_pnl
+
+        Without subtracting short_collateral, opening 55k of shorts would inflate the
+        equity curve by 55k (proceeds in cash) without corresponding liability — giving
+        artificial Sharpe inflation of ~+3 sigma per fold (BUG confirmed by PF < 1 vs Sharpe > 3).
         """
-        pmv = 0.0
+        long_mtm = 0.0
+        short_upnl = 0.0
         for sym, pos in self.positions.items():
             close = today_closes.get(sym, pos.entry_price)
             is_short = getattr(pos, "direction", "long") == "short"
             if is_short:
-                pmv += (pos.entry_price - close) * pos.quantity
+                short_upnl += (pos.entry_price - close) * pos.quantity
             else:
-                pmv += close * pos.quantity
-        return self.cash + pmv
+                long_mtm += close * pos.quantity
+        return self.cash - self.short_collateral + long_mtm + short_upnl
 
     def update_mtm(self, today_closes: dict) -> float:
         """Compute MTM equity and cache it for use in sizing/RM decisions this bar."""
@@ -123,7 +141,12 @@ class _PortfolioState:
 
     @property
     def equity(self) -> float:
-        return self.cash + self.position_market_value
+        """Entry-price equity: cash - short_collateral + long_pmv.
+
+        Short_collateral must be subtracted for the same reason as equity_mtm:
+        short proceeds sit in cash but are offset by the short liability.
+        """
+        return self.cash - self.short_collateral + self.position_market_value
 
     @property
     def equity_decision(self) -> float:
