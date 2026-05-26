@@ -1261,6 +1261,11 @@ class AgentSimulator:
                                 regime_label += "+HIGHVOL"
 
         # 6. Close drops
+        # BUG-12 FIX: exit at today's OPEN (same convention as entry, BUG-11 fix).
+        # Previously used today's close (exclude_today=False), creating a 1-day
+        # asymmetry: entry filled at yesterday's open, exit filled at today's close.
+        # Decision is made using data through yesterday; both legs now execute at
+        # today's open, which is the first price available post-decision.
         tx_costs = 0.0
         closed_trades: List = []
         for sym in delta.to_drop:
@@ -1270,15 +1275,18 @@ class AgentSimulator:
             df = symbols_data.get(sym)
             exit_price = pos.entry_price
             if df is not None:
-                prior = self._bars_up_to(df, day, exclude_today=False)
-                if prior is not None and len(prior) > 0:
-                    close_col = "close" if "close" in prior.columns else "Close"
-                    if close_col in prior.columns:
-                        exit_price = float(prior[close_col].iloc[-1])
+                today_bar = self._bars_on(df, day)
+                if today_bar is not None:
+                    open_col = "open" if "open" in today_bar.index else "Open"
+                    close_col = "close" if "close" in today_bar.index else "Close"
+                    if open_col in today_bar.index:
+                        exit_price = float(today_bar[open_col])
+                    elif close_col in today_bar.index:
+                        exit_price = float(today_bar[close_col])
             cost = exit_price * pos.quantity * self.transaction_cost_pct
             tx_costs += cost
             gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-            net_pnl = gross_pnl - cost - pos.entry_price * pos.quantity * self.transaction_cost_pct
+            net_pnl = gross_pnl - cost  # BUG-29 fix: only deduct exit tx; entry tx already paid at open
             portfolio.cash += exit_price * pos.quantity - cost
             del portfolio.positions[sym]
             closed_trades.append(Trade(
@@ -1324,14 +1332,18 @@ class AgentSimulator:
             df = symbols_data.get(sym)
             if df is None:
                 continue
-            prior = self._bars_up_to(df, day, exclude_today=True)
-            if prior is None or len(prior) == 0:
+            # BUG-11 FIX: entry at today's OPEN, not yesterday's open.
+            # Previously _bars_up_to(exclude_today=True).iloc[-1] gave yesterday's open.
+            # Decision uses data through yesterday; execution is at today's open
+            # (consistent with BUG-12 exit fix and with _process_entries convention).
+            today_bar = self._bars_on(df, day)
+            if today_bar is None:
                 continue
-            open_col = "open" if "open" in prior.columns else "Open"
-            close_col = "close" if "close" in prior.columns else "Close"
-            if open_col not in prior.columns and close_col not in prior.columns:
+            open_col = "open" if "open" in today_bar.index else "Open"
+            close_col = "close" if "close" in today_bar.index else "Close"
+            if open_col not in today_bar.index and close_col not in today_bar.index:
                 continue
-            entry_price = float(prior[open_col if open_col in prior.columns else close_col].iloc[-1])
+            entry_price = float(today_bar[open_col if open_col in today_bar.index else close_col])
             if entry_price <= 0:
                 continue
             qty = max(1, int(dollar_size / entry_price))

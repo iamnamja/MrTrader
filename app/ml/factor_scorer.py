@@ -700,9 +700,9 @@ def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int 
             continue
         col = closes[sym].dropna()
         past = col[col.index <= as_of_ts]
+        total += 1  # BUG-3 fix: always count in denominator (short history = below MA)
         if len(past) < ma_days:
             continue
-        total += 1
         ma_val = float(past.iloc[-ma_days:].mean())
         if float(past.iloc[-1]) > ma_val:
             above += 1
@@ -730,21 +730,32 @@ class IcCompositeV220Scorer:
 
     def __init__(self) -> None:
         self._fmp_fundamentals: Optional[pd.DataFrame] = None
-        self._fmp_loaded: bool = False
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
         # Regime state: True = Composite A (momentum), False = Composite B (quality)
         self._in_momentum_regime: bool = False
         # EMA of breadth (span=5 ≈ 3-day half-life)
         self._breadth_ema: Optional[float] = None
 
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
-        if not self._fmp_loaded:
+        # BUG-9 fix: load raw parquet once, filter PIT per call (was using nonexistent load_pit_fundamentals)
+        if self._fmp_fundamentals is None:
             try:
-                from app.data.fmp_fundamentals import load_pit_fundamentals
-                self._fmp_fundamentals = load_pit_fundamentals(as_of)
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
             except Exception:
-                self._fmp_fundamentals = None
-            self._fmp_loaded = True
-        return self._fmp_fundamentals if self._fmp_fundamentals is not None else pd.DataFrame()
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return df
 
     def _update_breadth(self, raw_breadth: float) -> float:
         """Update EMA of breadth with hysteresis and return smoothed value."""
@@ -765,11 +776,14 @@ class IcCompositeV220Scorer:
 
         close_cols = {}
         for sym, df in symbols_data.items():
-            if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
+            if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
             past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
-            if len(past) >= 60:
+            if sym in ("^VIX", "VIX"):
+                if len(past) > 0:
+                    close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation
+            elif len(past) >= 60:
                 close_cols[sym] = past
 
         if not close_cols:
@@ -798,7 +812,7 @@ class IcCompositeV220Scorer:
                 if hasattr(symbols_data[sym].index[0], "date")
                 else (symbols_data[sym].index < as_of_ts)
             ]
-            for sym in close_cols if sym in symbols_data
+            for sym in close_cols if sym in symbols_data and sym not in ("^VIX", "VIX")
         }
 
         fund = self._get_fundamentals(as_of_ts)
@@ -991,17 +1005,28 @@ V221_IC_WEIGHTS: dict[str, float] = {k: v / _V221_TOTAL for k, v in _V221_IC_WEI
 class IcCompositeV221Scorer:
     def __init__(self) -> None:
         self._fmp_fundamentals = None
-        self._fmp_loaded = False
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
 
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
-        if not self._fmp_loaded:
+        # BUG-9 fix: load raw parquet once, filter PIT per call (was using nonexistent load_pit_fundamentals)
+        if self._fmp_fundamentals is None:
             try:
-                from app.data.fmp_fundamentals import load_pit_fundamentals
-                self._fmp_fundamentals = load_pit_fundamentals(as_of)
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
             except Exception:
-                self._fmp_fundamentals = None
-            self._fmp_loaded = True
-        return self._fmp_fundamentals if self._fmp_fundamentals is not None else pd.DataFrame()
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return df
 
     def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
         _day_d = day.date() if hasattr(day, "date") else day
@@ -1009,11 +1034,14 @@ class IcCompositeV221Scorer:
 
         close_cols = {}
         for sym, df in symbols_data.items():
-            if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
+            if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
             past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
-            if len(past) >= 60:
+            if sym in ("^VIX", "VIX"):
+                if len(past) > 0:
+                    close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation
+            elif len(past) >= 60:
                 close_cols[sym] = past
 
         if not close_cols:
@@ -1028,7 +1056,7 @@ class IcCompositeV221Scorer:
                 if hasattr(symbols_data[sym].index[0], "date")
                 else (symbols_data[sym].index < as_of_ts)
             ]
-            for sym in close_cols if sym in symbols_data
+            for sym in close_cols if sym in symbols_data and sym not in ("^VIX", "VIX")
         }
 
         fund = self._get_fundamentals(as_of_ts)
