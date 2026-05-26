@@ -834,6 +834,120 @@ class IcCompositeV220Scorer:
         return "momentum" if self._in_momentum_regime else "quality"
 
 
+# =============================================================================
+# Phase 92 — v222 scorer: v221 base weights + v220 breadth-regime switch
+# Composite A (bull market, breadth>60%): V220A_WEIGHTS (momentum tilt)
+# Composite B (shock/neutral, breadth<55%): V221_IC_WEIGHTS (fundamentals ×0.30)
+# =============================================================================
+
+class IcCompositeV222Scorer:
+    """Phase 92 hybrid regime-conditional scorer (v222).
+
+    Combines v221's reduced-fundamentals base with v220's breadth-based regime switch.
+    - Bull market (breadth > 60%): Composite A = momentum tilt (V220A_WEIGHTS)
+    - Shock/neutral (breadth < 55%): Composite B = v221 quality weights (V221_IC_WEIGHTS)
+    - 5pp hysteresis deadband, EMA-smoothed breadth (span=5)
+    """
+
+    BREADTH_A_THRESHOLD = 0.60
+    BREADTH_B_THRESHOLD = 0.55
+
+    def __init__(self) -> None:
+        self._fmp_fundamentals: Optional[pd.DataFrame] = None
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+        self._in_momentum_regime: bool = False
+        self._breadth_ema: Optional[float] = None
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if self._fmp_fundamentals is None:
+            try:
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
+            except Exception:
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return df
+
+    def _update_breadth(self, raw_breadth: float) -> float:
+        if not np.isfinite(raw_breadth):
+            return self._breadth_ema if self._breadth_ema is not None else 0.5
+        alpha = 2.0 / (5 + 1)
+        if self._breadth_ema is None:
+            self._breadth_ema = raw_breadth
+        else:
+            self._breadth_ema = alpha * raw_breadth + (1 - alpha) * self._breadth_ema
+        return self._breadth_ema
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        _day_d = day.date() if hasattr(day, "date") else day
+        as_of_ts = pd.Timestamp(day)
+
+        close_cols = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
+            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            if sym in ("^VIX", "VIX"):
+                if len(past) > 0:
+                    close_cols[sym] = past
+            elif len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+
+        raw_breadth = _compute_breadth(closes, as_of_ts)
+        breadth_smooth = self._update_breadth(raw_breadth)
+
+        if self._in_momentum_regime:
+            if breadth_smooth < self.BREADTH_B_THRESHOLD:
+                self._in_momentum_regime = False
+        else:
+            if breadth_smooth > self.BREADTH_A_THRESHOLD:
+                self._in_momentum_regime = True
+
+        weights = V220A_WEIGHTS if self._in_momentum_regime else V221_IC_WEIGHTS
+
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols if sym in symbols_data and sym not in ("^VIX", "VIX")
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, weights, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+    @property
+    def active_regime(self) -> str:
+        return "momentum" if self._in_momentum_regime else "quality"
+
+
 def _compute_weighted_score(
     as_of: pd.Timestamp,
     closes: pd.DataFrame,
