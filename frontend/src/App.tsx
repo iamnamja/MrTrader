@@ -1146,7 +1146,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Stop', 'Target', 'Market Value', 'Unreal P&L', 'P&L %', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Market Value', 'Avg Entry', 'Current', 'Stop', 'Target', 'Unreal P&L', 'P&L %', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
@@ -1165,11 +1165,11 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
                       <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.trade_type ?? '—'}</td>
                       <td style={s.td}>{qty}</td>
+                      <td style={s.td}>{fmt$(mv)}</td>
                       <td style={s.td}>{fmt$(entry)}</td>
                       <td style={s.td}>{fmt$(cur)}</td>
                       <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
                       <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
-                      <td style={s.td}>{fmt$(mv)}</td>
                       <td style={{ ...s.td, color: clr(pnl) }}>{fmt$(pnl)}</td>
                       <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.risk_reward != null ? p.risk_reward.toFixed(1) + ':1' : '—'}</td>
