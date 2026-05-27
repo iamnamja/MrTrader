@@ -187,6 +187,8 @@ class TestTradesEndpoint:
         trade.target_price = 160.0
         trade.created_at = datetime.utcnow()
         trade.closed_at = datetime.utcnow()
+        trade.exit_price_source = None
+        trade.ghost_detection_count = None
 
         sess = _empty_db_session()
         chain = sess.query.return_value.order_by.return_value

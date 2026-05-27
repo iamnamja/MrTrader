@@ -55,6 +55,16 @@ def _migrate_columns() -> None:
         ("daily_state",    "regime_last_updated_at",   "TIMESTAMP"),
         # Phase J — direction on pending limit orders (needed for short-aware requote/escalation)
         ("pending_limit_orders", "direction", "VARCHAR(15)"),
+        # Reconciler hardening — exit price provenance + ghost/untracked state machine
+        ("trades", "exit_price_source",         "TEXT"),
+        ("trades", "exit_order_id",             "TEXT"),
+        ("trades", "exit_price_written_at",     "TIMESTAMP"),
+        ("trades", "exit_price_written_by",     "TEXT"),
+        ("trades", "ghost_detection_count",     "INTEGER DEFAULT 0"),
+        ("trades", "ghost_first_detected_at",   "TIMESTAMP"),
+        ("trades", "ghost_last_detected_at",    "TIMESTAMP"),
+        ("trades", "untracked_detection_count", "INTEGER DEFAULT 0"),
+        ("trades", "untracked_last_detected_at", "TIMESTAMP"),
     ]
     with engine.connect() as conn:
         for table, col, col_def in migrations:
@@ -65,6 +75,16 @@ def _migrate_columns() -> None:
             except Exception:
                 # Column already exists — expected on every subsequent startup
                 conn.rollback()
+
+        # Backfill: tag pre-existing closed trades with legacy_unknown provenance
+        try:
+            conn.execute(text(
+                "UPDATE trades SET exit_price_source = 'legacy_unknown' "
+                "WHERE exit_price IS NOT NULL AND exit_price_source IS NULL"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
         # Postgres only: widen direction columns from VARCHAR(5/10) → VARCHAR(15)
         # to accommodate "SELL_SHORT" (10 chars).  SQLite ignores VARCHAR lengths.

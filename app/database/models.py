@@ -37,6 +37,21 @@ class Trade(Base):
     # Phase 2d: live-vs-sim reconciliation — WF-predicted P&L at trade entry
     sim_predicted_pnl = Column(Float, nullable=True)   # expected $ P&L from walk-forward fold stats
 
+    # Reconciler hardening — exit price provenance
+    exit_price_source = Column(Text, nullable=True)        # alpaca_fill | fallback_bar_close | manual | agent_exit | legacy_unknown
+    exit_order_id = Column(Text, nullable=True)            # order ID that produced the exit fill
+    exit_price_written_at = Column(DateTime, nullable=True)
+    exit_price_written_by = Column(Text, nullable=True)    # reconciler | trader_agent | admin_cli
+
+    # Reconciler hardening — ghost detection counters
+    ghost_detection_count = Column(Integer, default=0, nullable=True)
+    ghost_first_detected_at = Column(DateTime, nullable=True)
+    ghost_last_detected_at = Column(DateTime, nullable=True)
+
+    # Reconciler hardening — untracked detection counters
+    untracked_detection_count = Column(Integer, default=0, nullable=True)
+    untracked_last_detected_at = Column(DateTime, nullable=True)
+
     # Relationships
     orders = relationship("Order", back_populates="trade")
     decisions = relationship("AgentDecision", back_populates="trade")
