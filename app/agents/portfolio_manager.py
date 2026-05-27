@@ -2846,15 +2846,16 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     _, probs = self.model.predict(x)
                     _model_ver = str(getattr(self.model, "version", "unknown"))
                     log_predict("live", _live_run_id, _live_asof, _model_ver, _feat_hash, np.array(probs), [trade.symbol])
+                    _entry_px = float(trade.entry_price or 0)
+                    # atr = atr_norm * entry_price (dollar ATR); never derive from target_price
+                    # because target may have been extended and would corrupt the extension math.
+                    _atr_norm_live = float(feats.get("atr_norm", 0.015))
                     results[trade.symbol] = {
                         "score": float(probs[0]),
                         "trade_id": trade.id,
-                        "entry_price": float(trade.entry_price or 0),
+                        "entry_price": _entry_px,
                         "target_price": float(trade.target_price or 0),
-                        "atr": (
-                            abs(float(trade.target_price or 0) - float(trade.entry_price or 0))
-                            if trade.target_price and trade.entry_price else 0.0
-                        ),
+                        "atr": round(_atr_norm_live * _entry_px, 4) if _entry_px > 0 else 0.0,
                     }
                 except Exception as exc:
                     self.logger.debug("Re-score failed for %s: %s", trade.symbol, exc)
