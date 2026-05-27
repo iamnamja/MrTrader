@@ -6663,3 +6663,42 @@ Post-event refresh at +3 min (already in `portfolio_manager._maybe_refresh_nis_p
 
 ---
 
+
+### LX3 — XGBoost Retrained on 5 IC-Validated Features (🔄 IN PROGRESS as of 2026-05-27 ~14:30 ET)
+
+Same honest harness as B2/LX1/LX2. Hypothesis: feature noise from 77 irrelevant features caused LX2 degradation (+0.171). Retraining XGBoost on only the 5 IC-validated features with a low-capacity prior should reduce overfitting and recover or beat the LX1 equal-weight baseline (+0.557).
+
+**Model:** swing_v222
+
+**Feature set (5 IC-validated, Phase A1):**
+| Feature | IC@5d | t-stat | Role |
+|---|---|---|---|
+| `momentum_252d_ex1m` | 0.029 | 1.99 | 12-1 momentum; IC grows to 0.046 at h20 |
+| `price_to_52w_high` | 0.017 | 1.11 | Positional momentum, orthogonal to 12-1 |
+| `profit_margin` | 0.013 | 1.40 | Quality |
+| `operating_margin` | 0.012 | 1.24 | Quality |
+| `pe_ratio` | 0.009 | 1.05 | Value tilt (weakest; included for XGBoost interaction discovery) |
+
+**Hyperparameter overrides (low-capacity prior for 5-feature model):**
+- `max_depth` 4→3, `colsample_bytree` 0.6→1.0, `n_estimators` 400→600, `lr` 0.03→0.02, `min_child_weight` 10→20, `reg_lambda` 1.5→2.0
+
+**Retrain command:**
+```
+python scripts/train_model.py --years 5 --workers 8 --model-type xgboost --label-scheme sector_relative --forward-days 20 --benign-model --regime-threshold 0.0 --provider polygon 2>&1 | tee logs/retrain_lx3_v222.log
+```
+Note: `--no-fundamentals` intentionally omitted — `profit_margin`/`operating_margin`/`pe_ratio` are loaded from FMP parquet (not EDGAR), so the flag has no effect on these features. The OOM risk from the EDGAR prefetch path doesn't apply to this 5-feature run.
+
+**WF validation command (run immediately after retrain):**
+```
+python scripts/walkforward_tier3.py --model swing --folds 3 --years 5 --swing-model-version 222 --swing-purge-days 85 --swing-embargo-days 85 --workers 8 2>&1 | tee logs/wf_lx3_v222.log
+```
+
+**Results: PENDING** — launched 2026-05-27 ~14:30 ET.
+
+> **[UPDATE NEEDED]** Fill in fold results when `logs/wf_lx3_v222.log` completes.
+> Decision tree:
+> - LX3 ≥ 0.80 → gate cleared → Phase SD0 (short model data infra)
+> - LX3 > LX1 (0.557) but < 0.80 → ML adds value over equal-weight → LX4 (hyperparameter search / label tuning)
+> - LX3 ≤ LX1 (0.557) → 5-feature XGBoost no better than equal-weight → reconsider ML approach entirely
+
+---

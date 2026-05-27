@@ -133,3 +133,141 @@ class TestConstants:
 
     def test_ghost_min_elapsed_at_least_10_min(self):
         assert GHOST_MIN_ELAPSED >= timedelta(minutes=10)
+
+
+# ── validate_target_stop / write_target_stop ──────────────────────────────────
+
+from app.startup_reconciler import (  # noqa: E402
+    validate_target_stop,
+    write_target_stop,
+    TARGET_STOP_BOUNDS,
+)
+
+
+class TestValidateTargetStop:
+    def test_long_legitimate_swing(self):
+        ok, why = validate_target_stop(100.0, 106.0, 98.0, "BUY", "swing")
+        assert ok, why
+
+    def test_long_target_at_entry_rejected(self):
+        ok, why = validate_target_stop(100.0, 100.0, 98.0, "BUY", "swing")
+        assert not ok
+        assert "target" in why.lower()
+
+    def test_long_target_below_entry_rejected(self):
+        ok, why = validate_target_stop(100.0, 95.0, 98.0, "BUY", "swing")
+        assert not ok
+
+    def test_long_runaway_target_rejected(self):
+        # AVGO real-world bug: $413 entry, $1,993 target → ~382% above
+        ok, why = validate_target_stop(413.0, 1993.0, 400.0, "BUY", "swing")
+        assert not ok
+        assert "exceeds max" in why or "50%" in why
+
+    def test_long_nem_runaway_target_rejected(self):
+        # NEM real-world bug: $108 entry, $217 target → ~101% above
+        ok, why = validate_target_stop(108.0, 217.0, 105.0, "BUY", "swing")
+        assert not ok
+
+    def test_long_stop_above_entry_rejected(self):
+        ok, why = validate_target_stop(100.0, 106.0, 101.0, "BUY", "swing")
+        assert not ok
+        assert "stop" in why.lower()
+
+    def test_long_runaway_stop_rejected(self):
+        ok, _ = validate_target_stop(100.0, 106.0, 50.0, "BUY", "swing")
+        assert not ok
+
+    def test_short_legitimate(self):
+        ok, why = validate_target_stop(100.0, 94.0, 103.0, "SELL_SHORT", "swing")
+        assert ok, why
+
+    def test_short_target_above_entry_rejected(self):
+        ok, _ = validate_target_stop(100.0, 106.0, 103.0, "SELL_SHORT", "swing")
+        assert not ok
+
+    def test_short_stop_below_entry_rejected(self):
+        ok, _ = validate_target_stop(100.0, 94.0, 98.0, "SELL_SHORT", "swing")
+        assert not ok
+
+    def test_intraday_tight_target_accepted(self):
+        # Intraday targets can be as low as 0.3% — must not false-positive
+        ok, why = validate_target_stop(100.0, 100.35, 99.80, "BUY", "intraday")
+        assert ok, why
+
+    def test_intraday_tight_stop_accepted(self):
+        ok, why = validate_target_stop(100.0, 100.50, 99.80, "BUY", "intraday")
+        assert ok, why
+
+    def test_swing_tight_target_rejected(self):
+        # 0.2% target on swing is below swing min — should reject
+        ok, _ = validate_target_stop(100.0, 100.20, 98.0, "BUY", "swing")
+        assert not ok
+
+    def test_only_target_supplied_ok(self):
+        ok, _ = validate_target_stop(100.0, 106.0, None, "BUY", "swing")
+        assert ok
+
+    def test_only_stop_supplied_ok(self):
+        ok, _ = validate_target_stop(100.0, None, 98.0, "BUY", "swing")
+        assert ok
+
+    def test_zero_entry_rejected(self):
+        ok, _ = validate_target_stop(0.0, 1.0, 0.5, "BUY", "swing")
+        assert not ok
+
+    def test_negative_target_rejected(self):
+        ok, _ = validate_target_stop(100.0, -5.0, 98.0, "BUY", "swing")
+        assert not ok
+
+    def test_bounds_constant_has_swing_and_intraday(self):
+        assert "swing" in TARGET_STOP_BOUNDS
+        assert "intraday" in TARGET_STOP_BOUNDS
+
+
+class TestWriteTargetStop:
+    def _trade(self, entry=100.0, direction="BUY", trade_type="swing"):
+        t = MagicMock()
+        t.id = 42
+        t.symbol = "TEST"
+        t.entry_price = entry
+        t.direction = direction
+        t.trade_type = trade_type
+        t.target_price = None
+        t.stop_price = None
+        return t
+
+    def test_writes_valid_target_only(self):
+        t = self._trade()
+        assert write_target_stop(t, target_price=106.0, written_by="test") is True
+        assert t.target_price == 106.0
+        assert t.stop_price is None
+
+    def test_writes_valid_stop_only(self):
+        t = self._trade()
+        assert write_target_stop(t, stop_price=98.0, written_by="test") is True
+        assert t.stop_price == 98.0
+        assert t.target_price is None
+
+    def test_writes_both(self):
+        t = self._trade()
+        assert write_target_stop(t, target_price=106.0, stop_price=98.0) is True
+        assert t.target_price == 106.0
+        assert t.stop_price == 98.0
+
+    def test_rejects_runaway_target_no_write(self):
+        t = self._trade(entry=413.0)
+        t.target_price = 420.0  # pre-existing sane value
+        result = write_target_stop(t, target_price=1993.0, written_by="test")
+        assert result is False
+        # Must NOT silently overwrite — pre-existing value preserved
+        assert t.target_price == 420.0
+
+    def test_rejects_inverted_long_target(self):
+        t = self._trade()
+        assert write_target_stop(t, target_price=95.0) is False
+        assert t.target_price is None
+
+    def test_no_op_when_both_none(self):
+        t = self._trade()
+        assert write_target_stop(t) is False
