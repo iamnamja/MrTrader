@@ -985,6 +985,47 @@ def run_swing_walkforward(
     # next fold's train_end is shifted forward by embargo_days so that no test
     # row (or its lookback features) appears in the next training set.
     segment_days = int(total_years * 365 / (n_folds + 1))
+
+    # WF-R5 (FIX 1): verify the requested WF config actually fits in
+    # `total_years`. Each fold needs `segment_days` of test + (n_folds-1)
+    # cumulative embargo shifts + `purge_days` lead-in + a small buffer.
+    # If it doesn't fit, the last fold's raw_test_end gets clamped to
+    # end_all, which can collapse the embargo gap below the next-fold
+    # threshold and trip the AssertionError below.
+    _BUFFER_DAYS = 30
+    _required_days = (
+        n_folds * segment_days
+        + (n_folds - 1) * _embargo
+        + purge_days
+        + _BUFFER_DAYS
+    )
+    _available_days = int(total_years * 365)
+    if _required_days > _available_days:
+        # Silently shrink segment_days so the layout fits. Log loudly so the
+        # user can adjust --total-years if they want full-length test windows.
+        _new_segment = max(
+            30,
+            (
+                _available_days
+                - (n_folds - 1) * _embargo
+                - purge_days
+                - _BUFFER_DAYS
+            ) // n_folds,
+        )
+        _suggested_years = (
+            (n_folds * segment_days + (n_folds - 1) * _embargo + purge_days + _BUFFER_DAYS)
+            / 365.0
+        )
+        logger.info(
+            "WF-R5 FIX 1: requested layout needs %dd but only %dd available "
+            "(total_years=%g, n_folds=%d, embargo=%dd, purge=%dd). "
+            "Shrinking segment_days %d → %d to fit. "
+            "Pass --total-years %.1f or larger to preserve full-length test windows.",
+            _required_days, _available_days, total_years, n_folds, _embargo,
+            purge_days, segment_days, _new_segment, _suggested_years,
+        )
+        segment_days = _new_segment
+
     fold_boundaries = []
     for fold_idx in range(n_folds):
         # Shift each fold's train_end forward by fold_idx * embargo_days so that
@@ -1023,6 +1064,33 @@ def run_swing_walkforward(
             raise AssertionError(
                 f"WF-C3: fold {_i} train_end ({_this_tr_end}) violates embargo "
                 f"of {_embargo}d after prior test_end ({_prev_te_end}): gap={_gap}d"
+            )
+
+    # WF-R5 (FIX 1 cont.): warn if any fold's test window was clamped short.
+    for _idx, (_, _tr_end, _te_start, _te_end, _) in enumerate(fold_boundaries, start=1):
+        _test_len = (_te_end - _te_start).days
+        if _test_len < 30:
+            logger.warning(
+                "WF-R5: fold %d test window clamped to %dd (%s -> %s) — "
+                "Sharpe may be noisy. Consider --total-years larger than %g.",
+                _idx, _test_len, _te_start, _te_end, total_years,
+            )
+
+    # WF-R5 (FIX 4): IC weights calibration cutoff must be strictly before every
+    # fold's train_end, else "pre-fold" weights become in-sample. The constant
+    # IC_WEIGHTS_CALIBRATION_END must mirror END_DATE in scripts/compute_factor_ic.py.
+    try:
+        from app.ml.factor_scorer import IC_WEIGHTS_CALIBRATION_END as _ic_cutoff
+    except Exception:
+        _ic_cutoff = date(2021, 4, 26)
+    for (_tr_s, _tr_e, _te_s, _te_e, _emb) in fold_boundaries:
+        if _tr_e <= _ic_cutoff:
+            raise ValueError(
+                f"WF-R5 FIX 4: fold train_end {_tr_e} <= IC calibration cutoff "
+                f"{_ic_cutoff}. IC weights are in-sample for this WF config. "
+                f"Recompute IC weights with END_DATE < {_tr_e} in "
+                f"scripts/compute_factor_ic.py and update IC_WEIGHTS_CALIBRATION_END "
+                f"in app/ml/factor_scorer.py."
             )
 
     # BUG-21 FIX: Load sector map once for all folds so sector cap (30%) actually fires.
@@ -1650,7 +1718,18 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     )
     strategy.model_type = "swing"
     from datetime import datetime, timedelta
-    end_all = datetime.now()
+    # WF-R5: propagate --as-of into CPCV the same way run_swing_walkforward does
+    # so CPCV results are reproducible across runs.
+    _cpcv_as_of_raw = getattr(args, "as_of", None)
+    if _cpcv_as_of_raw:
+        try:
+            _cpcv_as_of = datetime.strptime(_cpcv_as_of_raw, "%Y-%m-%d")
+            end_all = _cpcv_as_of
+            logger.info("WF-R5: CPCV swing pinned to --as-of=%s", _cpcv_as_of.date())
+        except Exception:
+            end_all = datetime.now()
+    else:
+        end_all = datetime.now()
     start_all = end_all - timedelta(days=args.years * 365 + 30)
     strategy.fetch_data(start_all, end_all)
     cpcv_result = run_cpcv(
@@ -2006,7 +2085,8 @@ def main() -> int:
 
     # P0: hard guard against using sacred holdout data in development WF runs.
     from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout_wf
-    _wf_end_today = date.today()
+    # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+    _wf_end_today = _as_of_date if _as_of_date is not None else date.today()
     _assert_holdout_wf(
         _wf_end_today,
         allow_sacred_holdout=args.allow_sacred_holdout,
@@ -2053,7 +2133,8 @@ def main() -> int:
     macro_blocked_dates: Optional[set] = None
     if args.macro_gate:
         from datetime import datetime as _dt2
-        _wf_end = _dt2.now().date()
+        # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+        _wf_end = _as_of_date if _as_of_date is not None else _dt2.now().date()
         _wf_start = _wf_end - timedelta(days=max(args.years * 365, args.days) + 30)
         try:
             from scripts.walkforward.macro_calendar import load_macro_blocked_dates
@@ -2069,7 +2150,19 @@ def main() -> int:
         try:
             from app.ml.regime_score_pit import build_regime_score_map
             from app.ml.retrain_config import BENIGN_REGIME_THRESHOLD
-            _score_map = build_regime_score_map()
+            _score_map_raw = build_regime_score_map()
+            # WF-R5 (FIX 2): shift regime score by one trading day to remove
+            # one-bar look-ahead. compute_pit_regime_series scores day D using
+            # SPY/VIX closes AT D — but the BenignGate consumes that score on
+            # day D to influence trades executed at D's open. Shift forward so
+            # day D's gate uses D-1's close-derived score.
+            if _score_map_raw:
+                import pandas as _pd_shift
+                _s = _pd_shift.Series(_score_map_raw).sort_index()
+                _s_shift = _s.shift(1).dropna()
+                _score_map = {d: float(v) for d, v in _s_shift.items()}
+            else:
+                _score_map = {}
             benign_blocked_dates = {
                 d for d, score in _score_map.items() if score < BENIGN_REGIME_THRESHOLD
             }
@@ -2082,7 +2175,8 @@ def main() -> int:
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
         from datetime import datetime as _dt
-        _end = _dt.now().date()
+        # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+        _end = _as_of_date if _as_of_date is not None else _dt.now().date()
         _start = _end - timedelta(days=max(args.years * 365, args.days) + 30)
         _syms = symbols or []
         if not _syms:
