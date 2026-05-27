@@ -6076,17 +6076,89 @@ Gate: avg_sharpe FAIL (0.278 < 0.80) | min_fold FAIL (-0.43 < -0.30) | F2 got WO
 ---
 
 ### Phase seccap50: v221 + Sector Cap 50% (2026-05-26)
-**Verdict:** 🔄 Running  
+**Verdict:** ❌ NO EFFECT — identical to v221 baseline  
 Hypothesis: Default 30% sector cap may allow overconcentration in a few sectors. Raising to 50% gives the scorer more room to concentrate in high-IC sectors while still providing some diversification.
 Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30 --rebalance-sector-cap 0.50`  
 Log: `logs/wf_v221_seccap50_fix.log`  
-Note: First run (seccap50) failed with BUG-LS3 recurrence. Root cause found: yfinance MultiIndex flattening produces duplicate "close" columns for some symbols. Fixed in commit bd1723b (dedup in download code + defensive iloc[:, 0] in scorer).
+Note: First run failed with BUG-LS3 recurrence (fixed in bd1723b). Second run completed successfully.
+
+| Fold | Period | Trades | Win% | Sharpe | DD | PF |
+|------|--------|--------|------|--------|----|----|
+| F1 | 2022-11-21→2023-09-02 | 436 | 63.8% | +0.88 | 10.5% | 1.10 |
+| F2 | 2024-02-20→2024-12-01 | 462 | 63.2% | -0.06 | 20.7% | 1.02 |
+| F3 | 2025-05-21→2026-03-02 | 389 | 67.3% | +0.30 | 18.8% | 1.15 |
+| **Avg** | | | | **+0.374** | | **1.088** |
+
+Gate: avg_sharpe FAIL, avg_profit_factor FAIL. **Conclusion:** Sector cap is NOT the bottleneck. Portfolio is not sector-concentrated at 30% cap; raising to 50% doesn't change stock selection. Problem remains F2 regime payoff shape.
 
 ### Phase v225: v221 + Reduced BULL Shorts (bottom-5) (2026-05-26)
-**Verdict:** 🔜 Planned  
-Hypothesis: In BULL regime, bottom-10 shorts bleed steadily (low-quality names with positive beta rally in bull markets). Reduce to bottom-5 to cut gross short bleed while keeping bear-episode convexity.  
-Opus 4.7 recommendation: "C+E: asymmetric exits + reduced BULL short count. Rationale: C fixes payoff shape; E specifically de-risks F2 bull-regime short bleed."  
+**Verdict:** ❌ NO EFFECT — identical to v221 baseline  
+Hypothesis: In BULL regime, bottom-10 shorts bleed steadily. Reduce to bottom-5.  
 Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30 --short-target-n 10 --short-bull-n 5`  
-Expected: F2 improves toward 0.0 → +0.30 (less short bleed in 2024 bull), F1/F3 unchanged or slightly better (full 10 shorts in BEAR episodes)
+
+| Fold | Period | Trades | Win% | Sharpe | DD | PF |
+|------|--------|--------|------|--------|----|----|
+| F1 | 2022-11-21→2023-09-02 | 436 | 63.8% | +0.88 | 10.5% | 1.10 |
+| F2 | 2024-02-20→2024-12-01 | 462 | 63.2% | -0.06 | 20.7% | 1.02 |
+| F3 | 2025-05-21→2026-03-02 | 389 | 67.3% | +0.30 | 18.8% | 1.15 |
+| **Avg** | | | | **+0.374** | | **1.088** |
+
+**Post-mortem:** Results byte-identical to v221. BULL regime gate already reduces short exposure to ~0.30× — short_bull_n=5 had no additional lever. F2 bleed is NOT from short count; it is structural to the IC composite scorer's cross-sector value tilt being short the AI bull regime.
+
+---
+
+## ⚠️ PHASE 2 PIVOT — 2026-05-26
+
+**Opus 4.7 verdict:** 5 execution experiments (v222–v225, seccap50) all failed to move F2. Execution layer is no longer the binding constraint. The IC composite scorer has a structural ceiling of ~+0.374 avg Sharpe due to its cross-sector quality/value tilt being short AI-momentum in F2 (Feb–Dec 2024).
+
+**Root cause of F2=-0.06:** IC scorer systematically underweights AI-momentum names (high-beta tech) and overweights value laggards. In F2, value laggards got dragged up by sector but less than leaders → long book has fat-tail reversals. avg_win/avg_loss=0.59 with 63% WR means payoff shape is broken, not hit rate.
+
+**Phase 2 fix:** `--label-scheme sector_relative` trains a binary ML model where the label is "does this stock beat its sector ETF over the forward window?" — sector-neutral by construction. Tech longs judged vs XLK, not vs utilities. Removes cross-sector value-trap bias.
+
+**Expected improvement:** F2 +0.30 to +0.60 (removes structural short-regime bias). F1/F3 give back 0.10–0.20 (less deep-value concentration). Net avg: ~+0.45 to +0.60.
+
+**Decision rule post-v226 WF:**
+- F2 ≥ +0.25 and avg ≥ +0.50 → Phase 2 works, iterate (longer fwd window, blended signal)
+- F2 < +0.10 → structural Sharpe ceiling ~0.40–0.50, requires product change (5d rebalance, intraday overlay, or options tail hedge)
+
+### Phase v226: Sector-Relative ML Binary Labels (2026-05-26)
+**Verdict:** ❌ WORSE than IC composite — Phase 2 ML path not viable at this AUC
+
+Training: `--benign-model --label-scheme sector_relative --no-fundamentals --workers 8`  
+Model: swing_v221.pkl, AUC=0.587  
+WF: `--swing-model-version 221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30`
+
+| Fold | Period | Trades | Win% | Sharpe | DD | PF |
+|------|--------|--------|------|--------|----|----|
+| F1 | 2022-11-21→2023-09-02 | 290 | 35.2% | +0.96 | 3.3% | 1.21 |
+| F2 | 2024-02-20→2024-12-01 | 176 | 27.3% | **-0.64** | 5.1% | 0.88 |
+| F3 | 2025-05-21→2026-03-02 | 231 | 33.8% | +0.57 | 5.6% | 1.13 |
+| **Avg** | | | | **+0.295** | | **1.075** |
+
+Gate: avg_sharpe FAIL, min_sharpe FAIL (-0.64 < -0.30), avg_pf FAIL.
+
+**Post-mortem:** ML model is strictly worse than hand-crafted IC composite. Win rate collapsed from 63-67% → 27-35%. AUC 0.587 is insufficient to beat the IC scorer. F2 went -0.06 → -0.64 (opposite of expected). Root cause: sector-relative label at 20-day horizon has low signal-to-noise (AUC barely above 0.5). The IC composite's alpha is in cross-sectional ranking, not binary classification.
+
+---
+
+## ⚠️ STRATEGIC CONCLUSION — 2026-05-26
+
+**Opus 4.7 final verdict:** Both execution path (v222–v225, seccap50) and ML path (v226) exhausted. IC composite has a structural Sharpe ceiling of ~+0.374 at 20-day rebalance on Russell 1000.
+
+**Root cause:** F2 (AI bull, Feb–Dec 2024) structural. No execution knob or ML model can fix a 20-day factor portfolio's exposure to a 2024-style melt-up. The F2=+1.22 requirement to hit avg=0.80 is mathematically impossible for this format.
+
+**Decision (per Opus 4.7):**
+1. **Deploy v221 IC composite to Alpaca paper** — strictly as ops/slippage validation, NOT alpha generation. Measure live vs backtest gap (slippage, borrow costs, fill quality).
+2. **Run 5d rebalance experiment** — highest-EV next bet. 20-day holding period is stale in fast-rotating regimes (2024 AI tape). 5d rebalance may lift F2 materially.
+3. **Do NOT** lower the gate (0.80 set for a reason), add more ML features, or tune v221 further.
+4. **Kill criterion:** If 5d rebalance + vol-scaled sizing + tighter universe still caps at <0.60 avg Sharpe → 20-day Russell L/S format is the wrong product at $20k. Change products.
+
+**Next concrete command:**
+```
+python scripts/walkforward_tier3.py --model swing --rebalance-ic-composite-v221 \
+  --rebalance-regime-gate --rebalance-inv-vol --enable-shorts \
+  --spy-beta-hedge --spy-hedge-max-gross 0.30 --rebalance-days 5
+```
+(requires adding `--rebalance-days` CLI arg to walkforward_tier3.py first)
 
 
