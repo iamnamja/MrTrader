@@ -6162,3 +6162,65 @@ python scripts/walkforward_tier3.py --model swing --rebalance-ic-composite-v221 
 (requires adding `--rebalance-days` CLI arg to walkforward_tier3.py first)
 
 
+
+---
+
+## ⚠️ WF HARNESS AUDIT & BUG FIX CAMPAIGN — 2026-05-27
+
+Conducted full adversarial audit of the WF harness using Opus 4.7. Found and fixed **4 rounds of bugs** across 4 PRs (#289–#292). All results prior to 2026-05-27 should be treated as **upper bounds** — the harness had multiple look-ahead and in-sample leakage issues.
+
+### Bugs Fixed
+
+| Round | PR | Severity | Bug | Fix |
+|---|---|---|---|---|
+| R1 | #289 | CRITICAL | C-2: `datetime.now()` makes folds non-reproducible | Added `--as-of YYYY-MM-DD` flag; warns when omitted |
+| R1 | #289 | CRITICAL | C-3: Embargo subtracted FROM test window instead of placed AFTER it | Fixed fold boundary math; added assertion guard |
+| R1 | #289 | HIGH | DB: WF code path could write to training DB | Added `--no-db-write` flag; confirmed default is read-only |
+| R1 | #289 | MEDIUM | M-7: `pit_union` used `start_all` (5yr lookback) for universe members | Bounded to `te_start - (252 + purge_days)` |
+| R2 | #290 | CRITICAL | C-1: IC weights computed on 2019-2024 overlapping ALL test folds | Replaced V221 weights with pre-fold-1 calibration (≤2021-04-26) |
+| R3 | #291 | HIGH | H-3: `index <= as_of` one-bar look-ahead risk | Standardized to strict `<` throughout factor_scorer.py |
+| R3 | #291 | REAL | M-5: Calmar used arithmetic annualization | Fixed to geometric: `(1+r)^(1/y)-1` |
+| R3 | #291 | REAL | M-6: `ann_return` used 365 calendar days vs 252 trading days for Sharpe | Now uses 252 trading days consistently |
+| R3 | #291 | REAL | L-4: V224Scorer missing `len(past) >= 60` guard | Added, matching other scorers |
+| R3 | #291 | REAL | L-5: No model + no scorer → silent Sharpe=0 "pass" | Now raises `ValueError` explicitly |
+| R3 | #291 | HIGH | H-1: Deprecated `rebalance_factor_stability_gate` was still callable with test-window look-ahead | Now raises `ValueError` |
+| R4 | #292 | CRITICAL | C-1 incomplete: V219/V220A/V224 weights still in-sample | Extended pre-fold-1 calibration to all 4 scorer variants |
+| R4 | #292 | HIGH | H-2: Stateful EMA fields not reset between folds | Added `reset()` / `get_state()` to V220/V222; WF calls reset() after deepcopy |
+| R4 | #292 | MEDIUM | C-4 partial: survivorship drops silent | Now logs `Survivorship augmentation: attempted N, loaded M, dropped K` |
+
+### Key Insight from C-1 Fix
+The pre-fold-1 IC weights are **radically different** from the in-sample weights:
+- `price_to_52w_low`: 17% → **55%** (now dominant — pure contrarian/mean-reversion)
+- `profit_margin` / `operating_margin` / `pe_ratio`: → **0%** each (fundamentals had negative pre-fold IC)
+- `momentum_252d_ex1m`: 17% → 2%
+- The entire v221 "quality/value tilt" design was an in-sample artifact from the 2019-2024 IC audit
+- The pre-fold-1 scorer is essentially a **price-to-52w-low + reversal + downtrend** mean-reversion signal
+
+### First Honest WF Run
+`wf_v221_honest_r2r3.log` — running now with all fixes applied, `--as-of 2026-05-27`
+**Results will be the first truly OOS Sharpe numbers for this system.**
+
+### First Honest WF Result — Pre-fold-1 IC Weights (2026-05-27)
+**Verdict: ❌ NEGATIVE EDGE — avg Sharpe = -0.311**
+Log: `logs/wf_v221_prefold1_weights.log`
+Command: `--rebalance-ic-composite-v221 --rebalance-regime-gate --rebalance-inv-vol --enable-shorts --spy-beta-hedge --spy-hedge-max-gross 0.30 --as-of 2026-05-27`
+
+Note: fold dates shifted vs prior runs due to C-3 (embargo) fix — test windows are now longer.
+
+| Fold | Period | Trades | Win% | Sharpe | DD | PF |
+|------|--------|--------|------|--------|----|----|
+| F1 | 2022-11-22→2023-11-27 | 557 | 62.5% | -0.40 | 21.7% | 0.91 |
+| F2 | 2024-05-16→2025-05-21 | 165 | 56.4% | -0.99 | 23.1% | 0.65 |
+| F3 | 2025-11-08→2026-05-27 | 419 | 64.9% | +0.46 | 18.2% | 1.35 |
+| **Avg** | | | | **-0.311** | | **0.968** |
+
+DSR: z=-10.452, p=0.000 — statistically NEGATIVE edge.
+
+**Interpretation:** The prior v221 results (+0.88/−0.06/+0.30, avg=+0.374) were almost entirely driven by in-sample IC weight selection. The pre-fold-1 scorer (price_to_52w_low dominant at 55%) has negative OOS Sharpe. The "quality/value tilt" narrative was an artifact. This is the honest baseline: **the system currently has no demonstrated edge.**
+
+**What this means for next steps:**
+- All prior experiments (v222-v226, seccap50) used in-sample weights — their results are invalid
+- The 5d rebalance experiment (Opus top recommendation) needs to be run with honest pre-fold-1 weights
+- The v186 XGBoost model deserves a clean re-run — it was never honestly tested
+- Phase 2 ML model at AUC 0.587 was also honest (post-bugs) and got -0.64 F2 — still negative
+- **Starting from scratch with honest WF is the correct path**
