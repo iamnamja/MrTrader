@@ -64,7 +64,7 @@ def _migrate_columns() -> None:
         ("trades", "ghost_first_detected_at",   "TIMESTAMP"),
         ("trades", "ghost_last_detected_at",    "TIMESTAMP"),
         ("trades", "untracked_detection_count", "INTEGER DEFAULT 0"),
-        ("trades", "untracked_last_detected_at","TIMESTAMP"),
+        ("trades", "untracked_last_detected_at", "TIMESTAMP"),
     ]
     with engine.connect() as conn:
         for table, col, col_def in migrations:
