@@ -884,6 +884,25 @@ class Trader(BaseAgent):
                 self._release_intraday_slot(trade_type)
                 return
 
+        # Final guard: check Alpaca live position before entering.
+        # Prevents re-entry after a restart where active_positions was cleared but
+        # the Alpaca position survived (e.g. after the DB was incorrectly closed by
+        # a stale reconciler run).
+        try:
+            _live_pos = alpaca.get_position(symbol)
+            if _live_pos:
+                _live_qty = abs(int(_live_pos.get("qty", 0) or 0))
+                if _live_qty > 0:
+                    self.logger.warning(
+                        "%s: Alpaca already holds %d shares — skipping entry to prevent duplicate position",
+                        symbol, _live_qty,
+                    )
+                    self.approved_symbols.pop(symbol, None)
+                    self._release_intraday_slot(trade_type)
+                    return
+        except Exception as _lp_exc:
+            self.logger.debug("%s: live-position pre-entry check failed (non-fatal): %s", symbol, _lp_exc)
+
         # Size the position
         account = alpaca.get_account()
         # Use portfolio_value (not buying_power) to avoid margin inflation.

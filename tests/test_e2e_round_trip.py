@@ -105,6 +105,7 @@ def _make_alpaca(symbol: str = "TSLA", fill_price: float = 200.0):
         "buying_power": 15_000.0, "cash": 15_000.0,
     }
     alpaca.get_positions.return_value = []
+    alpaca.get_position.return_value = None  # no existing position — safe to enter
     alpaca.get_quote.return_value = {
         "ask": fill_price, "bid": fill_price - 0.10, "mid": fill_price - 0.05
     }

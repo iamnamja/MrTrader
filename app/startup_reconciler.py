@@ -327,16 +327,28 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             _price_match = recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05
             _dir_match = (getattr(recent_trade, "direction", "BUY") or "BUY") == _alpaca_dir if recent_trade else False
             if _price_match and _dir_match:
-                # If the trade was already closed with a recorded exit_price, Alpaca is
+                # If the trade was already closed with a plausible exit_price, Alpaca is
                 # showing a stale position (order pending settlement). Do NOT reactivate —
                 # the DB close is authoritative and wiping exit_price would destroy the record.
+                # EXCEPTION: if exit_price is >30% from entry, it's likely a corrupt match
+                # (e.g. stale Alpaca order history) — treat as unresolved and reactivate.
                 if recent_trade.exit_price is not None:
-                    logger.info(
-                        "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
-                        "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
-                        symbol, qty, avg, recent_trade.id, float(recent_trade.exit_price),
-                    )
-                    continue
+                    _exit = float(recent_trade.exit_price)
+                    _entry_chk = float(recent_trade.entry_price or avg)
+                    _exit_diff = abs(_exit - _entry_chk) / max(_entry_chk, 1)
+                    if _exit_diff <= 0.30:
+                        logger.info(
+                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
+                            "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
+                            symbol, qty, avg, recent_trade.id, _exit,
+                        )
+                        continue
+                    else:
+                        logger.warning(
+                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d exit_price=$%.4f is >30%% "
+                            "from entry=$%.4f — treating as corrupt, reactivating.",
+                            symbol, qty, avg, recent_trade.id, _exit, _entry_chk,
+                        )
 
                 # Entry prices within 5% and direction matches — same position, reactivate
                 logger.warning(
