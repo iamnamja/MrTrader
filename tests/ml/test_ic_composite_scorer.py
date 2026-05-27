@@ -15,19 +15,38 @@ class TestV219Weights:
         negatives = {k: v for k, v in V219_IC_WEIGHTS.items() if v < 0}
         assert not negatives, f"Negative weights found: {negatives}"
 
-    def test_top_features_dominate(self):
-        """ix_momentum_vol, momentum_252d_ex1m, price_to_52w_low should be top-3."""
+    def test_top_feature_is_pre_fold_winner(self):
+        """WF-C1 R4: with pre-fold-1 IC weights, price_to_52w_low dominates.
+
+        The original full-period audit picked ix_momentum_vol / momentum_252d_ex1m
+        as the top features, but those used in-sample (post-2021) data. Recomputing
+        IC IR on the pre-fold-1 window (dates <= 2021-04-26) shows price_to_52w_low
+        as the only feature with a strong positive IR.
+        """
         from app.ml.factor_scorer import V219_IC_WEIGHTS
-        sorted_feats = sorted(V219_IC_WEIGHTS.items(), key=lambda x: x[1], reverse=True)
-        top3 = {k for k, _ in sorted_feats[:3]}
-        expected_top3 = {"ix_momentum_vol", "momentum_252d_ex1m", "price_to_52w_low"}
-        assert top3 == expected_top3, f"Top-3 features: {top3}, expected {expected_top3}"
+        top_feat = max(V219_IC_WEIGHTS.items(), key=lambda x: x[1])[0]
+        assert top_feat == "price_to_52w_low", \
+            f"Pre-fold-1 top feature should be price_to_52w_low, got {top_feat}"
 
     def test_vol_percentile_52w_excluded(self):
         """vol_percentile_52w has negative IC (-0.13) and must be excluded."""
         from app.ml.factor_scorer import V219_IC_WEIGHTS
         assert "vol_percentile_52w" not in V219_IC_WEIGHTS, \
             "vol_percentile_52w has negative h20 IC IR and must not appear in V219_IC_WEIGHTS"
+
+    def test_in_sample_weights_preserved(self):
+        """WF-C1 R4: original in-sample weights must be preserved for reproducibility."""
+        from app.ml.factor_scorer import _V219_IC_WEIGHTS_IN_SAMPLE
+        assert "ix_momentum_vol" in _V219_IC_WEIGHTS_IN_SAMPLE
+        assert _V219_IC_WEIGHTS_IN_SAMPLE["ix_momentum_vol"] == 2.3095
+
+    def test_fold_ic_weights_injection(self):
+        """Per-fold IC weights override module-level V219_IC_WEIGHTS."""
+        from app.ml.factor_scorer import IcCompositeScorer
+        custom = {"momentum_252d_ex1m": 1.0, "price_to_52w_high": 1.0}
+        scorer = IcCompositeScorer(fold_ic_weights=custom)
+        assert abs(sum(scorer._weights.values()) - 1.0) < 1e-9
+        assert set(scorer._weights.keys()) == set(custom.keys())
 
 
 class TestIcCompositeScorer:
