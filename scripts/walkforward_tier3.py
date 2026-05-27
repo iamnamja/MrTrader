@@ -1826,7 +1826,15 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
         earnings_blackout=earnings_cal,
     )
     strategy.model_type = "intraday"
-    end_date = _date.today()
+    _cpcv_intraday_as_of = getattr(args, "as_of", None)
+    if _cpcv_intraday_as_of:
+        try:
+            end_date = datetime.strptime(_cpcv_intraday_as_of, "%Y-%m-%d").date()
+            logger.info("WF-R5: CPCV intraday pinned to --as-of=%s", end_date)
+        except Exception:
+            end_date = _date.today()
+    else:
+        end_date = _date.today()
     start_date = end_date - timedelta(days=args.days + 10)
     strategy.fetch_data(start_date, end_date)
     cpcv_result = run_cpcv(
