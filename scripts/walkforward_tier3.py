@@ -888,7 +888,15 @@ def run_swing_walkforward(
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
     symbols_data: Dict[str, pd.DataFrame] = {}
+    # WF-R4: count survivorship drops within the extra_seed augmentation so the
+    # bias is visible even though we can't fully remove it.
+    _extra_seed_set = set(extra_seed) if extra_seed else set()
+    _extra_attempted = 0
+    _extra_loaded = 0
     for sym in symbols:
+        is_extra = sym in _extra_seed_set
+        if is_extra:
+            _extra_attempted += 1
         try:
             df = yf.download(sym, start=start_all.date().isoformat(),
                              end=end_all.date().isoformat(), progress=False, auto_adjust=True)
@@ -899,8 +907,17 @@ def run_swing_walkforward(
                 df = df.loc[:, ~df.columns.duplicated()]
             if len(df) >= 210:
                 symbols_data[sym] = df
+                if is_extra:
+                    _extra_loaded += 1
         except Exception:
             pass
+    if _extra_attempted > 0:
+        _dropped = _extra_attempted - _extra_loaded
+        _pct = 100.0 * _dropped / _extra_attempted
+        logger.info(
+            "Survivorship augmentation: attempted %d extra_seed symbols, loaded %d, dropped %d (%.1f%%)",
+            _extra_attempted, _extra_loaded, _dropped, _pct,
+        )
 
     spy_raw = yf.download("SPY", start=start_all.date().isoformat(),
                           end=end_all.date().isoformat(), progress=False, auto_adjust=True)
@@ -1153,16 +1170,11 @@ def run_swing_walkforward(
                 "look-ahead in its FactorStabilityGate construction. Remove it from your call "
                 "and use rebalance_dispersion_gate (Phase 89 v2) instead."
             )
-        if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
-            _regime_gate_fn = _make_combined_regime_fn(
-                fold_symbols_data,
-                scorer_instance,
-                spy_vix_fn=_regime_gate_fn,
-                lookback_days=rebalance_factor_stability_lookback,
-                ic_threshold=rebalance_factor_stability_ic_threshold,
-                te_start=te_start,
-                te_end=te_end,
-            )
+        # WF-R4: previous block invoking _make_combined_regime_fn was unreachable
+        # (guarded by the same rebalance_factor_stability_gate flag that just
+        # raised). Deleted as dead code; _make_combined_regime_fn is retained
+        # only because it would otherwise be flagged as an unused symbol — it
+        # may be removed in a follow-up cleanup.
 
         # Phase 89 v2: cross-sectional dispersion gate (concurrent ~5d lag signal)
         if rebalance_mode and rebalance_dispersion_gate:
@@ -1179,6 +1191,16 @@ def run_swing_walkforward(
         # ThreadPoolExecutor folds causes races and state contamination between folds).
         import copy
         _factor_scorer_inst = copy.deepcopy(scorer_instance) if scorer_instance is not None else None
+        # WF-R4: defensively reset stateful per-fold scorer state (EMA breadth,
+        # regime flag) so a deepcopy from a pre-warmed scorer cannot leak state
+        # across folds. No-op for scorers without reset().
+        if _factor_scorer_inst is not None and hasattr(_factor_scorer_inst, "reset"):
+            _factor_scorer_inst.reset()
+            if hasattr(_factor_scorer_inst, "get_state"):
+                _state_after_reset = _factor_scorer_inst.get_state()
+                assert _state_after_reset == (False, None), (
+                    f"WF-R4: scorer.reset() did not clear state, got {_state_after_reset}"
+                )
         if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
             _factor_scorer_inst = FactorPortfolioScorer(
