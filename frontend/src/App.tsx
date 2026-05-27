@@ -54,13 +54,17 @@ function fmtPct(v: number | null | undefined) {
   if (v == null || isNaN(v)) return '—'
   return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
 }
-function fmtTs(iso: string | undefined) {
+function fmtTs(iso: string | undefined | null) {
   if (!iso) return '—'
-  // DB stores UTC without 'Z'; append it so JS parses as UTC, then display in ET
-  const normalized = iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z'
+  const normalized = /[Z+\-]\d*$/.test(iso) ? iso : iso + 'Z'
   const d = new Date(normalized)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
-    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' })
+  if (isNaN(d.getTime())) return iso
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+  const month = d.toLocaleDateString('en-US', { ...opts, month: 'long' })
+  const day   = d.toLocaleDateString('en-US', { ...opts, day: 'numeric' })
+  const year  = d.toLocaleDateString('en-US', { ...opts, year: 'numeric' })
+  const time  = d.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit', hour12: true })
+  return `${month} ${day} ${year} ${time} ET`
 }
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
@@ -790,7 +794,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                         <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
                         <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
-                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ? fmtTs(p.entry_date) : '—'}</td>
                       </tr>
                     )
                   })}
@@ -1041,10 +1045,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_4h_pct != null ? clr(r.avg_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_4h_pct)}
+                      {r.avg_outcome_4h_pct != null ? fmtPct(r.avg_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, ...verdictStyle(r.verdict) }}>
                       {r.verdict === 'correct' ? '✓ Correct' : r.verdict === 'recalibrate' ? '⚠ Recalibrate' : r.verdict ?? '—'}
@@ -1070,7 +1074,7 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -1100,10 +1104,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                       {r.spy_first_hour_range_pct != null ? r.spy_first_hour_range_pct.toFixed(3) + '%' : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_4h_pct != null ? clr(-r.spy_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_4h_pct)}
+                      {r.spy_outcome_4h_pct != null ? fmtPct(r.spy_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_1d_pct != null ? clr(-r.spy_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_1d_pct)}
+                      {r.spy_outcome_1d_pct != null ? fmtPct(r.spy_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.verdict === 'good_abstention' ? C.green : r.verdict === 'bad_abstention' ? C.red : C.muted, fontWeight: 600 }}>
                       {r.verdict === 'good_abstention' ? '✓ Good' : r.verdict === 'bad_abstention' ? '⚠ Missed' : '—'}
@@ -1174,7 +1178,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                       <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.risk_reward != null ? p.risk_reward.toFixed(1) + ':1' : '—'}</td>
                       <td style={{ ...s.td, color: C.blue, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
-                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ? fmtTs(p.entry_date) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.bars_held ?? '—'}</td>
                     </tr>
                   )
@@ -1615,16 +1619,7 @@ function MacroIntelPanel() {
     }}>{sym}</span>
   )
 
-  // Format ISO timestamp → "May 13 14:00 ET"
-  // Appends 'Z' if the string has no timezone marker so browsers treat it as UTC, not local time.
-  const fmtTs = (iso: string) => {
-    if (!iso) return '—'
-    const normalised = /[Z+\-]\d*$/.test(iso) ? iso : iso + 'Z'
-    const d = new Date(normalised)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
-      d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
-  }
+  // fmtTs is the global function — standardized to "May 27 2026 7:42 PM ET"
   // Parse event_time into a Date. Handles:
   //   "12:30 UTC"  → today's date at 12:30 UTC
   //   ISO string   → direct parse (normalised to UTC if naive)
@@ -2013,14 +2008,12 @@ function TopBar({ health, wsConnected }: { health: Health | null; wsConnected: b
   useEffect(() => {
     const tick = () => {
       const now = new Date()
-      const etStr = now.toLocaleTimeString('en-US', {
-        hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
-        timeZone: 'America/New_York',
-      })
-      const dateStr = now.toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric', timeZone: 'America/New_York',
-      })
-      setClock(`${dateStr}  ${etStr} ET`)
+      const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+      const month = now.toLocaleDateString('en-US', { ...opts, month: 'long' })
+      const day   = now.toLocaleDateString('en-US', { ...opts, day: 'numeric' })
+      const year  = now.toLocaleDateString('en-US', { ...opts, year: 'numeric' })
+      const time  = now.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })
+      setClock(`${month} ${day} ${year}  ${time} ET`)
     }
     tick()
     const id = setInterval(tick, 1000)
@@ -3026,7 +3019,7 @@ function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' 
                       }}>{t.active ? 'Active' : 'Disabled'}</span>
                     </td>
                     <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>
-                      {t.added_at ? new Date(t.added_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' }) : '—'}
+                      {t.added_at ? fmtTs(t.added_at) : '—'}
                     </td>
                     <td style={s.td}>
                       <div style={{ display: 'flex', gap: 6 }}>

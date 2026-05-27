@@ -49,8 +49,9 @@ class TestBackfillScript:
         with patch("app.integrations.get_alpaca_client", return_value=mock_alpaca):
             result = _fetch_price_change("AAPL", datetime.now(timezone.utc), hours_forward=4)
 
-        # open=100, target_idx=4 => close=106 => 6.0%
-        assert result == pytest.approx(6.0, abs=0.01)
+        # open=100, target_idx=4 => close=106 => 6% = 0.06 (stored as fraction
+        # so the UI's value*100 render produces "6.00%").
+        assert result == pytest.approx(0.06, abs=1e-4)
 
     def test_run_dry_run_does_not_commit(self):
         """run(..., dry_run=True) rolls back instead of committing."""
