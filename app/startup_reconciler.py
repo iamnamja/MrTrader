@@ -121,7 +121,10 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             for ghost in stale_ghosts:
                 if ghost.symbol not in alpaca_positions:
                     _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
-                    exit_price, exit_order_id = _lookup_close_fill(alpaca, ghost.symbol, ghost.quantity, _ghost_short)
+                    _entry = float(ghost.entry_price or 0)
+                    exit_price, exit_order_id = _lookup_close_fill(
+                        alpaca, ghost.symbol, ghost.quantity, _ghost_short, entry_price=_entry,
+                    )
 
                     # Fallback: if Alpaca order lookup returned no fill, use the most
                     # recent bar close so the DB always has an exit price (source of truth).
@@ -458,19 +461,28 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     return result
 
 
-def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False, max_age_days: int = 30) -> tuple:
+def _lookup_close_fill(
+    alpaca, symbol: str, qty, is_short: bool = False,
+    max_age_days: int = 30, entry_price: float = 0.0,
+) -> tuple:
     """Return (filled_avg_price, order_id) for the most recent closing fill for symbol.
 
     Longs close via SELL; shorts close via BUY (cover).
-    Only considers orders filled within max_age_days to avoid matching stale historical fills
-    from when the stock traded at a completely different price level.
+    Guards against stale/wrong matches:
+    - date filter: only orders within max_age_days
+    - qty tolerance: tightened to 5% (was 20%) to avoid cross-lot matches
+    - price sanity: rejects fills >30% away from entry_price (if provided)
+    - newest-first: DESC direction ensures most recent match wins
     """
     try:
         from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.enums import QueryOrderStatus, QueryOrderDirection
         from datetime import timezone as _tz
         cutoff = datetime.utcnow().replace(tzinfo=_tz.utc) - timedelta(days=max_age_days)
-        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100, after=cutoff)
+        req = GetOrdersRequest(
+            status=QueryOrderStatus.ALL, limit=100, after=cutoff,
+            direction=QueryOrderDirection.DESC,
+        )
         orders = alpaca.trading_client.get_orders(req)
         target_qty = abs(int(qty or 0))
         close_side = "BUY" if is_short else "SELL"
@@ -479,14 +491,22 @@ def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False, max_age
                 continue
             if close_side not in str(o.side).upper():
                 continue
-            # Exact match to avoid treating PARTIALLY_FILLED as a complete close
             if str(o.status).upper() != "FILLED":
                 continue
             filled_qty = int(o.filled_qty or 0)
-            if target_qty > 0 and abs(filled_qty - target_qty) > max(5, target_qty * 0.2):
+            if target_qty > 0 and abs(filled_qty - target_qty) > max(1, target_qty * 0.05):
                 continue
-            if o.filled_avg_price:
-                return float(o.filled_avg_price), str(o.id)
+            if not o.filled_avg_price:
+                continue
+            fill_price = float(o.filled_avg_price)
+            # Reject fills that differ from entry by >30% — almost certainly a wrong match
+            if entry_price > 0 and abs(fill_price - entry_price) / entry_price > 0.30:
+                logger.warning(
+                    "_lookup_close_fill: rejecting fill $%.4f for %s (entry $%.4f, diff %.1f%%)",
+                    fill_price, symbol, entry_price, abs(fill_price - entry_price) / entry_price * 100,
+                )
+                continue
+            return fill_price, str(o.id)
     except Exception as exc:
         logger.debug("_lookup_close_fill failed for %s: %s", symbol, exc)
     return None, None
