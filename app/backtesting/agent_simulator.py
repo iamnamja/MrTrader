@@ -41,7 +41,7 @@ from app.agents.risk_rules import (
     validate_portfolio_heat,
 )
 from app.ml.cs_normalize import cs_normalize
-from app.strategy.signals import generate_signal, check_exit
+from app.strategy.signals import check_exit  # generate_signal used in docstrings/comments only
 from app.strategy.position_sizer import size_position
 
 logger = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ class AgentSimulator:
         spy_beta_cap: float = 1.5,          # cap realized beta at this value
         spy_hedge_max_gross: float = 0.30,  # max SPY short gross as fraction of equity
         short_target_n: int = 30,           # number of short positions (individual names)
-        short_bull_n: Optional[int] = None, # BULL-regime short count override (None = use short_target_n)
+        short_bull_n: Optional[int] = None,  # BULL-regime short count override (None = use short_target_n)
         long_gross: float = 0.95,           # long book gross as fraction of equity
         short_gross: float = 0.55,          # short book gross as fraction of equity
         short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
@@ -1497,7 +1497,6 @@ class AgentSimulator:
                 short_regime_mult=short_mult,
             )
         else:
-            long_budget = equity * long_mult
             short_budget = 0.0
 
         if self.rebalance_inv_vol:
@@ -1626,7 +1625,7 @@ class AgentSimulator:
                     entry_date=day,
                     entry_price=entry_price,
                     stop_price=entry_price * 1.20,   # soft sentinel (20% above entry)
-                    target_price=entry_price * 0.70, # soft sentinel (30% below entry)
+                    target_price=entry_price * 0.70,  # soft sentinel (30% below entry)
                     quantity=qty,
                     highest_price=entry_price,
                     confidence=float(short_rank_of.get(sym, 999)),

@@ -693,16 +693,6 @@ class IcCompositeScorer:
             for sym in close_cols if sym in symbols_data
         }
 
-        vix_val = None
-        if vix_history is not None:
-            try:
-                # H-3: strict `<` to avoid same-day VIX leak
-                past_vix = vix_history[vix_history.index < as_of_ts]
-                if len(past_vix) > 0:
-                    vix_val = float(past_vix.iloc[-1])
-            except Exception:
-                pass
-
         fund = self._get_fundamentals(as_of_ts)
         # WF-C1 R4: route through _compute_weighted_score with self._weights so
         # per-fold IC weight injection (if any) actually flows through. Note
