@@ -21,13 +21,13 @@ import os
 import sys
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database.session import get_session
-from app.database.models import Trade
+from app.database.session import get_session  # noqa: E402
+from app.database.models import Trade  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
 DRY_RUN = "--apply" not in sys.argv
 
@@ -67,7 +67,10 @@ def main():
             t.exit_reason = "reconcile_ghost_data_corrupt"
 
         db.commit()
-        log.info("Cleaned %d records — exit_price/pnl nulled, exit_reason='reconcile_ghost_data_corrupt'", len(candidates))
+        log.info(
+            "Cleaned %d records — exit_price/pnl nulled, exit_reason='reconcile_ghost_data_corrupt'",
+            len(candidates),
+        )
 
     except Exception:
         db.rollback()
