@@ -1105,10 +1105,27 @@ def _compute_weighted_score(
 
 
 # =============================================================================
-# Phase 91 � v221 scorer: v219 with fundamentals down-weighted 70%
+# Phase 91 - v221 scorer: v219 with fundamentals down-weighted 70%
+# =============================================================================
+#
+# WF-C1 FIX (2026-05-27): The original V221 weights below ("_IN_SAMPLE") were
+# derived from a per-feature IC IR audit run over 2019-01-01 -> 2026-11-08 — a
+# window that fully overlaps every WF test fold (F1 2022-11-21->2023-09-02,
+# F2 2024-02-20->2024-12-01, F3 2025-05-21->2026-03-02). That is in-sample
+# feature selection and inflates all reported fold Sharpes.
+#
+# Fix: recomputed the same h=20 IC IR from the existing daily-IC parquet
+# (data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet) using only
+# dates <= 2021-04-26 (one trading day before fold 1's earliest train_end).
+# Negative IRs are clipped to 0 (Phase 88 design rule). Fundamentals are
+# down-weighted by 0.30 as in the original v221 design.
+#
+# Many features had near-zero or negative pre-fold IR, confirming the
+# in-sample contamination of the original weights.
 # =============================================================================
 
-_V221_IC_WEIGHTS_RAW: dict[str, float] = {
+# Original (in-sample, contaminated) weights — kept for reference / reproducibility
+_V221_IC_WEIGHTS_IN_SAMPLE: dict[str, float] = {
     "ix_momentum_vol":          2.3095,
     "momentum_252d_ex1m":       2.2334,
     "price_to_52w_low":         2.2233,
@@ -1123,14 +1140,55 @@ _V221_IC_WEIGHTS_RAW: dict[str, float] = {
     "range_expansion":          0.1795,
     "vrp":                      0.0566,
 }
+
+# Pre-fold-1 IC IR weights (h=20, dates <= 2021-04-26, negatives clipped to 0,
+# pe_ratio sign inverted per Phase 88 design, fundamentals * 0.30).
+# Source: data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet
+_V221_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.0271,
+    "momentum_252d_ex1m":       0.0102,
+    "price_to_52w_low":         0.2449,
+    "profit_margin":            0.0000 * 0.30,  # pre-fold IR was -0.16
+    "operating_margin":         0.0000 * 0.30,  # pre-fold IR was -0.21
+    "pe_ratio":                 0.0000 * 0.30,  # pre-fold IR was -0.004 after sign-flip
+    "price_to_52w_high":        0.0000,         # pre-fold IR was -0.10
+    "volume_trend":             0.0000,         # pre-fold IR was -0.12
+    "reversal_5d_vol_weighted": 0.0817,
+    "downtrend":                0.0840,
+    "vol_regime":               0.0000,         # pre-fold IR was -0.09
+    "range_expansion":          0.0000,         # pre-fold IR was -0.24
+    "vrp":                      0.0000,         # pre-fold IR was -0.12
+}
 _V221_TOTAL = sum(_V221_IC_WEIGHTS_RAW.values())
-V221_IC_WEIGHTS: dict[str, float] = {k: v / _V221_TOTAL for k, v in _V221_IC_WEIGHTS_RAW.items()}
+V221_IC_WEIGHTS: dict[str, float] = (
+    {k: v / _V221_TOTAL for k, v in _V221_IC_WEIGHTS_RAW.items()}
+    if _V221_TOTAL > 0
+    else {k: 0.0 for k in _V221_IC_WEIGHTS_RAW}
+)
 
 
 class IcCompositeV221Scorer:
-    def __init__(self) -> None:
+    """IC composite v221 scorer.
+
+    Args:
+        fold_ic_weights: Optional dict overriding the module-level V221_IC_WEIGHTS
+            (e.g. for per-fold IC weights computed at runtime on pre-tr_end data
+            only — Option-A migration path for the WF-C1 in-sample bias fix).
+            Must have the same key structure as V221_IC_WEIGHTS. If provided,
+            the dict is normalized internally so callers can pass raw IR values.
+    """
+
+    def __init__(self, fold_ic_weights: Optional[dict] = None) -> None:
         self._fmp_fundamentals = None
         self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+        if fold_ic_weights is not None and len(fold_ic_weights) > 0:
+            _t = sum(max(v, 0.0) for v in fold_ic_weights.values())
+            if _t > 0:
+                self._weights = {k: max(v, 0.0) / _t for k, v in fold_ic_weights.items()}
+            else:
+                self._weights = dict(V221_IC_WEIGHTS)
+        else:
+            self._weights = V221_IC_WEIGHTS
 
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
         # BUG-9 fix: load raw parquet once, filter PIT per call (was using nonexistent load_pit_fundamentals)
@@ -1186,7 +1244,7 @@ class IcCompositeV221Scorer:
         }
 
         fund = self._get_fundamentals(as_of_ts)
-        scores = _compute_weighted_score(as_of_ts, closes, bars_past, V221_IC_WEIGHTS, fundamentals=fund)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, self._weights, fundamentals=fund)
 
         if scores.empty:
             return []

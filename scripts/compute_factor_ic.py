@@ -27,7 +27,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 START_DATE = "2019-01-01"
-END_DATE   = "2024-12-31"
+# WF-C1 (2026-05-27): END_DATE must end strictly before the earliest WF train_end
+# so the resulting IC numbers / weights are not contaminated by any data inside
+# a WF test fold. Fold 1's train ends 2021-04-27, so calibration ends one day
+# earlier. Override via env or CLI for ad-hoc analysis; the default is the
+# audit-safe pre-fold-1 window.
+END_DATE   = "2021-04-26"
 MIN_SYMBOLS = 50      # skip rebalance date if fewer symbols have scores
 MIN_IC_PASS = 0.02
 MIN_TSTAT_PASS = 2.0
