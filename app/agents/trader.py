@@ -545,22 +545,36 @@ class Trader(BaseAgent):
                     old_target = pos["target_price"]
                     # Shorts: target is below entry — extending means moving further down
                     _ext_sign = -1 if pos.get("direction") == "SELL_SHORT" else 1
-                    pos["target_price"] = round(old_target + _ext_sign * extend_atr, 4)
-                    # Persist to DB so it survives a restart
+                    new_target = round(old_target + _ext_sign * extend_atr, 4)
+                    # Persist to DB so it survives a restart — but validate first.
                     db = get_session()
                     try:
+                        from app.startup_reconciler import write_target_stop
                         trade = db.query(Trade).filter_by(id=pos["trade_id"]).first()
                         if trade:
-                            trade.target_price = pos["target_price"]
-                            db.commit()
+                            wrote = write_target_stop(
+                                trade, target_price=new_target,
+                                written_by="trader.extend_target",
+                                reason=msg.get("reason", "pm_extend"),
+                            )
+                            if wrote:
+                                db.commit()
+                                pos["target_price"] = new_target
+                                self.logger.info(
+                                    "%s: target extended by %.4f ATR → $%.2f (was $%.2f)",
+                                    symbol, extend_atr, new_target, old_target,
+                                )
+                            else:
+                                db.rollback()
+                                self.logger.error(
+                                    "%s: EXTEND_TARGET REJECTED (extend_atr=%.4f, "
+                                    "proposed=$%.4f, current=$%.4f) — see ERROR above",
+                                    symbol, extend_atr, new_target, old_target,
+                                )
                     except Exception:
                         db.rollback()
                     finally:
                         db.close()
-                    self.logger.info(
-                        "%s: target extended by %.4f ATR → $%.2f (was $%.2f)",
-                        symbol, extend_atr, pos["target_price"], old_target,
-                    )
 
             # HOLD → no action needed, PM is confirming to stay in position
 
@@ -1889,21 +1903,36 @@ class Trader(BaseAgent):
                 else adj.new_stop > pos["stop_price"]
             )
             if _stop_improved:
-                pos["stop_price"] = adj.new_stop
                 if adj.stop_tightened:
                     db = get_session()
                     try:
+                        from app.startup_reconciler import write_target_stop
                         trade = db.query(Trade).filter_by(id=pos.get("trade_id")).first()
                         if trade:
-                            trade.stop_price = adj.new_stop
-                            db.commit()
+                            wrote = write_target_stop(
+                                trade, stop_price=adj.new_stop,
+                                written_by="trader.stop_tighten",
+                                reason=adj.notes,
+                            )
+                            if wrote:
+                                db.commit()
+                                pos["stop_price"] = adj.new_stop
+                                self.logger.info("%s: stop %s → $%.2f (%s)", symbol,
+                                                 "tightened" if vix_now > 20 else "trailed",
+                                                 adj.new_stop, adj.notes)
+                            else:
+                                db.rollback()
+                                self.logger.error(
+                                    "%s: stop tighten REJECTED ($%.4f) — see ERROR above",
+                                    symbol, adj.new_stop,
+                                )
                     except Exception:
                         db.rollback()
                     finally:
                         db.close()
-                    self.logger.info("%s: stop %s → $%.2f (%s)", symbol,
-                                     "tightened" if vix_now > 20 else "trailed",
-                                     adj.new_stop, adj.notes)
+                else:
+                    # Non-persisted trailing stop update (in-memory only — no DB write)
+                    pos["stop_price"] = adj.new_stop
 
             # Apply target extension (longs extend upward; shorts extend downward)
             _target_extended = (
@@ -1913,19 +1942,31 @@ class Trader(BaseAgent):
                 )
             )
             if _target_extended:
-                pos["target_price"] = adj.new_target
                 db = get_session()
                 try:
+                    from app.startup_reconciler import write_target_stop
                     trade = db.query(Trade).filter_by(id=pos.get("trade_id")).first()
                     if trade:
-                        trade.target_price = adj.new_target
-                        db.commit()
+                        wrote = write_target_stop(
+                            trade, target_price=adj.new_target,
+                            written_by="trader.target_extend",
+                            reason=adj.notes,
+                        )
+                        if wrote:
+                            db.commit()
+                            pos["target_price"] = adj.new_target
+                            self.logger.info("%s: target extended → $%.2f (%s)",
+                                             symbol, adj.new_target, adj.notes)
+                        else:
+                            db.rollback()
+                            self.logger.error(
+                                "%s: target extend REJECTED ($%.4f) — see ERROR above",
+                                symbol, adj.new_target,
+                            )
                 except Exception:
                     db.rollback()
                 finally:
                     db.close()
-                self.logger.info("%s: target extended → $%.2f (%s)",
-                                 symbol, adj.new_target, adj.notes)
 
             # Execute partial exit if triggered
             if adj.partial_exit and adj.partial_exit_qty > 0:

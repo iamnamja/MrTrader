@@ -95,6 +95,223 @@ def write_exit_price(
     return True
 
 
+# ── Target/Stop sanity bounds ──────────────────────────────────────────────────
+# Bounds were chosen to be wide enough to never reject a legitimate trade while
+# still catching gross corruption (e.g. AVGO target $1,993 on $413 entry, ~382%
+# above entry — caused by self-reinforcing ATR feedback bug in EXTEND_TARGET).
+#
+# Swing trades use ATR_TARGET_MULT≈1.5 and ATR_STOP_MULT≈0.5 against atr_norm
+# clipped to [0.005, 0.08] for stop and [0.01, 0.16] for target → real bounds
+# fall comfortably inside [1%, 50%] target and [0.5%, 20%] stop. We add a
+# safety margin to avoid edge-case false positives.
+#
+# Intraday uses tighter targets/stops (down to 0.3%/0.2%) so its lower bounds
+# are looser.
+TARGET_STOP_BOUNDS = {
+    "swing": {
+        "target_min_pct": 0.005,   # 0.5% — anything tighter is almost certainly a bug
+        "target_max_pct": 0.50,    # 50% — catches runaway-ATR corruption
+        "stop_min_pct":   0.003,   # 0.3% — tighter than any realistic swing stop
+        "stop_max_pct":   0.20,    # 20% — wider than any sane swing risk
+    },
+    "intraday": {
+        "target_min_pct": 0.0015,  # 0.15% — covers 0.3% intraday floor with margin
+        "target_max_pct": 0.15,    # 15% — intraday never legitimately needs more
+        "stop_min_pct":   0.001,   # 0.10% — covers 0.2% intraday floor with margin
+        "stop_max_pct":   0.10,    # 10%
+    },
+}
+
+
+def validate_target_stop(
+    entry_price: float,
+    target_price: float | None,
+    stop_price: float | None,
+    direction: str = "BUY",
+    trade_type: str = "swing",
+) -> tuple[bool, str]:
+    """Validate that a target/stop pair is internally consistent and within sane bounds.
+
+    Returns (is_valid, reason_if_invalid).  Either target_price or stop_price may
+    be None — only the supplied side is checked.  Bounds are deliberately wide to
+    avoid false positives on legitimate trades; the goal is to catch obvious
+    corruption (e.g. target 5× entry from runaway-ATR), not enforce strategy rules.
+    """
+    if entry_price is None or entry_price <= 0:
+        return False, f"entry_price={entry_price!r} is non-positive"
+
+    bounds = TARGET_STOP_BOUNDS.get(trade_type or "swing", TARGET_STOP_BOUNDS["swing"])
+    is_short = (direction or "BUY") == "SELL_SHORT"
+
+    if target_price is not None:
+        if target_price <= 0:
+            return False, f"target_price={target_price} is non-positive"
+        # For longs: target above entry; for shorts: target below entry
+        if is_short:
+            if target_price >= entry_price:
+                return False, (
+                    f"SHORT target ${target_price:.4f} >= entry ${entry_price:.4f} "
+                    "(target must be below entry for shorts)"
+                )
+            pct = (entry_price - target_price) / entry_price
+        else:
+            if target_price <= entry_price:
+                return False, (
+                    f"LONG target ${target_price:.4f} <= entry ${entry_price:.4f} "
+                    "(target must be above entry for longs)"
+                )
+            pct = (target_price - entry_price) / entry_price
+        if pct < bounds["target_min_pct"]:
+            return False, (
+                f"target ${target_price:.4f} only {pct*100:.3f}% from entry "
+                f"${entry_price:.4f} — below min {bounds['target_min_pct']*100:.2f}% "
+                f"for {trade_type}"
+            )
+        if pct > bounds["target_max_pct"]:
+            return False, (
+                f"target ${target_price:.4f} is {pct*100:.1f}% from entry "
+                f"${entry_price:.4f} — exceeds max {bounds['target_max_pct']*100:.0f}% "
+                f"for {trade_type} (likely corruption)"
+            )
+
+    if stop_price is not None:
+        if stop_price <= 0:
+            return False, f"stop_price={stop_price} is non-positive"
+        if is_short:
+            if stop_price <= entry_price:
+                return False, (
+                    f"SHORT stop ${stop_price:.4f} <= entry ${entry_price:.4f} "
+                    "(stop must be above entry for shorts)"
+                )
+            pct = (stop_price - entry_price) / entry_price
+        else:
+            if stop_price >= entry_price:
+                return False, (
+                    f"LONG stop ${stop_price:.4f} >= entry ${entry_price:.4f} "
+                    "(stop must be below entry for longs)"
+                )
+            pct = (entry_price - stop_price) / entry_price
+        if pct < bounds["stop_min_pct"]:
+            return False, (
+                f"stop ${stop_price:.4f} only {pct*100:.3f}% from entry "
+                f"${entry_price:.4f} — below min {bounds['stop_min_pct']*100:.2f}% "
+                f"for {trade_type}"
+            )
+        if pct > bounds["stop_max_pct"]:
+            return False, (
+                f"stop ${stop_price:.4f} is {pct*100:.1f}% from entry "
+                f"${entry_price:.4f} — exceeds max {bounds['stop_max_pct']*100:.0f}% "
+                f"for {trade_type} (likely corruption)"
+            )
+
+    return True, ""
+
+
+def write_target_stop(
+    trade,
+    *,
+    target_price: float | None = None,
+    stop_price: float | None = None,
+    written_by: str = "unknown",
+    reason: str = "",
+) -> bool:
+    """Single chokepoint for writing target/stop on a Trade row.
+
+    Validates against ``validate_target_stop()`` first.  Logs an ERROR and
+    returns False if the values are insane — does NOT silently cap or fix
+    them; silent fixes hide bugs.
+
+    Pass only the fields you want to update; the other is left untouched.
+    Returns True if at least one field was written.
+    """
+    if target_price is None and stop_price is None:
+        return False
+
+    entry = float(getattr(trade, "entry_price", 0) or 0)
+    direction = getattr(trade, "direction", "BUY") or "BUY"
+    trade_type = getattr(trade, "trade_type", "swing") or "swing"
+
+    ok, why = validate_target_stop(
+        entry_price=entry,
+        target_price=target_price,
+        stop_price=stop_price,
+        direction=direction,
+        trade_type=trade_type,
+    )
+    if not ok:
+        logger.error(
+            "write_target_stop: REJECTED Trade#%s %s (%s, %s) by=%s reason=%s: %s",
+            getattr(trade, "id", "?"), getattr(trade, "symbol", "?"),
+            direction, trade_type, written_by, reason or "n/a", why,
+        )
+        return False
+
+    if target_price is not None:
+        trade.target_price = float(target_price)
+    if stop_price is not None:
+        trade.stop_price = float(stop_price)
+    logger.debug(
+        "write_target_stop: Trade#%s %s target=%s stop=%s by=%s",
+        getattr(trade, "id", "?"), getattr(trade, "symbol", "?"),
+        target_price, stop_price, written_by,
+    )
+    return True
+
+
+def audit_active_target_stops(db_session) -> list[dict]:
+    """Scan all ACTIVE trades for corrupt target/stop values.
+
+    Logs WARN for each failure with full details.  Does NOT auto-fix — surfaces
+    the problem so a human can investigate.  Returns a list of {trade_id,
+    symbol, entry, target, stop, reason} dicts for inclusion in the reconciler
+    summary.
+    """
+    from app.database.models import Trade
+    findings: list[dict] = []
+    try:
+        trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
+    except Exception as exc:
+        logger.error("audit_active_target_stops: query failed: %s", exc)
+        return findings
+
+    for trade in trades:
+        entry = float(trade.entry_price or 0)
+        if entry <= 0:
+            continue
+        direction = getattr(trade, "direction", "BUY") or "BUY"
+        trade_type = getattr(trade, "trade_type", "swing") or "swing"
+        ok, why = validate_target_stop(
+            entry_price=entry,
+            target_price=trade.target_price,
+            stop_price=trade.stop_price,
+            direction=direction,
+            trade_type=trade_type,
+        )
+        if not ok:
+            logger.warning(
+                "TARGET/STOP AUDIT: Trade#%d %s (%s %s) entry=$%.4f "
+                "target=%s stop=%s — %s",
+                trade.id, trade.symbol, direction, trade_type, entry,
+                trade.target_price, trade.stop_price, why,
+            )
+            findings.append({
+                "trade_id": trade.id,
+                "symbol": trade.symbol,
+                "direction": direction,
+                "trade_type": trade_type,
+                "entry_price": entry,
+                "target_price": trade.target_price,
+                "stop_price": trade.stop_price,
+                "reason": why,
+            })
+    if findings:
+        logger.warning(
+            "TARGET/STOP AUDIT: %d ACTIVE trade(s) have insane target/stop — "
+            "review and correct manually", len(findings),
+        )
+    return findings
+
+
 def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
     """Return True if Alpaca's position snapshot is trustworthy.
 
@@ -673,6 +890,16 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 ))
     except Exception as exc:
         logger.error("Orphaned order check failed: %s", exc)
+
+    # ── 5. Target/stop sanity audit (read-only) ───────────────────────────────
+    # Surface (don't auto-fix) any ACTIVE trades whose target/stop is corrupt.
+    # Prevents recurrences of the runaway-ATR EXTEND_TARGET bug from going
+    # unnoticed in production.
+    try:
+        result["insane_target_stops"] = audit_active_target_stops(db_session)
+    except Exception as exc:
+        logger.error("Target/stop audit failed: %s", exc)
+        result["insane_target_stops"] = []
 
     try:
         db_session.commit()
