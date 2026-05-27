@@ -821,6 +821,7 @@ def run_swing_walkforward(
     rebalance_dispersion_gate: bool = False,
     rebalance_dispersion_k: int = 5,
     rebalance_dispersion_L: int = 126,
+    as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -846,7 +847,17 @@ def run_swing_walkforward(
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     # Download full history
-    end_all = datetime.now()
+    # WF-C2: pin fold boundaries via as_of for reproducibility.
+    if as_of is not None:
+        end_all = datetime.combine(as_of, datetime.min.time())
+        logger.info("WF-C2: swing walk-forward pinned to --as-of=%s", as_of)
+    else:
+        end_all = datetime.now()
+        _warn(
+            "WF-C2: --as-of not specified; fold boundaries anchored to datetime.now() "
+            f"({end_all.date()}). Results will drift on subsequent runs. "
+            "Pass --as-of YYYY-MM-DD for reproducibility."
+        )
     start_all = end_all - timedelta(days=total_years * 365 + 30)
     _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
                f"{len(symbols)} symbols | model v{version}")
@@ -935,20 +946,29 @@ def run_swing_walkforward(
     # train_years=None: expanding window (train always from start_all).
     # train_years=N: rolling window (train starts at train_end - N years per fold).
     # purge_days gap between train_end and test_start prevents 5-day label leakage.
-    # embargo_days gap after test_end prevents test rows appearing in next train.
+    # embargo_days gap AFTER test_end prevents test rows leaking into next fold's training set.
+    #
+    # WF-C3 fix: previously test_end = train_end + segment_days - embargo, which
+    # *shortened the test window* instead of placing the embargo after it. The
+    # corrected layout is:
+    #   train | purge | TEST | embargo | next_train
+    # Each fold's full test window spans train_end + (purge, segment_days]; the
+    # next fold's train_end is shifted forward by embargo_days so that no test
+    # row (or its lookback features) appears in the next training set.
     segment_days = int(total_years * 365 / (n_folds + 1))
     fold_boundaries = []
     for fold_idx in range(n_folds):
-        train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
+        # Shift each fold's train_end forward by fold_idx * embargo_days so that
+        # successive folds preserve an embargo gap between consecutive test_end
+        # and train_end (expanding window naturally excludes the gap region).
+        train_end_dt = (
+            end_all
+            - timedelta(days=segment_days * (n_folds - fold_idx))
+            + timedelta(days=fold_idx * _embargo)
+        )
         test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
-        # test_end must leave embargo_days gap before the next fold's train_end,
-        # otherwise fold N's test rows (with their lookback features) bleed into
-        # fold N+1's training set.  Without this offset, adjacent folds abut and
-        # embargo_days has no effect.
-        raw_test_end_dt = train_end_dt + timedelta(days=segment_days - _embargo)
-        # For all but the last fold, ensure next train starts at least embargo_days after test_end
-        # (enforced implicitly: next fold's train_end is the next segment boundary,
-        #  so expanding window naturally excludes the test window of the current fold)
+        # Full-length test window (no longer truncated by embargo).
+        raw_test_end_dt = train_end_dt + timedelta(days=segment_days)
         if train_years is not None:
             # Rolling window: shift train start to exclude rows within embargo of prior test
             fold_train_start = max(
@@ -964,6 +984,17 @@ def run_swing_walkforward(
             min(raw_test_end_dt.date(), end_all.date()),
             _embargo,  # carry embargo into the fold runner for logging
         ))
+
+    # Guard: each fold's train_end must be >= prior fold's test_end + embargo_days.
+    for _i in range(1, len(fold_boundaries)):
+        _prev_te_end = fold_boundaries[_i - 1][3]
+        _this_tr_end = fold_boundaries[_i][1]
+        _gap = (_this_tr_end - _prev_te_end).days
+        if _gap < _embargo:
+            raise AssertionError(
+                f"WF-C3: fold {_i} train_end ({_this_tr_end}) violates embargo "
+                f"of {_embargo}d after prior test_end ({_prev_te_end}): gap={_gap}d"
+            )
 
     # BUG-21 FIX: Load sector map once for all folds so sector cap (30%) actually fires.
     # Previously sector_map was never passed to sim.run() → apply_sector_cap was a no-op.
@@ -1007,8 +1038,15 @@ def run_swing_walkforward(
         # Using te_end leaked test-window index additions (high-momentum names joining
         # the index mid-test are included from day 1 → look-ahead survivorship bias).
         # extra also capped at tr_end for the same reason.
-        extra = _hist_syms(tr_start, tr_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, tr_end, extra_symbols=extra))
+        # WF-M7 fix: previously pit_union("russell1000", tr_start, tr_end) with
+        # tr_start = start_all included names that left the index years before
+        # the fold began. Use a recency window bounded by te_start - (252 + purge_days)
+        # so that historical adds/removes far outside the fold's lookback do not
+        # pollute the universe.
+        _pit_lookback_days = 252 + purge_days
+        _pit_from = max(tr_start, te_start - timedelta(days=_pit_lookback_days))
+        extra = _hist_syms(_pit_from, tr_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", _pit_from, tr_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in symbols_data.items()
@@ -1268,6 +1306,7 @@ def run_intraday_walkforward(
     benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
     use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
     regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
+    as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -1290,7 +1329,17 @@ def run_intraday_walkforward(
     from app.data.universe_history import members_at as _members_at
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
-    end_all = datetime.now().date()
+    # WF-C2: pin fold boundaries via as_of for reproducibility.
+    if as_of is not None:
+        end_all = as_of
+        logger.info("WF-C2: intraday walk-forward pinned to --as-of=%s", as_of)
+    else:
+        end_all = datetime.now().date()
+        _warn(
+            "WF-C2: --as-of not specified; intraday fold boundaries anchored to "
+            f"datetime.now() ({end_all}). Results will drift on subsequent runs. "
+            "Pass --as-of YYYY-MM-DD for reproducibility."
+        )
     start_all = end_all - timedelta(days=total_days + 10)
 
     _subheader(f"Intraday walk-forward: {n_folds} folds | {total_days}d | "
@@ -1787,6 +1836,13 @@ def main() -> int:
                              "Use this to re-test historical/retired models.")
     parser.add_argument("--record-results", action="store_true", default=False,
                         help="Write tier3 Sharpe + gate result back to ModelVersion DB record")
+    parser.add_argument("--as-of", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="WF-C2: pin fold boundary 'end' date for reproducibility. "
+                             "When omitted, datetime.now() is used and a WARNING is printed.")
+    parser.add_argument("--no-db-write", action="store_true", default=False,
+                        help="WF-C audit: hard-block any DB writes from the WF harness. "
+                             "Disables --record-results if both are passed. Walk-forward "
+                             "should be purely read-only with respect to the app database.")
     parser.add_argument("--swing-cost-bps", type=float, default=5.0,
                         help="Round-trip transaction cost in bps for swing (default: 5bps)")
     parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
@@ -1892,6 +1948,20 @@ def main() -> int:
                              "single, final promotion-candidate evaluation. Logs a banner "
                              "warning. See app/ml/retrain_config.py.")
     args = parser.parse_args()
+
+    # WF-C2: parse --as-of into a date
+    _as_of_date: Optional[date] = None
+    if getattr(args, "as_of", None):
+        try:
+            _as_of_date = datetime.strptime(args.as_of, "%Y-%m-%d").date()
+        except Exception:
+            _err(f"--as-of must be YYYY-MM-DD (got {args.as_of!r})")
+            return 2
+
+    # WF-C audit: enforce read-only DB policy
+    if getattr(args, "no_db_write", False) and getattr(args, "record_results", False):
+        _warn("--no-db-write set: ignoring --record-results (WF is read-only)")
+        args.record_results = False
 
     # P0: hard guard against using sacred holdout data in development WF runs.
     from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout_wf
@@ -2049,6 +2119,7 @@ def main() -> int:
             rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
             rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
             rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
+            as_of=_as_of_date,
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
@@ -2126,6 +2197,7 @@ def main() -> int:
             benign_blocked_dates=benign_blocked_dates,
             use_regime_gate=getattr(args, "regime_gate", False),
             regime_map=_regime_map,
+            as_of=_as_of_date,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
