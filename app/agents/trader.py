@@ -62,7 +62,18 @@ _EXIT_REASON_MAP = {
 
 def _normalise_exit_reason(reason: str) -> str:
     key = (reason or "").upper().strip()
-    return _EXIT_REASON_MAP.get(key, reason.lower() if reason else "unknown")
+    if key in _EXIT_REASON_MAP:
+        return _EXIT_REASON_MAP[key]
+    # Pattern-based normalization for dynamic PM reasons
+    if key.startswith("PM_EARNINGS_IN_") or key.startswith("EARNINGS_IN_"):
+        return "pm_earnings_proximity"
+    if key.startswith("PM_NIS_") or key.startswith("NIS_"):
+        return "pm_nis_exit"
+    if key.startswith("PM_SCORE_DEGRADED") or key.startswith("SCORE_DEGRADED"):
+        return "pm_score_degraded"
+    if key.startswith("PM_NEGATIVE_NEWS") or key.startswith("NEGATIVE_NEWS"):
+        return "pm_news_exit"
+    return reason.lower() if reason else "unknown"
 
 
 class Trader(BaseAgent):
@@ -872,6 +883,25 @@ class Trader(BaseAgent):
                 # Position was never entered — release the RM intraday slot
                 self._release_intraday_slot(trade_type)
                 return
+
+        # Final guard: check Alpaca live position before entering.
+        # Prevents re-entry after a restart where active_positions was cleared but
+        # the Alpaca position survived (e.g. after the DB was incorrectly closed by
+        # a stale reconciler run).
+        try:
+            _live_pos = alpaca.get_position(symbol)
+            if _live_pos:
+                _live_qty = abs(int(_live_pos.get("qty", 0) or 0))
+                if _live_qty > 0:
+                    self.logger.warning(
+                        "%s: Alpaca already holds %d shares — skipping entry to prevent duplicate position",
+                        symbol, _live_qty,
+                    )
+                    self.approved_symbols.pop(symbol, None)
+                    self._release_intraday_slot(trade_type)
+                    return
+        except Exception as _lp_exc:
+            self.logger.debug("%s: live-position pre-entry check failed (non-fatal): %s", symbol, _lp_exc)
 
         # Size the position
         account = alpaca.get_account()

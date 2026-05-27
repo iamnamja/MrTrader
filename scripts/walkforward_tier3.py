@@ -123,28 +123,38 @@ def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: flo
     """
     if max_drawdown_pct <= 0 or years <= 0:
         return 0.0
-    annualised = total_return_pct / years
+    # M-5 fix: geometric annualisation (compounding). Inputs are fractions (e.g. 0.20 = 20%),
+    # so (1 + total_return)^(1/years) - 1 is the CAGR. Arithmetic (total/years) overstates
+    # multi-year returns and understates sub-year returns.
+    annualised = (1.0 + total_return_pct) ** (1.0 / years) - 1.0
     return float(annualised / max_drawdown_pct)
 
 
 def _compute_k_ratio(equity_curve: list) -> float:
-    """K-ratio = slope of cumulative return / std of annual returns.
-    Uses a simple linear regression on the equity curve index.
-    Returns 0.0 if insufficient data.
+    """K-ratio = slope of log-equity regressed on time / std(log returns), annualised.
 
-    A positive K-ratio means the equity curve trends up consistently.
+    R5b fix: the prior implementation divided slope-of-dollar-equity by
+    std-of-dollar-diffs, which is scale-dependent (a $200k account would show a
+    very different K-ratio than a $20k account on the same return path). We now
+    regress log(equity) on time and divide by the std of daily log returns, then
+    annualise by sqrt(252) so the K-ratio is comparable across capital bases.
+
+    Returns 0.0 if insufficient data or equity is non-positive anywhere.
     """
     if len(equity_curve) < 4:
         return 0.0
     try:
         y = np.array(equity_curve, dtype=float)
-        x = np.arange(len(y), dtype=float)
-        # slope via lstsq
-        slope = float(np.polyfit(x, y, 1)[0])
-        # std of differences as proxy for volatility of returns
-        diffs = np.diff(y)
-        vol = float(np.std(diffs)) if len(diffs) > 1 else 1.0
-        return slope / vol if vol > 0 else 0.0
+        if not np.all(y > 0):
+            return 0.0
+        log_y = np.log(y)
+        x = np.arange(len(log_y), dtype=float)
+        slope = float(np.polyfit(x, log_y, 1)[0])  # mean daily log return (drift)
+        log_rets = np.diff(log_y)
+        vol = float(np.std(log_rets)) if len(log_rets) > 1 else 0.0
+        if vol <= 0:
+            return 0.0
+        return (slope / vol) * float(np.sqrt(252.0))
     except Exception:
         return 0.0
 
@@ -215,6 +225,78 @@ def _make_regime_gate_fn(
         return neutral_mult       # NEUTRAL
 
     return _regime_fn
+
+
+def build_asymmetric_regime_fns(
+    spy_df,
+    vix_series,
+    spy_ma_days: int = 200,
+    vix_bull_threshold: float = 15.0,
+    vix_bear_threshold: float = 25.0,
+):
+    """Build separate (long_fn, short_fn) with asymmetric regime logic.
+
+    Long book multipliers  (same as symmetric gate):
+      BULL (SPY>MA200 AND VIX<15) → 1.0
+      BEAR (SPY<MA200 OR VIX>25)  → 0.30
+      NEUTRAL                     → 0.70
+
+    Short book multipliers  (inverse — shorts earn in bear, costly in bull):
+      BULL (SPY>MA200 AND VIX<15) → 0.30  (shorts fight equity premium)
+      BEAR (SPY<MA200 OR VIX>25)  → 1.0   (shorts earn, increase exposure)
+      NEUTRAL                     → 0.70
+
+    Both functions are PIT-safe: use data strictly before the query day.
+    Pre-registered thresholds (not tuned on WF folds) to prevent overfitting.
+    """
+    import pandas as _pd
+
+    spy_close = spy_df["close"] if spy_df is not None and "close" in spy_df.columns else None
+    spy_ma = (
+        spy_close.rolling(spy_ma_days, min_periods=max(spy_ma_days // 2, 1)).mean()
+        if spy_close is not None else None
+    )
+
+    # Accept both Series and DataFrame for vix
+    if isinstance(vix_series, _pd.DataFrame):
+        vix_s = vix_series["close"] if "close" in vix_series.columns else vix_series.iloc[:, 0]
+    else:
+        vix_s = vix_series
+
+    def _get_regime(day):
+        _day_ts = _pd.Timestamp(day)
+        spy_val = spy_ma_val = vix_val = None
+        if spy_close is not None:
+            h = spy_close[spy_close.index < _day_ts]
+            if len(h):
+                spy_val = float(h.iloc[-1])
+        if spy_ma is not None:
+            h = spy_ma[spy_ma.index < _day_ts]
+            if len(h):
+                spy_ma_val = float(h.iloc[-1])
+        if vix_s is not None:
+            h = vix_s[vix_s.index < _day_ts]
+            if len(h):
+                vix_val = float(h.iloc[-1])
+        above_ma = (spy_val is not None and spy_ma_val is not None and spy_val > spy_ma_val)
+        vix_ok = vix_val is not None and vix_val < vix_bull_threshold
+        vix_hi = vix_val is not None and vix_val >= vix_bear_threshold
+        spy_below = not above_ma if (spy_val is not None and spy_ma_val is not None) else False
+        if above_ma and vix_ok:
+            return "BULL"
+        if spy_below or vix_hi:
+            return "BEAR"
+        return "NEUTRAL"
+
+    def long_fn(day):
+        r = _get_regime(day)
+        return {"BULL": 1.0, "NEUTRAL": 0.70, "BEAR": 0.30}[r]
+
+    def short_fn(day):
+        r = _get_regime(day)
+        return {"BULL": 0.30, "NEUTRAL": 0.70, "BEAR": 1.0}[r]
+
+    return long_fn, short_fn
 
 
 def _make_combined_regime_fn(
@@ -690,6 +772,8 @@ def run_swing_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     pm_abstention_spy_5d: bool = False,
     model_version: Optional[int] = None,
+    # M-10: Default 5bps is optimistic for $20k retail; realistic Russell 1000 round-trip =
+    # 15-25bps at Alpaca (spread + slippage + fees). Increase this for live calibration.
     transaction_cost_pct: float = 0.0005,
     purge_days: int = 10,
     embargo_days: Optional[int] = None,  # WF-1: post-test gap before next fold trains (None = same as purge_days)
@@ -726,6 +810,21 @@ def run_swing_walkforward(
     rebalance_inv_vol_max_mult: float = 2.0,
     rebalance_spy_vol_damper: bool = False,
     rebalance_spy_vol_damper_scale: float = 0.50,
+    # Phase 2: L/S extension
+    enable_shorts: bool = False,
+    short_target_n: int = 30,
+    short_bull_n: Optional[int] = None,  # BULL-regime short count (None = use short_target_n)
+    long_gross: float = 0.95,
+    short_gross: float = 0.55,
+    short_min_adv: float = 50_000_000.0,
+    short_add_threshold: int = 15,
+    short_drop_threshold: int = 30,
+    spy_beta_hedge: bool = False,
+    spy_beta_lookback: int = 60,
+    spy_hedge_max_gross: float = 0.30,
+    spy_hedge_vix_lo: float = 0.0,
+    spy_hedge_vix_hi: float = 0.0,
+    rebalance_atr_stops: bool = False,
     # Phase 89: factor stability gate (rolling realized rank-IC filter) — DEPRECATED, use dispersion gate
     rebalance_factor_stability_gate: bool = False,
     rebalance_factor_stability_lookback: int = 63,
@@ -734,6 +833,10 @@ def run_swing_walkforward(
     rebalance_dispersion_gate: bool = False,
     rebalance_dispersion_k: int = 5,
     rebalance_dispersion_L: int = 126,
+    as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
+    delisted_haircut: float = 0.0,  # R5b: survivorship-realistic force-close haircut
+    per_fold_ic_weights: bool = False,  # R5b: compute Option-A per-fold IC weights
+    daily_ic_parquet: Optional[str] = None,  # R5b: path to daily_ic.parquet
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -745,9 +848,16 @@ def run_swing_walkforward(
     # stays False; downstream reporting/DSR consumers should treat fold Sharpes
     # as OOS evaluations of the SAME model, not of independently-fit models.
     model, version = _load_model("swing", version=model_version)
+    if model is None and not use_factor_portfolio and scorer_instance is None:
+        # L-5 fix: previously this returned an empty WalkForwardReport with Sharpe=0,
+        # which could silently pass a "no-failure" check in calling pipelines. Make it
+        # explicit so misconfigured runs surface immediately instead of vacuously.
+        raise ValueError(
+            "No swing model found AND no factor scorer provided. "
+            "Either retrain a swing model, pass --use-factor-portfolio, or supply a scorer_instance."
+        )
     if model is None:
-        _err("No swing model found — retrain first.")
-        return report
+        _warn("No ML swing model — running with factor scorer / portfolio only.")
     _warn(
         f"NOTE: Using pre-trained swing model v{version} for all {n_folds} folds — "
         "this is a generalization test, not a true expanding-window walk-forward "
@@ -759,7 +869,17 @@ def run_swing_walkforward(
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
     # Download full history
-    end_all = datetime.now()
+    # WF-C2: pin fold boundaries via as_of for reproducibility.
+    if as_of is not None:
+        end_all = datetime.combine(as_of, datetime.min.time())
+        logger.info("WF-C2: swing walk-forward pinned to --as-of=%s", as_of)
+    else:
+        end_all = datetime.now()
+        _warn(
+            "WF-C2: --as-of not specified; fold boundaries anchored to datetime.now() "
+            f"({end_all.date()}). Results will drift on subsequent runs. "
+            "Pass --as-of YYYY-MM-DD for reproducibility."
+        )
     start_all = end_all - timedelta(days=total_years * 365 + 30)
     _subheader(f"Swing walk-forward: {n_folds} folds | {total_years}yr | "
                f"{len(symbols)} symbols | model v{version}")
@@ -778,23 +898,44 @@ def run_swing_walkforward(
     logger.info("Downloading daily bars %s -> %s", start_all.date(), end_all.date())
     t0 = time.time()
     symbols_data: Dict[str, pd.DataFrame] = {}
+    # WF-R4: count survivorship drops within the extra_seed augmentation so the
+    # bias is visible even though we can't fully remove it.
+    _extra_seed_set = set(extra_seed) if extra_seed else set()
+    _extra_attempted = 0
+    _extra_loaded = 0
     for sym in symbols:
+        is_extra = sym in _extra_seed_set
+        if is_extra:
+            _extra_attempted += 1
         try:
             df = yf.download(sym, start=start_all.date().isoformat(),
                              end=end_all.date().isoformat(), progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.columns = [c.lower() for c in df.columns]
+            if df.columns.duplicated().any():
+                df = df.loc[:, ~df.columns.duplicated()]
             if len(df) >= 210:
                 symbols_data[sym] = df
+                if is_extra:
+                    _extra_loaded += 1
         except Exception:
             pass
+    if _extra_attempted > 0:
+        _dropped = _extra_attempted - _extra_loaded
+        _pct = 100.0 * _dropped / _extra_attempted
+        logger.info(
+            "Survivorship augmentation: attempted %d extra_seed symbols, loaded %d, dropped %d (%.1f%%)",
+            _extra_attempted, _extra_loaded, _dropped, _pct,
+        )
 
     spy_raw = yf.download("SPY", start=start_all.date().isoformat(),
                           end=end_all.date().isoformat(), progress=False, auto_adjust=True)
     if isinstance(spy_raw.columns, pd.MultiIndex):
         spy_raw.columns = spy_raw.columns.get_level_values(0)
     spy_raw.columns = [c.lower() for c in spy_raw.columns]
+    if spy_raw.columns.duplicated().any():
+        spy_raw = spy_raw.loc[:, ~spy_raw.columns.duplicated()]
     spy_prices = spy_raw["close"]
     symbols_data["SPY"] = spy_raw  # make SPY available to factor_scorer regime gate
 
@@ -806,6 +947,8 @@ def run_swing_walkforward(
             if isinstance(vix_raw.columns, pd.MultiIndex):
                 vix_raw.columns = vix_raw.columns.get_level_values(0)
             vix_raw.columns = [c.lower() for c in vix_raw.columns]
+            if vix_raw.columns.duplicated().any():
+                vix_raw = vix_raw.loc[:, ~vix_raw.columns.duplicated()]
             if len(vix_raw) >= 5:
                 symbols_data["^VIX"] = vix_raw
                 logger.info("VIX history loaded: %d rows (for opportunity score)", len(vix_raw))
@@ -842,20 +985,70 @@ def run_swing_walkforward(
     # train_years=None: expanding window (train always from start_all).
     # train_years=N: rolling window (train starts at train_end - N years per fold).
     # purge_days gap between train_end and test_start prevents 5-day label leakage.
-    # embargo_days gap after test_end prevents test rows appearing in next train.
+    # embargo_days gap AFTER test_end prevents test rows leaking into next fold's training set.
+    #
+    # WF-C3 fix: previously test_end = train_end + segment_days - embargo, which
+    # *shortened the test window* instead of placing the embargo after it. The
+    # corrected layout is:
+    #   train | purge | TEST | embargo | next_train
+    # Each fold's full test window spans train_end + (purge, segment_days]; the
+    # next fold's train_end is shifted forward by embargo_days so that no test
+    # row (or its lookback features) appears in the next training set.
     segment_days = int(total_years * 365 / (n_folds + 1))
+
+    # WF-R5 (FIX 1): verify the requested WF config actually fits in
+    # `total_years`. Each fold needs `segment_days` of test + (n_folds-1)
+    # cumulative embargo shifts + `purge_days` lead-in + a small buffer.
+    # If it doesn't fit, the last fold's raw_test_end gets clamped to
+    # end_all, which can collapse the embargo gap below the next-fold
+    # threshold and trip the AssertionError below.
+    _BUFFER_DAYS = 30
+    _required_days = (
+        n_folds * segment_days
+        + (n_folds - 1) * _embargo
+        + purge_days
+        + _BUFFER_DAYS
+    )
+    _available_days = int(total_years * 365)
+    if _required_days > _available_days:
+        # Silently shrink segment_days so the layout fits. Log loudly so the
+        # user can adjust --total-years if they want full-length test windows.
+        _new_segment = max(
+            30,
+            (
+                _available_days
+                - (n_folds - 1) * _embargo
+                - purge_days
+                - _BUFFER_DAYS
+            ) // n_folds,
+        )
+        _suggested_years = (
+            (n_folds * segment_days + (n_folds - 1) * _embargo + purge_days + _BUFFER_DAYS)
+            / 365.0
+        )
+        logger.info(
+            "WF-R5 FIX 1: requested layout needs %dd but only %dd available "
+            "(total_years=%g, n_folds=%d, embargo=%dd, purge=%dd). "
+            "Shrinking segment_days %d → %d to fit. "
+            "Pass --total-years %.1f or larger to preserve full-length test windows.",
+            _required_days, _available_days, total_years, n_folds, _embargo,
+            purge_days, segment_days, _new_segment, _suggested_years,
+        )
+        segment_days = _new_segment
+
     fold_boundaries = []
     for fold_idx in range(n_folds):
-        train_end_dt = end_all - timedelta(days=segment_days * (n_folds - fold_idx))
+        # Shift each fold's train_end forward by fold_idx * embargo_days so that
+        # successive folds preserve an embargo gap between consecutive test_end
+        # and train_end (expanding window naturally excludes the gap region).
+        train_end_dt = (
+            end_all
+            - timedelta(days=segment_days * (n_folds - fold_idx))
+            + timedelta(days=fold_idx * _embargo)
+        )
         test_start_dt = train_end_dt + timedelta(days=purge_days + 1)
-        # test_end must leave embargo_days gap before the next fold's train_end,
-        # otherwise fold N's test rows (with their lookback features) bleed into
-        # fold N+1's training set.  Without this offset, adjacent folds abut and
-        # embargo_days has no effect.
-        raw_test_end_dt = train_end_dt + timedelta(days=segment_days - _embargo)
-        # For all but the last fold, ensure next train starts at least embargo_days after test_end
-        # (enforced implicitly: next fold's train_end is the next segment boundary,
-        #  so expanding window naturally excludes the test window of the current fold)
+        # Full-length test window (no longer truncated by embargo).
+        raw_test_end_dt = train_end_dt + timedelta(days=segment_days)
         if train_years is not None:
             # Rolling window: shift train start to exclude rows within embargo of prior test
             fold_train_start = max(
@@ -871,6 +1064,44 @@ def run_swing_walkforward(
             min(raw_test_end_dt.date(), end_all.date()),
             _embargo,  # carry embargo into the fold runner for logging
         ))
+
+    # Guard: each fold's train_end must be >= prior fold's test_end + embargo_days.
+    for _i in range(1, len(fold_boundaries)):
+        _prev_te_end = fold_boundaries[_i - 1][3]
+        _this_tr_end = fold_boundaries[_i][1]
+        _gap = (_this_tr_end - _prev_te_end).days
+        if _gap < _embargo:
+            raise AssertionError(
+                f"WF-C3: fold {_i} train_end ({_this_tr_end}) violates embargo "
+                f"of {_embargo}d after prior test_end ({_prev_te_end}): gap={_gap}d"
+            )
+
+    # WF-R5 (FIX 1 cont.): warn if any fold's test window was clamped short.
+    for _idx, (_, _tr_end, _te_start, _te_end, _) in enumerate(fold_boundaries, start=1):
+        _test_len = (_te_end - _te_start).days
+        if _test_len < 30:
+            logger.warning(
+                "WF-R5: fold %d test window clamped to %dd (%s -> %s) — "
+                "Sharpe may be noisy. Consider --total-years larger than %g.",
+                _idx, _test_len, _te_start, _te_end, total_years,
+            )
+
+    # WF-R5 (FIX 4): IC weights calibration cutoff must be strictly before every
+    # fold's train_end, else "pre-fold" weights become in-sample. The constant
+    # IC_WEIGHTS_CALIBRATION_END must mirror END_DATE in scripts/compute_factor_ic.py.
+    try:
+        from app.ml.factor_scorer import IC_WEIGHTS_CALIBRATION_END as _ic_cutoff
+    except Exception:
+        _ic_cutoff = date(2021, 4, 26)
+    for (_tr_s, _tr_e, _te_s, _te_e, _emb) in fold_boundaries:
+        if _tr_e <= _ic_cutoff:
+            raise ValueError(
+                f"WF-R5 FIX 4: fold train_end {_tr_e} <= IC calibration cutoff "
+                f"{_ic_cutoff}. IC weights are in-sample for this WF config. "
+                f"Recompute IC weights with END_DATE < {_tr_e} in "
+                f"scripts/compute_factor_ic.py and update IC_WEIGHTS_CALIBRATION_END "
+                f"in app/ml/factor_scorer.py."
+            )
 
     # BUG-21 FIX: Load sector map once for all folds so sector cap (30%) actually fires.
     # Previously sector_map was never passed to sim.run() → apply_sector_cap was a no-op.
@@ -914,16 +1145,26 @@ def run_swing_walkforward(
         # Using te_end leaked test-window index additions (high-momentum names joining
         # the index mid-test are included from day 1 → look-ahead survivorship bias).
         # extra also capped at tr_end for the same reason.
-        extra = _hist_syms(tr_start, tr_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, tr_end, extra_symbols=extra))
+        # WF-M7 fix: previously pit_union("russell1000", tr_start, tr_end) with
+        # tr_start = start_all included names that left the index years before
+        # the fold began. Use a recency window bounded by te_start - (252 + purge_days)
+        # so that historical adds/removes far outside the fold's lookback do not
+        # pollute the universe.
+        _pit_lookback_days = 252 + purge_days
+        _pit_from = max(tr_start, te_start - timedelta(days=_pit_lookback_days))
+        extra = _hist_syms(_pit_from, tr_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", _pit_from, tr_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in symbols_data.items()
             if s in pit_members or s in _synthetic
         }
         # Build per-fold feature cache (pre-computes all (sym, day) features in parallel)
+        # Skip when scorer_instance is set: factor_scorer bypasses the cache in _pm_score,
+        # so building it is wasteful AND causes (N, 2) shape corruption in fold_symbols_data
+        # (BUG-LS3: feature cache ProcessPoolExecutor mutates shared DataFrame state).
         _feature_cache = None
-        if not feature_cache_disable:
+        if not feature_cache_disable and scorer_instance is None:
             try:
                 from app.backtesting.feature_cache import build_feature_cache as _build_fc
                 import os as _os
@@ -973,6 +1214,8 @@ def run_swing_walkforward(
 
         # Phase RB.1: build regime gate fn if requested (PIT-safe, uses fold's SPY+VIX)
         _regime_gate_fn = None
+        _long_regime_fn = None
+        _short_regime_fn = None
         if rebalance_mode and rebalance_regime_gate:
             _regime_gate_fn = _make_regime_gate_fn(
                 fold_symbols_data,
@@ -980,18 +1223,36 @@ def run_swing_walkforward(
                 vix_bull=rebalance_regime_vix_bull,
                 vix_bear=rebalance_regime_vix_bear,
             )
+            if enable_shorts:
+                # Build asymmetric per-side regime fns (pre-registered thresholds, not tuned on folds)
+                _spy_df = fold_symbols_data.get("SPY")
+                if _spy_df is None:
+                    _spy_df = fold_symbols_data.get("spy")
+                _vix_df = fold_symbols_data.get("^VIX")
+                if _vix_df is None:
+                    _vix_df = fold_symbols_data.get("VIX")
+                _vix_s = _vix_df["close"] if _vix_df is not None and "close" in _vix_df.columns else None
+                if _spy_df is not None and _vix_s is not None:
+                    _long_regime_fn, _short_regime_fn = build_asymmetric_regime_fns(
+                        _spy_df, _vix_s,
+                        spy_ma_days=rebalance_regime_spy_ma_days,
+                    )
+                else:
+                    logger.warning("Fold %d: SPY/VIX unavailable — asymmetric regime fns will use defaults", fold_idx)
 
-        # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag)
-        if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
-            _regime_gate_fn = _make_combined_regime_fn(
-                fold_symbols_data,
-                scorer_instance,
-                spy_vix_fn=_regime_gate_fn,
-                lookback_days=rebalance_factor_stability_lookback,
-                ic_threshold=rebalance_factor_stability_ic_threshold,
-                te_start=te_start,
-                te_end=te_end,
+        # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag, test-window look-ahead).
+        # H-1: hard-fail if anyone tries to re-enable this. Use rebalance_dispersion_gate instead.
+        if rebalance_factor_stability_gate:
+            raise ValueError(
+                "rebalance_factor_stability_gate is deprecated and disabled due to test-window "
+                "look-ahead in its FactorStabilityGate construction. Remove it from your call "
+                "and use rebalance_dispersion_gate (Phase 89 v2) instead."
             )
+        # WF-R4: previous block invoking _make_combined_regime_fn was unreachable
+        # (guarded by the same rebalance_factor_stability_gate flag that just
+        # raised). Deleted as dead code; _make_combined_regime_fn is retained
+        # only because it would otherwise be flagged as an unused symbol — it
+        # may be removed in a follow-up cleanup.
 
         # Phase 89 v2: cross-sectional dispersion gate (concurrent ~5d lag signal)
         if rebalance_mode and rebalance_dispersion_gate:
@@ -1008,6 +1269,61 @@ def run_swing_walkforward(
         # ThreadPoolExecutor folds causes races and state contamination between folds).
         import copy
         _factor_scorer_inst = copy.deepcopy(scorer_instance) if scorer_instance is not None else None
+
+        # R5b: Option-A per-fold IC weights. When enabled, recompute IC-IR weights from
+        # daily_ic.parquet using data with date <= tr_end (PIT-safe) and inject them into
+        # supported scorer classes (IcCompositeScorer, IcCompositeV221Scorer). Other scorer
+        # classes log a notice and fall back to their static weights.
+        if per_fold_ic_weights and _factor_scorer_inst is not None:
+            from app.ml.ic_utils import compute_fold_ic_weights, find_latest_daily_ic_parquet
+            _ic_path = daily_ic_parquet or find_latest_daily_ic_parquet()
+            _scorer_cls_name = type(_factor_scorer_inst).__name__
+            _supports = _scorer_cls_name in ("IcCompositeScorer", "IcCompositeV221Scorer")
+            if _ic_path is None:
+                logger.warning(
+                    "WF R5b: --per-fold-ic-weights set but no daily_ic.parquet found; "
+                    "fold %d using static pre-fold-1 weights.", fold_idx,
+                )
+            elif not _supports:
+                logger.warning(
+                    "WF R5b: --per-fold-ic-weights set but scorer %s does not accept "
+                    "fold_ic_weights; fold %d using static weights. "
+                    "TODO: extend Option-A support to %s.",
+                    _scorer_cls_name, fold_idx, _scorer_cls_name,
+                )
+            else:
+                _fold_weights = compute_fold_ic_weights(_ic_path, tr_end)
+                if _fold_weights is None:
+                    logger.warning(
+                        "WF R5b: insufficient IC data for fold %d (tr_end=%s); using static weights.",
+                        fold_idx, tr_end,
+                    )
+                else:
+                    # Rebuild a fresh scorer with the per-fold weights so prior state is dropped.
+                    _ScorerCls = type(_factor_scorer_inst)
+                    try:
+                        _factor_scorer_inst = _ScorerCls(fold_ic_weights=_fold_weights)
+                        logger.info(
+                            "WF R5b: fold %d per-fold IC weights (tr_end=%s, %d features): %s",
+                            fold_idx, tr_end, len(_fold_weights),
+                            ", ".join(f"{k}={v:.3f}" for k, v in sorted(
+                                _fold_weights.items(), key=lambda kv: -kv[1])[:5]),
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "WF R5b: failed to rebuild %s with fold_ic_weights (%s); using static.",
+                            _scorer_cls_name, _exc,
+                        )
+        # WF-R4: defensively reset stateful per-fold scorer state (EMA breadth,
+        # regime flag) so a deepcopy from a pre-warmed scorer cannot leak state
+        # across folds. No-op for scorers without reset().
+        if _factor_scorer_inst is not None and hasattr(_factor_scorer_inst, "reset"):
+            _factor_scorer_inst.reset()
+            if hasattr(_factor_scorer_inst, "get_state"):
+                _state_after_reset = _factor_scorer_inst.get_state()
+                assert _state_after_reset == (False, None), (
+                    f"WF-R4: scorer.reset() did not clear state, got {_state_after_reset}"
+                )
         if _factor_scorer_inst is None and use_factor_portfolio:
             from app.ml.factor_scorer import FactorPortfolioScorer
             _factor_scorer_inst = FactorPortfolioScorer(
@@ -1065,6 +1381,23 @@ def run_swing_walkforward(
             rebalance_inv_vol_max_mult=rebalance_inv_vol_max_mult,
             rebalance_spy_vol_damper=rebalance_spy_vol_damper,
             rebalance_spy_vol_damper_scale=rebalance_spy_vol_damper_scale,
+            enable_shorts=enable_shorts,
+            short_target_n=short_target_n,
+            short_bull_n=short_bull_n,
+            long_gross=long_gross,
+            short_gross=short_gross,
+            short_min_adv=short_min_adv,
+            short_add_threshold=short_add_threshold,
+            short_drop_threshold=short_drop_threshold,
+            short_regime_fn=_short_regime_fn if enable_shorts else None,
+            long_regime_fn=_long_regime_fn if enable_shorts else None,
+            spy_beta_hedge=spy_beta_hedge,
+            spy_beta_lookback=spy_beta_lookback,
+            spy_hedge_max_gross=spy_hedge_max_gross,
+            spy_hedge_vix_lo=spy_hedge_vix_lo,
+            spy_hedge_vix_hi=spy_hedge_vix_hi,
+            rebalance_atr_stops=rebalance_atr_stops,
+            delisted_haircut=delisted_haircut,
         )
         result = sim.run(
             fold_symbols_data,
@@ -1138,6 +1471,7 @@ def run_intraday_walkforward(
     benign_blocked_dates: Optional[set] = None,  # P1: adverse-regime dates
     use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
     regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
+    as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -1160,7 +1494,17 @@ def run_intraday_walkforward(
     from app.data.universe_history import members_at as _members_at
     symbols = symbols or list(RUSSELL_1000_TICKERS)
 
-    end_all = datetime.now().date()
+    # WF-C2: pin fold boundaries via as_of for reproducibility.
+    if as_of is not None:
+        end_all = as_of
+        logger.info("WF-C2: intraday walk-forward pinned to --as-of=%s", as_of)
+    else:
+        end_all = datetime.now().date()
+        _warn(
+            "WF-C2: --as-of not specified; intraday fold boundaries anchored to "
+            f"datetime.now() ({end_all}). Results will drift on subsequent runs. "
+            "Pass --as-of YYYY-MM-DD for reproducibility."
+        )
     start_all = end_all - timedelta(days=total_days + 10)
 
     _subheader(f"Intraday walk-forward: {n_folds} folds | {total_days}d | "
@@ -1430,7 +1774,18 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     )
     strategy.model_type = "swing"
     from datetime import datetime, timedelta
-    end_all = datetime.now()
+    # WF-R5: propagate --as-of into CPCV the same way run_swing_walkforward does
+    # so CPCV results are reproducible across runs.
+    _cpcv_as_of_raw = getattr(args, "as_of", None)
+    if _cpcv_as_of_raw:
+        try:
+            _cpcv_as_of = datetime.strptime(_cpcv_as_of_raw, "%Y-%m-%d")
+            end_all = _cpcv_as_of
+            logger.info("WF-R5: CPCV swing pinned to --as-of=%s", _cpcv_as_of.date())
+        except Exception:
+            end_all = datetime.now()
+    else:
+        end_all = datetime.now()
     start_all = end_all - timedelta(days=args.years * 365 + 30)
     strategy.fetch_data(start_all, end_all)
     cpcv_result = run_cpcv(
@@ -1471,7 +1826,15 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
         earnings_blackout=earnings_cal,
     )
     strategy.model_type = "intraday"
-    end_date = _date.today()
+    _cpcv_intraday_as_of = getattr(args, "as_of", None)
+    if _cpcv_intraday_as_of:
+        try:
+            end_date = datetime.strptime(_cpcv_intraday_as_of, "%Y-%m-%d").date()
+            logger.info("WF-R5: CPCV intraday pinned to --as-of=%s", end_date)
+        except Exception:
+            end_date = _date.today()
+    else:
+        end_date = _date.today()
     start_date = end_date - timedelta(days=args.days + 10)
     strategy.fetch_data(start_date, end_date)
     cpcv_result = run_cpcv(
@@ -1586,6 +1949,42 @@ def main() -> int:
                         help="Phase 92: hybrid — v221 base weights (fundamentals x0.30) + v220 "
                              "breadth-regime switch (bull>60%%: momentum tilt, shock<55%%: v221). "
                              "Best-of-both: shock-regime quality + bull-market momentum.")
+    parser.add_argument("--rebalance-ic-composite-v224", action="store_true", default=False,
+                        help="Phase v224: momentum-enhanced — v221 + mom_63d (3m momentum), "
+                             "reduced contrarian weights (reversal/downtrend x0.5).")
+    # Phase 2 — L/S extension
+    parser.add_argument("--enable-shorts", action="store_true", default=False,
+                        help="Phase 2: add short sleeve to IC composite rebalance. "
+                             "Shorts bottom-N from the same IC scorer. Asymmetric regime gate: "
+                             "shorts scale UP in bear market, DOWN in bull.")
+    parser.add_argument("--short-target-n", type=int, default=30,
+                        help="Number of short positions (default: 30)")
+    parser.add_argument("--short-bull-n", type=int, default=None,
+                        help="Override short count in BULL regime (None = use --short-target-n)")
+    parser.add_argument("--long-gross", type=float, default=0.95,
+                        help="Long book gross as fraction of equity (default: 0.95 = 95%%)")
+    parser.add_argument("--short-gross", type=float, default=0.55,
+                        help="Short book gross as fraction of equity (default: 0.55 = 55%%)")
+    parser.add_argument("--short-min-adv", type=float, default=50_000_000.0,
+                        help="Minimum ADV for short candidates in $ (default: 50M; higher than long 20M)")
+    parser.add_argument("--short-add-threshold", type=int, default=15,
+                        help="Hysteresis: add short if rank-from-bottom <= this (default: 15)")
+    parser.add_argument("--short-drop-threshold", type=int, default=30,
+                        help="Hysteresis: drop short if rank-from-bottom > this (default: 30)")
+    parser.add_argument("--spy-beta-hedge", action="store_true", default=False,
+                        help="Phase 2b: replace individual short book with SPY short sized to "
+                             "rolling 60d realized beta of the long book. No stock-specific alpha "
+                             "claim; pure market-exposure hedge. Requires --enable-shorts.")
+    parser.add_argument("--spy-beta-lookback", type=int, default=60,
+                        help="Rolling days for beta computation (default: 60)")
+    parser.add_argument("--spy-hedge-max-gross", type=float, default=0.30,
+                        help="Max SPY short gross as fraction of equity (default: 0.30 = 30%%)")
+    parser.add_argument("--spy-hedge-vix-lo", type=float, default=0.0,
+                        help="v222: VIX gate low (hedge=0 below this). 0=disabled. Recommended: 14")
+    parser.add_argument("--spy-hedge-vix-hi", type=float, default=0.0,
+                        help="v222: VIX gate high (hedge=full above this). 0=disabled. Recommended: 22")
+    parser.add_argument("--rebalance-atr-stops", action="store_true", default=False,
+                        help="v222: set 1.5×ATR stop / 3.0×ATR target on rebalance long entries (fix payoff shape)")
     parser.add_argument("--rebalance-factor-stability-gate", action="store_true", default=False,
                         help="Phase 89: add cross-sectional factor stability gate (rolling realized "
                              "rank-IC filter). Multiplied on top of SPY+VIX gate. "
@@ -1621,6 +2020,13 @@ def main() -> int:
                              "Use this to re-test historical/retired models.")
     parser.add_argument("--record-results", action="store_true", default=False,
                         help="Write tier3 Sharpe + gate result back to ModelVersion DB record")
+    parser.add_argument("--as-of", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="WF-C2: pin fold boundary 'end' date for reproducibility. "
+                             "When omitted, datetime.now() is used and a WARNING is printed.")
+    parser.add_argument("--no-db-write", action="store_true", default=False,
+                        help="WF-C audit: hard-block any DB writes from the WF harness. "
+                             "Disables --record-results if both are passed. Walk-forward "
+                             "should be purely read-only with respect to the app database.")
     parser.add_argument("--swing-cost-bps", type=float, default=5.0,
                         help="Round-trip transaction cost in bps for swing (default: 5bps)")
     parser.add_argument("--intraday-cost-bps", type=float, default=15.0,
@@ -1720,6 +2126,19 @@ def main() -> int:
                         help="P3: use paper-trading readiness gate instead of production gate. "
                              "Criteria: avg_sharpe > 0.50 and min_fold_sharpe > -0.40 (less strict). "
                              "DSR check still applies. Useful for deploy-to-paper decisions.")
+    # R5b: realism options
+    parser.add_argument("--delisted-haircut", type=float, default=0.0,
+                        help="R5b: when a position has no bar data at fold-end (delisted/halt), "
+                             "exit at entry_price*(1-haircut) for longs (or entry_price*(1-haircut) "
+                             "for shorts). Default 0.0 preserves prior behavior (P&L=0). "
+                             "Recommended: 0.90 to model bankruptcy losses.")
+    parser.add_argument("--per-fold-ic-weights", action="store_true", default=False,
+                        help="R5b: compute Option-A per-fold IC weights from daily_ic.parquet "
+                             "(filter date <= tr_end). Default off (uses static pre-2021-04-26 weights). "
+                             "Falls back to static if parquet missing or has < 252 IC observations.")
+    parser.add_argument("--daily-ic-parquet", type=str, default=None,
+                        help="R5b: explicit path to daily_ic.parquet. If omitted, auto-detect newest "
+                             "under data/diagnostics/feature_ic/.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -1727,9 +2146,24 @@ def main() -> int:
                              "warning. See app/ml/retrain_config.py.")
     args = parser.parse_args()
 
+    # WF-C2: parse --as-of into a date
+    _as_of_date: Optional[date] = None
+    if getattr(args, "as_of", None):
+        try:
+            _as_of_date = datetime.strptime(args.as_of, "%Y-%m-%d").date()
+        except Exception:
+            _err(f"--as-of must be YYYY-MM-DD (got {args.as_of!r})")
+            return 2
+
+    # WF-C audit: enforce read-only DB policy
+    if getattr(args, "no_db_write", False) and getattr(args, "record_results", False):
+        _warn("--no-db-write set: ignoring --record-results (WF is read-only)")
+        args.record_results = False
+
     # P0: hard guard against using sacred holdout data in development WF runs.
     from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout_wf
-    _wf_end_today = date.today()
+    # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+    _wf_end_today = _as_of_date if _as_of_date is not None else date.today()
     _assert_holdout_wf(
         _wf_end_today,
         allow_sacred_holdout=args.allow_sacred_holdout,
@@ -1776,7 +2210,8 @@ def main() -> int:
     macro_blocked_dates: Optional[set] = None
     if args.macro_gate:
         from datetime import datetime as _dt2
-        _wf_end = _dt2.now().date()
+        # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+        _wf_end = _as_of_date if _as_of_date is not None else _dt2.now().date()
         _wf_start = _wf_end - timedelta(days=max(args.years * 365, args.days) + 30)
         try:
             from scripts.walkforward.macro_calendar import load_macro_blocked_dates
@@ -1792,7 +2227,19 @@ def main() -> int:
         try:
             from app.ml.regime_score_pit import build_regime_score_map
             from app.ml.retrain_config import BENIGN_REGIME_THRESHOLD
-            _score_map = build_regime_score_map()
+            _score_map_raw = build_regime_score_map()
+            # WF-R5 (FIX 2): shift regime score by one trading day to remove
+            # one-bar look-ahead. compute_pit_regime_series scores day D using
+            # SPY/VIX closes AT D — but the BenignGate consumes that score on
+            # day D to influence trades executed at D's open. Shift forward so
+            # day D's gate uses D-1's close-derived score.
+            if _score_map_raw:
+                import pandas as _pd_shift
+                _s = _pd_shift.Series(_score_map_raw).sort_index()
+                _s_shift = _s.shift(1).dropna()
+                _score_map = {d: float(v) for d, v in _s_shift.items()}
+            else:
+                _score_map = {}
             benign_blocked_dates = {
                 d for d, score in _score_map.items() if score < BENIGN_REGIME_THRESHOLD
             }
@@ -1805,7 +2252,8 @@ def main() -> int:
     earnings_cal: Optional[Dict[str, set]] = None
     if args.earnings_blackout:
         from datetime import datetime as _dt
-        _end = _dt.now().date()
+        # WF-R5: prefer --as-of for reproducibility (else fall back to today).
+        _end = _as_of_date if _as_of_date is not None else _dt.now().date()
         _start = _end - timedelta(days=max(args.years * 365, args.days) + 30)
         _syms = symbols or []
         if not _syms:
@@ -1863,12 +2311,30 @@ def main() -> int:
             rebalance_inv_vol_max_mult=args.rebalance_inv_vol_max_mult,
             rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
             rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
+            enable_shorts=getattr(args, "enable_shorts", False),
+            short_target_n=getattr(args, "short_target_n", 30),
+            short_bull_n=getattr(args, "short_bull_n", None),
+            long_gross=getattr(args, "long_gross", 0.95),
+            short_gross=getattr(args, "short_gross", 0.55),
+            short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),
+            short_add_threshold=getattr(args, "short_add_threshold", 15),
+            short_drop_threshold=getattr(args, "short_drop_threshold", 30),
+            spy_beta_hedge=getattr(args, "spy_beta_hedge", False),
+            spy_beta_lookback=getattr(args, "spy_beta_lookback", 60),
+            spy_hedge_max_gross=getattr(args, "spy_hedge_max_gross", 0.30),
+            spy_hedge_vix_lo=getattr(args, "spy_hedge_vix_lo", 0.0),
+            spy_hedge_vix_hi=getattr(args, "spy_hedge_vix_hi", 0.0),
+            rebalance_atr_stops=getattr(args, "rebalance_atr_stops", False),
             rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
             rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
             rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
             rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
             rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
             rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
+            as_of=_as_of_date,
+            delisted_haircut=getattr(args, "delisted_haircut", 0.0),
+            per_fold_ic_weights=getattr(args, "per_fold_ic_weights", False),
+            daily_ic_parquet=getattr(args, "daily_ic_parquet", None),
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
@@ -1889,6 +2355,10 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeV222Scorer
             _swing_kwargs["scorer_instance"] = IcCompositeV222Scorer()
             print("  WF: IC composite v222 mode — Phase 92 hybrid (v221 base + v220 breadth switch)")
+        elif getattr(args, "rebalance_ic_composite_v224", False):
+            from app.ml.factor_scorer import IcCompositeV224Scorer
+            _swing_kwargs["scorer_instance"] = IcCompositeV224Scorer()
+            print("  WF: IC composite v224 mode — momentum-enhanced (v221 + mom_63d, reduced contrarian)")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
@@ -1942,6 +2412,7 @@ def main() -> int:
             benign_blocked_dates=benign_blocked_dates,
             use_regime_gate=getattr(args, "regime_gate", False),
             regime_map=_regime_map,
+            as_of=_as_of_date,
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)

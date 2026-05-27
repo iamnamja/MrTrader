@@ -28,29 +28,58 @@ class TestV221Weights:
     def test_weights_sum_to_one(self):
         assert abs(sum(V221_IC_WEIGHTS.values()) - 1.0) < 1e-9
 
-    def test_all_positive(self):
+    def test_all_non_negative(self):
+        # WF-C1: pre-fold-1 IC IRs are clipped at 0, so some features have
+        # zero weight in the OOS-calibrated set. Only require non-negative.
         for feat, w in V221_IC_WEIGHTS.items():
-            assert w > 0, f"Weight for {feat} is non-positive"
+            assert w >= 0, f"Weight for {feat} is negative"
+
+    def test_at_least_one_positive(self):
+        assert sum(1 for w in V221_IC_WEIGHTS.values() if w > 0) >= 3
 
     def test_fundamentals_downweighted_vs_v219(self):
-        """Quality features should be proportionally lower in v221 than v219."""
+        """Quality features should be proportionally lower in v221 than v219.
+
+        WF-C1 R4: V219 weights are now also pre-fold-1 calibrated, where
+        fundamentals were clipped to 0. The original "down-weighted 30%"
+        design property is therefore checked against the preserved in-sample
+        constants, not the live (pre-fold) weights.
+        """
+        from app.ml.factor_scorer import _V221_IC_WEIGHTS_IN_SAMPLE, _V219_IC_WEIGHTS_IN_SAMPLE
+        _tot_v221 = sum(_V221_IC_WEIGHTS_IN_SAMPLE.values())
+        _tot_v219 = sum(_V219_IC_WEIGHTS_IN_SAMPLE.values())
         for feat in ("profit_margin", "operating_margin", "pe_ratio"):
-            assert V221_IC_WEIGHTS[feat] < V219_IC_WEIGHTS[feat], (
-                f"{feat}: v221 weight {V221_IC_WEIGHTS[feat]:.4f} should be < "
-                f"v219 weight {V219_IC_WEIGHTS[feat]:.4f}"
+            v221_norm = _V221_IC_WEIGHTS_IN_SAMPLE[feat] / _tot_v221
+            v219_norm = _V219_IC_WEIGHTS_IN_SAMPLE[feat] / _tot_v219
+            assert v221_norm < v219_norm, (
+                f"{feat}: in-sample v221 norm {v221_norm:.4f} should be < v219 norm {v219_norm:.4f}"
             )
 
-    def test_momentum_relatively_higher_vs_v219(self):
-        """After renormalization, momentum features should be proportionally higher in v221."""
-        v221_mom = V221_IC_WEIGHTS.get("ix_momentum_vol", 0) + V221_IC_WEIGHTS.get("momentum_252d_ex1m", 0)
-        v219_mom = V219_IC_WEIGHTS.get("ix_momentum_vol", 0) + V219_IC_WEIGHTS.get("momentum_252d_ex1m", 0)
-        assert v221_mom > v219_mom, "v221 should have higher relative momentum weight than v219"
+    def test_in_sample_momentum_relatively_higher_vs_v219(self):
+        """After renormalization, momentum features should be proportionally higher in
+        the original (in-sample) v221 design. WF-C1: assert against the preserved
+        _V221_IC_WEIGHTS_IN_SAMPLE constant — the live OOS-calibrated weights
+        have a different shape and this design property no longer holds there.
+        """
+        from app.ml.factor_scorer import _V221_IC_WEIGHTS_IN_SAMPLE, _V219_IC_WEIGHTS_IN_SAMPLE
+        _t221 = sum(_V221_IC_WEIGHTS_IN_SAMPLE.values())
+        _t219 = sum(_V219_IC_WEIGHTS_IN_SAMPLE.values())
+        v221_mom = (_V221_IC_WEIGHTS_IN_SAMPLE.get("ix_momentum_vol", 0)
+                    + _V221_IC_WEIGHTS_IN_SAMPLE.get("momentum_252d_ex1m", 0)) / _t221
+        v219_mom = (_V219_IC_WEIGHTS_IN_SAMPLE.get("ix_momentum_vol", 0)
+                    + _V219_IC_WEIGHTS_IN_SAMPLE.get("momentum_252d_ex1m", 0)) / _t219
+        assert v221_mom > v219_mom, "v221 in-sample should have higher relative momentum weight than v219"
 
-    def test_fundamentals_approx_30pct_of_v219(self):
-        """Each fundamental feature should be ~30% of v219 raw weight (before renorm)."""
-        from app.ml.factor_scorer import _V221_IC_WEIGHTS_RAW, _V219_IC_WEIGHTS_RAW
+    def test_fundamentals_in_sample_approx_30pct_of_v219(self):
+        """Each fundamental feature should be ~30% of v219 raw weight in the
+        original (in-sample) recipe — structural invariant of the v221 design.
+        WF-C1: the live _V221_IC_WEIGHTS_RAW now comes from pre-fold-1 IR (with
+        fundamentals clipped at 0), so we assert against the preserved
+        _V221_IC_WEIGHTS_IN_SAMPLE constant instead.
+        """
+        from app.ml.factor_scorer import _V221_IC_WEIGHTS_IN_SAMPLE, _V219_IC_WEIGHTS_IN_SAMPLE
         for feat in ("profit_margin", "operating_margin", "pe_ratio"):
-            ratio = _V221_IC_WEIGHTS_RAW[feat] / _V219_IC_WEIGHTS_RAW[feat]
+            ratio = _V221_IC_WEIGHTS_IN_SAMPLE[feat] / _V219_IC_WEIGHTS_IN_SAMPLE[feat]
             assert abs(ratio - 0.30) < 0.01, f"{feat} raw ratio {ratio:.3f} should be ~0.30"
 
 

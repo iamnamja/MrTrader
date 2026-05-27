@@ -41,7 +41,7 @@ from app.agents.risk_rules import (
     validate_portfolio_heat,
 )
 from app.ml.cs_normalize import cs_normalize
-from app.strategy.signals import generate_signal, check_exit
+from app.strategy.signals import generate_signal, check_exit  # noqa: F401
 from app.strategy.position_sizer import size_position
 
 logger = logging.getLogger(__name__)
@@ -89,29 +89,50 @@ class _PortfolioState:
     # MTM equity cached each bar before entries run — used for all sizing/RM decisions.
     # None until first bar closes; falls back to entry-price equity if not set.
     _cached_mtm_equity: float = field(default=None, repr=False)
+    # Collateral reserved for open short positions (short entry notional).
+    # Prevents the same dollars being used to size both long and short books.
+    short_collateral: float = 0.0
 
     @property
     def position_market_value(self) -> float:
-        # Uses entry price (no MTM) — kept for backward compat with live PM code paths.
-        return sum(p.entry_price * p.quantity for p in self.positions.values())
+        """Entry-price PMV for LONG positions only.
+
+        Short positions contribute via unrealized P&L = (entry - close) × qty, not raw notional.
+        Including short entry notional here would double-count (proceeds already in cash;
+        short_collateral tracks the reserved amount separately).
+        """
+        return sum(
+            p.entry_price * p.quantity
+            for p in self.positions.values()
+            if getattr(p, "direction", "long") == "long"
+        )
 
     def equity_mtm(self, today_closes: dict) -> float:
         """Mark-to-market equity: longs at today's close, shorts as unrealized PnL.
 
-        For longs:  contribution = today_close * qty
-        For shorts: contribution = (entry_price - today_close) * qty
-                    (profit when price falls; cash already holds entry proceeds as margin)
-        Falls back to entry_price if today_close is unavailable for a symbol.
+        Accounting model:
+          cash = free cash + short_proceeds_received - long_cost_paid - tx_costs
+          short_collateral = sum(entry_price × qty) for all open shorts
+                           (reserved from cash; must be subtracted to get true equity)
+          long MTM = today_close × qty (or entry_price fallback)
+          short unrealized PnL = (entry_price - today_close) × qty (positive when price falls)
+
+          equity_mtm = cash - short_collateral + long_mtm + short_unrealized_pnl
+
+        Without subtracting short_collateral, opening 55k of shorts would inflate the
+        equity curve by 55k (proceeds in cash) without corresponding liability — giving
+        artificial Sharpe inflation of ~+3 sigma per fold (BUG confirmed by PF < 1 vs Sharpe > 3).
         """
-        pmv = 0.0
+        long_mtm = 0.0
+        short_upnl = 0.0
         for sym, pos in self.positions.items():
             close = today_closes.get(sym, pos.entry_price)
             is_short = getattr(pos, "direction", "long") == "short"
             if is_short:
-                pmv += (pos.entry_price - close) * pos.quantity
+                short_upnl += (pos.entry_price - close) * pos.quantity
             else:
-                pmv += close * pos.quantity
-        return self.cash + pmv
+                long_mtm += close * pos.quantity
+        return self.cash - self.short_collateral + long_mtm + short_upnl
 
     def update_mtm(self, today_closes: dict) -> float:
         """Compute MTM equity and cache it for use in sizing/RM decisions this bar."""
@@ -120,7 +141,12 @@ class _PortfolioState:
 
     @property
     def equity(self) -> float:
-        return self.cash + self.position_market_value
+        """Entry-price equity: cash - short_collateral + long_pmv.
+
+        Short_collateral must be subtracted for the same reason as equity_mtm:
+        short proceeds sit in cash but are offset by the short liability.
+        """
+        return self.cash - self.short_collateral + self.position_market_value
 
     @property
     def equity_decision(self) -> float:
@@ -198,6 +224,30 @@ class AgentSimulator:
         rebalance_inv_vol_max_mult: float = 2.0,
         rebalance_spy_vol_damper: bool = False,  # Phase 91: halve gross_mult when SPY 21d vol > 80th pct
         rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
+        # Phase 2 — L/S extension
+        enable_shorts: bool = False,        # False = pure long-only (backward-compat default)
+        spy_beta_hedge: bool = False,       # True = short SPY sized to long-book rolling beta (Option A)
+        spy_beta_lookback: int = 60,        # rolling days for beta computation
+        spy_beta_cap: float = 1.5,          # cap realized beta at this value
+        spy_hedge_max_gross: float = 0.30,  # max SPY short gross as fraction of equity
+        short_target_n: int = 30,           # number of short positions (individual names)
+        short_bull_n: Optional[int] = None,  # BULL-regime short count override (None = use short_target_n)
+        long_gross: float = 0.95,           # long book gross as fraction of equity
+        short_gross: float = 0.55,          # short book gross as fraction of equity
+        short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
+        short_drop_threshold: int = 30,     # hysteresis: drop short when rank-from-bottom > this
+        short_min_adv: float = 50_000_000.0,    # tighter ADV for shorts (need to borrow)
+        short_regime_fn=None,               # callable(day)->float; asymmetric regime multiplier
+        long_regime_fn=None,                # explicit long-side regime fn (overrides rebalance_regime_fn when set)
+        # Phase v222 — payoff-shape + hedge improvements
+        rebalance_atr_stops: bool = False,  # set real ATR stops/targets on rebalance entries (fix payoff shape)
+        spy_hedge_vix_lo: float = 0.0,      # VIX gate: below this, hedge = 0 (0=disabled)
+        spy_hedge_vix_hi: float = 0.0,      # VIX gate: above this, hedge = full (0=disabled)
+        # R5b: survivorship-realistic force-close. When >0, a force-closed position with NO
+        # bar data at fold-end is exited at entry_price * (1 - haircut) for longs (or
+        # entry_price * (1 + haircut) for shorts) to model delisting losses. Default 0.0
+        # preserves prior behavior (close at entry → P&L=0) so this is opt-in.
+        delisted_haircut: float = 0.0,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -248,6 +298,25 @@ class AgentSimulator:
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
         self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
+        # Phase 2 — L/S state
+        self.enable_shorts = enable_shorts
+        self.spy_beta_hedge = spy_beta_hedge
+        self.spy_beta_lookback = spy_beta_lookback
+        self.spy_beta_cap = spy_beta_cap
+        self.spy_hedge_max_gross = spy_hedge_max_gross
+        self.short_target_n = short_target_n
+        self.short_bull_n = short_bull_n
+        self.long_gross = long_gross
+        self.short_gross = short_gross
+        self.short_add_threshold = short_add_threshold
+        self.short_drop_threshold = short_drop_threshold
+        self.short_min_adv = short_min_adv
+        self.short_regime_fn = short_regime_fn
+        self.long_regime_fn = long_regime_fn
+        self.rebalance_atr_stops = rebalance_atr_stops
+        self.spy_hedge_vix_lo = spy_hedge_vix_lo
+        self.spy_hedge_vix_hi = spy_hedge_vix_hi
+        self.delisted_haircut = max(0.0, min(1.0, float(delisted_haircut)))
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -550,6 +619,7 @@ class AgentSimulator:
         # Fold dataframes typically carry the full history (training + test + lookahead),
         # so iloc[-1] could be weeks past the fold's test window. We now restrict to the
         # last close on-or-before end_date.
+        _force_close_no_bar_count = 0
         for sym, pos in list(portfolio.positions.items()):
             df = symbols_data.get(sym)
             exit_price = None
@@ -558,13 +628,34 @@ class AgentSimulator:
                 if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
                     exit_price = float(_prior["close"].iloc[-1])
             if exit_price is None:
-                # Symbol has no data at fold end (delisted/gap) — exit at entry price
-                # to record the trade rather than silently discarding it.
-                logger.warning("FORCE_CLOSE: no bar data for %s at %s — closing at entry", sym, end_date)
-                exit_price = pos.entry_price
+                # Symbol has no data at fold end (delisted/halt/gap).
+                # R5b: by default we exit at entry_price (P&L=0) to record the trade
+                # rather than silently discarding it. If delisted_haircut > 0, model
+                # this as a likely delisting loss: longs lose `haircut` of entry,
+                # shorts gain `haircut` (cover at lower price).
+                _force_close_no_bar_count += 1
+                if self.delisted_haircut > 0.0:
+                    if getattr(pos, "direction", "long") == "short":
+                        exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
+                    else:
+                        exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
+                    logger.warning(
+                        "FORCE_CLOSE: no bar data for %s at %s — applying delisted_haircut=%.2f (exit=%.4f vs entry=%.4f)",
+                        sym, end_date, self.delisted_haircut, exit_price, pos.entry_price,
+                    )
+                else:
+                    logger.warning("FORCE_CLOSE: no bar data for %s at %s — closing at entry (P&L=0)", sym, end_date)
+                    exit_price = pos.entry_price
             trade, tx = self._close_position(pos, end_date, exit_price, "FORCE_CLOSE", portfolio)
             accepted_trades.append(trade)
             tx_costs_total += tx
+        if _force_close_no_bar_count > 0 and self.delisted_haircut <= 0.0:
+            logger.warning(
+                "FORCE_CLOSE: %d position(s) had no bar data at fold-end %s — P&L set to zero. "
+                "This may overstate returns if symbols were delisted/bankrupt. "
+                "Pass delisted_haircut > 0 (e.g. 0.90) to model survivorship losses.",
+                _force_close_no_bar_count, end_date,
+            )
 
         if not accepted_trades:
             return self._empty_result()
@@ -834,12 +925,10 @@ class AgentSimulator:
         if bars_up_to_day is None or len(bars_up_to_day) < 200:
             return False, 0.0, 0.0
         try:
-            generate_signal(
-                symbol, bars_up_to_day,
-                check_earnings=False,
-                check_regime=False,
-                backtest_mode=True,
-            )
+            # WF-R5 (H-4 cleanup): removed discarded `generate_signal(...)` call
+            # here — it computed a full indicator set whose return value was never
+            # used. PM's ML score is the entry gate; the trend/RSI/ATR logic
+            # below uses bars directly. Saves significant CPU per fold.
             closes = bars_up_to_day["close"]
             close = float(closes.iloc[-1])
 
@@ -1180,6 +1269,78 @@ class AgentSimulator:
 
     # ─── Phase RA: REBALANCE mode entry ────────────────────────────────────────
 
+    def _effective_cash(self, portfolio: "_PortfolioState") -> float:
+        """Cash available for new LONG opens, net of short collateral reserve.
+
+        Short entries receive cash proceeds but simultaneously reserve collateral
+        equal to the entry notional. Without this, the same dollars would be used
+        to size both books (Opus BUG-2/#7).
+        """
+        return portfolio.cash - portfolio.short_collateral
+
+    def _rebalance_drop_position(
+        self,
+        sym: str,
+        pos: "_Position",
+        symbols_data: Dict[str, pd.DataFrame],
+        portfolio: "_PortfolioState",
+        day: "date",
+        regime_label: str,
+    ) -> tuple:
+        """Close a single position (long or short) at today's open. Returns (trades, tx_cost).
+
+        Separated from _process_rebalance to enable unit-testing of P&L sign (Opus BUG-1).
+        """
+        from app.backtesting.agent_simulator import Trade  # noqa: local import avoids circular
+        is_short = getattr(pos, "direction", "long") == "short"
+        df = symbols_data.get(sym)
+        exit_price = pos.entry_price
+        if df is not None:
+            today_bar = self._bars_on(df, day)
+            if today_bar is not None:
+                open_col = "open" if "open" in today_bar.index else "Open"
+                close_col = "close" if "close" in today_bar.index else "Close"
+                if open_col in today_bar.index:
+                    exit_price = float(today_bar[open_col])
+                elif close_col in today_bar.index:
+                    exit_price = float(today_bar[close_col])
+
+        cost = exit_price * pos.quantity * self.transaction_cost_pct
+
+        if is_short:
+            # Cover: P&L = (entry - exit) × qty — profit when price falls.
+            # Short entry already added proceeds to cash and reserved collateral.
+            # On cover: pay exit notional + exit tx; release collateral reserve.
+            gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            net_pnl = gross_pnl - cost  # entry tx already charged at entry (BUG-29 parity)
+            collateral = pos.entry_price * pos.quantity
+            portfolio.cash -= exit_price * pos.quantity + cost   # pay to cover + exit tx
+            portfolio.short_collateral = max(0.0, portfolio.short_collateral - collateral)
+        else:
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            net_pnl = gross_pnl - cost  # entry tx already charged at entry (BUG-29 fix)
+            portfolio.cash += exit_price * pos.quantity - cost
+
+        del portfolio.positions[sym]
+        trade = Trade(
+            symbol=sym,
+            entry_date=pos.entry_date,
+            exit_date=day,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            quantity=pos.quantity,
+            pnl=net_pnl,
+            pnl_pct=(exit_price / pos.entry_price - 1.0) * (-1 if is_short else 1),
+            hold_bars=pos.bars_held,
+            exit_reason="REBALANCE_DROP",
+            source="REBALANCE",
+            rank_at_entry=pos.confidence,
+            regime_at_entry=regime_label,
+            gross_exposure_mult=1.0,
+            rebalance_date=day,
+        )
+        return [trade], cost
+
     def _process_rebalance(
         self,
         day: date,
@@ -1188,13 +1349,24 @@ class AgentSimulator:
         sector_map: Dict[str, str],
         vix_history=None,
     ) -> Tuple[List, float]:
-        """Score all symbols, compute target portfolio, close drops, open adds."""
+        """Score all symbols, compute target portfolio, close drops, open adds.
+
+        When enable_shorts=True:
+          - Long book: top-N from scored list, long_regime_fn multiplier
+          - Short book: bottom-N (reversed list), short_regime_fn multiplier
+          - Separate liquidity/sector-cap/hysteresis for each book
+          - Per-side dollar budgets from split_gross_budgets
+          - Short collateral tracked to prevent double-counting
+        """
         from app.strategy.portfolio_construction import (
             apply_sector_cap,
+            apply_sector_cap_shorts,
             compute_equal_weights,
             compute_inverse_vol_weights,
             compute_target_portfolio,
+            compute_target_portfolio_shorts,
             liquidity_filter,
+            split_gross_budgets,
         )
 
         # 1. Score
@@ -1204,43 +1376,78 @@ class AgentSimulator:
         ranked_symbols = [s for s, _ in scored]
         score_of = {s: float(sc) for s, sc in scored}
 
-        # 2. Liquidity filter (PIT-safe)
-        eligible = liquidity_filter(
+        # 2. Liquidity filter (PIT-safe) — tighter threshold for shorts
+        long_eligible = liquidity_filter(
             symbols_data, as_of=day,
             min_avg_daily_dollar_vol=self.rebalance_min_adv,
         )
-        ranked_eligible = [s for s in ranked_symbols if s in eligible] or ranked_symbols
+        short_eligible = liquidity_filter(
+            symbols_data, as_of=day,
+            min_avg_daily_dollar_vol=self.short_min_adv if self.enable_shorts else self.rebalance_min_adv,
+        ) if self.enable_shorts else set()
 
-        # 3. Sector cap
+        ranked_eligible = [s for s in ranked_symbols if s in long_eligible] or ranked_symbols
+
+        # Short ranking = reverse of long ranking (worst-first), filtered by short_eligible
+        worst_first = list(reversed(ranked_symbols))
+        short_ranked_eligible = [s for s in worst_first if s in short_eligible] if self.enable_shorts else []
+
+        # 3. Sector cap (both books)
         capped = apply_sector_cap(
             ranked_eligible, sector_map,
             cap=self.rebalance_sector_cap,
             n_target=self.rebalance_target_n,
         )
+        # Determine effective short count — optionally reduce in BULL regime to cut bleed
+        _eff_short_n = self.short_target_n
+        if self.short_bull_n is not None and self.enable_shorts:
+            _long_fn = self.long_regime_fn or self.rebalance_regime_fn
+            _pre_long_mult = _long_fn(day) if _long_fn else 1.0
+            if _pre_long_mult >= 0.95:  # BULL regime
+                _eff_short_n = self.short_bull_n
 
-        # 4. Hysteresis target
-        current_holdings = list(portfolio.positions.keys())
+        short_capped = apply_sector_cap_shorts(
+            short_ranked_eligible, sector_map,
+            cap=self.rebalance_sector_cap,
+            n_target=_eff_short_n,
+        ) if self.enable_shorts else []
+
+        # 4. Hysteresis target — separate current holdings for each book
+        current_longs = [s for s, p in portfolio.positions.items()
+                         if getattr(p, "direction", "long") == "long"]
+        current_shorts = [s for s, p in portfolio.positions.items()
+                          if getattr(p, "direction", "long") != "long"]
+
         delta = compute_target_portfolio(
-            capped, current_holdings,
+            capped, current_longs,
             n_target=self.rebalance_target_n,
             add_rank_threshold=self.rebalance_add_threshold,
             drop_rank_threshold=self.rebalance_drop_threshold,
         )
+        short_delta = compute_target_portfolio_shorts(
+            short_capped, current_shorts,
+            n_target=_eff_short_n,
+            add_rank_threshold=self.short_add_threshold,
+            drop_rank_threshold=self.short_drop_threshold,
+        ) if self.enable_shorts else None
 
-        # 5. Regime multiplier
-        gross_mult = self.rebalance_regime_fn(day) if self.rebalance_regime_fn else 1.0
-        if not self.rebalance_regime_fn:
-            regime_label = "UNSET"
-        elif gross_mult >= 0.95:
-            regime_label = "BULL"
-        elif gross_mult <= 0.35:
-            regime_label = "BEAR"
-        else:
-            regime_label = "NEUTRAL"
+        # 5. Per-side regime multipliers (asymmetric gate)
+        long_fn = self.long_regime_fn or self.rebalance_regime_fn
+        long_mult = long_fn(day) if long_fn else 1.0
+        short_mult = self.short_regime_fn(day) if (self.enable_shorts and self.short_regime_fn) else (
+            1.0 if self.enable_shorts else 0.0
+        )
 
-        # 5b. SPY concurrent vol damper (Phase 91): when SPY 21d realized vol > 80th pct of
-        # trailing 252d rolling vols, halve gross_mult. Defensive only — reduces size when the
-        # cross-section is noisy, not a directional signal.
+        def _regime_label(mult: float) -> str:
+            if mult >= 0.95:
+                return "BULL"
+            if mult <= 0.35:
+                return "BEAR"
+            return "NEUTRAL"
+
+        regime_label = _regime_label(long_mult)
+
+        # 5b. SPY vol damper (applies to long book only — shorts benefit from high vol)
         if self.rebalance_spy_vol_damper:
             import numpy as _np
             _as_of_ts = pd.Timestamp(day)
@@ -1248,8 +1455,11 @@ class AgentSimulator:
             if _spy_df is not None:
                 _spy_col = "close" if "close" in _spy_df.columns else "Close"
                 if _spy_col in _spy_df.columns:
-                    _spy_past = _spy_df[_spy_col][_spy_df.index <= _as_of_ts].dropna()
-                    if len(_spy_past) >= 273:  # 252 + 21 minimum
+                    # WF-R5 (FIX 3): strict `<` to avoid using today's SPY close
+                    # for a decision made at today's open. Other SPY lookups in
+                    # this file (lines ~451/491/502/517/1645/1661) already use `<`.
+                    _spy_past = _spy_df[_spy_col][_spy_df.index < _as_of_ts].dropna()
+                    if len(_spy_past) >= 273:
                         _log_rets = _np.log(_spy_past / _spy_past.shift(1)).dropna()
                         _vol_21 = float(_log_rets.iloc[-21:].std() * _np.sqrt(252))
                         _rolling_21 = _log_rets.rolling(21).std() * _np.sqrt(252)
@@ -1257,85 +1467,63 @@ class AgentSimulator:
                         if len(_hist_vols) >= 50:
                             _pct_rank = float((_vol_21 > _hist_vols).mean())
                             if _pct_rank > 0.80:
-                                gross_mult *= self.rebalance_spy_vol_damper_scale
+                                long_mult *= self.rebalance_spy_vol_damper_scale
                                 regime_label += "+HIGHVOL"
 
-        # 6. Close drops
-        # BUG-12 FIX: exit at today's OPEN (same convention as entry, BUG-11 fix).
-        # Previously used today's close (exclude_today=False), creating a 1-day
-        # asymmetry: entry filled at yesterday's open, exit filled at today's close.
-        # Decision is made using data through yesterday; both legs now execute at
-        # today's open, which is the first price available post-decision.
+        # 6. Close drops (both books) — direction-aware P&L via _rebalance_drop_position
         tx_costs = 0.0
         closed_trades: List = []
-        for sym in delta.to_drop:
+
+        all_drops = list(delta.to_drop)
+        if short_delta is not None:
+            all_drops += list(short_delta.to_drop)
+
+        for sym in all_drops:
             if sym not in portfolio.positions:
                 continue
             pos = portfolio.positions[sym]
-            df = symbols_data.get(sym)
-            exit_price = pos.entry_price
-            if df is not None:
-                today_bar = self._bars_on(df, day)
-                if today_bar is not None:
-                    open_col = "open" if "open" in today_bar.index else "Open"
-                    close_col = "close" if "close" in today_bar.index else "Close"
-                    if open_col in today_bar.index:
-                        exit_price = float(today_bar[open_col])
-                    elif close_col in today_bar.index:
-                        exit_price = float(today_bar[close_col])
-            cost = exit_price * pos.quantity * self.transaction_cost_pct
+            trades, cost = self._rebalance_drop_position(sym, pos, symbols_data, portfolio, day, regime_label)
+            closed_trades.extend(trades)
             tx_costs += cost
-            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
-            net_pnl = gross_pnl - cost  # BUG-29 fix: only deduct exit tx; entry tx already paid at open
-            portfolio.cash += exit_price * pos.quantity - cost
-            del portfolio.positions[sym]
-            closed_trades.append(Trade(
-                symbol=sym,
-                entry_date=pos.entry_date,
-                exit_date=day,
-                entry_price=pos.entry_price,
-                exit_price=exit_price,
-                quantity=pos.quantity,
-                pnl=net_pnl,
-                pnl_pct=(exit_price / pos.entry_price - 1.0),
-                hold_bars=pos.bars_held,
-                exit_reason="REBALANCE_DROP",
-                source="REBALANCE",
-                rank_at_entry=pos.confidence,
-                regime_at_entry=regime_label,
-                gross_exposure_mult=gross_mult,
-                rebalance_date=day,
-            ))
 
-        # 7. Open adds
+        # 7. Open long adds
         equity = portfolio.equity_decision
+        if self.enable_shorts:
+            long_budget, short_budget = split_gross_budgets(
+                equity,
+                net_target=self.long_gross - self.short_gross,
+                gross_target=self.long_gross + self.short_gross,
+                long_regime_mult=long_mult,
+                short_regime_mult=short_mult,
+            )
+        else:
+            short_budget = 0.0
+
         if self.rebalance_inv_vol:
-            weights = compute_inverse_vol_weights(
+            long_weights = compute_inverse_vol_weights(
                 delta.to_add, symbols_data, as_of=day,
                 total_equity=equity,
-                gross_exposure_multiplier=gross_mult,
+                gross_exposure_multiplier=long_mult,
                 vol_lookback_days=self.rebalance_inv_vol_lookback,
                 min_weight_mult=self.rebalance_inv_vol_min_mult,
                 max_weight_mult=self.rebalance_inv_vol_max_mult,
             )
         else:
-            weights = compute_equal_weights(delta.to_add, equity, gross_mult)
+            long_weights = compute_equal_weights(delta.to_add, equity, long_mult)
+
         rank_of = {s: i + 1 for i, s in enumerate(ranked_eligible)}
+        short_rank_of = {s: i + 1 for i, s in enumerate(short_ranked_eligible)}
         entered_trades: List = []
 
         for sym in delta.to_add:
             if sym in portfolio.positions:
                 continue
-            dollar_size = weights.get(sym, 0.0)
+            dollar_size = long_weights.get(sym, 0.0)
             if dollar_size <= 0:
                 continue
             df = symbols_data.get(sym)
             if df is None:
                 continue
-            # BUG-11 FIX: entry at today's OPEN, not yesterday's open.
-            # Previously _bars_up_to(exclude_today=True).iloc[-1] gave yesterday's open.
-            # Decision uses data through yesterday; execution is at today's open
-            # (consistent with BUG-12 exit fix and with _process_entries convention).
             today_bar = self._bars_on(df, day)
             if today_bar is None:
                 continue
@@ -1348,20 +1536,40 @@ class AgentSimulator:
                 continue
             qty = max(1, int(dollar_size / entry_price))
             cost = entry_price * qty * self.transaction_cost_pct
-            if portfolio.cash < entry_price * qty + cost:
+            # Use effective cash (net of short collateral) to prevent double-spend (Opus BUG-2)
+            if self._effective_cash(portfolio) < entry_price * qty + cost:
                 continue
             portfolio.cash -= entry_price * qty + cost
             tx_costs += cost
-            # Sentinel stop/target (no ATR stops in rebalance mode by design)
+            # v222: compute ATR stop/target when rebalance_atr_stops=True
+            _rb_stop = entry_price * 0.0001
+            _rb_target = entry_price * 100.0
+            if self.rebalance_atr_stops and df is not None:
+                try:
+                    # Use _bars_up_to to handle tz-aware/tz-naive index safely
+                    _hist = self._bars_up_to(df, day, exclude_today=True)
+                    if _hist is not None and len(_hist) >= 15 and all(c in _hist.columns for c in ("high", "low", "close")):
+                        _h = _hist["high"].to_numpy(dtype=float)
+                        _l = _hist["low"].to_numpy(dtype=float)
+                        _c = _hist["close"].to_numpy(dtype=float)
+                        _tr = np.maximum(_h[1:] - _l[1:], np.maximum(np.abs(_h[1:] - _c[:-1]), np.abs(_l[1:] - _c[:-1])))
+                        _atr_pct = float(np.mean(_tr[-14:])) / entry_price if entry_price > 0 else 0.02
+                        _stop_pct = float(np.clip(1.5 * _atr_pct, 0.01, 0.06))
+                        _tgt_pct = float(np.clip(3.0 * _atr_pct, 0.02, 0.12))
+                        _rb_stop = entry_price * (1 - _stop_pct)
+                        _rb_target = entry_price * (1 + _tgt_pct)
+                except Exception:
+                    pass
             portfolio.positions[sym] = _Position(
                 symbol=sym,
                 entry_date=day,
                 entry_price=entry_price,
-                stop_price=entry_price * 0.0001,   # sentinel — never triggers
-                target_price=entry_price * 100.0,  # sentinel — never triggers
+                stop_price=_rb_stop,
+                target_price=_rb_target,
                 quantity=qty,
                 highest_price=entry_price,
                 confidence=float(rank_of.get(sym, 999)),
+                direction="long",
             )
             entered_trades.append(Trade(
                 symbol=sym,
@@ -1378,9 +1586,176 @@ class AgentSimulator:
                 rank_at_entry=rank_of.get(sym),
                 score_at_entry=score_of.get(sym),
                 regime_at_entry=regime_label,
-                gross_exposure_mult=gross_mult,
+                gross_exposure_mult=long_mult,
                 rebalance_date=day,
             ))
+
+        # 8. Open short adds (only when enable_shorts=True)
+        if self.enable_shorts and short_delta is not None:
+            short_n = max(1, len(short_delta.to_add)) if short_delta.to_add else 1
+            short_per_pos = short_budget / short_n if short_delta.to_add else 0.0
+
+            for sym in short_delta.to_add:
+                if sym in portfolio.positions:
+                    continue
+                if short_per_pos <= 0:
+                    continue
+                df = symbols_data.get(sym)
+                if df is None:
+                    continue
+                today_bar = self._bars_on(df, day)
+                if today_bar is None:
+                    continue
+                open_col = "open" if "open" in today_bar.index else "Open"
+                close_col = "close" if "close" in today_bar.index else "Close"
+                if open_col not in today_bar.index and close_col not in today_bar.index:
+                    continue
+                entry_price = float(today_bar[open_col if open_col in today_bar.index else close_col])
+                if entry_price <= 0:
+                    continue
+                qty = max(1, int(short_per_pos / entry_price))
+                cost = entry_price * qty * self.transaction_cost_pct
+                notional = entry_price * qty
+                # Short entry: receive proceeds in cash; reserve same as collateral
+                portfolio.cash += notional - cost   # proceeds received, tx paid
+                portfolio.short_collateral += notional  # reserve prevents double-spend
+                tx_costs += cost
+                portfolio.positions[sym] = _Position(
+                    symbol=sym,
+                    entry_date=day,
+                    entry_price=entry_price,
+                    stop_price=entry_price * 1.20,   # soft sentinel (20% above entry)
+                    target_price=entry_price * 0.70,  # soft sentinel (30% below entry)
+                    quantity=qty,
+                    highest_price=entry_price,
+                    confidence=float(short_rank_of.get(sym, 999)),
+                    direction="short",
+                )
+                entered_trades.append(Trade(
+                    symbol=sym,
+                    entry_date=day,
+                    exit_date=None,
+                    entry_price=entry_price,
+                    exit_price=None,
+                    quantity=qty,
+                    pnl=0.0,
+                    pnl_pct=0.0,
+                    hold_bars=0,
+                    exit_reason="OPEN_SHORT",
+                    source="REBALANCE",
+                    rank_at_entry=short_rank_of.get(sym),
+                    score_at_entry=score_of.get(sym),
+                    regime_at_entry=regime_label,
+                    gross_exposure_mult=short_mult,
+                    rebalance_date=day,
+                ))
+
+        # 9. SPY beta hedge (Option A — replaces individual short book when spy_beta_hedge=True)
+        if self.spy_beta_hedge:
+            import numpy as _np
+
+            # Close any existing SPY hedge position first (sizing changes each rebalance)
+            _SPY_HEDGE_KEY = "__SPY_HEDGE__"
+            if _SPY_HEDGE_KEY in portfolio.positions:
+                hedge_pos = portfolio.positions[_SPY_HEDGE_KEY]
+                hedge_trades, hedge_cost = self._rebalance_drop_position(
+                    _SPY_HEDGE_KEY, hedge_pos, {_SPY_HEDGE_KEY: symbols_data.get("SPY", pd.DataFrame())},
+                    portfolio, day, regime_label,
+                )
+                closed_trades.extend(hedge_trades)
+                tx_costs += hedge_cost
+
+            # Compute rolling realized beta of the current long book vs SPY
+            spy_df = symbols_data.get("SPY")
+            if spy_df is not None and not spy_df.empty:
+                _as_of_ts = pd.Timestamp(day)
+                spy_col = "close" if "close" in spy_df.columns else "Close"
+                spy_hist = spy_df[spy_df.index < _as_of_ts][spy_col].dropna()
+
+                long_syms = [s for s, p in portfolio.positions.items()
+                             if getattr(p, "direction", "long") == "long" and s != _SPY_HEDGE_KEY]
+
+                beta = 1.0  # default if insufficient history
+                if len(spy_hist) >= self.spy_beta_lookback + 5 and long_syms:
+                    spy_rets = spy_hist.pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                    book_rets_list = []
+                    for sym in long_syms:
+                        sdf = symbols_data.get(sym)
+                        if sdf is None:
+                            continue
+                        sc = "close" if "close" in sdf.columns else "Close"
+                        if sc not in sdf.columns:
+                            continue
+                        sh = sdf[sdf.index < _as_of_ts][sc].dropna().pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                        if len(sh) >= self.spy_beta_lookback // 2:
+                            book_rets_list.append(sh)
+                    if book_rets_list:
+                        book_rets = pd.concat(book_rets_list, axis=1).mean(axis=1)
+                        aligned = pd.concat([spy_rets, book_rets], axis=1).dropna()
+                        if len(aligned) >= 20:
+                            cov = _np.cov(aligned.iloc[:, 1], aligned.iloc[:, 0])
+                            beta = float(cov[0, 1] / cov[1, 1]) if cov[1, 1] > 0 else 1.0
+                            beta = min(self.spy_beta_cap, max(0.0, beta))
+
+                # Size the hedge: equity × beta × short_mult, capped at spy_hedge_max_gross
+                _short_mult = self.short_regime_fn(day) if self.short_regime_fn else 1.0
+                # v222: VIX gate — scale hedge to 0 in low-vol bull, full in high-vol
+                _vix_hedge_mult = 1.0
+                if self.spy_hedge_vix_lo > 0 and self.spy_hedge_vix_hi > self.spy_hedge_vix_lo and vix_history is not None:
+                    _vix_hist = vix_history
+                    _vix_idx = _vix_hist.index
+                    _vix_dates = _vix_idx.date if hasattr(_vix_idx, "date") else pd.DatetimeIndex(_vix_idx).date
+                    _vix_today = _vix_hist.loc[pd.Index(_vix_dates) < day]
+                    if len(_vix_today) > 0:
+                        _vix_val = float(_vix_today.iloc[-1])
+                        _vix_hedge_mult = max(0.0, min(1.0, (_vix_val - self.spy_hedge_vix_lo) / (self.spy_hedge_vix_hi - self.spy_hedge_vix_lo)))
+                hedge_gross = min(
+                    equity * beta * _short_mult * _vix_hedge_mult,
+                    equity * self.spy_hedge_max_gross
+                )
+
+                # Open new SPY short hedge
+                spy_today = self._bars_on(spy_df, day)
+                if spy_today is not None and hedge_gross > 100.0:
+                    spy_open_col = "open" if "open" in spy_today.index else "Open"
+                    spy_close_col = "close" if "close" in spy_today.index else "Close"
+                    hedge_price = float(spy_today[spy_open_col if spy_open_col in spy_today.index else spy_close_col])
+                    if hedge_price > 0:
+                        hedge_qty = max(1, int(hedge_gross / hedge_price))
+                        hedge_cost_tx = hedge_price * hedge_qty * self.transaction_cost_pct
+                        hedge_notional = hedge_price * hedge_qty
+                        portfolio.cash += hedge_notional - hedge_cost_tx
+                        portfolio.short_collateral += hedge_notional
+                        tx_costs += hedge_cost_tx
+                        portfolio.positions[_SPY_HEDGE_KEY] = _Position(
+                            symbol=_SPY_HEDGE_KEY,
+                            entry_date=day,
+                            entry_price=hedge_price,
+                            stop_price=hedge_price * 1.30,
+                            target_price=hedge_price * 0.70,
+                            quantity=hedge_qty,
+                            highest_price=hedge_price,
+                            confidence=0.0,
+                            direction="short",
+                        )
+                        entered_trades.append(Trade(
+                            symbol=_SPY_HEDGE_KEY,
+                            entry_date=day,
+                            exit_date=None,
+                            entry_price=hedge_price,
+                            exit_price=None,
+                            quantity=hedge_qty,
+                            pnl=0.0,
+                            pnl_pct=0.0,
+                            hold_bars=0,
+                            exit_reason="OPEN_SPY_HEDGE",
+                            source="REBALANCE",
+                            rank_at_entry=None,
+                            score_at_entry=beta,
+                            regime_at_entry=regime_label,
+                            gross_exposure_mult=_short_mult,
+                            rebalance_date=day,
+                        ))
 
         return closed_trades + entered_trades, tx_costs
 
@@ -1589,13 +1964,17 @@ class AgentSimulator:
         final_equity = eq_vals[-1] if eq_vals else self.starting_capital
 
         total_return = (final_equity - self.starting_capital) / self.starting_capital
-        n_days = max((end_date - start_date).days, 1)
-        ann_return = (1 + total_return) ** (365 / n_days) - 1
 
         daily_rets = [
             (eq_vals[i] - eq_vals[i-1]) / max(eq_vals[i-1], 1e-9)
             for i in range(1, len(eq_vals))
         ]
+        # M-6 fix: use 252 trading days for ann_return (consistent with Sharpe/Sortino
+        # which also annualize on 252). Previously ann_return used 365 calendar days while
+        # Sharpe used 252, producing mismatched bases for Calmar (= ann_return / max_dd).
+        # n_trading_days counts daily-return observations (one per trading bar).
+        n_trading_days = max(len(daily_rets), 1)
+        ann_return = (1 + total_return) ** (252 / n_trading_days) - 1
         # Sharpe/Sortino must be computed from a daily return series (so the sqrt(252)
         # annualization applies). Falling back to per-trade returns mixes periodicity
         # and produces a meaningless annualized number — return 0 instead.

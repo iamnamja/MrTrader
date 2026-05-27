@@ -97,20 +97,16 @@ class TestV220AWeights:
     def test_weights_sum_to_one(self):
         assert abs(sum(V220A_WEIGHTS.values()) - 1.0) < 1e-9
 
-    def test_momentum_features_dominate(self):
-        """ix_momentum_vol + momentum_252d_ex1m should be > 40% of weight."""
-        mom_weight = V220A_WEIGHTS.get("ix_momentum_vol", 0) + V220A_WEIGHTS.get("momentum_252d_ex1m", 0)
-        assert mom_weight > 0.40, f"Momentum weight {mom_weight:.2f} < 0.40"
-
-    def test_all_positive(self):
+    def test_no_negative_weights(self):
+        """WF-C1 R4: pre-fold-1 IC IR clipped at 0; weights are non-negative."""
         for feat, w in V220A_WEIGHTS.items():
-            assert w > 0, f"Weight for {feat} is non-positive"
+            assert w >= 0, f"Weight for {feat} is negative"
 
-    def test_v220a_vs_v219_momentum_difference(self):
-        """Composite A should have more momentum weight than v219."""
-        v220_mom = V220A_WEIGHTS.get("ix_momentum_vol", 0) + V220A_WEIGHTS.get("momentum_252d_ex1m", 0)
-        v219_mom = V219_IC_WEIGHTS.get("ix_momentum_vol", 0) + V219_IC_WEIGHTS.get("momentum_252d_ex1m", 0)
-        assert v220_mom > v219_mom, "Composite A should tilt MORE toward momentum than v219"
+    def test_in_sample_weights_preserved(self):
+        """WF-C1 R4: original hand-tuned in-sample weights are kept for reference."""
+        from app.ml.factor_scorer import _V220A_WEIGHTS_IN_SAMPLE
+        assert abs(sum(_V220A_WEIGHTS_IN_SAMPLE.values()) - 1.0) < 1e-9
+        assert _V220A_WEIGHTS_IN_SAMPLE["ix_momentum_vol"] == 0.23
 
 
 class TestIcCompositeV220Scorer:

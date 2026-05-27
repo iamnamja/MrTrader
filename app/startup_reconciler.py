@@ -121,7 +121,10 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             for ghost in stale_ghosts:
                 if ghost.symbol not in alpaca_positions:
                     _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
-                    exit_price, exit_order_id = _lookup_close_fill(alpaca, ghost.symbol, ghost.quantity, _ghost_short)
+                    _entry = float(ghost.entry_price or 0)
+                    exit_price, exit_order_id = _lookup_close_fill(
+                        alpaca, ghost.symbol, ghost.quantity, _ghost_short, entry_price=_entry,
+                    )
 
                     # Fallback: if Alpaca order lookup returned no fill, use the most
                     # recent bar close so the DB always has an exit price (source of truth).
@@ -324,16 +327,28 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             _price_match = recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05
             _dir_match = (getattr(recent_trade, "direction", "BUY") or "BUY") == _alpaca_dir if recent_trade else False
             if _price_match and _dir_match:
-                # If the trade was already closed with a recorded exit_price, Alpaca is
+                # If the trade was already closed with a plausible exit_price, Alpaca is
                 # showing a stale position (order pending settlement). Do NOT reactivate —
                 # the DB close is authoritative and wiping exit_price would destroy the record.
+                # EXCEPTION: if exit_price is >30% from entry, it's likely a corrupt match
+                # (e.g. stale Alpaca order history) — treat as unresolved and reactivate.
                 if recent_trade.exit_price is not None:
-                    logger.info(
-                        "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
-                        "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
-                        symbol, qty, avg, recent_trade.id, float(recent_trade.exit_price),
-                    )
-                    continue
+                    _exit = float(recent_trade.exit_price)
+                    _entry_chk = float(recent_trade.entry_price or avg)
+                    _exit_diff = abs(_exit - _entry_chk) / max(_entry_chk, 1)
+                    if _exit_diff <= 0.30:
+                        logger.info(
+                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
+                            "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
+                            symbol, qty, avg, recent_trade.id, _exit,
+                        )
+                        continue
+                    else:
+                        logger.warning(
+                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d exit_price=$%.4f is >30%% "
+                            "from entry=$%.4f — treating as corrupt, reactivating.",
+                            symbol, qty, avg, recent_trade.id, _exit, _entry_chk,
+                        )
 
                 # Entry prices within 5% and direction matches — same position, reactivate
                 logger.warning(
@@ -458,15 +473,28 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     return result
 
 
-def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False) -> tuple:
+def _lookup_close_fill(
+    alpaca, symbol: str, qty, is_short: bool = False,
+    max_age_days: int = 30, entry_price: float = 0.0,
+) -> tuple:
     """Return (filled_avg_price, order_id) for the most recent closing fill for symbol.
 
     Longs close via SELL; shorts close via BUY (cover).
+    Guards against stale/wrong matches:
+    - date filter: only orders within max_age_days
+    - qty tolerance: tightened to 5% (was 20%) to avoid cross-lot matches
+    - price sanity: rejects fills >30% away from entry_price (if provided)
+    - newest-first: DESC direction ensures most recent match wins
     """
     try:
         from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
-        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
+        from alpaca.trading.enums import QueryOrderStatus, QueryOrderDirection
+        from datetime import timezone as _tz
+        cutoff = datetime.utcnow().replace(tzinfo=_tz.utc) - timedelta(days=max_age_days)
+        req = GetOrdersRequest(
+            status=QueryOrderStatus.ALL, limit=100, after=cutoff,
+            direction=QueryOrderDirection.DESC,
+        )
         orders = alpaca.trading_client.get_orders(req)
         target_qty = abs(int(qty or 0))
         close_side = "BUY" if is_short else "SELL"
@@ -475,14 +503,30 @@ def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False) -> tupl
                 continue
             if close_side not in str(o.side).upper():
                 continue
-            # Exact match to avoid treating PARTIALLY_FILLED as a complete close
             if str(o.status).upper() != "FILLED":
                 continue
             filled_qty = int(o.filled_qty or 0)
-            if target_qty > 0 and abs(filled_qty - target_qty) > max(5, target_qty * 0.2):
+            if target_qty > 0 and abs(filled_qty - target_qty) > max(1, target_qty * 0.05):
                 continue
-            if o.filled_avg_price:
-                return float(o.filled_avg_price), str(o.id)
+            if not o.filled_avg_price:
+                continue
+            fill_price = float(o.filled_avg_price)
+            # Reject fills that differ from entry by >30% — almost certainly a wrong match
+            if entry_price > 0 and abs(fill_price - entry_price) / entry_price > 0.30:
+                logger.warning(
+                    "_lookup_close_fill: rejecting fill $%.4f for %s (entry $%.4f, diff %.1f%%)",
+                    fill_price, symbol, entry_price, abs(fill_price - entry_price) / entry_price * 100,
+                )
+                continue
+            # Reject suspiciously round fills (e.g. exactly $110.00) — real market
+            # fills always have cents. A zero-cent price is a sentinel/test value.
+            if fill_price == int(fill_price) and fill_price > 0:
+                logger.warning(
+                    "_lookup_close_fill: rejecting round-number fill $%.2f for %s — likely stale test/sentinel",
+                    fill_price, symbol,
+                )
+                continue
+            return fill_price, str(o.id)
     except Exception as exc:
         logger.debug("_lookup_close_fill failed for %s: %s", symbol, exc)
     return None, None

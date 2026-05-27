@@ -11,10 +11,22 @@ Public API:
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+
+# WF-R5 (FIX 4): IC weights calibration cutoff. All `_V*_IC_WEIGHTS` constants
+# below were derived from daily_ic.parquet rows with `date <= 2021-04-26` (one
+# trading day before fold-1's earliest train_end at the default WF config:
+# --total-years 5 --n-folds 3 --as-of 2026-05-27). Importers (e.g. the WF
+# harness) use this constant to assert that every fold's train_end is strictly
+# greater than this cutoff — otherwise the "pre-fold" weights are in-sample
+# again. If you recompute weights with a different END_DATE in
+# `scripts/compute_factor_ic.py`, update this constant in lockstep.
+IC_WEIGHTS_CALIBRATION_END: date = date(2021, 4, 26)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -193,7 +205,8 @@ def regime_gate_ok(
     if spy_closes.empty:
         return True  # permissive if no data
 
-    past = spy_closes[spy_closes.index <= as_of]
+    # H-3: strict `<` to prevent same-day bar leak if as_of matches a bar timestamp.
+    past = spy_closes[spy_closes.index < as_of]
     if len(past) < ma_window:
         return True  # not enough history — allow trading
 
@@ -260,7 +273,8 @@ class FactorPortfolioScorer:
                 continue
             _day_d = day.date() if hasattr(day, "date") else day
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < pd.Timestamp(day)
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if len(past) >= 60:
                 close_cols[sym] = past
 
@@ -276,7 +290,8 @@ class FactorPortfolioScorer:
         vix_val = None
         if vix_history is not None:
             try:
-                past_vix = vix_history[vix_history.index <= as_of]
+                # H-3: strict `<` to avoid same-day VIX bar leak
+                past_vix = vix_history[vix_history.index < as_of]
                 if len(past_vix) > 0:
                     vix_val = float(past_vix.iloc[-1])
             except Exception:
@@ -371,8 +386,17 @@ class FactorPortfolioScorer:
 # Motivation: LambdaRank v218 failed to beat 60d momentum baseline. Deterministic
 # IC-weighted composite avoids HPO overfitting and leverages all 17-feature audit.
 
-# h20 IC IR weights, clipped to 0 for negatives (vol_percentile_52w = -0.13)
-_V219_IC_WEIGHTS_RAW: dict[str, float] = {
+# WF-C1 FIX (R4, 2026-05-27): the original V219 weights (now preserved as
+# `_V219_IC_WEIGHTS_IN_SAMPLE`) were derived from a per-feature IC IR audit run
+# over 2019-01-01 -> 2026-11-08 — a window that fully overlaps every WF test
+# fold. That is in-sample feature selection. The replacement below uses only
+# pre-fold-1 data (dates <= 2021-04-26, one day before fold 1's earliest
+# train_end) from the same daily_ic.parquet (h=20, negatives clipped to 0,
+# normalized). Many features had negative pre-fold IR, confirming the
+# in-sample contamination of the original weights.
+
+# Original in-sample (contaminated) weights — kept for reference/reproducibility.
+_V219_IC_WEIGHTS_IN_SAMPLE: dict[str, float] = {
     "ix_momentum_vol":          2.3095,
     "momentum_252d_ex1m":       2.2334,
     "price_to_52w_low":         2.2233,
@@ -391,8 +415,30 @@ _V219_IC_WEIGHTS_RAW: dict[str, float] = {
     # wq_alpha35: 0.6437 — omitted
     # vol_percentile_52w: -0.1343 — dropped (negative IC)
 }
+
+# Pre-fold-1 IC IR weights (h=20, dates <= 2021-04-26, negatives clipped to 0).
+# Source: data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet.
+_V219_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.0271,
+    "momentum_252d_ex1m":       0.0102,
+    "price_to_52w_low":         0.2449,
+    "profit_margin":            0.0000,   # pre-fold IR was -0.16
+    "operating_margin":         0.0000,   # pre-fold IR was -0.21
+    "pe_ratio":                 0.0041,   # pre-fold IR (raw, before sign-flip)
+    "price_to_52w_high":        0.0000,   # pre-fold IR was -0.10
+    "volume_trend":             0.0000,   # pre-fold IR was -0.12
+    "reversal_5d_vol_weighted": 0.0817,
+    "downtrend":                0.0840,
+    "range_expansion":          0.0000,   # pre-fold IR was -0.24
+    "vol_regime":               0.0000,   # pre-fold IR was -0.09
+    "vrp":                      0.0000,   # pre-fold IR was -0.12
+}
 _V219_TOTAL = sum(_V219_IC_WEIGHTS_RAW.values())
-V219_IC_WEIGHTS: dict[str, float] = {k: v / _V219_TOTAL for k, v in _V219_IC_WEIGHTS_RAW.items()}
+V219_IC_WEIGHTS: dict[str, float] = (
+    {k: v / _V219_TOTAL for k, v in _V219_IC_WEIGHTS_RAW.items()}
+    if _V219_TOTAL > 0
+    else {k: 0.0 for k in _V219_IC_WEIGHTS_RAW}
+)
 
 
 def _vol_regime(closes_sym: pd.Series, as_of_idx: int, short_w: int = 21, long_w: int = 126) -> float:
@@ -468,7 +514,8 @@ def compute_v219_score(
         if len(col) < 60:
             continue
         # Find index in col
-        mask = col.index <= as_of_ts
+        # H-3: strict `<` (defensive — callers pre-truncate, but enforce no same-day leak)
+        mask = col.index < as_of_ts
         past = col[mask]
         if len(past) < 60:
             continue
@@ -508,7 +555,7 @@ def compute_v219_score(
         # volume_trend
         df_sym = bars.get(sym)
         if df_sym is not None and "volume" in df_sym.columns:
-            sym_mask = df_sym.index <= as_of_ts
+            sym_mask = df_sym.index < as_of_ts  # H-3: strict `<`
             sym_past = df_sym[sym_mask]
             sidx = len(sym_past)
             if sidx >= 60:
@@ -578,9 +625,20 @@ class IcCompositeScorer:
         (day, symbols_data, vix_history) -> [(sym, score)]
     """
 
-    def __init__(self, fmp_parquet: Optional[str] = None):
+    def __init__(self, fmp_parquet: Optional[str] = None, fold_ic_weights: Optional[dict] = None):
         self._fundamentals: Optional[pd.DataFrame] = None
         self._fmp_path = fmp_parquet or "data/fundamentals/fmp_fundamentals_history.parquet"
+        # WF-C1 R4: optional per-fold IC-weight injection. Same Option-A migration
+        # path as V221 — caller may pass pre-train_end IR values; we clip & normalize.
+        if fold_ic_weights is not None and len(fold_ic_weights) > 0:
+            _t = sum(max(v, 0.0) for v in fold_ic_weights.values())
+            self._weights = (
+                {k: max(v, 0.0) / _t for k, v in fold_ic_weights.items()}
+                if _t > 0
+                else dict(V219_IC_WEIGHTS)
+            )
+        else:
+            self._weights = V219_IC_WEIGHTS
 
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
         if self._fundamentals is None:
@@ -615,7 +673,8 @@ class IcCompositeScorer:
             if sym in ("^VIX", "VIX") or df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if len(past) >= 60:
                 close_cols[sym] = past
 
@@ -634,17 +693,20 @@ class IcCompositeScorer:
             for sym in close_cols if sym in symbols_data
         }
 
-        vix_val = None
+        fund = self._get_fundamentals(as_of_ts)
+        # WF-C1 R4: route through _compute_weighted_score with self._weights so
+        # per-fold IC weight injection (if any) actually flows through. Note
+        # _compute_weighted_score reads VIX from closes[^VIX] internally; ensure
+        # VIX series is included alongside symbol closes.
         if vix_history is not None:
             try:
-                past_vix = vix_history[vix_history.index <= as_of_ts]
-                if len(past_vix) > 0:
-                    vix_val = float(past_vix.iloc[-1])
+                vix_series = vix_history if isinstance(vix_history, pd.Series) else None
+                if vix_series is not None and len(vix_series) > 0:
+                    closes = closes.copy()
+                    closes["^VIX"] = vix_series.reindex(closes.index).ffill()
             except Exception:
                 pass
-
-        fund = self._get_fundamentals(as_of_ts)
-        scores = compute_v219_score(as_of_ts, closes, bars_past, fundamentals=fund, vix_val=vix_val)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, self._weights, fundamentals=fund)
 
         if scores.empty:
             return []
@@ -665,8 +727,23 @@ class IcCompositeScorer:
 # (profit_margin, operating_margin, pe_ratio) are wrong for late-cycle blow-off.
 # Pure momentum baseline scores +0.60 in Fold 1 vs v219's -0.37.
 
-# Composite A weights — momentum-tilted (Opus 4.7 design, 2026-05-25)
-_V220A_WEIGHTS_RAW: dict[str, float] = {
+# WF-C1 FIX (R4, 2026-05-27): the original V220A weights (now preserved as
+# `_V220A_WEIGHTS_IN_SAMPLE`) were a hand-tuned Opus-4.7 momentum tilt designed
+# AFTER inspecting the full-period IC audit (2019->2026), so they implicitly
+# leak fold information through the designer's prior knowledge.
+#
+# We replace them with pre-fold-1 IC IR weights computed from the same
+# daily_ic.parquet (dates <= 2021-04-26, h=20, negatives clipped to 0,
+# normalized to sum=1), restricted to V220A's original feature set.
+#
+# NOTE on V220A's two-composite regime switch: after R2 also corrected V221
+# (the "quality" composite used in the non-momentum regime), both composites
+# now derive from the same pre-fold IC IR audit and end up momentum-tilted
+# (the pre-fold-1 IR for fundamentals is negative -> clipped to 0). The
+# regime-switch logic therefore offers little differentiation in this
+# window; per the R4 fix-spec we document this but do NOT re-engineer the
+# regime logic — that is a separate research question.
+_V220A_WEIGHTS_IN_SAMPLE: dict[str, float] = {
     "ix_momentum_vol":          0.23,
     "momentum_252d_ex1m":       0.21,
     "price_to_52w_high":        0.13,
@@ -681,9 +758,32 @@ _V220A_WEIGHTS_RAW: dict[str, float] = {
     "pe_ratio":                 0.03,  # inverted: lower PE = better
     "vrp":                      0.03,
 }
-# Already sums to 1.0; assert to catch future drift
-assert abs(sum(_V220A_WEIGHTS_RAW.values()) - 1.0) < 1e-9, "V220A weights must sum to 1.0"
-V220A_WEIGHTS: dict[str, float] = dict(_V220A_WEIGHTS_RAW)
+assert abs(sum(_V220A_WEIGHTS_IN_SAMPLE.values()) - 1.0) < 1e-9, "V220A in-sample weights must sum to 1.0"
+
+# Pre-fold-1 IC IR (h=20, dates <= 2021-04-26, negatives clipped to 0),
+# restricted to V220A's original 13-feature set.
+# Source: data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet.
+_V220A_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.0271,
+    "momentum_252d_ex1m":       0.0102,
+    "price_to_52w_high":        0.0000,   # pre-fold IR was -0.10
+    "volume_trend":             0.0000,   # pre-fold IR was -0.12
+    "operating_margin":         0.0000,   # pre-fold IR was -0.21
+    "range_expansion":          0.0000,   # pre-fold IR was -0.24
+    "downtrend":                0.0840,
+    "vol_regime":               0.0000,   # pre-fold IR was -0.09
+    "reversal_5d_vol_weighted": 0.0817,
+    "price_to_52w_low":         0.2449,
+    "profit_margin":            0.0000,   # pre-fold IR was -0.16
+    "pe_ratio":                 0.0041,   # pre-fold IR (raw)
+    "vrp":                      0.0000,   # pre-fold IR was -0.12
+}
+_V220A_TOTAL = sum(_V220A_WEIGHTS_RAW.values())
+V220A_WEIGHTS: dict[str, float] = (
+    {k: v / _V220A_TOTAL for k, v in _V220A_WEIGHTS_RAW.items()}
+    if _V220A_TOTAL > 0
+    else {k: 0.0 for k in _V220A_WEIGHTS_RAW}
+)
 
 # Composite B = v219 (imported above as V219_IC_WEIGHTS)
 
@@ -692,6 +792,19 @@ def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int 
     """Compute % of symbols with close > MA(ma_days) as of as_of_ts.
 
     Returns float [0, 1] or NaN if insufficient data.
+
+    COLD-START CAVEAT (R5b doc, 2026-05-27):
+      We require at least 50 eligible symbols (`total < 50` → NaN). In a fresh
+      walk-forward fold, the first ~5–10 trading days typically have too few
+      symbols with ma_days (200) of priors loaded into the fold's closes frame
+      (the slice handed to the scorer is the per-fold window, not the full
+      history). During this warm-up, `_update_breadth` receives NaN and returns
+      0.5 (or the prior EMA), which biases the scorer toward the QUALITY
+      regime for the first ~5–10 days regardless of the actual market state.
+      Downstream consumers (e.g. IcCompositeV220Scorer) should treat the very
+      first fold-week's regime tag as low-confidence. The simulator already
+      deepcopies+resets scorer EMA state per fold, so this cold-start happens
+      every fold, not just fold 1.
     """
     above = 0
     total = 0
@@ -699,7 +812,7 @@ def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int 
         if sym in ("SPY", "^VIX", "VIX"):
             continue
         col = closes[sym].dropna()
-        past = col[col.index <= as_of_ts]
+        past = col[col.index < as_of_ts]  # H-3: strict `<`
         total += 1  # BUG-3 fix: always count in denominator (short history = below MA)
         if len(past) < ma_days:
             continue
@@ -736,6 +849,20 @@ class IcCompositeV220Scorer:
         # EMA of breadth (span=5 ≈ 3-day half-life)
         self._breadth_ema: Optional[float] = None
 
+    def reset(self) -> None:
+        """WF-R4: clear mutable per-fold state.
+
+        Re-initialises stateful fields (_in_momentum_regime, _breadth_ema) to
+        their __init__ defaults so that a deepcopy from a pre-warmed instance
+        starts each fold from a clean state. Fundamentals cache is preserved.
+        """
+        self._in_momentum_regime = False
+        self._breadth_ema = None
+
+    def get_state(self) -> tuple:
+        """WF-R4: snapshot of stateful fields (for post-reset assertion)."""
+        return (self._in_momentum_regime, self._breadth_ema)
+
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
         # BUG-9 fix: load raw parquet once, filter PIT per call (was using nonexistent load_pit_fundamentals)
         if self._fmp_fundamentals is None:
@@ -758,7 +885,13 @@ class IcCompositeV220Scorer:
         return df
 
     def _update_breadth(self, raw_breadth: float) -> float:
-        """Update EMA of breadth with hysteresis and return smoothed value."""
+        """Update EMA of breadth with hysteresis and return smoothed value.
+
+        R5b cold-start note: when raw_breadth is NaN (fewer than 50 eligible
+        symbols, typical during the first ~5-10 days of a fresh WF fold) and
+        no prior EMA exists, we return 0.5 — i.e. the quality regime — until
+        enough data accumulates. See `_compute_breadth` docstring for detail.
+        """
         if not np.isfinite(raw_breadth):
             return self._breadth_ema if self._breadth_ema is not None else 0.5
         alpha = 2.0 / (5 + 1)  # span=5 EMA
@@ -779,7 +912,8 @@ class IcCompositeV220Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation
@@ -858,6 +992,14 @@ class IcCompositeV222Scorer:
         self._in_momentum_regime: bool = False
         self._breadth_ema: Optional[float] = None
 
+    def reset(self) -> None:
+        """WF-R4: clear mutable per-fold state (see IcCompositeV220Scorer.reset)."""
+        self._in_momentum_regime = False
+        self._breadth_ema = None
+
+    def get_state(self) -> tuple:
+        return (self._in_momentum_regime, self._breadth_ema)
+
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
         if self._fmp_fundamentals is None:
             try:
@@ -897,7 +1039,8 @@ class IcCompositeV222Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past
@@ -974,7 +1117,7 @@ def _compute_weighted_score(
     for _vix_col in ("^VIX", "VIX"):
         if _vix_col in closes.columns:
             _past_vix = closes[_vix_col].dropna()
-            _past_vix = _past_vix[_past_vix.index <= as_of_ts]
+            _past_vix = _past_vix[_past_vix.index < as_of_ts]  # H-3: strict `<`
             if len(_past_vix) > 0:
                 _vix_val = float(_past_vix.iloc[-1])
             break
@@ -985,7 +1128,7 @@ def _compute_weighted_score(
         col = closes[sym].dropna()
         if len(col) < 60:
             continue
-        mask = col.index <= as_of_ts
+        mask = col.index < as_of_ts  # H-3: strict `<`
         past = col[mask]
         if len(past) < 60:
             continue
@@ -1065,6 +1208,13 @@ def _compute_weighted_score(
             if not np.isnan(vrp_val):
                 raw_features["vrp"][sym] = vrp_val
 
+        # mom_63d: 3-month price momentum (intermediate, captures recent trend persistence)
+        if "mom_63d" in raw_features and idx >= 63:
+            c_now = float(past.iloc[-1])
+            c_start = float(past.iloc[-63])
+            if c_start > 1e-9:
+                raw_features["mom_63d"][sym] = (c_now / c_start) - 1.0
+
     # Fundamentals
     if not fund.empty:
         for feat, sign in [("profit_margin", 1), ("operating_margin", 1), ("pe_ratio", -1)]:
@@ -1094,10 +1244,27 @@ def _compute_weighted_score(
 
 
 # =============================================================================
-# Phase 91 � v221 scorer: v219 with fundamentals down-weighted 70%
+# Phase 91 - v221 scorer: v219 with fundamentals down-weighted 70%
+# =============================================================================
+#
+# WF-C1 FIX (2026-05-27): The original V221 weights below ("_IN_SAMPLE") were
+# derived from a per-feature IC IR audit run over 2019-01-01 -> 2026-11-08 — a
+# window that fully overlaps every WF test fold (F1 2022-11-21->2023-09-02,
+# F2 2024-02-20->2024-12-01, F3 2025-05-21->2026-03-02). That is in-sample
+# feature selection and inflates all reported fold Sharpes.
+#
+# Fix: recomputed the same h=20 IC IR from the existing daily-IC parquet
+# (data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet) using only
+# dates <= 2021-04-26 (one trading day before fold 1's earliest train_end).
+# Negative IRs are clipped to 0 (Phase 88 design rule). Fundamentals are
+# down-weighted by 0.30 as in the original v221 design.
+#
+# Many features had near-zero or negative pre-fold IR, confirming the
+# in-sample contamination of the original weights.
 # =============================================================================
 
-_V221_IC_WEIGHTS_RAW: dict[str, float] = {
+# Original (in-sample, contaminated) weights — kept for reference / reproducibility
+_V221_IC_WEIGHTS_IN_SAMPLE: dict[str, float] = {
     "ix_momentum_vol":          2.3095,
     "momentum_252d_ex1m":       2.2334,
     "price_to_52w_low":         2.2233,
@@ -1112,14 +1279,55 @@ _V221_IC_WEIGHTS_RAW: dict[str, float] = {
     "range_expansion":          0.1795,
     "vrp":                      0.0566,
 }
+
+# Pre-fold-1 IC IR weights (h=20, dates <= 2021-04-26, negatives clipped to 0,
+# pe_ratio sign inverted per Phase 88 design, fundamentals * 0.30).
+# Source: data/diagnostics/feature_ic/20260524T230508Z/daily_ic.parquet
+_V221_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.0271,
+    "momentum_252d_ex1m":       0.0102,
+    "price_to_52w_low":         0.2449,
+    "profit_margin":            0.0000 * 0.30,  # pre-fold IR was -0.16
+    "operating_margin":         0.0000 * 0.30,  # pre-fold IR was -0.21
+    "pe_ratio":                 0.0000 * 0.30,  # pre-fold IR was -0.004 after sign-flip
+    "price_to_52w_high":        0.0000,         # pre-fold IR was -0.10
+    "volume_trend":             0.0000,         # pre-fold IR was -0.12
+    "reversal_5d_vol_weighted": 0.0817,
+    "downtrend":                0.0840,
+    "vol_regime":               0.0000,         # pre-fold IR was -0.09
+    "range_expansion":          0.0000,         # pre-fold IR was -0.24
+    "vrp":                      0.0000,         # pre-fold IR was -0.12
+}
 _V221_TOTAL = sum(_V221_IC_WEIGHTS_RAW.values())
-V221_IC_WEIGHTS: dict[str, float] = {k: v / _V221_TOTAL for k, v in _V221_IC_WEIGHTS_RAW.items()}
+V221_IC_WEIGHTS: dict[str, float] = (
+    {k: v / _V221_TOTAL for k, v in _V221_IC_WEIGHTS_RAW.items()}
+    if _V221_TOTAL > 0
+    else {k: 0.0 for k in _V221_IC_WEIGHTS_RAW}
+)
 
 
 class IcCompositeV221Scorer:
-    def __init__(self) -> None:
+    """IC composite v221 scorer.
+
+    Args:
+        fold_ic_weights: Optional dict overriding the module-level V221_IC_WEIGHTS
+            (e.g. for per-fold IC weights computed at runtime on pre-tr_end data
+            only — Option-A migration path for the WF-C1 in-sample bias fix).
+            Must have the same key structure as V221_IC_WEIGHTS. If provided,
+            the dict is normalized internally so callers can pass raw IR values.
+    """
+
+    def __init__(self, fold_ic_weights: Optional[dict] = None) -> None:
         self._fmp_fundamentals = None
         self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+        if fold_ic_weights is not None and len(fold_ic_weights) > 0:
+            _t = sum(max(v, 0.0) for v in fold_ic_weights.values())
+            if _t > 0:
+                self._weights = {k: max(v, 0.0) / _t for k, v in fold_ic_weights.items()}
+            else:
+                self._weights = dict(V221_IC_WEIGHTS)
+        else:
+            self._weights = V221_IC_WEIGHTS
 
     def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
         # BUG-9 fix: load raw parquet once, filter PIT per call (was using nonexistent load_pit_fundamentals)
@@ -1151,7 +1359,8 @@ class IcCompositeV221Scorer:
             if df is None or df.empty or "close" not in df.columns:
                 continue
             mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
-            past = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
             if sym in ("^VIX", "VIX"):
                 if len(past) > 0:
                     close_cols[sym] = past  # BUG-8 fix: include VIX for VRP computation
@@ -1174,7 +1383,141 @@ class IcCompositeV221Scorer:
         }
 
         fund = self._get_fundamentals(as_of_ts)
-        scores = _compute_weighted_score(as_of_ts, closes, bars_past, V221_IC_WEIGHTS, fundamentals=fund)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, self._weights, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+
+# =============================================================================
+# Phase v224 — momentum-enhanced scorer: v221 + mom_63d, reduced contrarian
+# Hypothesis: v221 underperforms in 2024 bull (AI/momentum tape) because
+# contrarian features (reversal, downtrend) add noise in trending markets.
+# Add 3-month momentum and reduce contrarian weights to capture growth/AI trend.
+# =============================================================================
+
+# WF-C1 FIX (R4, 2026-05-27): the original V224 weights (preserved as
+# `_V224_IC_WEIGHTS_IN_SAMPLE`) used full-period IC IR (2019->2026), overlapping
+# every WF test fold — in-sample feature selection. The replacement below uses
+# pre-fold-1 IC IR (dates <= 2021-04-26, h=20, negatives clipped to 0,
+# fundamentals * 0.30 as in V224's original design, contrarian features halved
+# as in V224's original design). `mom_63d` is not present in daily_ic.parquet
+# (only `momentum_60d` is) so its pre-fold weight is set to 0 per the R4 spec.
+_V224_IC_WEIGHTS_IN_SAMPLE: dict[str, float] = {
+    "ix_momentum_vol":          2.3095,
+    "momentum_252d_ex1m":       2.2334,
+    "mom_63d":                  1.8000,   # NEW: 3-month momentum (recent trend)
+    "price_to_52w_low":         2.2233,
+    "profit_margin":            1.2582 * 0.30,
+    "operating_margin":         1.0727 * 0.30,
+    "pe_ratio":                 0.8842 * 0.30,
+    "price_to_52w_high":        0.9442,
+    "volume_trend":             0.8840,
+    "reversal_5d_vol_weighted": 0.6254 * 0.50,
+    "downtrend":                0.4532 * 0.50,
+    "vol_regime":               0.2386,
+    "range_expansion":          0.1795,
+    "vrp":                      0.0566,
+}
+
+_V224_IC_WEIGHTS_RAW: dict[str, float] = {
+    "ix_momentum_vol":          0.0271,
+    "momentum_252d_ex1m":       0.0102,
+    "mom_63d":                  0.0000,   # not in daily_ic.parquet
+    "price_to_52w_low":         0.2449,
+    "profit_margin":            0.0000 * 0.30,   # pre-fold IR was -0.16
+    "operating_margin":         0.0000 * 0.30,   # pre-fold IR was -0.21
+    "pe_ratio":                 0.0041 * 0.30,
+    "price_to_52w_high":        0.0000,          # pre-fold IR was -0.10
+    "volume_trend":             0.0000,          # pre-fold IR was -0.12
+    "reversal_5d_vol_weighted": 0.0817 * 0.50,
+    "downtrend":                0.0840 * 0.50,
+    "vol_regime":               0.0000,          # pre-fold IR was -0.09
+    "range_expansion":          0.0000,          # pre-fold IR was -0.24
+    "vrp":                      0.0000,          # pre-fold IR was -0.12
+}
+_V224_TOTAL = sum(_V224_IC_WEIGHTS_RAW.values())
+V224_IC_WEIGHTS: dict[str, float] = (
+    {k: v / _V224_TOTAL for k, v in _V224_IC_WEIGHTS_RAW.items()}
+    if _V224_TOTAL > 0
+    else {k: 0.0 for k in _V224_IC_WEIGHTS_RAW}
+)
+
+
+class IcCompositeV224Scorer:
+    """IC composite v224: v221 + 3-month momentum + reduced contrarian features.
+
+    Changes vs v221:
+    - Added mom_63d (3-month momentum, weight ~1.80) — captures AI/growth trend persistence
+    - Halved reversal_5d_vol_weighted and downtrend (contrarian signals hurt in trending bull)
+    """
+
+    def __init__(self) -> None:
+        self._fmp_fundamentals = None
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if self._fmp_fundamentals is None:
+            try:
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
+            except Exception:
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        as_of_ts = pd.Timestamp(day)
+        _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
+
+        # L-4 fix: enforce len(past) >= 60 guard consistent with V221 to avoid
+        # computing factor scores on symbols with insufficient history (which can
+        # produce noisy/degenerate factor values that distort the rank-IC composite).
+        close_cols: dict = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
+            if sym in ("^VIX", "VIX"):
+                if len(past) > 0:
+                    close_cols[sym] = past
+            elif sym == "SPY":
+                continue
+            elif len(past) >= 60:
+                close_cols[sym] = past
+        if not close_cols:
+            return []
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols if sym in symbols_data and sym not in ("^VIX", "VIX")
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, V224_IC_WEIGHTS, fundamentals=fund)
 
         if scores.empty:
             return []
