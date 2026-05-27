@@ -1045,10 +1045,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_4h_pct != null ? clr(r.avg_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_4h_pct)}
+                      {r.avg_outcome_4h_pct != null ? fmtPct(r.avg_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, ...verdictStyle(r.verdict) }}>
                       {r.verdict === 'correct' ? '✓ Correct' : r.verdict === 'recalibrate' ? '⚠ Recalibrate' : r.verdict ?? '—'}
@@ -1074,7 +1074,7 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -1104,10 +1104,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                       {r.spy_first_hour_range_pct != null ? r.spy_first_hour_range_pct.toFixed(3) + '%' : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_4h_pct != null ? clr(-r.spy_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_4h_pct)}
+                      {r.spy_outcome_4h_pct != null ? fmtPct(r.spy_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_1d_pct != null ? clr(-r.spy_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_1d_pct)}
+                      {r.spy_outcome_1d_pct != null ? fmtPct(r.spy_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.verdict === 'good_abstention' ? C.green : r.verdict === 'bad_abstention' ? C.red : C.muted, fontWeight: 600 }}>
                       {r.verdict === 'good_abstention' ? '✓ Good' : r.verdict === 'bad_abstention' ? '⚠ Missed' : '—'}
