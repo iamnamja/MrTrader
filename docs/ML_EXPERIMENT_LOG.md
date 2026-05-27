@@ -6224,3 +6224,294 @@ DSR: z=-10.452, p=0.000 — statistically NEGATIVE edge.
 - The v186 XGBoost model deserves a clean re-run — it was never honestly tested
 - Phase 2 ML model at AUC 0.587 was also honest (post-bugs) and got -0.64 F2 — still negative
 - **Starting from scratch with honest WF is the correct path**
+
+---
+
+## Phase L/S — Long/Short Experiment & swing_short_v1 Design — 2026-05-27
+
+### L/S Experiment Background
+
+Prior to this phase, all WF experiments used long-only simulation. In Phase 2, attempts to add a short book via `--enable-shorts` were made but all 3 runs (v221, seccap50, v225) inadvertently omitted the `--enable-shorts` flag, producing identical long-only results. Root cause: `agent_simulator.py:228` has `enable_shorts: bool = False` default — no flag = no shorts, silently.
+
+### L/S Experiment Run 1 — v221 with `--enable-shorts` (2026-05-27)
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --model swing --folds 5 --years 6 \
+  --rebalance-mode --rebalance-ic-composite-v221 --rebalance-regime-gate \
+  --rebalance-inv-vol --enable-shorts --no-prefilters \
+  --swing-purge-days 10 --swing-embargo-days 10
+```
+Log: `logs/wf_v221_ls_enabled_5fold.log`
+
+| Fold | Period | Trades | Win% | Sharpe | DD | PF |
+|------|--------|--------|------|--------|----|----|
+| F1 | 2021-06→2022-05 | 1468 | 28.2% | **-1.31** | 15.7% | 0.72 |
+| F2 | 2022-06→2023-06 | 1418 | 28.3% | **-1.15** | 19.6% | 0.80 |
+| F3 | 2023-06→2024-06 | 1322 | 31.2% | +0.64 | 9.9% | 1.04 |
+| F4 | 2024-07→2025-06 | 1392 | 32.0% | +0.85 | 18.2% | 1.23 |
+| F5 | 2025-07→2026-05 | 1232 | 32.6% | **+1.27** | 7.5% | 1.30 |
+| **Avg** | | **6832** | **30.4%** | **+0.06** | | **1.02** |
+
+DSR: z=-0.741, p=0.229 — gate FAIL.
+
+**Verdict: ❌ FAIL** — avg Sharpe +0.06, min fold -1.31, DSR p=0.23. Enabling shorts on a long-trained model destroyed performance in bull-market folds (F1-F2). Win rate collapsed to 28% when shorts fired in trend-following environments.
+
+**Root cause analysis (Opus 4.7):**
+1. **Inverted long signal ≠ short signal.** The long model predicts "this stock will go up." Its inverse does not reliably predict "this stock will go down" — especially in bull regimes where low-scoring longs are often just mean-reverting laggards, not downtrend candidates.
+2. **No regime gate on short side.** In 2021 melt-up, short signals fired constantly against the tape.
+3. **Win rate asymmetry.** Long model was trained with long-only labels/hyperparameters. No class imbalance correction for the much rarer downside event.
+4. **No squeeze risk awareness.** Short book included high-short-interest stocks with squeeze risk.
+
+**Conclusion:** Short book requires a fully independent model, feature set, label definition, and regime gate. Inverted long scores are not viable.
+
+---
+
+### swing_short_v1 — Design Specification (Opus 4.7, 2026-05-27)
+
+**Design philosophy:** Three fundamental asymmetries between longs and shorts drive every choice below:
+1. **Distributional asymmetry** — Stocks drift up ~7%/yr. Base rate for "down 5% in 5 days" is materially lower outside bear regimes.
+2. **Tail asymmetry** — Short losses are unbounded (squeeze), gains capped at 100%. Label and gate must penalize tail risk explicitly.
+3. **Regime asymmetry** — Short alpha is regime-conditional. RSI>80 means "buy breakout" in 2021, "fade exhaustion" in 2022. Model must be regime-gated AND include regime features internally.
+
+**Architecture decision: Separate dedicated XGBoost classifier** (`swing_short_v1.pkl`). Not two-headed, not inverted long. Justification: features, hyperparameters, label definition, and training data weighting all differ — sharing a model compounds both models.
+
+#### Feature Set (20 new features)
+
+**Group A — Technical Exhaustion (6 features)**
+
+| Name | Formula | Horizon | Rationale |
+|------|---------|---------|-----------|
+| `short_tech_overextension_z` | `(close - SMA50) / (ATR20 * sqrt(50))`, clipped [-5,5] | 5-10d | Vol-normalized distance above SMA50; values >2 = statistically extreme. |
+| `short_tech_failed_breakout` | Binary × magnitude: `1 if high[t-1] > max20[t-2] AND close[t] < max20[t-2]`, × `(max20-close)/ATR` | 3-5d | Trapped longs become forced sellers; highest-conviction technical short pattern. |
+| `short_tech_volume_climax` | `(vol/SMA20_vol) * sign(close-close[t-1]) * (range/ATR20)`, rolling max over 3d | 3d | High vol + wide range + up-close = exhaustion buying. Signed to distinguish dist. |
+| `short_tech_bb_upper_pierce_decay` | Bars in last 10 where `high > BB_upper` minus bars where `close > BB_upper` | 5d | Repeated intraday tag without close = supply overwhelming demand (Wyckoff dist). |
+| `short_tech_lower_high_count` | Fraction of 3-bar swing highs in last 15 bars that are lower than previous swing high | 5-10d | Lower-highs sequence = downtrend forming before formal trend break. |
+| `short_tech_atr_compression_after_rally` | `(ATR5/ATR20) * sign(return_20d)` | 5d | Low recent vol after a rally = topping; no follow-through buying. |
+
+**Group B — Relative Weakness (4 features)**
+
+| Name | Formula | Horizon | Rationale |
+|------|---------|---------|-----------|
+| `short_rs_sector_decile` | Cross-sectional decile of `return_20d - β_sector * sector_etf_return_20d` within sector | 10d | Separates stock-specific weakness from sector/market move at feature level. |
+| `short_rs_breakdown_vs_sector` | `1 if stock makes new 20d low AND sector ETF does NOT` | 5-10d | Idiosyncratic breakdown — purest "alpha short" filter. |
+| `short_rs_beta_adjusted_alpha_20d` | 60d rolling β regression, `alpha_20d = return_20d - β*spy_return_20d`, cross-sec z-score | 10d | True idiosyncratic underperformance; removes market confusion from label. |
+| `short_rs_high_beta_in_weak_tape` | `beta_60d * (-spy_return_5d)` — positive when high-β in weakening tape | 5d | High-β stocks lead downside in early bear phases. |
+
+**Group C — Fundamental Deterioration (4 features)**
+
+| Name | Formula | Horizon | Data Source |
+|------|---------|---------|------------|
+| `short_fund_earnings_quality_decline` | `(latest_EPS_surprise - mean(last_4q_surprises)) / std(last_4q_surprises)` | 10d | FMP earnings (available) |
+| `short_fund_margin_compression` | `gross_margin_latest - gross_margin_4q_ago` (quarterly, forward-filled) | 10d | FMP financials (available) |
+| `short_fund_valuation_zscore_sector` | Cross-sec P/E z-score within sector, `max(0, z-1)` (high tail only) | 10d | FMP (available) |
+| `short_fund_debt_pressure` | `debt_to_equity * (1 - clip(EBIT/interest_expense/10, 0, 1))` | 10d | FMP (available) |
+
+**Group D — Regime / Macro (3 features — first-class)**
+
+| Name | Formula | Data Source |
+|------|---------|------------|
+| `short_regime_spy_below_200sma` | `(SPY_close - SMA200_SPY) / ATR20_SPY` | Available |
+| `short_regime_vix_term_structure` | `VIX / VIX3M - 1` (positive = backwardation = stress) | **Needs VIX3M fetch** (^VIX3M Yahoo) |
+| `short_regime_breadth_deterioration` | `pct(universe above SMA50) - pct(universe above SMA50, 10d ago)` | Needs daily aggregation step |
+
+**Group E — Squeeze Risk / Avoid (3 features, negative expected sign)**
+
+| Name | Formula | Data Source |
+|------|---------|------------|
+| `short_squeeze_short_interest_pct_float` | `short_interest / float` (semi-monthly FINRA, forward-filled) | **Needs FINRA data fetch** |
+| `short_squeeze_days_to_cover` | `short_interest / avg_daily_volume_30d` | Same as above |
+| `short_squeeze_borrow_proxy` | `1 if (market_cap < $2B AND SI_pct_float > 0.15) else 0` | Computable from E1 + market_cap |
+
+#### Label Construction
+
+**Volatility-scaled, sector-neutral, triple-barrier, 5-day binary.**
+
+1. Raw forward return with triple barrier (López de Prado):
+   - Upper barrier: `+1.5 * ATR20 / close` (stop-out)
+   - Lower barrier: `-1.5 * ATR20 / close` (take-profit)
+   - Time barrier: 5 trading days
+   - `r_raw` = return at first barrier hit, or close at t+5
+2. Sector-adjusted: `r_adj = r_raw - β_sector * r_sector_etf` (60d rolling β)
+3. Vol-normalized: `r_norm = r_adj / (ATR20/close)`
+4. Binary label: `y = 1 if r_norm < -1.0 else 0` (~15-25% positive rate depending on regime)
+
+**Survivorship bias handling:**
+- Point-in-time universe (tradeable at `t`, not current members)
+- Delistings labeled `r_raw = -1.0` (best short labels — P0 prerequisite, must verify parquet includes delisted names)
+
+#### Model Hyperparameters
+
+| Param | Long (v221) | Short (v1) | Rationale |
+|-------|------------|------------|-----------|
+| `max_depth` | 6 | 4 | Short signals are simpler conjunctions; deep trees overfit to bear-period idiosyncrasies |
+| `n_estimators` | 800 | 400 | Less effective training signal |
+| `learning_rate` | 0.05 | 0.03 | Lower SNR → slower learning |
+| `subsample` | 0.8 | 0.7 | More regularization |
+| `colsample_bytree` | 0.8 | 0.6 | Forces feature diversity |
+| `min_child_weight` | 1 | 5 | Avoid memorizing rare bear-fold patterns |
+| `scale_pos_weight` | 1 | dynamic `n_neg/n_pos` per fold | Class imbalance |
+| `reg_alpha` | 0 | 0.1 | L1 regularization |
+| `reg_lambda` | 1 | 2 | L2 stability |
+| `eval_metric` | `auc` | `aucpr` | PR-AUC is correct for imbalanced classes |
+
+Feature selection: Train v1.0 on all 20 short + 15 strongest long features; drop anything with SHAP importance <0.5% averaged across folds in v1.1.
+
+#### Regime Gate (3-layer multiplicative)
+
+```
+G = g_macro * g_sector * g_stock
+short_allowed = (G >= 0.5) AND (p_short >= 0.65)
+```
+
+**`g_macro`** (are macro conditions favorable for shorting?):
+```
+g_macro = sigmoid(
+    -1.5 * spy_above_200sma_z
+  + 0.8  * (vix_level / 20 - 1)
+  + 1.2  * vix_term_backwardation
+  + 0.5  * breadth_deterioration_z
+)
+```
+~0.2 in raging bull, ~0.5 in neutral, ~0.85 in bear.
+
+**`g_sector`** (is the sector shortable?):
+```
+g_sector = sigmoid(
+    -2.0 * sector_etf_above_50sma_z
+  + 1.0  * sector_rs_decline_5d
+)
+```
+
+**`g_stock`** (squeeze-safety check):
+```
+g_stock = 1.0
+  * (1 if SI_pct_float < 0.20 else 0.3)
+  * (1 if days_to_cover < 5 else 0.5)
+  * (1 if market_cap > 2B else 0.4)
+  * (0 if earnings_within_3d else 1)   ← HARD ZERO
+  * (1 if avg_dollar_vol_20d > 10M else 0.5)
+```
+
+Earnings-within-3-days is a **hard zero** — never short into earnings. Largest single category of avoidable short losses.
+
+Gate thresholds to tune in WF by sweeping `G ∈ {0.4, 0.5, 0.6}` × `p_short ∈ {0.55, 0.60, 0.65, 0.70}`.
+
+#### Training Data Strategy
+
+- **Date range:** 2010-01-01 to T-180d (exclude 2008-2009 — GFC is once-in-a-generation, skews model toward bear conditions)
+- **Sample weights:** `w = 0.95^years_ago` (time decay — recent regimes weighted higher)
+- **Class imbalance:** `scale_pos_weight = n_neg/n_pos` per fold (no SMOTE — synthetic samples mislead in financial time series)
+
+**Walk-forward: 6 folds, 2yr train / 6mo test, 3mo embargo:**
+
+| Fold | Train | Test |
+|------|-------|------|
+| 1 | 2010-01 → 2012-12 | 2013-04 → 2013-09 |
+| 2 | 2012-07 → 2015-06 | 2015-10 → 2016-03 |
+| 3 | 2014-01 → 2017-12 | 2018-04 → 2018-09 |
+| 4 | 2016-07 → 2019-12 | 2020-04 → 2020-09 |
+| 5 | 2018-01 → 2021-12 | 2022-04 → 2022-09 |
+| 6 | 2020-07 → 2024-06 | 2024-10 → 2025-03 |
+
+**Fold 5 (2022 bear) is the primary gate** — if v1 fails this fold, do not ship.
+
+**Pipeline integration:** Add `--side {long,short}` flag to `train_model.py`. When `--side short`: load short-feature module, apply short label, use short hparams from `configs/hparams_short_v1.yaml`. Output to `models/swing_short_v1.pkl` + `swing_short_v1.meta.json`.
+
+#### Integration with Existing System
+
+Signal combination at trader layer:
+```python
+if p_long >= 0.65 and gate_long_ok(symbol):
+    candidate_long(symbol, score=p_long)
+elif p_short >= 0.65 and gate_short_ok(symbol):
+    candidate_short(symbol, score=p_short)
+# elif: same symbol cannot be both long and short candidate same day
+# if both fire: prefer long (validated edge)
+```
+
+Portfolio allocation (regime-tilted):
+- Bull (`g_macro < 0.4`): 90% long / 10% short gross
+- Neutral (`0.4 ≤ g_macro < 0.7`): 70% / 30%
+- Bear (`g_macro ≥ 0.7`): 50% / 50% (cap gross at 1.0× NAV — no net short)
+- Max 5 concurrent short positions, 3% NAV each, 15% NAV total short book
+- Stop loss: 1.5× ATR20 (vs 2.0× for longs — tighter due to tail asymmetry)
+- Position size: half-Kelly of long model (0.5 multiplier)
+
+#### Walk-Forward Gates (all must pass to ship)
+
+| Metric | Threshold | Rationale |
+|--------|-----------|-----------|
+| Mean fold Sharpe | ≥ **0.6** | Lower than long gate (0.8); shorts are harder but 0.6 is real edge |
+| Fold 5 (2022 bear) Sharpe | ≥ **1.0** | Signature test — must work where naive inversion failed |
+| Worst-fold Sharpe | ≥ **-0.2** | No catastrophic fold |
+| Win rate | ≥ **42%** | Shorts naturally lower; 42% + positive EV is viable |
+| Avg win / avg loss | ≥ **1.4** | Compensates lower win rate |
+| Max drawdown (test window) | ≤ **8%** of short-book NAV | Hard cap |
+| Coverage ratio | **15-40%** days with ≥1 valid signal | Too few = no trading; too many = not selective |
+| Estimated borrow cost drag | ≤ **1.5% annualized** | `sum(SI_pct * 0.02) / n_trades` |
+
+Post-deployment kill-switch: if rolling 20d short-book Sharpe < -0.5 OR drawdown > 5% NAV OR win rate < 30% → disable shorts, alert, re-enable only after full WF retrain.
+
+#### Implementation Roadmap (~8-10 working days)
+
+| Phase | Scope | Est. Time |
+|-------|-------|-----------|
+| S0 | Data deps: VIX3M fetch, FINRA short interest, delisting history verification | ~3-4h |
+| S1 | 20 new short-alpha features in feature pipeline (config-driven, backward-compatible) | ~3-4d |
+| S2 | Triple-barrier sector-adjusted label construction | ~1d |
+| S3 | `swing_short_v1` model training + WF 6-fold scaffold, `--side short` flag | ~2d |
+| S4 | Regime gate (3-layer multiplicative), portfolio integration, position sizing | ~1-2d |
+| S5 | Tests, PR, 30-day paper trading before real capital | ongoing |
+
+**Pre-ship checklist:**
+1. All 8 WF gates pass
+2. Fold 5 Sharpe ≥ 1.0 specifically
+3. SHAP confirms regime (D1-D3) and squeeze (E1-E3) features are influential
+4. 30 calendar days paper-trade minimum
+5. `ML_EXPERIMENT_LOG.md` entry per project policy
+
+---
+
+### Strategic Sequencing Review (Opus 4.7, 2026-05-27)
+
+**Verdict: Do not start short model. Fix long-side edge first.**
+
+Full L/S ML model design is deferred. Reasons:
+
+1. **The foundation is broken.** DSR z=-10.4 means the system has statistically negative long-side edge. Building a short book on a broken long book means every bug is unattributable (long? short? interaction?). The same research process that produced the +0.374 false-positive will produce false positives in short-model IC feature selection too.
+
+2. **The immediate path is "B2 + selection overlay."** B2 naive (SPY > 200d MA, equal-weight universe) = Sharpe +0.808. That's the floor to beat. Reframe v187: **default to the market** when SPY > 200d MA; use XGBoost only to choose *which* names to overweight. This collapses the hard problem (predict absolute returns) into a more tractable one (predict cross-sectional rank within already-positive expected-return regime).
+
+3. **3-week timebox on long side.** If 3 weeks of focused B2+overlay work can't beat B2 by ≥ 0.2 Sharpe honestly, the conclusion is XGBoost on weekly fundamentals+momentum is the wrong model class for this universe — which also means the short model design needs a rethink.
+
+**What IS acceptable before long side passes gate:**
+- Data fetches only (VIX3M, FINRA short interest, delisting history) — pure ingestion, no labels
+- Feature IC notebooks (offline, not in production pipeline)
+- Rule-based short overlay (3-day version, see below)
+
+**What is NOT acceptable before long side passes gate:**
+- XGBoost short model training
+- Short label generation in production pipeline
+- Regime gate ML integration
+- Execution/risk integration for shorts
+
+#### Minimum Viable Short Overlay (Rules-Based, ~3 days, safe to ship now)
+
+While long-side work proceeds, a rules-based short overlay is acceptable as a baseline:
+- **Signal:** `52w_high_reversal AND neg_1m_momentum AND below_50d_MA` (AND-gated, 3 conditions)
+- **Macro gate:** No shorts when `SPY > 50d MA AND SPY_50d > SPY_200d` (uses available data, captures ~70% of VIX3M/breadth protection)
+- **Stock gate:** earnings within 7d = hard zero; market_cap < $2B = exclude; SI% float > 20% = exclude; avg_daily_vol < $10M = exclude
+- **Sizing:** 50% of long-side position size, hard cap 3% NAV per short, 15% NAV total book
+- **Goal:** (a) prove execution path works, (b) establish naive baseline that ML short model must beat, (c) short exposure in bear regimes immediately
+
+This rules-based overlay has no ML look-ahead risk and can be honestly walk-forward validated.
+
+**Full `swing_short_v1` ML model:** Deferred until long-side honest WF clears Sharpe > 0.8. Design spec above is preserved for when that milestone is reached.
+
+#### Revised Next Steps
+
+1. **This week:** Experiment 1 — equal-weight 4 IC-validated features (`momentum_252d_ex1m`, quality margins, `price_to_52w_high`, `pe_ratio`) as simplest possible B2+overlay challenger. Run honest WF. If this beats B2 by ≥ 0.2, it proves XGBoost adds value; if not, reframe entirely.
+2. **This week:** Experiment 2 — v186 clean honest re-run (was never honestly tested; all prior tests had look-ahead bugs).
+3. **In parallel (data infra only):** VIX3M, FINRA short interest fetches.
+4. **After long-side gate cleared:** Build rules-based short overlay → validate → then build `swing_short_v1` ML model.

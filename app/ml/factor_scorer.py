@@ -1527,3 +1527,145 @@ class IcCompositeV224Scorer:
             key=lambda x: x[1],
             reverse=True,
         )
+
+
+# =============================================================================
+# Phase LX1 — equal-weight 5-feature IC-validated scorer
+# Only the 5 features that cleared Phase A1 out-of-sample IC test (pre-fold-1
+# calibration, 2026-05-13): momentum_252d_ex1m, profit_margin, operating_margin,
+# price_to_52w_high, pe_ratio. Equal weights (0.20 each). No learned weights.
+# pe_ratio is inverted by _compute_weighted_score (sign=-1 map).
+# =============================================================================
+
+LX1_EQ_WEIGHTS: dict = {
+    "momentum_252d_ex1m": 0.20,
+    "profit_margin": 0.20,
+    "operating_margin": 0.20,
+    "price_to_52w_high": 0.20,
+    "pe_ratio": 0.20,
+}
+assert abs(sum(LX1_EQ_WEIGHTS.values()) - 1.0) < 1e-9, "LX1 weights must sum to 1.0"
+
+
+class LX1EqualWeightScorer:
+    """LX1 — equal-weight 5-feature IC-validated scorer (Phase LX1, 2026-05-27).
+
+    Uses identical per-date cross-sectional z-score + ±3σ winsorise + weighted-sum
+    pipeline as V221/V224, but equal weights over the 5 Phase-A1 IC-validated
+    features only. No ML, no HPO, no learned weights. Missing features handled
+    gracefully (symbol scored on available features, min_count=1).
+    """
+
+    def __init__(self) -> None:
+        self._fmp_fundamentals = None
+        self._fmp_path = "data/fundamentals/fmp_fundamentals_history.parquet"
+
+    def _get_fundamentals(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        if self._fmp_fundamentals is None:
+            try:
+                self._fmp_fundamentals = pd.read_parquet(self._fmp_path)
+            except Exception:
+                self._fmp_fundamentals = pd.DataFrame()
+        df = self._fmp_fundamentals
+        if df.empty:
+            return df
+        date_col = next((c for c in ("date", "report_date", "filed_date") if c in df.columns), None)
+        sym_col = next((c for c in ("symbol", "ticker", "sym") if c in df.columns), None)
+        if date_col and sym_col:
+            try:
+                filtered = df[pd.to_datetime(df[date_col]) <= as_of]
+                if not filtered.empty:
+                    return filtered.sort_values(date_col).groupby(sym_col).last()
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        as_of_ts = pd.Timestamp(day)
+        _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
+
+        close_cols: dict = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            if sym in ("^VIX", "VIX", "SPY"):
+                continue
+            mask = (
+                df.index.date < _day_d
+                if hasattr(df.index[0], "date")
+                else df.index < as_of_ts
+            )
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
+            if len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+        bars_past = {
+            sym: symbols_data[sym].loc[
+                (symbols_data[sym].index.date < _day_d)
+                if hasattr(symbols_data[sym].index[0], "date")
+                else (symbols_data[sym].index < as_of_ts)
+            ]
+            for sym in close_cols
+            if sym in symbols_data
+        }
+
+        fund = self._get_fundamentals(as_of_ts)
+        scores = _compute_weighted_score(as_of_ts, closes, bars_past, LX1_EQ_WEIGHTS, fundamentals=fund)
+
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym != "SPY"],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+
+# =============================================================================
+# Phase B2 — naive baseline scorer (no selection, regime gate + inv-vol only)
+# All symbols score 0.0 so top-N selection is arbitrary (universe order).
+# The only edge from this scorer comes from the SPY>200d MA regime gate
+# and inverse-volatility sizing — not from stock picking.
+# Used as honest reference point for all selection experiments.
+# =============================================================================
+
+
+class B2EqualWeightUniverseScorer:
+    """B2 baseline: no stock selection. All eligible symbols score 0.0.
+
+    The only signal sources are the outer regime gate (SPY > 200d MA) and
+    inverse-vol sizing — not stock picking. Output is shuffled so top-N
+    selection by the rebalance harness is random across the eligible universe,
+    not biased by dict insertion order. Seeded by day for reproducibility.
+    """
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        import random as _random
+        as_of_ts = pd.Timestamp(day)
+        _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
+
+        out = []
+        for sym, df in symbols_data.items():
+            if sym in ("^VIX", "VIX", "SPY") or df is None or df.empty:
+                continue
+            if "close" not in df.columns:
+                continue
+            mask = (
+                df.index.date < _day_d
+                if hasattr(df.index[0], "date")
+                else df.index < as_of_ts
+            )
+            if mask.sum() >= 60:
+                out.append((sym, 0.0))
+        # Shuffle seeded by day so repeated calls on the same day are identical
+        # (fold reproducibility) but ordering is not biased by insertion order.
+        _rng = _random.Random(str(_day_d))
+        _rng.shuffle(out)
+        return out
