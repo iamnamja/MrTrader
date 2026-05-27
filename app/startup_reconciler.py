@@ -18,6 +18,110 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# ── Exit-price provenance ──────────────────────────────────────────────────────
+# Canonical set of sources that represent a real broker fill (not a reconciler
+# estimate).  Used by Rules A/B/C to decide whether to override a previous close.
+_LEGITIMATE_EXIT_SOURCES = frozenset({"alpaca_fill", "agent_exit", "manual"})
+
+# All recognised source values — enforced at write time.
+EXIT_PRICE_SOURCES = frozenset({
+    "alpaca_fill",
+    "fallback_bar_close",
+    "manual",
+    "agent_exit",
+    "legacy_unknown",
+})
+
+# ── Ghost state-machine constants ─────────────────────────────────────────────
+GHOST_MIN_DETECTIONS = 2                    # must be seen missing this many times
+GHOST_MIN_ELAPSED = timedelta(minutes=20)   # and at least this long since first seen
+GHOST_MAX_PENDING_HOURS = 24               # auto-escalate to UNRESOLVED after this
+
+RECONCILE_GHOST_PENDING = "RECONCILE_GHOST_PENDING"
+RECONCILE_GHOST_UNRESOLVED = "RECONCILE_GHOST_UNRESOLVED"
+
+# ── Untracked-skip constants ───────────────────────────────────────────────────
+# Max times we skip reactivation for a "reconciler-exited" trade before we force
+# a new RECONCILED record.  Keeps the reconciler from ignoring a genuine new
+# position that happens to match a symbol we recently closed.
+UNTRACKED_REACTIVATE_AFTER = 2
+
+# Exit reasons written by the reconciler itself — used for Rule A: always
+# reactivate when a previous close was a reconciler estimate (not a broker fill).
+RECONCILER_EXIT_REASONS: frozenset = frozenset({
+    "reconcile_ghost_expired",
+    "reconcile_superseded",
+    "reconcile_ghost_pending_timeout",
+})
+
+
+def write_exit_price(
+    trade,
+    price: float,
+    source: str,
+    order_id: str | None = None,
+    written_by: str = "reconciler",
+    *,
+    force: bool = False,
+) -> bool:
+    """Write exit_price with provenance.  Returns True if written, False if blocked.
+
+    Immutability guard: if a legitimate exit price is already recorded, refuse
+    to overwrite unless ``force=True``.  This prevents the reconciler's bar-close
+    fallback from clobbering a real broker fill.
+    """
+    if source not in EXIT_PRICE_SOURCES:
+        logger.error("write_exit_price: unknown source %r for Trade#%d — rejected", source, trade.id)
+        return False
+
+    existing_source = getattr(trade, "exit_price_source", None)
+    if (
+        not force
+        and trade.exit_price is not None
+        and existing_source in _LEGITIMATE_EXIT_SOURCES
+    ):
+        logger.warning(
+            "write_exit_price: Trade#%d already has exit_price=$%.4f (source=%s) — "
+            "refusing to overwrite with source=%s (use force=True to override)",
+            trade.id, trade.exit_price, existing_source, source,
+        )
+        return False
+
+    trade.exit_price = price
+    trade.exit_price_source = source
+    trade.exit_order_id = order_id
+    trade.exit_price_written_at = datetime.utcnow()
+    trade.exit_price_written_by = written_by
+    return True
+
+
+def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
+    """Return True if Alpaca's position snapshot is trustworthy.
+
+    An empty snapshot is usually valid (no positions), but if the account
+    has equity well above cash it almost certainly still holds something —
+    the API returned a partial/error response.  In that case, skip ghost
+    marking for this run.
+    """
+    if alpaca_positions:
+        return True  # non-empty snapshot is always trusted
+    try:
+        acct = alpaca.trading_client.get_account()
+        equity = float(getattr(acct, "equity", 0) or 0)
+        cash = float(getattr(acct, "cash", 0) or 0)
+        if equity - cash > 1.0:
+            logger.warning(
+                "_is_broker_view_trusted: Alpaca returned 0 positions but "
+                "equity=%.2f cash=%.2f — API may be returning incomplete data; "
+                "skipping ghost marking this run",
+                equity, cash,
+            )
+            return False
+    except Exception as exc:
+        logger.debug("_is_broker_view_trusted account check failed: %s", exc)
+    return True
+
+
 # Minimum number of Alpaca positions required before we trust a "ghost" detection.
 # If Alpaca returns fewer positions than this threshold AND we have many ACTIVE DB
 # trades, it's likely an API error rather than genuine position closure — skip ghost
@@ -63,13 +167,16 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     active_trades = db_session.query(Trade).filter_by(status="ACTIVE").all()
     n_alpaca_positions = len(alpaca_positions)
 
-    # ── 1. Ghost positions ─────────────────────────────────────────────────────
+    # ── 1. Ghost positions — multi-run state machine ──────────────────────────
     # A ghost = ACTIVE in DB but NOT in Alpaca, AND old enough that we know it
     # isn't a brand-new market order whose fill hasn't propagated yet.
-    # We trust any successful Alpaca response — including an empty list — because
-    # the previous "skip if 0 positions" guard caused ghosts to persist forever
-    # when the user externally closed the only open position.
-    if api_call_ok:
+    #
+    # Two-pass state machine (prevents single-restart false positives):
+    #   Pass A: ACTIVE → RECONCILE_GHOST_PENDING  (first detection)
+    #   Pass B: PENDING (≥2 detections, ≥20 min elapsed) → CLOSED
+    #           PENDING (>24 h elapsed)             → RECONCILE_GHOST_UNRESOLVED
+    #           PENDING (in Alpaca again)            → revert to ACTIVE
+    if api_call_ok and _is_broker_view_trusted(alpaca, alpaca_positions):
         try:
             # Read ghost minimum age from agent_config (default 5 minutes).
             try:
@@ -78,113 +185,177 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             except Exception:
                 ghost_min_age_minutes = 5
             ghost_cutoff = datetime.utcnow() - timedelta(minutes=ghost_min_age_minutes)
+            now = datetime.utcnow()
 
+            # Pass A — promote ACTIVE → RECONCILE_GHOST_PENDING
             for trade in active_trades:
                 if trade.symbol in alpaca_positions:
                     continue
-                # Protect very recent trades whose fills may not have populated yet
-                trade_age_anchor = trade.created_at or datetime.utcnow()
+                trade_age_anchor = trade.created_at or now
                 if trade_age_anchor > ghost_cutoff:
                     logger.info(
                         "Skipping ghost check for Trade#%d %s — too recent (%.1f min old, threshold %d min)",
                         trade.id, trade.symbol,
-                        (datetime.utcnow() - trade_age_anchor).total_seconds() / 60.0,
+                        (now - trade_age_anchor).total_seconds() / 60.0,
                         ghost_min_age_minutes,
                     )
                     continue
+                # First detection — enter PENDING state
+                count = (trade.ghost_detection_count or 0) + 1
+                trade.ghost_detection_count = count
+                trade.ghost_last_detected_at = now
+                if trade.ghost_first_detected_at is None:
+                    trade.ghost_first_detected_at = now
+                trade.status = RECONCILE_GHOST_PENDING
                 logger.warning(
-                    "GHOST POSITION: Trade#%d %s is ACTIVE in DB but not in Alpaca "
-                    "(Alpaca returned %d position(s); trade older than %d min)",
-                    trade.id, trade.symbol, n_alpaca_positions, ghost_min_age_minutes,
+                    "GHOST PENDING: Trade#%d %s not in Alpaca (detection #%d, "
+                    "Alpaca returned %d position(s))",
+                    trade.id, trade.symbol, count, n_alpaca_positions,
                 )
                 result["ghost_positions"].append({
                     "trade_id": trade.id, "symbol": trade.symbol,
                     "entry_price": trade.entry_price, "quantity": trade.quantity,
+                    "ghost_detection_count": count,
                 })
-                trade.status = "RECONCILE_GHOST"
                 db_session.add(AuditLog(
-                    action="RECONCILE_GHOST_POSITION",
+                    action="RECONCILE_GHOST_PENDING",
                     details={
                         "trade_id": trade.id, "symbol": trade.symbol,
-                        "reason": "Active in DB but no matching Alpaca position on startup",
+                        "ghost_detection_count": count,
                         "alpaca_position_count": n_alpaca_positions,
-                        "ghost_min_age_minutes": ghost_min_age_minutes,
-                        "detected_at": datetime.utcnow().isoformat(),
+                        "detected_at": now.isoformat(),
                     },
-                    timestamp=datetime.utcnow(),
+                    timestamp=now,
                 ))
 
-            # Close stale RECONCILE_GHOST records for symbols no longer in Alpaca.
-            # Without this, old ghost rows accumulate across restarts and block the
-            # "untracked" check from creating fresh ACTIVE records on later restarts.
-            stale_ghosts = db_session.query(Trade).filter_by(status="RECONCILE_GHOST").all()
-            for ghost in stale_ghosts:
-                if ghost.symbol not in alpaca_positions:
-                    _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
-                    _entry = float(ghost.entry_price or 0)
-                    exit_price, exit_order_id = _lookup_close_fill(
-                        alpaca, ghost.symbol, ghost.quantity, _ghost_short, entry_price=_entry,
+            # Pass B — resolve RECONCILE_GHOST_PENDING trades
+            pending_ghosts = db_session.query(Trade).filter_by(status=RECONCILE_GHOST_PENDING).all()
+            for ghost in pending_ghosts:
+                if ghost.symbol in alpaca_positions:
+                    # Position reappeared — false alarm, revert to ACTIVE
+                    ghost.status = "ACTIVE"
+                    ghost.ghost_detection_count = 0
+                    ghost.ghost_first_detected_at = None
+                    ghost.ghost_last_detected_at = None
+                    logger.info(
+                        "GHOST RESOLVED: Trade#%d %s reappeared in Alpaca — reverting to ACTIVE",
+                        ghost.id, ghost.symbol,
                     )
+                    result["ghost_positions"].append({
+                        "trade_id": ghost.id, "symbol": ghost.symbol, "action": "reverted",
+                    })
+                    db_session.add(AuditLog(
+                        action="RECONCILE_GHOST_REVERTED",
+                        details={
+                            "trade_id": ghost.id, "symbol": ghost.symbol,
+                            "reason": "Position reappeared in Alpaca — false alarm",
+                            "reverted_at": now.isoformat(),
+                        },
+                        timestamp=now,
+                    ))
+                    continue
 
-                    # Fallback: if Alpaca order lookup returned no fill, use the most
-                    # recent bar close. Apply same sanity guards as _lookup_close_fill:
-                    # reject round-number prices (real fills always have cents) and
-                    # reject prices >30% from entry (data corruption / wrong symbol).
-                    if exit_price is None:
-                        try:
-                            bars = alpaca.get_bars(ghost.symbol, timeframe="1D", limit=2)
-                            if bars is not None and not bars.empty:
-                                _fb_price = float(bars["close"].iloc[-1])
-                                _fb_entry = float(ghost.entry_price or 0)
-                                _fb_round = (_fb_price == int(_fb_price) and _fb_price > 0)
-                                _fb_sanity = (
-                                    _fb_entry <= 0
-                                    or abs(_fb_price - _fb_entry) / _fb_entry <= 0.30
+                first_seen = ghost.ghost_first_detected_at or now
+                elapsed = now - first_seen
+                count = ghost.ghost_detection_count or 0
+
+                if elapsed > timedelta(hours=GHOST_MAX_PENDING_HOURS):
+                    # Too long in PENDING — escalate to UNRESOLVED for human review
+                    ghost.status = RECONCILE_GHOST_UNRESOLVED
+                    ghost.exit_reason = "reconcile_ghost_pending_timeout"
+                    logger.error(
+                        "GHOST UNRESOLVED: Trade#%d %s has been PENDING for %.1fh — "
+                        "manual review required (admin_force_close.py)",
+                        ghost.id, ghost.symbol, elapsed.total_seconds() / 3600,
+                    )
+                    db_session.add(AuditLog(
+                        action="RECONCILE_GHOST_UNRESOLVED",
+                        details={
+                            "trade_id": ghost.id, "symbol": ghost.symbol,
+                            "elapsed_hours": elapsed.total_seconds() / 3600,
+                            "ghost_detection_count": count,
+                            "escalated_at": now.isoformat(),
+                        },
+                        timestamp=now,
+                    ))
+                    continue
+
+                if count < GHOST_MIN_DETECTIONS or elapsed < GHOST_MIN_ELAPSED:
+                    logger.info(
+                        "GHOST PENDING: Trade#%d %s — waiting for confirmation "
+                        "(detections=%d/%d, elapsed=%.1fmin/%.0fmin)",
+                        ghost.id, ghost.symbol, count, GHOST_MIN_DETECTIONS,
+                        elapsed.total_seconds() / 60, GHOST_MIN_ELAPSED.total_seconds() / 60,
+                    )
+                    continue
+
+                # Confirmed ghost — close it
+                _ghost_short = (getattr(ghost, "direction", "BUY") or "BUY") == "SELL_SHORT"
+                _entry = float(ghost.entry_price or 0)
+                exit_price, exit_order_id = _lookup_close_fill(
+                    alpaca, ghost.symbol, ghost.quantity, _ghost_short, entry_price=_entry,
+                )
+                _exit_source = "alpaca_fill" if exit_price is not None else None
+
+                if exit_price is None:
+                    try:
+                        bars = alpaca.get_bars(ghost.symbol, timeframe="1D", limit=2)
+                        if bars is not None and not bars.empty:
+                            _fb_price = float(bars["close"].iloc[-1])
+                            _fb_round = (_fb_price == int(_fb_price) and _fb_price > 0)
+                            _fb_sanity = (_entry <= 0 or abs(_fb_price - _entry) / _entry <= 0.30)
+                            if _fb_round:
+                                logger.warning(
+                                    "Trade#%d %s: fallback bar close $%.4f is a round number — skipping",
+                                    ghost.id, ghost.symbol, _fb_price,
                                 )
-                                if _fb_round:
-                                    logger.warning(
-                                        "Trade#%d %s: fallback bar close $%.4f is a round number "
-                                        "— skipping (likely stale/sentinel price, exit_price left NULL)",
-                                        ghost.id, ghost.symbol, _fb_price,
-                                    )
-                                elif not _fb_sanity:
-                                    logger.warning(
-                                        "Trade#%d %s: fallback bar close $%.4f is >30%% from entry "
-                                        "$%.4f — skipping (data corruption guard, exit_price left NULL)",
-                                        ghost.id, ghost.symbol, _fb_price, _fb_entry,
-                                    )
-                                else:
-                                    exit_price = _fb_price
-                                    exit_order_id = "fallback_last_close"
-                                    logger.warning(
-                                        "Trade#%d %s: no Alpaca fill found — using last bar close "
-                                        "$%.4f as exit price",
-                                        ghost.id, ghost.symbol, exit_price,
-                                    )
-                        except Exception as _fb_exc:
-                            logger.debug("Bar fallback failed for %s: %s", ghost.symbol, _fb_exc)
+                            elif not _fb_sanity:
+                                logger.warning(
+                                    "Trade#%d %s: fallback bar close $%.4f is >30%% from entry $%.4f — skipping",
+                                    ghost.id, ghost.symbol, _fb_price, _entry,
+                                )
+                            else:
+                                exit_price = _fb_price
+                                exit_order_id = "fallback_last_close"
+                                _exit_source = "fallback_bar_close"
+                                logger.warning(
+                                    "Trade#%d %s: no Alpaca fill — using last bar close $%.4f",
+                                    ghost.id, ghost.symbol, exit_price,
+                                )
+                    except Exception as _fb_exc:
+                        logger.debug("Bar fallback failed for %s: %s", ghost.symbol, _fb_exc)
 
-                    ghost.status = "CLOSED"
-                    ghost.exit_reason = "reconcile_ghost_expired"
-                    ghost.closed_at = datetime.utcnow()
-                    if exit_price is not None:
-                        ghost.exit_price = exit_price
-                        _entry = float(ghost.entry_price or 0)
-                        _qty = ghost.quantity or 0
-                        if _ghost_short:
-                            ghost.pnl = round((_entry - exit_price) * _qty, 2)
-                        else:
-                            ghost.pnl = round((exit_price - _entry) * _qty, 2)
-                        logger.info(
-                            "Closing stale RECONCILE_GHOST Trade#%d %s — exit=$%.4f pnl=$%.2f (order %s)",
-                            ghost.id, ghost.symbol, exit_price, ghost.pnl or 0, exit_order_id or "?",
-                        )
+                ghost.status = "CLOSED"
+                ghost.exit_reason = "reconcile_ghost_expired"
+                ghost.closed_at = now
+                if exit_price is not None:
+                    write_exit_price(ghost, exit_price, source=_exit_source,
+                                     order_id=exit_order_id, written_by="reconciler")
+                    _qty = ghost.quantity or 0
+                    if _ghost_short:
+                        ghost.pnl = round((_entry - exit_price) * _qty, 2)
                     else:
-                        logger.warning(
-                            "Closing stale RECONCILE_GHOST Trade#%d %s with no exit price — "
-                            "check Alpaca manually and backfill exit_price in DB.",
-                            ghost.id, ghost.symbol,
-                        )
+                        ghost.pnl = round((exit_price - _entry) * _qty, 2)
+                    logger.info(
+                        "Closing confirmed ghost Trade#%d %s — exit=$%.4f pnl=$%.2f (source=%s order=%s)",
+                        ghost.id, ghost.symbol, exit_price, ghost.pnl or 0, _exit_source, exit_order_id or "?",
+                    )
+                else:
+                    logger.warning(
+                        "Closing ghost Trade#%d %s with no exit price — "
+                        "check Alpaca manually and backfill exit_price in DB.",
+                        ghost.id, ghost.symbol,
+                    )
+                db_session.add(AuditLog(
+                    action="RECONCILE_GHOST_CLOSED",
+                    details={
+                        "trade_id": ghost.id, "symbol": ghost.symbol,
+                        "exit_price": exit_price, "exit_source": _exit_source,
+                        "ghost_detection_count": count, "elapsed_minutes": elapsed.total_seconds() / 60,
+                        "closed_at": now.isoformat(),
+                    },
+                    timestamp=now,
+                ))
         except Exception as exc:
             logger.error("Ghost position check failed: %s", exc)
 
@@ -340,7 +511,8 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 .filter(
                     Trade.symbol == symbol,
                     Trade.created_at >= lookback_cutoff,
-                    Trade.status.in_(("CLOSED", "CANCELLED", "RECONCILE_GHOST")),
+                    Trade.status.in_(("CLOSED", "CANCELLED", "RECONCILE_GHOST",
+                                      RECONCILE_GHOST_PENDING, RECONCILE_GHOST_UNRESOLVED)),
                 )
                 .order_by(Trade.id.desc())
                 .first()
@@ -350,46 +522,74 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             _price_match = recent_trade and abs(float(recent_trade.entry_price or 0) - avg) / max(avg, 1) < 0.05
             _dir_match = (getattr(recent_trade, "direction", "BUY") or "BUY") == _alpaca_dir if recent_trade else False
             if _price_match and _dir_match:
-                # If the trade was already closed with a plausible exit_price, Alpaca is
-                # showing a stale position (order pending settlement). Do NOT reactivate —
-                # the DB close is authoritative and wiping exit_price would destroy the record.
-                # EXCEPTION: if exit_price is >30% from entry, it's likely a corrupt match
-                # (e.g. stale Alpaca order history) — treat as unresolved and reactivate.
-                if recent_trade.exit_price is not None:
+                # ── Rule A: reconciler-written exit → always reactivate ──────
+                # If the previous close was a reconciler estimate (ghost, superseded,
+                # etc.) and the position is back in Alpaca, the reconciler was wrong.
+                # Always reactivate — never cap this at UNTRACKED_REACTIVATE_AFTER.
+                _prev_source = getattr(recent_trade, "exit_price_source", None)
+                _prev_reason = recent_trade.exit_reason or ""
+                _is_reconciler_exit = _prev_reason in RECONCILER_EXIT_REASONS
+
+                # ── Rule B: legitimate exit → skip up to N runs, then force new ─
+                # If exit was a real broker fill and we've seen the position N times,
+                # stop reactivating — the user probably opened a new position in the
+                # same symbol and we don't want to corrupt the old record.
+                if not _is_reconciler_exit and recent_trade.exit_price is not None:
                     _exit = float(recent_trade.exit_price)
                     _entry_chk = float(recent_trade.entry_price or avg)
                     _exit_diff = abs(_exit - _entry_chk) / max(_entry_chk, 1)
-                    if _exit_diff <= 0.30:
-                        logger.info(
-                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d already has exit_price=$%.4f "
-                            "(DB is source of truth). Skipping reactivation; Alpaca position likely settling.",
-                            symbol, qty, avg, recent_trade.id, _exit,
-                        )
-                        continue
-                    else:
+                    if _exit_diff <= 0.30 and _prev_source in _LEGITIMATE_EXIT_SOURCES:
+                        _skip_count = (recent_trade.untracked_detection_count or 0) + 1
+                        if _skip_count <= UNTRACKED_REACTIVATE_AFTER:
+                            # Only write the counter when we're actually skipping (not falling through)
+                            recent_trade.untracked_detection_count = _skip_count
+                            recent_trade.untracked_last_detected_at = datetime.utcnow()
+                            logger.info(
+                                "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d has legitimate "
+                                "exit_price=$%.4f (source=%s, skip %d/%d). Alpaca position settling.",
+                                symbol, qty, avg, recent_trade.id, _exit, _prev_source,
+                                _skip_count, UNTRACKED_REACTIVATE_AFTER,
+                            )
+                            continue
+                        else:
+                            logger.warning(
+                                "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d seen %d times "
+                                "after legitimate close — treating as genuinely new position.",
+                                symbol, qty, avg, recent_trade.id, _skip_count,
+                            )
+                            # Fall through to create a new RECONCILED record; don't pollute old trade
+                            _price_match = False
+
+                # ── Rule C: corrupt exit_price (>30% diff) → reactivate ──────
+                if _price_match and recent_trade.exit_price is not None:
+                    _exit = float(recent_trade.exit_price)
+                    _entry_chk = float(recent_trade.entry_price or avg)
+                    _exit_diff = abs(_exit - _entry_chk) / max(_entry_chk, 1)
+                    if _exit_diff > 0.30:
                         logger.warning(
-                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d exit_price=$%.4f is >30%% "
-                            "from entry=$%.4f — treating as corrupt, reactivating.",
+                            "UNTRACKED POSITION: %s x%d @ $%.2f — Trade#%d exit_price=$%.4f "
+                            "is >30%% from entry=$%.4f — treating as corrupt, reactivating.",
                             symbol, qty, avg, recent_trade.id, _exit, _entry_chk,
                         )
+                        # Will reactivate below
 
-                # Entry prices within 5% and direction matches — same position, reactivate
+            if _price_match and _dir_match:
                 logger.warning(
-                    "UNTRACKED POSITION: %s x%d @ $%.2f — reactivating Trade#%d (was %s) "
-                    "instead of creating duplicate",
+                    "UNTRACKED POSITION: %s x%d @ $%.2f — reactivating Trade#%d (was %s)",
                     symbol, qty, avg, recent_trade.id, recent_trade.status,
                 )
-                # Recompute partial P&L from immutable Order ledger before reactivating.
-                # Zeroing trade.pnl here would destroy any partial-exit P&L realized before
-                # the position was incorrectly marked closed.
                 from app.database.models import recompute_partial_pnl
                 _entry = float(recent_trade.entry_price or avg)
                 _dir = getattr(recent_trade, "direction", "BUY") or "BUY"
                 _partial = recompute_partial_pnl(db_session, recent_trade.id, _entry, _dir)
                 recent_trade.status = "ACTIVE"
                 recent_trade.quantity = abs(qty)
-                recent_trade.exit_price = None   # safe: only reached when exit_price was None
-                recent_trade.pnl = _partial or None  # preserve realized partial; None if no partials
+                recent_trade.exit_price = None
+                recent_trade.exit_price_source = None
+                recent_trade.exit_order_id = None
+                recent_trade.exit_price_written_at = None
+                recent_trade.exit_price_written_by = None
+                recent_trade.pnl = _partial or None
                 recent_trade.closed_at = None
                 recent_trade.exit_reason = None
                 recent_trade.highest_price = avg
@@ -402,6 +602,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     details={
                         "trade_id": recent_trade.id, "symbol": symbol,
                         "qty": qty, "avg_price": avg,
+                        "rule": "A" if _is_reconciler_exit else "C",
                         "reason": "Reactivated existing trade instead of creating duplicate",
                         "detected_at": datetime.utcnow().isoformat(),
                     },

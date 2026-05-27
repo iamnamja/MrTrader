@@ -43,6 +43,8 @@ class TradeResponse(BaseModel):
     target_price: Optional[float] = None
     created_at: datetime
     closed_at: Optional[datetime] = None
+    exit_price_source: Optional[str] = None
+    ghost_detection_count: Optional[int] = None
 
 
 class AgentDecisionResponse(BaseModel):
