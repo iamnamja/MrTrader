@@ -41,7 +41,7 @@ from app.agents.risk_rules import (
     validate_portfolio_heat,
 )
 from app.ml.cs_normalize import cs_normalize
-from app.strategy.signals import check_exit  # generate_signal used in docstrings/comments only
+from app.strategy.signals import generate_signal, check_exit  # noqa: F401
 from app.strategy.position_sizer import size_position
 
 logger = logging.getLogger(__name__)
