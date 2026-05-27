@@ -760,7 +760,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
             : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead><tr>
-                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal', 'Opened'].map(h =>
+                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Stop', 'Target', 'Return', 'P&L', 'Signal', 'Opened'].map(h =>
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -785,10 +785,10 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                         <td style={s.td}>{fmt$(marketValue)}</td>
                         <td style={s.td}>{fmt$(entry)}</td>
                         <td style={s.td}>{fmt$(cur)}</td>
-                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
-                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
                         <td style={{ ...s.td, color: C.red }}>{stop != null ? fmt$(stop) : '—'}</td>
                         <td style={{ ...s.td, color: C.green }}>{target != null ? fmt$(target) : '—'}</td>
+                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
+                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
                       </tr>
@@ -1146,7 +1146,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Stop', 'Target', 'Market Value', 'Unreal P&L', 'P&L %', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
@@ -1167,11 +1167,11 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                       <td style={s.td}>{qty}</td>
                       <td style={s.td}>{fmt$(entry)}</td>
                       <td style={s.td}>{fmt$(cur)}</td>
+                      <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
                       <td style={s.td}>{fmt$(mv)}</td>
                       <td style={{ ...s.td, color: clr(pnl) }}>{fmt$(pnl)}</td>
                       <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
-                      <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
-                      <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.risk_reward != null ? p.risk_reward.toFixed(1) + ':1' : '—'}</td>
                       <td style={{ ...s.td, color: C.blue, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
                       <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
@@ -1543,12 +1543,14 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
 // ── Macro Intel Panel ────────────────────────────────────────────────────────
 function MacroIntelPanel() {
   const [macro, setMacro] = useState<NisMacroContext | null>(null)
+  const [macroHistory, setMacroHistory] = useState<Array<{ as_of: string; overall_risk: string; global_sizing_factor: number; events_today: number }>>([])
   const [signals, setSignals] = useState<{ blocked: string[]; sized_down: string[]; signals: NisSignal[] }>({ blocked: [], sized_down: [], signals: [] })
   const [decisions, setDecisions] = useState<DecisionAuditRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true); else setLoading(true)
     try {
       const [m, sig, dec] = await Promise.all([
         api.nisMacro(),
@@ -1557,12 +1559,26 @@ function MacroIntelPanel() {
       ])
       const sigTyped = sig as { blocked: string[]; sized_down: string[]; signals: NisSignal[] }
       const decRows = ((dec as { decisions?: DecisionAuditRow[] }).decisions ?? []) as DecisionAuditRow[]
-      setMacro(m as NisMacroContext)
+      const newMacro = m as NisMacroContext
+      setMacro(newMacro)
       setDecisions(decRows)
-      // When live NIS cache is empty (server restart / premarket not yet run),
-      // synthesize blocked/sized_down from today's decision audit rows so the panel stays useful.
+      // Build refresh history: current snapshot + proxy entries from decision audit
+      const today = new Date().toISOString().slice(0, 10)
+      const seen = new Set<string>()
+      const hist: typeof macroHistory = []
+      if (newMacro?.as_of) {
+        seen.add(newMacro.as_of)
+        hist.push({ as_of: newMacro.as_of, overall_risk: newMacro.overall_risk, global_sizing_factor: newMacro.global_sizing_factor, events_today: newMacro.events_today?.length ?? 0 })
+      }
+      decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today && r.macro_risk_level)
+        .forEach(r => {
+          const key = (r.decided_at ?? '').slice(0, 16)
+          if (!seen.has(key)) { seen.add(key); hist.push({ as_of: r.decided_at ?? '', overall_risk: r.macro_risk_level ?? '', global_sizing_factor: 1, events_today: 0 }) }
+        })
+      hist.sort((a, b) => b.as_of.localeCompare(a.as_of))
+      setMacroHistory(hist)
+      // When live NIS cache is empty synthesize blocked/sized_down from decision audit
       if ((sigTyped.blocked?.length ?? 0) === 0 && (sigTyped.sized_down?.length ?? 0) === 0 && decRows.length > 0) {
-        const today = new Date().toISOString().slice(0, 10)
         const todays = decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today)
         const blocked = Array.from(new Set(todays.filter(r => r.news_action_policy === 'block_entry').map(r => r.symbol)))
         const sized_down = Array.from(new Set(
@@ -1573,10 +1589,16 @@ function MacroIntelPanel() {
         setSignals(sigTyped)
       }
     } catch (e) { /* silent */ }
-    setLoading(false)
+    if (manual) setRefreshing(false); else setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Auto-refresh every 5 minutes to pick up post-event NIS reassessments
+  useEffect(() => {
+    const id = setInterval(() => load(), 5 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [load])
 
   const risk = (macro?.overall_risk ?? '').toUpperCase()
   const riskColor = risk === 'HIGH' ? C.red : risk === 'MEDIUM' ? C.yellow : risk === 'LOW' ? C.green : C.muted
@@ -1633,6 +1655,7 @@ function MacroIntelPanel() {
   }
 
   if (loading) return <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading Macro Intel…</div>
+  const riskColorFor = (r: string) => r === 'HIGH' ? C.red : r === 'MEDIUM' ? C.yellow : r === 'LOW' ? C.green : C.muted
 
   return (
     <div>
@@ -1659,9 +1682,14 @@ function MacroIntelPanel() {
           <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>INTRADAY</div>
           {blockBadge(macro?.block_new_entries ?? false)}
         </div>
-        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+        <div style={{ marginLeft: 'auto', textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
           <div style={{ color: C.muted, fontSize: 10 }}>AS OF</div>
           <div style={{ fontSize: 11, color: C.muted }}>{macro?.as_of ? fmtTs(macro.as_of) : '—'}</div>
+          <button onClick={() => load(true)} disabled={refreshing} style={{
+            marginTop: 4, padding: '3px 10px', fontSize: 10, cursor: refreshing ? 'default' : 'pointer',
+            border: `1px solid ${C.border}`, borderRadius: 4, background: 'transparent',
+            color: refreshing ? C.muted : C.accent, opacity: refreshing ? 0.5 : 1,
+          }}>{refreshing ? 'Refreshing…' : '↻ Refresh'}</button>
         </div>
       </div>
 
@@ -1676,20 +1704,24 @@ function MacroIntelPanel() {
           <div style={{ ...s.cardTitle, borderTop: `1px solid ${C.border}`, marginTop: 4, fontSize: 11 }}>
             Refresh History
           </div>
-          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 120, overflowY: 'auto' }}>
-            {macro?.as_of ? (
-              <div style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ color: C.muted, minWidth: 90 }}>{fmtTs(macro.as_of)}</span>
-                <span>
-                  <span style={{ color: riskColor, fontWeight: 600 }}>{risk}</span>
-                  <span style={{ color: C.muted }}> · {macro.global_sizing_factor}x sizing</span>
-                  {(macro.events_today?.length ?? 0) > 0 &&
-                    <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>
-                      {macro.events_today!.length} event(s) today
-                    </div>}
-                </span>
-              </div>
-            ) : <span style={{ color: C.muted }}>No history available</span>}
+          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 140, overflowY: 'auto' }}>
+            {macroHistory.length === 0
+              ? <span style={{ color: C.muted }}>No history available</span>
+              : macroHistory.map((h, i) => {
+                  const rc = riskColorFor(h.overall_risk)
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
+                      <span style={{ color: C.muted, minWidth: 110, flexShrink: 0 }}>{fmtTs(h.as_of)}</span>
+                      <span>
+                        <span style={{ color: rc, fontWeight: 600 }}>{h.overall_risk || '—'}</span>
+                        {(h.global_sizing_factor !== 1 || i === 0) &&
+                          <span style={{ color: C.muted }}> · {h.global_sizing_factor}x sizing</span>}
+                        {h.events_today > 0 &&
+                          <span style={{ color: C.muted, fontSize: 10 }}> · {h.events_today} event(s)</span>}
+                      </span>
+                    </div>
+                  )
+                })}
           </div>
         </div>
 
