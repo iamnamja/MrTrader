@@ -263,6 +263,9 @@ export interface NisMacroEvent {
   consensus_summary: string | null
   rationale: string | null
   already_priced_in: boolean
+  actual: number | null
+  estimate: number | null
+  prior: number | null
 }
 
 export interface NisMacroContext {

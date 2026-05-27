@@ -48,6 +48,9 @@ class MacroEventSignal:
     schema_version: str = "v1"
     prompt_version: str = "macro_v1"
     already_priced_in: bool = False      # True when estimate == prior
+    actual: float | None = None          # Actual released value (None = not yet released)
+    estimate: float | None = None        # Consensus estimate before release
+    prior: float | None = None           # Prior period value
 
     @property
     def effective_sizing_factor(self) -> float:

@@ -1594,18 +1594,41 @@ function MacroIntelPanel() {
   )
 
   // Format ISO timestamp → "May 13 14:00 ET"
+  // Appends 'Z' if the string has no timezone marker so browsers treat it as UTC, not local time.
   const fmtTs = (iso: string) => {
     if (!iso) return '—'
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso  // return raw string if unparseable
+    const normalised = /[Z+\-]\d*$/.test(iso) ? iso : iso + 'Z'
+    const d = new Date(normalised)
+    if (isNaN(d.getTime())) return iso
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
       d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
   }
-  // Format event_time which may be a plain string like "14:00 ET" or an ISO timestamp
+  // Parse event_time into a Date. Handles:
+  //   "12:30 UTC"  → today's date at 12:30 UTC
+  //   ISO string   → direct parse (normalised to UTC if naive)
+  const parseEventTime = (t: string | null | undefined): Date | null => {
+    if (!t) return null
+    // "HH:MM UTC" or "HH:MM ET" style
+    const m = t.match(/^(\d{1,2}):(\d{2})\s*(UTC|ET)?$/i)
+    if (m) {
+      const [, hh, mm, tz] = m
+      const today = new Date()
+      if ((tz ?? 'UTC').toUpperCase() === 'UTC') {
+        return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), +hh, +mm))
+      }
+      // ET — build as UTC offset -4/-5
+      const etOffset = today.toLocaleString('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' })
+        .match(/GMT([+-]\d+)/)?.[1]
+      const offsetH = etOffset ? parseInt(etOffset) : -4
+      return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), +hh - offsetH, +mm))
+    }
+    const normalised = /[Z+\-]\d*$/.test(t) ? t : t + 'Z'
+    const d = new Date(normalised)
+    return isNaN(d.getTime()) ? null : d
+  }
   const fmtEventTime = (t: string | null | undefined) => {
-    if (!t) return '—'
-    const d = new Date(t)
-    if (isNaN(d.getTime())) return t  // plain string like "14:00 ET" — show as-is
+    const d = parseEventTime(t)
+    if (!d) return t ?? '—'
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
   }
 
@@ -1672,21 +1695,43 @@ function MacroIntelPanel() {
 
         <div style={s.card}>
           <div style={s.cardTitle}>Macro Event Schedule</div>
-          <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
-                <tr>{['Time (ET)', 'Event', 'Impact', 'Status'].map(h => (
+                <tr>{['Time (ET)', 'Event', 'Impact', 'Actual', 'Est', 'Prior', 'Outcome'].map(h => (
                   <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${C.border}`,
-                    color: C.muted, textAlign: 'left', fontWeight: 500 }}>{h}</th>
+                    color: C.muted, textAlign: 'left', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                 ))}</tr>
               </thead>
               <tbody>
                 {(macro?.events_today ?? []).length === 0 ? (
-                  <tr><td colSpan={4} style={{ padding: 16, color: C.muted, textAlign: 'center' }}>No events today</td></tr>
+                  <tr><td colSpan={7} style={{ padding: 16, color: C.muted, textAlign: 'center' }}>No events today</td></tr>
                 ) : (macro?.events_today ?? []).map((e, i) => {
                   const ic = (e.risk_level ?? '').toUpperCase()
                   const icColor = ic === 'HIGH' ? C.red : ic === 'MEDIUM' ? C.yellow : C.green
-                  const released = e.already_priced_in ?? false
+                  const evtD = parseEventTime(e.event_time)
+                  const released = evtD ? evtD.getTime() <= Date.now() : (e.already_priced_in ?? false)
+
+                  // Outcome: Beat / Miss / In-Line / Pending
+                  let outcomLabel = ''
+                  let outcomeColor = C.muted
+                  if (released && e.actual != null && e.estimate != null) {
+                    const diff = e.actual - e.estimate
+                    const pct = e.estimate !== 0 ? Math.abs(diff / e.estimate) : 0
+                    if (pct < 0.005) { outcomLabel = 'In-Line'; outcomeColor = C.muted }
+                    else if (diff > 0) { outcomLabel = '▲ Beat'; outcomeColor = C.green }
+                    else { outcomLabel = '▼ Miss'; outcomeColor = C.red }
+                  } else if (released && e.actual != null) {
+                    outcomLabel = 'Released'; outcomeColor = C.muted
+                  } else if (released) {
+                    outcomLabel = 'Released'; outcomeColor = C.muted
+                  } else {
+                    outcomLabel = 'Upcoming'; outcomeColor = C.accent
+                  }
+
+                  const fmtNum = (v: number | null | undefined) =>
+                    v != null ? (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(1)) : '—'
+
                   return (
                     <tr key={i} title={e.consensus_summary ?? ''} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
@@ -1694,8 +1739,13 @@ function MacroIntelPanel() {
                       </td>
                       <td style={{ padding: '5px 8px', fontWeight: 600 }}>{e.event_type}</td>
                       <td style={{ padding: '5px 8px', color: icColor }}>{ic || '—'}</td>
-                      <td style={{ padding: '5px 8px', color: released ? C.muted : C.accent }}>
-                        {released ? 'Released' : 'Upcoming'}
+                      <td style={{ padding: '5px 8px', color: e.actual != null ? C.text : C.muted, fontWeight: e.actual != null ? 600 : 400 }}>
+                        {fmtNum(e.actual)}
+                      </td>
+                      <td style={{ padding: '5px 8px', color: C.muted }}>{fmtNum(e.estimate)}</td>
+                      <td style={{ padding: '5px 8px', color: C.muted }}>{fmtNum(e.prior)}</td>
+                      <td style={{ padding: '5px 8px', color: outcomeColor, fontWeight: outcomLabel.includes('▲') || outcomLabel.includes('▼') ? 600 : 400 }}>
+                        {outcomLabel}
                       </td>
                     </tr>
                   )

@@ -153,6 +153,9 @@ def persist_nis_macro_snapshot(
                 "consensus_summary": getattr(e, "consensus_summary", None),
                 "rationale": getattr(e, "rationale", None),
                 "already_priced_in": getattr(e, "already_priced_in", False),
+                "actual": getattr(e, "actual", None),
+                "estimate": getattr(e, "estimate", None),
+                "prior": getattr(e, "prior", None),
             })
         rationale = getattr(macro_context, "rationale", None)
 

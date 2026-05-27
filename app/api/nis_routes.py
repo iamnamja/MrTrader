@@ -53,6 +53,9 @@ def get_macro_context() -> Dict[str, Any]:
                         "consensus_summary": e.consensus_summary,
                         "rationale": e.rationale,
                         "already_priced_in": e.already_priced_in,
+                        "actual": e.actual,
+                        "estimate": e.estimate,
+                        "prior": e.prior,
                     }
                     for e in ctx.events_today
                 ],
