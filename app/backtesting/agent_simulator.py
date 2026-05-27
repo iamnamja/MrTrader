@@ -1936,13 +1936,17 @@ class AgentSimulator:
         final_equity = eq_vals[-1] if eq_vals else self.starting_capital
 
         total_return = (final_equity - self.starting_capital) / self.starting_capital
-        n_days = max((end_date - start_date).days, 1)
-        ann_return = (1 + total_return) ** (365 / n_days) - 1
 
         daily_rets = [
             (eq_vals[i] - eq_vals[i-1]) / max(eq_vals[i-1], 1e-9)
             for i in range(1, len(eq_vals))
         ]
+        # M-6 fix: use 252 trading days for ann_return (consistent with Sharpe/Sortino
+        # which also annualize on 252). Previously ann_return used 365 calendar days while
+        # Sharpe used 252, producing mismatched bases for Calmar (= ann_return / max_dd).
+        # n_trading_days counts daily-return observations (one per trading bar).
+        n_trading_days = max(len(daily_rets), 1)
+        ann_return = (1 + total_return) ** (252 / n_trading_days) - 1
         # Sharpe/Sortino must be computed from a daily return series (so the sqrt(252)
         # annualization applies). Falling back to per-trade returns mixes periodicity
         # and produces a meaningless annualized number — return 0 instead.

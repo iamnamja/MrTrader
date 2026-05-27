@@ -193,7 +193,8 @@ def regime_gate_ok(
     if spy_closes.empty:
         return True  # permissive if no data
 
-    past = spy_closes[spy_closes.index <= as_of]
+    # H-3: strict `<` to prevent same-day bar leak if as_of matches a bar timestamp.
+    past = spy_closes[spy_closes.index < as_of]
     if len(past) < ma_window:
         return True  # not enough history — allow trading
 
@@ -277,7 +278,8 @@ class FactorPortfolioScorer:
         vix_val = None
         if vix_history is not None:
             try:
-                past_vix = vix_history[vix_history.index <= as_of]
+                # H-3: strict `<` to avoid same-day VIX bar leak
+                past_vix = vix_history[vix_history.index < as_of]
                 if len(past_vix) > 0:
                     vix_val = float(past_vix.iloc[-1])
             except Exception:
@@ -469,7 +471,8 @@ def compute_v219_score(
         if len(col) < 60:
             continue
         # Find index in col
-        mask = col.index <= as_of_ts
+        # H-3: strict `<` (defensive — callers pre-truncate, but enforce no same-day leak)
+        mask = col.index < as_of_ts
         past = col[mask]
         if len(past) < 60:
             continue
@@ -509,7 +512,7 @@ def compute_v219_score(
         # volume_trend
         df_sym = bars.get(sym)
         if df_sym is not None and "volume" in df_sym.columns:
-            sym_mask = df_sym.index <= as_of_ts
+            sym_mask = df_sym.index < as_of_ts  # H-3: strict `<`
             sym_past = df_sym[sym_mask]
             sidx = len(sym_past)
             if sidx >= 60:
@@ -639,7 +642,8 @@ class IcCompositeScorer:
         vix_val = None
         if vix_history is not None:
             try:
-                past_vix = vix_history[vix_history.index <= as_of_ts]
+                # H-3: strict `<` to avoid same-day VIX leak
+                past_vix = vix_history[vix_history.index < as_of_ts]
                 if len(past_vix) > 0:
                     vix_val = float(past_vix.iloc[-1])
             except Exception:
@@ -701,7 +705,7 @@ def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int 
         if sym in ("SPY", "^VIX", "VIX"):
             continue
         col = closes[sym].dropna()
-        past = col[col.index <= as_of_ts]
+        past = col[col.index < as_of_ts]  # H-3: strict `<`
         total += 1  # BUG-3 fix: always count in denominator (short history = below MA)
         if len(past) < ma_days:
             continue
@@ -978,7 +982,7 @@ def _compute_weighted_score(
     for _vix_col in ("^VIX", "VIX"):
         if _vix_col in closes.columns:
             _past_vix = closes[_vix_col].dropna()
-            _past_vix = _past_vix[_past_vix.index <= as_of_ts]
+            _past_vix = _past_vix[_past_vix.index < as_of_ts]  # H-3: strict `<`
             if len(_past_vix) > 0:
                 _vix_val = float(_past_vix.iloc[-1])
             break
@@ -989,7 +993,7 @@ def _compute_weighted_score(
         col = closes[sym].dropna()
         if len(col) < 60:
             continue
-        mask = col.index <= as_of_ts
+        mask = col.index < as_of_ts  # H-3: strict `<`
         past = col[mask]
         if len(past) < 60:
             continue
@@ -1318,20 +1322,28 @@ class IcCompositeV224Scorer:
     def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
         as_of_ts = pd.Timestamp(day)
         _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
-        close_cols = [s for s in symbols_data if s not in ("^VIX", "VIX", "SPY")]
-        closes = pd.DataFrame({
-            sym: symbols_data[sym]["close"].loc[
-                symbols_data[sym].index.date < _day_d
-                if hasattr(symbols_data[sym].index[0], "date")
-                else symbols_data[sym].index < as_of_ts
-            ]
-            for sym in close_cols
-            if sym in symbols_data
-            and "close" in symbols_data[sym].columns
-            and len(symbols_data[sym]) > 0
-        })
-        if closes.empty:
+
+        # L-4 fix: enforce len(past) >= 60 guard consistent with V221 to avoid
+        # computing factor scores on symbols with insufficient history (which can
+        # produce noisy/degenerate factor values that distort the rank-IC composite).
+        close_cols: dict = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = df.index.date < _day_d if hasattr(df.index[0], "date") else df.index < as_of_ts
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
+            if sym in ("^VIX", "VIX"):
+                if len(past) > 0:
+                    close_cols[sym] = past
+            elif sym == "SPY":
+                continue
+            elif len(past) >= 60:
+                close_cols[sym] = past
+        if not close_cols:
             return []
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
         bars_past = {
             sym: symbols_data[sym].loc[
                 (symbols_data[sym].index.date < _day_d)

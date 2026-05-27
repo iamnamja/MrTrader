@@ -51,8 +51,11 @@ class TestComputeCalmar:
         return _compute_calmar(total_return, max_dd, years)
 
     def test_basic(self):
-        # annualised = 0.20/2 = 0.10; calmar = 0.10/0.05 = 2.0
-        assert abs(self._cal(0.20, 0.05, 2.0) - 2.0) < 1e-9
+        # M-5: geometric annualisation: (1.20)^(1/2) - 1 = 0.0954451...
+        # calmar = 0.0954451 / 0.05 = 1.9089...
+        expected_ann = (1.0 + 0.20) ** (1.0 / 2.0) - 1.0
+        expected = expected_ann / 0.05
+        assert abs(self._cal(0.20, 0.05, 2.0) - expected) < 1e-9
 
     def test_zero_drawdown_returns_zero(self):
         assert self._cal(0.10, 0.0, 1.0) == 0.0

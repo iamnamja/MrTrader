@@ -123,7 +123,10 @@ def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: flo
     """
     if max_drawdown_pct <= 0 or years <= 0:
         return 0.0
-    annualised = total_return_pct / years
+    # M-5 fix: geometric annualisation (compounding). Inputs are fractions (e.g. 0.20 = 20%),
+    # so (1 + total_return)^(1/years) - 1 is the CAGR. Arithmetic (total/years) overstates
+    # multi-year returns and understates sub-year returns.
+    annualised = (1.0 + total_return_pct) ** (1.0 / years) - 1.0
     return float(annualised / max_drawdown_pct)
 
 
@@ -762,6 +765,8 @@ def run_swing_walkforward(
     pm_abstention_spy_ma_days: int = 0,
     pm_abstention_spy_5d: bool = False,
     model_version: Optional[int] = None,
+    # M-10: Default 5bps is optimistic for $20k retail; realistic Russell 1000 round-trip =
+    # 15-25bps at Alpaca (spread + slippage + fees). Increase this for live calibration.
     transaction_cost_pct: float = 0.0005,
     purge_days: int = 10,
     embargo_days: Optional[int] = None,  # WF-1: post-test gap before next fold trains (None = same as purge_days)
@@ -833,9 +838,16 @@ def run_swing_walkforward(
     # stays False; downstream reporting/DSR consumers should treat fold Sharpes
     # as OOS evaluations of the SAME model, not of independently-fit models.
     model, version = _load_model("swing", version=model_version)
+    if model is None and not use_factor_portfolio and scorer_instance is None:
+        # L-5 fix: previously this returned an empty WalkForwardReport with Sharpe=0,
+        # which could silently pass a "no-failure" check in calling pipelines. Make it
+        # explicit so misconfigured runs surface immediately instead of vacuously.
+        raise ValueError(
+            "No swing model found AND no factor scorer provided. "
+            "Either retrain a swing model, pass --use-factor-portfolio, or supply a scorer_instance."
+        )
     if model is None:
-        _err("No swing model found — retrain first.")
-        return report
+        _warn("No ML swing model — running with factor scorer / portfolio only.")
     _warn(
         f"NOTE: Using pre-trained swing model v{version} for all {n_folds} folds — "
         "this is a generalization test, not a true expanding-window walk-forward "
@@ -1133,7 +1145,14 @@ def run_swing_walkforward(
                 else:
                     logger.warning("Fold %d: SPY/VIX unavailable — asymmetric regime fns will use defaults", fold_idx)
 
-        # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag)
+        # Phase 89: factor stability gate — DEPRECATED (trailing IC ~80d lag, test-window look-ahead).
+        # H-1: hard-fail if anyone tries to re-enable this. Use rebalance_dispersion_gate instead.
+        if rebalance_factor_stability_gate:
+            raise ValueError(
+                "rebalance_factor_stability_gate is deprecated and disabled due to test-window "
+                "look-ahead in its FactorStabilityGate construction. Remove it from your call "
+                "and use rebalance_dispersion_gate (Phase 89 v2) instead."
+            )
         if rebalance_mode and rebalance_factor_stability_gate and scorer_instance is not None:
             _regime_gate_fn = _make_combined_regime_fn(
                 fold_symbols_data,
