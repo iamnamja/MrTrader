@@ -59,9 +59,9 @@ Phase LS1 (DONE)      swing_short_v1 design spec (Opus 4.7)      2026-05-27  DEF
 
 ── ACTIVE MISSION: Find honest long-side edge (3-week timebox) ──────────────
 
-Phase LX1 (NEXT)      Experiment: equal-weight 4 IC features + B2 overlay    ~2 days
-Phase LX2             Experiment: v186 honest clean re-run                    ~1 day
-Phase LX3             Experiment: B2+overlay with XGBoost 4-feature model     ~2 days
+Phase LX1 (DONE)      Experiment: equal-weight 5 IC features + B2 overlay    2026-05-27  avg Sharpe +0.557
+Phase LX2 (DONE)      Experiment: v186 honest clean re-run                   2026-05-27  avg Sharpe +0.171 FAIL — XGBoost 82 features worse than equal-weight
+Phase LX3 (NEXT)      Experiment: Retrain XGBoost on 5 IC-validated features only        ~2 days
 Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
 
 ── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────

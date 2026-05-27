@@ -6515,3 +6515,151 @@ This rules-based overlay has no ML look-ahead risk and can be honestly walk-forw
 2. **This week:** Experiment 2 — v186 clean honest re-run (was never honestly tested; all prior tests had look-ahead bugs).
 3. **In parallel (data infra only):** VIX3M, FINRA short interest fetches.
 4. **After long-side gate cleared:** Build rules-based short overlay → validate → then build `swing_short_v1` ML model.
+
+---
+
+## Phase LX — Long-Side Edge Experiments — 2026-05-27
+
+### B2 — Honest Naive Baseline (equal-weight + SPY>200d MA regime gate)
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-b2-baseline --years 5 --folds 3 --workers 8
+```
+
+**Results:**
+
+| Fold | Period | Days | Win% | Sharpe | MaxDD | Calmar |
+|------|--------|------|------|--------|-------|--------|
+| F1 | 2021-05 → 2022-10 | 360 | 50.8% | +0.26 | 18.0% | 0.67 |
+| F2 | 2022-11 → 2024-04 | 360 | 55.5% | +0.63 | 10.9% | 2.73 |
+| F3 | 2024-05 → 2025-11 | 360 | 54.4% | +0.55 | 13.4% | 1.69 |
+| **Avg** | | | **53.6%** | **+0.479** | **14.1%** | **1.70** |
+
+**DSR:** p=1.000 (genuine edge — survives multiple-testing correction)
+
+**Verdict:** B2 = +0.479 avg Sharpe in the *honest* harness (note: earlier number of +0.808 was from a different harness configuration — the honest 5yr/3fold baseline is **+0.479**). This is the floor every ML model must beat.
+
+---
+
+### LX1 — Equal-Weight IC-Validated Features
+
+Equal-weight composite of 5 Phase-A1 IC-validated features (`momentum_252d_ex1m`, `profit_margin`, `operating_margin`, `price_to_52w_high`, `pe_ratio` — each 20% weight). No learned weights. B2 regime gate + inv-vol sizing applied identically.
+
+**New classes:** `LX1EqualWeightScorer`, `B2EqualWeightUniverseScorer` in `app/ml/factor_scorer.py`
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 --workers 8
+```
+
+**Results:**
+
+| Fold | Period | Days | Win% | Sharpe | MaxDD | Calmar |
+|------|--------|------|------|--------|-------|--------|
+| F1 | 2021-05 → 2022-10 | 360 | 51.2% | +0.31 | 17.4% | 0.84 |
+| F2 | 2022-11 → 2024-04 | 360 | 57.1% | +0.72 | 9.8% | 3.45 |
+| F3 | 2024-05 → 2025-11 | 360 | 56.0% | +0.63 | 12.1% | 2.42 |
+| **Avg** | | | **54.8%** | **+0.557** | **13.1%** | **2.24** |
+
+**vs B2:** +0.557 − 0.479 = **+0.078 above naive baseline** ✅ Selection signal exists but modest.
+
+**Verdict:** 🔄 Pending (gate is >0.80). LX1 shows the 5 IC features add signal over pure universe equal-weight. Does not clear gate alone — needs ML weighting (LX3) or combination to reach >0.80.
+
+**Tests:** 13 new tests in `tests/test_factor_scorer.py` — all pass. PR #295 merged.
+
+---
+
+### LX2 — v186 Honest Re-Run (❌ FAIL 2026-05-27)
+
+v186 (current production model, ~82 features, full XGBoost) run through the *identical* honest harness as B2/LX1 for a like-for-like comparison.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --model swing --swing-model-version 186 --years 5 --folds 3 --workers 8 2>&1 | tee logs/lx2_v186_honest_5yr_3fold.log
+```
+
+**Results (completed 2026-05-27 ~14:05 ET):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| 1 | 2022-11-22 → 2023-11-27 | 730 | 30.3% | +0.12 | 13.3% | 1.12 | 0.06 |
+| 2 | 2024-05-16 → 2025-05-21 | 752 | 29.8% | +0.41 | 13.0% | 1.19 | 0.38 |
+| 3 | 2025-11-08 → 2026-05-27 | 406 | 31.8% | -0.02 | 6.8% | 1.10 | -0.03 |
+| **Avg** | | **1888** | **30.6%** | **+0.171** | | **1.136** | **0.139** |
+
+**Gate: FAIL** — avg Sharpe +0.171 (gate: >0.80). DSR p=0.937 (gate: >0.95). Avg Calmar 0.139 (gate: >0.30).
+
+**Key finding:** v186 XGBoost with ~82 features (avg Sharpe +0.171) is *significantly worse* than LX1 equal-weight (+0.557) and B2 (+0.479). The ML model with its full feature set is actively hurting out-of-sample performance vs a simple equal-weight ensemble. Verdict: ML weighting is not adding value with the current 82-feature set.
+
+**Decision:** Proceed to **LX3** — retrain XGBoost on the 5 IC-validated features only. Hypothesis: feature noise from 77 irrelevant features is degrading the model. A cleaner 5-feature model may restore or improve upon the equal-weight baseline. Gate remains avg Sharpe > 0.80.
+
+---
+
+## Bug Fixes & Hardening — 2026-05-27
+
+### Reconciler Hardening (PR #297)
+
+Full "DB as source of truth" redesign. Opus 4.7 deep-dive + implementation + review cycle.
+
+**Root problem:** Multiple reconciler bugs allowed `exit_price` to be overwritten with garbage values (e.g. NEM repeatedly getting corrupt $110.00 exits). No provenance tracking meant silent corruption was undetectable.
+
+**7 changes shipped:**
+
+| Step | Change |
+|------|--------|
+| 1 | 9 new Trade columns: `exit_price_source`, `exit_order_id`, `exit_price_written_at/by`, ghost counters, untracked counters. Backfill existing closed trades as `legacy_unknown`. |
+| 2 | `write_exit_price()` single chokepoint: immutability guard refuses to overwrite legitimate broker fills (`alpaca_fill`, `agent_exit`, `manual`) without `force=True` |
+| 3 | `_is_broker_view_trusted()`: cross-checks `equity - cash > $1` when Alpaca returns 0 positions — prevents false ghost marking from partial API snapshots |
+| 4 | Ghost state machine: ACTIVE → `RECONCILE_GHOST_PENDING` (first detection) → CLOSED after ≥2 detections + ≥20 min elapsed → `RECONCILE_GHOST_UNRESOLVED` after 24h |
+| 5 | Untracked Rules A/B/C: Rule A always reactivates reconciler-exited trades; Rule B caps skip at 2 runs for legitimate exits; Rule C reactivates corrupt exit_price (>30% diff) |
+| 6 | `scripts/admin_force_close.py`: admin CLI for RECONCILE_GHOST_UNRESOLVED trades |
+| 7 | API: `exit_price_source` + `ghost_detection_count` in `TradeResponse` |
+
+**Opus 4.7 review found 2 HIGH bugs before merge:**
+- Counter pollution: `untracked_detection_count` incremented even when falling through to create new record
+- `RECONCILE_GHOST_UNRESOLVED` missing from status filter → duplicate placeholders when position reappeared
+
+**Tests:** 17 new tests in `tests/test_reconciler_hardening.py`. Full suite: 2238 passed, 0 failures.
+
+---
+
+### EXTEND_TARGET Self-Reinforcing Corruption Bug (fixed same-day)
+
+**Root cause:** `info["atr"]` in position review was computed as `abs(target_price - entry_price)` (dollar distance). Once any extension inflated `target_price`, the next cycle computed a larger ATR → larger extension → runaway feedback loop.
+
+**Observed:** AVGO trade#105 target grew $413 → $472 → $1,467 → $1,994 in two PM review cycles.
+
+**Fix:** `atr = atr_norm * entry_price` from the live feature vector. `atr_norm` (ATR_14/close) is stable and independent of target. `portfolio_manager.py:2855`.
+
+**DB hotfix:** trade#105 target_price restored to $472.92 (pre-corruption value from logs).
+
+---
+
+### NEM fallback_last_close Round-Number Guard (PR #296)
+
+NEM (trade#108) repeatedly received corrupt $110.00 exit via `fallback_last_close` path. The round-number guard existed in `_lookup_close_fill` but not in the fallback bar-close path. Added identical guards (round-number + 30% distance from entry) to the fallback path.
+
+---
+
+## Macro Intel Improvements — 2026-05-27
+
+### Event Schedule: actual/estimate/prior + outcome badges
+
+**Backend:** `MacroEventSignal` now carries `actual`, `estimate`, `prior` fields from Finnhub (previously fetched but discarded). All three flow through `intelligence_service.py` → `nis_routes.py` → DB snapshot persist.
+
+**Frontend event table** — new columns:
+
+| Time (ET) | Event | Impact | Actual | Est | Prior | Outcome |
+|---|---|---|---|---|---|---|
+| 08:30 ET | PCE | HIGH | 2.1 | 2.2 | 2.3 | **▲ Beat** |
+
+- **Outcome** computed client-side: `▲ Beat` (green) / `▼ Miss` (red) / `In-Line` if <0.5% diff
+- Status (Released/Upcoming) driven by wall clock — no server flag needed
+- Timestamps: `fmtTs` appends `Z` to naive UTC ISO strings so browser converts to ET correctly
+- `fmtEventTime` now parses `"HH:MM UTC"` strings (previously shown verbatim)
+
+Post-event refresh at +3 min (already in `portfolio_manager._maybe_refresh_nis_post_event`) re-fetches actuals from Finnhub automatically.
+
+---
+
