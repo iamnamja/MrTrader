@@ -458,15 +458,19 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
     return result
 
 
-def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False) -> tuple:
+def _lookup_close_fill(alpaca, symbol: str, qty, is_short: bool = False, max_age_days: int = 30) -> tuple:
     """Return (filled_avg_price, order_id) for the most recent closing fill for symbol.
 
     Longs close via SELL; shorts close via BUY (cover).
+    Only considers orders filled within max_age_days to avoid matching stale historical fills
+    from when the stock traded at a completely different price level.
     """
     try:
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
-        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
+        from datetime import timezone as _tz
+        cutoff = datetime.utcnow().replace(tzinfo=_tz.utc) - timedelta(days=max_age_days)
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100, after=cutoff)
         orders = alpaca.trading_client.get_orders(req)
         target_qty = abs(int(qty or 0))
         close_side = "BUY" if is_short else "SELL"

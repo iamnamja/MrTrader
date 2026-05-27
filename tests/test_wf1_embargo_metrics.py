@@ -89,7 +89,8 @@ class TestComputeKRatio:
 
     def test_downward_curve_negative(self):
         rng = np.random.default_rng(1)
-        curve = list(np.cumsum(rng.normal(-0.5, 0.1, 100)))  # noisy downward trend
+        # Start at 100 and subtract, so all values stay positive while trending down
+        curve = list(100.0 + np.cumsum(rng.normal(-0.5, 0.1, 100)))
         assert self._k(curve) < 0
 
 
