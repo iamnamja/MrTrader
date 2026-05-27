@@ -518,6 +518,14 @@ def _lookup_close_fill(
                     fill_price, symbol, entry_price, abs(fill_price - entry_price) / entry_price * 100,
                 )
                 continue
+            # Reject suspiciously round fills (e.g. exactly $110.00) — real market
+            # fills always have cents. A zero-cent price is a sentinel/test value.
+            if fill_price == int(fill_price) and fill_price > 0:
+                logger.warning(
+                    "_lookup_close_fill: rejecting round-number fill $%.2f for %s — likely stale test/sentinel",
+                    fill_price, symbol,
+                )
+                continue
             return fill_price, str(o.id)
     except Exception as exc:
         logger.debug("_lookup_close_fill failed for %s: %s", symbol, exc)
