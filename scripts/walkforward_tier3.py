@@ -131,23 +131,30 @@ def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: flo
 
 
 def _compute_k_ratio(equity_curve: list) -> float:
-    """K-ratio = slope of cumulative return / std of annual returns.
-    Uses a simple linear regression on the equity curve index.
-    Returns 0.0 if insufficient data.
+    """K-ratio = slope of log-equity regressed on time / std(log returns), annualised.
 
-    A positive K-ratio means the equity curve trends up consistently.
+    R5b fix: the prior implementation divided slope-of-dollar-equity by
+    std-of-dollar-diffs, which is scale-dependent (a $200k account would show a
+    very different K-ratio than a $20k account on the same return path). We now
+    regress log(equity) on time and divide by the std of daily log returns, then
+    annualise by sqrt(252) so the K-ratio is comparable across capital bases.
+
+    Returns 0.0 if insufficient data or equity is non-positive anywhere.
     """
     if len(equity_curve) < 4:
         return 0.0
     try:
         y = np.array(equity_curve, dtype=float)
-        x = np.arange(len(y), dtype=float)
-        # slope via lstsq
-        slope = float(np.polyfit(x, y, 1)[0])
-        # std of differences as proxy for volatility of returns
-        diffs = np.diff(y)
-        vol = float(np.std(diffs)) if len(diffs) > 1 else 1.0
-        return slope / vol if vol > 0 else 0.0
+        if not np.all(y > 0):
+            return 0.0
+        log_y = np.log(y)
+        x = np.arange(len(log_y), dtype=float)
+        slope = float(np.polyfit(x, log_y, 1)[0])  # mean daily log return (drift)
+        log_rets = np.diff(log_y)
+        vol = float(np.std(log_rets)) if len(log_rets) > 1 else 0.0
+        if vol <= 0:
+            return 0.0
+        return (slope / vol) * float(np.sqrt(252.0))
     except Exception:
         return 0.0
 
@@ -827,6 +834,9 @@ def run_swing_walkforward(
     rebalance_dispersion_k: int = 5,
     rebalance_dispersion_L: int = 126,
     as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
+    delisted_haircut: float = 0.0,  # R5b: survivorship-realistic force-close haircut
+    per_fold_ic_weights: bool = False,  # R5b: compute Option-A per-fold IC weights
+    daily_ic_parquet: Optional[str] = None,  # R5b: path to daily_ic.parquet
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -1259,6 +1269,51 @@ def run_swing_walkforward(
         # ThreadPoolExecutor folds causes races and state contamination between folds).
         import copy
         _factor_scorer_inst = copy.deepcopy(scorer_instance) if scorer_instance is not None else None
+
+        # R5b: Option-A per-fold IC weights. When enabled, recompute IC-IR weights from
+        # daily_ic.parquet using data with date <= tr_end (PIT-safe) and inject them into
+        # supported scorer classes (IcCompositeScorer, IcCompositeV221Scorer). Other scorer
+        # classes log a notice and fall back to their static weights.
+        if per_fold_ic_weights and _factor_scorer_inst is not None:
+            from app.ml.ic_utils import compute_fold_ic_weights, find_latest_daily_ic_parquet
+            _ic_path = daily_ic_parquet or find_latest_daily_ic_parquet()
+            _scorer_cls_name = type(_factor_scorer_inst).__name__
+            _supports = _scorer_cls_name in ("IcCompositeScorer", "IcCompositeV221Scorer")
+            if _ic_path is None:
+                logger.warning(
+                    "WF R5b: --per-fold-ic-weights set but no daily_ic.parquet found; "
+                    "fold %d using static pre-fold-1 weights.", fold_idx,
+                )
+            elif not _supports:
+                logger.warning(
+                    "WF R5b: --per-fold-ic-weights set but scorer %s does not accept "
+                    "fold_ic_weights; fold %d using static weights. "
+                    "TODO: extend Option-A support to %s.",
+                    _scorer_cls_name, fold_idx, _scorer_cls_name,
+                )
+            else:
+                _fold_weights = compute_fold_ic_weights(_ic_path, tr_end)
+                if _fold_weights is None:
+                    logger.warning(
+                        "WF R5b: insufficient IC data for fold %d (tr_end=%s); using static weights.",
+                        fold_idx, tr_end,
+                    )
+                else:
+                    # Rebuild a fresh scorer with the per-fold weights so prior state is dropped.
+                    _ScorerCls = type(_factor_scorer_inst)
+                    try:
+                        _factor_scorer_inst = _ScorerCls(fold_ic_weights=_fold_weights)
+                        logger.info(
+                            "WF R5b: fold %d per-fold IC weights (tr_end=%s, %d features): %s",
+                            fold_idx, tr_end, len(_fold_weights),
+                            ", ".join(f"{k}={v:.3f}" for k, v in sorted(
+                                _fold_weights.items(), key=lambda kv: -kv[1])[:5]),
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "WF R5b: failed to rebuild %s with fold_ic_weights (%s); using static.",
+                            _scorer_cls_name, _exc,
+                        )
         # WF-R4: defensively reset stateful per-fold scorer state (EMA breadth,
         # regime flag) so a deepcopy from a pre-warmed scorer cannot leak state
         # across folds. No-op for scorers without reset().
@@ -1342,6 +1397,7 @@ def run_swing_walkforward(
             spy_hedge_vix_lo=spy_hedge_vix_lo,
             spy_hedge_vix_hi=spy_hedge_vix_hi,
             rebalance_atr_stops=rebalance_atr_stops,
+            delisted_haircut=delisted_haircut,
         )
         result = sim.run(
             fold_symbols_data,
@@ -2062,6 +2118,19 @@ def main() -> int:
                         help="P3: use paper-trading readiness gate instead of production gate. "
                              "Criteria: avg_sharpe > 0.50 and min_fold_sharpe > -0.40 (less strict). "
                              "DSR check still applies. Useful for deploy-to-paper decisions.")
+    # R5b: realism options
+    parser.add_argument("--delisted-haircut", type=float, default=0.0,
+                        help="R5b: when a position has no bar data at fold-end (delisted/halt), "
+                             "exit at entry_price*(1-haircut) for longs (or entry_price*(1-haircut) "
+                             "for shorts). Default 0.0 preserves prior behavior (P&L=0). "
+                             "Recommended: 0.90 to model bankruptcy losses.")
+    parser.add_argument("--per-fold-ic-weights", action="store_true", default=False,
+                        help="R5b: compute Option-A per-fold IC weights from daily_ic.parquet "
+                             "(filter date <= tr_end). Default off (uses static pre-2021-04-26 weights). "
+                             "Falls back to static if parquet missing or has < 252 IC observations.")
+    parser.add_argument("--daily-ic-parquet", type=str, default=None,
+                        help="R5b: explicit path to daily_ic.parquet. If omitted, auto-detect newest "
+                             "under data/diagnostics/feature_ic/.")
     # P0: sacred holdout bypass (one-shot promotion run only)
     parser.add_argument("--allow-sacred-holdout", action="store_true", default=False,
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
@@ -2255,6 +2324,9 @@ def main() -> int:
             rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
             rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
             as_of=_as_of_date,
+            delisted_haircut=getattr(args, "delisted_haircut", 0.0),
+            per_fold_ic_weights=getattr(args, "per_fold_ic_weights", False),
+            daily_ic_parquet=getattr(args, "daily_ic_parquet", None),
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)
