@@ -897,12 +897,10 @@ class AgentSimulator:
         if bars_up_to_day is None or len(bars_up_to_day) < 200:
             return False, 0.0, 0.0
         try:
-            generate_signal(
-                symbol, bars_up_to_day,
-                check_earnings=False,
-                check_regime=False,
-                backtest_mode=True,
-            )
+            # WF-R5 (H-4 cleanup): removed discarded `generate_signal(...)` call
+            # here — it computed a full indicator set whose return value was never
+            # used. PM's ML score is the entry gate; the trend/RSI/ATR logic
+            # below uses bars directly. Saves significant CPU per fold.
             closes = bars_up_to_day["close"]
             close = float(closes.iloc[-1])
 
@@ -1429,7 +1427,10 @@ class AgentSimulator:
             if _spy_df is not None:
                 _spy_col = "close" if "close" in _spy_df.columns else "Close"
                 if _spy_col in _spy_df.columns:
-                    _spy_past = _spy_df[_spy_col][_spy_df.index <= _as_of_ts].dropna()
+                    # WF-R5 (FIX 3): strict `<` to avoid using today's SPY close
+                    # for a decision made at today's open. Other SPY lookups in
+                    # this file (lines ~451/491/502/517/1645/1661) already use `<`.
+                    _spy_past = _spy_df[_spy_col][_spy_df.index < _as_of_ts].dropna()
                     if len(_spy_past) >= 273:
                         _log_rets = _np.log(_spy_past / _spy_past.shift(1)).dropna()
                         _vol_21 = float(_log_rets.iloc[-21:].std() * _np.sqrt(252))

@@ -11,10 +11,22 @@ Public API:
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+
+# WF-R5 (FIX 4): IC weights calibration cutoff. All `_V*_IC_WEIGHTS` constants
+# below were derived from daily_ic.parquet rows with `date <= 2021-04-26` (one
+# trading day before fold-1's earliest train_end at the default WF config:
+# --total-years 5 --n-folds 3 --as-of 2026-05-27). Importers (e.g. the WF
+# harness) use this constant to assert that every fold's train_end is strictly
+# greater than this cutoff — otherwise the "pre-fold" weights are in-sample
+# again. If you recompute weights with a different END_DATE in
+# `scripts/compute_factor_ic.py`, update this constant in lockstep.
+IC_WEIGHTS_CALIBRATION_END: date = date(2021, 4, 26)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
