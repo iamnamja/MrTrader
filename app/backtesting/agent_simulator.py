@@ -243,6 +243,11 @@ class AgentSimulator:
         rebalance_atr_stops: bool = False,  # set real ATR stops/targets on rebalance entries (fix payoff shape)
         spy_hedge_vix_lo: float = 0.0,      # VIX gate: below this, hedge = 0 (0=disabled)
         spy_hedge_vix_hi: float = 0.0,      # VIX gate: above this, hedge = full (0=disabled)
+        # R5b: survivorship-realistic force-close. When >0, a force-closed position with NO
+        # bar data at fold-end is exited at entry_price * (1 - haircut) for longs (or
+        # entry_price * (1 + haircut) for shorts) to model delisting losses. Default 0.0
+        # preserves prior behavior (close at entry → P&L=0) so this is opt-in.
+        delisted_haircut: float = 0.0,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -311,6 +316,7 @@ class AgentSimulator:
         self.rebalance_atr_stops = rebalance_atr_stops
         self.spy_hedge_vix_lo = spy_hedge_vix_lo
         self.spy_hedge_vix_hi = spy_hedge_vix_hi
+        self.delisted_haircut = max(0.0, min(1.0, float(delisted_haircut)))
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -613,6 +619,7 @@ class AgentSimulator:
         # Fold dataframes typically carry the full history (training + test + lookahead),
         # so iloc[-1] could be weeks past the fold's test window. We now restrict to the
         # last close on-or-before end_date.
+        _force_close_no_bar_count = 0
         for sym, pos in list(portfolio.positions.items()):
             df = symbols_data.get(sym)
             exit_price = None
@@ -621,13 +628,34 @@ class AgentSimulator:
                 if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
                     exit_price = float(_prior["close"].iloc[-1])
             if exit_price is None:
-                # Symbol has no data at fold end (delisted/gap) — exit at entry price
-                # to record the trade rather than silently discarding it.
-                logger.warning("FORCE_CLOSE: no bar data for %s at %s — closing at entry", sym, end_date)
-                exit_price = pos.entry_price
+                # Symbol has no data at fold end (delisted/halt/gap).
+                # R5b: by default we exit at entry_price (P&L=0) to record the trade
+                # rather than silently discarding it. If delisted_haircut > 0, model
+                # this as a likely delisting loss: longs lose `haircut` of entry,
+                # shorts gain `haircut` (cover at lower price).
+                _force_close_no_bar_count += 1
+                if self.delisted_haircut > 0.0:
+                    if getattr(pos, "direction", "long") == "short":
+                        exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
+                    else:
+                        exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
+                    logger.warning(
+                        "FORCE_CLOSE: no bar data for %s at %s — applying delisted_haircut=%.2f (exit=%.4f vs entry=%.4f)",
+                        sym, end_date, self.delisted_haircut, exit_price, pos.entry_price,
+                    )
+                else:
+                    logger.warning("FORCE_CLOSE: no bar data for %s at %s — closing at entry (P&L=0)", sym, end_date)
+                    exit_price = pos.entry_price
             trade, tx = self._close_position(pos, end_date, exit_price, "FORCE_CLOSE", portfolio)
             accepted_trades.append(trade)
             tx_costs_total += tx
+        if _force_close_no_bar_count > 0 and self.delisted_haircut <= 0.0:
+            logger.warning(
+                "FORCE_CLOSE: %d position(s) had no bar data at fold-end %s — P&L set to zero. "
+                "This may overstate returns if symbols were delisted/bankrupt. "
+                "Pass delisted_haircut > 0 (e.g. 0.90) to model survivorship losses.",
+                _force_close_no_bar_count, end_date,
+            )
 
         if not accepted_trades:
             return self._empty_result()

@@ -802,6 +802,19 @@ def _compute_breadth(closes: pd.DataFrame, as_of_ts: pd.Timestamp, ma_days: int 
     """Compute % of symbols with close > MA(ma_days) as of as_of_ts.
 
     Returns float [0, 1] or NaN if insufficient data.
+
+    COLD-START CAVEAT (R5b doc, 2026-05-27):
+      We require at least 50 eligible symbols (`total < 50` → NaN). In a fresh
+      walk-forward fold, the first ~5–10 trading days typically have too few
+      symbols with ma_days (200) of priors loaded into the fold's closes frame
+      (the slice handed to the scorer is the per-fold window, not the full
+      history). During this warm-up, `_update_breadth` receives NaN and returns
+      0.5 (or the prior EMA), which biases the scorer toward the QUALITY
+      regime for the first ~5–10 days regardless of the actual market state.
+      Downstream consumers (e.g. IcCompositeV220Scorer) should treat the very
+      first fold-week's regime tag as low-confidence. The simulator already
+      deepcopies+resets scorer EMA state per fold, so this cold-start happens
+      every fold, not just fold 1.
     """
     above = 0
     total = 0
@@ -882,7 +895,13 @@ class IcCompositeV220Scorer:
         return df
 
     def _update_breadth(self, raw_breadth: float) -> float:
-        """Update EMA of breadth with hysteresis and return smoothed value."""
+        """Update EMA of breadth with hysteresis and return smoothed value.
+
+        R5b cold-start note: when raw_breadth is NaN (fewer than 50 eligible
+        symbols, typical during the first ~5-10 days of a fresh WF fold) and
+        no prior EMA exists, we return 0.5 — i.e. the quality regime — until
+        enough data accumulates. See `_compute_breadth` docstring for detail.
+        """
         if not np.isfinite(raw_breadth):
             return self._breadth_ema if self._breadth_ema is not None else 0.5
         alpha = 2.0 / (5 + 1)  # span=5 EMA
