@@ -62,7 +62,18 @@ _EXIT_REASON_MAP = {
 
 def _normalise_exit_reason(reason: str) -> str:
     key = (reason or "").upper().strip()
-    return _EXIT_REASON_MAP.get(key, reason.lower() if reason else "unknown")
+    if key in _EXIT_REASON_MAP:
+        return _EXIT_REASON_MAP[key]
+    # Pattern-based normalization for dynamic PM reasons
+    if key.startswith("PM_EARNINGS_IN_") or key.startswith("EARNINGS_IN_"):
+        return "pm_earnings_proximity"
+    if key.startswith("PM_NIS_") or key.startswith("NIS_"):
+        return "pm_nis_exit"
+    if key.startswith("PM_SCORE_DEGRADED") or key.startswith("SCORE_DEGRADED"):
+        return "pm_score_degraded"
+    if key.startswith("PM_NEGATIVE_NEWS") or key.startswith("NEGATIVE_NEWS"):
+        return "pm_news_exit"
+    return reason.lower() if reason else "unknown"
 
 
 class Trader(BaseAgent):
