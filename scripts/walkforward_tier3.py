@@ -1952,6 +1952,16 @@ def main() -> int:
     parser.add_argument("--rebalance-ic-composite-v224", action="store_true", default=False,
                         help="Phase v224: momentum-enhanced — v221 + mom_63d (3m momentum), "
                              "reduced contrarian weights (reversal/downtrend x0.5).")
+    # Phase LX1 / B2 — long-side edge experiments
+    parser.add_argument("--rebalance-lx1", action="store_true", default=False,
+                        help="LX1: equal-weight 5-feature IC-validated scorer "
+                             "(momentum_252d_ex1m, profit_margin, operating_margin, "
+                             "price_to_52w_high, -pe_ratio). No learned weights. "
+                             "Phase A1 out-of-sample IC-validated features only.")
+    parser.add_argument("--rebalance-b2-baseline", action="store_true", default=False,
+                        help="B2 naive baseline: all symbols score 0.0 (no selection). "
+                             "Edge comes only from SPY>200d MA regime gate + inv-vol sizing. "
+                             "Reference floor that all selection models must beat.")
     # Phase 2 — L/S extension
     parser.add_argument("--enable-shorts", action="store_true", default=False,
                         help="Phase 2: add short sleeve to IC composite rebalance. "
@@ -2359,6 +2369,16 @@ def main() -> int:
             from app.ml.factor_scorer import IcCompositeV224Scorer
             _swing_kwargs["scorer_instance"] = IcCompositeV224Scorer()
             print("  WF: IC composite v224 mode — momentum-enhanced (v221 + mom_63d, reduced contrarian)")
+        elif getattr(args, "rebalance_lx1", False):
+            from app.ml.factor_scorer import LX1EqualWeightScorer
+            _swing_kwargs["scorer_instance"] = LX1EqualWeightScorer()
+            print("  WF: LX1 mode — equal-weight 5-feature IC-validated scorer "
+                  "(momentum_252d_ex1m, profit_margin, operating_margin, "
+                  "price_to_52w_high, -pe_ratio)")
+        elif getattr(args, "rebalance_b2_baseline", False):
+            from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+            _swing_kwargs["scorer_instance"] = B2EqualWeightUniverseScorer()
+            print("  WF: B2 baseline mode — no stock selection, regime gate + inv-vol only")
         swing_report = run_swing_walkforward(**_swing_kwargs)
         swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
         print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
