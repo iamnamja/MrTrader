@@ -127,17 +127,40 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     )
 
                     # Fallback: if Alpaca order lookup returned no fill, use the most
-                    # recent bar close so the DB always has an exit price (source of truth).
+                    # recent bar close. Apply same sanity guards as _lookup_close_fill:
+                    # reject round-number prices (real fills always have cents) and
+                    # reject prices >30% from entry (data corruption / wrong symbol).
                     if exit_price is None:
                         try:
                             bars = alpaca.get_bars(ghost.symbol, timeframe="1D", limit=2)
                             if bars is not None and not bars.empty:
-                                exit_price = float(bars["close"].iloc[-1])
-                                exit_order_id = "fallback_last_close"
-                                logger.warning(
-                                    "Trade#%d %s: no Alpaca fill found — using last bar close $%.4f as exit price",
-                                    ghost.id, ghost.symbol, exit_price,
+                                _fb_price = float(bars["close"].iloc[-1])
+                                _fb_entry = float(ghost.entry_price or 0)
+                                _fb_round = (_fb_price == int(_fb_price) and _fb_price > 0)
+                                _fb_sanity = (
+                                    _fb_entry <= 0
+                                    or abs(_fb_price - _fb_entry) / _fb_entry <= 0.30
                                 )
+                                if _fb_round:
+                                    logger.warning(
+                                        "Trade#%d %s: fallback bar close $%.4f is a round number "
+                                        "— skipping (likely stale/sentinel price, exit_price left NULL)",
+                                        ghost.id, ghost.symbol, _fb_price,
+                                    )
+                                elif not _fb_sanity:
+                                    logger.warning(
+                                        "Trade#%d %s: fallback bar close $%.4f is >30%% from entry "
+                                        "$%.4f — skipping (data corruption guard, exit_price left NULL)",
+                                        ghost.id, ghost.symbol, _fb_price, _fb_entry,
+                                    )
+                                else:
+                                    exit_price = _fb_price
+                                    exit_order_id = "fallback_last_close"
+                                    logger.warning(
+                                        "Trade#%d %s: no Alpaca fill found — using last bar close "
+                                        "$%.4f as exit price",
+                                        ghost.id, ghost.symbol, exit_price,
+                                    )
                         except Exception as _fb_exc:
                             logger.debug("Bar fallback failed for %s: %s", ghost.symbol, _fb_exc)
 
