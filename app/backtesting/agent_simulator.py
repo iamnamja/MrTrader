@@ -224,6 +224,7 @@ class AgentSimulator:
         rebalance_inv_vol_max_mult: float = 2.0,
         rebalance_spy_vol_damper: bool = False,  # Phase 91: halve gross_mult when SPY 21d vol > 80th pct
         rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
+        rebalance_hard_exit_bear: bool = False,  # LX6b: force-close ALL longs when regime==BEAR at rebalance
         # Phase 2 — L/S extension
         enable_shorts: bool = False,        # False = pure long-only (backward-compat default)
         spy_beta_hedge: bool = False,       # True = short SPY sized to long-book rolling beta (Option A)
@@ -298,6 +299,7 @@ class AgentSimulator:
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
         self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
+        self.rebalance_hard_exit_bear = rebalance_hard_exit_bear
         # Phase 2 — L/S state
         self.enable_shorts = enable_shorts
         self.spy_beta_hedge = spy_beta_hedge
@@ -1437,6 +1439,17 @@ class AgentSimulator:
         short_mult = self.short_regime_fn(day) if (self.enable_shorts and self.short_regime_fn) else (
             1.0 if self.enable_shorts else 0.0
         )
+
+        # LX6b: hard-exit — when regime is BEAR at rebalance, close ALL longs, enter nothing.
+        # Only new entries are affected by the normal entry gate; this override forces exits.
+        if self.rebalance_hard_exit_bear and long_mult <= 0.35:
+            current_longs_all = [s for s, p in portfolio.positions.items()
+                                 if getattr(p, "direction", "long") == "long"]
+            if current_longs_all:
+                from app.strategy.portfolio_construction import RebalanceDelta
+                delta = RebalanceDelta(
+                    target=[], to_add=[], to_drop=current_longs_all, held=[],
+                )
 
         def _regime_label(mult: float) -> str:
             if mult >= 0.95:
