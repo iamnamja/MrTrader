@@ -6976,7 +6976,7 @@ LX7 launches the pivot: long top-20 + short bottom-20 by the same 5-feature comp
 
 ---
 
-### LX7 — Long/Short 5-Feature Composite (🔄 IN PROGRESS — launched 2026-05-28)
+### LX7 — Long/Short 5-Feature Composite (❌ FAIL — avg +0.036)
 
 **Hypothesis:** Long top-20 + short bottom-20 by the LX1 5-feature equal-weight composite, +40% net long. Shorts in low-quality/high-vol names partially offset long losses in tail-shock regimes.
 
@@ -7000,6 +7000,46 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
 - avg ≥ +0.30 AND F2 ≥ -0.30 → **ship to paper trading** (paper-gate cleared)
 - avg +0.10 to +0.30 → run LX8 (vary gross or net exposure, or add short-specific features)
 - avg < +0.10 → L/S thesis wrong; pivot to options-overlay tail hedge on long-only LX1
+
+**Results (2026-05-28, log: wf_lx7_ls_5feature.log):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|-------------|--------|------|--------|-----|-----|--------|
+| F1 | 2022-11-23→2023-11-28 | 506 | 61.7% | **+0.07** | 17.4% | 0.92 | -0.01 |
+| F2 | 2024-05-17→2025-05-22 | 431 | 62.9% | **-0.76** | 25.6% | 0.74 | -0.76 |
+| F3 | 2025-11-09→2026-05-28 | 373 | 64.9% | **+0.79** | 14.8% | 1.18 | +1.43 |
+| **Avg** | | **1,310** | **63.2%** | **+0.036** | | | |
+
+**Gate:** avg +0.036 < +0.30 → ❌ FAIL
+
+**Verdict:** avg < +0.10 per decision rule → **L/S thesis wrong for this scorer.** Triggered pivot away from short-book.
+
+**Root cause (Opus 4.7 analysis):** Bottom-20 by the LX1 5-feature composite = value stocks at lows + post-crash growth stocks. These rally *fastest* in recovery (especially post-Aug 2024 carry unwind and post-DeepSeek). The long-side IC validation does NOT validate short-side predictiveness — low composite score does not predict negative returns, only lower positive returns. The short book added short-squeeze risk and negated the F3 recovery in long positions.
+
+**Note on fold structure:** The SWING WF (5-year, 85d purge/embargo) is the LX experiment result. Each log also contains an INTRADAY WF section (2-year, 2d purge) showing the intraday model result (~6.6 avg Sharpe) which is unrelated to the LX experiment.
+
+---
+
+### LX8 — Per-Position Trailing Stop on LX1 (🔄 IN PROGRESS — launched 2026-05-28 ~18:05)
+
+**Hypothesis:** The payoff asymmetry problem (62-66% win rate but losses > wins in magnitude) can be attacked at the individual trade level. A 7% trailing stop from high-water-mark ratchets up daily, cutting losses without requiring regime prediction or portfolio-level rules.
+
+**Mechanism:** `rebalance_flat_stop_pct=0.07` in AgentSimulator — stop starts at `entry * 0.93`, ratchets up to `prev_day_highest * 0.93` (PIT-safe: uses previous day's highest_price). Implemented in `_process_exits()` after snapshot block.
+
+**Configuration:** Same as LX1 baseline (target_n=30, add=15, drop=30, equal-weight) + 7% trailing stop.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-flat-stop 0.07 --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx8_flat_stop7pct.log
+```
+
+**Decision rule (pre-registered):**
+- avg ≥ +0.20 AND F2 ≥ -0.30 → **start paper trading LX1+stop** (paper-gate cleared)
+- avg +0.10 to +0.20 → LX9 (different stop %, e.g., 5% or 10%)
+- avg < +0.10 → pivot to short-book research (earnings revision velocity + accruals) OR declare composite exhausted
 
 ---
 

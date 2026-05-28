@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-28
 **Capital:** $100k (paper)
-**Status:** LX campaign complete (LX1-LX6). Best long-only = +0.079 (LX1 equal-weight). Pivot to L/S confirmed. **Active: LX7 — L/S 5-feature composite, +40% net long.** Paper-trade gate LOWERED to avg Sharpe ≥ +0.30 (was 0.80 — unrealistic for long-only at $100k; see Opus analysis 2026-05-28).
+**Status:** LX1-LX7 complete. LX7 (L/S) = +0.036 FAIL — short-book thesis wrong. **Active: LX8 — 7% per-position trailing stop on LX1 (running ~18:05, ETA ~20:00).** Paper-trade gate: avg Sharpe ≥ +0.30.
 
 ---
 
@@ -67,7 +67,8 @@ Phase LX5 (DONE)      Experiment: Inverse-vol position sizing on LX1 (target_n=3
 Phase LX1-rb (DONE)   Re-baseline LX1 on identical folds (--as-of 2026-05-28)    2026-05-28  avg Sharpe +0.079 FAIL — original +0.557 was fold-period artifact; honest equal-weight baseline is +0.079
 Phase LX6a (DONE)     Entry-only regime gate (VIX≥30→30% on new entries)              2026-05-28  avg -0.127 FAIL — WORSE than baseline; blocks recovery entries; ruled out
 Phase LX6b (DONE)     Hard-exit regime gate (VIX≥30→liquidate all longs at rebalance)  2026-05-28  avg -0.103 FAIL — F2 worsened (-0.72→-0.88); exits at bottom, misses bounce; ruled out. PIVOT TRIGGERED.
-Phase LX7 (IN PROGRESS) L/S: long top-20 + short bottom-20 by 5-feature composite, +40% net long  launched 2026-05-28  gate: avg≥+0.30 AND F2≥-0.30 → ship to paper
+Phase LX7 (DONE)        L/S: long top-20 + short bottom-20 by 5-feature composite, +40% net long  2026-05-28  avg +0.036 FAIL — short-book thesis wrong; bottom-20 composite = value/post-crash names that rally fastest; L/S ruled out
+Phase LX8 (IN PROGRESS) 7% per-position trailing stop on LX1 (target_n=30, equal-weight)         launched 2026-05-28 ~18:05  ETA ~20:00; gate: avg≥+0.20 AND F2≥-0.30 → paper trade
 Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
 
 ── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────
