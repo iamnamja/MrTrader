@@ -61,7 +61,9 @@ Phase LS1 (DONE)      swing_short_v1 design spec (Opus 4.7)      2026-05-27  DEF
 
 Phase LX1 (DONE)      Experiment: equal-weight 5 IC features + B2 overlay    2026-05-27  avg Sharpe +0.557
 Phase LX2 (DONE)      Experiment: v186 honest clean re-run                   2026-05-27  avg Sharpe +0.171 FAIL — XGBoost 82 features worse than equal-weight
-Phase LX3 (NEXT)      Experiment: Retrain XGBoost on 5 IC-validated features only        ~2 days
+Phase LX3 (DONE)      Experiment: Retrain XGBoost on 5 IC-validated features only        2026-05-27  avg Sharpe -2.344 FAIL — XGBoost 5 features ≪ equal-weight; ML weighting ruled out
+Phase LX4 (DONE)      Experiment: Concentrated LX1 (target_n=15) + factor-stability gate  2026-05-27  avg Sharpe -0.251 FAIL — but win rate 64.7% on 1,332 trades confirms real signal edge; problem is DD (17-25%), not direction
+Phase LX5 (NEXT)      Experiment: Volatility-scaled (inv-vol) sizing on LX1 + gross-exposure cap + sector cap — fix sizing, not signal       ~1 day
 Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
 
 ── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────

@@ -106,3 +106,6 @@ results/
 .claude/state/overnight_jobs.json
 .claude/state/last_morning_cursor.txt
 .claude/worktrees/
+
+# MCP config (may contain API keys)
+.mcp.json

@@ -1397,6 +1397,11 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
             }}>↻</button>
           </div>
         </div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>
+          Symbol <span style={{ color: C.accent, fontWeight: 700 }}>*</span> indicates a strategy-level skip
+          (no per-symbol decision was made — e.g. kill-switch, no proposals cached, model not trained).
+          Score and NIS Policy are blank for these rows by design.
+        </div>
         <div style={{ maxHeight: 260, overflowY: 'auto' }}>
           <DecisionAuditTable rows={auditRows} />
         </div>
