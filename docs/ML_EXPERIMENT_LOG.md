@@ -6693,12 +6693,84 @@ Note: `--no-fundamentals` intentionally omitted — `profit_margin`/`operating_m
 python scripts/walkforward_tier3.py --model swing --folds 3 --years 5 --swing-model-version 222 --swing-purge-days 85 --swing-embargo-days 85 --workers 8 2>&1 | tee logs/wf_lx3_v222.log
 ```
 
-**Results: PENDING** — launched 2026-05-27 ~14:30 ET.
+**Results: ❌ CATASTROPHIC FAIL (completed 2026-05-27 ~16:55 ET)**
 
-> **[UPDATE NEEDED]** Fill in fold results when `logs/wf_lx3_v222.log` completes.
-> Decision tree:
-> - LX3 ≥ 0.80 → gate cleared → Phase SD0 (short model data infra)
-> - LX3 > LX1 (0.557) but < 0.80 → ML adds value over equal-weight → LX4 (hyperparameter search / label tuning)
-> - LX3 ≤ LX1 (0.557) → 5-feature XGBoost no better than equal-weight → reconsider ML approach entirely
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| 1 | 2022-11-22 → 2023-11-27 | 120 | 20.8% | -2.01 | 5.5% | 0.52 | -0.86 |
+| 2 | 2024-05-16 → 2025-05-21 | 83 | 12.0% | -2.77 | 5.0% | 0.28 | -1.07 |
+| 3 | 2025-11-08 → 2026-05-27 | 111 | 22.5% | -2.24 | 5.8% | 0.62 | -1.36 |
+| **Avg** | | **314** | **18.5%** | **-2.344** | | **0.476** | **-1.096** |
+
+**Gate: FAIL on every criterion.** Avg Sharpe -2.344 (gate >0.80); min fold -2.775 (gate >-0.3); DSR z=-33.4 p=0.000; PF 0.476; Calmar -1.10.
+
+**Diagnosis (from `logs/retrain_lx3_v222.log`):**
+- v222 trained AUC = **0.541** (drift alert auto-triggered; the trainer itself flagged "Weak signal — AUC near random, do not trade live")
+- Holdout precision = **11.2%** — of stocks the model predicts as winners, only 11% actually win
+- Feature importance: `price_to_52w_high` 32%, `momentum_252d_ex1m` 21%, `profit_margin` 17%, `operating_margin` 16%, `pe_ratio` 14% — all five features carry weight, none dominant
+- Win-rate 18.5% on 314 OOS trades is **far below the 50% random baseline** — XGBoost has overfit the *tail* of the score distribution: the most extreme positive predictions are systematically wrong
+- 5 features × 31,483 train samples is not many features, but it is plenty of degrees of freedom for the tree ensemble (max_depth=3, n_estimators=600) to memorize spurious top-rank patterns
+- WF cs_normalize fallback ("Model has no TS norm state") is the same on v186 and v222, so feature-norm mismatch is **not** the unique LX3 cause — both models use the legacy normalizer
+
+**Conclusion (matches decision tree branch 3):** LX3 (-2.344) ≪ LX1 (+0.557). XGBoost on the 5 IC-validated features is **dramatically worse** than equal-weight on the same features. The trees memorize the tails of a near-random signal and produce inverted picks at the extremes. **ML weighting on this feature set is officially ruled out.**
+
+**Decision:** Proceed to **LX4 = concentration variant of LX1** — push the proven non-ML equal-weight baseline (+0.557) toward the 0.80 gate using portfolio-construction levers (smaller target N, factor stability gate). No XGBoost retrain; no new ML model.
+
+---
+
+### LX4 — Concentrated LX1 + Factor-Stability Gate (❌ FAIL — completed 2026-05-27)
+
+**Rationale:** LX1 (target_n=30 default) achieved +0.557 avg Sharpe; gate is 0.80. Two orthogonal levers known to lift Sharpe without changing the signal source:
+1. **Concentration** — fewer positions in the top-ranked set → higher exposure to the strongest signal, lower idiosyncratic dilution. `target_n=15`, `add_threshold=10`, `drop_threshold=20` (was 30/15/30).
+2. **Factor-stability gate (Phase 89)** — skip rebalance days when the rolling realized IC of the composite is below 0.02. Removes trades on days when the signal is currently uninformative.
+
+Both are non-ML, stateless, and orthogonal to selection logic. LX1 already passed all unit tests.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 --workers 8 \
+  --rebalance-target-n 15 --rebalance-add-threshold 10 --rebalance-drop-threshold 20 \
+  --rebalance-factor-stability-gate --as-of 2026-05-27 2>&1 | tee logs/wf_lx4_concentrated_lx1.log
+```
+
+**Results: ❌ FAIL on Sharpe — but signal edge is real (completed 2026-05-27)**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|-----|------|--------|
+| 1 [OK]   | 2022-11-22 → 2023-11-27 | 515 | 64.8% | -0.08 | 17.5% | 1.01 | -0.11 |
+| 2 [FAIL] | 2024-05-16 → 2025-05-21 | 441 | 62.6% | -0.67 | 25.1% | 0.79 | -0.75 |
+| 3 [OK]   | 2025-11-08 → 2026-05-27 | 376 | 66.5% | -0.01 | 17.7% | 1.15 | -0.18 |
+| **Avg**  |                          | **1332** | **64.7%** | **-0.251** | | | |
+
+**Gate result:** Avg Sharpe -0.251 (gate >0.80) → **FAIL**. Min fold Sharpe -0.667 (gate >-0.30) → **FAIL**.
+
+**Key observation — the signal has real directional edge:**
+- **Win rate 64.7% across 1,332 OOS trades** — far above 50% random baseline. This is a strong directional signal, dramatically better than LX3 (18.5%) and consistent with LX1 IC validation.
+- Profit factor ≥1.0 in two of three folds — the wins are paying for the losses on average.
+- The killer is **drawdown 17–25%**, not directional accuracy. Fold 2 (2024-05 → 2025-05) is the problem fold: 25.1% DD swamps the +62.6% win rate and drags Sharpe to -0.67.
+
+**Diagnosis:** LX4 = concentrated position sizing (target_n=15) on the LX1 5-feature equal-weight model. The PM/sizing path used by the walk-forward over-concentrates: when the high-conviction picks correlate (factor crowding, sector concentration), losses compound into 20%+ drawdowns even though >60% of trades win individually. The signal is real; the **position sizing is wrong**.
+
+**Intraday WF (ran alongside, existing model — not LX work):** avg Sharpe **+6.67**, PASS. No action needed; documented for completeness.
+
+**Conclusion:** Concentration alone *hurts* Sharpe vs. LX1 (+0.557 → -0.251) by amplifying tail risk. But the 64.7% win rate is the strongest evidence yet that the 5-feature composite carries real edge. The problem is sizing, not signal.
+
+---
+
+### LX5 — Volatility-Scaled Sizing on LX1 (NEXT)
+
+**Hypothesis:** The LX1 signal is real (64% win rate on 1,332 trades). Concentration (LX4) over-amplifies idiosyncratic and correlated tail risk. The fix is **risk-parity / vol-scaled position sizing**, not concentration.
+
+**Plan (do not run yet — design only):**
+1. Restore LX1 selection (target_n=30, add=15, drop=30) — the proven-edge baseline.
+2. Replace equal-dollar sizing with **inverse-volatility weights** (σ from trailing 20–60d realized vol), normalized so portfolio gross stays at 100%.
+3. Add a **gross-exposure cap when realized portfolio vol exceeds threshold** (e.g., scale down if 20d portfolio σ > 25% annualized) to truncate Fold-2-style 25% DD episodes.
+4. Optional: add a sector cap (e.g., max 30% gross per GICS sector) to reduce correlated concentration.
+5. Re-run WF Tier 3 (3 folds, 5 years).
+
+**Decision tree (LX5):**
+- LX5 ≥ 0.80 → LX-gate cleared → unlock Phase SD0.
+- LX5 > LX1 (+0.557) but < 0.80 → vol-scaling helps; combine with regime gate (LX6).
+- LX5 ≤ LX1 → sizing isn't the lever either; revisit feature universe (Phase A2 IC re-scan).
 
 ---
