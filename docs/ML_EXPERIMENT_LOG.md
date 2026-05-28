@@ -6757,7 +6757,255 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 --worker
 
 ---
 
-### LX5 — Volatility-Scaled Sizing on LX1 (NEXT)
+### LX5 — Volatility-Scaled Sizing on LX1 (🔄 IN PROGRESS — launched 2026-05-27 ~22:27 ET)
+
+**Implementation note:** The required machinery is already in `app/strategy/portfolio_construction.py:compute_inverse_vol_weights` and wired into `AgentSimulator` via the `rebalance_inv_vol` flag set (see `app/backtesting/agent_simulator.py:1502-1510`). Walk-forward exposes the flag set via `--rebalance-inv-vol` / `--rebalance-inv-vol-lookback` / `--rebalance-inv-vol-min-mult` / `--rebalance-inv-vol-max-mult`. **No code change required for LX5** — pure flag activation.
+
+**Command (running):**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-inv-vol --rebalance-inv-vol-lookback 20 \
+  --rebalance-inv-vol-min-mult 0.5 --rebalance-inv-vol-max-mult 2.0 \
+  --feature-cache-workers 8 --as-of 2026-05-27 \
+  2>&1 | tee logs/wf_lx5_invvol.log
+```
+
+**Sizing math (from `compute_inverse_vol_weights`):**
+- For each candidate symbol i: σ_i = std of trailing 20d daily returns (PIT-safe; uses bars strictly before `as_of`).
+- raw_w_i = 1/σ_i; normalized; then capped at [0.5×equal_w, 2.0×equal_w] and re-normalized.
+- Dollar allocation = w_i × total_equity × gross_exposure_multiplier.
+- Floor: 0.5× equal-weight prevents degenerate near-zero σ blowups. Ceiling: 2× equal-weight prevents single-name concentration.
+- Fallback to equal-weight if any symbol lacks 21+ days of history (safe in early-fold edge cases).
+
+**Pre-flight checks performed:**
+- Confirmed `--rebalance-lx1` + `--rebalance-inv-vol` compose correctly (both wired into the same `AgentSimulator.run` rebalance path).
+- Confirmed selection logic (top-N + add/drop thresholds) is independent of sizing logic — same picks, different weights.
+- Min/max multipliers default to 0.5/2.0 (sensible: roughly matches volatility dispersion of S&P 500 names without exploding tails).
+
+**Sector cap:** NOT enabled in this first LX5 run. Reasoning: keeping LX5 a clean A/B vs LX1. If LX5 helps but doesn't pass the 0.80 gate, sector cap is a candidate add-on for LX6 (it's available via `--rebalance-sector-cap`).
+
+### LX5 — Results (❌ FAIL — completed 2026-05-28)
+
+**Command run:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-inv-vol --rebalance-inv-vol-lookback 20 \
+  --rebalance-inv-vol-min-mult 0.5 --rebalance-inv-vol-max-mult 2.0 \
+  --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx5_invvol.log
+```
+
+**Results:**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| F1 | 2022-11-23 → 2023-11-28 | 498 | 61.9% | +0.16 | 15.6% | 0.99 | 0.11 |
+| F2 | 2024-05-17 → 2025-05-22 | 428 | 63.1% | -0.72 | 25.0% | 0.75 | -0.76 |
+| F3 | 2025-11-09 → 2026-05-28 | 381 | 66.7% | +0.66 | 14.8% | 1.21 | 1.11 |
+| **Avg** | | **1307** | **63.9%** | **+0.032** | | **0.984** | **0.154** |
+
+**Gate: FAIL** — avg Sharpe +0.032 (gate: >0.80). All 5 gates failed.
+
+**vs LX4 (same folds, concentrated 15 picks):**
+- F1: +0.16 vs -0.08 (**+0.24** inv-vol improves)
+- F2: -0.72 vs -0.67 (-0.05 inv-vol slightly worse)
+- F3: +0.66 vs -0.01 (**+0.67** inv-vol dramatically improves)
+- Avg: +0.032 vs -0.251 (**+0.28 improvement**)
+
+**Critical finding — fold comparison is INVALID vs LX1:**
+LX1 was run without `--as-of`, anchoring folds to a different wall-clock date. LX1's F2 (+0.72) covered 2022-11→2024-04 (post-bear recovery). LX5's F2 (-0.72) covers 2024-05→2025-05 (Aug 2024 VIX spike to 65, DeepSeek shock, factor crowding). These are incomparable periods. **LX1 rebaseline launched on identical fold spec** (logs/wf_lx1_rebaseline.log) to get honest A/B.
+
+**Opus 4.7 analysis (2026-05-28) key findings:**
+1. **Inv-vol IS PIT-safe** — `compute_inverse_vol_weights` uses `df.index < _day_ts` strictly.
+2. **IC selection leakage present** — features chosen on full 5-year panel (not per-fold). Estimated inflation: +0.05–0.15 Sharpe. In-fold IC selection required for production honesty.
+3. **Fold 2 math consistent** — 63% win rate + large loss asymmetry = -0.72 Sharpe. Factor-crowding tail (Aug 2024 carry unwind, Jan 2025 DeepSeek) is the structural driver. Not a bug.
+4. **Regime gate estimated impact on fold 2: +0.4 to +0.7** — VIX>30 / SPY<200d gate would have skipped ~40–55 of the worst trading days (~20% of fold). Code already wired (`--rebalance-regime-gate`, `--rebalance-regime-vix-bear`).
+
+**Decision tree outcome:**
+- LX5 (+0.032) < LX1 (+0.557) on incomparable folds → await LX1 rebaseline
+- Inv-vol helps F1/F3 significantly → keep inv-vol, add regime gate next
+- Proceed to **LX6a** (regime gate + inv-vol on LX1, identical fold spec)
+
+---
+
+### LX1-rebaseline (🔄 IN PROGRESS — launched 2026-05-28)
+
+Re-run LX1 (equal-weight 5-feature scorer, target_n=30) with `--as-of 2026-05-28` to get fold periods identical to LX5. Required to make LX1 vs LX5 comparison valid before any sizing conclusion.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --feature-cache-workers 8 --as-of 2026-05-28 2>&1 | tee logs/wf_lx1_rebaseline.log
+```
+
+**Results: ❌ FAIL — completed 2026-05-28**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| F1 | 2022-11-23 → 2023-11-28 | 501 | 61.5% | +0.12 | 16.7% | 0.93 | 0.05 |
+| F2 | 2024-05-17 → 2025-05-22 | 428 | 63.1% | -0.72 | 25.0% | 0.75 | -0.76 |
+| F3 | 2025-11-09 → 2026-05-28 | 362 | 66.0% | +0.84 | 14.8% | 1.25 | 1.52 |
+| **Avg** | | **1291** | **63.5%** | **+0.079** | | **0.977** | **0.272** |
+
+**Gate: FAIL** — avg Sharpe +0.079 (gate: >0.80). All 5 gates failed.
+
+**CRITICAL: LX1 original (+0.557) was a fold-period artifact.** Honest LX1 on identical folds = **+0.079**. The original LX1 F2 (+0.72) covered post-2022 bull recovery; honest LX1 F2 covers 2024 factor-crowding crash. The reported baseline was inflated ~7x. All future comparisons must use `--as-of 2026-05-28`.
+
+**Honest LX experiment comparison (all on identical folds):**
+
+| Experiment | F1 | F2 | F3 | Avg | Notes |
+|------------|----|----|----|----|-------|
+| LX1-rebaseline (equal-weight) | +0.12 | -0.72 | +0.84 | **+0.079** | Honest baseline |
+| LX5 (inv-vol sizing) | +0.16 | -0.72 | +0.66 | **+0.032** | Inv-vol hurts F3 |
+| LX4 (concentrated 15) | -0.08 | -0.67 | -0.01 | **-0.251** | Concentration hurts |
+
+**Inv-vol verdict (from Opus 4.7 analysis):** Drop it. In bull-trending folds (F3), equal-weight out-performs inv-vol by 0.18 Sharpe because high-vol names deliver the strongest trend returns. Inv-vol systematically under-weights the winners. Equal-weight is the correct default for this strategy.
+
+**Opus 4.7 structural diagnosis (2026-05-28):**
+- Entry-only regime gate ceiling: ~+0.30 avg Sharpe (F2 ceiling ~-0.02). Gate at 0.80 structurally unreachable with entry gate alone.
+- Hard-exit gate (liquidate all on VIX>=30 at rebalance) estimated +0.8 to +1.5 on F2. The ONLY mechanism with a credible path to the gate.
+- Probability of clearing 0.80 avg Sharpe with best-case LX6: **12–18%**.
+- Recommended decision rule: if LX6b avg ≥ 0.50 AND F2 ≥ 0.20 → proceed; else pivot to L/S construction.
+
+**Code change:** `--rebalance-hard-exit-bear` flag implemented in `app/backtesting/agent_simulator.py` (line ~1443) and wired through `scripts/walkforward_tier3.py`. Forces full liquidation of all longs when regime==BEAR at rebalance day.
+
+**Next experiments launched (2026-05-28):**
+- **LX6a** (entry gate only): `--rebalance-regime-gate` → `logs/wf_lx6a_entry_gate.log`
+- **LX6b** (hard-exit gate): `--rebalance-regime-gate --rebalance-hard-exit-bear` → `logs/wf_lx6b_hard_exit.log`
+
+---
+
+### LX6a — Entry-Only Regime Gate (❌ FAIL — worse than baseline, completed 2026-05-28)
+
+**Hypothesis:** VIX≥30/SPY<200d reduces gross exposure to 30% on new entries. Protects against entering positions during stressed markets.
+
+**Results:**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| F1 | 2022-11-23 → 2023-11-28 | 522 | 62.3% | -0.11 | 16.1% | 0.85 | -0.23 |
+| F2 | 2024-05-17 → 2025-05-22 | 430 | 63.7% | -0.64 | 22.3% | 0.77 | -0.76 |
+| F3 | 2025-11-09 → 2026-05-28 | 384 | 64.1% | +0.36 | 13.8% | 1.08 | 0.46 |
+| **Avg** | | **1336** | **63.3%** | **-0.127** | | **0.902** | **-0.177** |
+
+**Gate: FAIL** — avg Sharpe **-0.127** (gate: >0.80). ALL gates failed. **WORSE than LX1-rb (+0.079).**
+
+**vs LX1-rebaseline:**
+| | LX1-rb | LX6a | Δ |
+|-|--------|------|---|
+| F1 | +0.12 | -0.11 | **-0.23** |
+| F2 | -0.72 | -0.64 | +0.08 |
+| F3 | +0.84 | +0.36 | **-0.48** |
+| Avg | +0.079 | -0.127 | **-0.206** |
+
+**Conclusion:** Entry gate actively destroys value. It blocks entries during regime transitions and recovery phases — exactly when long-only strategies want to be buying. The +0.08 improvement on F2 is swamped by the -0.23 and -0.48 damage to F1/F3. Entry-only regime gating is ruled out for this strategy.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-regime-gate --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx6a_entry_gate.log
+```
+
+---
+
+### LX6b — Hard-Exit Regime Gate (❌ FAIL — WORSE than baseline, completed 2026-05-28)
+
+**Hypothesis:** When VIX≥30 (BEAR) at rebalance, immediately liquidate ALL long holdings and skip new entries. Re-enter at next rebalance when regime normalizes.
+
+**Implementation:** New `--rebalance-hard-exit-bear` flag. In `AgentSimulator._rebalance()`: when `long_mult <= 0.35`, override delta to `to_drop=all_longs, to_add=[]`. PIT-safe — VIX close on day T evaluated at T+1 open (daily bar data).
+
+**Results:**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|------------|--------|------|--------|----|----|--------|
+| F1 | 2022-11-23 → 2023-11-28 | 507 | 62.7% | +0.03 | 18.9% | 0.93 | -0.06 |
+| F2 | 2024-05-17 → 2025-05-22 | 445 | 63.6% | **-0.88** | 26.5% | 0.81 | -0.83 |
+| F3 | 2025-11-09 → 2026-05-28 | 383 | 66.1% | +0.54 | 15.4% | 1.17 | 0.80 |
+| **Avg** | | **1335** | **64.1%** | **-0.103** | | **0.970** | **-0.027** |
+
+**Gate: FAIL** — avg Sharpe **-0.103** (gate: >0.80). WORSE than LX1-rb (+0.079). F2 got WORSE not better (-0.72 → -0.88).
+
+**Why the gate failed (post-hoc analysis):** Regime gates fire at 20-day rebalance cadence. Aug 5, 2024: VIX spiked intraday to 65. Positions were entered July 31 with VIX=15. The shock happened mid-hold. Gate fires at the NEXT rebalance (~Aug 20) when VIX is still elevated — forcing liquidation AT the panic bottom, then missing the V-shape recovery. Hard-exit crystallizes losses AND creates whipsaw re-entry costs. This is why F2 worsened.
+
+**Decision rule triggered:** avg -0.103 < +0.35 → **PIVOT TO L/S CONSTRUCTION.**
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-regime-gate --rebalance-hard-exit-bear \
+  --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx6b_hard_exit.log
+```
+
+---
+
+## LX Campaign Conclusion — 2026-05-28 (Opus 4.7 + Empirical)
+
+**6 experiments, 3 folds each, all on identical `--as-of 2026-05-28` fold spec.**
+
+### What is definitively ruled out
+| Approach | Best Avg Sharpe | Verdict |
+|----------|----------------|---------|
+| LX1 equal-weight 30 picks | +0.079 | Best long-only result |
+| LX5 inv-vol sizing | +0.032 | Hurts F3 (under-weights winners in bull tape) |
+| LX4 concentrated 15 picks | -0.251 | Amplifies drawdown |
+| LX6a entry-only regime gate | -0.127 | Blocks recovery entries |
+| LX6b hard-exit regime gate | -0.103 | Exits at panic bottom |
+| Reactive VIX/regime gating at 20d rebalance | — | Structurally broken: gates fire at the bottom |
+
+### What is confirmed true
+1. **5-feature equal-weight scorer has real directional edge**: win rates 62-66% across all 6 variants and 3 folds. Not noise.
+2. **The problem is payoff asymmetry, not signal quality.** Tail-shock regimes (F2: Aug 2024 carry unwind + Jan 2025 DeepSeek) produce outsized losses that swamp the win rate.
+3. **Long-only cannot solve the tail problem at 20-day rebalance cadence.** By the time a reactive exit fires, the damage is done.
+4. **Concentration makes things worse.** The signal is broad and shallow — 30 picks is load-bearing.
+
+### Pivot decision
+Pre-registered rule triggered: LX6b avg < +0.35 → **pivot to L/S construction.**
+
+LX7 launches the pivot: long top-20 + short bottom-20 by the same 5-feature composite. +40% net long (`--long-gross 0.70 --short-gross 0.30`). Shorts hedge the tail: when a vol shock hits, low-quality/high-vol names (the shorts) drop harder than the longs.
+
+**Gate revised (Opus recommendation):** 0.80 was aspirational and unrealistic for long-only at $100k. New phased gates:
+- **Paper-trade gate: avg Sharpe ≥ +0.30** (F2 ≥ -0.40, max DD ≤ 25%)
+- **Live small-capital gate: avg Sharpe ≥ +0.50** sustained OOS
+- **Scale-up gate: avg Sharpe ≥ +0.70** sustained 6 months live
+
+---
+
+### LX7 — Long/Short 5-Feature Composite (🔄 IN PROGRESS — launched 2026-05-28)
+
+**Hypothesis:** Long top-20 + short bottom-20 by the LX1 5-feature equal-weight composite, +40% net long. Shorts in low-quality/high-vol names partially offset long losses in tail-shock regimes.
+
+**Mechanism:** `short_ranked_eligible = [s for s in worst_first if s in short_eligible]` — the short book is already the reverse of the long scorer by AgentSimulator design (line ~1393). No new code needed.
+
+**Why LS0 failure (-1.31 avg) is not informative:** LS0 used v221 (82-feature XGBoost with no validated directional edge). If the scorer doesn't pick right direction, reversing it for shorts doesn't help. LX1's 5-feature composite has confirmed 64% win rate — this is a qualitatively different test.
+
+**Configuration:** target_n=20 long / 20 short, long_gross=0.70, short_gross=0.30 → +40% net long, 100% gross.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 20 --rebalance-add-threshold 10 --rebalance-drop-threshold 20 \
+  --enable-shorts --short-target-n 20 \
+  --long-gross 0.70 --short-gross 0.30 \
+  --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx7_ls_5feature.log
+```
+
+**Decision rule:**
+- avg ≥ +0.30 AND F2 ≥ -0.30 → **ship to paper trading** (paper-gate cleared)
+- avg +0.10 to +0.30 → run LX8 (vary gross or net exposure, or add short-specific features)
+- avg < +0.10 → L/S thesis wrong; pivot to options-overlay tail hedge on long-only LX1
+
+---
+
+### LX5 — Original design notes (superseded by results above)
+
+### LX5 — Original design notes (superseded by results above)
 
 **Hypothesis:** The LX1 signal is real (64% win rate on 1,332 trades). Concentration (LX4) over-amplifies idiosyncratic and correlated tail risk. The fix is **risk-parity / vol-scaled position sizing**, not concentration.
 

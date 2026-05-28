@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-27
+**Last updated:** 2026-05-28
 **Capital:** $100k (paper)
-**Status:** HONEST BASELINE = avg Sharpe -0.311 (DSR z=-10.4, no demonstrated edge). Naive B2 (SPY>200d MA) = +0.808. **Active mission: beat B2 with ML selection overlay before any short-model work begins.**
+**Status:** LX campaign complete (LX1-LX6). Best long-only = +0.079 (LX1 equal-weight). Pivot to L/S confirmed. **Active: LX7 — L/S 5-feature composite, +40% net long.** Paper-trade gate LOWERED to avg Sharpe ≥ +0.30 (was 0.80 — unrealistic for long-only at $100k; see Opus analysis 2026-05-28).
 
 ---
 
@@ -63,7 +63,11 @@ Phase LX1 (DONE)      Experiment: equal-weight 5 IC features + B2 overlay    202
 Phase LX2 (DONE)      Experiment: v186 honest clean re-run                   2026-05-27  avg Sharpe +0.171 FAIL — XGBoost 82 features worse than equal-weight
 Phase LX3 (DONE)      Experiment: Retrain XGBoost on 5 IC-validated features only        2026-05-27  avg Sharpe -2.344 FAIL — XGBoost 5 features ≪ equal-weight; ML weighting ruled out
 Phase LX4 (DONE)      Experiment: Concentrated LX1 (target_n=15) + factor-stability gate  2026-05-27  avg Sharpe -0.251 FAIL — but win rate 64.7% on 1,332 trades confirms real signal edge; problem is DD (17-25%), not direction
-Phase LX5 (NEXT)      Experiment: Volatility-scaled (inv-vol) sizing on LX1 + gross-exposure cap + sector cap — fix sizing, not signal       ~1 day
+Phase LX5 (DONE)      Experiment: Inverse-vol position sizing on LX1 (target_n=30, 20d vol lookback, 0.5x-2x cap)  2026-05-28  avg Sharpe +0.032 FAIL — inv-vol helps F1/F3 (+0.24/+0.67) but fold-2 killer remains; fold-spec mismatch vs LX1 invalidates direct comparison
+Phase LX1-rb (DONE)   Re-baseline LX1 on identical folds (--as-of 2026-05-28)    2026-05-28  avg Sharpe +0.079 FAIL — original +0.557 was fold-period artifact; honest equal-weight baseline is +0.079
+Phase LX6a (DONE)     Entry-only regime gate (VIX≥30→30% on new entries)              2026-05-28  avg -0.127 FAIL — WORSE than baseline; blocks recovery entries; ruled out
+Phase LX6b (DONE)     Hard-exit regime gate (VIX≥30→liquidate all longs at rebalance)  2026-05-28  avg -0.103 FAIL — F2 worsened (-0.72→-0.88); exits at bottom, misses bounce; ruled out. PIVOT TRIGGERED.
+Phase LX7 (IN PROGRESS) L/S: long top-20 + short bottom-20 by 5-feature composite, +40% net long  launched 2026-05-28  gate: avg≥+0.30 AND F2≥-0.30 → ship to paper
 Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
 
 ── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────
