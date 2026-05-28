@@ -105,6 +105,7 @@ def _make_alpaca(symbol: str = "TSLA", fill_price: float = 200.0):
         "buying_power": 15_000.0, "cash": 15_000.0,
     }
     alpaca.get_positions.return_value = []
+    alpaca.get_position.return_value = None  # no existing position — safe to enter
     alpaca.get_quote.return_value = {
         "ask": fill_price, "bid": fill_price - 0.10, "mid": fill_price - 0.05
     }
@@ -158,7 +159,10 @@ def _base_session_patch(session_factory):
     """Patch app.agents.base.get_session to prevent log_decision() from writing
     to the real PostgreSQL DB during tests. Without this patch, TRADE_APPROVED /
     TRADE_REJECTED audit rows leak into production every time the e2e suite runs."""
-    return patch("app.agents.base.get_session", side_effect=session_factory)
+    # base.py imports get_session lazily inside log_decision(), so patch the
+    # module attribute on app.database.session (which is what the lazy import
+    # resolves to).
+    return patch("app.database.session.get_session", side_effect=session_factory)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +241,7 @@ async def test_rm_rejects_when_kill_switch_active():
     with (
         _queue_patch(),
         patch("app.agents.risk_manager.get_session", side_effect=SessionFactory),
+        _base_session_patch(SessionFactory),
         patch("app.live_trading.kill_switch.kill_switch") as mock_ks,
     ):
         mock_ks.is_active = True
@@ -290,6 +295,7 @@ async def test_rm_rejects_over_position_limit():
     with (
         _queue_patch(),
         patch("app.agents.risk_manager.get_session", side_effect=SessionFactory),
+        _base_session_patch(SessionFactory),
         patch("app.integrations.get_alpaca_client", return_value=mock_ac),
         patch("app.live_trading.kill_switch.kill_switch") as mock_ks,
     ):
@@ -485,6 +491,7 @@ async def test_full_pm_rm_trader_pipeline():
     with (
         _queue_patch(),
         patch("app.agents.risk_manager.get_session", side_effect=SessionFactory),
+        _base_session_patch(SessionFactory),
         patch("app.integrations.get_alpaca_client", return_value=alpaca),
         patch("app.calendars.earnings.earnings_calendar") as mock_ec,
         patch("app.live_trading.kill_switch.kill_switch") as mock_ks,

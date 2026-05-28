@@ -183,11 +183,13 @@ class TestSwingWalkforward:
 
         assert len(report.folds) == 2
 
-    def test_no_model_returns_empty_report(self):
+    def test_no_model_raises_value_error(self):
+        # L-5: missing model AND no factor scorer must raise explicitly (no silent empty report).
+        import pytest
         from scripts.walkforward_tier3 import run_swing_walkforward
         with patch("scripts.walkforward_tier3._load_model", return_value=(None, 0)):
-            report = run_swing_walkforward(n_folds=2, total_years=3, symbols=["AAPL"])
-        assert len(report.folds) == 0
+            with pytest.raises(ValueError, match="No swing model found"):
+                run_swing_walkforward(n_folds=2, total_years=3, symbols=["AAPL"])
 
 
 # ── Intraday walk-forward integration ─────────────────────────────────────────

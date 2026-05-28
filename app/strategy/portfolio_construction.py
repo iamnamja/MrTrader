@@ -198,6 +198,65 @@ def compute_equal_weights(
     return {sym: per_position for sym in symbols}
 
 
+# ---------------------------------------------------------------------------
+# L/S helpers
+# ---------------------------------------------------------------------------
+
+def apply_sector_cap_shorts(
+    worst_first_symbols: Sequence[str],
+    sector_map: Mapping[str, str],
+    cap: float = 0.30,
+    n_target: int = 30,
+) -> List[str]:
+    """apply_sector_cap for the short book: walk worst-first (same greedy logic)."""
+    return apply_sector_cap(worst_first_symbols, sector_map, cap=cap, n_target=n_target)
+
+
+def compute_target_portfolio_shorts(
+    worst_first_symbols: Sequence[str],
+    current_short_holdings: Iterable[str],
+    n_target: int = 30,
+    add_rank_threshold: int = 15,
+    drop_rank_threshold: int = 30,
+) -> "RebalanceDelta":
+    """Hysteresis target for the short book.
+
+    Works identically to compute_target_portfolio but the input list is already
+    worst-first (rank 1 = most-shortable). The caller reverses the IC scored list
+    before passing here.
+    """
+    return compute_target_portfolio(
+        worst_first_symbols,
+        current_short_holdings,
+        n_target=n_target,
+        add_rank_threshold=add_rank_threshold,
+        drop_rank_threshold=drop_rank_threshold,
+    )
+
+
+def split_gross_budgets(
+    equity: float,
+    net_target: float = 0.40,
+    gross_target: float = 1.50,
+    long_regime_mult: float = 1.0,
+    short_regime_mult: float = 1.0,
+) -> tuple:
+    """Compute per-side dollar budgets for L/S sizing.
+
+    Net exposure = long_gross - short_gross = net_target × equity
+    Gross exposure = long_gross + short_gross = gross_target × equity
+
+    Solving:
+        long_gross  = equity × (gross_target + net_target) / 2
+        short_gross = equity × (gross_target - net_target) / 2
+
+    Returns (long_budget, short_budget) after applying per-side regime multipliers.
+    """
+    long_base = equity * (gross_target + net_target) / 2.0
+    short_base = equity * (gross_target - net_target) / 2.0
+    return long_base * long_regime_mult, short_base * short_regime_mult
+
+
 def compute_inverse_vol_weights(
     symbols: Sequence[str],
     bars_map: Mapping[str, "pd.DataFrame"],

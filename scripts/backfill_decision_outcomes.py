@@ -43,7 +43,8 @@ def _fetch_price_change(symbol: str, from_dt: datetime, hours_forward: float) ->
         close_price = float(bars.iloc[target_idx]["close"])
         if open_price <= 0:
             return None
-        return round((close_price - open_price) / open_price * 100, 4)
+        # Return as fraction (0.0464 = 4.64%) — frontend renders × 100.
+        return round((close_price - open_price) / open_price, 6)
     except Exception as exc:
         logger.debug("Price fetch failed for %s: %s", symbol, exc)
         return None
@@ -73,11 +74,13 @@ def run(lookback_days: int = 14, dry_run: bool = False) -> int:
 
             # outcome_pnl_pct: realized P&L for entered trades
             if row.final_decision == "enter" and row.outcome_pnl_pct is None:
+                _dec = row.decided_at.replace(tzinfo=None) if row.decided_at.tzinfo else row.decided_at
                 trade = (
                     db.query(Trade)
                     .filter(
                         Trade.symbol == row.symbol,
-                        Trade.created_at >= row.decided_at.replace(tzinfo=None) - timedelta(minutes=30),
+                        Trade.created_at >= _dec - timedelta(minutes=30),
+                        Trade.created_at <= _dec + timedelta(minutes=30),
                         Trade.status == "CLOSED",
                     )
                     .order_by(Trade.created_at)
@@ -86,7 +89,8 @@ def run(lookback_days: int = 14, dry_run: bool = False) -> int:
                 if trade and trade.pnl is not None and trade.entry_price and trade.quantity:
                     cost_basis = trade.entry_price * trade.quantity
                     if cost_basis > 0:
-                        row.outcome_pnl_pct = round(trade.pnl / cost_basis * 100, 4)
+                        # Stored as fraction (0.0464 = 4.64%) — frontend renders × 100.
+                        row.outcome_pnl_pct = round(trade.pnl / cost_basis, 6)
                         changed = True
 
             # outcome_4h_pct: 4-hour price change from decision time

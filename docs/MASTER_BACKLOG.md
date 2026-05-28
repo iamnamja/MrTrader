@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-23
+**Last updated:** 2026-05-27
 **Capital:** $100k (paper)
-**Status:** v216 GATE FAILED (avg Sharpe -0.91, all 5 folds negative). Model rank-IC@20d = 0.0012 overall (noise). **By-year IC reveals regime problem, not dead features.** See Phase 1 findings below.
+**Status:** HONEST BASELINE = avg Sharpe -0.311 (DSR z=-10.4, no demonstrated edge). Naive B2 (SPY>200d MA) = +0.808. **Active mission: beat B2 with ML selection overlay before any short-model work begins.**
 
 ---
 
@@ -52,13 +52,43 @@ Full synthesis lives in `docs/QUANT_REVIEW_SYNTHESIS_2026_05_18.md`.
 ```
 Phase E (DONE)        IC + survivorship scripts                  2026-05-18
 Phase F (DONE)        L/S infrastructure                          2026-05-20
-Phase 0-align (DONE)  10 WF simulation bugs fixed, PR #256       2026-05-23
-Phase 1 (DONE)        Model rank-IC diagnostic                    2026-05-23
-Phase 2 (NEXT)        Regime-conditional IC + binary labels       ~3 days
-Phase G               PEAD strategy                               after Phase 2
-Phase H               3-month paper trading gate                  3 months
+Phase 0-align (DONE)  10 WF simulation bugs fixed, PR #288       2026-05-27
+Phase 1 (DONE)        Model rank-IC diagnostic + honest WF       2026-05-27
+Phase LS0 (DONE)      L/S experiment — enable-shorts on v221     2026-05-27  FAIL (-1.31 min fold)
+Phase LS1 (DONE)      swing_short_v1 design spec (Opus 4.7)      2026-05-27  DEFERRED (see below)
+
+── ACTIVE MISSION: Find honest long-side edge (3-week timebox) ──────────────
+
+Phase LX1 (DONE)      Experiment: equal-weight 5 IC features + B2 overlay    2026-05-27  avg Sharpe +0.557
+Phase LX2 (DONE)      Experiment: v186 honest clean re-run                   2026-05-27  avg Sharpe +0.171 FAIL — XGBoost 82 features worse than equal-weight
+Phase LX3 (DONE)      Experiment: Retrain XGBoost on 5 IC-validated features only        2026-05-27  avg Sharpe -2.344 FAIL — XGBoost 5 features ≪ equal-weight; ML weighting ruled out
+Phase LX4 (DONE)      Experiment: Concentrated LX1 (target_n=15) + factor-stability gate  2026-05-27  avg Sharpe -0.251 FAIL — but win rate 64.7% on 1,332 trades confirms real signal edge; problem is DD (17-25%), not direction
+Phase LX5 (NEXT)      Experiment: Volatility-scaled (inv-vol) sizing on LX1 + gross-exposure cap + sector cap — fix sizing, not signal       ~1 day
+Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
+
+── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────
+
+Phase SD0             Data infra: VIX3M + FINRA short interest (safe, parallel)  ~4h
+Phase SD1             Rules-based short overlay (3-day, no ML)               ~3 days
+Phase SD2             swing_short_v1 ML model (full 10-day build)            after LX-gate
+Phase SD3             30-day paper trade gate for shorts                      3 months
+
+── DOWNSTREAM (unchanged) ───────────────────────────────────────────────────
+
+Phase G               PEAD strategy                               after LX-gate
+Phase H               3-month paper trading gate                  after SD2
 Phase I               Live $100k                                  after H passes
 ```
+
+### LX-gate definition
+Long side passes when ALL of:
+- Honest WF avg Sharpe ≥ **0.80** (same gate as before)
+- No fold < **-0.30**
+- DSR p ≥ **0.95**
+- Beats naive B2 (SPY>200d MA = 0.808) by ≥ **0.10 Sharpe**
+
+### Short model deferral rationale (Opus 4.7, 2026-05-27)
+Building `swing_short_v1` on a long book with DSR z=-10.4 means every future bug is unattributable (long? short? interaction?). The same research process that produced the +0.374 false-positive will embed false positives in short-model IC selection. Fix the foundation first. Full design spec is preserved in `ML_EXPERIMENT_LOG.md` and ready for implementation the moment LX-gate clears.
 
 ### Phase 1 Key Findings (2026-05-23)
 

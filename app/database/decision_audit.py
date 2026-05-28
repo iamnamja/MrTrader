@@ -153,6 +153,9 @@ def persist_nis_macro_snapshot(
                 "consensus_summary": getattr(e, "consensus_summary", None),
                 "rationale": getattr(e, "rationale", None),
                 "already_priced_in": getattr(e, "already_priced_in", False),
+                "actual": getattr(e, "actual", None),
+                "estimate": getattr(e, "estimate", None),
+                "prior": getattr(e, "prior", None),
             })
         rationale = getattr(macro_context, "rationale", None)
 
@@ -246,10 +249,11 @@ def backfill_gate_outcomes(lookback_days: int = 7) -> dict:
                     base = row.price_at_decision
                     direction_mult = -1.0 if (row.direction or "BUY") == "SELL" else 1.0
 
+                    # Stored as fraction (0.0464 = 4.64%) — frontend renders × 100.
                     if price_4h is not None and base and base > 0:
-                        row.outcome_4h_pct = round((price_4h - base) / base * direction_mult * 100, 3)
+                        row.outcome_4h_pct = round((price_4h - base) / base * direction_mult, 6)
                     if price_1d is not None and base and base > 0:
-                        row.outcome_1d_pct = round((price_1d - base) / base * direction_mult * 100, 3)
+                        row.outcome_1d_pct = round((price_1d - base) / base * direction_mult, 6)
                     row.outcome_fetched_at = now
                     updated += 1
                 except Exception as exc:
@@ -297,10 +301,11 @@ def backfill_scan_abstention_outcomes(lookback_days: int = 7) -> dict:
                 try:
                     spy_4h, spy_1d = _fetch_outcome_prices("SPY", abstained)
                     base = row.spy_price_at_abstention
+                    # Stored as fraction (0.0464 = 4.64%) — frontend renders × 100.
                     if spy_4h is not None and base and base > 0:
-                        row.spy_outcome_4h_pct = round((spy_4h - base) / base * 100, 3)
+                        row.spy_outcome_4h_pct = round((spy_4h - base) / base, 6)
                     if spy_1d is not None and base and base > 0:
-                        row.spy_outcome_1d_pct = round((spy_1d - base) / base * 100, 3)
+                        row.spy_outcome_1d_pct = round((spy_1d - base) / base, 6)
                         # negative SPY = good abstention (we avoided a down day)
                         row.verdict = "good_abstention" if spy_1d < base else "bad_abstention"
                     row.outcome_fetched_at = now
@@ -381,11 +386,18 @@ def backfill_outcomes(lookback_days: int = 7) -> int:
             )
 
             for row in rows:
+                # Match only trades opened in a tight window around the decision —
+                # without an upper bound we'd attribute a much-later trade on the
+                # same symbol to this decision row.
+                _decided = row.decided_at
+                if _decided.tzinfo is not None:
+                    _decided = _decided.replace(tzinfo=None)
                 trade = (
                     db.query(Trade)
                     .filter(
                         Trade.symbol == row.symbol,
-                        Trade.created_at >= row.decided_at - timedelta(minutes=30),
+                        Trade.created_at >= _decided - timedelta(minutes=30),
+                        Trade.created_at <= _decided + timedelta(minutes=30),
                         Trade.status == "CLOSED",
                     )
                     .order_by(Trade.created_at)
@@ -479,9 +491,10 @@ def gate_calibration_report() -> dict:
                 # verdict: negative avg 1d = gate correctly blocked a loser (good)
                 verdict = None
                 if avg_1d is not None:
-                    if avg_1d < -0.5:
+                    # outcomes stored as fraction; ±0.5% threshold = ±0.005
+                    if avg_1d < -0.005:
                         verdict = "correct"
-                    elif avg_1d > 0.5:
+                    elif avg_1d > 0.005:
                         verdict = "recalibrate"
                     else:
                         verdict = "neutral"
@@ -491,8 +504,9 @@ def gate_calibration_report() -> dict:
                     "strategy": r.strategy,
                     "count": r.count,
                     "outcome_count": r.outcome_count,
-                    "avg_outcome_4h_pct": round(float(r.avg_4h), 3) if r.avg_4h is not None else None,
-                    "avg_outcome_1d_pct": round(avg_1d, 3) if avg_1d is not None else None,
+                    # Stored as fraction (0.0464 = 4.64%); frontend renders × 100.
+                    "avg_outcome_4h_pct": round(float(r.avg_4h), 6) if r.avg_4h is not None else None,
+                    "avg_outcome_1d_pct": round(avg_1d, 6) if avg_1d is not None else None,
                     "verdict": verdict,
                 })
 
@@ -513,7 +527,8 @@ def gate_calibration_report() -> dict:
                     "gate_category": r.gate_category,
                     "count": r.count,
                     "outcome_count": r.outcome_count,
-                    "avg_outcome_1d_pct": round(float(r.avg_1d), 3) if r.avg_1d is not None else None,
+                    # Stored as fraction; frontend renders × 100.
+                    "avg_outcome_1d_pct": round(float(r.avg_1d), 6) if r.avg_1d is not None else None,
                 }
                 for r in cat_rows
             ]

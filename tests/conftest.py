@@ -109,9 +109,12 @@ def test_client(mock_alpaca, mock_redis, db_session):
         patch("app.integrations.get_alpaca_client", return_value=mock_alpaca),
         patch("app.integrations.get_redis_queue", return_value=mock_redis),
         patch("app.database.check_db_connection", return_value=True),
-        patch("app.database.session.get_session", return_value=db_session),
-        patch("app.analytics.signal_attribution.get_session", return_value=db_session),
-        patch("app.analytics.drawdown_analyzer.get_session", return_value=db_session),
+        # Startup code calls get_session() then db.close() — give it a throwaway mock
+        # so it doesn't close the test's db_session and invalidate the transaction.
+        # Route handlers use db_session exclusively via the override_get_db dependency.
+        patch("app.database.session.get_session", return_value=MagicMock()),
+        patch("app.analytics.signal_attribution.get_session", return_value=MagicMock()),
+        patch("app.analytics.drawdown_analyzer.get_session", return_value=MagicMock()),
         patch("app.orchestrator.AgentOrchestrator.start", new_callable=AsyncMock),
         patch("app.orchestrator.AgentOrchestrator.stop", new_callable=AsyncMock),
         patch("app.main.init_db"),

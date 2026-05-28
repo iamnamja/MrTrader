@@ -54,13 +54,17 @@ function fmtPct(v: number | null | undefined) {
   if (v == null || isNaN(v)) return '—'
   return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
 }
-function fmtTs(iso: string | undefined) {
+function fmtTs(iso: string | undefined | null) {
   if (!iso) return '—'
-  // DB stores UTC without 'Z'; append it so JS parses as UTC, then display in ET
-  const normalized = iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z'
+  const normalized = /[Z+\-]\d*$/.test(iso) ? iso : iso + 'Z'
   const d = new Date(normalized)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
-    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' })
+  if (isNaN(d.getTime())) return iso
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+  const month = d.toLocaleDateString('en-US', { ...opts, month: 'long' })
+  const day   = d.toLocaleDateString('en-US', { ...opts, day: 'numeric' })
+  const year  = d.toLocaleDateString('en-US', { ...opts, year: 'numeric' })
+  const time  = d.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit', hour12: true })
+  return `${month} ${day} ${year} ${time} ET`
 }
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
@@ -760,7 +764,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
             : <div style={{ overflowY: 'auto', maxHeight: 260, flex: 1 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead><tr>
-                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Return', 'P&L', 'Stop', 'Target', 'Signal', 'Opened'].map(h =>
+                  {['Symbol', 'Type', 'Qty', 'Value', 'Entry', 'Current', 'Stop', 'Target', 'Return', 'P&L', 'Signal', 'Opened'].map(h =>
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -785,12 +789,12 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                         <td style={s.td}>{fmt$(marketValue)}</td>
                         <td style={s.td}>{fmt$(entry)}</td>
                         <td style={s.td}>{fmt$(cur)}</td>
-                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
-                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
                         <td style={{ ...s.td, color: C.red }}>{stop != null ? fmt$(stop) : '—'}</td>
                         <td style={{ ...s.td, color: C.green }}>{target != null ? fmt$(target) : '—'}</td>
+                        <td style={{ ...s.td, color: retColor }}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</td>
+                        <td style={{ ...s.td, color: retColor }}>{fmt$(pnl)}</td>
                         <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sig ?? '—'}</td>
-                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
+                        <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ? fmtTs(p.entry_date) : '—'}</td>
                       </tr>
                     )
                   })}
@@ -1041,10 +1045,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_4h_pct != null ? clr(r.avg_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_4h_pct)}
+                      {r.avg_outcome_4h_pct != null ? fmtPct(r.avg_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, ...verdictStyle(r.verdict) }}>
                       {r.verdict === 'correct' ? '✓ Correct' : r.verdict === 'recalibrate' ? '⚠ Recalibrate' : r.verdict ?? '—'}
@@ -1070,7 +1074,7 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                     <td style={{ ...s.td }}>{r.count}</td>
                     <td style={{ ...s.td, color: r.outcome_count > 0 ? C.text : C.muted }}>{r.outcome_count}</td>
                     <td style={{ ...s.td, color: r.avg_outcome_1d_pct != null ? clr(r.avg_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.avg_outcome_1d_pct)}
+                      {r.avg_outcome_1d_pct != null ? fmtPct(r.avg_outcome_1d_pct * 100) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -1100,10 +1104,10 @@ function GateCalibrationPanel({ report }: { report: GateCalibrationReport | null
                       {r.spy_first_hour_range_pct != null ? r.spy_first_hour_range_pct.toFixed(3) + '%' : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_4h_pct != null ? clr(-r.spy_outcome_4h_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_4h_pct)}
+                      {r.spy_outcome_4h_pct != null ? fmtPct(r.spy_outcome_4h_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.spy_outcome_1d_pct != null ? clr(-r.spy_outcome_1d_pct) : C.muted }}>
-                      {fmtPct(r.spy_outcome_1d_pct)}
+                      {r.spy_outcome_1d_pct != null ? fmtPct(r.spy_outcome_1d_pct * 100) : '—'}
                     </td>
                     <td style={{ ...s.td, color: r.verdict === 'good_abstention' ? C.green : r.verdict === 'bad_abstention' ? C.red : C.muted, fontWeight: 600 }}>
                       {r.verdict === 'good_abstention' ? '✓ Good' : r.verdict === 'bad_abstention' ? '⚠ Missed' : '—'}
@@ -1146,7 +1150,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Symbol', 'Type', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Unreal P&L', 'P&L %', 'Stop', 'Target', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
+              {['Symbol', 'Type', 'Qty', 'Market Value', 'Avg Entry', 'Current', 'Stop', 'Target', 'Unreal P&L', 'P&L %', 'R:R', 'Signal', 'Opened', 'Bars'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
@@ -1165,16 +1169,16 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
                       <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.trade_type ?? '—'}</td>
                       <td style={s.td}>{qty}</td>
+                      <td style={s.td}>{fmt$(mv)}</td>
                       <td style={s.td}>{fmt$(entry)}</td>
                       <td style={s.td}>{fmt$(cur)}</td>
-                      <td style={s.td}>{fmt$(mv)}</td>
-                      <td style={{ ...s.td, color: clr(pnl) }}>{fmt$(pnl)}</td>
-                      <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
                       <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
                       <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
+                      <td style={{ ...s.td, color: clr(pnl) }}>{fmt$(pnl)}</td>
+                      <td style={{ ...s.td, color: clr(pct) }}>{pct != null ? fmtPct(pct) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.risk_reward != null ? p.risk_reward.toFixed(1) + ':1' : '—'}</td>
                       <td style={{ ...s.td, color: C.blue, fontSize: 10 }}>{p.signal_type ?? '—'}</td>
-                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ?? '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.entry_date ? fmtTs(p.entry_date) : '—'}</td>
                       <td style={{ ...s.td, color: C.muted }}>{p.bars_held ?? '—'}</td>
                     </tr>
                   )
@@ -1393,6 +1397,11 @@ function SignalsPanel({ feed, decisions }: { feed: SignalRow[]; decisions: Decis
             }}>↻</button>
           </div>
         </div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>
+          Symbol <span style={{ color: C.accent, fontWeight: 700 }}>*</span> indicates a strategy-level skip
+          (no per-symbol decision was made — e.g. kill-switch, no proposals cached, model not trained).
+          Score and NIS Policy are blank for these rows by design.
+        </div>
         <div style={{ maxHeight: 260, overflowY: 'auto' }}>
           <DecisionAuditTable rows={auditRows} />
         </div>
@@ -1543,12 +1552,14 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
 // ── Macro Intel Panel ────────────────────────────────────────────────────────
 function MacroIntelPanel() {
   const [macro, setMacro] = useState<NisMacroContext | null>(null)
+  const [macroHistory, setMacroHistory] = useState<Array<{ as_of: string; overall_risk: string; global_sizing_factor: number; events_today: number }>>([])
   const [signals, setSignals] = useState<{ blocked: string[]; sized_down: string[]; signals: NisSignal[] }>({ blocked: [], sized_down: [], signals: [] })
   const [decisions, setDecisions] = useState<DecisionAuditRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true); else setLoading(true)
     try {
       const [m, sig, dec] = await Promise.all([
         api.nisMacro(),
@@ -1557,12 +1568,26 @@ function MacroIntelPanel() {
       ])
       const sigTyped = sig as { blocked: string[]; sized_down: string[]; signals: NisSignal[] }
       const decRows = ((dec as { decisions?: DecisionAuditRow[] }).decisions ?? []) as DecisionAuditRow[]
-      setMacro(m as NisMacroContext)
+      const newMacro = m as NisMacroContext
+      setMacro(newMacro)
       setDecisions(decRows)
-      // When live NIS cache is empty (server restart / premarket not yet run),
-      // synthesize blocked/sized_down from today's decision audit rows so the panel stays useful.
+      // Build refresh history: current snapshot + proxy entries from decision audit
+      const today = new Date().toISOString().slice(0, 10)
+      const seen = new Set<string>()
+      const hist: typeof macroHistory = []
+      if (newMacro?.as_of) {
+        seen.add(newMacro.as_of)
+        hist.push({ as_of: newMacro.as_of, overall_risk: newMacro.overall_risk, global_sizing_factor: newMacro.global_sizing_factor, events_today: newMacro.events_today?.length ?? 0 })
+      }
+      decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today && r.macro_risk_level)
+        .forEach(r => {
+          const key = (r.decided_at ?? '').slice(0, 16)
+          if (!seen.has(key)) { seen.add(key); hist.push({ as_of: r.decided_at ?? '', overall_risk: r.macro_risk_level ?? '', global_sizing_factor: 1, events_today: 0 }) }
+        })
+      hist.sort((a, b) => b.as_of.localeCompare(a.as_of))
+      setMacroHistory(hist)
+      // When live NIS cache is empty synthesize blocked/sized_down from decision audit
       if ((sigTyped.blocked?.length ?? 0) === 0 && (sigTyped.sized_down?.length ?? 0) === 0 && decRows.length > 0) {
-        const today = new Date().toISOString().slice(0, 10)
         const todays = decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today)
         const blocked = Array.from(new Set(todays.filter(r => r.news_action_policy === 'block_entry').map(r => r.symbol)))
         const sized_down = Array.from(new Set(
@@ -1573,10 +1598,16 @@ function MacroIntelPanel() {
         setSignals(sigTyped)
       }
     } catch (e) { /* silent */ }
-    setLoading(false)
+    if (manual) setRefreshing(false); else setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Auto-refresh every 5 minutes to pick up post-event NIS reassessments
+  useEffect(() => {
+    const id = setInterval(() => load(), 5 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [load])
 
   const risk = (macro?.overall_risk ?? '').toUpperCase()
   const riskColor = risk === 'HIGH' ? C.red : risk === 'MEDIUM' ? C.yellow : risk === 'LOW' ? C.green : C.muted
@@ -1593,23 +1624,38 @@ function MacroIntelPanel() {
     }}>{sym}</span>
   )
 
-  // Format ISO timestamp → "May 13 14:00 ET"
-  const fmtTs = (iso: string) => {
-    if (!iso) return '—'
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso  // return raw string if unparseable
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' +
-      d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
+  // fmtTs is the global function — standardized to "May 27 2026 7:42 PM ET"
+  // Parse event_time into a Date. Handles:
+  //   "12:30 UTC"  → today's date at 12:30 UTC
+  //   ISO string   → direct parse (normalised to UTC if naive)
+  const parseEventTime = (t: string | null | undefined): Date | null => {
+    if (!t) return null
+    // "HH:MM UTC" or "HH:MM ET" style
+    const m = t.match(/^(\d{1,2}):(\d{2})\s*(UTC|ET)?$/i)
+    if (m) {
+      const [, hh, mm, tz] = m
+      const today = new Date()
+      if ((tz ?? 'UTC').toUpperCase() === 'UTC') {
+        return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), +hh, +mm))
+      }
+      // ET — build as UTC offset -4/-5
+      const etOffset = today.toLocaleString('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' })
+        .match(/GMT([+-]\d+)/)?.[1]
+      const offsetH = etOffset ? parseInt(etOffset) : -4
+      return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), +hh - offsetH, +mm))
+    }
+    const normalised = /[Z+\-]\d*$/.test(t) ? t : t + 'Z'
+    const d = new Date(normalised)
+    return isNaN(d.getTime()) ? null : d
   }
-  // Format event_time which may be a plain string like "14:00 ET" or an ISO timestamp
   const fmtEventTime = (t: string | null | undefined) => {
-    if (!t) return '—'
-    const d = new Date(t)
-    if (isNaN(d.getTime())) return t  // plain string like "14:00 ET" — show as-is
+    const d = parseEventTime(t)
+    if (!d) return t ?? '—'
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
   }
 
   if (loading) return <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading Macro Intel…</div>
+  const riskColorFor = (r: string) => r === 'HIGH' ? C.red : r === 'MEDIUM' ? C.yellow : r === 'LOW' ? C.green : C.muted
 
   return (
     <div>
@@ -1636,9 +1682,14 @@ function MacroIntelPanel() {
           <div style={{ color: C.muted, fontSize: 10, marginBottom: 3 }}>INTRADAY</div>
           {blockBadge(macro?.block_new_entries ?? false)}
         </div>
-        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+        <div style={{ marginLeft: 'auto', textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
           <div style={{ color: C.muted, fontSize: 10 }}>AS OF</div>
           <div style={{ fontSize: 11, color: C.muted }}>{macro?.as_of ? fmtTs(macro.as_of) : '—'}</div>
+          <button onClick={() => load(true)} disabled={refreshing} style={{
+            marginTop: 4, padding: '3px 10px', fontSize: 10, cursor: refreshing ? 'default' : 'pointer',
+            border: `1px solid ${C.border}`, borderRadius: 4, background: 'transparent',
+            color: refreshing ? C.muted : C.accent, opacity: refreshing ? 0.5 : 1,
+          }}>{refreshing ? 'Refreshing…' : '↻ Refresh'}</button>
         </div>
       </div>
 
@@ -1653,40 +1704,66 @@ function MacroIntelPanel() {
           <div style={{ ...s.cardTitle, borderTop: `1px solid ${C.border}`, marginTop: 4, fontSize: 11 }}>
             Refresh History
           </div>
-          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 120, overflowY: 'auto' }}>
-            {macro?.as_of ? (
-              <div style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ color: C.muted, minWidth: 90 }}>{fmtTs(macro.as_of)}</span>
-                <span>
-                  <span style={{ color: riskColor, fontWeight: 600 }}>{risk}</span>
-                  <span style={{ color: C.muted }}> · {macro.global_sizing_factor}x sizing</span>
-                  {(macro.events_today?.length ?? 0) > 0 &&
-                    <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>
-                      {macro.events_today!.length} event(s) today
-                    </div>}
-                </span>
-              </div>
-            ) : <span style={{ color: C.muted }}>No history available</span>}
+          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 140, overflowY: 'auto' }}>
+            {macroHistory.length === 0
+              ? <span style={{ color: C.muted }}>No history available</span>
+              : macroHistory.map((h, i) => {
+                  const rc = riskColorFor(h.overall_risk)
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
+                      <span style={{ color: C.muted, minWidth: 110, flexShrink: 0 }}>{fmtTs(h.as_of)}</span>
+                      <span>
+                        <span style={{ color: rc, fontWeight: 600 }}>{h.overall_risk || '—'}</span>
+                        {(h.global_sizing_factor !== 1 || i === 0) &&
+                          <span style={{ color: C.muted }}> · {h.global_sizing_factor}x sizing</span>}
+                        {h.events_today > 0 &&
+                          <span style={{ color: C.muted, fontSize: 10 }}> · {h.events_today} event(s)</span>}
+                      </span>
+                    </div>
+                  )
+                })}
           </div>
         </div>
 
         <div style={s.card}>
           <div style={s.cardTitle}>Macro Event Schedule</div>
-          <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
-                <tr>{['Time (ET)', 'Event', 'Impact', 'Status'].map(h => (
+                <tr>{['Time (ET)', 'Event', 'Impact', 'Actual', 'Est', 'Prior', 'Outcome'].map(h => (
                   <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${C.border}`,
-                    color: C.muted, textAlign: 'left', fontWeight: 500 }}>{h}</th>
+                    color: C.muted, textAlign: 'left', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                 ))}</tr>
               </thead>
               <tbody>
                 {(macro?.events_today ?? []).length === 0 ? (
-                  <tr><td colSpan={4} style={{ padding: 16, color: C.muted, textAlign: 'center' }}>No events today</td></tr>
+                  <tr><td colSpan={7} style={{ padding: 16, color: C.muted, textAlign: 'center' }}>No events today</td></tr>
                 ) : (macro?.events_today ?? []).map((e, i) => {
                   const ic = (e.risk_level ?? '').toUpperCase()
                   const icColor = ic === 'HIGH' ? C.red : ic === 'MEDIUM' ? C.yellow : C.green
-                  const released = e.already_priced_in ?? false
+                  const evtD = parseEventTime(e.event_time)
+                  const released = evtD ? evtD.getTime() <= Date.now() : (e.already_priced_in ?? false)
+
+                  // Outcome: Beat / Miss / In-Line / Pending
+                  let outcomLabel = ''
+                  let outcomeColor = C.muted
+                  if (released && e.actual != null && e.estimate != null) {
+                    const diff = e.actual - e.estimate
+                    const pct = e.estimate !== 0 ? Math.abs(diff / e.estimate) : 0
+                    if (pct < 0.005) { outcomLabel = 'In-Line'; outcomeColor = C.muted }
+                    else if (diff > 0) { outcomLabel = '▲ Beat'; outcomeColor = C.green }
+                    else { outcomLabel = '▼ Miss'; outcomeColor = C.red }
+                  } else if (released && e.actual != null) {
+                    outcomLabel = 'Released'; outcomeColor = C.muted
+                  } else if (released) {
+                    outcomLabel = 'Released'; outcomeColor = C.muted
+                  } else {
+                    outcomLabel = 'Upcoming'; outcomeColor = C.accent
+                  }
+
+                  const fmtNum = (v: number | null | undefined) =>
+                    v != null ? (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(1)) : '—'
+
                   return (
                     <tr key={i} title={e.consensus_summary ?? ''} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
@@ -1694,8 +1771,13 @@ function MacroIntelPanel() {
                       </td>
                       <td style={{ padding: '5px 8px', fontWeight: 600 }}>{e.event_type}</td>
                       <td style={{ padding: '5px 8px', color: icColor }}>{ic || '—'}</td>
-                      <td style={{ padding: '5px 8px', color: released ? C.muted : C.accent }}>
-                        {released ? 'Released' : 'Upcoming'}
+                      <td style={{ padding: '5px 8px', color: e.actual != null ? C.text : C.muted, fontWeight: e.actual != null ? 600 : 400 }}>
+                        {fmtNum(e.actual)}
+                      </td>
+                      <td style={{ padding: '5px 8px', color: C.muted }}>{fmtNum(e.estimate)}</td>
+                      <td style={{ padding: '5px 8px', color: C.muted }}>{fmtNum(e.prior)}</td>
+                      <td style={{ padding: '5px 8px', color: outcomeColor, fontWeight: outcomLabel.includes('▲') || outcomLabel.includes('▼') ? 600 : 400 }}>
+                        {outcomLabel}
                       </td>
                     </tr>
                   )
@@ -1931,14 +2013,12 @@ function TopBar({ health, wsConnected }: { health: Health | null; wsConnected: b
   useEffect(() => {
     const tick = () => {
       const now = new Date()
-      const etStr = now.toLocaleTimeString('en-US', {
-        hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
-        timeZone: 'America/New_York',
-      })
-      const dateStr = now.toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric', timeZone: 'America/New_York',
-      })
-      setClock(`${dateStr}  ${etStr} ET`)
+      const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+      const month = now.toLocaleDateString('en-US', { ...opts, month: 'long' })
+      const day   = now.toLocaleDateString('en-US', { ...opts, day: 'numeric' })
+      const year  = now.toLocaleDateString('en-US', { ...opts, year: 'numeric' })
+      const time  = now.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })
+      setClock(`${month} ${day} ${year}  ${time} ET`)
     }
     tick()
     const id = setInterval(tick, 1000)
@@ -2944,7 +3024,7 @@ function WatchlistPanel({ toast }: { toast: (m: string, t?: 'success' | 'error' 
                       }}>{t.active ? 'Active' : 'Disabled'}</span>
                     </td>
                     <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>
-                      {t.added_at ? new Date(t.added_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' }) : '—'}
+                      {t.added_at ? fmtTs(t.added_at) : '—'}
                     </td>
                     <td style={s.td}>
                       <div style={{ display: 'flex', gap: 6 }}>

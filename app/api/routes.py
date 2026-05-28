@@ -384,6 +384,8 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 target_price=getattr(t, 'target_price', None),
                 created_at=t.created_at,
                 closed_at=t.closed_at,
+                exit_price_source=getattr(t, 'exit_price_source', None),
+                ghost_detection_count=getattr(t, 'ghost_detection_count', None),
             )
             for t in trades
         ]

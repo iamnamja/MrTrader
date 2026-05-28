@@ -103,6 +103,9 @@ class NewsIntelligenceService:
                 scorer_tier="haiku",
                 evaluated_at=datetime.now(timezone.utc),
                 already_priced_in=e.get("estimate") == e.get("prior"),
+                actual=e.get("actual"),
+                estimate=e.get("estimate"),
+                prior=e.get("prior"),
             ))
         return signals
 

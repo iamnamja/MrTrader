@@ -399,3 +399,159 @@ class TestFactorPortfolioScorer:
         vix_normal = pd.Series(np.full(300, 15.0), index=vix_idx)
         result = scorer(day, symbols_data, vix_history=vix_normal)
         assert result == [], "Bear market SPY should suppress all signals via regime gate"
+
+
+# =============================================================================
+# LX1EqualWeightScorer tests
+# =============================================================================
+
+class TestLX1EqualWeightScorer:
+    """Tests for the Phase LX1 equal-weight 5-feature IC-validated scorer."""
+
+    def _bars_dict(self, closes: pd.DataFrame) -> dict:
+        result = {}
+        for sym in closes.columns:
+            df = pd.DataFrame({
+                "open": closes[sym] * 0.999,
+                "high": closes[sym] * 1.005,
+                "low": closes[sym] * 0.995,
+                "close": closes[sym],
+                "volume": 1e6,
+            })
+            result[sym] = df
+        return result
+
+    def _run(self, n: int = 300, symbols=None):
+        from app.ml.factor_scorer import LX1EqualWeightScorer
+        if symbols is None:
+            symbols = [f"SYM{i:02d}" for i in range(10)]
+        closes = _closes_df(n=n, symbols=symbols)
+        symbols_data = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        scorer = LX1EqualWeightScorer()
+        return scorer(day, symbols_data)
+
+    def test_returns_list_of_tuples(self):
+        result = self._run()
+        assert isinstance(result, list)
+        assert all(isinstance(r, tuple) and len(r) == 2 for r in result)
+
+    def test_scores_are_finite(self):
+        result = self._run()
+        assert all(np.isfinite(score) for _, score in result)
+
+    def test_sorted_descending(self):
+        result = self._run()
+        scores = [s for _, s in result]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_spy_excluded(self):
+        from app.ml.factor_scorer import LX1EqualWeightScorer
+        symbols = [f"SYM{i:02d}" for i in range(5)]
+        closes = _closes_df(n=300, symbols=symbols)
+        closes["SPY"] = np.linspace(400, 500, 300)
+        symbols_data = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        scorer = LX1EqualWeightScorer()
+        result = scorer(day, symbols_data)
+        syms = [s for s, _ in result]
+        assert "SPY" not in syms
+
+    def test_insufficient_history_returns_empty(self):
+        result = self._run(n=30)  # < 60 bars required
+        assert result == []
+
+    def test_empty_symbols_data_returns_empty(self):
+        from app.ml.factor_scorer import LX1EqualWeightScorer
+        scorer = LX1EqualWeightScorer()
+        day = date(2024, 1, 15)
+        assert scorer(day, {}) == []
+
+    def test_weights_sum_to_one(self):
+        from app.ml.factor_scorer import LX1_EQ_WEIGHTS
+        assert abs(sum(LX1_EQ_WEIGHTS.values()) - 1.0) < 1e-9
+
+    def test_no_fundamentals_still_returns_scores(self):
+        """Without FMP parquet, scorer falls back to technical features only."""
+        from app.ml.factor_scorer import LX1EqualWeightScorer
+        scorer = LX1EqualWeightScorer()
+        scorer._fmp_path = "nonexistent_path_that_does_not_exist.parquet"
+        symbols = [f"SYM{i:02d}" for i in range(6)]
+        closes = _closes_df(n=300, symbols=symbols)
+        bars = {}
+        for sym in closes.columns:
+            bars[sym] = pd.DataFrame({
+                "open": closes[sym] * 0.999, "high": closes[sym] * 1.005,
+                "low": closes[sym] * 0.995, "close": closes[sym], "volume": 1e6,
+            })
+        day = closes.index[-1].date() + timedelta(days=1)
+        result = scorer(day, bars)
+        # momentum_252d_ex1m and price_to_52w_high are technical — should still score
+        assert len(result) > 0
+
+
+# =============================================================================
+# B2EqualWeightUniverseScorer tests
+# =============================================================================
+
+class TestB2EqualWeightUniverseScorer:
+    """Tests for the B2 naive baseline scorer (no stock selection)."""
+
+    def _bars_dict(self, closes: pd.DataFrame) -> dict:
+        result = {}
+        for sym in closes.columns:
+            df = pd.DataFrame({
+                "open": closes[sym] * 0.999,
+                "high": closes[sym] * 1.005,
+                "low": closes[sym] * 0.995,
+                "close": closes[sym],
+                "volume": 1e6,
+            })
+            result[sym] = df
+        return result
+
+    def test_all_scores_zero(self):
+        from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+        scorer = B2EqualWeightUniverseScorer()
+        symbols = [f"SYM{i:02d}" for i in range(5)]
+        closes = _closes_df(n=300, symbols=symbols)
+        bars = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        result = scorer(day, bars)
+        assert all(score == 0.0 for _, score in result)
+
+    def test_spy_excluded(self):
+        from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+        scorer = B2EqualWeightUniverseScorer()
+        symbols = [f"SYM{i:02d}" for i in range(5)]
+        closes = _closes_df(n=300, symbols=symbols)
+        closes["SPY"] = np.linspace(400, 500, 300)
+        bars = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        result = scorer(day, bars)
+        assert "SPY" not in [s for s, _ in result]
+
+    def test_returns_all_eligible_symbols(self):
+        from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+        scorer = B2EqualWeightUniverseScorer()
+        symbols = [f"SYM{i:02d}" for i in range(8)]
+        closes = _closes_df(n=300, symbols=symbols)
+        bars = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        result = scorer(day, bars)
+        assert len(result) == len(symbols)
+
+    def test_insufficient_history_excluded(self):
+        from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+        scorer = B2EqualWeightUniverseScorer()
+        symbols = [f"SYM{i:02d}" for i in range(5)]
+        closes = _closes_df(n=30, symbols=symbols)  # < 60 bars
+        bars = self._bars_dict(closes)
+        day = closes.index[-1].date() + timedelta(days=1)
+        result = scorer(day, bars)
+        assert result == []
+
+    def test_empty_input_returns_empty(self):
+        from app.ml.factor_scorer import B2EqualWeightUniverseScorer
+        scorer = B2EqualWeightUniverseScorer()
+        assert scorer(date(2024, 1, 15), {}) == []

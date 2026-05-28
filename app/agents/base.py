@@ -3,8 +3,39 @@ import logging
 from typing import Any, Dict, Optional
 from datetime import datetime
 
-from app.database.session import get_session
 from app.database.models import AgentDecision
+
+
+def _sanitize_reasoning(value: Any) -> Any:
+    """Recursively scrub a reasoning payload of non-JSON-serializable objects
+    (e.g. unittest.mock.Mock / MagicMock that would otherwise be stringified
+    as ``"MagicMock name='…'``"" and persisted into the live DB).
+
+    Detects mocks by class hierarchy *and* by module so test-only objects
+    never reach `agent_decisions.reasoning`. Unknown non-primitive types are
+    replaced with their ``repr`` so the column never crashes serialization.
+    """
+    try:
+        from unittest.mock import NonCallableMock
+    except Exception:  # pragma: no cover
+        NonCallableMock = ()  # type: ignore
+
+    _PRIMS = (str, int, float, bool, type(None))
+
+    def _walk(v: Any) -> Any:
+        if isinstance(v, _PRIMS):
+            return v
+        if isinstance(v, NonCallableMock) or v.__class__.__module__.startswith("unittest.mock"):
+            return "<scrubbed-mock>"
+        if isinstance(v, dict):
+            return {str(k): _walk(vv) for k, vv in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [_walk(x) for x in v]
+        return v  # let SQLAlchemy / JSON encoder handle real objects
+
+    if value is None:
+        return None
+    return _walk(value)
 
 
 class BaseAgent(ABC):
@@ -27,6 +58,10 @@ class BaseAgent(ABC):
         reasoning: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log an agent decision to the database for auditing."""
+        # Lazy import so test-level patches of app.database.session.get_session
+        # take effect (prevents test mocks from leaking into the live DB).
+        from app.database.session import get_session
+        reasoning = _sanitize_reasoning(reasoning)
         db = get_session()
         try:
             decision = AgentDecision(

@@ -1987,6 +1987,43 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             )
         return allows
 
+    def _write_skip_audit(
+        self,
+        strategy: str,
+        reason: str,
+        proposals: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Record an early-exit/skip path in decision_audit so the Signal Monitor
+        shows the "skip" outcome instead of silently dropping rows.
+
+        If `proposals` is given, write one row per proposal symbol (preserving
+        model_score / price). Otherwise write a single strategy-level row with
+        symbol='*'. Fails silently — never blocks trading.
+        """
+        try:
+            from app.database.decision_audit import write_decision
+            block_reason = f"pm_skip: {reason}"
+            if proposals:
+                for p in proposals:
+                    write_decision(
+                        symbol=p.get("symbol", "*"),
+                        strategy=strategy,
+                        final_decision="skip",
+                        model_score=float(p.get("confidence")) if p.get("confidence") is not None else None,
+                        block_reason=block_reason,
+                        price_at_decision=p.get("entry_price"),
+                        direction=p.get("direction"),
+                    )
+            else:
+                write_decision(
+                    symbol="*",
+                    strategy=strategy,
+                    final_decision="skip",
+                    block_reason=block_reason,
+                )
+        except Exception as exc:
+            self.logger.debug("skip-audit write failed (non-fatal): %s", exc)
+
     async def _send_swing_proposals(self):
         """
         09:50 ET: Forward cached swing proposals to Risk Manager.
@@ -1997,6 +2034,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         if kill_switch.is_active:
             self.logger.warning("Kill switch ACTIVE — suppressing all swing proposals")
             await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "kill_switch"})
+            self._write_skip_audit("swing", "kill_switch", self._swing_proposals)
             self._swing_proposals = []
             return
 
@@ -2005,6 +2043,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 "No swing proposals cached at send time — pre-market analysis did not run or "
                 "was cleared. Skipping today's swing proposals. Check logs for SELECTION_SKIPPED."
             )
+            self._write_skip_audit("swing", "no_proposals_cached")
             return
 
         # Phase 88: graduated opportunity score for swing (mirrors intraday gate)
@@ -2017,6 +2056,11 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             await self.log_decision(
                 "SWING_ABSTAINED",
                 reasoning={"reason": "phase88_opportunity_score_low", "score": round(swing_opp_score, 3)},
+            )
+            self._write_skip_audit(
+                "swing",
+                f"opportunity_score_low:{round(swing_opp_score, 3)}",
+                self._swing_proposals,
             )
             self._swing_proposals = []
             return
@@ -2031,6 +2075,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 await self.log_decision(
                     "SWING_ABSTAINED",
                     reasoning={"reason": f"macro event window: {event_names}"},
+                )
+                self._write_skip_audit(
+                    "swing", f"macro_event_window:{event_names}", self._swing_proposals,
                 )
                 self._swing_proposals = []
                 return
@@ -2135,6 +2182,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         if kill_switch.is_active:
             self.logger.warning("Kill switch ACTIVE — suppressing intraday scan %s", win_str)
             await self.log_decision("SELECTION_SKIPPED", reasoning={"reason": "kill_switch", "window": win_str})
+            self._write_skip_audit("intraday", f"kill_switch:{win_str}")
             return
 
         if not self.intraday_model.is_trained:
@@ -2144,6 +2192,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 "strategy": "intraday",
                 "model_version": intraday_ver,
             })
+            self._write_skip_audit("intraday", "model_not_trained")
             return
 
         # Phase 88: graduated opportunity score — replaces binary VIX/SPY gate
@@ -2152,6 +2201,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             self.logger.info(
                 "Phase 88: opportunity score %.2f < 0.35 — suppressing all intraday entries", opp_score,
             )
+            self._write_skip_audit("intraday", f"opportunity_score_low:{round(opp_score, 3)}")
             return
         # score 0.35–0.64 → cap at 2 candidates; ≥ 0.65 → normal
         _phase88_max = TOP_N_INTRADAY if opp_score >= 0.65 else 2
@@ -2164,6 +2214,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             if macro_ctx.block_new_entries:
                 event_names = ", ".join(e.event_type for e in macro_ctx.events_today)
                 self.logger.info("Macro gate: suppressing intraday entries — within %s window", event_names)
+                self._write_skip_audit("intraday", f"macro_event_window:{event_names}")
                 return
         except Exception as exc:
             self.logger.debug("Macro calendar check failed: %s", exc)
@@ -2192,6 +2243,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     "reason": "spy_hard_stop", "spy_pct": round(spy_pct, 2),
                     "strategy": "intraday", "window": win_str,
                 })
+                self._write_skip_audit(
+                    "intraday", f"spy_hard_stop:{round(spy_pct, 2)}%:{win_str}",
+                )
                 return
             elif spy_pct <= SPY_CAUTION_PCT:
                 intraday_min_conf = 0.65
@@ -2394,6 +2448,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     "Intraday daily loss cap hit (%.2f < -%.0f) — skipping %s scan",
                     intraday_day_pnl, _acct_val * INTRADAY_DAILY_LOSS_CAP_PCT, win_str,
                 )
+                self._write_skip_audit(
+                    "intraday", f"daily_loss_cap:{round(intraday_day_pnl, 2)}:{win_str}",
+                )
                 return
         except Exception as exc:
             self.logger.debug("Daily intraday P&L cap check failed (non-fatal): %s", exc)
@@ -2516,6 +2573,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 )
             except Exception:
                 pass
+            self._write_skip_audit("intraday", _gate_reason)
             return
 
         # Gate 1C: melt-up compression guard — catch sustained low-vol melt-up regime
@@ -2562,6 +2620,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     )
                 except Exception:
                     pass
+                self._write_skip_audit("intraday", "gate1c_meltup")
                 return
 
         # Gate 1B: score-spread abstention — reduce picks if model has no strong opinion
@@ -2594,11 +2653,13 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
 
         if not selected:
             self.logger.info("No intraday candidates above confidence threshold (or all on cooldown)")
+            self._write_skip_audit("intraday", f"no_candidates_above_threshold:{win_str}")
             return
 
         from app.live_trading.kill_switch import kill_switch
         if kill_switch.is_active:
             self.logger.warning("Intraday scan: kill switch active — suppressing proposals")
+            self._write_skip_audit("intraday", f"kill_switch_late:{win_str}")
             return
 
         self.logger.info("Intraday selected: %s", [s for s, _ in selected])
@@ -2846,15 +2907,16 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     _, probs = self.model.predict(x)
                     _model_ver = str(getattr(self.model, "version", "unknown"))
                     log_predict("live", _live_run_id, _live_asof, _model_ver, _feat_hash, np.array(probs), [trade.symbol])
+                    _entry_px = float(trade.entry_price or 0)
+                    # atr = atr_norm * entry_price (dollar ATR); never derive from target_price
+                    # because target may have been extended and would corrupt the extension math.
+                    _atr_norm_live = float(feats.get("atr_norm", 0.015))
                     results[trade.symbol] = {
                         "score": float(probs[0]),
                         "trade_id": trade.id,
-                        "entry_price": float(trade.entry_price or 0),
+                        "entry_price": _entry_px,
                         "target_price": float(trade.target_price or 0),
-                        "atr": (
-                            abs(float(trade.target_price or 0) - float(trade.entry_price or 0))
-                            if trade.target_price and trade.entry_price else 0.0
-                        ),
+                        "atr": round(_atr_norm_live * _entry_px, 4) if _entry_px > 0 else 0.0,
                     }
                 except Exception as exc:
                     self.logger.debug("Re-score failed for %s: %s", trade.symbol, exc)
