@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-29
 **Capital:** $100k (paper)
-**Status:** LX1–LX8 complete. Root cause identified by Opus 4.7: **beta-in-the-book** — composite loads on high-beta/momentum names that get killed in vol spikes. All timing-based fixes (gates, stops, regime) ruled out. **Active: LX9-B1 (10d rebalance cadence, launched ~22:30).** Next: LX9-A (beta-neutralize feature ranking). Paper-trade gate: avg Sharpe ≥ +0.30. Opus recommends paper-trading LX1 baseline in parallel while researching.
+**Status:** LX1–LX9-B1 complete. All timing fixes ruled out (cadence, gates, stops, L/S). **Active: LX9-A — beta-neutralize feature ranking (Opus building, WF launch pending).** Root cause: composite loads on high-beta names. Fix: residualize features vs trailing 252d beta-to-SPY before ranking. C1/C2/C3 production corruption bugs fixed (PR #306 in CI). Paper-trade gate: avg Sharpe ≥ +0.30.
 
 ---
 
@@ -69,8 +69,8 @@ Phase LX6a (DONE)     Entry-only regime gate (VIX≥30→30% on new entries)    
 Phase LX6b (DONE)     Hard-exit regime gate (VIX≥30→liquidate all longs at rebalance)  2026-05-28  avg -0.103 FAIL — F2 worsened (-0.72→-0.88); exits at bottom, misses bounce; ruled out. PIVOT TRIGGERED.
 Phase LX7 (DONE)        L/S: long top-20 + short bottom-20 by 5-feature composite, +40% net long  2026-05-28  avg +0.036 FAIL — short-book thesis wrong; bottom-20 composite = value/post-crash names that rally fastest; L/S ruled out
 Phase LX8 (DONE)        7% per-position trailing stop on LX1 (bug-fixed as LX8b)                 2026-05-28  avg -0.207 FAIL — stop cuts winners (PF 0.957); bug found: stop fired on swing-model positions too (fixed in PR #305). Root cause confirmed: timing interventions don't fix beta exposure problem.
-Phase LX9-B1 (IN PROGRESS) 10-day rebalance cycle on LX1 (test if cadence addresses F2 shock timing)  launched 2026-05-28 ~22:30  gate: F2≥-0.40 AND F1/F3 positive → run LX9-B2/A
-Phase LX9-A (PENDING)   Beta-neutralize feature ranking (residualize vs trailing 1Y beta-to-SPY)    highest P(success)~45% per Opus; requires new code
+Phase LX9-B1 (DONE)      10-day rebalance cycle on LX1                                              2026-05-29  avg +0.057 FAIL — F2=-0.72 unchanged; cadence definitively not the lever; all timing fixes ruled out
+Phase LX9-A (IN PROGRESS) Beta-neutralize feature ranking (OLS residualize vs trailing 252d beta-to-SPY)  implementation by Opus 4.7; WF launch pending  P(success)~45%; highest-conviction structural fix remaining
 Phase LX-gate         Long side honest WF Sharpe > 0.8 → UNLOCK short model
 
 ── SHORT SIDE (deferred until LX-gate passes) ───────────────────────────────
