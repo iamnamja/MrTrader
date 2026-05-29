@@ -740,6 +740,7 @@ class ModelTrainer:
         exclude_risk_off_days: bool = False,
         use_union_label: bool = False,  # Phase 90: OR(5d, 15d) label captures slow grind
         allow_sacred_holdout: bool = False,  # P0: explicit bypass for one-shot promotion run
+        promote_to_active: bool = False,  # C1: only retrain_cron may auto-promote (after WF gate)
     ) -> int:
         """
         Full pipeline: fetch -> rolling windows -> features -> train -> save.
@@ -748,6 +749,7 @@ class ModelTrainer:
         symbols = symbols or RUSSELL_1000_TICKERS
         years = years or settings.historical_data_years
         self._use_union_label = use_union_label  # Phase 90: accessible to _windows_to_matrix
+        self._promote_to_active = promote_to_active  # C1: pass-through for regime-split path
 
         # Option C: apply LABEL_HORIZON_DAYS from retrain_config (default 5).
         # Mutates module globals so all downstream label / window code uses the
@@ -1051,7 +1053,8 @@ class ModelTrainer:
 
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
-        self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics)
+        self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics,
+                             promote_to_active=promote_to_active)
 
         # Persist TS normalizer state for inference parity (Fix 2).
         # Must be loaded before prediction — without this, live features are
@@ -1160,7 +1163,8 @@ class ModelTrainer:
             )
             metrics.update(wf_metrics)
 
-        self._record_version(version, len(X_train), len(X_test), low_path, years, metrics)
+        self._record_version(version, len(X_train), len(X_test), low_path, years, metrics,
+                             promote_to_active=getattr(self, "_promote_to_active", False))
         return version
 
     # ── Data fetching ─────────────────────────────────────────────────────────
@@ -2832,8 +2836,16 @@ class ModelTrainer:
 
     def _record_version(
         self, version: int, n_train: int, n_test: int,
-        model_path: str, years: int, metrics: Dict
+        model_path: str, years: int, metrics: Dict,
+        promote_to_active: bool = False,
     ) -> None:
+        """Record a trained swing model version.
+
+        C1 fix: defaults to status=CANDIDATE so background training scripts
+        cannot corrupt live trading. Only callers that have run a walk-forward
+        gate immediately after training (i.e. retrain_cron.py) should pass
+        promote_to_active=True to perform the ACTIVE/RETIRED swap.
+        """
         try:
             db = get_session()
         except Exception as exc:
@@ -2842,11 +2854,19 @@ class ModelTrainer:
         try:
             end_dt = datetime.now()
             start_dt = end_dt - timedelta(days=365 * years)
-            # Retire previous ACTIVE swing versions — only one should be active at a time
-            prev = db.query(ModelVersion).filter_by(model_name="swing", status="ACTIVE").all()
-            for p in prev:
-                p.status = "RETIRED"
-                logger.info("Retired swing v%d", p.version)
+            if promote_to_active:
+                # Retire previous ACTIVE swing versions — only one should be active at a time
+                prev = db.query(ModelVersion).filter_by(model_name="swing", status="ACTIVE").all()
+                for p in prev:
+                    p.status = "RETIRED"
+                    logger.info("Retired swing v%d", p.version)
+                new_status = "ACTIVE"
+            else:
+                new_status = "CANDIDATE"
+                logger.info(
+                    "Swing v%d recorded as CANDIDATE — must pass WF gate + promote_lkg.py to go ACTIVE",
+                    version,
+                )
             db.add(ModelVersion(
                 model_name="swing",
                 version=version,
@@ -2859,7 +2879,7 @@ class ModelTrainer:
                     "tier3_avg_sharpe": None,
                     "tier3_fold_sharpes": None,
                 },
-                status="ACTIVE",
+                status=new_status,
                 model_path=model_path,
             ))
             db.commit()

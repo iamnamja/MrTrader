@@ -82,12 +82,16 @@ def main() -> int:
     try:
         from app.ml.intraday_training import IntradayModelTrainer
         trainer = IntradayModelTrainer(model_dir=args.model_dir)
+        # C1: scripts/retrain_intraday.py never auto-promotes — model is saved as
+        # CANDIDATE until walk-forward gate validates it. Use promote_lkg.py to activate.
         version = trainer.train_model(
             days=args.days,
             use_ranker=args.ranker,
             top_n_by_liquidity=args.top_n_liquidity,
+            promote_to_active=False,
         )
-        logger.info("Retrain complete — new intraday model version: v%d", version)
+        logger.info("Retrain complete — new intraday model version: v%d (CANDIDATE)", version)
+        logger.info("Model saved as CANDIDATE — run walkforward_tier3.py then promote_lkg.py to activate.")
     except Exception as exc:
         logger.error("Retrain failed: %s", exc, exc_info=True)
         return 1
