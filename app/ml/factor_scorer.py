@@ -1629,6 +1629,199 @@ class LX1EqualWeightScorer:
 
 
 # =============================================================================
+# LX9-A — beta-residualized LX1 scorer (Phase LX9-A, 2026-05-29)
+# Root cause of F2 collapse: "beta-in-the-book" — composite loads on high-beta
+# momentum names that crash in VIX spikes (Daniel-Moskowitz 2016).
+# Fix: cross-sectionally regress each raw feature vs trailing 252d beta to SPY
+# at each rebalance date. Use residuals for ranking, not raw feature values.
+# =============================================================================
+
+
+def _compute_trailing_beta(closes: pd.DataFrame, as_of: pd.Timestamp, window: int = 252) -> pd.Series:
+    """Trailing OLS beta of each stock vs SPY over [as_of-window, as_of).
+
+    Returns a Series indexed by symbol, NaN for stocks with insufficient history.
+    Strict PIT: uses only rows with index < as_of.
+    """
+    spy_col = next((c for c in ("SPY", "^SPY") if c in closes.columns), None)
+    if spy_col is None:
+        return pd.Series(dtype=float)
+
+    mask = closes.index < as_of
+    sub = closes.loc[mask].iloc[-window:]
+    if len(sub) < 30:
+        return pd.Series(dtype=float)
+
+    spy_ret = sub[spy_col].pct_change().dropna()
+    if spy_ret.std() < 1e-9:
+        return pd.Series(dtype=float)
+
+    betas = {}
+    for sym in sub.columns:
+        if sym in ("SPY", "^SPY", "^VIX", "VIX"):
+            continue
+        stock_ret = sub[sym].pct_change().dropna()
+        common = spy_ret.index.intersection(stock_ret.index)
+        if len(common) < 30:
+            continue
+        x = spy_ret.loc[common].values
+        y = stock_ret.loc[common].values
+        cov_xy = float(np.cov(x, y)[0, 1])
+        var_x = float(np.var(x))
+        if var_x > 1e-12:
+            betas[sym] = cov_xy / var_x
+    return pd.Series(betas)
+
+
+def _beta_residualize(raw_features: dict[str, dict[str, float]], betas: pd.Series) -> dict[str, dict[str, float]]:
+    """OLS-residualize each feature series vs beta cross-sectionally.
+
+    For each feature f: residual_i = f_i - (alpha + beta_coef * beta_i)
+    where alpha and beta_coef are OLS estimates from the cross-section.
+    Only symbols with a known beta are residualized; others pass through unchanged.
+    """
+    result = {k: dict(v) for k, v in raw_features.items()}
+    if betas.empty:
+        return result
+
+    for feat, vals_dict in raw_features.items():
+        vals = pd.Series(vals_dict)
+        common = vals.index.intersection(betas.index)
+        if len(common) < 5:
+            continue
+        y = vals.loc[common].values.astype(float)
+        x = betas.loc[common].values.astype(float)
+        # OLS: y = a + b*x
+        x_dm = x - x.mean()
+        var_x = float(np.var(x_dm))
+        if var_x < 1e-12:
+            continue
+        b = float(np.dot(x_dm, y - y.mean()) / (var_x * len(x)))
+        a = y.mean() - b * x.mean()
+        for sym in common:
+            result[feat][sym] = vals_dict[sym] - (a + b * float(betas[sym]))
+    return result
+
+
+class LX9ABetaNeutralScorer(LX1EqualWeightScorer):
+    """LX9-A — pre-ranking beta residualization of LX1 features.
+
+    At each rebalance date: compute trailing 252d OLS beta vs SPY for each
+    stock, then OLS-regress each raw feature on beta cross-sectionally.
+    Rank stocks by residual composite score (beta-orthogonal signal).
+
+    Hypothesis: removing the market-beta component of momentum/quality
+    prevents loading on high-beta names that crash during VIX spikes
+    (Aug 2024 yen carry unwind, Jan 2025 DeepSeek shock).
+    """
+
+    def __call__(self, day, symbols_data: dict, vix_history=None) -> list:
+        as_of_ts = pd.Timestamp(day)
+        _day_d = as_of_ts.date() if hasattr(as_of_ts, "date") else day
+
+        close_cols: dict = {}
+        for sym, df in symbols_data.items():
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            mask = (
+                df.index.date < _day_d
+                if hasattr(df.index[0], "date")
+                else df.index < as_of_ts
+            )
+            _past_raw = df.loc[mask, "close"] if mask.any() else pd.Series(dtype=float)
+            past = _past_raw.iloc[:, 0] if isinstance(_past_raw, pd.DataFrame) else _past_raw
+            if len(past) >= 60:
+                close_cols[sym] = past
+
+        if not close_cols:
+            return []
+
+        closes = pd.DataFrame(close_cols)
+        closes.index = pd.to_datetime(closes.index)
+
+        # Add SPY to closes for beta computation (if present in symbols_data)
+        if "SPY" in symbols_data and "SPY" not in closes.columns:
+            spy_df = symbols_data["SPY"]
+            if spy_df is not None and not spy_df.empty and "close" in spy_df.columns:
+                mask_spy = (
+                    spy_df.index.date < _day_d
+                    if hasattr(spy_df.index[0], "date")
+                    else spy_df.index < as_of_ts
+                )
+                spy_past = spy_df.loc[mask_spy, "close"]
+                if isinstance(spy_past, pd.DataFrame):
+                    spy_past = spy_past.iloc[:, 0]
+                if len(spy_past) >= 60:
+                    closes["SPY"] = spy_past
+
+        fund = self._get_fundamentals(as_of_ts)
+
+        # Compute per-symbol trailing betas
+        betas = _compute_trailing_beta(closes, as_of_ts, window=252)
+
+        # Compute raw feature scores (reuse _compute_weighted_score internals)
+        # We need raw_features before z-scoring — extract them manually
+        raw_features: dict[str, dict[str, float]] = {k: {} for k in LX1_EQ_WEIGHTS}
+
+        for sym in closes.columns:
+            if sym in ("SPY", "^SPY", "^VIX", "VIX"):
+                continue
+            col = closes[sym].dropna()
+            if len(col) < 60:
+                continue
+            mask = col.index < as_of_ts
+            past = col[mask]
+            if len(past) < 60:
+                continue
+            idx = len(past)
+
+            if "momentum_252d_ex1m" in raw_features and idx >= 252:
+                c_now = float(past.iloc[-21]) if idx >= 21 else float(past.iloc[-1])
+                c_start = float(past.iloc[-252])
+                if c_start > 1e-9:
+                    raw_features["momentum_252d_ex1m"][sym] = (c_now / c_start) - 1.0
+
+            if "price_to_52w_high" in raw_features and idx >= 252:
+                h52 = float(past.iloc[-252:].max())
+                if h52 > 1e-9:
+                    raw_features["price_to_52w_high"][sym] = float(past.iloc[-1]) / h52
+
+        if not fund.empty:
+            for feat, sign in [("profit_margin", 1), ("operating_margin", 1), ("pe_ratio", -1)]:
+                if feat in raw_features and feat in fund.columns:
+                    for sym, val in fund[feat].items():
+                        if sym in closes.columns and not np.isnan(val):
+                            raw_features[feat][sym] = sign * val
+
+        # Beta-residualize each feature cross-sectionally
+        raw_features = _beta_residualize(raw_features, betas)
+
+        # Z-score and combine
+        score_df_parts: list[pd.Series] = []
+        for feat, w in LX1_EQ_WEIGHTS.items():
+            if w <= 0:
+                continue
+            vals = pd.Series(raw_features.get(feat, {})).dropna()
+            if len(vals) < 5:
+                continue
+            z = _zscore_cross(vals) * w
+            score_df_parts.append(z)
+
+        if not score_df_parts:
+            return []
+
+        scores = pd.concat(score_df_parts, axis=1).sum(axis=1, min_count=1).dropna()
+        if scores.empty:
+            return []
+
+        return sorted(
+            [(sym, float(scores[sym])) for sym in scores.index if sym not in ("SPY", "^SPY")],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+
+# =============================================================================
 # Phase B2 — naive baseline scorer (no selection, regime gate + inv-vol only)
 # All symbols score 0.0 so top-N selection is arbitrary (universe order).
 # The only edge from this scorer comes from the SPY>200d MA regime gate

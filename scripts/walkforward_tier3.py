@@ -1974,6 +1974,10 @@ def main() -> int:
                         help="B2 naive baseline: all symbols score 0.0 (no selection). "
                              "Edge comes only from SPY>200d MA regime gate + inv-vol sizing. "
                              "Reference floor that all selection models must beat.")
+    parser.add_argument("--rebalance-beta-neutralize", action="store_true", default=False,
+                        help="LX9-A: beta-residualized LX1 scorer. Cross-sectionally regress "
+                             "each feature vs trailing 252d beta to SPY, rank by residuals. "
+                             "Addresses momentum crash / beta-in-the-book in VIX spikes.")
     # Phase 2 — L/S extension
     parser.add_argument("--enable-shorts", action="store_true", default=False,
                         help="Phase 2: add short sleeve to IC composite rebalance. "
@@ -2389,6 +2393,11 @@ def main() -> int:
             print("  WF: LX1 mode — equal-weight 5-feature IC-validated scorer "
                   "(momentum_252d_ex1m, profit_margin, operating_margin, "
                   "price_to_52w_high, -pe_ratio)")
+        elif getattr(args, "rebalance_beta_neutralize", False):
+            from app.ml.factor_scorer import LX9ABetaNeutralScorer
+            _swing_kwargs["scorer_instance"] = LX9ABetaNeutralScorer()
+            print("  WF: LX9-A mode — beta-residualized LX1 scorer "
+                  "(cross-sectional OLS residuals vs trailing 252d SPY beta)")
         elif getattr(args, "rebalance_b2_baseline", False):
             from app.ml.factor_scorer import B2EqualWeightUniverseScorer
             _swing_kwargs["scorer_instance"] = B2EqualWeightUniverseScorer()

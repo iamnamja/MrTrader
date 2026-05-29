@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-29
 **Capital:** $100k (paper)
-**Status:** LX1–LX9-B1 complete. All timing fixes ruled out (cadence, gates, stops, L/S). **Active: LX9-A — beta-neutralize feature ranking (Opus building, WF launch pending).** Root cause: composite loads on high-beta names. Fix: residualize features vs trailing 252d beta-to-SPY before ranking. C1/C2/C3 production corruption bugs fixed (PR #306 in CI). Paper-trade gate: avg Sharpe ≥ +0.30.
+**Status:** ⛔ **LX CAMPAIGN CLOSED** — 9 experiments (LX1 baseline, LX6a/b, LX7, LX8, LX8b, LX9-B1, LX9-A) all failed to fix F2 (Aug 2024 VIX spike). Crash-date sector audit confirmed F2 losses are structural to this universe/cadence, not addressable through feature engineering. **New focus: Intraday model (avg WF Sharpe +7.08, all folds passing)**. Swing LX1 kept as candidate for paper-trade monitoring only. C1/C2/C3 corruption bugs fixed (PR #306 merged).
 
 ---
 
