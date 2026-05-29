@@ -107,6 +107,7 @@ def run_swing(dry_run: bool) -> bool:
             fetch_fundamentals=SWING_RETRAIN["fetch_fundamentals"],
             exclude_risk_off_days=SWING_RETRAIN.get("exclude_risk_off_days", False),
             use_union_label=SWING_RETRAIN.get("use_union_label", False),
+            promote_to_active=True,  # C1: retrain_cron runs WF gate immediately below
         )
         logger.info("Swing v%d trained — running walk-forward gate...", version)
     except Exception as e:
@@ -166,6 +167,8 @@ def run_intraday(dry_run: bool) -> bool:
     trainer = IntradayModelTrainer()
     try:
         train_kwargs = {k: v for k, v in INTRADAY_RETRAIN.items() if k != "wf_folds"}
+        # C1: retrain_cron runs WF gate immediately below — allowed to auto-promote
+        train_kwargs["promote_to_active"] = True
         version = trainer.train_model(**train_kwargs)
         logger.info("Intraday v%d trained — running walk-forward gate...", version)
     except Exception as e:
