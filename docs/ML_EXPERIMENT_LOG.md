@@ -7060,7 +7060,44 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
 
 ---
 
-### LX9 — Rebalance Cadence (10d) Experiment (🔄 IN PROGRESS — launched 2026-05-28 ~22:30)
+### LX9-A — Beta-Residualized LX1 Scorer (❌ FAIL — completed 2026-05-29)
+
+**Hypothesis (from Opus 4.7):** F2 losses driven by "beta-in-the-book" — composite loads on high-beta momentum names destroyed in VIX spikes (Daniel-Moskowitz 2016). Fix: cross-sectionally OLS-regress each LX1 feature vs trailing 252d beta to SPY at each rebalance date, rank by residuals.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --rebalance-beta-neutralize --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --feature-cache-workers 8 --as-of 2026-05-28 2>&1 | tee logs/wf_lx9a_beta_neutral.log
+```
+
+**Results (5-year, 3 folds):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|-------------|--------|------|--------|----|----|--------|
+| F1 | 2022-11-23→2023-11-28 | 513 | 62.6% | **+0.06** | 16.9% | 1.01 | -0.03 |
+| F2 | 2024-05-17→2025-05-22 | 450 | 64.9% | **-0.70** | 24.4% | 0.82 | -0.77 |
+| F3 | 2025-11-09→2026-05-28 | 385 | 63.1% | **+0.73** | 14.9% | 1.14 | 1.29 |
+| **Avg** | | 1348 | 63.5% | **+0.031** | | | |
+
+**F2 vs LX1 baseline:** -0.70 vs -0.72 → **no meaningful improvement (Δ+0.02)**
+
+**Verdict: ❌ FAIL** — Beta residualization did not fix F2.
+
+**Diagnostic (crash-date book audit):**
+- LX1 book on 2024-08-01: Healthcare 6, Industrials 5, Consumer Cyclical 4, **Technology 4**, Utilities 2...
+- LX1 book on 2025-01-01: Consumer Cyclical 8, Industrials 5, Healthcare 4, **Technology 2**, CommSvc 1...
+- **IT+CommSvc was only 13% and 10% of book** on crash dates — already diversified
+- **Rules out sector concentration hypothesis (LX10 sector-neutral would not help)**
+
+**Root cause conclusion:** F2 losses are NOT beta exposure and NOT sector concentration. The LX1 composite selects a well-diversified equal-weight book. F2 Sharpe of -0.70 during a period that contained the Aug 2024 yen carry unwind (VIX→65, SPY -8%) and Jan 2025 DeepSeek shock appears to be **structural alpha degradation in the factor signal during high-uncertainty regimes** — not addressable through ranking signal engineering.
+
+**LX Campaign Decision (triggered: "F2 unchanged → composite exhausted"):**
+After 9 experiments (LX1 baseline, LX6a/b, LX7, LX8, LX8b, LX9-B1, LX9-A) ALL failing to fix F2, the LX campaign is **CLOSED**. The swing factor composite at this universe/cadence has a structural F2 ceiling. The correct next step is to **pivot research focus to intraday**, which is passing WF gates convincingly (avg +7.08, all folds positive).
+
+---
+
+### LX9-B1 — Rebalance Cadence (10d) Experiment (❌ FAIL — completed 2026-05-28)
 
 **Hypothesis (LX9-B from Opus analysis):** The 20-day hold period let the Aug 2024 shock play out inside a single fold window. A 10-day rebalance cycle forces a mid-shock re-rank, potentially re-buying quality names and reducing concentration at the peak of the panic. P(success) ~30% per Opus.
 

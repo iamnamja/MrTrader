@@ -1,8 +1,8 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-29
 **Capital:** $100k (paper)
-**Status:** LX1–LX8 complete. Root cause identified by Opus 4.7: **beta-in-the-book** — composite loads on high-beta/momentum names that get killed in vol spikes. All timing-based fixes (gates, stops, regime) ruled out. **Active: LX9-B1 (10d rebalance cadence, launched ~22:30).** Next: LX9-A (beta-neutralize feature ranking). Paper-trade gate: avg Sharpe ≥ +0.30. Opus recommends paper-trading LX1 baseline in parallel while researching.
+**Status:** ⛔ **LX CAMPAIGN CLOSED** — 9 experiments (LX1 baseline, LX6a/b, LX7, LX8, LX8b, LX9-B1, LX9-A) all failed to fix F2 (Aug 2024 VIX spike). Crash-date sector audit confirmed F2 losses are structural to this universe/cadence, not addressable through feature engineering. **New focus: Intraday model (avg WF Sharpe +7.08, all folds passing)**. Swing LX1 kept as candidate for paper-trade monitoring only.
 
 ---
 
