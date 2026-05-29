@@ -36,6 +36,7 @@ def _atomic_pickle_dump(obj: Any, path: Path) -> None:
         pickle.dump(obj, f)
     os.replace(tmp, str(path))
 
+
 # R4: Optional XGBoost hyperparameter overrides for regularization experiments.
 # Set before calling train_model() to override defaults without code changes.
 # Example: EXPERIMENT_OVERRIDES = {"reg_alpha": 2.0, "reg_lambda": 2.0, "colsample_bytree": 0.5}
