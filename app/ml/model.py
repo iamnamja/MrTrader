@@ -7,9 +7,22 @@ alone by reducing overfitting on noisy training labels.
 """
 
 import logging
+import os
 import pickle
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
+
+
+def _atomic_pickle_dump(obj: Any, path: Path) -> None:
+    """C2: atomic pickle write — write to *.tmp then os.replace.
+
+    Prevents corrupt .pkl files on disk if the process is killed mid-write,
+    which would otherwise crash the live PM at next load.
+    """
+    tmp = str(path) + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(obj, f)
+    os.replace(tmp, str(path))
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -398,20 +411,17 @@ class PortfolioSelectorModel:
         scaler_path = Path(directory) / f"{model_name}_scaler_v{version}.pkl"
         meta_path = Path(directory) / f"{model_name}_meta_v{version}.pkl"
 
-        with open(model_path, "wb") as f:
-            pickle.dump(self.model, f)
-        with open(scaler_path, "wb") as f:
-            pickle.dump(self.scaler, f)
-        with open(meta_path, "wb") as f:
-            pickle.dump({
-                "feature_names": self.feature_names,
-                "model_type": self.model_type,
-                "lr_model": self._lr_model,
-                "lgbm_model": self._lgbm_model,
-                "predict_threshold": self.predict_threshold,
-                "feature_weights": self._feature_weights,
-                "is_regression": self._is_regression,
-            }, f)
+        _atomic_pickle_dump(self.model, model_path)
+        _atomic_pickle_dump(self.scaler, scaler_path)
+        _atomic_pickle_dump({
+            "feature_names": self.feature_names,
+            "model_type": self.model_type,
+            "lr_model": self._lr_model,
+            "lgbm_model": self._lgbm_model,
+            "predict_threshold": self.predict_threshold,
+            "feature_weights": self._feature_weights,
+            "is_regression": self._is_regression,
+        }, meta_path)
 
         logger.info("Model v%d saved to %s", version, directory)
         return str(model_path)
@@ -726,8 +736,7 @@ class TwoStageModel:
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        _atomic_pickle_dump(self, path)
         logger.info("TwoStageModel v%d saved to %s", version, directory)
         return str(path)
 
@@ -873,8 +882,7 @@ class ThreeStageModel:
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        _atomic_pickle_dump(self, path)
         logger.info("ThreeStageModel v%d saved to %s", version, directory)
         return str(path)
 
@@ -1027,8 +1035,7 @@ class LambdaRankModel:
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        _atomic_pickle_dump(self, path)
         logger.info("LambdaRankModel v%d saved to %s", version, directory)
         return str(path)
 
@@ -1258,8 +1265,7 @@ class DoubleEnsembleModel:
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        _atomic_pickle_dump(self, path)
         logger.info("DoubleEnsembleModel v%d saved to %s", version, directory)
         return str(path)
 

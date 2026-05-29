@@ -119,6 +119,7 @@ class IntradayModelTrainer:
         use_ranker: bool = False,
         top_n_by_liquidity: Optional[int] = None,
         exclude_risk_off_days: bool = True,  # Phase R6: drop training rows from RISK_OFF regime days
+        promote_to_active: bool = False,  # C1: only retrain_cron may auto-promote (after WF gate)
     ) -> int:
         """
         Full pipeline: fetch/cache 5-min bars → label → features → train → save.
@@ -394,7 +395,8 @@ class IntradayModelTrainer:
             "top_n_by_liquidity": top_n_by_liquidity,
         }
         self._record_version(version, len(X_train), len(X_test), saved_path, days, metrics,
-                             training_config=training_config)
+                             training_config=training_config,
+                             promote_to_active=promote_to_active)
 
         logger.info("Total training time: %.1fs", (datetime.now() - t0).total_seconds())
         return version
@@ -860,7 +862,14 @@ class IntradayModelTrainer:
         self, version: int, n_train: int, n_test: int,
         model_path: str, days: int, metrics: Dict,
         training_config: Optional[Dict] = None,
+        promote_to_active: bool = False,
     ) -> None:
+        """Record a trained intraday model version.
+
+        C1 fix: defaults to status=CANDIDATE so background training scripts
+        cannot corrupt live trading. Only callers that have run a walk-forward
+        gate immediately after training should pass promote_to_active=True.
+        """
         try:
             db = get_session()
         except Exception as exc:
@@ -869,13 +878,21 @@ class IntradayModelTrainer:
         try:
             end_dt = datetime.utcnow()
             start_dt = end_dt - timedelta(days=days)
-            # Retire previous ACTIVE versions — only one version is active at a time
-            prev = db.query(ModelVersion).filter_by(
-                model_name="intraday", status="ACTIVE"
-            ).all()
-            for p in prev:
-                p.status = "RETIRED"
-                logger.info("Retired intraday v%d", p.version)
+            if promote_to_active:
+                # Retire previous ACTIVE versions — only one version is active at a time
+                prev = db.query(ModelVersion).filter_by(
+                    model_name="intraday", status="ACTIVE"
+                ).all()
+                for p in prev:
+                    p.status = "RETIRED"
+                    logger.info("Retired intraday v%d", p.version)
+                new_status = "ACTIVE"
+            else:
+                new_status = "CANDIDATE"
+                logger.info(
+                    "Intraday v%d recorded as CANDIDATE — must pass WF gate + promote_lkg.py to go ACTIVE",
+                    version,
+                )
             performance = {
                 **metrics,
                 "n_train": n_train,
@@ -894,11 +911,11 @@ class IntradayModelTrainer:
                 data_range_start=start_dt.strftime("%Y-%m-%d"),
                 data_range_end=end_dt.strftime("%Y-%m-%d"),
                 performance=performance,
-                status="ACTIVE",
+                status=new_status,
                 model_path=model_path,
             ))
             db.commit()
-            logger.info("Intraday model v%d recorded in DB", version)
+            logger.info("Intraday model v%d recorded in DB (status=%s)", version, new_status)
         except Exception as exc:
             db.rollback()
             logger.error("Failed to record model version: %s", exc)

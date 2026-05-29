@@ -24,6 +24,7 @@ Usage
 
 import json
 import logging
+import os
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -78,11 +79,20 @@ class DataCache:
 
     @staticmethod
     def _write_df(df: pd.DataFrame, path: Path) -> None:
-        """Write Parquet, falling back to CSV if pyarrow is unavailable."""
+        """Write Parquet atomically (write to .tmp then rename).
+
+        C3: prevents corrupt parquet files if process is killed mid-write —
+        live regime gate and price loaders would otherwise crash on read.
+        """
         try:
-            df.to_parquet(path)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            df.to_parquet(tmp)
+            os.replace(tmp, path)
         except ImportError:
-            df.to_csv(path.with_suffix(".csv"))
+            csv_path = path.with_suffix(".csv")
+            tmp_csv = csv_path.with_suffix(csv_path.suffix + ".tmp")
+            df.to_csv(tmp_csv)
+            os.replace(tmp_csv, csv_path)
 
     # ── OHLCV — daily ─────────────────────────────────────────────────────────
 

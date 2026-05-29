@@ -540,10 +540,14 @@ def run_rolling_pipeline(
         ok(f"TS norm state -> {_norm_path}")
 
     try:
+        # C1: scripts/train_model.py never auto-promotes — model is saved as CANDIDATE
+        # until walk-forward gate validates it. Use scripts/promote_lkg.py to activate.
         trainer._record_version(
-            version, len(X_train), len(X_test), path, years, metrics
+            version, len(X_train), len(X_test), path, years, metrics,
+            promote_to_active=False,
         )
-        ok(f"Version v{version} recorded in database")
+        ok(f"Version v{version} recorded in database as CANDIDATE")
+        ok("Model saved as CANDIDATE — run walkforward_tier3.py then promote_lkg.py to activate.")
     except Exception as exc:
         warn(f"DB record skipped (DB not running?): {exc}")
 
