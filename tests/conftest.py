@@ -27,6 +27,26 @@ from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import Base
 
 
+# ── Kill switch safety net ────────────────────────────────────────────────────
+# Defense-in-depth: ensure no test can ever persist kill_switch.active=True to
+# the production DB, even if a test forgets to patch the singleton.
+@pytest.fixture(autouse=True)
+def _isolate_kill_switch():
+    """Force the real kill_switch singleton to a clean, non-persisting state
+    around every test. _persist_state and _audit are also no-ops under pytest
+    (see app/live_trading/kill_switch.py::_running_under_pytest), but this
+    guarantees the in-memory flag is also reset.
+    """
+    try:
+        from app.live_trading.kill_switch import kill_switch as _ks
+        _ks._active = False
+    except Exception:
+        _ks = None
+    yield
+    if _ks is not None:
+        _ks._active = False
+
+
 # ── In-memory SQLite DB ────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
