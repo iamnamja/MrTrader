@@ -1738,15 +1738,6 @@ class LX9ABetaNeutralScorer(LX1EqualWeightScorer):
 
         closes = pd.DataFrame(close_cols)
         closes.index = pd.to_datetime(closes.index)
-        bars_past = {
-            sym: symbols_data[sym].loc[
-                (symbols_data[sym].index.date < _day_d)
-                if hasattr(symbols_data[sym].index[0], "date")
-                else (symbols_data[sym].index < as_of_ts)
-            ]
-            for sym in close_cols
-            if sym in symbols_data
-        }
 
         # Add SPY to closes for beta computation (if present in symbols_data)
         if "SPY" in symbols_data and "SPY" not in closes.columns:
