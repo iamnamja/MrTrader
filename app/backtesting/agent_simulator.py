@@ -1818,7 +1818,9 @@ class AgentSimulator:
 
             # LX8: flat trailing stop — ratchet stop up to (HWM * (1 - pct)).
             # Uses yesterday's highest_price (PIT-safe). Applied before intrabar check.
-            if self.rebalance_flat_stop_pct > 0.0 and not is_short:
+            # Gated on rebalance_mode: swing-model positions have their own ATR stop +
+            # check_exit() trailing logic; stacking LX8 on top double-trails and kills winners.
+            if self.rebalance_flat_stop_pct > 0.0 and self.rebalance_mode and not is_short:
                 _trail = _pre_bar_highest * (1 - self.rebalance_flat_stop_pct)
                 if _trail > _orig_stop:
                     pos.stop_price = _trail
