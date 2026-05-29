@@ -5,6 +5,7 @@ Closes every open position via Alpaca market orders and records the event
 in the audit log.  Idempotent: safe to call multiple times.
 """
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -15,6 +16,16 @@ logger = logging.getLogger(__name__)
 
 
 _CFG_KS_ACTIVE = "kill_switch.active"
+
+
+def _running_under_pytest() -> bool:
+    """Detect pytest at runtime so the kill switch never writes to the
+    production DB during tests, even if a test forgets to patch _persist_state.
+
+    Defense-in-depth: a stray test that activates the real KillSwitch singleton
+    must NOT leave kill_switch.active=True in the persistent configuration store.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.environ.get("_", "")
 
 
 class KillSwitch:
@@ -48,6 +59,9 @@ class KillSwitch:
         return False
 
     def _persist_state(self):
+        if _running_under_pytest():
+            logger.debug("Skipping kill switch DB persist — pytest detected")
+            return
         try:
             from app.database.config_store import set_config
             db = get_session()
@@ -142,6 +156,9 @@ class KillSwitch:
 
     @staticmethod
     def _audit(details: Dict, action: str = "KILL_SWITCH_ACTIVATED"):
+        if _running_under_pytest():
+            logger.debug("Skipping kill switch audit log write — pytest detected")
+            return
         db = get_session()
         try:
             db.add(AuditLog(action=action, details=details, timestamp=datetime.utcnow()))
