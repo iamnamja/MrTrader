@@ -604,7 +604,7 @@ class FeatureEngineer:
                     _vix = float(vix_history[_mask].iloc[-1])
             except Exception:
                 pass
-        if _vix is None and as_of_date is None:
+        if _vix is None and as_of_date is None and fetch_fundamentals:
             try:
                 from app.macro.fred_client import FredClient
                 _fred_data = FredClient()._fetch("VIXCLS")
@@ -616,7 +616,7 @@ class FeatureEngineer:
                             break
             except Exception:
                 pass
-        if _vix is None and as_of_date is None:
+        if _vix is None and as_of_date is None and fetch_fundamentals:
             try:
                 import yfinance as yf
                 from datetime import date as _date, timedelta as _td

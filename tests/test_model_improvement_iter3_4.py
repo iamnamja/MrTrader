@@ -183,12 +183,19 @@ class TestMomentum5dSectorNeutral:
         }, index=dates)
 
         etf_5d = 0.01
-        with patch("app.ml.fundamental_fetcher.get_sector_momentum", return_value=0.02):
-            with patch("app.ml.fundamental_fetcher.get_sector_momentum_5d", return_value=etf_5d):
-                feats = fe.engineer_features(
-                    "AAPL", df, sector="Technology",
-                    fetch_fundamentals=False
-                )
+        with patch("app.ml.fundamental_fetcher.get_sector_momentum", return_value=0.02), \
+             patch("app.ml.fundamental_fetcher.get_sector_momentum_5d", return_value=etf_5d), \
+             patch("app.ml.fundamental_fetcher.get_fundamentals", return_value={}), \
+             patch("app.ml.fundamental_fetcher.get_insider_score", return_value=0.0), \
+             patch("app.ml.fundamental_fetcher.get_earnings_surprise", return_value=0.0), \
+             patch("app.ml.fundamental_fetcher.get_earnings_history", return_value={"earnings_surprise_1q": 0.0, "earnings_surprise_2q_avg": 0.0, "days_since_earnings": 90.0}), \
+             patch("app.ml.fundamental_fetcher.get_short_interest", return_value=0.0), \
+             patch("app.macro.fred_client.FredClient._fetch", return_value=[]), \
+             patch("yfinance.download", return_value=__import__("pandas").DataFrame()):
+            feats = fe.engineer_features(
+                "AAPL", df, sector="Technology",
+                fetch_fundamentals=True
+            )
 
         if feats is not None and "momentum_5d_sector_neutral" in feats:
             expected = feats.get("momentum_5d", 0.0) - etf_5d
