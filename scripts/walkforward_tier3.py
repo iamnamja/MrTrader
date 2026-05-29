@@ -811,6 +811,7 @@ def run_swing_walkforward(
     rebalance_spy_vol_damper: bool = False,
     rebalance_spy_vol_damper_scale: float = 0.50,
     rebalance_hard_exit_bear: bool = False,  # LX6b: force-close all longs when BEAR at rebalance
+    rebalance_flat_stop_pct: float = 0.0,  # LX8: per-position trailing stop pct (0.0 = off)
     # Phase 2: L/S extension
     enable_shorts: bool = False,
     short_target_n: int = 30,
@@ -1383,6 +1384,7 @@ def run_swing_walkforward(
             rebalance_spy_vol_damper=rebalance_spy_vol_damper,
             rebalance_spy_vol_damper_scale=rebalance_spy_vol_damper_scale,
             rebalance_hard_exit_bear=rebalance_hard_exit_bear,
+            rebalance_flat_stop_pct=rebalance_flat_stop_pct,
             enable_shorts=enable_shorts,
             short_target_n=short_target_n,
             short_bull_n=short_bull_n,
@@ -1766,6 +1768,7 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
         rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
         rebalance_hard_exit_bear=getattr(args, "rebalance_hard_exit_bear", False),
+        rebalance_flat_stop_pct=getattr(args, "rebalance_flat_stop_pct", 0.0),
         rebalance_factor_stability_gate=getattr(args, "rebalance_factor_stability_gate", False),
         rebalance_factor_stability_lookback=getattr(args, "rebalance_factor_stability_lookback", 63),
         rebalance_factor_stability_ic_threshold=getattr(args, "rebalance_factor_stability_ic_threshold", 0.02),
@@ -1925,6 +1928,9 @@ def main() -> int:
     parser.add_argument("--rebalance-hard-exit-bear", action="store_true", default=False,
                         help="LX6b: force-close ALL long positions when regime==BEAR at rebalance, "
                              "and skip new entries. Requires --rebalance-regime-gate.")
+    parser.add_argument("--rebalance-flat-stop", type=float, default=0.0, dest="rebalance_flat_stop_pct",
+                        help="LX8: per-position trailing stop pct from high-water-mark (e.g. 0.07 = 7%%). "
+                             "0 = disabled (default). PIT-safe: trails from previous day's highest price.")
     parser.add_argument("--rebalance-inv-vol", action="store_true", default=False,
                         help="Phase RB.2: use inverse-volatility position sizing")
     parser.add_argument("--rebalance-inv-vol-lookback", type=int, default=20,
@@ -2328,6 +2334,7 @@ def main() -> int:
             rebalance_spy_vol_damper=getattr(args, "rebalance_spy_vol_damper", False),
             rebalance_spy_vol_damper_scale=getattr(args, "rebalance_spy_vol_damper_scale", 0.50),
             rebalance_hard_exit_bear=getattr(args, "rebalance_hard_exit_bear", False),
+        rebalance_flat_stop_pct=getattr(args, "rebalance_flat_stop_pct", 0.0),
             enable_shorts=getattr(args, "enable_shorts", False),
             short_target_n=getattr(args, "short_target_n", 30),
             short_bull_n=getattr(args, "short_bull_n", None),

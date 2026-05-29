@@ -225,6 +225,7 @@ class AgentSimulator:
         rebalance_spy_vol_damper: bool = False,  # Phase 91: halve gross_mult when SPY 21d vol > 80th pct
         rebalance_spy_vol_damper_scale: float = 0.50,  # scale factor applied when vol is elevated
         rebalance_hard_exit_bear: bool = False,  # LX6b: force-close ALL longs when regime==BEAR at rebalance
+        rebalance_flat_stop_pct: float = 0.0,  # LX8: per-position trailing stop (e.g. 0.07 = 7% below HWM)
         # Phase 2 — L/S extension
         enable_shorts: bool = False,        # False = pure long-only (backward-compat default)
         spy_beta_hedge: bool = False,       # True = short SPY sized to long-book rolling beta (Option A)
@@ -300,6 +301,7 @@ class AgentSimulator:
         self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
         self.rebalance_hard_exit_bear = rebalance_hard_exit_bear
+        self.rebalance_flat_stop_pct = rebalance_flat_stop_pct
         # Phase 2 — L/S state
         self.enable_shorts = enable_shorts
         self.spy_beta_hedge = spy_beta_hedge
@@ -1555,7 +1557,10 @@ class AgentSimulator:
             portfolio.cash -= entry_price * qty + cost
             tx_costs += cost
             # v222: compute ATR stop/target when rebalance_atr_stops=True
-            _rb_stop = entry_price * 0.0001
+            # LX8: flat trailing stop sets initial stop_price; 0.0001 sentinel = no stop
+            _rb_stop = (entry_price * (1 - self.rebalance_flat_stop_pct)
+                        if self.rebalance_flat_stop_pct > 0.0
+                        else entry_price * 0.0001)
             _rb_target = entry_price * 100.0
             if self.rebalance_atr_stops and df is not None:
                 try:
@@ -1810,6 +1815,14 @@ class AgentSimulator:
             _orig_stop = pos.stop_price
             _orig_target = pos.target_price
             _pre_bar_highest = pos.highest_price
+
+            # LX8: flat trailing stop — ratchet stop up to (HWM * (1 - pct)).
+            # Uses yesterday's highest_price (PIT-safe). Applied before intrabar check.
+            if self.rebalance_flat_stop_pct > 0.0 and not is_short:
+                _trail = _pre_bar_highest * (1 - self.rebalance_flat_stop_pct)
+                if _trail > _orig_stop:
+                    pos.stop_price = _trail
+                    _orig_stop = _trail
 
             # Track best price: longs use highest high, shorts use lowest low.
             # Done after snapshot so the update is only visible to FUTURE bars.
