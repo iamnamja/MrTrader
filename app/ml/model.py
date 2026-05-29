@@ -12,18 +12,6 @@ import pickle
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-
-def _atomic_pickle_dump(obj: Any, path: Path) -> None:
-    """C2: atomic pickle write — write to *.tmp then os.replace.
-
-    Prevents corrupt .pkl files on disk if the process is killed mid-write,
-    which would otherwise crash the live PM at next load.
-    """
-    tmp = str(path) + ".tmp"
-    with open(tmp, "wb") as f:
-        pickle.dump(obj, f)
-    os.replace(tmp, str(path))
-
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -39,6 +27,14 @@ except ImportError:
     _LGBM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_pickle_dump(obj: Any, path: Path) -> None:
+    """C2: atomic pickle write — write to *.tmp then os.replace."""
+    tmp = str(path) + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(obj, f)
+    os.replace(tmp, str(path))
 
 # R4: Optional XGBoost hyperparameter overrides for regularization experiments.
 # Set before calling train_model() to override defaults without code changes.
