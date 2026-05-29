@@ -7041,6 +7041,44 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
 - avg +0.10 to +0.20 → LX9 (different stop %, e.g., 5% or 10%)
 - avg < +0.10 → pivot to short-book research (earnings revision velocity + accruals) OR declare composite exhausted
 
+**Bug found (2026-05-28):** Original LX8 run showed win rate 35.7% (vs 62-66% baseline) and avg -1.607 because `rebalance_flat_stop_pct` fired unconditionally for ALL long positions, including swing-model positions that already have ATR stops + `check_exit()` trailing. The double-trail converted winners into stops on normal pullbacks. Fix: added `self.rebalance_mode` guard in `_process_exits()` so trailing ratchet only applies to rebalance-path positions. Diagnosed by Opus 4.7. Fixed in PR #305.
+
+**Results — LX8b (bug-fixed, log: wf_lx8b_flat_stop7pct_fixed.log, 2026-05-28):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF | Calmar |
+|------|-------------|--------|------|--------|-----|-----|--------|
+| F1 | 2022-11-23→2023-11-28 | 513 | 63.7% | **+0.03** | 17.2% | 0.93 | -0.08 |
+| F2 | 2024-05-17→2025-05-22 | 441 | 63.9% | **-0.71** | 25.8% | 0.84 | -0.73 |
+| F3 | 2025-11-09→2026-05-28 | 383 | 65.8% | **+0.07** | 17.7% | 1.10 | -0.07 |
+| **Avg** | | **1,337** | **64.5%** | **-0.207** | | **0.957** | |
+
+**Gate:** avg -0.207 < +0.10 → ❌ FAIL. Pre-registered: pivot.
+
+**Verdict:** Win rate restored to 64.5% (bug fixed), but PF=0.957 confirms the trailing stop cuts winners faster than it cuts losers. LX1's winners are multi-week moves; a 7% leash fires on normal volatility and converts +15% moves into +7% exits. The stop does NOT address the payoff asymmetry — it just moves the asymmetry in the opposite direction.
+
+**Opus 4.7 structural diagnosis (2026-05-28):** The real problem is **beta-in-the-book**, not timing. The composite (`momentum_252d_ex1m`, `price_to_52w_high`, `-pe_ratio`) loads heavily on high-beta/momentum names — exactly what gets destroyed in VIX spikes (same shape as AQR Aug 2007, Aug 2024 yen unwind). Every LX6–LX8 attempt operated on *timing*; none addressed the mechanism. Fix: residualize features against trailing 1Y beta-to-SPY before ranking, keeping the quality/value signal while shedding systematic beta exposure.
+
+---
+
+### LX9 — Rebalance Cadence (10d) Experiment (🔄 IN PROGRESS — launched 2026-05-28 ~22:30)
+
+**Hypothesis (LX9-B from Opus analysis):** The 20-day hold period let the Aug 2024 shock play out inside a single fold window. A 10-day rebalance cycle forces a mid-shock re-rank, potentially re-buying quality names and reducing concentration at the peak of the panic. P(success) ~30% per Opus.
+
+**Configuration:** Same as LX1 baseline (target_n=30, add=15, drop=30, equal-weight) + `--rebalance-days 10`.
+
+**Command:**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --rebalance-days 10 --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx9b1_10d.log
+```
+
+**Decision rule (pre-registered):**
+- F2 ≥ -0.40 AND F1/F3 still positive → run LX9-B2 (5d) and plan LX9-A (beta-neutral)
+- F2 ≈ -0.72 unchanged → cadence is not the lever; pivot to LX9-A (beta-neutralize)
+- F2 improves but F1/F3 tank (cost drag) → 20d was near-optimal on costs; pivot to LX9-A
+
 ---
 
 ### LX5 — Original design notes (superseded by results above)

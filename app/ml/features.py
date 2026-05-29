@@ -916,7 +916,8 @@ class FeatureEngineer:
         # vs sector ETF, which the 20d and 60d windows miss.
         try:
             from app.ml.fundamental_fetcher import get_sector_momentum_5d
-            sector_mom_5d = get_sector_momentum_5d(sector) if sector else 0.0
+            sector_mom_5d = (get_sector_momentum_5d(sector)
+                             if fetch_fundamentals and sector else 0.0)
         except Exception:
             sector_mom_5d = 0.0
         features["sector_momentum_5d"] = sector_mom_5d
