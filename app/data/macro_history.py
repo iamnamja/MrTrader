@@ -18,6 +18,7 @@ spy    : float (SPY close)
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
@@ -175,7 +176,11 @@ def update_macro_history() -> pd.DataFrame:
     combined = combined.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     combined = combined.reset_index(drop=True)
 
-    combined.to_parquet(MACRO_PATH, index=False)
+    # C3: atomic write — prevents corrupt macro_history.parquet if backfill is
+    # killed mid-write (live regime gate depends on this file at startup).
+    _tmp = MACRO_PATH.with_suffix(MACRO_PATH.suffix + ".tmp")
+    combined.to_parquet(_tmp, index=False)
+    os.replace(_tmp, MACRO_PATH)
     logger.info(
         "macro_history.parquet updated: %d rows total (added %d new), %s → %s",
         len(combined), len(new_df), combined["date"].min(), combined["date"].max(),

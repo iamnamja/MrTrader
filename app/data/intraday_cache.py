@@ -14,6 +14,7 @@ File format: data/intraday/{SYMBOL}.parquet
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -114,7 +115,11 @@ def save(symbol: str, df: pd.DataFrame) -> None:
     INTRADAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(symbol)
     try:
-        df.to_parquet(path)
+        # C3: atomic write — write to .tmp then rename so killed processes
+        # cannot leave a corrupt parquet that crashes live price loaders.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        df.to_parquet(tmp)
+        os.replace(tmp, path)
     except Exception as exc:
         logger.warning("Failed to write intraday cache for %s: %s", symbol, exc)
 

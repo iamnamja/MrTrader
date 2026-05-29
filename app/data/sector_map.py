@@ -10,6 +10,7 @@ Build/refresh the cache:
 """
 from __future__ import annotations
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -80,6 +81,9 @@ def _save_cache() -> None:
         df = pd.DataFrame(
             [{"symbol": sym, "sector": sec} for sym, sec in _sector_cache.items()]
         )
-        df.to_parquet(_CACHE_PATH, index=False)
+        # C3: atomic write — prevents corrupt sector_map.parquet on killed process.
+        tmp = _CACHE_PATH.with_suffix(_CACHE_PATH.suffix + ".tmp")
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, _CACHE_PATH)
     except Exception as exc:
         logger.warning("sector_map: failed to save cache — %s", exc)
