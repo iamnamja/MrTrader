@@ -7116,6 +7116,46 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --years 5 --folds 3 \
 - F2 ≈ -0.72 unchanged → cadence is not the lever; pivot to LX9-A (beta-neutralize)
 - F2 improves but F1/F3 tank (cost drag) → 20d was near-optimal on costs; pivot to LX9-A
 
+**Results (2026-05-29, log: wf_lx9b1_10d.log):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | DD | PF |
+|------|-------------|--------|------|--------|-----|-----|
+| F1 | 2022-11-23→2023-11-28 | 501 | 61.9% | **+0.15** | 16.6% | 0.97 |
+| F2 | 2024-05-17→2025-05-22 | 428 | 63.1% | **-0.72** | 25.0% | 0.75 |
+| F3 | 2025-11-09→2026-05-28 | 379 | 66.5% | **+0.74** | 14.8% | 1.29 |
+| **Avg** | | **1308** | **63.8%** | **+0.057** | | **1.003** |
+
+**Gate:** avg +0.057 < +0.30 → ❌ FAIL. F2 = -0.72, **exactly unchanged** from 20-day baseline.
+
+**Verdict:** Pre-registered rule: F2 ≈ -0.72 → cadence is not the lever. **Pivot to LX9-A (beta-neutralize).**
+
+The 10-day cycle rebalances more frequently but doesn't change *what* gets bought — the same high-beta momentum names rank at the top. Halving the cycle buys the same concentrated beta exposure twice as often. The Aug 2024 shock hits regardless of whether you last rebalanced 5 or 20 days ago.
+
+This definitively rules out all timing-based interventions (LX6a, LX6b, LX8b, LX9-B1). **The only remaining structural fix is changing the composition of the book** — which is what LX9-A (beta-residualized features) attempts.
+
+---
+
+### LX9-A — Beta-Neutralized Feature Ranking (🔄 IMPLEMENTATION IN PROGRESS — 2026-05-29)
+
+**Hypothesis (P(success) ~45% per Opus 4.7):** The composite (`momentum_252d_ex1m`, `price_to_52w_high`, `-pe_ratio`, `profit_margin`, `operating_margin`) loads heavily on high-beta names. Before computing the composite rank, residualize each feature cross-sectionally against trailing 252d beta-to-SPY. This removes systematic market beta exposure while preserving the quality/value alpha. Mechanically: OLS(feature ~ beta) per rebalance date, use residuals instead of raw values.
+
+**Reference:** Daniel & Moskowitz 2016 "Momentum Crashes" — the documented fix for momentum crash risk is beta-hedging/residualization, not timing.
+
+**Command (to be run once implementation complete):**
+```
+python scripts/walkforward_tier3.py --rebalance-lx1 --rebalance-beta-neutralize \
+  --years 5 --folds 3 \
+  --rebalance-target-n 30 --rebalance-add-threshold 15 --rebalance-drop-threshold 30 \
+  --feature-cache-workers 8 --as-of 2026-05-28 \
+  2>&1 | tee logs/wf_lx9a_beta_neutral.log
+```
+
+**Decision rule (pre-registered):**
+- avg ≥ +0.30 AND F2 ≥ -0.30 → **paper trade** (gate cleared)
+- avg +0.15 to +0.30 → strong signal; combine with other improvement (LX9-A+stop, sector cap)
+- F2 improves materially (≥ -0.40) but avg < +0.15 → residualization helps but partial; iterate
+- F2 unchanged → composite alpha IS the beta exposure; declare long-only composite exhausted
+
 ---
 
 ### LX5 — Original design notes (superseded by results above)
