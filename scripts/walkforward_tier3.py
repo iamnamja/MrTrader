@@ -1095,16 +1095,18 @@ def run_swing_walkforward(
             )
 
     # OOS-guard: every test fold must start strictly after the model's training cutoff.
-    from scripts.walkforward.oos_guard import assert_model_oos as _assert_oos
-    _assert_oos(
-        trained_through=getattr(model, "trained_through", None) if model is not None else None,
-        fold_boundaries=[(tr, te, ts, te2) for tr, te, ts, te2, _ in fold_boundaries],
-        purge_days=purge_days,
-        model_label=f"swing v{version}",
-        allow_in_sample=allow_in_sample,
-    )
-    if allow_in_sample:
-        report.in_sample_override = True
+    # Skip when model is None (pure factor/scorer run — no ML training cutoff to enforce).
+    if model is not None:
+        from scripts.walkforward.oos_guard import assert_model_oos as _assert_oos
+        _assert_oos(
+            trained_through=getattr(model, "trained_through", None),
+            fold_boundaries=[(tr, te, ts, te2) for tr, te, ts, te2, _ in fold_boundaries],
+            purge_days=purge_days,
+            model_label=f"swing v{version}",
+            allow_in_sample=allow_in_sample,
+        )
+        if allow_in_sample:
+            report.in_sample_override = True
 
     # WF-R5 (FIX 4): IC weights calibration cutoff must be strictly before every
     # fold's train_end, else "pre-fold" weights become in-sample. The constant
