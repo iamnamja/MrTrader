@@ -384,8 +384,12 @@ class IntradayModelTrainer:
             self.model.trained_through = _date.fromordinal(int(raw_train[:, 0].max()))
             logger.info("trained_through set to %s", self.model.trained_through)
         except Exception as _exc:
-            logger.warning("Could not set trained_through from raw_train: %s", _exc)
-            self.model.trained_through = end_dt.date()
+            logger.critical(
+                "Could not set trained_through from raw_train: %s — "
+                "setting to None so OOS guard will reject any test folds rather "
+                "than silently certifying datetime.now() as a safe cutoff.", _exc
+            )
+            self.model.trained_through = None
         version = self._next_version("intraday")
         saved_path = self.model.save(self.model_dir, version, model_name="intraday")
         training_config = {

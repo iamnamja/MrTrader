@@ -1062,10 +1062,17 @@ class ModelTrainer:
                 self.model.trained_through = _train_cutoff
                 logger.info("trained_through set to %s", self.model.trained_through)
             else:
-                self.model.trained_through = end_dt
-                logger.warning("_last_all_dates empty; trained_through set to end_dt=%s", end_dt)
+                self.model.trained_through = None
+                logger.warning(
+                    "_last_all_dates empty; trained_through set to None — "
+                    "OOS guard will reject test folds rather than silently accepting end_dt=%s", end_dt
+                )
         except Exception as _exc:
-            logger.warning("Could not set trained_through: %s", _exc)
+            logger.critical(
+                "Could not set trained_through: %s — setting to None so OOS guard "
+                "will reject any test folds rather than certifying a stale cutoff.", _exc
+            )
+            self.model.trained_through = None
 
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")

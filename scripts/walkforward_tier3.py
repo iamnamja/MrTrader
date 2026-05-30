@@ -457,6 +457,9 @@ class WalkForwardReport:
     # (reporting, ML_EXPERIMENT_LOG, DSR interpretation). Set to True only when
     # a per-fold retrain has actually been performed.
     is_true_walkforward: bool = False
+    # True when the OOS guard was bypassed with allow_in_sample=True.
+    # In-sample runs can never promote past gates.
+    in_sample_override: bool = False
 
     @property
     def avg_sharpe(self) -> float:
@@ -504,6 +507,8 @@ class WalkForwardReport:
     PAPER_MIN_FOLD_SHARPE = -0.40
 
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
+        if self.in_sample_override:
+            return False
         _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
@@ -839,6 +844,7 @@ def run_swing_walkforward(
     delisted_haircut: float = 0.0,  # R5b: survivorship-realistic force-close haircut
     per_fold_ic_weights: bool = False,  # R5b: compute Option-A per-fold IC weights
     daily_ic_parquet: Optional[str] = None,  # R5b: path to daily_ic.parquet
+    allow_in_sample: bool = False,  # OOS-guard bypass: label run in-sample, cannot promote
 ) -> WalkForwardReport:
     import yfinance as yf
     from app.backtesting.agent_simulator import AgentSimulator
@@ -1087,6 +1093,18 @@ def run_swing_walkforward(
                 "Sharpe may be noisy. Consider --total-years larger than %g.",
                 _idx, _test_len, _te_start, _te_end, total_years,
             )
+
+    # OOS-guard: every test fold must start strictly after the model's training cutoff.
+    from scripts.walkforward.oos_guard import assert_model_oos as _assert_oos
+    _assert_oos(
+        trained_through=getattr(model, "trained_through", None) if model is not None else None,
+        fold_boundaries=[(tr, te, ts, te2) for tr, te, ts, te2, _ in fold_boundaries],
+        purge_days=purge_days,
+        model_label=f"swing v{version}",
+        allow_in_sample=allow_in_sample,
+    )
+    if allow_in_sample:
+        report.in_sample_override = True
 
     # WF-R5 (FIX 4): IC weights calibration cutoff must be strictly before every
     # fold's train_end, else "pre-fold" weights become in-sample. The constant
@@ -1615,6 +1633,8 @@ def run_intraday_walkforward(
         model_label=f"intraday v{version}",
         allow_in_sample=allow_in_sample,
     )
+    if allow_in_sample:
+        report.in_sample_override = True
 
     def _run_intraday_fold(args):
         fold_idx, tr_start, tr_end, te_start, te_end, emb = args
@@ -2382,6 +2402,7 @@ def main() -> int:
             delisted_haircut=getattr(args, "delisted_haircut", 0.0),
             per_fold_ic_weights=getattr(args, "per_fold_ic_weights", False),
             daily_ic_parquet=getattr(args, "daily_ic_parquet", None),
+            allow_in_sample=getattr(args, "allow_in_sample", False),
         )
         if getattr(args, "rebalance_momentum_baseline", False):
             _swing_kwargs["scorer_instance"] = _momentum_baseline_scorer(lookback_days=60)

@@ -112,6 +112,9 @@ class SwingStrategy:
         self.no_atr_stops = no_atr_stops
         self.symbols_data: Dict[str, pd.DataFrame] = {}
         self.spy_prices: Optional[pd.Series] = None
+        # OOS-guard escape hatch: set True to allow test folds inside training period.
+        # Results labeled in-sample; gate_passed() always returns False.
+        self.allow_in_sample: bool = False
 
     def fetch_data(self, start: datetime, end: datetime) -> None:
         """Download daily bars for all symbols in the strategy universe."""
