@@ -10,6 +10,7 @@ Pipeline:
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -145,6 +146,24 @@ class AgentOrchestrator:
 
     async def _trigger_retraining(self) -> None:
         """Spawn retrain_cron.py as a subprocess so training workers are isolated from uvicorn."""
+        # Guard: skip retrain if a CPCV or walk-forward job is actively writing logs.
+        # Running two XGBoost training jobs concurrently on this machine causes OOM.
+        logs_dir = Path(__file__).resolve().parent.parent / "logs"
+        _now = time.time()
+        for _log in logs_dir.glob("p0_*_cpcv.log"):
+            if _now - _log.stat().st_mtime < 3600:
+                logger.warning(
+                    "Orchestrator: skipping scheduled retrain — CPCV job active (%s written %.0f min ago)",
+                    _log.name, (_now - _log.stat().st_mtime) / 60,
+                )
+                return
+        for _log in logs_dir.glob("wf_*.log"):
+            if _now - _log.stat().st_mtime < 3600:
+                logger.warning(
+                    "Orchestrator: skipping scheduled retrain — walk-forward job active (%s written %.0f min ago)",
+                    _log.name, (_now - _log.stat().st_mtime) / 60,
+                )
+                return
         logger.info("Orchestrator: spawning retraining subprocess")
         script = Path(__file__).resolve().parent.parent / "scripts" / "retrain_cron.py"
         log_date = datetime.utcnow().strftime("%Y-%m-%d")
