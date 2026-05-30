@@ -1810,6 +1810,7 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         no_atr_stops=getattr(args, "no_atr_stops", False),
     )
     strategy.model_type = "swing"
+    strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
     from datetime import datetime, timedelta
     # WF-R5: propagate --as-of into CPCV the same way run_swing_walkforward does
     # so CPCV results are reproducible across runs.
