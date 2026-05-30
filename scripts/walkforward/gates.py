@@ -135,6 +135,9 @@ class FoldResult:
 class WalkForwardReport:
     model_type: str
     folds: List[FoldResult] = field(default_factory=list)
+    # True when the OOS guard was bypassed with allow_in_sample=True.
+    # In-sample runs can never promote past gates.
+    in_sample_override: bool = False
 
     @property
     def avg_sharpe(self) -> float:
@@ -182,6 +185,8 @@ class WalkForwardReport:
         return float(min(all_regime_sharpes)) if all_regime_sharpes else None
 
     def gate_passed(self) -> bool:
+        if self.in_sample_override:
+            return False
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_obs)
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR

@@ -50,6 +50,7 @@ class FoldEngine:
         total_days: Optional[int] = None,
         train_years: Optional[int] = None,
         allow_sacred_holdout: bool = False,  # P0
+        allow_in_sample: bool = False,  # OOS-guard bypass: label run in-sample, cannot promote
     ) -> WalkForwardReport:
         """Run the walk-forward. Exactly one of total_years or total_days must be given."""
         if total_years is None and total_days is None:
@@ -78,7 +79,25 @@ class FoldEngine:
                 n_folds, getattr(self.strategy, "all_days_sorted", [])
             )
 
-        report = WalkForwardReport(model_type=getattr(self.strategy, "model_type", "unknown"))
+        # OOS-guard: every test fold must start strictly after the model's training cutoff.
+        from scripts.walkforward.oos_guard import assert_model_oos
+        _trained_through = getattr(getattr(self.strategy, "model", None), "trained_through", None)
+        _model_label = (
+            f"{getattr(self.strategy, 'model_type', 'unknown')} "
+            f"v{getattr(self.strategy, 'version', '?')}"
+        )
+        assert_model_oos(
+            trained_through=_trained_through,
+            fold_boundaries=fold_boundaries,
+            purge_days=self.purge_days,
+            model_label=_model_label,
+            allow_in_sample=allow_in_sample,
+        )
+
+        report = WalkForwardReport(
+            model_type=getattr(self.strategy, "model_type", "unknown"),
+            in_sample_override=allow_in_sample,
+        )
 
         # Regime diversity check (warns only; never blocks fold construction)
         if self.regime_map:

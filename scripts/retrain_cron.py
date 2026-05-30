@@ -125,8 +125,9 @@ def run_swing(dry_run: bool) -> bool:
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
-        gate_ok = (avg_sh >= SWING_GATE["min_avg_sharpe"] and
-                   min_sh >= SWING_GATE["min_fold_sharpe"])
+        # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
+        # than a local Sharpe-only approximation that can diverge from the real gate.
+        gate_ok = wf.gate_passed()
 
         ModelTrainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
 
@@ -183,8 +184,9 @@ def run_intraday(dry_run: bool) -> bool:
                                       use_opportunity_score=True)
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
-        gate_ok = (avg_sh >= INTRADAY_GATE["min_avg_sharpe"] and
-                   min_sh >= INTRADAY_GATE["min_fold_sharpe"])
+        # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
+        # than a local Sharpe-only approximation that can diverge from the real gate.
+        gate_ok = wf.gate_passed()
 
         trainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
 
