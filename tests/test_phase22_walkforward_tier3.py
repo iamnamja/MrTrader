@@ -173,6 +173,8 @@ class TestSwingWalkforward:
                 return spy_series.to_frame("Close").rename(columns={"Close": "Close"})
             return df
 
+        from datetime import date as _date
+        model.trained_through = _date(2019, 1, 1)  # OOS guard: old enough for all test folds
         with patch("scripts.walkforward_tier3._load_model", return_value=(model, 95)):
             with patch("yfinance.download", side_effect=fake_download):
                 with patch("app.backtesting.agent_simulator.AgentSimulator.run",
@@ -198,7 +200,9 @@ class TestIntradayWalkforward:
 
     def test_returns_correct_fold_count(self):
         from scripts.walkforward_tier3 import run_intraday_walkforward
+        from datetime import date as _date
         model = MagicMock()
+        model.trained_through = _date(2019, 1, 1)  # OOS guard: old enough for all test folds
         bars_5m = _5min_bars(500)
         cache_data = {"AAPL": bars_5m, "MSFT": bars_5m}
 

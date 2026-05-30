@@ -39,6 +39,14 @@ def assert_model_oos(
     Raises OOSViolation if any test fold te_start <= trained_through + purge.
     Raises OOSViolation if trained_through is None (unknown training cutoff).
     """
+    if trained_through is not None and not isinstance(trained_through, date):
+        logger.warning(
+            "OOS guard: %s.trained_through has unexpected type %s (expected date or None) — "
+            "treating as None. Ensure the model was saved after the trained_through fix.",
+            model_label, type(trained_through).__name__,
+        )
+        trained_through = None
+
     if trained_through is None:
         msg = (
             f"OOS guard: {model_label}.trained_through is None — cannot verify "

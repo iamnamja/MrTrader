@@ -164,6 +164,9 @@ class TestCombinationsCount:
         start = date(2022, 1, 3)
         all_days = [start + timedelta(days=i * 7) for i in range(200)]
         mock_strategy.all_days_sorted = all_days
+        # OOS guard: set trained_through before the test window so the guard passes
+        mock_strategy.model.trained_through = date(2021, 1, 1)
+        mock_strategy.allow_in_sample = False
 
         def fake_run_fold(fold_idx, n_folds, tr_start, tr_end, te_start, te_end):
             return FoldResult(
