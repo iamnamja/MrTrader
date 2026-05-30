@@ -7178,7 +7178,13 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --rebalance-beta-neutralize 
 
 ---
 
-## Intraday v63 — ✅ CPCV PASSED (2026-05-30)
+## Intraday v63 — ⚠️ RESULTS INVALID — IN-SAMPLE CONTAMINATION (2026-05-30)
+
+**⚠️ CRITICAL: All WF and CPCV results below are INVALID. Model v63 was trained through 2026-05-28 but every test fold covers Nov 2024–Apr 2026 — 100% in-sample. These results cannot be used for promotion decisions.**
+
+**Root cause (found by Opus 4.7 audit, 2026-05-30):** The WF/CPCV harness had no `trained_through` guard. The OOS invariant (`te_start > trained_through`) was never enforced. Fixed in PR #311 (`feat/oos-guard-fix`).
+
+**Re-validation plan:** Train shadow v63s with `--end-date 2024-10-15` cutoff, then run CPCV on Nov 2024–May 2026 OOS data with the shadow model. If the architecture passes on genuinely OOS data, promote the full-data v63 as validated.
 
 **Context:** Following the LX swing campaign closure (9 experiments, F2 structural losses confirmed), focus pivoted to intraday. v63 emerged from a retraining run as the new active champion, superseding the previously struggling v60 (avg -1.685). v61/v62 were intermediate retrain iterations; v63 is the first intraday model to clear the walk-forward gate since v51 (+0.529, now stale).
 
@@ -7219,7 +7225,7 @@ Gate: avg Sharpe ≥ 0.8, min fold ≥ -0.3, DSR p > 0.95 — **ALL PASSED**
 - Single entry window (bar 12): timing fragility if live scan runs late
 - No regime abstention: model has no explicit signal to go to cash on macro-dislocation days
 
-**Promotion decision:** v63 promoted to ACTIVE status. Recommended paper trading at 0.25× sizing initially with full signal telemetry, per Opus 4.7 analysis.
+**Promotion decision:** ~~v63 promoted to ACTIVE status.~~ **REVERTED — results were in-sample.** Promotion on hold pending OOS re-validation (shadow v63s run).
 
 **Next experiment — v64 Regime Abstention Gate:**
 - **Hypothesis:** Skip bar-12 entry on days where SPY overnight gap > |1.5%|, VIX > 28, or market breadth (ADV/DEC at 09:35) < 0.40. Target: raise P5 from +0.53 toward +1.0 without degrading mean Sharpe. Expected to skip ~15-20% of trading days.

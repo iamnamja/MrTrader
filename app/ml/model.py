@@ -9,6 +9,7 @@ alone by reducing overfitting on noisy training labels.
 import logging
 import os
 import pickle
+from datetime import date
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -62,6 +63,10 @@ class PortfolioSelectorModel:
         self._is_regression = False  # set True when training on float return labels
         self._is_ranker = False      # set True for XGBRanker (uses predict not predict_proba)
         self._ts_norm_state = None   # TSNormalizerState for Fix 2 TS normalization (swing only)
+        # OOS-guard: latest training observation date, set by trainer before save().
+        # Walk-forward / CPCV assert every test fold starts strictly after this date.
+        # None = unknown (legacy model); guard treats None as a violation.
+        self.trained_through: Optional[date] = None
 
         if model_type == "xgboost_ranker":
             self.model = XGBRanker(
@@ -418,6 +423,7 @@ class PortfolioSelectorModel:
             "predict_threshold": self.predict_threshold,
             "feature_weights": self._feature_weights,
             "is_regression": self._is_regression,
+            "trained_through": self.trained_through,
         }, meta_path)
 
         logger.info("Model v%d saved to %s", version, directory)
@@ -453,6 +459,7 @@ class PortfolioSelectorModel:
                 self.predict_threshold = meta.get("predict_threshold", 0.5)
                 self._feature_weights = meta.get("feature_weights")
                 self._is_regression = meta.get("is_regression", False)
+                self.trained_through = meta.get("trained_through")
 
         self.is_trained = True
         self.version = version

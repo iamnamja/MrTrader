@@ -47,6 +47,9 @@ class IntradayStrategy:
         self.spy_data: Optional[pd.DataFrame] = None
         self.spy_daily_data: Optional[pd.DataFrame] = None
         self.all_days_sorted: list = []
+        # OOS-guard escape hatch: set True to allow test folds inside training period.
+        # Results labeled in-sample; gate_passed() always returns False.
+        self.allow_in_sample: bool = False
 
     def fetch_data(self, start, end) -> None:
         """Load 5-min data from Polygon cache (or yfinance fallback)."""

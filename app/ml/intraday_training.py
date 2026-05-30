@@ -376,6 +376,20 @@ class IntradayModelTrainer:
         logger.info("OOS metrics: %s", metrics)
 
         # ── 4. Save ───────────────────────────────────────────────────────────
+        # OOS-guard: record the latest training observation date before saving.
+        # raw_train[:, 0] is day_ordinal; convert max ordinal back to a date so
+        # walk-forward / CPCV can assert test folds start strictly after this.
+        try:
+            from datetime import date as _date
+            self.model.trained_through = _date.fromordinal(int(raw_train[:, 0].max()))
+            logger.info("trained_through set to %s", self.model.trained_through)
+        except Exception as _exc:
+            logger.critical(
+                "Could not set trained_through from raw_train: %s — "
+                "setting to None so OOS guard will reject any test folds rather "
+                "than silently certifying datetime.now() as a safe cutoff.", _exc
+            )
+            self.model.trained_through = None
         version = self._next_version("intraday")
         saved_path = self.model.save(self.model_dir, version, model_name="intraday")
         training_config = {
