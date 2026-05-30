@@ -46,6 +46,13 @@ def assert_model_oos(
             model_label, type(trained_through).__name__,
         )
         trained_through = None
+    # Normalize datetime → date so comparison with te_start (always date) never raises TypeError.
+    # (datetime subclasses date so isinstance passes, but date <= datetime raises TypeError.)
+    if trained_through is not None and type(trained_through) is not date:
+        try:
+            trained_through = trained_through.date()
+        except AttributeError:
+            trained_through = None
 
     if trained_through is None:
         msg = (
