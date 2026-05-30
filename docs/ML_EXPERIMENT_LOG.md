@@ -7177,3 +7177,53 @@ python scripts/walkforward_tier3.py --rebalance-lx1 --rebalance-beta-neutralize 
 - LX5 ≤ LX1 → sizing isn't the lever either; revisit feature universe (Phase A2 IC re-scan).
 
 ---
+
+## Intraday v63 — ✅ CPCV PASSED (2026-05-30)
+
+**Context:** Following the LX swing campaign closure (9 experiments, F2 structural losses confirmed), focus pivoted to intraday. v63 emerged from a retraining run as the new active champion, superseding the previously struggling v60 (avg -1.685). v61/v62 were intermediate retrain iterations; v63 is the first intraday model to clear the walk-forward gate since v51 (+0.529, now stale).
+
+**Walk-Forward (3 folds, 730d window, 710 symbols, 5-min bars):**
+
+| Fold | Test Period | Trades | Win% | Sharpe | PF | Calmar |
+|---|---|---|---|---|---|---|
+| 1 | 2024-11-12 → 2025-05-05 | 230 | 48.3% | **+2.05** | 1.47 | 5.04 |
+| 2 | 2025-05-08 → 2025-10-24 | 227 | 69.2% | **+9.64** | 3.46 | 63.14 |
+| 3 | 2025-10-29 → 2026-04-20 | 221 | 65.6% | **+8.16** | 3.07 | 29.11 |
+| **Avg** | | **678** | **61.0%** | **+6.62** | **2.67** | **32.43** |
+
+Gate: avg Sharpe ≥ 0.8, min fold ≥ -0.3, DSR p > 0.95 — **ALL PASSED**
+
+**CPCV (C(6,2) = 14 paths, 2026-05-29–30, ~15h runtime):**
+
+| Metric | Value | Gate | Result |
+|---|---|---|---|
+| Mean Sharpe | +5.14 | > 0.8 | ✅ |
+| Std Sharpe | 2.975 | — | — |
+| P5 Sharpe | +0.53 | > -0.3 | ✅ |
+| P95 Sharpe | +9.44 | — | — |
+| % positive paths | 92.9% | ≥ 75% | ✅ |
+| DSR p-value | 0.984 | > 0.95 | ✅ |
+| Avg Calmar | 22.98 | > 0.3 | ✅ |
+
+**Model architecture:** XGBoost + LightGBM stacked meta-model. Target: binary — stock hits +0.5% within 2h (24 × 5-min bars). Entry at bar 12 (~60 min post-open). ATR-adaptive labeling. Long-only, no overnight holds.
+
+**Key observations (Opus 4.7 analysis, 2026-05-30):**
+1. **F1 weakness (+2.05 vs F2/F3 ~9):** Likely NIS (news signal) feature coverage gap pre-2022 — same root cause as identified in swing Phase C diagnostics. F1 covers Nov 2024–May 2025; the relatively lower Sharpe may also reflect the tariff-shock regime where intraday momentum was noisier.
+2. **P5 = +0.53 is the honest floor:** High mean Sharpe (5.14) with std 2.975 means the distribution is wide. P5 barely clears the gate — meaning in the worst 5% of market regimes, this model is marginal. Not a dealbreaker, but the target for v64 should be to raise P5, not mean.
+3. **F2 = +9.64 during crash period:** Model benefited from high single-stock dispersion during vol-spike episodes — intraday mean-reversion signals were very clean. Long-only intraday can be regime-adaptive by being in cash on bad macro days.
+4. **Calmar ratios appear inflated** (63.14 fold 2) — likely because max DD per fold is very small (0.2–0.6%) on an equal-weight portfolio with forced intraday exits. Calmar is not the primary signal here; Sharpe and PF are.
+5. **CPCV runtime caveat:** First attempt (attempt1 log) was killed at combo 11/15 by the daily 17:00 orchestrator retrain firing concurrently (OOM). Root cause fixed in PR #309 (concurrency guard). Second run completed cleanly.
+
+**Risks for live trading (not captured in backtest):**
+- Slippage: 5-min IOC fills on 710 symbols — backtest uses mid-quote; live will be ~5-15 bps each side, potentially eroding 30-50% of edge
+- Single entry window (bar 12): timing fragility if live scan runs late
+- No regime abstention: model has no explicit signal to go to cash on macro-dislocation days
+
+**Promotion decision:** v63 promoted to ACTIVE status. Recommended paper trading at 0.25× sizing initially with full signal telemetry, per Opus 4.7 analysis.
+
+**Next experiment — v64 Regime Abstention Gate:**
+- **Hypothesis:** Skip bar-12 entry on days where SPY overnight gap > |1.5%|, VIX > 28, or market breadth (ADV/DEC at 09:35) < 0.40. Target: raise P5 from +0.53 toward +1.0 without degrading mean Sharpe. Expected to skip ~15-20% of trading days.
+- **Gate:** CPCV P5 ≥ +1.0 (primary), mean Sharpe ≥ v63's reproduced mean, trade count drop ≤ 30%.
+- **Status:** Pending — run after 30-day paper observation of v63 to validate backtest/live fidelity.
+
+---
