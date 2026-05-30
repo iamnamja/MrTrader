@@ -1476,6 +1476,7 @@ def run_intraday_walkforward(
     use_regime_gate: bool = False,  # Phase R5: regime gates (R5-A/B/C)
     regime_map: Optional[Dict] = None,  # Phase R5: {date: label} from WF-4 regime.py
     as_of: Optional[date] = None,  # WF-C2: pin fold boundaries for reproducibility
+    allow_in_sample: bool = False,  # OOS-guard bypass: label run in-sample, cannot promote
 ) -> WalkForwardReport:
     from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
     from app.data.intraday_cache import load_many, available_symbols as poly_syms
@@ -1604,6 +1605,16 @@ def run_intraday_walkforward(
             all_days_sorted[te_end_idx],
             _embargo_intra,
         ))
+
+    # OOS-guard: every test fold must start strictly after the model's training cutoff.
+    from scripts.walkforward.oos_guard import assert_model_oos
+    assert_model_oos(
+        trained_through=getattr(model, "trained_through", None),
+        fold_boundaries=[(tr, te, ts, te2) for tr, te, ts, te2, _ in fold_boundaries],
+        purge_days=purge_days,
+        model_label=f"intraday v{version}",
+        allow_in_sample=allow_in_sample,
+    )
 
     def _run_intraday_fold(args):
         fold_idx, tr_start, tr_end, te_start, te_end, emb = args
@@ -1832,6 +1843,7 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
         earnings_blackout=earnings_cal,
     )
     strategy.model_type = "intraday"
+    strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
     _cpcv_intraday_as_of = getattr(args, "as_of", None)
     if _cpcv_intraday_as_of:
         try:
@@ -2170,6 +2182,13 @@ def main() -> int:
                         help="P0: bypass the SACRED_HOLDOUT_START guard. Use ONLY for the "
                              "single, final promotion-candidate evaluation. Logs a banner "
                              "warning. See app/ml/retrain_config.py.")
+    # OOS-guard bypass: allows running WF/CPCV on test folds inside the model's
+    # training period. Results are explicitly labeled in-sample and cannot promote
+    # past gates. Use for diagnostics / baseline benchmarks only.
+    parser.add_argument("--allow-in-sample", action="store_true", default=False,
+                        help="Bypass the OOS guard — allow test folds inside the model's "
+                             "training period. Results labeled in-sample; cannot promote "
+                             "past gates. Use for diagnostics only.")
     args = parser.parse_args()
 
     # WF-C2: parse --as-of into a date
@@ -2456,6 +2475,7 @@ def main() -> int:
             use_regime_gate=getattr(args, "regime_gate", False),
             regime_map=_regime_map,
             as_of=_as_of_date,
+            allow_in_sample=getattr(args, "allow_in_sample", False),
         )
         intraday_report = run_intraday_walkforward(**_intraday_kwargs)
         intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)

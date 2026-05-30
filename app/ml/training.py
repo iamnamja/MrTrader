@@ -1051,6 +1051,22 @@ class ModelTrainer:
         # rows (MIN_WARMUP=8 never met with empty history) → 0 trades → garbage results.
         self.model._ts_norm_state = self._ts_norm_state if _use_ts_norm else None
 
+        # OOS-guard: record the latest training observation date before saving.
+        # _last_all_dates is populated by _build_rolling_matrix; max gives the
+        # most recent date present in training data (forward-label window excluded).
+        try:
+            from datetime import date as _date
+            _last_dates = getattr(self, "_last_all_dates", [])
+            if _last_dates:
+                _train_cutoff = max(d if isinstance(d, _date) else d.date() for d in _last_dates)
+                self.model.trained_through = _train_cutoff
+                logger.info("trained_through set to %s", self.model.trained_through)
+            else:
+                self.model.trained_through = end_dt
+                logger.warning("_last_all_dates empty; trained_through set to end_dt=%s", end_dt)
+        except Exception as _exc:
+            logger.warning("Could not set trained_through: %s", _exc)
+
         version = self._next_version("swing")
         saved_path = self.model.save(self.model_dir, version, model_name="swing")
         self._record_version(version, len(X_train), len(X_test), saved_path, years, metrics,

@@ -45,6 +45,10 @@ class CPCVResult:
     path_sharpes: List[float] = field(default_factory=list)
     path_profit_factors: List[float] = field(default_factory=list)
     path_calmars: List[float] = field(default_factory=list)
+    # Trading-day observation count per path; used for correct DSR n_obs.
+    path_n_obs: List[int] = field(default_factory=list)
+    # True when the OOS guard was bypassed with allow_in_sample=True.
+    in_sample_override: bool = False
 
     @property
     def n_combinations(self) -> int:
@@ -80,9 +84,21 @@ class CPCVResult:
         cals = [c for c in self.path_calmars if c != 0]
         return float(np.mean(cals)) if cals else 0.0
 
+    @property
+    def total_obs(self) -> int:
+        """Sum of trading-day observations across all paths. Used for correct DSR n_obs."""
+        return sum(self.path_n_obs) if self.path_n_obs else 0
+
+    def _dsr_n_obs(self) -> int:
+        """Use total trading-day count for DSR; fall back to n_combinations for legacy results."""
+        return self.total_obs if self.total_obs > 0 else max(self.n_combinations, 1)
+
     def gate_passed(self) -> bool:
+        # In-sample runs (allow_in_sample override) can never promote past gates.
+        if self.in_sample_override:
+            return False
         _, dsr_p = deflated_sharpe_ratio(
-            self.mean_sharpe, N_TRIALS_TESTED, max(self.n_combinations, 1)
+            self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs()
         )
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
@@ -97,7 +113,7 @@ class CPCVResult:
 
     def gate_detail(self) -> dict:
         _, dsr_p = deflated_sharpe_ratio(
-            self.mean_sharpe, N_TRIALS_TESTED, max(self.n_combinations, 1)
+            self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs()
         )
         return {
             "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= SHARPE_GATE),
@@ -114,6 +130,8 @@ class CPCVResult:
         from scripts.walkforward.reports import _ok, _err, _header
         _header(f"CPCV Report - {self.model_type.upper()} "
                 f"C({self.n_folds},{self.n_paths})={self.n_combinations} paths")
+        if self.in_sample_override:
+            print("  *** IN-SAMPLE RUN (--allow-in-sample): results cannot promote past gates ***")
         print(f"  Mean Sharpe:  {self.mean_sharpe:+.3f}  (gate: > {SHARPE_GATE})  "
               f"{'OK' if self.mean_sharpe >= SHARPE_GATE else 'FAIL'}")
         print(f"  Std Sharpe:   {self.std_sharpe:.3f}")
@@ -122,7 +140,7 @@ class CPCVResult:
         print(f"  P95 Sharpe:   {self.p95_sharpe:+.3f}")
         print(f"  % positive:   {self.pct_positive:.1%}  (gate: >= 75%)  "
               f"{'OK' if self.pct_positive >= 0.75 else 'FAIL'}")
-        _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED, self.n_combinations)
+        _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs())
         print(f"  DSR p:        {dsr_p:.3f}  (gate: > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
         if self.avg_profit_factor > 0:
             print(f"  Avg PF:       {self.avg_profit_factor:.3f}  "
@@ -192,10 +210,27 @@ def run_cpcv(
             n_folds=n_folds, n_paths=n_paths,
         )
 
+    # OOS-guard: every test fold must start strictly after the model's training cutoff.
+    from scripts.walkforward.oos_guard import assert_model_oos
+    _trained_through = getattr(getattr(strategy, "model", None), "trained_through", None)
+    _allow_in_sample = getattr(strategy, "allow_in_sample", False)
+    _model_label = (
+        f"{getattr(strategy, 'model_type', 'unknown')} "
+        f"v{getattr(strategy, 'version', '?')}"
+    )
+    assert_model_oos(
+        trained_through=_trained_through,
+        fold_boundaries=all_boundaries,
+        purge_days=purge_days,
+        model_label=_model_label,
+        allow_in_sample=_allow_in_sample,
+    )
+
     result = CPCVResult(
         model_type=getattr(strategy, "model_type", "unknown"),
         n_folds=n_folds,
         n_paths=n_paths,
+        in_sample_override=_allow_in_sample,
     )
 
     # Generate C(k, paths) combinations
@@ -212,6 +247,7 @@ def run_cpcv(
         combo_sharpes = []
         combo_pfs = []
         combo_cals = []
+        combo_n_obs: List[int] = []
 
         for ti in test_indices:
             tr_start, tr_end, te_start, te_end = all_boundaries[ti]
@@ -259,6 +295,7 @@ def run_cpcv(
                 combo_sharpes.append(fold.sharpe)
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
+                combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
             except Exception as exc:
                 logger.warning("CPCV combo %d fold %d failed: %s", combo_idx, ti, exc)
 
@@ -267,6 +304,7 @@ def run_cpcv(
             result.path_sharpes.append(path_sharpe)
             result.path_profit_factors.append(float(np.mean([p for p in combo_pfs if p > 0]) if combo_pfs else 0))
             result.path_calmars.append(float(np.mean([c for c in combo_cals if c != 0]) if combo_cals else 0))
+            result.path_n_obs.append(int(sum(combo_n_obs)))
 
         if (combo_idx + 1) % 5 == 0 or combo_idx == len(combinations) - 1:
             logger.info("CPCV: %d/%d combinations done, mean Sharpe so far: %.3f",
