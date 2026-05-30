@@ -153,9 +153,12 @@ class TestFoldEngineDelegation:
         from scripts.walkforward.engine import FoldEngine
         from scripts.walkforward.gates import FoldResult
 
+        from datetime import date as _date
         mock_strategy = MagicMock()
         mock_strategy.all_days_sorted = []
         mock_strategy.model_type = "swing"
+        mock_strategy.model.trained_through = _date(2019, 1, 1)  # OOS guard: before all fold dates
+        mock_strategy.allow_in_sample = False
 
         # Provide a realistic FoldResult for each call
         def make_fold(fold_idx, n_folds, tr_start, tr_end, te_start, te_end):

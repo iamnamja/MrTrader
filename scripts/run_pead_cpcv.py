@@ -54,6 +54,11 @@ class PEADStrategy:
         self.symbols_data: Dict[str, pd.DataFrame] = {}
         self.spy_prices = None
         self.all_days_sorted = []
+        # OOS guard: rules-based strategies have no ML training cutoff.
+        # Use date.min so every test fold is trivially after the "training" date.
+        from datetime import date as _date
+        self.model = type("_NoModel", (), {"trained_through": _date.min})()
+        self.allow_in_sample = False
 
     def fetch_data(self, start: datetime, end: datetime) -> None:
         import yfinance as yf
