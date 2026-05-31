@@ -49,6 +49,9 @@ class CPCVResult:
     path_n_obs: List[int] = field(default_factory=list)
     # True when the OOS guard was bypassed with allow_in_sample=True.
     in_sample_override: bool = False
+    # BUG-2: track skipped folds (fold 0 can't be tested — no prior training data).
+    # n_skipped > 0 is normal for CPCV; a large fraction indicates a design problem.
+    n_skipped: int = 0
 
     @property
     def n_combinations(self) -> int:
@@ -86,12 +89,32 @@ class CPCVResult:
 
     @property
     def total_obs(self) -> int:
-        """Sum of trading-day observations across all paths. Used for correct DSR n_obs."""
+        """Raw sum of trading-day observations across all paths.
+
+        NOTE: each unique trading day appears in C(n_folds-1, n_paths-1) paths.
+        Use _dsr_n_obs() (not this property) for DSR to avoid inflating T.
+        """
         return sum(self.path_n_obs) if self.path_n_obs else 0
 
+    @property
+    def unique_obs(self) -> int:
+        """Unique trading-day observations, corrected for combinatorial multiplicity.
+
+        BUG-1 fix: in C(k, paths) CPCV, every trading day appears in
+        C(k-1, paths-1) paths. total_obs over-counts unique days by that factor,
+        which inflates the DSR denominator and makes the gate easier to pass.
+        Dividing by C(n_folds-1, n_paths-1) recovers the true unique-day count.
+
+        Example: k=6, paths=2 → C(5,1)=5 → each day appears in 5 paths.
+        total_obs = 5 × unique_days; this property returns unique_days.
+        """
+        import math
+        multiplicity = math.comb(max(self.n_folds - 1, 0), max(self.n_paths - 1, 0))
+        return max(self.total_obs // max(multiplicity, 1), 1) if self.total_obs > 0 else 0
+
     def _dsr_n_obs(self) -> int:
-        """Use total trading-day count for DSR; fall back to n_combinations for legacy results."""
-        return self.total_obs if self.total_obs > 0 else max(self.n_combinations, 1)
+        """Unique trading-day count for DSR; fall back to n_combinations for legacy results."""
+        return self.unique_obs if self.unique_obs > 0 else max(self.n_combinations, 1)
 
     def gate_passed(self) -> bool:
         # In-sample runs (allow_in_sample override) can never promote past gates.
@@ -267,12 +290,14 @@ def run_cpcv(
             # paired test fold in the combo is processed).
             prior_train = [j for j in train_indices if j < ti]
             if not prior_train:
-                # No causal training history available for this test fold (e.g.
-                # ti == 0). Skip — this is the standard CPCV behavior when the
-                # earliest folds appear in test_indices.
+                # BUG-2: no causal training history before this test fold (ti == 0).
+                # Skipping is the only causally valid option — training on folds AFTER
+                # ti would be look-ahead. Count skips for the completeness metric;
+                # a large n_skipped fraction would indicate CPCV is biased toward
+                # later (potentially stronger) regimes.
+                result.n_skipped += 1
                 continue
             best_train = max(prior_train)
-            real_tr_start = all_boundaries[0][0]  # expanding: always from start
             tr_end_candidate = all_boundaries[best_train][1]
             # Apply purge gap: train must end at least `purge_days` calendar days
             # before te_start. The engine's per-fold purge is bypassed here because
@@ -280,7 +305,37 @@ def run_cpcv(
             from datetime import timedelta as _td
             max_tr_end = te_start - _td(days=max(purge_days, 0) + 1)
             real_tr_end = min(tr_end_candidate, max_tr_end)
+            # BUG-3 fix: honor train_years for rolling window CPCV.
+            # Previously always used all_boundaries[0][0] (expanding from start).
+            # With train_years set, roll the train start forward so only the most
+            # recent train_years of data are used — matching WF rolling behavior.
+            if train_years:
+                rolling_start = real_tr_end - _td(days=int(train_years * 365))
+                real_tr_start = max(all_boundaries[0][0], rolling_start)
+            else:
+                real_tr_start = all_boundaries[0][0]  # expanding: always from start
             if real_tr_end <= real_tr_start:
+                result.n_skipped += 1
+                continue
+
+            # BUG-23 fix: with rolling train_years, the training window
+            # [real_tr_start, real_tr_end] can overlap a prior test fold's
+            # [te_start, te_end] — training on data that was tested elsewhere
+            # in this combination is a form of in-sample contamination.
+            # Detect and skip rather than silently leaking.
+            prior_test_folds = [j for j in test_indices if j < ti]
+            overlap = any(
+                real_tr_start < all_boundaries[j][3]   # te_end of prior test
+                and real_tr_end > all_boundaries[j][2] # te_start of prior test
+                for j in prior_test_folds
+            )
+            if overlap:
+                logger.debug(
+                    "CPCV BUG-23 guard: combo %d ti=%d rolling window [%s, %s] "
+                    "overlaps prior test fold — skipping",
+                    combo_idx, ti, real_tr_start, real_tr_end,
+                )
+                result.n_skipped += 1
                 continue
 
             try:
@@ -310,5 +365,24 @@ def run_cpcv(
             logger.info("CPCV: %d/%d combinations done, mean Sharpe so far: %.3f",
                         combo_idx + 1, len(combinations),
                         float(np.mean(result.path_sharpes)) if result.path_sharpes else 0)
+
+    # BUG-2: log completeness — how many fold evaluations were skipped due to
+    # having no causal training history. For k=6, paths=2, exactly (k-1)=5 folds
+    # will be skipped (one per combo containing fold 0). This is expected and does
+    # not indicate a bug, but a large skip fraction beyond that is worth investigating.
+    total_fold_evals = len(combinations) * n_paths
+    expected_skips = len(combinations) - len(result.path_sharpes)
+    if result.n_skipped > 0:
+        skip_pct = result.n_skipped / max(total_fold_evals, 1) * 100
+        if skip_pct > 20:
+            logger.warning(
+                "CPCV: %d/%d fold evaluations skipped (%.0f%%) — CPCV distribution "
+                "is biased toward later regimes. Consider increasing n_folds or "
+                "checking fold boundary construction.",
+                result.n_skipped, total_fold_evals, skip_pct,
+            )
+        else:
+            logger.info("CPCV: %d fold evaluations skipped (fold 0 no-prior-train; expected).",
+                        result.n_skipped)
 
     return result

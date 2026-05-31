@@ -78,10 +78,32 @@ class IntradayStrategy:
                     pass
 
         self.spy_data = self.symbols_data.get("SPY")
+        # BUG-22: if SPY 5-min isn't in the Polygon cache, fetch it from yfinance
+        # (limited to trailing ~55 days) so the simulator always has a SPY overlay.
+        if self.spy_data is None:
+            try:
+                import yfinance as yf
+                _spy5 = yf.download("SPY", period="55d", interval="5m",
+                                    progress=False, auto_adjust=True)
+                if isinstance(_spy5.columns, pd.MultiIndex):
+                    _spy5.columns = _spy5.columns.get_level_values(0)
+                _spy5.columns = [c.lower() for c in _spy5.columns]
+                if len(_spy5) > 0:
+                    self.spy_data = _spy5
+                    self.symbols_data["SPY"] = _spy5
+                    logger.info("SPY 5-min fetched from yfinance (%d bars)", len(_spy5))
+            except Exception as exc:
+                logger.warning("SPY 5-min fallback failed: %s — running without SPY overlay.", exc)
 
+        # BUG-10 fix: use explicit start/end rather than period="3y" which leaks
+        # future data when as_of is set to a historical date. Add a 1-year buffer
+        # before start so MA and rolling-regime indicators have warm-up data.
         try:
             import yfinance as yf
-            _spy_daily = yf.download("SPY", period="3y", progress=False, auto_adjust=True)
+            _spy_start = (start - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+            _spy_end = (end + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            _spy_daily = yf.download("SPY", start=_spy_start, end=_spy_end,
+                                     progress=False, auto_adjust=True)
             if isinstance(_spy_daily.columns, pd.MultiIndex):
                 _spy_daily.columns = _spy_daily.columns.get_level_values(0)
             _spy_daily.columns = [c.lower() for c in _spy_daily.columns]
@@ -93,7 +115,8 @@ class IntradayStrategy:
         if self.use_opportunity_score:
             try:
                 import yfinance as yf
-                _vix_daily = yf.download("^VIX", period="3y", progress=False, auto_adjust=True)
+                _vix_daily = yf.download("^VIX", start=_spy_start, end=_spy_end,
+                                         progress=False, auto_adjust=True)
                 if isinstance(_vix_daily.columns, pd.MultiIndex):
                     _vix_daily.columns = _vix_daily.columns.get_level_values(0)
                 _vix_daily.columns = [c.lower() for c in _vix_daily.columns]
@@ -113,7 +136,12 @@ class IntradayStrategy:
         from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
         from app.data.universe_history import members_at as _members_at
 
-        pit_members = set(_members_at("russell1000", tr_start))
+        # BUG-9 fix: use PIT membership at te_start, not tr_start.
+        # _members_at(tr_start) includes stocks that delisted/crashed between tr_start
+        # and te_start (de-listing bias), while additions after tr_start are correctly
+        # excluded. Using te_start as the PIT date eliminates de-listing bias without
+        # any look-ahead into the test window (te_start is the first day we trade).
+        pit_members = set(_members_at("russell1000", te_start))
         fold_symbols_data = {s: d for s, d in self.symbols_data.items() if s in pit_members}
         sim = IntradayAgentSimulator(
             model=self.model,
@@ -138,6 +166,10 @@ class IntradayStrategy:
         trade_returns = getattr(result, "trade_returns", [])
         equity_curve = getattr(result, "equity_curve", [])
         years = fold_years(te_start, te_end)
+        # n_obs: number of daily-return observations (one per trading day in the fold).
+        # equity_curve is a list of (date, equity) pairs sampled once per trading day
+        # by IntradayAgentSimulator; len - 1 gives the number of day-over-day returns.
+        n_obs = max(len(equity_curve) - 1, 0)
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -152,4 +184,5 @@ class IntradayStrategy:
             profit_factor=compute_profit_factor(trade_returns),
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
+            n_obs=n_obs,
         )
