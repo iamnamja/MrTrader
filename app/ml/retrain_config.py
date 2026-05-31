@@ -181,7 +181,10 @@ INTRADAY_GATE = dict(
 #   15   — original (under-stated: only counted explicit HPO trials, not all variants)
 #   200  — corrected 2026-05-11 (R1): iterations 1-6 + phases 18-87 + R-series ≈ 200
 #   200  — 2026-05-12: v192-v195 retrains + R5 + R2 ablation = ~205; rounded 200
-N_TRIALS_TESTED: int = 200
+#   250  — updated 2026-05-30: LX1–LX9 campaign (9 experiments) + v217–v224 retrains
+#          + 4 audit rounds with repeated WF re-runs ≈ 225 total; rounded to 250.
+#          Higher N makes DSR harder to pass — correct direction for selection bias.
+N_TRIALS_TESTED: int = 250
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.

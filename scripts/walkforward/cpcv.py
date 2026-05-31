@@ -322,18 +322,22 @@ def run_cpcv(
             # [real_tr_start, real_tr_end] can overlap a prior test fold's
             # [te_start, te_end] — training on data that was tested elsewhere
             # in this combination is a form of in-sample contamination.
-            # Detect and skip rather than silently leaking.
+            # Purge_days is applied symmetrically: enforce it AFTER each prior
+            # test fold's end too (not just before this test's start), preventing
+            # label-horizon leakage where training data starts within purge_days
+            # of a prior test fold ending.
             prior_test_folds = [j for j in test_indices if j < ti]
+            _purge = _td(days=max(purge_days, 0))
             overlap = any(
-                real_tr_start < all_boundaries[j][3]   # te_end of prior test
-                and real_tr_end > all_boundaries[j][2] # te_start of prior test
+                real_tr_start < all_boundaries[j][3] + _purge  # te_end + purge buffer
+                and real_tr_end > all_boundaries[j][2]          # te_start of prior test
                 for j in prior_test_folds
             )
             if overlap:
                 logger.debug(
-                    "CPCV BUG-23 guard: combo %d ti=%d rolling window [%s, %s] "
-                    "overlaps prior test fold — skipping",
-                    combo_idx, ti, real_tr_start, real_tr_end,
+                    "CPCV overlap guard: combo %d ti=%d rolling window [%s, %s] "
+                    "overlaps prior test fold (including %d-day post-test embargo) — skipping",
+                    combo_idx, ti, real_tr_start, real_tr_end, purge_days,
                 )
                 result.n_skipped += 1
                 continue
