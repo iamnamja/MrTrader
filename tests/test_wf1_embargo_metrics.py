@@ -31,8 +31,9 @@ class TestComputeProfitFactor:
         assert abs(self._pf([1.0, 1.0, 1.0, -1.0]) - 3.0) < 1e-9
 
     def test_no_losses_returns_sentinel(self):
-        # All wins, no losses: undefined PF, report 999.0 sentinel (not 0.0)
-        assert self._pf([1.0, 2.0]) == 999.0
+        # All wins, no losses: undefined PF, report PF_NO_LOSS_SENTINEL (5.0), not 0.0 or 999.0
+        from scripts.walkforward.gates import PF_NO_LOSS_SENTINEL
+        assert self._pf([1.0, 2.0]) == PF_NO_LOSS_SENTINEL
 
     def test_empty_returns_zero(self):
         assert self._pf([]) == 0.0
@@ -210,31 +211,32 @@ class TestGateLogic:
                 stop_exit_rate=0.4,
                 profit_factor=pf,
                 calmar_ratio=calmar,
+                n_obs=120,
             )
             report.folds.append(f)
         return report
 
-    @patch("scripts.walkforward_tier3._deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_passes_all_gates(self, _dsr):
         report = self._report_with_sharpes([1.2, 1.1, 1.3], pf=1.5, calmar=0.5)
         assert report.gate_passed()
 
-    @patch("scripts.walkforward_tier3._deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_fails_sharpe_gate(self, _dsr):
         report = self._report_with_sharpes([0.5, 0.5, 0.5], pf=1.5, calmar=0.5)
         assert not report.gate_passed()
 
-    @patch("scripts.walkforward_tier3._deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_fails_min_fold_sharpe(self, _dsr):
         report = self._report_with_sharpes([1.5, 1.5, -0.5], pf=1.5, calmar=0.5)
         assert not report.gate_passed()
 
-    @patch("scripts.walkforward_tier3._deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_fails_profit_factor_gate(self, _dsr):
         report = self._report_with_sharpes([1.2, 1.1, 1.3], pf=0.9, calmar=0.5)
         assert not report.gate_passed()
 
-    @patch("scripts.walkforward_tier3._deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_fails_calmar_gate(self, _dsr):
         report = self._report_with_sharpes([1.2, 1.1, 1.3], pf=1.5, calmar=0.1)
         assert not report.gate_passed()

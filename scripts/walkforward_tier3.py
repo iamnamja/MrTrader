@@ -33,7 +33,6 @@ import os
 import signal
 import sys
 import time
-from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -41,13 +40,20 @@ from typing import Dict, List, Optional
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 
-import math  # noqa: E402
-
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from scipy.stats import norm  # noqa: E402
 
 from app.ml.retrain_config import MAX_WORKERS, MAX_FOLD_WORKERS, N_TRIALS_TESTED  # noqa: E402
+from scripts.walkforward.gates import (  # noqa: E402
+    SHARPE_GATE, MIN_FOLD_SHARPE, MIN_PROFIT_FACTOR, MIN_CALMAR,
+    deflated_sharpe_ratio as _deflated_sharpe_ratio,
+    compute_profit_factor as _compute_profit_factor,
+    compute_calmar as _compute_calmar,
+    compute_k_ratio as _compute_k_ratio,
+    fold_years as _fold_years,
+    FoldResult,
+    WalkForwardReport,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -55,113 +61,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-# ── Gate thresholds ───────────────────────────────────────────────────────────
-SHARPE_GATE = 0.8          # avg OOS Sharpe required to pass
-MIN_FOLD_SHARPE = -0.3     # no individual fold may be below this
-# N_TRIALS_TESTED imported from app.ml.retrain_config — single source of truth.
-# WF-1: multi-metric gates
-MIN_PROFIT_FACTOR = 1.10   # avg profit factor across folds (sum wins / sum |losses|)
-MIN_CALMAR = 0.30          # avg Calmar ratio (annualised return / max drawdown)
-
-
-def _deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
-    """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
-    Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction.
-
-    Formula (per B&LP 2014, eq. 8-10):
-      V[SR]      = (1 + 0.5·SR²) / (T - 1)              # IID-normal variance of SR estimator
-      E[SR_max]  = sqrt(V[SR]) · [ (1-γ)·Φ⁻¹(1-1/N)
-                                  + γ·Φ⁻¹(1-1/(N·e)) ]   # selection-bias correction
-      DSR_z      = (SR_obs - E[SR_max]) / sqrt(V[SR])
-
-    Bug fix (WF deep-review pass 2): previous implementation omitted the sqrt(V[SR])
-    scaling factor on E[SR_max], so the deflation term carried wrong units and
-    massively overstated DSR for high-T runs. The numerator and denominator of
-    DSR_z must use the same variance scaling.
-
-    Args:
-      sharpe:   The observed (annualized) Sharpe ratio.
-      n_trials: Number of model variants tried historically (selection-bias N).
-      n_obs:    Number of return OBSERVATIONS used to compute SR (i.e. number of
-                daily returns / trading days in the test window). NOT trade count —
-                using trade count here under-states T and produces an inflated DSR.
-                Callers must pass total trading days, not total_trades.
-    """
-    if n_trials <= 1 or n_obs <= 1:
-        return sharpe, 0.5
-    euler_mascheroni = 0.5772156649
-    sr_var = (1 + 0.5 * sharpe ** 2) / max(n_obs - 1, 1)
-    sr_var_sqrt = math.sqrt(sr_var)
-    sr_star = sr_var_sqrt * (
-        (1 - euler_mascheroni) * norm.ppf(1 - 1.0 / n_trials)
-        + euler_mascheroni * norm.ppf(1 - 1.0 / (n_trials * math.e))
-    )
-    dsr_z = (sharpe - sr_star) / sr_var_sqrt
-    return dsr_z, float(norm.cdf(dsr_z))
-
-
-# ── WF-1: Additional metric helpers ──────────────────────────────────────────
-
-def _compute_profit_factor(trade_returns: list) -> float:
-    """Profit factor = sum(positive returns) / sum(abs(negative returns)).
-    Returns 0.0 if no trades (cannot compute).
-    Returns 999.0 if wins > 0 but no losses (infinite edge, small fold).
-    """
-    if not trade_returns:
-        return 0.0
-    wins = sum(r for r in trade_returns if r > 0)
-    losses = sum(abs(r) for r in trade_returns if r < 0)
-    if losses > 0:
-        return float(wins / losses)
-    return 999.0 if wins > 0 else 0.0
-
-
-def _compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
-    """Calmar ratio = annualised return / max drawdown.
-    Returns 0.0 if max_drawdown is zero (avoids division by zero).
-    """
-    if max_drawdown_pct <= 0 or years <= 0:
-        return 0.0
-    # M-5 fix: geometric annualisation (compounding). Inputs are fractions (e.g. 0.20 = 20%),
-    # so (1 + total_return)^(1/years) - 1 is the CAGR. Arithmetic (total/years) overstates
-    # multi-year returns and understates sub-year returns.
-    annualised = (1.0 + total_return_pct) ** (1.0 / years) - 1.0
-    return float(annualised / max_drawdown_pct)
-
-
-def _compute_k_ratio(equity_curve: list) -> float:
-    """K-ratio = slope of log-equity regressed on time / std(log returns), annualised.
-
-    R5b fix: the prior implementation divided slope-of-dollar-equity by
-    std-of-dollar-diffs, which is scale-dependent (a $200k account would show a
-    very different K-ratio than a $20k account on the same return path). We now
-    regress log(equity) on time and divide by the std of daily log returns, then
-    annualise by sqrt(252) so the K-ratio is comparable across capital bases.
-
-    Returns 0.0 if insufficient data or equity is non-positive anywhere.
-    """
-    if len(equity_curve) < 4:
-        return 0.0
-    try:
-        y = np.array(equity_curve, dtype=float)
-        if not np.all(y > 0):
-            return 0.0
-        log_y = np.log(y)
-        x = np.arange(len(log_y), dtype=float)
-        slope = float(np.polyfit(x, log_y, 1)[0])  # mean daily log return (drift)
-        log_rets = np.diff(log_y)
-        vol = float(np.std(log_rets)) if len(log_rets) > 1 else 0.0
-        if vol <= 0:
-            return 0.0
-        return (slope / vol) * float(np.sqrt(252.0))
-    except Exception:
-        return 0.0
-
-
-def _fold_years(test_start: date, test_end: date) -> float:
-    """Return the length of a test fold in years."""
-    return max((test_end - test_start).days / 365.0, 1 / 365.0)
 
 
 def _make_regime_gate_fn(
@@ -326,189 +225,6 @@ def _header(msg):
 
 def _subheader(msg):
     print(f"\n{'-'*62}\n  {msg}\n{'-'*62}")
-
-
-# ── Fold result ───────────────────────────────────────────────────────────────
-
-@dataclass
-class FoldResult:
-    fold: int
-    train_start: date
-    train_end: date
-    test_start: date
-    test_end: date
-    trades: int
-    win_rate: float
-    sharpe: float
-    max_drawdown: float
-    total_return: float
-    stop_exit_rate: float
-    model_version: int = 0
-    # WF-1: additional metrics
-    profit_factor: float = 0.0   # sum(wins) / sum(|losses|); 0 = not computed
-    calmar_ratio: float = 0.0    # annualised_return / max_drawdown; 0 = not computed
-    k_ratio: float = 0.0         # slope(cum_ret) / std(annual_ret); 0 = not computed
-    # WF-4: regime stratification
-    regime_sharpes: dict = field(default_factory=dict)
-    regime_diversity: int = 0
-    # WF-5a: abstention tracking
-    opp_score_abstain_days: int = 0
-    earnings_blackout_days: int = 0
-    macro_gate_days: int = 0
-    # Number of return observations (trading days) in this fold's equity curve.
-    # Used to compute T for the Deflated Sharpe Ratio. 0 means "unknown" — callers
-    # that aggregate folds should sum this across folds for the DSR n_obs argument.
-    n_obs: int = 0
-    # Phase A diagnostics: per-feature mean IC over the test window (optional).
-    # Populated when --compute-fold-ic is passed. Not a gate — used to monitor
-    # feature decay between train and test.
-    feature_ic: Optional[Dict[str, float]] = None
-
-    def passed_gate(self) -> bool:
-        return self.sharpe >= MIN_FOLD_SHARPE
-
-    def summary_line(self) -> str:
-        gate = "OK" if self.passed_gate() else "FAIL"
-        pf_str = f"  PF={self.profit_factor:.2f}" if self.profit_factor > 0 else ""
-        cal_str = f"  Cal={self.calmar_ratio:.2f}" if self.calmar_ratio != 0 else ""
-        return (
-            f"  Fold {self.fold} [{gate}] "
-            f"test={self.test_start}->{self.test_end}  "
-            f"trades={self.trades}  win={self.win_rate:.1%}  "
-            f"Sharpe={self.sharpe:.2f}  DD={self.max_drawdown:.1%}"
-            f"{pf_str}{cal_str}"
-        )
-
-
-@dataclass
-class WalkForwardReport:
-    model_type: str
-    folds: List[FoldResult] = field(default_factory=list)
-    # WF design note (deep-review pass 3): the harness loads ONE pre-trained
-    # model via _load_model() and re-scores it across every fold's test window.
-    # This is a GENERALIZATION TEST — "does this single model hold up across
-    # multiple out-of-sample regimes?" — not a true expanding-window walk-forward
-    # (which would retrain on [train_start, fold_train_end] inside each fold).
-    # The flag below makes that distinction explicit for downstream consumers
-    # (reporting, ML_EXPERIMENT_LOG, DSR interpretation). Set to True only when
-    # a per-fold retrain has actually been performed.
-    is_true_walkforward: bool = False
-    # True when the OOS guard was bypassed with allow_in_sample=True.
-    # In-sample runs can never promote past gates.
-    in_sample_override: bool = False
-
-    @property
-    def avg_sharpe(self) -> float:
-        return float(np.mean([f.sharpe for f in self.folds])) if self.folds else 0.0
-
-    @property
-    def min_sharpe(self) -> float:
-        return float(np.min([f.sharpe for f in self.folds])) if self.folds else 0.0
-
-    @property
-    def avg_win_rate(self) -> float:
-        return float(np.mean([f.win_rate for f in self.folds])) if self.folds else 0.0
-
-    @property
-    def total_trades(self) -> int:
-        return sum(f.trades for f in self.folds)
-
-    @property
-    def total_obs(self) -> int:
-        """Total number of return observations (trading days) across all folds.
-        Falls back to total_trades only when no fold reported n_obs (legacy)."""
-        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
-        return obs if obs > 0 else self.total_trades
-
-    @property
-    def avg_profit_factor(self) -> float:
-        # Cap at 5.0 before averaging: PF=999 sentinel (all-wins fold) would otherwise
-        # inflate the mean far above the gate threshold, giving a spurious pass.
-        MAX_PF = 5.0
-        pfs = [min(f.profit_factor, MAX_PF) for f in self.folds if f.profit_factor > 0]
-        return float(np.mean(pfs)) if pfs else 0.0
-
-    @property
-    def avg_calmar(self) -> float:
-        cals = [f.calmar_ratio for f in self.folds if f.calmar_ratio != 0]
-        return float(np.mean(cals)) if cals else 0.0
-
-    @property
-    def avg_k_ratio(self) -> float:
-        ks = [f.k_ratio for f in self.folds if f.k_ratio != 0]
-        return float(np.mean(ks)) if ks else 0.0
-
-    # P3: paper-gate thresholds (less strict, for deploy-to-paper decisions)
-    PAPER_SHARPE_GATE = 0.50
-    PAPER_MIN_FOLD_SHARPE = -0.40
-
-    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
-        if self.in_sample_override:
-            return False
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
-        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
-        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
-        return (
-            self.avg_sharpe >= sharpe_gate
-            and self.min_sharpe >= min_fold_gate
-            and dsr_p > 0.95
-            and pf_ok
-            and cal_ok
-        )
-
-    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
-        """Return per-gate pass/fail dict for logging and tests."""
-        _, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
-        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
-        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
-        return {
-            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= sharpe_gate),
-            "min_sharpe": (self.min_sharpe, self.min_sharpe >= min_fold_gate),
-            "dsr_p": (dsr_p, dsr_p > 0.95),
-            "avg_profit_factor": (self.avg_profit_factor, pf_ok),
-            "avg_calmar": (self.avg_calmar, cal_ok),
-        }
-
-    def print(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> None:
-        _header(f"Walk-Forward Report — {self.model_type.upper()} (Tier 3)"
-                + (" [PAPER-GATE MODE]" if paper_gate else ""))
-        for f in self.folds:
-            print(f.summary_line())
-        print()
-        detail = self.gate_detail(dsr_n=dsr_n, paper_gate=paper_gate)
-        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
-        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        print(f"  Avg Sharpe:      {self.avg_sharpe:+.3f}  (gate: > {sharpe_gate})  "
-              f"{'OK' if detail['avg_sharpe'][1] else 'FAIL'}")
-        print(f"  Min fold Sharpe: {self.min_sharpe:+.3f}  (gate: > {min_fold_gate})  "
-              f"{'OK' if detail['min_sharpe'][1] else 'FAIL'}")
-        print(f"  Avg win rate:    {self.avg_win_rate:.1%}")
-        print(f"  Total trades:    {self.total_trades}")
-        dsr_z, dsr_p = _deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
-        print(f"  DSR (N={dsr_n} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
-              f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
-        if self.avg_profit_factor > 0 and not paper_gate:
-            print(f"  Avg profit factor: {self.avg_profit_factor:.3f}  "
-                  f"(gate: > {MIN_PROFIT_FACTOR})  "
-                  f"{'OK' if detail['avg_profit_factor'][1] else 'FAIL'}")
-        if self.avg_calmar != 0 and not paper_gate:
-            print(f"  Avg Calmar ratio:  {self.avg_calmar:.3f}  "
-                  f"(gate: > {MIN_CALMAR})  "
-                  f"{'OK' if detail['avg_calmar'][1] else 'FAIL'}")
-        if self.avg_k_ratio != 0:
-            print(f"  Avg K-ratio:       {self.avg_k_ratio:.3f}  (directional; > 0 = improving)")
-        print()
-        if self.gate_passed(dsr_n=dsr_n, paper_gate=paper_gate):
-            mode = "PAPER GATE" if paper_gate else "GATE"
-            _ok(f"{mode} PASSED — avg Sharpe {self.avg_sharpe:.3f}, DSR p={dsr_p:.3f}, "
-                f"PF={self.avg_profit_factor:.2f}, Calmar={self.avg_calmar:.2f}")
-        else:
-            failed = [k for k, (v, ok) in detail.items() if not ok]
-            _err(f"GATE NOT MET — failed: {', '.join(failed)}")
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────

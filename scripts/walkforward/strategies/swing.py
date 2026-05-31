@@ -164,8 +164,12 @@ class SwingStrategy:
         from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
 
         # WF-A2/A3: use Russell 1000 PIT union (matches training universe).
-        extra = _hist_syms(tr_start, te_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
+        # Upper bound is tr_end, NOT te_end: names that joined the index between
+        # tr_end and te_end are only known in the future — including them is
+        # forward-looking survivorship bias. The live trader also cannot know
+        # about index joiners before they actually join.
+        extra = _hist_syms(tr_start, tr_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, tr_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in self.symbols_data.items()
@@ -265,6 +269,10 @@ class SwingStrategy:
         stop_rate = stop_exits / max(result.total_trades, 1)
         trade_returns = getattr(result, "trade_returns", [])
         equity_curve = getattr(result, "equity_curve", [])
+        # n_obs = trading-day return observations for DSR. equity_curve is a list
+        # of (date, equity) tuples (one per trading day); diffs give daily returns,
+        # hence len-1. Required by deflated_sharpe_ratio; mirrors intraday.py.
+        n_obs = max(len(equity_curve) - 1, 0)
         years = fold_years(te_start, te_end)
         return FoldResult(
             fold=fold_idx,
@@ -280,4 +288,5 @@ class SwingStrategy:
             profit_factor=compute_profit_factor(trade_returns),
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
+            n_obs=n_obs,
         )
