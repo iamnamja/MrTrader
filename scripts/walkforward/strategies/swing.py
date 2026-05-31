@@ -57,6 +57,9 @@ class SwingStrategy:
         rebalance_inv_vol_max_mult: float = 2.0,
         rebalance_spy_vol_damper: bool = False,
         rebalance_spy_vol_damper_scale: float = 0.50,
+        # LX6b/LX8: hard bear-exit + per-position trailing stop (forwarded to AgentSimulator)
+        rebalance_hard_exit_bear: bool = False,
+        rebalance_flat_stop_pct: float = 0.0,
         # Phase 89: factor stability gate (WF path only; CPCV path wired in Phase 90)
         rebalance_factor_stability_gate: bool = False,
         rebalance_factor_stability_lookback: int = 63,
@@ -102,6 +105,8 @@ class SwingStrategy:
         self.rebalance_inv_vol_max_mult = rebalance_inv_vol_max_mult
         self.rebalance_spy_vol_damper = rebalance_spy_vol_damper
         self.rebalance_spy_vol_damper_scale = rebalance_spy_vol_damper_scale
+        self.rebalance_hard_exit_bear = rebalance_hard_exit_bear
+        self.rebalance_flat_stop_pct = rebalance_flat_stop_pct
         self.rebalance_factor_stability_gate = rebalance_factor_stability_gate
         self.rebalance_factor_stability_lookback = rebalance_factor_stability_lookback
         self.rebalance_factor_stability_ic_threshold = rebalance_factor_stability_ic_threshold
@@ -293,6 +298,8 @@ class SwingStrategy:
             rebalance_inv_vol_max_mult=self.rebalance_inv_vol_max_mult,
             rebalance_spy_vol_damper=self.rebalance_spy_vol_damper,
             rebalance_spy_vol_damper_scale=self.rebalance_spy_vol_damper_scale,
+            rebalance_hard_exit_bear=self.rebalance_hard_exit_bear,
+            rebalance_flat_stop_pct=self.rebalance_flat_stop_pct,
         )
         import uuid as _uuid
         sim._wf_run_id = f"wf-fold{fold_idx}-{_uuid.uuid4().hex[:8]}"
