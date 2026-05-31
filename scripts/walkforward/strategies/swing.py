@@ -156,6 +156,14 @@ class SwingStrategy:
         if self.rebalance_mode:
             self.symbols_data["SPY"] = spy_raw
 
+        # C11-6: pre-compute regime_map over the full evaluation window so that VIX
+        # quartile thresholds are stable across folds (not re-computed per test window).
+        try:
+            from scripts.walkforward.regime import load_regime_map as _lrm
+            self._global_regime_map = _lrm(start.date(), end.date())
+        except Exception:
+            self._global_regime_map = {}
+
         logger.info("Swing data loaded: %d symbols in %.1fs", len(self.symbols_data), time.time() - t0)
 
     def run_fold(self, fold_idx: int, n_folds: int,
@@ -279,7 +287,8 @@ class SwingStrategy:
         n_obs = max(len(equity_curve) - 1, 0)
         years = fold_years(te_start, te_end)
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
-        regime_sharpes = _crs(equity_curve, te_start, te_end)
+        regime_sharpes = _crs(equity_curve, te_start, te_end,
+                              regime_map=getattr(self, "_global_regime_map", None))
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,

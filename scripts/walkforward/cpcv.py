@@ -138,6 +138,10 @@ class CPCVResult:
         )
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        # C11-2: require a minimum number of surviving paths before any gate fires.
+        # Without this, a single surviving path can pass mean_sharpe/p5/pct_positive.
+        if len(self.path_sharpes) < MIN_ACTIVE_FOLDS_FOR_GATE:
+            return False
         # CR-1/C8-9: close "avg==0 → pass" bypass — require MIN_ACTIVE_FOLDS_FOR_GATE paths.
         # C8-6: paper_gate bypasses PF/Calmar (matching WalkForwardReport behaviour).
         n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
@@ -168,11 +172,14 @@ class CPCVResult:
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
         n_cal_active = sum(1 for c in self.path_calmars if c != 0)
+        n_paths = len(self.path_sharpes)
+        enough_paths = n_paths >= MIN_ACTIVE_FOLDS_FOR_GATE
         return {
-            "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= sharpe_gate),
-            "p5_sharpe": (self.p5_sharpe, self.p5_sharpe >= min_fold_gate),
-            "pct_positive": (self.pct_positive, self.pct_positive >= 0.75),
-            "dsr_p": (dsr_p, dsr_p > 0.95),
+            "n_paths": (n_paths, enough_paths),
+            "mean_sharpe": (self.mean_sharpe, enough_paths and self.mean_sharpe >= sharpe_gate),
+            "p5_sharpe": (self.p5_sharpe, enough_paths and self.p5_sharpe >= min_fold_gate),
+            "pct_positive": (self.pct_positive, enough_paths and self.pct_positive >= 0.75),
+            "dsr_p": (dsr_p, enough_paths and dsr_p > 0.95),
             "avg_profit_factor": (self.avg_profit_factor,
                                   paper_gate
                                   or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
@@ -276,6 +283,29 @@ def run_cpcv(
             model_type=getattr(strategy, "model_type", "unknown"),
             n_folds=n_folds, n_paths=n_paths,
         )
+
+    # C11-10: verify strategy data range covers the constructed fold window so that
+    # a caller who fetched a shorter range does not silently produce empty-fold results.
+    if total_years is not None:
+        _sd = getattr(strategy, "symbols_data", None) or {}
+        if _sd:
+            import pandas as pd
+            _all_dates = []
+            for _df in _sd.values():
+                if hasattr(_df, "index"):
+                    _all_dates.extend(_df.index.tolist())
+            if _all_dates:
+                _data_start = min(_all_dates)
+                _data_start = _data_start.date() if hasattr(_data_start, "date") else _data_start
+                _fold_start = all_boundaries[0][0]
+                _fold_start = _fold_start.date() if hasattr(_fold_start, "date") else _fold_start
+                if _data_start > _fold_start:
+                    logger.warning(
+                        "C11-10: strategy data starts %s but first fold train-start is %s. "
+                        "Folds before data start will produce empty results. "
+                        "Re-fetch with a longer window.",
+                        _data_start, _fold_start,
+                    )
 
     # OOS-guard: every test fold must start strictly after the model's training cutoff.
     from scripts.walkforward.oos_guard import assert_model_oos

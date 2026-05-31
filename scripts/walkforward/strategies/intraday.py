@@ -129,6 +129,15 @@ class IntradayStrategy:
             d for df in self.symbols_data.values()
             for d in pd.to_datetime(df.index).date
         })
+        # C11-6: pre-compute regime_map over the full evaluation window so VIX quartile
+        # thresholds are stable across all folds (not re-computed per test window).
+        try:
+            from scripts.walkforward.regime import load_regime_map as _lrm
+            _start_d = start.date() if hasattr(start, "date") else start
+            _end_d = end.date() if hasattr(end, "date") else end
+            self._global_regime_map = _lrm(_start_d, _end_d)
+        except Exception:
+            self._global_regime_map = {}
         logger.info("Intraday data loaded: %d symbols", len(self.symbols_data))
 
     def run_fold(self, fold_idx: int, n_folds: int,
@@ -174,7 +183,8 @@ class IntradayStrategy:
         # by IntradayAgentSimulator; len - 1 gives the number of day-over-day returns.
         n_obs = max(len(equity_curve) - 1, 0)
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
-        regime_sharpes = _crs(equity_curve, te_start, te_end)
+        regime_sharpes = _crs(equity_curve, te_start, te_end,
+                              regime_map=getattr(self, "_global_regime_map", None))
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
