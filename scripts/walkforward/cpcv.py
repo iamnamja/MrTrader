@@ -125,12 +125,12 @@ class CPCVResult:
         """Unique trading-day count for DSR; fall back to n_combinations for legacy results."""
         return self.unique_obs if self.unique_obs > 0 else max(self.n_combinations, 1)
 
-    def gate_passed(self) -> bool:
+    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED) -> bool:
         # In-sample runs (allow_in_sample override) can never promote past gates.
         if self.in_sample_override:
             return False
         _, dsr_p = deflated_sharpe_ratio(
-            self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs()
+            self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
@@ -146,9 +146,9 @@ class CPCVResult:
             and regime_ok
         )
 
-    def gate_detail(self) -> dict:
+    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED) -> dict:
         _, dsr_p = deflated_sharpe_ratio(
-            self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs()
+            self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
         return {
             "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= SHARPE_GATE),
@@ -276,6 +276,8 @@ def run_cpcv(
     combinations = list(itertools.combinations(fold_indices, n_paths))
     logger.info("CPCV: %d combinations (C(%d,%d))", len(combinations), n_folds, n_paths)
 
+    all_fold_regime_sharpes: List[float] = []  # C-2: accumulate across all combos
+
     for combo_idx, test_indices in enumerate(combinations):
         train_indices = [i for i in fold_indices if i not in test_indices]
         if not train_indices:
@@ -286,6 +288,7 @@ def run_cpcv(
         combo_pfs = []
         combo_cals = []
         combo_n_obs: List[int] = []
+        combo_regime_sharpes: List[float] = []  # C-2: collect for worst_regime_sharpe
 
         for ti in test_indices:
             tr_start, tr_end, te_start, te_end = all_boundaries[ti]
@@ -370,6 +373,9 @@ def run_cpcv(
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
+                fold_rs = getattr(fold, "regime_sharpes", {}).values()
+                combo_regime_sharpes.extend(fold_rs)
+                all_fold_regime_sharpes.extend(fold_rs)
             except Exception as exc:
                 logger.warning("CPCV combo %d fold %d failed: %s", combo_idx, ti, exc)
 
@@ -382,12 +388,26 @@ def run_cpcv(
             # I2: drop only uncomputed zeros; keep negatives (CAL_TOTAL_LOSS_SENTINEL).
             valid_cals = [c for c in combo_cals if c != 0]
             result.path_calmars.append(float(np.mean(valid_cals)) if valid_cals else 0.0)
-            result.path_n_obs.append(int(sum(combo_n_obs)))
+            # C-1 fix: each path's Sharpe is a mean of n_paths fold-Sharpes, so
+            # the independent observation count for that path is the per-fold mean,
+            # not the sum. Summing inflated _dsr_n_obs by n_paths, making the DSR
+            # gate easier to pass (smaller sr_var → higher dsr_z).
+            result.path_n_obs.append(int(np.mean(combo_n_obs)) if combo_n_obs else 0)
 
         if (combo_idx + 1) % 5 == 0 or combo_idx == len(combinations) - 1:
             logger.info("CPCV: %d/%d combinations done, mean Sharpe so far: %.3f",
                         combo_idx + 1, len(combinations),
                         float(np.mean(result.path_sharpes)) if result.path_sharpes else 0)
+
+    # C-2: populate worst_regime_sharpe so regime gate is active in gate_passed().
+    if all_fold_regime_sharpes:
+        result.worst_regime_sharpe = float(min(all_fold_regime_sharpes))
+    else:
+        logger.warning(
+            "CPCV: no regime_sharpes recorded across any fold — "
+            "worst_regime_sharpe is None, regime gate inactive. "
+            "Populate FoldResult.regime_sharpes in your strategy to enable it."
+        )
 
     # BUG-2: log completeness — how many fold evaluations were skipped due to
     # having no causal training history. For k=6, paths=2, exactly (k-1)=5 folds
