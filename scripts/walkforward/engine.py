@@ -56,7 +56,15 @@ class FoldEngine:
         if total_years is None and total_days is None:
             raise ValueError("Provide either total_years or total_days.")
 
-        end_all = datetime.now()
+        # C8-14: anchor end_all to retrain_as_of() for reproducibility — datetime.now()
+        # drifts across day boundaries, enabling temporal multiple testing (re-run WF
+        # until a favourable fold boundary appears). Falls back to datetime.now() if
+        # retrain_as_of() is unavailable (e.g. missing config).
+        try:
+            from app.ml.retrain_config import retrain_as_of as _retrain_as_of
+            end_all = datetime.combine(_retrain_as_of(), datetime.min.time())
+        except Exception:
+            end_all = datetime.now()
 
         # P0: hard guard against using sacred holdout data in WF runs.
         from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout
@@ -86,12 +94,18 @@ class FoldEngine:
             f"{getattr(self.strategy, 'model_type', 'unknown')} "
             f"v{getattr(self.strategy, 'version', '?')}"
         )
+        # C12-2: pass trading_day_set for intraday so purge_days is counted in
+        # trading days (not calendar days). A Friday trained_through + purge=2 with
+        # calendar counting admits a Monday te_start with 0 real trading-day gap.
+        _all_days = getattr(self.strategy, "all_days_sorted", None)
+        _trading_day_set = set(_all_days) if _all_days else None
         assert_model_oos(
             trained_through=_trained_through,
             fold_boundaries=fold_boundaries,
             purge_days=self.purge_days,
             model_label=_model_label,
             allow_in_sample=allow_in_sample,
+            trading_day_set=_trading_day_set,
         )
 
         report = WalkForwardReport(

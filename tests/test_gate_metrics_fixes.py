@@ -139,12 +139,13 @@ class TestRetrainCronPurgeDays:
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "run_swing":
                 fn_src = ast.get_source_segment(src, node)
-                assert "purge_days=85" in fn_src, (
-                    "retrain_cron.run_swing does not pass purge_days=85 to "
-                    "run_swing_walkforward. BUG-19: default is 10, CLI uses 85."
+                # Accept SWING_PURGE_DAYS constant (preferred) or hard-coded 85.
+                assert "purge_days=85" in fn_src or "purge_days=SWING_PURGE_DAYS" in fn_src, (
+                    "retrain_cron.run_swing does not pass purge_days=85 or SWING_PURGE_DAYS "
+                    "to run_swing_walkforward. BUG-19: default is 10, CLI uses 85."
                 )
-                assert "embargo_days=85" in fn_src, (
-                    "retrain_cron.run_swing does not pass embargo_days=85."
+                assert "embargo_days=85" in fn_src or "embargo_days=SWING_PURGE_DAYS" in fn_src, (
+                    "retrain_cron.run_swing does not pass embargo_days=85 or SWING_PURGE_DAYS."
                 )
                 return
         pytest.fail("run_swing function not found in retrain_cron.py")

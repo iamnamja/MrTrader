@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +99,57 @@ def regime_diversity(days: List[date], regime_map: Dict[date, str]) -> int:
     """Return the number of distinct regime labels in `days`."""
     labels = set(label_days(days, regime_map)) - {"UNK"}
     return len(labels)
+
+
+def compute_regime_sharpes(
+    equity_curve: list,
+    te_start,
+    te_end,
+    regime_map: Optional[Dict[date, str]] = None,
+) -> Dict[str, float]:
+    """Compute annualised Sharpe ratio per regime label from a daily equity curve.
+
+    equity_curve is a list of (date, equity) tuples (one per trading day).
+    Pass regime_map to use a pre-computed global map so VIX quartile thresholds
+    are consistent across folds. If None, loads a per-test-window map (less stable).
+    Returns {} on any error (network failure, insufficient data, etc.) so callers
+    can safely ignore regime_sharpes when regime data is unavailable.
+    """
+    try:
+        import numpy as np
+
+        if len(equity_curve) < 2:
+            return {}
+
+        if regime_map is None:
+            start = te_start.date() if hasattr(te_start, "date") else te_start
+            end = te_end.date() if hasattr(te_end, "date") else te_end
+            regime_map = load_regime_map(start, end)
+        if not regime_map:
+            return {}
+
+        regime_daily_rets: Dict[str, list] = {}
+        for i in range(1, len(equity_curve)):
+            d, eq = equity_curve[i]
+            _, eq_prev = equity_curve[i - 1]
+            if eq_prev <= 0:
+                continue
+            ret = (eq - eq_prev) / eq_prev
+            key = d.date() if hasattr(d, "date") else d
+            label = regime_map.get(key)
+            if label is None:
+                continue
+            regime_daily_rets.setdefault(label, []).append(ret)
+
+        result: Dict[str, float] = {}
+        for label, rets in regime_daily_rets.items():
+            arr = np.array(rets)
+            if len(arr) < 2:
+                # C10-3: drop regimes with < 2 obs — mean*sqrt(252) is not a Sharpe
+                # and would corrupt worst_regime_sharpe with phantom extremes.
+                continue
+            std = float(np.std(arr, ddof=1))
+            result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0
+        return result
+    except Exception:
+        return {}

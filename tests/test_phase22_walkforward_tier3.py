@@ -32,6 +32,7 @@ def _fold(sharpe: float, trades: int = 50, win_rate: float = 0.5) -> "FoldResult
         max_drawdown=0.05,
         total_return=0.02,
         stop_exit_rate=0.5,
+        n_obs=trades,
     )
 
 

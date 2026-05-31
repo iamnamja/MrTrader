@@ -14,12 +14,18 @@ from unittest.mock import patch, MagicMock
 from scripts.walkforward.oos_guard import OOSViolation
 
 
-def _make_strategy(trained_through, allow_in_sample=False, n_days=300):
-    """Build a minimal strategy namespace that run_cpcv can consume."""
+def _make_strategy(trained_through, allow_in_sample=False, n_days=300, n_future_days=500):
+    """Build a minimal strategy namespace that run_cpcv can consume.
+
+    all_days_sorted spans from n_days before to n_future_days after trained_through
+    (or the anchor date), matching production where fetch_data populates the full
+    eval window including dates beyond trained_through used as the OOS guard set.
+    """
     model = SimpleNamespace(trained_through=trained_through)
-    # all_days_sorted: n_days of trading days before trained_through
     base = trained_through or date(2026, 5, 28)
+    # Include dates before and after trained_through (full eval window)
     all_days = [base - timedelta(days=i) for i in range(n_days, 0, -1)]
+    all_days += [base + timedelta(days=i) for i in range(1, n_future_days + 1)]
     strategy = SimpleNamespace(
         model=model,
         model_type="intraday",

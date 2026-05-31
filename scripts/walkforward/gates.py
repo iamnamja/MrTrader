@@ -22,6 +22,10 @@ from app.ml.retrain_config import N_TRIALS_TESTED  # noqa: E402
 MIN_PROFIT_FACTOR = 1.10
 MIN_CALMAR = 0.30
 MIN_WORST_REGIME_SHARPE = -0.5
+# CR-1/C8-9: minimum number of "active" folds required before PF/Calmar gates are binding.
+# =1 only closed the zero-fold bypass; =2 closes the single-lucky-fold bypass where one
+# favorable fold satisfies PF≥MIN and the rest abstain.  Requires majority participation.
+MIN_ACTIVE_FOLDS_FOR_GATE = 2
 
 
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
@@ -45,52 +49,84 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[flo
     return dsr_z, float(norm.cdf(dsr_z))
 
 
+PF_NO_LOSS_SENTINEL = 5.0   # all-wins fold → use cap value (not 0 or 999)
+MAX_PF_FOR_AVG = 5.0        # cap before averaging so one lucky fold can't dominate
+CAL_TOTAL_LOSS_SENTINEL = -5.0  # total loss >100% → negative sentinel so avg_calmar reflects disaster
+CAL_NO_DD_SENTINEL = 5.0    # max_drawdown=0 + profitable fold → cap value
+MIN_TRADES_FOR_CAL_SENTINEL = 5  # guard against abstaining models gaming no-DD calmar sentinel
+
+
 def compute_profit_factor(trade_returns: list) -> float:
     """Profit factor = sum(positive returns) / sum(abs(negative returns)).
-    Returns 0.0 if no trades or no losses."""
+
+    Returns 0.0 if no trades. Returns PF_NO_LOSS_SENTINEL (5.0) when there are
+    winners but zero losers — matching the cap used during averaging so that
+    all-wins folds are included (not dropped) with a bounded contribution.
+    The prior implementation returned 0.0 for no-loss folds, which silently
+    excluded the best-looking folds from avg_profit_factor.
+    """
     if not trade_returns:
         return 0.0
     wins = sum(r for r in trade_returns if r > 0)
     losses = sum(abs(r) for r in trade_returns if r < 0)
-    return float(wins / losses) if losses > 0 else 0.0
+    if losses > 0:
+        return float(wins / losses)
+    return PF_NO_LOSS_SENTINEL if wins > 0 else 0.0
 
 
 def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
-    """Calmar ratio = CAGR / max drawdown.
-    Returns 0.0 if max_drawdown or years is zero.
+    """Calmar ratio = CAGR / max drawdown (inputs as fractions, e.g. 0.20 = 20%).
 
-    BUG-5 fix: use geometric annualisation (CAGR) to match walkforward_tier3.
-    Arithmetic (total/years) overstates multi-year returns and understates < 1y returns.
+    Geometric annualisation: (1 + total_return)^(1/years) - 1. Arithmetic
+    division (total/years) overstates multi-year returns and understates sub-year
+    ones. This matches tier3._compute_calmar — intraday was already correct,
+    now swing is too.
+    Returns 0.0 if max_drawdown_pct <= 0 or years <= 0.
+    Returns CAL_TOTAL_LOSS_SENTINEL (-5.0) when 1+total_return <= 0 (total wipeout)
+    so catastrophic folds pull down avg_calmar rather than disappearing silently.
     """
     if max_drawdown_pct <= 0 or years <= 0:
         return 0.0
-    annualised = (1.0 + total_return_pct) ** (1.0 / years) - 1.0
-    return float(annualised / max_drawdown_pct)
+    base = 1.0 + total_return_pct
+    if base <= 0:
+        return CAL_TOTAL_LOSS_SENTINEL
+    cagr = base ** (1.0 / years) - 1.0
+    return float(cagr / max_drawdown_pct)
 
 
-def compute_k_ratio(equity_curve: list) -> float:
-    """K-ratio = slope of log-equity / std(log returns), annualised by sqrt(252).
+def compute_k_ratio(equity_curve) -> float:
+    """K-ratio = annualised slope of log-equity / std of daily log returns.
 
-    BUG-7 fix (R5b): prior implementation used raw dollar equity (scale-dependent —
-    a $200k account shows a different K-ratio than $20k on the same return path).
-    Now matches walkforward_tier3._compute_k_ratio: regress log(equity) on time,
-    divide by std of daily log returns, annualise. Returns 0.0 if insufficient data
-    or any equity value is non-positive.
+    Two bugs fixed:
+    1. AgentSimulator.equity_curve is a list of (date, value) tuples. The prior
+       np.array(..., dtype=float) raised on the date column; the bare except
+       swallowed it, so every fold silently reported k_ratio=0.0.
+    2. The prior implementation regressed raw dollar equity and divided by std
+       of dollar diffs — scale-dependent and not annualised. Now uses log-equity
+       and sqrt(252), matching tier3._compute_k_ratio.
+
+    Accepts flat list of equity values OR list of (date, value) tuples.
+    Returns 0.0 if insufficient data, non-positive equity, or zero volatility.
     """
-    if len(equity_curve) < 4:
+    if equity_curve is None or len(equity_curve) < 4:
         return 0.0
     try:
-        y = np.array(equity_curve, dtype=float)
-        if not np.all(y > 0):
+        first = equity_curve[0]
+        if isinstance(first, (tuple, list)) and len(first) == 2:
+            values = [v for _, v in equity_curve]
+        else:
+            values = list(equity_curve)
+        y = np.asarray(values, dtype=float)
+        if y.size < 4 or not np.all(np.isfinite(y)) or not np.all(y > 0):
             return 0.0
         log_y = np.log(y)
-        x = np.arange(len(log_y), dtype=float)
+        x = np.arange(log_y.size, dtype=float)
         slope = float(np.polyfit(x, log_y, 1)[0])
         log_rets = np.diff(log_y)
-        vol = float(np.std(log_rets)) if len(log_rets) > 1 else 0.0
+        vol = float(np.std(log_rets, ddof=1)) if log_rets.size > 1 else 0.0
         if vol <= 0:
             return 0.0
-        return (slope / vol) * float(np.sqrt(252.0))
+        return (slope / vol) * math.sqrt(252.0)
     except Exception:
         return 0.0
 
@@ -153,10 +189,30 @@ class WalkForwardReport:
     # True when the OOS guard was bypassed with allow_in_sample=True.
     # In-sample runs can never promote past gates.
     in_sample_override: bool = False
+    # True only when per-fold retraining was performed (not just re-scoring one
+    # frozen model). Affects DSR interpretation — set by FoldEngine when used.
+    is_true_walkforward: bool = False
+
+    # Paper-trade gate thresholds (less strict; for deploy-to-paper decisions)
+    PAPER_SHARPE_GATE: float = 0.50
+    PAPER_MIN_FOLD_SHARPE: float = -0.40
 
     @property
     def avg_sharpe(self) -> float:
-        return float(np.mean([f.sharpe for f in self.folds])) if self.folds else 0.0
+        """n_obs-weighted mean Sharpe across folds.
+
+        C8-4: unweighted mean lets a short, lucky fold lift avg_sharpe cheaply while
+        total_obs (DSR denominator) is correctly summed. Weighting by n_obs makes
+        avg_sharpe and total_obs inputs to DSR consistent. Falls back to equal
+        weighting when no fold reports n_obs (all zeros).
+        """
+        if not self.folds:
+            return 0.0
+        weights = [getattr(f, "n_obs", 0) or 0 for f in self.folds]
+        total_w = sum(weights)
+        if total_w > 0:
+            return float(sum(f.sharpe * w for f, w in zip(self.folds, weights)) / total_w)
+        return float(np.mean([f.sharpe for f in self.folds]))
 
     @property
     def min_sharpe(self) -> float:
@@ -172,20 +228,41 @@ class WalkForwardReport:
 
     @property
     def total_obs(self) -> int:
-        """Total return observations (trading days) across folds; falls back to total_trades."""
-        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
-        return obs if obs > 0 else self.total_trades
+        """Total return observations (trading days) across folds.
+
+        Does NOT fall back to total_trades: trade count ≠ observation count for
+        DSR which requires daily-return observations. If no folds report n_obs,
+        returns 0 and gate_passed() will use the n_trials fallback in
+        deflated_sharpe_ratio() rather than a semantically incorrect trade count.
+        """
+        return sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
 
     @property
     def avg_profit_factor(self) -> float:
-        # BUG-4 fix: cap at 5.0 before averaging to prevent all-wins folds (PF=999)
-        # from dominating the mean and trivially passing the >= 1.10 gate.
-        pfs = [min(f.profit_factor, 5.0) for f in self.folds if f.profit_factor > 0]
+        # Cap at MAX_PF_FOR_AVG before averaging: PF=999 sentinel (all-wins fold)
+        # must not inflate the mean above the gate threshold by itself. Also
+        # includes folds with PF=PF_NO_LOSS_SENTINEL (5.0) — all-wins folds are
+        # now properly included with a bounded contribution.
+        pfs = [min(f.profit_factor, MAX_PF_FOR_AVG)
+               for f in self.folds if f.profit_factor > 0]
         return float(np.mean(pfs)) if pfs else 0.0
 
     @property
     def avg_calmar(self) -> float:
-        cals = [f.calmar_ratio for f in self.folds if f.calmar_ratio != 0]
+        # A zero calmar_ratio can mean either (a) max_drawdown=0 (a good fold,
+        # silently dropped by the old != 0 filter) or (b) a degenerate fold with
+        # negative return and zero drawdown. Distinguish by checking total_return.
+        # CAL_NO_DD_SENTINEL guard: require MIN_TRADES_FOR_CAL_SENTINEL trades so
+        # an abstaining model (0 trades, 0 DD, 0 return) can't stack sentinel values
+        # and trivially pass the Calmar gate.
+        cals: List[float] = []
+        for f in self.folds:
+            if f.calmar_ratio != 0:
+                cals.append(f.calmar_ratio)
+            elif (f.max_drawdown == 0 and f.total_return > 0
+                  and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
+                cals.append(CAL_NO_DD_SENTINEL)
+            # else: degenerate or abstaining fold — skip
         return float(np.mean(cals)) if cals else 0.0
 
     @property
@@ -195,43 +272,86 @@ class WalkForwardReport:
 
     @property
     def worst_regime_sharpe(self) -> Optional[float]:
-        """Minimum per-regime Sharpe across all folds. None if no regime data collected."""
-        all_regime_sharpes: List[float] = []
-        for f in self.folds:
-            all_regime_sharpes.extend(f.regime_sharpes.values())
-        return float(min(all_regime_sharpes)) if all_regime_sharpes else None
+        """Worst per-regime mean Sharpe across folds. None if no regime data collected.
 
-    def gate_passed(self) -> bool:
+        IM-3 fix: aggregates per-regime (mean across folds) THEN takes the min over
+        regimes, rather than min over all (fold × regime) pairs. The raw min over all
+        pairs is dominated by single-fold noise — one bad fold in one regime can gate-
+        fail an otherwise solid model, and the minimum gets noisier as more paths are
+        added. Per-regime mean first gives a stable, interpretable worst-regime signal.
+        """
+        regime_to_sharpes: Dict[str, List[float]] = {}
+        for f in self.folds:
+            for regime, sh in f.regime_sharpes.items():
+                regime_to_sharpes.setdefault(regime, []).append(sh)
+        if not regime_to_sharpes:
+            return None
+        per_regime_means = [float(np.mean(v)) for v in regime_to_sharpes.values()]
+        return float(min(per_regime_means))
+
+    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
+        import logging as _logging
         if self.in_sample_override:
             return False
-        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_obs)
-        pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        # CR-1: "avg == 0 → pass" bypass closed: require at least MIN_ACTIVE_FOLDS_FOR_GATE
+        # folds contributing to each metric before treating the gate as optional.
+        n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
+        n_cal_active = sum(1 for f in self.folds
+                           if f.calmar_ratio != 0
+                           or (f.max_drawdown == 0 and f.total_return > 0
+                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
+        if wrs is None:
+            _logging.getLogger(__name__).warning(
+                "WalkForwardReport: worst_regime_sharpe gate is INACTIVE — "
+                "FoldResult.regime_sharpes is empty on all folds. The regime-Sharpe "
+                "gate (MIN_WORST_REGIME_SHARPE=%.1f) is not being enforced. "
+                "Populate FoldResult.regime_sharpes to activate.", MIN_WORST_REGIME_SHARPE
+            )
         regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
-            self.avg_sharpe >= SHARPE_GATE
-            and self.min_sharpe >= MIN_FOLD_SHARPE
+            self.avg_sharpe >= sharpe_gate
+            and self.min_sharpe >= min_fold_gate
             and dsr_p > 0.95
             and pf_ok
             and cal_ok
             and regime_ok
         )
 
-    def gate_detail(self) -> dict:
-        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, N_TRIALS_TESTED, self.total_obs)
+    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
+        _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
+        n_cal_active = sum(1 for f in self.folds
+                           if f.calmar_ratio != 0
+                           or (f.max_drawdown == 0 and f.total_return > 0
+                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
         return {
-            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= SHARPE_GATE),
-            "min_sharpe": (self.min_sharpe, self.min_sharpe >= MIN_FOLD_SHARPE),
+            "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= sharpe_gate),
+            "min_sharpe": (self.min_sharpe, self.min_sharpe >= min_fold_gate),
             "dsr_p": (dsr_p, dsr_p > 0.95),
-            "avg_profit_factor": (self.avg_profit_factor,
-                                  self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
-            "avg_calmar": (self.avg_calmar,
-                           self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+            "avg_profit_factor": (self.avg_profit_factor, pf_ok),
+            "avg_calmar": (self.avg_calmar, cal_ok),
             "worst_regime_sharpe": (wrs, wrs is None or wrs >= MIN_WORST_REGIME_SHARPE),
         }
 
-    def print(self) -> None:
+    def print(self, dsr_n: int | None = None, paper_gate: bool = False) -> None:
         from scripts.walkforward.reports import print_report
-        print_report(self)
+        print_report(self, dsr_n=dsr_n, paper_gate=paper_gate)

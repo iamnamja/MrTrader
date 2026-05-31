@@ -156,6 +156,14 @@ class SwingStrategy:
         if self.rebalance_mode:
             self.symbols_data["SPY"] = spy_raw
 
+        # C11-6: pre-compute regime_map over the full evaluation window so that VIX
+        # quartile thresholds are stable across folds (not re-computed per test window).
+        try:
+            from scripts.walkforward.regime import load_regime_map as _lrm
+            self._global_regime_map = _lrm(start.date(), end.date())
+        except Exception:
+            self._global_regime_map = {}
+
         logger.info("Swing data loaded: %d symbols in %.1fs", len(self.symbols_data), time.time() - t0)
 
     def run_fold(self, fold_idx: int, n_folds: int,
@@ -164,8 +172,12 @@ class SwingStrategy:
         from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
 
         # WF-A2/A3: use Russell 1000 PIT union (matches training universe).
-        extra = _hist_syms(tr_start, te_end, trade_type="swing")
-        pit_members = set(_pit_union("russell1000", tr_start, te_end, extra_symbols=extra))
+        # Upper bound is tr_end, NOT te_end: names that joined the index between
+        # tr_end and te_end are only known in the future — including them is
+        # forward-looking survivorship bias. The live trader also cannot know
+        # about index joiners before they actually join.
+        extra = _hist_syms(tr_start, tr_end, trade_type="swing")
+        pit_members = set(_pit_union("russell1000", tr_start, tr_end, extra_symbols=extra))
         _synthetic = {"^VIX", "VIX", "SPY"}
         fold_symbols_data = {
             s: d for s, d in self.symbols_data.items()
@@ -263,9 +275,20 @@ class SwingStrategy:
         )
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
-        trade_returns = getattr(result, "trade_returns", [])
+        # Extract per-trade pnl_pct from result.trades for k_ratio.
+        # For profit_factor we use result.profit_factor directly (already computed
+        # by AgentSimulator with _PF_NO_LOSS_SENTINEL=5.0) to avoid double computation.
+        trades_list = getattr(result, "trades", None) or []
+        trade_returns = [t.pnl_pct for t in trades_list if hasattr(t, "pnl_pct")]
         equity_curve = getattr(result, "equity_curve", [])
+        # n_obs = trading-day return observations for DSR. equity_curve is a list
+        # of (date, equity) tuples (one per trading day); diffs give daily returns,
+        # hence len-1. Required by deflated_sharpe_ratio; mirrors intraday.py.
+        n_obs = max(len(equity_curve) - 1, 0)
         years = fold_years(te_start, te_end)
+        from scripts.walkforward.regime import compute_regime_sharpes as _crs
+        regime_sharpes = _crs(equity_curve, te_start, te_end,
+                              regime_map=getattr(self, "_global_regime_map", None))
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -277,7 +300,9 @@ class SwingStrategy:
             total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=self.version,
-            profit_factor=compute_profit_factor(trade_returns),
+            profit_factor=getattr(result, "profit_factor", compute_profit_factor(trade_returns)),
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
+            n_obs=n_obs,
+            regime_sharpes=regime_sharpes,
         )

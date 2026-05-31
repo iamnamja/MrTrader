@@ -59,13 +59,21 @@ class TestCPCVResultStats:
         assert r.pct_positive == 0.0
         assert r.n_combinations == 0
 
-    def test_avg_profit_factor_excludes_zeros(self):
+    def test_avg_profit_factor_includes_zeros_and_caps(self):
+        # I3/I4 fix: zero-PF paths (unfilled) now count in the mean (pull it down, not ignored).
+        # Sentinel values are capped at MAX_PF_FOR_AVG=5.0 before averaging.
         from scripts.walkforward.cpcv import CPCVResult
+        from scripts.walkforward.gates import MAX_PF_FOR_AVG
         r = CPCVResult(model_type="swing", n_folds=6, n_paths=2)
         r.path_sharpes = [1.0, 1.0]
-        r.path_profit_factors = [1.5, 0.0]  # second is "not computed"
+        r.path_profit_factors = [1.5, 0.0]  # zero path included: (1.5+0)/2=0.75
         r.path_calmars = [0.5, 0.5]
-        assert abs(r.avg_profit_factor - 1.5) < 1e-9
+        assert abs(r.avg_profit_factor - 0.75) < 1e-9
+
+        # Sentinel cap: PF=999 capped to MAX_PF_FOR_AVG before averaging
+        r2 = CPCVResult(model_type="swing", n_folds=6, n_paths=2)
+        r2.path_profit_factors = [999.0, 1.0]
+        assert abs(r2.avg_profit_factor - (MAX_PF_FOR_AVG + 1.0) / 2) < 1e-9
 
 
 # ---------------------------------------------------------------------------

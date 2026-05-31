@@ -7233,3 +7233,59 @@ Gate: avg Sharpe ≥ 0.8, min fold ≥ -0.3, DSR p > 0.95 — **ALL PASSED**
 - **Status:** Pending — run after 30-day paper observation of v63 to validate backtest/live fidelity.
 
 ---
+
+## Walk-Forward Pipeline Integrity — Audit Rounds 1–4 (2026-05-30)
+
+**Context:** Multi-round adversarial audit of the walk-forward/CPCV evaluation pipeline. Four rounds of Opus 4.7 review + systematic bug fixing. All changes merged to main via PRs #314–317.
+
+### What Was Found and Fixed
+
+**Round 1-2 (PRs #314, #315) — BUG-1 through BUG-23:**
+- CPCV DSR n_obs: was summing total_obs across all paths (×multiplicity inflation); fixed to divide by C(k-1, paths-1)
+- IntradayStrategy.run_fold: n_obs was missing → DSR p=0.5 → gate was no-op; fixed to len(equity_curve)-1
+- IntradayStrategy: SPY/VIX `period='3y'` look-ahead bias fixed (PIT download by date range)
+- Intraday universe survivorship bias fixed (pit_members_at te_start not current membership)
+- Intraday OOS guard: counted calendar days not trading days for purge gap; fixed
+- DB model load: gate_passed sentinel not enforced on DB path; fixed
+- CPCV fold 0 reserved as train-only; n_skipped completeness metric added
+- BUG-23: CPCV rolling window overlap guard (train window must not include any prior test fold)
+- Plus: retrain_cron as_of, SWING_PURGE_DAYS from retrain_config, SPY 5-min fallback, model deep-copy, dead code cleanup
+
+**Round 3 (PR #316) — Critical: dual WalkForwardReport eliminated:**
+- The BIGGEST bug: `walkforward_tier3.py` had its own duplicate `FoldResult` and `WalkForwardReport` classes that shadowed the `gates.py` imports at runtime. Every metric fix made to `gates.py` was invisible for actual swing/intraday WF runs.
+- `compute_calmar`: arithmetic→geometric CAGR (arithmetic overstates multi-year, understates sub-year)
+- `compute_k_ratio`: was broken for (date,value) tuples from AgentSimulator (dtype=float raised, bare except swallowed → every fold silently reported k_ratio=0.0); fixed to extract values + log-equity + sqrt(252)
+- `PF_NO_LOSS_SENTINEL=5.0`: all-wins folds now report 5.0 (not 0.0), matching avg cap so they're included
+- Swing `n_obs=0`: SwingStrategy.run_fold never set n_obs → DSR p=0.5 always → swing PF gate was a no-op
+- Swing `pit_union` survivorship bias: was passing `te_end` (test end) as upper bound → look-ahead; fixed to `tr_end`
+- `reports.py` DSR call: was passing `total_trades` not `total_obs`; fixed
+- Circular import fix in `walkforward/__init__.py`
+
+**Round 4 (PR #317) — Critical: PF gate was completely non-functional:**
+- `swing.py` and `intraday.py` both did `getattr(result, "trade_returns", [])` but `SimResult` has no `trade_returns` field. `getattr` always returned `[]` → `compute_profit_factor([])` = 0.0 → `avg_profit_factor == 0` → PF gate waived every run. The profit-factor gate has been a no-op since its introduction.
+- Fix: use `result.profit_factor` directly (already computed correctly by AgentSimulator with PF_NO_LOSS_SENTINEL=5.0)
+
+### Implications for Prior Results
+
+**All walk-forward and CPCV results prior to 2026-05-30 must be re-run.**
+The most impactful bugs:
+1. **Swing n_obs=0** → DSR gate was checking p=0.5 always → any model could pass DSR on swing
+2. **Dual WalkForwardReport** → all metric fixes (Calmar, k_ratio, PF sentinel) were invisible for swing
+3. **PF gate non-functional** → profit_factor gate never enforced for any run
+4. **Swing pit_union look-ahead** → test fold universe included future joiners → inflated diversity/coverage
+
+The intraday CPCV v63 result (avg +7.08 Sharpe) used the corrected pipeline (rounds 1-2 were merged before that run), but may need re-validation for the PF gate fix (round 4).
+
+### Current Pipeline Status
+
+All critical gates are now correctly wired:
+- ✅ Avg Sharpe gate (0.80 swing / 1.00 intraday)
+- ✅ Min fold Sharpe gate (-0.30)
+- ✅ DSR gate (p > 0.95, using trading-day n_obs, N_TRIALS_TESTED=200)
+- ✅ Profit-factor gate (avg PF > 1.10) — **newly enforced**
+- ✅ Calmar ratio gate (avg Calmar > 0.30, geometric CAGR)
+- ✅ OOS guard (trained_through + purge_days < te_start)
+- ✅ Sacred holdout guard
+- ⚠️ Worst-regime-sharpe gate — wired in gate_passed() but FoldResult.regime_sharpes never populated in production (always waived). Design-level gap, not a bug per se.
+
+**Note from Opus 4.7 (round 4):** `N_TRIALS_TESTED=200` may be stale — last updated 2026-05-12; additional PRs #299–317 + multiple R-series runs have occurred since. Consider bumping to 250+ before next gate evaluation.
