@@ -440,15 +440,16 @@ class WalkForwardReport:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
-        if USE_CALMAR_VOL_FLOOR:
-            n_cal_active = sum(1 for f in self.folds if f.calmar_ratio != 0)
-        else:
-            n_cal_active = sum(1 for f in self.folds
-                               if f.calmar_ratio != 0
-                               or (f.max_drawdown == 0 and f.total_return > 0
-                                   and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        # Must match gate_passed() exactly — always count no-DD profitable folds as active
+        # (calmar_ratio may round to 0.0 for small values; use max_drawdown+total_return
+        # as the activeness signal, not the rounded float). See M-2 fix.
+        n_cal_active = sum(
+            1 for f in self.folds
+            if f.calmar_ratio != 0
+            or (f.max_drawdown == 0 and f.total_return > 0
+                and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL)
+        )
         pf_ok = (paper_gate
                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR)

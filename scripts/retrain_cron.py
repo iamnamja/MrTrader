@@ -131,7 +131,15 @@ def run_swing(dry_run: bool) -> bool:
         min_sh = wf.min_sharpe
         # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
         # than a local Sharpe-only approximation that can diverge from the real gate.
-        gate_ok = wf.gate_passed()
+        # Mirror walkforward_tier3.py: block promotion on implausible Sharpe.
+        gate_ok = wf.gate_passed() and not wf.requires_human_review()
+        if wf.requires_human_review() and wf.gate_passed():
+            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+            logger.warning(
+                "AUTO-PROMOTION BLOCKED: swing v%d avg Sharpe %.3f > "
+                "SHARPE_IMPLAUSIBILITY_CEILING %.1f — manual review required.",
+                version, wf.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+            )
 
         ModelTrainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
 
@@ -190,7 +198,15 @@ def run_intraday(dry_run: bool) -> bool:
         min_sh = wf.min_sharpe
         # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
         # than a local Sharpe-only approximation that can diverge from the real gate.
-        gate_ok = wf.gate_passed()
+        # Mirror walkforward_tier3.py: block promotion on implausible Sharpe.
+        gate_ok = wf.gate_passed() and not wf.requires_human_review()
+        if wf.requires_human_review() and wf.gate_passed():
+            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+            logger.warning(
+                "AUTO-PROMOTION BLOCKED: intraday v%d avg Sharpe %.3f > "
+                "SHARPE_IMPLAUSIBILITY_CEILING %.1f — manual review required.",
+                version, wf.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+            )
 
         trainer.record_tier3_result(version, avg_sh, [f.sharpe for f in wf.folds], gate_ok)
 
