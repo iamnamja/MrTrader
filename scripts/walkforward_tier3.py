@@ -198,75 +198,11 @@ def build_asymmetric_regime_fns(
     return long_fn, short_fn
 
 
-def _make_combined_regime_fn(
-    fold_symbols_data: dict,
-    scorer_instance,
-    *,
-    spy_vix_fn=None,
-    lookback_days: int = 63,
-    ic_threshold: float = 0.02,
-    te_start,
-    te_end,
-):
-    """
-    Phase 89: Return a combined regime multiplier = SPY/VIX gate × factor stability gate.
-
-    Builds a FactorStabilityGate from all available fold data (train + test window),
-    then returns a callable (day) -> float that multiplies both gates together.
-    This is PIT-safe: the FactorStabilityGate uses shift(fwd_window) internally
-    so no future forward returns leak into the gate state.
-    """
-    import pandas as _pd
-    from datetime import date as _date
-    from app.ml.factor_stability_gate import FactorStabilityGate
-
-    # Build price DataFrame from fold_symbols_data (adj close)
-    price_dict = {}
-    for sym, df in fold_symbols_data.items():
-        if sym in ("SPY", "^VIX", "VIX") or df is None or "close" not in df.columns:
-            continue
-        price_dict[sym] = df["close"]
-
-    if len(price_dict) < 50:
-        # Not enough symbols; fall back to SPY+VIX gate only
-        return spy_vix_fn
-
-    prices = _pd.DataFrame(price_dict)
-
-    # Score all symbols on every training day to build a scores_at_rebalance matrix.
-    # We call scorer_instance for each day in the fold's training range.
-    # Use a coarse 5-day step to avoid re-scoring 665 symbols on every single day.
-    all_dates = sorted(prices.index)
-    score_rows = {}
-    for dt in all_dates[::5]:
-        day = dt.date() if hasattr(dt, "date") else dt
-        scored = scorer_instance(day, fold_symbols_data)
-        if scored:
-            row = {sym: score for sym, score, *_ in scored}
-            score_rows[_pd.Timestamp(day)] = row
-
-    if len(score_rows) < 20:
-        return spy_vix_fn
-
-    scores_df = _pd.DataFrame(score_rows).T.sort_index()
-    scores_df = scores_df.reindex(prices.index).ffill()
-
-    try:
-        fs_gate = FactorStabilityGate(
-            scores_df,
-            prices,
-            lookback_days=lookback_days,
-            ic_threshold=ic_threshold,
-        )
-    except Exception:
-        return spy_vix_fn
-
-    def _combined_fn(day: _date) -> float:
-        spy_mult = spy_vix_fn(day) if spy_vix_fn is not None else 1.0
-        fs_mult = fs_gate(day)
-        return spy_mult * fs_mult
-
-    return _combined_fn
+# BUG-12: _make_combined_regime_fn deleted — it was dead code.
+# The only caller was guarded by a rebalance_factor_stability_gate flag that
+# now raises unconditionally (line ~1285). The function also leaked test-window
+# scores into the FactorStabilityGate by scoring all_dates (train+test together).
+# Removed to prevent accidental future reactivation of this look-ahead path.
 
 
 # ── Console helpers ───────────────────────────────────────────────────────────
@@ -315,6 +251,22 @@ def _load_model(model_name: str, version: Optional[int] = None):
                 )
             if mv and mv.model_path:
                 path = Path(mv.model_path)
+                # BUG-13 fix: require the .gate_passed sentinel on the DB path too
+                # (when loading the ACTIVE model without a specific version). A manual
+                # DB edit can flip status="ACTIVE" without the model having passed the
+                # gate, bypassing all promotion safety. The sentinel file is the
+                # tamper-evident physical record of a gate pass.
+                if version is None and mv.status == "ACTIVE":
+                    sentinel = path.parent / (path.stem + ".gate_passed")
+                    if not sentinel.exists():
+                        logger.error(
+                            "BUG-13: DB says %s v%d is ACTIVE but no .gate_passed "
+                            "sentinel at %s. Refusing to load — sentinel may have been "
+                            "deleted or DB was manually edited. Touch the sentinel or "
+                            "re-run the walk-forward gate.",
+                            model_name, mv.version, sentinel,
+                        )
+                        return None, 0
                 if path.exists():
                     with open(path, "rb") as f:
                         obj = pickle.load(f)
@@ -986,11 +938,7 @@ def run_swing_walkforward(
                 "look-ahead in its FactorStabilityGate construction. Remove it from your call "
                 "and use rebalance_dispersion_gate (Phase 89 v2) instead."
             )
-        # WF-R4: previous block invoking _make_combined_regime_fn was unreachable
-        # (guarded by the same rebalance_factor_stability_gate flag that just
-        # raised). Deleted as dead code; _make_combined_regime_fn is retained
-        # only because it would otherwise be flagged as an unused symbol — it
-        # may be removed in a follow-up cleanup.
+        # BUG-12: _make_combined_regime_fn was deleted (look-ahead leak + dead code).
 
         # Phase 89 v2: cross-sectional dispersion gate (concurrent ~5d lag signal)
         if rebalance_mode and rebalance_dispersion_gate:
@@ -1085,8 +1033,15 @@ def run_swing_walkforward(
         else:
             _sim_limits = None  # use AgentSimulator defaults
 
+        # BUG-14: deep-copy model before passing to each fold's simulator.
+        # On Linux/Mac, MAX_FOLD_WORKERS > 1 means folds run concurrently in threads.
+        # XGBoost inference is GIL-safe but any mutable Python-layer state on the model
+        # object (cached predictions, normalisation state) can race. Deep-copy is cheap
+        # (~MB) and eliminates the risk. On Windows MAX_FOLD_WORKERS=1 so the copy is a
+        # no-op in production but still documents the thread-safety contract.
+        _fold_model = copy.deepcopy(model) if model is not None else None
         sim = AgentSimulator(
-            model=model,
+            model=_fold_model,
             atr_stop_mult=atr_stop_mult,
             atr_target_mult=atr_target_mult,
             meta_model=meta_model,
@@ -1343,6 +1298,9 @@ def run_intraday_walkforward(
         ))
 
     # OOS-guard: every test fold must start strictly after the model's training cutoff.
+    # BUG-8 fix: pass trading_day_set so purge_days is counted in trading days, not
+    # calendar days. Without this, a Friday trained_through + purge=2 gives a Sunday
+    # cutoff that a Monday te_start clears with only 1 trading day of actual gap.
     from scripts.walkforward.oos_guard import assert_model_oos
     assert_model_oos(
         trained_through=getattr(model, "trained_through", None),
@@ -1350,6 +1308,7 @@ def run_intraday_walkforward(
         purge_days=purge_days,
         model_label=f"intraday v{version}",
         allow_in_sample=allow_in_sample,
+        trading_day_set=set(all_days_sorted),
     )
     if allow_in_sample:
         report.in_sample_override = True
@@ -1835,9 +1794,14 @@ def main() -> int:
     parser.add_argument("--no-dispersion-gate", dest="dispersion_gate",
                         action="store_false",
                         help="WF-5a: disable the dispersion gate.")
-    parser.add_argument("--no-prefilters", action="store_true", default=False,
-                        help="Phase 3a: bypass RSI 40-70 and EMA20/50 trader pre-filters in swing. "
-                             "Lets ML model score the full universe without rule-based entry gates.")
+    # BUG-21: default True to match retrain_cron production gate. RSI/EMA prefilters
+    # are a legacy artifact; the ML model should score the full universe.
+    # Use --with-prefilters to restore legacy behavior for diagnostics.
+    parser.add_argument("--no-prefilters", action="store_true", default=True,
+                        help="(default ON) Bypass RSI/EMA pre-filters — ML model scores full universe. "
+                             "Matches retrain_cron production gate. Use --with-prefilters to restore legacy.")
+    parser.add_argument("--with-prefilters", dest="no_prefilters", action="store_false",
+                        help="Legacy: re-enable RSI 40-70 and EMA20/50 pre-filters (diagnostic only).")
     parser.add_argument("--swing-train-years", type=int, default=None,
                         help="Phase 3b: rolling training window per fold — limit each fold's "
                              "training data to the N most recent years before train_end "

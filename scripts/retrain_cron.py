@@ -116,12 +116,16 @@ def run_swing(dry_run: bool) -> bool:
 
     try:
         from scripts.walkforward_tier3 import run_swing_walkforward
+        from app.ml.retrain_config import retrain_as_of as _retrain_as_of, SWING_PURGE_DAYS
         wf = run_swing_walkforward(
             n_folds=SWING_RETRAIN["walk_forward_folds"],
             total_years=SWING_RETRAIN["walk_forward_years"],
             model_version=version,
             use_opportunity_score=True,
-            no_prefilters=True,  # Phase 89: let model score full universe, no RSI/EMA gates
+            no_prefilters=True,   # BUG-21: full universe — RSI/EMA prefilters are legacy
+            purge_days=SWING_PURGE_DAYS,   # BUG-19 fix, sourced from retrain_config
+            embargo_days=SWING_PURGE_DAYS,  # symmetric post-test buffer
+            as_of=_retrain_as_of(),         # BUG-20: deterministic fold boundaries
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
