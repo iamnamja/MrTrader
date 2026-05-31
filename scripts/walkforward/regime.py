@@ -141,10 +141,11 @@ def compute_regime_sharpes(
         for label, rets in regime_daily_rets.items():
             arr = np.array(rets)
             if len(arr) < 2:
-                result[label] = float(np.mean(arr)) * np.sqrt(252)
-            else:
-                std = float(np.std(arr, ddof=1))
-                result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0
+                # C10-3: drop regimes with < 2 obs — mean*sqrt(252) is not a Sharpe
+                # and would corrupt worst_regime_sharpe with phantom extremes.
+                continue
+            std = float(np.std(arr, ddof=1))
+            result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0
         return result
     except Exception:
         return {}
