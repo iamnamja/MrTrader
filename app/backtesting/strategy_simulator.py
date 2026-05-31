@@ -66,6 +66,16 @@ class SimResult:
     monthly_pnl: Dict[str, float] = field(default_factory=dict)
     trades: List[Trade] = field(default_factory=list)
 
+    # CRITICAL-2: capital deployment tracking (diagnostic — not a gate)
+    avg_capital_deployed_pct: float = 0.0
+    """Mean fraction of capital deployed (open position notional / equity) across
+    all trading days. Low values indicate Sharpe is computed on mostly-flat days."""
+    deployment_adjusted_sharpe: float = 0.0
+    """Sharpe of daily returns each scaled to TARGET_DEPLOYMENT_PCT deployment.
+    Shows what Sharpe would be if the strategy ran fully invested. Diagnostic only."""
+    low_deployment_warning: bool = False
+    """True when avg_capital_deployed_pct < MIN_DEPLOYMENT_PCT_WARN."""
+
     def print_report(self) -> None:
         """Pretty-print the simulation report."""
         W = "\033[32m"
@@ -118,6 +128,48 @@ class SimResult:
                 print(f"    {month}  {col}{bar:<20}{RESET}  ${pnl:+,.0f}")
 
         print(f"{B}{C}{'='*62}{RESET}\n")
+
+
+def compute_deployment_metrics(
+    equity_curve: list,
+    deployment_by_date: dict,
+) -> tuple:
+    """Compute avg_capital_deployed_pct, deployment_adjusted_sharpe, low_deployment_warning.
+
+    Args:
+        equity_curve: sorted list of (date, equity) tuples
+        deployment_by_date: {date: deployment_fraction} where fraction = open_notional / equity
+
+    Returns:
+        (avg_dep, dep_adj_sharpe, low_deployment_warning)
+    """
+    from app.ml.retrain_config import (
+        TARGET_DEPLOYMENT_PCT, MIN_DEPLOYMENT_PCT_WARN, DEP_ADJ_MAX_SCALE,
+    )
+    import numpy as np
+
+    if not equity_curve or len(equity_curve) < 2:
+        return 0.0, 0.0, False
+
+    days = [d for d, _ in equity_curve]
+    deps = [deployment_by_date.get(d, 0.0) for d in days]
+    avg_dep = float(np.mean(deps)) if deps else 0.0
+
+    eq = [v for _, v in equity_curve]
+    rets = [(eq[i] - eq[i - 1]) / max(eq[i - 1], 1e-9) for i in range(1, len(eq))]
+
+    scaled = []
+    for i in range(len(rets)):
+        d_i = deps[i + 1]  # deployment at EOD of day i+1 (entering the return period)
+        if d_i <= 1e-9:
+            scaled.append(0.0)  # flat day stays flat
+        else:
+            scale = min(TARGET_DEPLOYMENT_PCT / d_i, DEP_ADJ_MAX_SCALE)
+            scaled.append(rets[i] * scale)
+
+    dep_adj_sharpe = StrategySimulator._sharpe(scaled, 252) if len(scaled) >= 2 else 0.0
+    warn = avg_dep < MIN_DEPLOYMENT_PCT_WARN
+    return avg_dep, dep_adj_sharpe, warn
 
 
 class StrategySimulator:

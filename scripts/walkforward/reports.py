@@ -34,6 +34,9 @@ def print_report(
     if paper_gate:
         title += " [PAPER-GATE MODE]"
     _header(title)
+    if getattr(report, "data_span", None):
+        n_days, d0, d1, n_syms, src = report.data_span
+        print(f"  DATA: {n_syms} symbols x {n_days} days ({d0} -> {d1}) [{src}]")
     for f in report.folds:
         print(f.summary_line())
     print()
@@ -47,6 +50,23 @@ def print_report(
     dsr_z, dsr_p = deflated_sharpe_ratio(report.avg_sharpe, dsr_n, report.total_obs)
     print(f"  DSR (N={dsr_n} trials): z={dsr_z:+.3f}  p={dsr_p:.3f}  "
           f"(gate: p > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
+    from app.ml.retrain_config import (
+        DSR_SATURATION_P, SHARPE_IMPLAUSIBILITY_CEILING, MIN_DEPLOYMENT_PCT_WARN,
+    )
+    if dsr_p > DSR_SATURATION_P:
+        _warn(f"DSR SATURATED (p > {DSR_SATURATION_P}) — provides NO selection-bias "
+              f"screening at this Sharpe level. Rely on deployment-adjusted Sharpe.")
+    if report.requires_human_review():
+        _warn(f"*** HUMAN REVIEW REQUIRED: avg Sharpe {report.avg_sharpe:.3f} > "
+              f"ceiling {SHARPE_IMPLAUSIBILITY_CEILING} — verify no deployment artifact ***")
+    if report.avg_deployment_pct > 0:
+        print(f"  Avg capital deployed:    {report.avg_deployment_pct:.1%}")
+        print(f"  Deployment-adj Sharpe:   {report.avg_deployment_adjusted_sharpe:+.3f}  "
+              f"(diagnostic: scaled to 100% deployment)")
+        if report.low_deployment:
+            _warn(f"LOW DEPLOYMENT ({report.avg_deployment_pct:.1%} < "
+                  f"{MIN_DEPLOYMENT_PCT_WARN:.0%}) — "
+                  f"raw Sharpe not comparable to fully-invested benchmarks")
     if report.avg_profit_factor > 0 and not paper_gate:
         print(f"  Avg profit factor: {report.avg_profit_factor:.3f}  "
               f"(gate: > {MIN_PROFIT_FACTOR})  "

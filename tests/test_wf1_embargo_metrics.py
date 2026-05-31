@@ -58,8 +58,16 @@ class TestComputeCalmar:
         expected = expected_ann / 0.05
         assert abs(self._cal(0.20, 0.05, 2.0) - expected) < 1e-9
 
-    def test_zero_drawdown_returns_zero(self):
-        assert self._cal(0.10, 0.0, 1.0) == 0.0
+    def test_zero_drawdown_legacy_returns_zero(self):
+        # MEDIUM-1: legacy behaviour (vol-floor disabled) returns 0.0 for no-DD.
+        from unittest.mock import patch
+        with patch("app.ml.retrain_config.USE_CALMAR_VOL_FLOOR", False):
+            assert self._cal(0.10, 0.0, 1.0) == 0.0
+
+    def test_zero_drawdown_vol_floor_default(self):
+        # MEDIUM-1: default vol-floor ON, no daily_returns → MIN_CALMAR_FLOOR_DD (0.01).
+        # 0.10 / 0.01 = 10.0.
+        assert abs(self._cal(0.10, 0.0, 1.0) - 10.0) < 1e-6
 
     def test_zero_years_returns_zero(self):
         assert self._cal(0.10, 0.05, 0.0) == 0.0

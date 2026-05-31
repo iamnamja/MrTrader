@@ -185,15 +185,19 @@ class TestCombinationsCount:
             )
         mock_strategy.run_fold.side_effect = fake_run_fold
 
-        result = run_cpcv(
-            strategy=mock_strategy,
-            purge_days=2,
-            embargo_days=2,
-            n_folds=4,
-            n_paths=1,
-            total_days=500,
-            allow_sacred_holdout=True,  # unit test: strategy is mocked
-        )
+        # MEDIUM-3: 200 synthetic days < MIN_DATA_SPAN_TRADING_DAYS; this test exercises
+        # path-count logic, not the span gate, so disable the gate for the call.
+        from unittest.mock import patch
+        with patch("app.ml.retrain_config.ENFORCE_MIN_DATA_SPAN", False):
+            result = run_cpcv(
+                strategy=mock_strategy,
+                purge_days=2,
+                embargo_days=2,
+                n_folds=4,
+                n_paths=1,
+                total_days=500,
+                allow_sacred_holdout=True,  # unit test: strategy is mocked
+            )
         from math import comb
         # After the CPCV look-ahead fix, combinations whose test fold has no causal
         # training history are dropped entirely. Fold 0 has no prior folds → skipped.

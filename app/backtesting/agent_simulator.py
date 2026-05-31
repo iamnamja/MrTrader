@@ -397,6 +397,7 @@ class AgentSimulator:
 
         accepted_trades: List[Trade] = []
         equity_by_date: Dict[date, float] = {}
+        deployment_by_date: Dict[date, float] = {}
         tx_costs_total = 0.0
 
         # Phase 35: Build SPY close series and VIX series for regime gate
@@ -614,6 +615,19 @@ class AgentSimulator:
                         _today_closes_eod[_sym] = float(_prior["close"].iloc[-1])
                     # else: equity_mtm will fall back to entry_price (no prior bar at all)
             equity_by_date[day] = portfolio.equity_mtm(_today_closes_eod)
+            # CRITICAL-2: track daily capital deployment (open notional / equity)
+            _eq_today = equity_by_date[day]
+            _long_notional = sum(
+                _today_closes_eod.get(_s, _p.entry_price) * _p.quantity
+                for _s, _p in portfolio.positions.items()
+                if getattr(_p, "direction", "long") == "long"
+            )
+            _short_notional = sum(
+                abs(_p.entry_price * _p.quantity)
+                for _s, _p in portfolio.positions.items()
+                if getattr(_p, "direction", "long") != "long"
+            )
+            deployment_by_date[day] = (_long_notional + _short_notional) / max(_eq_today, 1e-9)
             if equity_by_date[day] > portfolio.peak_equity:
                 portfolio.peak_equity = equity_by_date[day]
             portfolio.daily_pnl = 0.0  # reset for next day
@@ -668,6 +682,7 @@ class AgentSimulator:
         return self._compute_result(
             accepted_trades, equity_by_date, tx_costs_total,
             start_date, end_date, spy_prices,
+            deployment_by_date=deployment_by_date,
         )
 
     # ─── PM: score all symbols ─────────────────────────────────────────────────
@@ -1985,6 +2000,7 @@ class AgentSimulator:
         start_date: date,
         end_date: date,
         spy_prices: Optional[pd.Series],
+        deployment_by_date: Optional[Dict[date, float]] = None,
     ) -> SimResult:
         # Rebuild equity from trades since portfolio.cash tracking can drift
         # (simpler: use equity_by_date as-is)
@@ -2055,6 +2071,11 @@ class AgentSimulator:
             except Exception:
                 pass
 
+        # CRITICAL-2: deployment metrics
+        from app.backtesting.strategy_simulator import compute_deployment_metrics
+        _dep_by_date = deployment_by_date or {}
+        avg_dep, dep_adj_sharpe, low_dep_warn = compute_deployment_metrics(equity_curve, _dep_by_date)
+
         return SimResult(
             model_type="swing_agent",
             starting_capital=self.starting_capital,
@@ -2078,6 +2099,9 @@ class AgentSimulator:
             equity_curve=equity_curve,
             monthly_pnl=dict(monthly),
             trades=accepted_trades,
+            avg_capital_deployed_pct=round(avg_dep, 4),
+            deployment_adjusted_sharpe=round(dep_adj_sharpe, 3),
+            low_deployment_warning=low_dep_warn,
         )
 
     def _empty_result(self) -> SimResult:

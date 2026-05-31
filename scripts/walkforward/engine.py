@@ -26,6 +26,32 @@ from scripts.walkforward.gates import WalkForwardReport
 logger = logging.getLogger(__name__)
 
 
+def _get_data_span(strategy) -> tuple:
+    """Return (n_trading_days, start_date, end_date, n_symbols, source_hint) for a strategy."""
+    import pandas as pd
+
+    # Intraday: use all_days_sorted
+    all_days = getattr(strategy, "all_days_sorted", None)
+    if all_days and len(all_days) > 0:
+        n_syms = len(getattr(strategy, "symbols_data", {}))
+        src = getattr(strategy, "data_source", "unknown")
+        return len(all_days), all_days[0], all_days[-1], n_syms, src
+
+    # Swing: count distinct dates across symbols_data
+    symbols_data = getattr(strategy, "symbols_data", {})
+    if not symbols_data:
+        return 0, None, None, 0, "none"
+    all_dates = set()
+    for df in symbols_data.values():
+        if hasattr(df, "index"):
+            for d in pd.DatetimeIndex(df.index).date:
+                all_dates.add(d)
+    if not all_dates:
+        return 0, None, None, len(symbols_data), "yfinance-daily"
+    sorted_dates = sorted(all_dates)
+    return len(sorted_dates), sorted_dates[0], sorted_dates[-1], len(symbols_data), "yfinance-daily"
+
+
 class FoldEngine:
     """Strategy-agnostic fold construction with purge + embargo on both sides."""
 
@@ -87,6 +113,24 @@ class FoldEngine:
                 n_folds, getattr(self.strategy, "all_days_sorted", [])
             )
 
+        # MEDIUM-3: data span gate — fail before any fold runs when the data window
+        # is too short to construct non-degenerate folds.
+        from scripts.walkforward.gates import DataSpanError
+        from app.ml.retrain_config import MIN_DATA_SPAN_TRADING_DAYS, ENFORCE_MIN_DATA_SPAN
+
+        n_span, d0, d1, n_syms, src = _get_data_span(self.strategy)
+        logger.info("DATA: %d symbols × %d days (%s → %s) [%s]", n_syms, n_span, d0, d1, src)
+        if n_span < MIN_DATA_SPAN_TRADING_DAYS:
+            msg = (
+                f"DATA SPAN TOO SHORT: {n_span} trading days < "
+                f"MIN_DATA_SPAN_TRADING_DAYS={MIN_DATA_SPAN_TRADING_DAYS} "
+                f"({d0} → {d1}, {n_syms} symbols, source={src}). "
+                f"WF/CPCV folds would degenerate. Refill the data cache."
+            )
+            if ENFORCE_MIN_DATA_SPAN:
+                raise DataSpanError(msg)
+            logger.warning(msg)
+
         # OOS-guard: every test fold must start strictly after the model's training cutoff.
         from scripts.walkforward.oos_guard import assert_model_oos
         _trained_through = getattr(getattr(self.strategy, "model", None), "trained_through", None)
@@ -112,6 +156,7 @@ class FoldEngine:
             model_type=getattr(self.strategy, "model_type", "unknown"),
             in_sample_override=allow_in_sample,
         )
+        report.data_span = (n_span, d0, d1, n_syms, src)
 
         # Regime diversity check (warns only; never blocks fold construction)
         if self.regime_map:

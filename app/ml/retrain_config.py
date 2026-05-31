@@ -186,6 +186,58 @@ INTRADAY_GATE = dict(
 #          Higher N makes DSR harder to pass — correct direction for selection bias.
 N_TRIALS_TESTED: int = 250
 
+# ── CRITICAL-1: DSR implausibility ceiling ────────────────────────────────────
+SHARPE_IMPLAUSIBILITY_CEILING: float = 3.0
+"""Annualised Sharpe above which a result flags for mandatory human review instead
+of auto-promotion. A daily-Sharpe > 3.0 net of costs is empirically implausible
+for a retail equity strategy — capital-deployment artifacts or leakage are the
+likeliest cause. Does NOT block gate_passed() — enforced by the promotion runner
+(walkforward_tier3.py) via requires_human_review(). See CRITICAL-1."""
+
+DSR_SATURATION_P: float = 0.999
+"""DSR p-value above which the DSR gate is reported as SATURATED (non-binding).
+A NOTE is emitted so reviewers know DSR provided no selection-bias screening.
+Basis: deflated_sharpe_ratio saturates to ~1.0 for Sharpe > ~2 at n_obs~250."""
+
+# ── CRITICAL-2: Capital deployment tracking ───────────────────────────────────
+TARGET_DEPLOYMENT_PCT: float = 1.0
+"""Target capital deployment fraction for deployment-adjusted Sharpe (1.0 = 100%
+fully invested). Daily returns are rescaled by (target / actual_deployment) before
+computing the diagnostic deployment-adjusted Sharpe so strategies with different
+position sizing are comparable. Diagnostic only — never a gate. See CRITICAL-2."""
+
+MIN_DEPLOYMENT_PCT_WARN: float = 0.10
+"""Avg capital deployment below which a LOW DEPLOYMENT WARNING is issued.
+WARNING only — does not block gate_passed(). Basis: 3% sizing × 5 max positions
+= 15% ceiling; < 10% means most days are flat and Sharpe denominator is tiny."""
+
+DEP_ADJ_MAX_SCALE: float = 50.0
+"""Maximum scale factor for deployment-adjusted Sharpe per day. Caps
+(target_deployment / actual_deployment) to prevent a near-zero-deployment day
+from exploding the diagnostic. Diagnostic only."""
+
+# ── MEDIUM-1: Calmar vol-floor ────────────────────────────────────────────────
+USE_CALMAR_VOL_FLOOR: bool = True
+"""When True, no-DD folds compute Calmar using max(0.5 * monthly_vol, MIN_CALMAR_FLOOR_DD)
+as a floor drawdown instead of CAL_NO_DD_SENTINEL=+5.0. Prevents tight-stop intraday
+strategies from trivially passing the Calmar gate on no-drawdown folds.
+Set False to reproduce legacy sentinel behavior (for baseline comparisons)."""
+
+MIN_CALMAR_FLOOR_DD: float = 0.01
+"""Absolute floor drawdown (1%) when no-DD fold has insufficient daily return data
+to estimate a vol-based floor. Prevents the free-pass CAL_NO_DD_SENTINEL on
+short folds. See MEDIUM-1."""
+
+# ── MEDIUM-3: Data span gate ──────────────────────────────────────────────────
+MIN_DATA_SPAN_TRADING_DAYS: int = 250
+"""Hard minimum trading-day span data must cover before WF/CPCV runs.
+Below this, folds degenerate (e.g. 55-day yfinance fallback → 9-day folds).
+Raises DataSpanError when ENFORCE_MIN_DATA_SPAN=True. See MEDIUM-3."""
+
+ENFORCE_MIN_DATA_SPAN: bool = True
+"""When True, raise DataSpanError if data span < MIN_DATA_SPAN_TRADING_DAYS.
+Set False for warn-only legacy behavior (e.g. intentional short-window experiments)."""
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
 #   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025

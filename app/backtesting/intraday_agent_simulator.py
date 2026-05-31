@@ -197,6 +197,7 @@ class IntradayAgentSimulator:
         portfolio = _PortfolioState(cash=self.starting_capital, peak_equity=self.starting_capital)
         accepted_trades: List[Trade] = []
         equity_by_date: Dict[date, float] = {}
+        deployment_by_date: Dict[date, float] = {}
         tx_costs_total = 0.0
 
         # Precompute VIX and SPY daily closes for abstention gate / opportunity score
@@ -408,6 +409,10 @@ class IntradayAgentSimulator:
             if portfolio.equity > portfolio.peak_equity:
                 portfolio.peak_equity = portfolio.equity
             equity_by_date[day] = portfolio.equity
+            # CRITICAL-2: track daily capital deployment
+            _pmv = portfolio.position_market_value  # long MTM from property at line 77
+            _dep_eq = max(portfolio.equity, 1e-9)
+            deployment_by_date[day] = _pmv / _dep_eq
             portfolio.daily_pnl = 0.0
 
         if not accepted_trades:
@@ -416,6 +421,7 @@ class IntradayAgentSimulator:
         return self._compute_result(
             accepted_trades, equity_by_date, tx_costs_total,
             start_date, end_date, spy_prices,
+            deployment_by_date=deployment_by_date,
         )
 
     # ─── Per-day simulation ────────────────────────────────────────────────────
@@ -702,6 +708,7 @@ class IntradayAgentSimulator:
         start_date: date,
         end_date: date,
         spy_prices: Optional[pd.Series],
+        deployment_by_date: Optional[Dict[date, float]] = None,
     ) -> SimResult:
         equity_curve = sorted(equity_by_date.items())
         eq_vals = [v for _, v in equity_curve]
@@ -760,6 +767,11 @@ class IntradayAgentSimulator:
             except Exception:
                 pass
 
+        # CRITICAL-2: deployment metrics
+        from app.backtesting.strategy_simulator import compute_deployment_metrics
+        _dep_by_date = deployment_by_date or {}
+        avg_dep, dep_adj_sharpe, low_dep_warn = compute_deployment_metrics(equity_curve, _dep_by_date)
+
         return SimResult(
             model_type="intraday_agent",
             starting_capital=self.starting_capital,
@@ -783,6 +795,9 @@ class IntradayAgentSimulator:
             equity_curve=equity_curve,
             monthly_pnl=dict(monthly),
             trades=accepted_trades,
+            avg_capital_deployed_pct=round(avg_dep, 4),
+            deployment_adjusted_sharpe=round(dep_adj_sharpe, 3),
+            low_deployment_warning=low_dep_warn,
         )
 
     def _empty_result(self) -> SimResult:

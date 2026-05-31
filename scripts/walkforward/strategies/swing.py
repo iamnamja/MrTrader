@@ -286,6 +286,10 @@ class SwingStrategy:
         # hence len-1. Required by deflated_sharpe_ratio; mirrors intraday.py.
         n_obs = max(len(equity_curve) - 1, 0)
         years = fold_years(te_start, te_end)
+        # Extract daily returns for Calmar vol-floor (MEDIUM-1)
+        _eq_vals = [v for _, v in equity_curve]
+        _daily_rets = [((_eq_vals[i] - _eq_vals[i - 1]) / max(_eq_vals[i - 1], 1e-9))
+                       for i in range(1, len(_eq_vals))] if len(_eq_vals) >= 2 else []
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
         regime_sharpes = _crs(equity_curve, te_start, te_end,
                               regime_map=getattr(self, "_global_regime_map", None))
@@ -301,8 +305,12 @@ class SwingStrategy:
             stop_exit_rate=stop_rate,
             model_version=self.version,
             profit_factor=getattr(result, "profit_factor", compute_profit_factor(trade_returns)),
-            calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
+            calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years,
+                                        daily_returns=_daily_rets),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
             regime_sharpes=regime_sharpes,
+            avg_capital_deployed_pct=getattr(result, "avg_capital_deployed_pct", 0.0),
+            deployment_adjusted_sharpe=getattr(result, "deployment_adjusted_sharpe", 0.0),
+            low_deployment_warning=getattr(result, "low_deployment_warning", False),
         )
