@@ -109,3 +109,7 @@ results/
 
 # MCP config (may contain API keys)
 .mcp.json
+
+# Large generated log files — don't commit
+docs/phase_h_plus_rerun_log.txt
+docs/archive/data/phase_h_plus_rerun_log.txt
