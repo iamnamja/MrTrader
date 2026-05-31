@@ -2148,11 +2148,15 @@ def main() -> int:
         if args.record_results and swing_report.folds:
             from app.ml.training import ModelTrainer
             loaded_ver = swing_report.folds[0].model_version if swing_report.folds else 0
+            # C-1 fix: gate sentinel on combined decision — gate_passed AND not requires_human_review.
+            # Using raw gate_passed() here would write the sentinel even when AUTO-PROMOTION BLOCKED.
+            _swing_promotable = (swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+                                 and not swing_report.requires_human_review())
             ModelTrainer.record_tier3_result(
                 version=loaded_ver,
                 avg_sharpe=swing_report.avg_sharpe,
                 fold_sharpes=[f.sharpe for f in swing_report.folds],
-                gate_passed=swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate),
+                gate_passed=_swing_promotable,
             )
 
     if args.model in ("intraday", "both"):
@@ -2213,11 +2217,14 @@ def main() -> int:
         if args.record_results and intraday_report.folds:
             from app.ml.intraday_training import IntradayModelTrainer
             loaded_ver = intraday_report.folds[0].model_version if intraday_report.folds else 0
+            # C-1 fix: gate sentinel on combined decision — mirrors swing fix above.
+            _intraday_promotable = (intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+                                    and not intraday_report.requires_human_review())
             IntradayModelTrainer.record_tier3_result(
                 version=loaded_ver,
                 avg_sharpe=intraday_report.avg_sharpe,
                 fold_sharpes=[f.sharpe for f in intraday_report.folds],
-                gate_passed=intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate),
+                gate_passed=_intraday_promotable,
             )
 
     print()
