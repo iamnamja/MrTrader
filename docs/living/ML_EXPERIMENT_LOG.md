@@ -33,6 +33,38 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## System Improvement — Gate Integrity Phase 2 + Phase 3 — 2026-05-31 (PRs #331, #332)
+
+Pipeline gate hardening (no model retrain — these change how WF/CPCV results are
+judged, so all prior gate verdicts should be re-evaluated under the new gates).
+
+**Phase 2 — Regime gate overhaul (HIGH-2 + MEDIUM-4, PR #331):**
+- The `worst_regime_sharpe` gate had been **silently inactive on every run**: the
+  16-bucket label space (VIX-quartile × trend × momentum) produced too-sparse
+  per-bucket obs → `compute_regime_sharpes` returned `{}` → `worst_regime_sharpe
+  is None` → `regime_ok = True` (silent pass). VIX `pd.qcut` also looked ahead.
+- New `REGIME_SCHEME="coarse3"` (default): BULL/BEAR/NEUTRAL with **expanding-quantile**
+  VIX thresholds (PIT-correct, no look-ahead), `REGIME_VIX_WARMUP_DAYS=60` warmup,
+  `REGIME_MIN_OBS=20` per-bucket floor. `legacy16` retained under the flag.
+- `ALLOW_NO_REGIME_GATE=False` (default) → `worst_regime_sharpe is None` now
+  **HARD-FAILS** `gate_passed()` in both `WalkForwardReport` and `CPCVResult`.
+- New gate status: regime gate **ACTIVE** when `FoldResult.regime_sharpes` is
+  populated, **HARD FAIL** when None. KL-2 + KL-7 RESOLVED.
+
+**Phase 3 — CPCV path t-stat + StrategySimulator (HIGH-3, PR #332):**
+- `CPCVResult.path_sharpe_tstat = mean/(std/√N_eff)` with **N_eff = n_folds**
+  (not n_paths — the C(k,p) paths reuse k folds and are correlated). Reported +
+  WARNED below `CPCV_MIN_TSTAT=2.0`; blocks only when `require_tstat_gate=True`
+  (off by default until baseline t-stat data is collected). KL-4 partially addressed.
+- `StrategySimulator` (TIER-2 only, NOT in WF/CPCV) gained a prominent tier-2
+  banner + `build_daily_equity_curve` opt-in flag (forward-fills entry-date equity
+  onto daily calendar). KL-8 addressed.
+
+**Verification:** full pytest 2383 passed, 0 failures. New tests:
+`test_regime_coarse3.py` (11), `test_cpcv_tstat.py` (7), `test_strategy_sim_daily_curve.py` (3).
+
+---
+
 ## Phase A COMPLETE — Diagnostic Verdicts — 2026-05-13
 
 **All three kill criteria triggered. Proceeding to Phase C (re-architect).**
