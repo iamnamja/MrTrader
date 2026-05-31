@@ -163,7 +163,10 @@ class IntradayStrategy:
         )
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
-        trade_returns = getattr(result, "trade_returns", [])
+        # Extract per-trade pnl_pct from result.trades (SimResult.trades is the
+        # canonical source; result.trade_returns does not exist on SimResult).
+        trades_list = getattr(result, "trades", None) or []
+        trade_returns = [t.pnl_pct for t in trades_list if hasattr(t, "pnl_pct")]
         equity_curve = getattr(result, "equity_curve", [])
         years = fold_years(te_start, te_end)
         # n_obs: number of daily-return observations (one per trading day in the fold).
@@ -181,7 +184,7 @@ class IntradayStrategy:
             total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=self.version,
-            profit_factor=compute_profit_factor(trade_returns),
+            profit_factor=getattr(result, "profit_factor", compute_profit_factor(trade_returns)),
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
