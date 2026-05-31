@@ -60,6 +60,10 @@ class CPCVResult:
     # CRITICAL-2: per-path deployment diagnostics (mirror WalkForwardReport).
     path_deployments: List[float] = field(default_factory=list)
     path_deployment_adj_sharpes: List[float] = field(default_factory=list)
+    # Phase 3 (HIGH-3): when True, gate_passed() requires path_sharpe_tstat >=
+    # CPCV_MIN_TSTAT. Off by default — the t-stat is reported and warned but does
+    # not block. Enable once baseline t-stat data is collected.
+    require_tstat_gate: bool = False
 
     @property
     def n_combinations(self) -> int:
@@ -84,6 +88,24 @@ class CPCVResult:
     @property
     def pct_positive(self) -> float:
         return float(np.mean([s > 0 for s in self.path_sharpes])) if self.path_sharpes else 0.0
+
+    @property
+    def path_sharpe_tstat(self) -> float:
+        """t = mean_path_sharpe / (std_path_sharpe / sqrt(N_eff)).
+
+        N_eff = n_folds (NOT n_combinations). The C(k,p) paths reuse k folds and
+        are strongly positively correlated. Using n_combinations would overstate
+        significance. N_eff = n_folds is the conservative, defensible choice.
+        Returns 0.0 if < 2 paths or zero dispersion.
+        """
+        import math
+        if len(self.path_sharpes) < 2:
+            return 0.0
+        sd = self.std_sharpe
+        if sd <= 1e-12:
+            return 0.0
+        n_eff = max(self.n_folds, 1)
+        return self.mean_sharpe / (sd / math.sqrt(n_eff))
 
     @property
     def avg_profit_factor(self) -> float:
@@ -203,6 +225,19 @@ class CPCVResult:
                 regime_ok = False
         else:
             regime_ok = wrs >= MIN_WORST_REGIME_SHARPE
+        # Phase 3 (HIGH-3): CPCV path-Sharpe t-stat significance.
+        from app.ml.retrain_config import CPCV_MIN_TSTAT
+        tstat = self.path_sharpe_tstat
+        tstat_ok = tstat >= CPCV_MIN_TSTAT
+        if not tstat_ok:
+            import logging as _tlog
+            _tlog.getLogger(__name__).warning(
+                "CPCV path t-stat %.2f < CPCV_MIN_TSTAT %.2f (N_eff=%d folds, NOT %d paths). "
+                "%s",
+                tstat, CPCV_MIN_TSTAT, self.n_folds, len(self.path_sharpes),
+                "GATING (require_tstat_gate=True)" if self.require_tstat_gate
+                else "NOT gating (require_tstat_gate=False)",
+            )
         return (
             self.mean_sharpe >= sharpe_gate
             and self.p5_sharpe >= min_fold_gate
@@ -211,6 +246,7 @@ class CPCVResult:
             and pf_ok
             and cal_ok
             and regime_ok
+            and (tstat_ok or not self.require_tstat_gate)
         )
 
     def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
@@ -227,6 +263,10 @@ class CPCVResult:
         from app.ml.retrain_config import ALLOW_NO_REGIME_GATE as _ALLOW_NRG
         _wrs = self.worst_regime_sharpe
         _wrs_ok = (_wrs is not None and _wrs >= MIN_WORST_REGIME_SHARPE) or (_wrs is None and _ALLOW_NRG)
+        # Phase 3 (HIGH-3): path-Sharpe t-stat. ok=True when not gating or above threshold.
+        from app.ml.retrain_config import CPCV_MIN_TSTAT
+        _tstat = self.path_sharpe_tstat
+        _tstat_ok = (_tstat >= CPCV_MIN_TSTAT) or not self.require_tstat_gate
         # C13-1: gate PF/Calmar on enough_paths too, matching gate_passed() early-return.
         # Without this, gate_detail could show PF/Calmar "OK" while gate_passed returns False.
         return {
@@ -246,6 +286,7 @@ class CPCVResult:
                                or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                                or self.avg_calmar >= MIN_CALMAR)),
             "worst_regime_sharpe": (self.worst_regime_sharpe, enough_paths and _wrs_ok),
+            "path_sharpe_tstat": (_tstat, _tstat_ok),
             # CRITICAL-1/2: informational keys — NOT part of gate_passed() boolean AND.
             # ok=True when NOT triggered (appear in failed-keys list only when fired).
             "human_review_required": (self.mean_sharpe, not self.requires_human_review()),
@@ -266,6 +307,15 @@ class CPCVResult:
         print(f"  P95 Sharpe:   {self.p95_sharpe:+.3f}")
         print(f"  % positive:   {self.pct_positive:.1%}  (gate: >= 75%)  "
               f"{'OK' if self.pct_positive >= 0.75 else 'FAIL'}")
+        from app.ml.retrain_config import CPCV_MIN_TSTAT
+        tstat = self.path_sharpe_tstat
+        tstat_ok = tstat >= CPCV_MIN_TSTAT
+        print(f"  Path Sharpe t-stat: {tstat:+.2f}  "
+              f"(gate: > {CPCV_MIN_TSTAT}; N_eff={self.n_folds} folds, NOT {len(self.path_sharpes)} paths)  "
+              f"{'OK' if tstat_ok else 'WARN'}"
+              f"{'  [GATING]' if self.require_tstat_gate and not tstat_ok else ''}")
+        print(f"    NOTE: N_eff={self.n_folds} (folds), NOT {len(self.path_sharpes)} (paths). "
+              f"C(k,p) paths reuse k folds and are correlated.")
         _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs())
         print(f"  DSR p:        {dsr_p:.3f}  (gate: > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
         from app.ml.retrain_config import (
