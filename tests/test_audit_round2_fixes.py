@@ -164,6 +164,66 @@ class TestCPCVTrainYears:
                 f"= {window_days} days > {2*365+10}"
             )
 
+    def test_train_window_never_overlaps_prior_test_fold(self):
+        """BUG-23: rolling window must not overlap any prior test fold's [te_start, te_end]."""
+        from datetime import date as _date, timedelta as _td
+        from unittest.mock import patch, MagicMock
+        from scripts.walkforward.gates import FoldResult
+        from scripts.walkforward.cpcv import run_cpcv
+
+        # Track (combo_idx, tr_start, tr_end, te_start, te_end) per run_fold call
+        captured = []
+        call_counter = [0]
+
+        mock_strategy = MagicMock()
+        mock_strategy.model_type = "swing"
+        mock_strategy.version = 1
+        mock_strategy.allow_in_sample = False
+        mock_strategy.model = MagicMock()
+        mock_strategy.model.trained_through = _date(2018, 1, 1)
+        mock_strategy.all_days_sorted = []
+
+        def _capture(fold_idx, n_folds, tr_start, tr_end, te_start, te_end):
+            # fold_idx encodes combo_idx * n_folds + ti + 1 (from cpcv.py)
+            combo_idx = (fold_idx - 1) // n_folds
+            captured.append((combo_idx, tr_start, tr_end, te_start, te_end))
+            return FoldResult(
+                fold=fold_idx, train_start=tr_start, train_end=tr_end,
+                test_start=te_start, test_end=te_end,
+                trades=10, win_rate=0.5, sharpe=1.0, max_drawdown=0.05,
+                total_return=0.10, stop_exit_rate=0.2,
+            )
+
+        mock_strategy.run_fold.side_effect = _capture
+
+        with patch("app.ml.retrain_config.assert_no_sacred_holdout"):
+            result = run_cpcv(
+                strategy=mock_strategy,
+                purge_days=10,
+                embargo_days=10,
+                n_folds=6,
+                n_paths=2,
+                total_years=5,
+                train_years=1,  # short window forces potential overlap
+                allow_sacred_holdout=True,
+            )
+
+        # Within the same combination, a fold's training window must not overlap
+        # any earlier test fold's [te_start, te_end]. Cross-combo overlaps are fine.
+        from itertools import groupby
+        by_combo = {}
+        for combo_idx, tr_start, tr_end, te_start, te_end in captured:
+            by_combo.setdefault(combo_idx, []).append((tr_start, tr_end, te_start, te_end))
+
+        for combo_idx, folds in by_combo.items():
+            folds_sorted = sorted(folds, key=lambda f: f[2])  # sort by te_start
+            for i, (tr_start, tr_end, te_start, te_end) in enumerate(folds_sorted):
+                for otr_start, otr_end, ote_start, ote_end in folds_sorted[:i]:
+                    assert not (tr_start < ote_end and tr_end > ote_start), (
+                        f"BUG-23 combo {combo_idx}: training [{tr_start},{tr_end}] "
+                        f"overlaps prior test [{ote_start},{ote_end}]"
+                    )
+
 
 # ---------------------------------------------------------------------------
 # BUG-6: WalkForwardReport.total_obs no longer falls back to total_trades

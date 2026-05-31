@@ -315,6 +315,27 @@ def run_cpcv(
             else:
                 real_tr_start = all_boundaries[0][0]  # expanding: always from start
             if real_tr_end <= real_tr_start:
+                result.n_skipped += 1
+                continue
+
+            # BUG-23 fix: with rolling train_years, the training window
+            # [real_tr_start, real_tr_end] can overlap a prior test fold's
+            # [te_start, te_end] — training on data that was tested elsewhere
+            # in this combination is a form of in-sample contamination.
+            # Detect and skip rather than silently leaking.
+            prior_test_folds = [j for j in test_indices if j < ti]
+            overlap = any(
+                real_tr_start < all_boundaries[j][3]   # te_end of prior test
+                and real_tr_end > all_boundaries[j][2] # te_start of prior test
+                for j in prior_test_folds
+            )
+            if overlap:
+                logger.debug(
+                    "CPCV BUG-23 guard: combo %d ti=%d rolling window [%s, %s] "
+                    "overlaps prior test fold — skipping",
+                    combo_idx, ti, real_tr_start, real_tr_end,
+                )
+                result.n_skipped += 1
                 continue
 
             try:
