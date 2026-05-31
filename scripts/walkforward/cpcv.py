@@ -183,6 +183,8 @@ class CPCVResult:
         n_cal_active = sum(1 for c in self.path_calmars if c != 0)
         n_paths = len(self.path_sharpes)
         enough_paths = n_paths >= MIN_ACTIVE_FOLDS_FOR_GATE
+        # C13-1: gate PF/Calmar on enough_paths too, matching gate_passed() early-return.
+        # Without this, gate_detail could show PF/Calmar "OK" while gate_passed returns False.
         return {
             "n_paths": (n_paths, enough_paths),
             "mean_sharpe": (self.mean_sharpe, enough_paths and self.mean_sharpe >= sharpe_gate),
@@ -190,16 +192,19 @@ class CPCVResult:
             "pct_positive": (self.pct_positive, enough_paths and self.pct_positive >= 0.75),
             "dsr_p": (dsr_p, enough_paths and dsr_p > 0.95),
             "avg_profit_factor": (self.avg_profit_factor,
-                                  paper_gate
-                                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
-                                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
+                                  enough_paths and (
+                                      paper_gate
+                                      or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                                      or self.avg_profit_factor >= MIN_PROFIT_FACTOR)),
             "avg_calmar": (self.avg_calmar,
-                           paper_gate
-                           or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
-                           or self.avg_calmar >= MIN_CALMAR),
+                           enough_paths and (
+                               paper_gate
+                               or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                               or self.avg_calmar >= MIN_CALMAR)),
             "worst_regime_sharpe": (self.worst_regime_sharpe,
-                                    self.worst_regime_sharpe is None
-                                    or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE),
+                                    enough_paths and (
+                                        self.worst_regime_sharpe is None
+                                        or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE)),
         }
 
     def print(self) -> None:
