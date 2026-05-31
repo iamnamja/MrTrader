@@ -184,16 +184,25 @@ class CPCVResult:
                   or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                   or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
+        # Phase 2: None → fail unless ALLOW_NO_REGIME_GATE=True (mirror WalkForwardReport).
+        from app.ml.retrain_config import ALLOW_NO_REGIME_GATE
+        import logging as _log
         if wrs is None:
-            # C12-3: mirror WalkForwardReport warning so silent gate bypass is visible.
-            import logging as _log
-            _log.getLogger(__name__).warning(
-                "CPCVResult: worst_regime_sharpe gate INACTIVE — no regime data populated. "
-                "MIN_WORST_REGIME_SHARPE=%.1f is not being enforced. "
-                "Ensure fetch_data loaded _global_regime_map successfully.",
-                MIN_WORST_REGIME_SHARPE,
-            )
-        regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
+            if ALLOW_NO_REGIME_GATE:
+                _log.getLogger(__name__).warning(
+                    "CPCVResult: worst_regime_sharpe=None, gate bypassed "
+                    "(ALLOW_NO_REGIME_GATE=True). Regime gate NOT enforced."
+                )
+                regime_ok = True
+            else:
+                _log.getLogger(__name__).error(
+                    "CPCVResult: worst_regime_sharpe=None — regime data insufficient. "
+                    "GATE FAILING (set ALLOW_NO_REGIME_GATE=True to bypass). "
+                    "Ensure fetch_data loaded _global_regime_map successfully."
+                )
+                regime_ok = False
+        else:
+            regime_ok = wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.mean_sharpe >= sharpe_gate
             and self.p5_sharpe >= min_fold_gate
@@ -214,6 +223,10 @@ class CPCVResult:
         n_cal_active = sum(1 for c in self.path_calmars if c != 0)
         n_paths = len(self.path_sharpes)
         enough_paths = n_paths >= MIN_ACTIVE_FOLDS_FOR_GATE
+        # Phase 2: regime None → fail unless ALLOW_NO_REGIME_GATE (mirror WalkForwardReport).
+        from app.ml.retrain_config import ALLOW_NO_REGIME_GATE as _ALLOW_NRG
+        _wrs = self.worst_regime_sharpe
+        _wrs_ok = (_wrs is not None and _wrs >= MIN_WORST_REGIME_SHARPE) or (_wrs is None and _ALLOW_NRG)
         # C13-1: gate PF/Calmar on enough_paths too, matching gate_passed() early-return.
         # Without this, gate_detail could show PF/Calmar "OK" while gate_passed returns False.
         return {
@@ -232,10 +245,7 @@ class CPCVResult:
                                paper_gate
                                or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                                or self.avg_calmar >= MIN_CALMAR)),
-            "worst_regime_sharpe": (self.worst_regime_sharpe,
-                                    enough_paths and (
-                                        self.worst_regime_sharpe is None
-                                        or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE)),
+            "worst_regime_sharpe": (self.worst_regime_sharpe, enough_paths and _wrs_ok),
             # CRITICAL-1/2: informational keys — NOT part of gate_passed() boolean AND.
             # ok=True when NOT triggered (appear in failed-keys list only when fired).
             "human_review_required": (self.mean_sharpe, not self.requires_human_review()),

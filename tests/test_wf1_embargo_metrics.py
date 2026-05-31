@@ -220,6 +220,9 @@ class TestGateLogic:
                 profit_factor=pf,
                 calmar_ratio=calmar,
                 n_obs=120,
+                # Phase 2: populate passing regime data so the now-enforced regime
+                # gate is not the blocker in these PF/Calmar/Sharpe gate tests.
+                regime_sharpes={"BULL": 1.0, "BEAR": 0.5, "NEUTRAL": 0.8},
             )
             report.folds.append(f)
         return report

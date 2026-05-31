@@ -28,7 +28,7 @@
 
 > **NOTE (2026-05-31):** All WF/CPCV results prior to the 13-round audit (PRs #323–327) must be re-run. Pipeline hardening changes gate behavior for Calmar, PF, and OOS guard. The intraday CPCV result above was produced on the corrected pipeline.
 >
-> **Known limitations in current gate results:** Deployment-adjusted Sharpe not yet computed (CRITICAL-2 fix pending Phase 1). Regime gate inactive (worst_regime_sharpe=None, silently passing). See `docs/living/PIPELINE_ARCHITECTURE.md` §12 for full known-limitations list.
+> **Known limitations in current gate results:** Deployment-adjusted Sharpe not yet computed (CRITICAL-2 fix pending Phase 1). **Regime gate now ACTIVE (Phase 2, 2026-05-31):** coarse3 BULL/BEAR/NEUTRAL labeler with expanding-quantile VIX (PIT-correct); `worst_regime_sharpe=None` now HARD-FAILS the gate (no more silent pass) unless `ALLOW_NO_REGIME_GATE=True`. WF/CPCV results must now populate `FoldResult.regime_sharpes`. See `docs/living/PIPELINE_ARCHITECTURE.md` §12 for full known-limitations list.
 
 ---
 

@@ -410,14 +410,23 @@ class WalkForwardReport:
                   or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                   or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
+        from app.ml.retrain_config import ALLOW_NO_REGIME_GATE
         if wrs is None:
-            _logging.getLogger(__name__).warning(
-                "WalkForwardReport: worst_regime_sharpe gate is INACTIVE — "
-                "FoldResult.regime_sharpes is empty on all folds. The regime-Sharpe "
-                "gate (MIN_WORST_REGIME_SHARPE=%.1f) is not being enforced. "
-                "Populate FoldResult.regime_sharpes to activate.", MIN_WORST_REGIME_SHARPE
-            )
-        regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
+            if ALLOW_NO_REGIME_GATE:
+                _logging.getLogger(__name__).warning(
+                    "WalkForwardReport: worst_regime_sharpe=None, gate bypassed "
+                    "(ALLOW_NO_REGIME_GATE=True). Regime gate NOT enforced."
+                )
+                regime_ok = True
+            else:
+                _logging.getLogger(__name__).error(
+                    "WalkForwardReport: worst_regime_sharpe=None — regime data insufficient. "
+                    "GATE FAILING (set ALLOW_NO_REGIME_GATE=True to bypass). "
+                    "Ensure fetch_data populated _global_regime_map."
+                )
+                regime_ok = False
+        else:
+            regime_ok = wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.avg_sharpe >= sharpe_gate
             and self.min_sharpe >= min_fold_gate
@@ -447,13 +456,15 @@ class WalkForwardReport:
                   or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                   or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
+        from app.ml.retrain_config import ALLOW_NO_REGIME_GATE as _ALLOW_NRG
+        _wrs_ok = (wrs is not None and wrs >= MIN_WORST_REGIME_SHARPE) or (wrs is None and _ALLOW_NRG)
         return {
             "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= sharpe_gate),
             "min_sharpe": (self.min_sharpe, self.min_sharpe >= min_fold_gate),
             "dsr_p": (dsr_p, dsr_p > 0.95),
             "avg_profit_factor": (self.avg_profit_factor, pf_ok),
             "avg_calmar": (self.avg_calmar, cal_ok),
-            "worst_regime_sharpe": (wrs, wrs is None or wrs >= MIN_WORST_REGIME_SHARPE),
+            "worst_regime_sharpe": (wrs, _wrs_ok),
             # CRITICAL-1/2: informational keys — NOT part of gate_passed() boolean AND.
             # ok=True when NOT triggered, so they only appear in the failed-keys list
             # when the condition fires.

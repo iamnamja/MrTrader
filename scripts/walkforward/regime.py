@@ -1,8 +1,12 @@
 """
 regime.py — Daily market regime tagger for walk-forward fold stratification.
 
-Regime label = VIX_quartile (1-4) x SPY_trend (U/D) x SPY_momentum (P/N)
-Results in up to 8 buckets per day (e.g. "1UP", "2DN", "3UP" ...).
+Two schemes (selected via app.ml.retrain_config.REGIME_SCHEME):
+  coarse3 (default): BULL / BEAR / NEUTRAL — 3 buckets with expanding-quantile
+    VIX thresholds (PIT-correct, no look-ahead). Enough obs per bucket for the
+    worst-regime-sharpe gate to be meaningful.
+  legacy16: VIX_quartile (1-4) x SPY_trend (U/D) x SPY_momentum (P/N), up to
+    16 buckets (e.g. "1UP", "2DN"). Original scheme; too-sparse per bucket.
 
 Usage:
     from scripts.walkforward.regime import load_regime_map, label_days
@@ -29,21 +33,30 @@ def load_regime_map(
 ) -> Dict[date, str]:
     """Download SPY + VIX history and return {date: regime_label}.
 
-    Label format: "<vix_quartile><trend><momentum>"
-      vix_quartile: 1 (lowest) .. 4 (highest), based on rolling quartile of VIX over the window
-      trend:  U = SPY above 50d MA, D = SPY below 50d MA
-      momentum: P = SPY 20d return > 0, N = SPY 20d return <= 0
+    When REGIME_SCHEME='coarse3' (default):
+      Label = 'BULL', 'BEAR', or 'NEUTRAL'
+      - BEAR: VIX >= expanding-pctile(REGIME_BEAR_VIX_PCTILE) OR SPY < REGIME_SPY_MA_BEAR-d MA
+      - BULL: VIX <= expanding-pctile(REGIME_BULL_VIX_PCTILE) AND SPY > REGIME_SPY_MA_BULL-d MA
+      - NEUTRAL: everything else
+      VIX thresholds use expanding quantiles (PIT-correct, no look-ahead).
+      Days with < REGIME_VIX_WARMUP_DAYS of prior VIX history → NEUTRAL.
 
-    Examples: "1UP", "4DN", "2DP"
+    When REGIME_SCHEME='legacy16':
+      Label = '<vix_quartile><trend><momentum>' (original scheme, up to 16 buckets).
     """
+    from app.ml.retrain_config import REGIME_SCHEME
     try:
         import yfinance as yf
         import pandas as pd
+        import numpy as np  # noqa: F401  (imported for availability check)
     except ImportError as e:
         logger.warning("yfinance/pandas/numpy not available: %s — returning empty regime map", e)
         return {}
 
-    fetch_start = start - timedelta(days=80)  # need 50d MA lookback
+    # Fetch with warmup buffer: need MA lookback + warmup days before start
+    from app.ml.retrain_config import REGIME_SPY_MA_BEAR, REGIME_VIX_WARMUP_DAYS
+    _buffer_days = max(REGIME_SPY_MA_BEAR, REGIME_VIX_WARMUP_DAYS) + 30
+    fetch_start = start - timedelta(days=_buffer_days)
     tickers = yf.download(
         [spy_ticker, vix_ticker],
         start=fetch_start.isoformat(),
@@ -66,13 +79,62 @@ def load_regime_map(
     spy = spy_close.reindex(common)
     vix = vix_close.reindex(common)
 
-    # Indicators
+    if REGIME_SCHEME == "coarse3":
+        return _load_coarse3(spy, vix, common, start, end)
+    else:
+        return _load_legacy16(spy, vix, common, start, end)
+
+
+def _load_coarse3(spy, vix, common, start, end) -> Dict[date, str]:
+    """Build BULL/BEAR/NEUTRAL regime map using expanding VIX quantiles (PIT-correct)."""
+    from app.ml.retrain_config import (
+        REGIME_BULL_VIX_PCTILE, REGIME_BEAR_VIX_PCTILE,
+        REGIME_SPY_MA_BULL, REGIME_SPY_MA_BEAR, REGIME_VIX_WARMUP_DAYS,
+    )
+    import numpy as np
+    import pandas as pd
+
+    spy_ma_bull = spy.rolling(REGIME_SPY_MA_BULL, min_periods=REGIME_SPY_MA_BULL // 2).mean()
+    spy_ma_bear = spy.rolling(REGIME_SPY_MA_BEAR, min_periods=REGIME_SPY_MA_BEAR // 2).mean()
+    vix_arr = vix.values
+
+    regime_map: Dict[date, str] = {}
+    for i, dt in enumerate(common):
+        d = dt.date() if hasattr(dt, "date") else dt
+        if d < start or d > end:
+            continue
+        # Insufficient warmup: NEUTRAL
+        if i < REGIME_VIX_WARMUP_DAYS:
+            regime_map[d] = "NEUTRAL"
+            continue
+        # NaN MA: NEUTRAL
+        ma_bull_val = spy_ma_bull.iloc[i]
+        ma_bear_val = spy_ma_bear.iloc[i]
+        if pd.isna(ma_bull_val) or pd.isna(ma_bear_val):
+            regime_map[d] = "NEUTRAL"
+            continue
+        # Expanding-window VIX quantile thresholds (PIT-correct — uses only [:i+1])
+        vix_lo = float(np.percentile(vix_arr[:i + 1], REGIME_BULL_VIX_PCTILE))
+        vix_hi = float(np.percentile(vix_arr[:i + 1], REGIME_BEAR_VIX_PCTILE))
+        spy_val = float(spy.iloc[i])
+        vix_val = float(vix_arr[i])
+        if vix_val >= vix_hi or spy_val < float(ma_bear_val):
+            regime_map[d] = "BEAR"
+        elif vix_val <= vix_lo and spy_val > float(ma_bull_val):
+            regime_map[d] = "BULL"
+        else:
+            regime_map[d] = "NEUTRAL"
+
+    logger.info("Regime map (coarse3): %d dates tagged (%s -> %s)", len(regime_map), start, end)
+    return regime_map
+
+
+def _load_legacy16(spy, vix, common, start, end) -> Dict[date, str]:
+    """Original VIX-quartile x trend x momentum scheme (up to 16 labels)."""
+    import pandas as pd
     spy_ma50 = spy.rolling(50, min_periods=20).mean()
     spy_ret20 = spy.pct_change(20)
-
-    # VIX quartile labels (1=lowest, 4=highest) over the full window
     vix_q = pd.qcut(vix, q=4, labels=["1", "2", "3", "4"], duplicates="drop")
-
     regime_map: Dict[date, str] = {}
     for dt in common:
         d = dt.date() if hasattr(dt, "date") else dt
@@ -85,8 +147,7 @@ def load_regime_map(
             regime_map[d] = vq + trend + mom
         except (KeyError, TypeError, ValueError):
             pass
-
-    logger.info("Regime map: %d dates tagged (%s → %s)", len(regime_map), start, end)
+    logger.info("Regime map (legacy16): %d dates tagged (%s -> %s)", len(regime_map), start, end)
     return regime_map
 
 
@@ -117,6 +178,7 @@ def compute_regime_sharpes(
     """
     try:
         import numpy as np
+        from app.ml.retrain_config import REGIME_MIN_OBS as _REGIME_MIN_OBS
 
         if len(equity_curve) < 2:
             return {}
@@ -144,9 +206,10 @@ def compute_regime_sharpes(
         result: Dict[str, float] = {}
         for label, rets in regime_daily_rets.items():
             arr = np.array(rets)
-            if len(arr) < 2:
-                # C10-3: drop regimes with < 2 obs — mean*sqrt(252) is not a Sharpe
-                # and would corrupt worst_regime_sharpe with phantom extremes.
+            if len(arr) < _REGIME_MIN_OBS:
+                # Phase 2 (C10-3): drop regimes with < REGIME_MIN_OBS obs —
+                # mean*sqrt(252) on a handful of returns is not a Sharpe and would
+                # corrupt worst_regime_sharpe with phantom extremes.
                 continue
             std = float(np.std(arr, ddof=1))
             result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0

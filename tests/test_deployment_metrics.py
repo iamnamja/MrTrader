@@ -80,6 +80,9 @@ def test_report_gate_detail_low_deployment_does_not_block():
             max_drawdown=0.05, total_return=0.3, stop_exit_rate=0.1,
             n_obs=250, profit_factor=2.0, calmar_ratio=1.0,
             avg_capital_deployed_pct=0.05, low_deployment_warning=True,
+            # Phase 2: real regime data so the now-enforced regime gate isn't the
+            # blocker (this test is about low-deployment, not regime).
+            regime_sharpes={"BULL": 1.0, "BEAR": 0.5, "NEUTRAL": 0.8},
         )
         for i in range(2)
     ]

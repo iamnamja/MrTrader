@@ -145,13 +145,24 @@ class TestWorstRegimeGate:
         assert r.gate_passed()
 
     @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
-    def test_passes_when_no_regime_data(self, _dsr):
-        # When regime_sharpes is empty for all folds, worst_regime_sharpe=None → gate skipped
+    def test_no_regime_data_fails_by_default(self, _dsr):
+        # Phase 2: worst_regime_sharpe=None now HARD-FAILS the gate (no silent pass).
         f = _fold(sharpe=1.0)
         f.profit_factor = 1.5
         f.calmar_ratio = 0.5
         r = _report([f])
-        assert r.gate_passed()
+        with patch("app.ml.retrain_config.ALLOW_NO_REGIME_GATE", False):
+            assert r.gate_passed() is False
+
+    @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
+    def test_no_regime_data_passes_with_bypass(self, _dsr):
+        # Phase 2: None passes only when ALLOW_NO_REGIME_GATE=True (explicit bypass).
+        f = _fold(sharpe=1.0)
+        f.profit_factor = 1.5
+        f.calmar_ratio = 0.5
+        r = _report([f])
+        with patch("app.ml.retrain_config.ALLOW_NO_REGIME_GATE", True):
+            assert r.gate_passed() is True
 
     @patch("scripts.walkforward.gates.deflated_sharpe_ratio", return_value=(2.0, 0.99))
     def test_boundary_exactly_minus_05_passes(self, _dsr):
@@ -177,10 +188,20 @@ class TestGateDetailRegime:
         val, passed = r.gate_detail()["worst_regime_sharpe"]
         assert isinstance(passed, bool)
 
-    def test_none_value_passes(self):
+    def test_none_value_fails_by_default(self):
+        # Phase 2: None now reports ok=False by default (gate enforced).
         f = _fold()  # no regime data
         r = _report([f])
-        val, passed = r.gate_detail()["worst_regime_sharpe"]
+        with patch("app.ml.retrain_config.ALLOW_NO_REGIME_GATE", False):
+            val, passed = r.gate_detail()["worst_regime_sharpe"]
+        assert val is None
+        assert passed is False
+
+    def test_none_value_passes_with_bypass(self):
+        f = _fold()  # no regime data
+        r = _report([f])
+        with patch("app.ml.retrain_config.ALLOW_NO_REGIME_GATE", True):
+            val, passed = r.gate_detail()["worst_regime_sharpe"]
         assert val is None
         assert passed is True
 
