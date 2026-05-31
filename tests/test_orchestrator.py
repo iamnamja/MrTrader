@@ -256,6 +256,9 @@ class TestRetrainingSubprocess:
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
             patch("builtins.open", mock_open()),
+            # Hermetic: ignore any recent CPCV/WF logs in the real logs/ dir that
+            # would otherwise trip the active-job guard and skip the retrain.
+            patch("pathlib.Path.glob", return_value=[]),
         ):
             await self.orch._trigger_retraining()
 
@@ -279,6 +282,8 @@ class TestRetrainingSubprocess:
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("builtins.open", mock_open()),
+            # Hermetic: ignore any recent CPCV/WF logs that would trip the guard.
+            patch("pathlib.Path.glob", return_value=[]),
         ):
             await self.orch._trigger_retraining()
 
@@ -301,6 +306,8 @@ class TestRetrainingSubprocess:
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("builtins.open", mock_open()),
+            # Hermetic: ignore any recent CPCV/WF logs that would trip the guard.
+            patch("pathlib.Path.glob", return_value=[]),
         ):
             await self.orch._trigger_retraining()
 

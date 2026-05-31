@@ -95,6 +95,8 @@ class TestEnsembleModel:
         X = np.random.randn(100, 5)
         y = (X[:, 0] > 0).astype(int)
         m.train(X[:80], y[:80])
+        from datetime import date
+        m.trained_through = date(2025, 1, 1)  # KL-10 save-guard requires a cutoff
         m.save(str(tmp_path), version=99, model_name="test")
         m2 = PortfolioSelectorModel("ensemble")
         m2.load(str(tmp_path), version=99, model_name="test")

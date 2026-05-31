@@ -304,6 +304,14 @@ below threshold. See HIGH-3."""
 #   Why: same pattern as USE_REALIZED_R_LABELS — code/infra preserved, behavior gated.
 USE_NIS_FEATURES: bool = False
 
+# ── Model artifact integrity ──────────────────────────────────────────────────
+REQUIRE_TRAINED_THROUGH: bool = True
+"""When True (default), model save() refuses to persist a model whose
+trained_through is None. A model without a verifiable training cutoff cannot be
+OOS-gate-evaluated, and shipping one (as happened with v63/v224) produces silently
+in-sample results. Set False ONLY for explicit diagnostic saves that will never
+be gate-evaluated."""
+
 # ── Phase 93: FMP quarterly fundamentals ─────────────────────────────────────
 # When True and data/fundamentals/fmp_fundamentals_history.parquet exists,
 # training/inference loads PIT-correct quarterly fundamentals from FMP and

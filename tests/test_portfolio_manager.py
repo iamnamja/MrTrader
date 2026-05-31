@@ -217,7 +217,9 @@ class TestPortfolioSelectorModel:
         assert len(preds) == 5
 
     def test_save_and_load(self, tmp_path):
+        from datetime import date
         model, X, names = self._trained_model()
+        model.trained_through = date(2025, 1, 1)  # KL-10 save-guard requires a cutoff
         model.save(str(tmp_path), version=1)
 
         model2 = PortfolioSelectorModel(model_type="xgboost")
