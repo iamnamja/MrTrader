@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from app.ml.retrain_config import MAX_WORKERS
+from scripts.walkforward.gates import PF_NO_LOSS_SENTINEL as _PF_NO_LOSS_SENTINEL
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
@@ -2025,11 +2026,11 @@ class AgentSimulator:
         gross_loss_raw = abs(sum(t.pnl_pct for t in losers)) if losers else 0.0
         # Bug fix (WF deep-review pass 5): previously divided by max(loss, 1e-9), which
         # exploded to ~1e9 when there were zero losing trades — producing a misleading
-        # "infinite edge" metric. We now report 0.0 when there are no winners, and a
-        # large but finite sentinel (999.0) when there are winners but no losers (small
-        # folds; "undefined" PF). This is consistent with common backtest libraries.
+        # "infinite edge" metric. We now report 0.0 when there are no winners, and
+        # PF_NO_LOSS_SENTINEL (5.0) when there are winners but no losers — matches the
+        # cap used during averaging so all-wins folds are included, not inflating the mean.
         if gross_loss_raw <= 0:
-            profit_factor = 0.0 if gross_win <= 0 else 999.0
+            profit_factor = 0.0 if gross_win <= 0 else _PF_NO_LOSS_SENTINEL
         else:
             profit_factor = gross_win / gross_loss_raw
 

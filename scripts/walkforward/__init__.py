@@ -25,13 +25,6 @@ from scripts.walkforward.gates import FoldResult, WalkForwardReport
 from scripts.walkforward.engine import FoldEngine
 from scripts.walkforward.cost_models import FixedBpsCostModel, SpreadCostModel
 
-# Public run functions — delegate to walkforward_tier3 for now.
-# As WF-3 (CPCV) and beyond extend the package, these will migrate to native implementations.
-from scripts.walkforward_tier3 import (
-    run_swing_walkforward,
-    run_intraday_walkforward,
-)
-
 __all__ = [
     "FoldEngine",
     "FoldResult",
@@ -41,3 +34,15 @@ __all__ = [
     "run_swing_walkforward",
     "run_intraday_walkforward",
 ]
+
+
+def run_swing_walkforward(*args, **kwargs):
+    """Delegate to scripts.walkforward_tier3 (lazy import avoids circular dependency)."""
+    from scripts.walkforward_tier3 import run_swing_walkforward as _fn
+    return _fn(*args, **kwargs)
+
+
+def run_intraday_walkforward(*args, **kwargs):
+    """Delegate to scripts.walkforward_tier3 (lazy import avoids circular dependency)."""
+    from scripts.walkforward_tier3 import run_intraday_walkforward as _fn
+    return _fn(*args, **kwargs)

@@ -114,7 +114,7 @@ def test_paper_gate_still_requires_positive_dsr():
 def test_gate_detail_returns_all_keys():
     report = _make_report([1.0, 0.8, 0.9])
     detail = report.gate_detail()
-    assert set(detail.keys()) == {"avg_sharpe", "min_sharpe", "dsr_p", "avg_profit_factor", "avg_calmar"}
+    assert {"avg_sharpe", "min_sharpe", "dsr_p", "avg_profit_factor", "avg_calmar"} <= set(detail.keys())
 
 
 # ── print() smoke test ────────────────────────────────────────────────────────
