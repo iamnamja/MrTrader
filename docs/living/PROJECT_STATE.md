@@ -9,40 +9,73 @@
 ---
 
 ## Active Phase
-**Docs restructure + Gate Integrity fixes (Phase 1 of 3-phase pipeline hardening)**
+**Honest baseline validation on the fully-corrected pipeline**
 
-Phase 1 scope: CRITICAL-1 (DSR ceiling), CRITICAL-2 (deployment-adjusted Sharpe), MEDIUM-1 (Calmar vol-floor), MEDIUM-3 (data span gate). Branch: `fix/gate-integrity-phase1` (pending creation after docs merge).
+All 3 phases of the gate integrity overhaul are merged (PRs #329–#334). Pipeline cleared for CPCV by 3 Opus 4.8 review passes. Now establishing the two honest baselines we've never had: swing v224 CPCV and a clean intraday v63 CPCV re-run (the prior +5.14 predates deployment tracking + the active regime gate).
 
 ---
 
 ## Model Status
 → See `docs/living/MODEL_STATUS.md` for full details.
 
-- **swing v224** — trained 2026-05-29, age 1d, no post-audit WF yet
-- **intraday_meta v63** — CPCV PASSED 2026-05-30 (mean +5.143), but deployment-adjusted Sharpe not yet computed
+- **swing v224** — trained 2026-05-29; never CPCV-validated post-audit. **CPCV launching tonight.**
+- **intraday_meta v63** — CPCV +5.143 (2026-05-30) but that run predates Phase 1 deployment tracking + Phase 2 regime gate. **Re-running CPCV tonight** to get deployment-adjusted Sharpe.
 - **regime v5** — active
 
 ---
 
-## Immediate Next Actions (top 3)
-1. Merge docs restructure PR (this branch)
-2. Implement Phase 1 gate integrity fixes (CRITICAL-1/2, MEDIUM-1/3)
-3. Run swing v224 CPCV after Phase 1 gates are in (first honest post-audit swing validation)
+## Tonight's Jobs (launched 2026-05-31)
+1. **CPCV swing v224** (~4h) → `logs/p0_swing_v224_cpcv.log` — first honest swing baseline
+2. **CPCV intraday v63 re-run** (~4h) → `logs/p0_intraday_v63_cpcv_postaudit.log` — deployment-adjusted Sharpe on fully-corrected pipeline
+3. Macro history + yfinance incremental data updates (~12min)
+
+**Tomorrow:** `/morning` for results → Opus 4.8 analyzes for oddities (esp. if intraday Sharpe stays implausibly high → dig for residual artifacts) → decision tree below.
 
 ---
 
-## Active Background Jobs
-- `mrtrader_2026-05-31.log` — paper trading live
+## Decision Tree (after tonight's results)
+```
+Intraday v63 deployment-adjusted Sharpe?
+  > 1.0  → Intraday is REAL edge → lead strategy → begin PEAD as 2nd strategy
+  0.3-1.0 → Marginal; the +5.14 was largely a deployment artifact (Opus est. 3-7% real)
+  < 0.3  → Artifact confirmed → intraday not deployable as-is
+
+Swing v224 CPCV?
+  Passes (mean > 0.80) → run paper-trade prep
+  Fails → long-only cross-sectional ranking exhausted (all 9 LX experiments failed,
+          incl. LX9-A beta-neutral on corrected pipeline: +0.031, F2=-0.70).
+          Next swing work = PEAD (earnings momentum, F2-immune) or proper L/S short model.
+```
+
+---
+
+## Strategic Context: Why NOT re-run old models
+The pipeline bugs (PF gate non-functional, DSR n_obs=0, pit_union look-ahead, Calmar formula)
+affected **measurement**, not the underlying signal. The F2 structural loss (Aug 2024 VIX spike
+destroys long-only beta-exposed swing models) is real market behavior — no bug fix changes it.
+LX9-A confirms this: beta-neutralized, post-audit, still -0.70 on F2.
+
+**Worth re-running:** only v224 CPCV (never run) + intraday v63 (deployment unknown).
+**Not worth re-running:** LX2–LX9, v186–v223 in isolation — failures were F2-structural, not bug-induced.
+
+---
+
+## Data Review (queued for analysis)
+After tonight's results, evaluate whether the current data set is the bottleneck:
+- Current: yfinance daily/5min, Polygon 5min cache, FMP fundamentals, macro_history, sector ETFs
+- Question: are we missing data points that would unlock edge? (options IV/skew, short interest,
+  VIX3M term structure, alt data). Opus to assess what's worth downloading vs purchasing.
 
 ---
 
 ## Blockers / Risks
-- Phase 1 fixes required before any CPCV result can be trusted at face value (KL-1 through KL-5 in PIPELINE_ARCHITECTURE.md)
-- Swing v224 has never been CPCV-validated on the corrected pipeline
+- Intraday +5.14 Sharpe is implausible for retail equity (daily IR 0.32) — likely a low-deployment
+  artifact. Tonight's re-run with deployment tracking will quantify it.
+- Swing long-only approach may be structurally exhausted — need forward-looking pivot decision.
 
 ---
 
 ## Recently Completed
-- 2026-05-31: 13-round adversarial audit complete (PRs #323–327), pipeline clean
-- 2026-05-31: PIPELINE_ARCHITECTURE.md created, docs restructured
-- 2026-05-30: intraday v63 CPCV PASSED on corrected pipeline
+- 2026-05-31: 3-phase gate integrity overhaul merged (PRs #329–#334); 3 Opus review passes; CLEARED FOR CPCV
+- 2026-05-31: notify_watcher auto-starts with uvicorn; docs restructured (living/reference/archive)
+- 2026-05-31: 13-round adversarial audit complete; PIPELINE_ARCHITECTURE.md is SSOT
