@@ -243,6 +243,7 @@ run_cpcv(strategy, purge_days, embargo_days, n_folds=6, n_paths=2)
 | Calmar | `avg_calmar` | ≥ 0.30 | ⚠️ **WEAK** | Same sentinel issue as WF |
 | Worst regime Sharpe | as WF | ≥ -0.50 | ✅ **ACTIVE; HARD FAIL when None** (Phase 2) | `None` fails unless `ALLOW_NO_REGIME_GATE=True` (mirrors WalkForwardReport) |
 | Min active paths | `len(path_sharpes) >= 2` | | ✅ **ACTIVE** | Must have ≥ 2 paths before any gate fires |
+| Path Sharpe t-stat | `path_sharpe_tstat = mean/(std/√n_folds)` | ≥ `CPCV_MIN_TSTAT=2.0` | ⏸️ **REPORTED, OFF BY DEFAULT** (Phase 3) | N_eff = n_folds (NOT n_paths). Warns when below threshold; blocks only when `require_tstat_gate=True`. Addresses KL-4 |
 
 ### 7c. What gate_passed() does NOT check (not in the boolean AND)
 
@@ -396,7 +397,7 @@ CPCV run (separate from WF, no auto-promotion):
 
 **Impact:** "92.9% positive" overstates statistical confidence. Actual effective N for significance is ~6, not 15.
 
-**Fix status:** Planned Phase 3. Will add `path_sharpe_tstat = mean/(std/√n_folds)` to CPCVResult and optional `require_tstat_gate`.
+**Fix status:** ⏳ PARTIALLY ADDRESSED Phase 3 (PR #PHASE3). Added `CPCVResult.path_sharpe_tstat = mean_path_sharpe / (std_path_sharpe / √N_eff)` with **N_eff = n_folds** (not n_combinations — correctly reflects that the C(k,p) paths reuse the same k folds and are correlated). Reported in `print()` and `gate_detail()` with an explicit "N_eff=n_folds, NOT n_paths" note, and WARNED when below `CPCV_MIN_TSTAT=2.0`. The `require_tstat_gate` flag (default False) makes it blocking once enabled. **Still off by default** — turn on after collecting baseline t-stat data across known-good models, so we calibrate the threshold before it can fail a promotion.
 
 ### KL-5 — No minimum data span gate (MEDIUM)
 **Description:** If Polygon cache is empty, intraday silently falls back to 55-day yfinance window. CPCV on 55 days = 9-day test folds. Nothing blocks promotion on this degenerate case. No data provenance info in report output.
@@ -419,12 +420,12 @@ CPCV run (separate from WF, no auto-promotion):
 
 **Fix status:** ✅ RESOLVED Phase 2. The coarse3 scheme (`_load_coarse3`) computes VIX BULL/BEAR thresholds with **expanding quantiles** (`np.percentile(vix_arr[:i+1], pctile)`) using only data up to and including day `i` — PIT-correct, no look-ahead. Days with `< REGIME_VIX_WARMUP_DAYS=60` of prior history are labeled NEUTRAL. Regression-tested by `tests/test_regime_coarse3.py::test_coarse3_no_lookahead` (label at date t is identical whether the series ends at t or extends 200 days further). The legacy16 path (`pd.qcut`) is retained only under `REGIME_SCHEME="legacy16"` for baseline comparison.
 
-### KL-8 — StrategySimulator equity curve entry-date only (LOW, tier-2 only)
+### KL-8 — StrategySimulator equity curve entry-date only (LOW, tier-2 only) — ✅ ADDRESSED (Phase 3)
 **Description:** `strategy_simulator.py:StrategySimulator.run()` records equity only on trade-entry dates, not daily. Sharpe annualization is incorrect for sparse-entry strategies.
 
 **Impact:** Tier-2 standalone tool only — NOT used in WF/CPCV. Does not affect any gate or promotion decision.
 
-**Fix status:** Planned Phase 3 (low priority). Will add `build_daily_equity_curve` opt-in flag and prominent tier-2 banner.
+**Fix status:** ✅ ADDRESSED Phase 3 (PR #PHASE3). Added a prominent module-level **TIER-2 ONLY** banner stating WF/CPCV swing uses `AgentSimulator` (calendar-daily MTM) and this simulator's entry-date-keyed curve must never drive promotion decisions. Added a `build_daily_equity_curve=False` opt-in flag to `run()`: when True, the entry-date-keyed equity is forward-filled onto every calendar day in `[start_date, end_date]` so flat days dilute volatility correctly (lower, more honest Sharpe for sparse-entry strategies). Default False = exact legacy behaviour. Tested in `tests/test_strategy_sim_daily_curve.py`.
 
 ### KL-9 — Polygon cache may lack delisted names (MEDIUM)
 **Description:** If the Polygon 5-min cache only holds currently-listed Russell 1000 names, intraday WF results have survivorship bias regardless of the `members_at(te_start)` PIT logic. The PIT logic is only as good as the cache's historical completeness.
@@ -453,6 +454,8 @@ All live in `app/ml/retrain_config.py`.
 | `REGIME_MIN_OBS` | 20 | Min daily-return obs per regime bucket before its Sharpe counts | Phase 2 ✅ |
 | `REGIME_VIX_WARMUP_DAYS` | 60 | Min VIX history before a day gets a non-NEUTRAL coarse3 label | Phase 2 ✅ |
 | `ALLOW_NO_REGIME_GATE` | False | False = None worst_regime_sharpe HARD-FAILS gate (no silent pass) | Phase 2 ✅ |
+| `CPCV_MIN_TSTAT` | 2.0 | Min path-Sharpe t-stat (N_eff=n_folds); gate via `require_tstat_gate` | Phase 3 ✅ |
+| `CPCVResult.require_tstat_gate` | False | True = path_sharpe_tstat < CPCV_MIN_TSTAT blocks gate | Phase 3 ✅ |
 | `ENFORCE_MIN_DATA_SPAN` | *planned* | Raise DataSpanError if data < 250 days | Phase 1 planned |
 
 ---
@@ -463,6 +466,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-05-31 | #PHASE3 | **Phase 3 — CPCV path t-stat + StrategySimulator tier-2 (HIGH-3):** added `CPCVResult.path_sharpe_tstat` (N_eff=n_folds, NOT n_paths) reported + warned, gateable via `require_tstat_gate` (off by default, `CPCV_MIN_TSTAT=2.0`); StrategySimulator gains a TIER-2-ONLY banner + `build_daily_equity_curve` opt-in flag (forward-fills entry-date equity onto daily calendar). KL-4 partially addressed, KL-8 addressed. | `cpcv.py`, `strategy_simulator.py`, `retrain_config.py`, `tests/test_cpcv_tstat.py`, `tests/test_strategy_sim_daily_curve.py` |
 | 2026-05-31 | #PHASE2 | **Phase 2 — Regime gate overhaul (HIGH-2 + MEDIUM-4):** coarse3 BULL/BEAR/NEUTRAL labeler with expanding-quantile VIX thresholds (PIT-correct, no look-ahead); `REGIME_MIN_OBS=20` bucket floor; `worst_regime_sharpe is None` now HARD-FAILS `gate_passed()` (WF + CPCV) unless `ALLOW_NO_REGIME_GATE=True`. KL-2 + KL-7 RESOLVED. | `regime.py`, `gates.py`, `cpcv.py`, `reports.py`, `retrain_config.py`, `tests/test_regime_coarse3.py` |
 | 2026-05-31 | — | Document created; reflects post-13-round-audit state | This file |
 | 2026-05-30 | #327 | OOS same-day overlap guard; gate_detail n_paths consistency | `cpcv.py`, `oos_guard.py` |

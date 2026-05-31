@@ -10,6 +10,15 @@ Wraps the model backtester with:
   - Alpha / information ratio vs benchmark
 """
 
+# ============================================================================
+# TIER-2 ONLY — NOT USED BY THE WALK-FORWARD / CPCV PIPELINE.
+# WF/CPCV swing uses app/backtesting/agent_simulator.py:AgentSimulator which
+# builds a calendar-daily MTM equity curve. THIS simulator's equity curve is
+# keyed on trade-ENTRY dates only (equity_by_date[entry_date]), so its
+# Sharpe/Calmar/n_obs are granularity-inconsistent. Use for quick standalone
+# sanity checks only; never for promotion decisions.
+# ============================================================================
+
 import math
 import logging
 from collections import defaultdict
@@ -203,6 +212,7 @@ class StrategySimulator:
         spy_prices: Optional[pd.Series] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
+        build_daily_equity_curve: bool = False,
     ) -> SimResult:
         """
         Convert raw trade list into a portfolio equity simulation.
@@ -212,6 +222,12 @@ class StrategySimulator:
             spy_prices:      daily SPY close series for benchmark comparison
             start_date:      backtest window start (for benchmark alignment)
             end_date:        backtest window end
+            build_daily_equity_curve: when True, forward-fill the entry-date-keyed
+                equity_by_date onto every calendar day in [start_date, end_date]
+                so Sharpe/Calmar are computed on a daily MTM curve (flat days
+                between entries included). Default False = legacy entry-date-only
+                behaviour. Note: this is a tier-2 convenience only; the WF/CPCV
+                pipeline uses AgentSimulator, not this class.
         """
         trades = backtest_result.trades
         if not trades:
@@ -265,6 +281,21 @@ class StrategySimulator:
 
         if not accepted_trades:
             return self._empty_result(backtest_result.model_type)
+
+        # Phase 3 (KL-8): optional daily MTM curve. Forward-fill the entry-date-keyed
+        # equity onto every calendar day in [start_date, end_date] so flat days between
+        # entries are counted in the Sharpe/Calmar denominator. Default off (legacy).
+        if build_daily_equity_curve and equity_by_date:
+            from datetime import timedelta as _td
+            _full: Dict[date, float] = {}
+            _last = self.starting_capital
+            _d = start_date
+            while _d <= end_date:
+                if _d in equity_by_date:
+                    _last = equity_by_date[_d]
+                _full[_d] = _last
+                _d += _td(days=1)
+            equity_by_date = _full
 
         # ── Metrics ───────────────────────────────────────────────────────────
         total_return = (capital - self.starting_capital) / self.starting_capital

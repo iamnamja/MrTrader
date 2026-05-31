@@ -282,6 +282,16 @@ pass that has historically made the regime gate a no-op.
 Set True to restore old silent-pass behavior (for diagnostic runs or legacy
 comparisons where regime data is unavailable)."""
 
+# ── Phase 3: CPCV path t-stat ─────────────────────────────────────────────────
+CPCV_MIN_TSTAT: float = 2.0
+"""Minimum path-Sharpe t-statistic for CPCV significance.
+t = mean_path_sharpe / (std_path_sharpe / sqrt(N_eff)), where N_eff = n_folds
+(NOT n_paths — the C(k,p) paths reuse the same k folds and are strongly
+correlated; treating them as n_paths independent experiments overstates
+significance by ~sqrt(n_paths/n_folds)). t > 2.0 ≈ 95% one-sided.
+Gate is off by default (require_tstat_gate=False); reported as WARNING when
+below threshold. See HIGH-3."""
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
 #   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025
