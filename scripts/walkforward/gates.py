@@ -157,9 +157,15 @@ class WalkForwardReport:
 
     @property
     def total_obs(self) -> int:
-        """Total return observations (trading days) across folds; falls back to total_trades."""
-        obs = sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
-        return obs if obs > 0 else self.total_trades
+        """Total return observations (trading days) across folds.
+
+        BUG-6 fix: previously fell back to total_trades when n_obs=0.
+        Trade count ≠ observation count — DSR requires daily-return observations.
+        Folds without n_obs data are excluded from the sum; if no folds have
+        n_obs, returns 0 and gate_passed() will use the n_trials fallback in
+        deflated_sharpe_ratio() rather than a semantically incorrect trade count.
+        """
+        return sum(getattr(f, "n_obs", 0) or 0 for f in self.folds)
 
     @property
     def avg_profit_factor(self) -> float:

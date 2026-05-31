@@ -374,3 +374,46 @@ def assert_no_sacred_holdout(end_date, *, allow_sacred_holdout: bool = False,
         f"one-shot run, pass allow_sacred_holdout=True (or --allow-sacred-holdout). "
         f"See app/ml/retrain_config.py for details."
     )
+
+
+# ── BUG-17/18: Purge horizon invariant ────────────────────────────────────────
+# The swing OOS purge_days (85) must exceed feature_lookback + label_horizon + buffer.
+# This invariant is checked at import time so a config drift (e.g. bumping
+# LABEL_HORIZON_DAYS) is caught immediately rather than silently producing leakage.
+SWING_PURGE_DAYS: int = 85        # must match --swing-purge-days CLI default
+FEATURE_LOOKBACK_DAYS: int = 60   # max rolling feature window (252d excluded; it's for labels)
+
+def _assert_purge_horizon_invariant() -> None:
+    """Raise if swing purge_days < feature_lookback + label_horizon + buffer.
+
+    Called at module import so any config drift is caught at startup, not at
+    a future WF run hours later.
+    """
+    buffer = 5
+    required = FEATURE_LOOKBACK_DAYS + LABEL_HORIZON_DAYS + buffer
+    if SWING_PURGE_DAYS < required:
+        raise RuntimeError(
+            f"Purge invariant violated: SWING_PURGE_DAYS={SWING_PURGE_DAYS} < "
+            f"FEATURE_LOOKBACK_DAYS({FEATURE_LOOKBACK_DAYS}) + "
+            f"LABEL_HORIZON_DAYS({LABEL_HORIZON_DAYS}) + buffer({buffer}) = {required}. "
+            f"Increase SWING_PURGE_DAYS in retrain_config.py or reduce LABEL_HORIZON_DAYS."
+        )
+
+_assert_purge_horizon_invariant()
+
+
+# ── BUG-20: Deterministic retrain boundary ────────────────────────────────────
+def retrain_as_of():
+    """Return the WF boundary date for this retrain cycle: last completed Friday.
+
+    Anchoring to last Friday makes weekly gate decisions deterministic — two
+    retrains on the same cycle (e.g. crash-restart) use identical fold boundaries.
+    Clamped below SACRED_HOLDOUT_START to prevent holdout contamination.
+    """
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    # Roll back to the most recent Friday (weekday 4); if today is Friday, use today.
+    offset = (today.weekday() - 4) % 7
+    last_friday = today - _td(days=offset if offset else 0)
+    holdout = _parse_sacred_holdout_start()
+    return min(last_friday, holdout - _td(days=1))
