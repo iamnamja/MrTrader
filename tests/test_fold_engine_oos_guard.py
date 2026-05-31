@@ -25,7 +25,7 @@ def _make_passing_report(in_sample_override: bool) -> WalkForwardReport:
             test_start=date(2023, 1, 1), test_end=date(2023, 6, 1),
             trades=100, win_rate=0.60, sharpe=2.5, max_drawdown=0.05,
             total_return=0.20, stop_exit_rate=0.1, model_version=63,
-            profit_factor=1.8, calmar_ratio=1.5,
+            profit_factor=1.8, calmar_ratio=1.5, n_obs=120,
         ))
     return r
 

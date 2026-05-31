@@ -383,6 +383,7 @@ def assert_no_sacred_holdout(end_date, *, allow_sacred_holdout: bool = False,
 SWING_PURGE_DAYS: int = 85        # must match --swing-purge-days CLI default
 FEATURE_LOOKBACK_DAYS: int = 60   # max rolling feature window (252d excluded; it's for labels)
 
+
 def _assert_purge_horizon_invariant() -> None:
     """Raise if swing purge_days < feature_lookback + label_horizon + buffer.
 
@@ -399,10 +400,12 @@ def _assert_purge_horizon_invariant() -> None:
             f"Increase SWING_PURGE_DAYS in retrain_config.py or reduce LABEL_HORIZON_DAYS."
         )
 
+
 _assert_purge_horizon_invariant()
 
 
 # ── BUG-20: Deterministic retrain boundary ────────────────────────────────────
+
 def retrain_as_of():
     """Return the WF boundary date for this retrain cycle: last completed Friday.
 
