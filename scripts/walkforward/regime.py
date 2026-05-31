@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +105,13 @@ def compute_regime_sharpes(
     equity_curve: list,
     te_start,
     te_end,
+    regime_map: Optional[Dict[date, str]] = None,
 ) -> Dict[str, float]:
     """Compute annualised Sharpe ratio per regime label from a daily equity curve.
 
     equity_curve is a list of (date, equity) tuples (one per trading day).
+    Pass regime_map to use a pre-computed global map so VIX quartile thresholds
+    are consistent across folds. If None, loads a per-test-window map (less stable).
     Returns {} on any error (network failure, insufficient data, etc.) so callers
     can safely ignore regime_sharpes when regime data is unavailable.
     """
@@ -118,9 +121,10 @@ def compute_regime_sharpes(
         if len(equity_curve) < 2:
             return {}
 
-        start = te_start.date() if hasattr(te_start, "date") else te_start
-        end = te_end.date() if hasattr(te_end, "date") else te_end
-        regime_map = load_regime_map(start, end)
+        if regime_map is None:
+            start = te_start.date() if hasattr(te_start, "date") else te_start
+            end = te_end.date() if hasattr(te_end, "date") else te_end
+            regime_map = load_regime_map(start, end)
         if not regime_map:
             return {}
 
