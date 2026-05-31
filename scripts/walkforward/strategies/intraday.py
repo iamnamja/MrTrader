@@ -173,6 +173,8 @@ class IntradayStrategy:
         # equity_curve is a list of (date, equity) pairs sampled once per trading day
         # by IntradayAgentSimulator; len - 1 gives the number of day-over-day returns.
         n_obs = max(len(equity_curve) - 1, 0)
+        from scripts.walkforward.regime import compute_regime_sharpes as _crs
+        regime_sharpes = _crs(equity_curve, te_start, te_end)
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -188,4 +190,5 @@ class IntradayStrategy:
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
+            regime_sharpes=regime_sharpes,
         )
