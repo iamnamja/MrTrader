@@ -122,6 +122,11 @@ def run_swing(dry_run: bool) -> bool:
             model_version=version,
             use_opportunity_score=True,
             no_prefilters=True,  # Phase 89: let model score full universe, no RSI/EMA gates
+            # BUG-19 fix: function default is 10, CLI default is 85. Swing labels look
+            # forward 20d; feature lookback is 252d. 85-day purge matches CLI default
+            # and ensures no label leakage at fold boundaries.
+            purge_days=85,
+            embargo_days=85,
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe

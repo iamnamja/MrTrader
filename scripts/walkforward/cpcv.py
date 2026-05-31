@@ -76,7 +76,9 @@ class CPCVResult:
 
     @property
     def avg_profit_factor(self) -> float:
-        pfs = [p for p in self.path_profit_factors if p > 0]
+        # BUG-4 fix: cap at 5.0 before averaging to prevent all-wins paths (PF=999)
+        # from dominating the mean and trivially passing the >= 1.10 gate.
+        pfs = [min(p, 5.0) for p in self.path_profit_factors if p > 0]
         return float(np.mean(pfs)) if pfs else 0.0
 
     @property

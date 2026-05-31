@@ -56,26 +56,41 @@ def compute_profit_factor(trade_returns: list) -> float:
 
 
 def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
-    """Calmar ratio = annualised return / max drawdown.
-    Returns 0.0 if max_drawdown or years is zero."""
+    """Calmar ratio = CAGR / max drawdown.
+    Returns 0.0 if max_drawdown or years is zero.
+
+    BUG-5 fix: use geometric annualisation (CAGR) to match walkforward_tier3.
+    Arithmetic (total/years) overstates multi-year returns and understates < 1y returns.
+    """
     if max_drawdown_pct <= 0 or years <= 0:
         return 0.0
-    annualised = total_return_pct / years
+    annualised = (1.0 + total_return_pct) ** (1.0 / years) - 1.0
     return float(annualised / max_drawdown_pct)
 
 
 def compute_k_ratio(equity_curve: list) -> float:
-    """K-ratio = slope of cumulative return / std of periodic returns.
-    Positive = equity curve trends up consistently. Returns 0.0 if insufficient data."""
+    """K-ratio = slope of log-equity / std(log returns), annualised by sqrt(252).
+
+    BUG-7 fix (R5b): prior implementation used raw dollar equity (scale-dependent —
+    a $200k account shows a different K-ratio than $20k on the same return path).
+    Now matches walkforward_tier3._compute_k_ratio: regress log(equity) on time,
+    divide by std of daily log returns, annualise. Returns 0.0 if insufficient data
+    or any equity value is non-positive.
+    """
     if len(equity_curve) < 4:
         return 0.0
     try:
         y = np.array(equity_curve, dtype=float)
-        x = np.arange(len(y), dtype=float)
-        slope = float(np.polyfit(x, y, 1)[0])
-        diffs = np.diff(y)
-        vol = float(np.std(diffs)) if len(diffs) > 1 else 1.0
-        return slope / vol if vol > 0 else 0.0
+        if not np.all(y > 0):
+            return 0.0
+        log_y = np.log(y)
+        x = np.arange(len(log_y), dtype=float)
+        slope = float(np.polyfit(x, log_y, 1)[0])
+        log_rets = np.diff(log_y)
+        vol = float(np.std(log_rets)) if len(log_rets) > 1 else 0.0
+        if vol <= 0:
+            return 0.0
+        return (slope / vol) * float(np.sqrt(252.0))
     except Exception:
         return 0.0
 
@@ -163,7 +178,9 @@ class WalkForwardReport:
 
     @property
     def avg_profit_factor(self) -> float:
-        pfs = [f.profit_factor for f in self.folds if f.profit_factor > 0]
+        # BUG-4 fix: cap at 5.0 before averaging to prevent all-wins folds (PF=999)
+        # from dominating the mean and trivially passing the >= 1.10 gate.
+        pfs = [min(f.profit_factor, 5.0) for f in self.folds if f.profit_factor > 0]
         return float(np.mean(pfs)) if pfs else 0.0
 
     @property
