@@ -22,10 +22,10 @@ from app.ml.retrain_config import N_TRIALS_TESTED  # noqa: E402
 MIN_PROFIT_FACTOR = 1.10
 MIN_CALMAR = 0.30
 MIN_WORST_REGIME_SHARPE = -0.5
-# CR-1: minimum number of "active" folds required before PF/Calmar gates are binding.
-# Prevents an abstaining model from clearing gates via the avg==0 → pass-through bypass.
-# Applies to avg_profit_factor (pf_ok) and avg_calmar (cal_ok) in gate_passed().
-MIN_ACTIVE_FOLDS_FOR_GATE = 1
+# CR-1/C8-9: minimum number of "active" folds required before PF/Calmar gates are binding.
+# =1 only closed the zero-fold bypass; =2 closes the single-lucky-fold bypass where one
+# favorable fold satisfies PF≥MIN and the rest abstain.  Requires majority participation.
+MIN_ACTIVE_FOLDS_FOR_GATE = 2
 
 
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
@@ -199,7 +199,20 @@ class WalkForwardReport:
 
     @property
     def avg_sharpe(self) -> float:
-        return float(np.mean([f.sharpe for f in self.folds])) if self.folds else 0.0
+        """n_obs-weighted mean Sharpe across folds.
+
+        C8-4: unweighted mean lets a short, lucky fold lift avg_sharpe cheaply while
+        total_obs (DSR denominator) is correctly summed. Weighting by n_obs makes
+        avg_sharpe and total_obs inputs to DSR consistent. Falls back to equal
+        weighting when no fold reports n_obs (all zeros).
+        """
+        if not self.folds:
+            return 0.0
+        weights = [getattr(f, "n_obs", 0) or 0 for f in self.folds]
+        total_w = sum(weights)
+        if total_w > 0:
+            return float(sum(f.sharpe * w for f, w in zip(self.folds, weights)) / total_w)
+        return float(np.mean([f.sharpe for f in self.folds]))
 
     @property
     def min_sharpe(self) -> float:

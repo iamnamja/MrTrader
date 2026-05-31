@@ -125,26 +125,34 @@ class CPCVResult:
         """Unique trading-day count for DSR; fall back to n_combinations for legacy results."""
         return self.unique_obs if self.unique_obs > 0 else max(self.n_combinations, 1)
 
-    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED) -> bool:
+    # Paper-trade gate thresholds — mirror WalkForwardReport's relaxed values
+    PAPER_SHARPE_GATE: float = 0.50
+    PAPER_MIN_FOLD_SHARPE: float = -0.40
+
+    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
         # In-sample runs (allow_in_sample override) can never promote past gates.
         if self.in_sample_override:
             return False
         _, dsr_p = deflated_sharpe_ratio(
             self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
-        # CR-1: close "avg==0 → pass" bypass — require MIN_ACTIVE_FOLDS_FOR_GATE paths
-        # contributing before treating the gate as optional.
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        # CR-1/C8-9: close "avg==0 → pass" bypass — require MIN_ACTIVE_FOLDS_FOR_GATE paths.
+        # C8-6: paper_gate bypasses PF/Calmar (matching WalkForwardReport behaviour).
         n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
         n_cal_active = sum(1 for c in self.path_calmars if c != 0)
-        pf_ok = (n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
-        cal_ok = (n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                   or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
         regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
-            self.mean_sharpe >= SHARPE_GATE
-            and self.p5_sharpe >= MIN_FOLD_SHARPE
+            self.mean_sharpe >= sharpe_gate
+            and self.p5_sharpe >= min_fold_gate
             and self.pct_positive >= 0.75
             and dsr_p > 0.95
             and pf_ok
@@ -152,20 +160,26 @@ class CPCVResult:
             and regime_ok
         )
 
-    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED) -> dict:
+    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
         _, dsr_p = deflated_sharpe_ratio(
             self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
+        sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
+        min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
+        n_cal_active = sum(1 for c in self.path_calmars if c != 0)
         return {
-            "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= SHARPE_GATE),
-            "p5_sharpe": (self.p5_sharpe, self.p5_sharpe >= MIN_FOLD_SHARPE),
+            "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= sharpe_gate),
+            "p5_sharpe": (self.p5_sharpe, self.p5_sharpe >= min_fold_gate),
             "pct_positive": (self.pct_positive, self.pct_positive >= 0.75),
             "dsr_p": (dsr_p, dsr_p > 0.95),
             "avg_profit_factor": (self.avg_profit_factor,
-                                  sum(1 for p in self.path_profit_factors if p > 0) < MIN_ACTIVE_FOLDS_FOR_GATE
+                                  paper_gate
+                                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                                   or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
             "avg_calmar": (self.avg_calmar,
-                           sum(1 for c in self.path_calmars if c != 0) < MIN_ACTIVE_FOLDS_FOR_GATE
+                           paper_gate
+                           or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                            or self.avg_calmar >= MIN_CALMAR),
             "worst_regime_sharpe": (self.worst_regime_sharpe,
                                     self.worst_regime_sharpe is None
@@ -306,7 +320,9 @@ def run_cpcv(
         combo_pfs = []
         combo_cals = []
         combo_n_obs: List[int] = []
-        combo_regime_sharpes: List[float] = []  # C-2: collect for worst_regime_sharpe
+        # C8-5: accumulate per-regime within this combo to average before global append,
+        # so each combo contributes equally (not proportional to its fold count).
+        combo_regime_by_name: dict = {}  # regime -> [sharpe, ...]
 
         for ti in test_indices:
             tr_start, tr_end, te_start, te_end = all_boundaries[ti]
@@ -392,8 +408,7 @@ def run_cpcv(
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
-                    combo_regime_sharpes.append(sh)
-                    all_regime_sharpes_by_regime.setdefault(regime, []).append(sh)
+                    combo_regime_by_name.setdefault(regime, []).append(sh)
             except Exception as exc:
                 logger.warning("CPCV combo %d fold %d failed: %s", combo_idx, ti, exc)
 
@@ -411,6 +426,10 @@ def run_cpcv(
             # not the sum. Summing inflated _dsr_n_obs by n_paths, making the DSR
             # gate easier to pass (smaller sr_var → higher dsr_z).
             result.path_n_obs.append(int(np.mean(combo_n_obs)) if combo_n_obs else 0)
+            # C8-5: append per-combo regime mean (not per-fold raw value) so each
+            # combo contributes equally to worst_regime_sharpe regardless of fold count.
+            for regime, vals in combo_regime_by_name.items():
+                all_regime_sharpes_by_regime.setdefault(regime, []).append(float(np.mean(vals)))
 
         if (combo_idx + 1) % 5 == 0 or combo_idx == len(combinations) - 1:
             logger.info("CPCV: %d/%d combinations done, mean Sharpe so far: %.3f",

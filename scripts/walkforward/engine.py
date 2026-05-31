@@ -56,7 +56,15 @@ class FoldEngine:
         if total_years is None and total_days is None:
             raise ValueError("Provide either total_years or total_days.")
 
-        end_all = datetime.now()
+        # C8-14: anchor end_all to retrain_as_of() for reproducibility — datetime.now()
+        # drifts across day boundaries, enabling temporal multiple testing (re-run WF
+        # until a favourable fold boundary appears). Falls back to datetime.now() if
+        # retrain_as_of() is unavailable (e.g. missing config).
+        try:
+            from app.ml.retrain_config import retrain_as_of as _retrain_as_of
+            end_all = datetime.combine(_retrain_as_of(), datetime.min.time())
+        except Exception:
+            end_all = datetime.now()
 
         # P0: hard guard against using sacred holdout data in WF runs.
         from app.ml.retrain_config import assert_no_sacred_holdout as _assert_holdout
