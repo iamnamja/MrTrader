@@ -2186,39 +2186,48 @@ def main() -> int:
             from app.ml.factor_scorer import B2EqualWeightUniverseScorer
             _swing_kwargs["scorer_instance"] = B2EqualWeightUniverseScorer()
             print("  WF: B2 baseline mode — no stock selection, regime gate + inv-vol only")
-        swing_report = run_swing_walkforward(**_swing_kwargs)
-        swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
-        print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
-        if args.bootstrap > 0:
-            _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
-        if args.cpcv and args.model in ("swing", "both"):
+        # Per-fold-retrain short-circuit: the legacy run_swing_walkforward is a
+        # frozen-model generalization test (is_true_walkforward=False, cannot promote)
+        # that bypasses SwingStrategy/FoldEngine, so it has NO per-fold path and would
+        # crash on a None trained_through. When --per-fold-retrain + --cpcv are set, skip
+        # the legacy WF and run ONLY the genuine per-fold CPCV (the trustworthy number).
+        if getattr(args, "per_fold_retrain", False) and args.cpcv:
+            print("  Per-fold-retrain mode: skipping legacy frozen WF; running per-fold CPCV only.")
             _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
-        if not swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
-            passed = False
-        # CRITICAL-1: block auto-promotion when the result is implausibly strong.
-        # requires_human_review() does NOT affect gate_passed(); enforce it here at
-        # the runner level so an implausible Sharpe cannot silently auto-promote.
-        if swing_report.requires_human_review():
-            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
-            logger.warning(
-                "AUTO-PROMOTION BLOCKED: swing avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
-                "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
-                swing_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
-            )
-            passed = False
-        if args.record_results and swing_report.folds:
-            from app.ml.training import ModelTrainer
-            loaded_ver = swing_report.folds[0].model_version if swing_report.folds else 0
-            # C-1 fix: gate sentinel on combined decision — gate_passed AND not requires_human_review.
-            # Using raw gate_passed() here would write the sentinel even when AUTO-PROMOTION BLOCKED.
-            _swing_promotable = (swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
-                                 and not swing_report.requires_human_review())
-            ModelTrainer.record_tier3_result(
-                version=loaded_ver,
-                avg_sharpe=swing_report.avg_sharpe,
-                fold_sharpes=[f.sharpe for f in swing_report.folds],
-                gate_passed=_swing_promotable,
-            )
+        else:
+            swing_report = run_swing_walkforward(**_swing_kwargs)
+            swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+            print(f"  Swing walk-forward elapsed: {time.time()-t0:.0f}s")
+            if args.bootstrap > 0:
+                _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
+            if args.cpcv and args.model in ("swing", "both"):
+                _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
+            if not swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
+                passed = False
+            # CRITICAL-1: block auto-promotion when the result is implausibly strong.
+            # requires_human_review() does NOT affect gate_passed(); enforce it here at
+            # the runner level so an implausible Sharpe cannot silently auto-promote.
+            if swing_report.requires_human_review():
+                from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+                logger.warning(
+                    "AUTO-PROMOTION BLOCKED: swing avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
+                    "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
+                    swing_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+                )
+                passed = False
+            if args.record_results and swing_report.folds:
+                from app.ml.training import ModelTrainer
+                loaded_ver = swing_report.folds[0].model_version if swing_report.folds else 0
+                # C-1 fix: gate sentinel on combined decision — gate_passed AND not requires_human_review.
+                # Using raw gate_passed() here would write the sentinel even when AUTO-PROMOTION BLOCKED.
+                _swing_promotable = (swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+                                     and not swing_report.requires_human_review())
+                ModelTrainer.record_tier3_result(
+                    version=loaded_ver,
+                    avg_sharpe=swing_report.avg_sharpe,
+                    fold_sharpes=[f.sharpe for f in swing_report.folds],
+                    gate_passed=_swing_promotable,
+                )
 
     if args.model in ("intraday", "both"):
         t0 = time.time()
