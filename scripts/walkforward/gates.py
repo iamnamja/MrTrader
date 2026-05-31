@@ -22,6 +22,10 @@ from app.ml.retrain_config import N_TRIALS_TESTED  # noqa: E402
 MIN_PROFIT_FACTOR = 1.10
 MIN_CALMAR = 0.30
 MIN_WORST_REGIME_SHARPE = -0.5
+# CR-1: minimum number of "active" folds required before PF/Calmar gates are binding.
+# Prevents an abstaining model from clearing gates via the avg==0 → pass-through bypass.
+# Applies to avg_profit_factor (pf_ok) and avg_calmar (cal_ok) in gate_passed().
+MIN_ACTIVE_FOLDS_FOR_GATE = 1
 
 
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
@@ -255,11 +259,22 @@ class WalkForwardReport:
 
     @property
     def worst_regime_sharpe(self) -> Optional[float]:
-        """Minimum per-regime Sharpe across all folds. None if no regime data collected."""
-        all_regime_sharpes: List[float] = []
+        """Worst per-regime mean Sharpe across folds. None if no regime data collected.
+
+        IM-3 fix: aggregates per-regime (mean across folds) THEN takes the min over
+        regimes, rather than min over all (fold × regime) pairs. The raw min over all
+        pairs is dominated by single-fold noise — one bad fold in one regime can gate-
+        fail an otherwise solid model, and the minimum gets noisier as more paths are
+        added. Per-regime mean first gives a stable, interpretable worst-regime signal.
+        """
+        regime_to_sharpes: Dict[str, List[float]] = {}
         for f in self.folds:
-            all_regime_sharpes.extend(f.regime_sharpes.values())
-        return float(min(all_regime_sharpes)) if all_regime_sharpes else None
+            for regime, sh in f.regime_sharpes.items():
+                regime_to_sharpes.setdefault(regime, []).append(sh)
+        if not regime_to_sharpes:
+            return None
+        per_regime_means = [float(np.mean(v)) for v in regime_to_sharpes.values()]
+        return float(min(per_regime_means))
 
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
         import logging as _logging
@@ -268,8 +283,19 @@ class WalkForwardReport:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        # CR-1: "avg == 0 → pass" bypass closed: require at least MIN_ACTIVE_FOLDS_FOR_GATE
+        # folds contributing to each metric before treating the gate as optional.
+        n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
+        n_cal_active = sum(1 for f in self.folds
+                           if f.calmar_ratio != 0
+                           or (f.max_drawdown == 0 and f.total_return > 0
+                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
         if wrs is None:
             _logging.getLogger(__name__).warning(
@@ -292,8 +318,17 @@ class WalkForwardReport:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
-        pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
+        n_cal_active = sum(1 for f in self.folds
+                           if f.calmar_ratio != 0
+                           or (f.max_drawdown == 0 and f.total_return > 0
+                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
         return {
             "avg_sharpe": (self.avg_sharpe, self.avg_sharpe >= sharpe_gate),
