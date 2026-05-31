@@ -267,7 +267,11 @@ class SwingStrategy:
         )
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
-        trade_returns = getattr(result, "trade_returns", [])
+        # Extract per-trade pnl_pct from result.trades for k_ratio.
+        # For profit_factor we use result.profit_factor directly (already computed
+        # by AgentSimulator with _PF_NO_LOSS_SENTINEL=5.0) to avoid double computation.
+        trades_list = getattr(result, "trades", None) or []
+        trade_returns = [t.pnl_pct for t in trades_list if hasattr(t, "pnl_pct")]
         equity_curve = getattr(result, "equity_curve", [])
         # n_obs = trading-day return observations for DSR. equity_curve is a list
         # of (date, equity) tuples (one per trading day); diffs give daily returns,
@@ -285,7 +289,7 @@ class SwingStrategy:
             total_return=result.total_return_pct,
             stop_exit_rate=stop_rate,
             model_version=self.version,
-            profit_factor=compute_profit_factor(trade_returns),
+            profit_factor=getattr(result, "profit_factor", compute_profit_factor(trade_returns)),
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
