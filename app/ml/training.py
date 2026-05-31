@@ -1369,7 +1369,6 @@ class ModelTrainer:
         NOTE: this method never fetches data or hits the network. It consumes only
         the passed in-memory ``symbols_data`` / ``spy_prices``.
         """
-        import pandas as _pd
         from datetime import date as _date, datetime as _dt
 
         def _to_date(d):
@@ -1383,6 +1382,54 @@ class ModelTrainer:
 
         ts = _to_date(train_start)
         te = _to_date(train_end)
+
+        # Horizon parity with production: train_model() mutates the module-level
+        # FORWARD_DAYS/STEP_DAYS/EMBARGO_WINDOWS to LABEL_HORIZON_DAYS at entry, so
+        # the live swing model (v224 = 20d) is trained with horizon 20. The per-fold
+        # path does NOT call train_model(), so without this the windows would label
+        # at the stale module default (5d) — a DIFFERENT label scheme than the
+        # production model, silently producing a wrong Sharpe. Set the same horizon
+        # here, save/restore around the build so we never cross-contaminate other
+        # code running in the same process.
+        global FORWARD_DAYS, STEP_DAYS, EMBARGO_WINDOWS
+        _saved_horizon = (FORWARD_DAYS, STEP_DAYS, EMBARGO_WINDOWS)
+        try:
+            from app.ml.retrain_config import LABEL_HORIZON_DAYS as _LHD
+            _target_h = int(_LHD)
+        except Exception:
+            _target_h = FORWARD_DAYS
+        if _target_h and _target_h != FORWARD_DAYS:
+            logger.info(
+                "build_train_matrix_for_window: setting per-fold horizon "
+                "FORWARD_DAYS=%d -> %d (LABEL_HORIZON_DAYS) for production parity",
+                FORWARD_DAYS, _target_h,
+            )
+            FORWARD_DAYS = _target_h
+            STEP_DAYS = _target_h
+            EMBARGO_WINDOWS = max(1, round(FORWARD_DAYS / STEP_DAYS))
+        try:
+            return self._build_train_matrix_for_window_impl(
+                symbols_data, ts, te,
+                spy_prices=spy_prices, regime_score_map=regime_score_map,
+                fetch_fundamentals=fetch_fundamentals,
+            )
+        finally:
+            FORWARD_DAYS, STEP_DAYS, EMBARGO_WINDOWS = _saved_horizon
+
+    def _build_train_matrix_for_window_impl(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        ts,
+        te,
+        *,
+        spy_prices=None,
+        regime_score_map: Optional[Dict] = None,
+        fetch_fundamentals: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], List[dict]]:
+        """Inner body of build_train_matrix_for_window. ts/te are pre-normalized
+        date objects; the caller has already set the label horizon. Split out so
+        the horizon save/restore wrapper stays a thin try/finally."""
+        import pandas as _pd
 
         # Defense in depth: never let a per-fold window touch sacred holdout data.
         _assert_no_sacred_holdout(
@@ -1443,9 +1490,34 @@ class ModelTrainer:
         if not window_starts:
             return np.array([]), np.array([]), [], []
 
-        # Make the regime-score map available to the worker exactly like
-        # _build_rolling_matrix does (per-window regime_score lookup).
-        if regime_score_map is None:
+        # Make the regime-SCORE map available to the worker exactly like
+        # _build_rolling_matrix does (per-window regime_score lookup). The worker
+        # passes regime_score_map.get(w_end_date) straight into
+        # engineer_features(regime_score=...), where it is cast with float(...).
+        # It therefore MUST be a {date: float} composite-score map.
+        #
+        # The CPCV/WF caller (SwingStrategy._global_regime_map via
+        # load_regime_map) is a {date: str} regime *label* map ("BULL"/"BEAR"/
+        # "NEUTRAL") — passing that straight through makes float("BULL") raise in
+        # the worker, which is swallowed by its bare ``except Exception: continue``
+        # and silently drops EVERY window → empty matrix. Guard against it:
+        # accept the passed map only if its values are numeric; otherwise build
+        # the PIT composite-score map via the same helper the normal path uses.
+        def _is_numeric_score_map(m) -> bool:
+            if not m:
+                return False
+            for v in m.values():
+                return isinstance(v, (int, float)) and not isinstance(v, bool)
+            return False
+
+        if not _is_numeric_score_map(regime_score_map):
+            if regime_score_map:
+                logger.info(
+                    "build_train_matrix_for_window: ignoring non-numeric regime map "
+                    "(got %s-valued labels, not composite scores) — rebuilding PIT "
+                    "score map via build_regime_score_map().",
+                    type(next(iter(regime_score_map.values()))).__name__,
+                )
             try:
                 from app.ml.regime_score_pit import build_regime_score_map
                 regime_score_map = build_regime_score_map()
