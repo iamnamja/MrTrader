@@ -99,3 +99,52 @@ def regime_diversity(days: List[date], regime_map: Dict[date, str]) -> int:
     """Return the number of distinct regime labels in `days`."""
     labels = set(label_days(days, regime_map)) - {"UNK"}
     return len(labels)
+
+
+def compute_regime_sharpes(
+    equity_curve: list,
+    te_start,
+    te_end,
+) -> Dict[str, float]:
+    """Compute annualised Sharpe ratio per regime label from a daily equity curve.
+
+    equity_curve is a list of (date, equity) tuples (one per trading day).
+    Returns {} on any error (network failure, insufficient data, etc.) so callers
+    can safely ignore regime_sharpes when regime data is unavailable.
+    """
+    try:
+        import numpy as np
+
+        if len(equity_curve) < 2:
+            return {}
+
+        start = te_start.date() if hasattr(te_start, "date") else te_start
+        end = te_end.date() if hasattr(te_end, "date") else te_end
+        regime_map = load_regime_map(start, end)
+        if not regime_map:
+            return {}
+
+        regime_daily_rets: Dict[str, list] = {}
+        for i in range(1, len(equity_curve)):
+            d, eq = equity_curve[i]
+            _, eq_prev = equity_curve[i - 1]
+            if eq_prev <= 0:
+                continue
+            ret = (eq - eq_prev) / eq_prev
+            key = d.date() if hasattr(d, "date") else d
+            label = regime_map.get(key)
+            if label is None:
+                continue
+            regime_daily_rets.setdefault(label, []).append(ret)
+
+        result: Dict[str, float] = {}
+        for label, rets in regime_daily_rets.items():
+            arr = np.array(rets)
+            if len(arr) < 2:
+                result[label] = float(np.mean(arr)) * np.sqrt(252)
+            else:
+                std = float(np.std(arr, ddof=1))
+                result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0
+        return result
+    except Exception:
+        return {}

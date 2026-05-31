@@ -278,6 +278,8 @@ class SwingStrategy:
         # hence len-1. Required by deflated_sharpe_ratio; mirrors intraday.py.
         n_obs = max(len(equity_curve) - 1, 0)
         years = fold_years(te_start, te_end)
+        from scripts.walkforward.regime import compute_regime_sharpes as _crs
+        regime_sharpes = _crs(equity_curve, te_start, te_end)
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -293,4 +295,5 @@ class SwingStrategy:
             calmar_ratio=compute_calmar(result.total_return_pct, result.max_drawdown_pct, years),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
+            regime_sharpes=regime_sharpes,
         )
