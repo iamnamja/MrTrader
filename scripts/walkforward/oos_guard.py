@@ -112,8 +112,10 @@ def assert_model_oos(
     for tr_start, tr_end, te_start, te_end in fold_boundaries:
         if trading_day_set is not None:
             # BUG-8: count gap in trading days, not calendar days.
+            # C13-4: always require te_start > trained_through even when purge_days=0,
+            # preventing same-day overlap (te_start on trained_through date).
             gap = _trading_day_gap(trained_through, te_start, trading_day_set)
-            violates = gap < purge_days
+            violates = (te_start <= trained_through) or (gap < purge_days)
         else:
             cutoff = trained_through + timedelta(days=max(purge_days, 0))
             violates = te_start <= cutoff
