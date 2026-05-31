@@ -94,12 +94,18 @@ class FoldEngine:
             f"{getattr(self.strategy, 'model_type', 'unknown')} "
             f"v{getattr(self.strategy, 'version', '?')}"
         )
+        # C12-2: pass trading_day_set for intraday so purge_days is counted in
+        # trading days (not calendar days). A Friday trained_through + purge=2 with
+        # calendar counting admits a Monday te_start with 0 real trading-day gap.
+        _all_days = getattr(self.strategy, "all_days_sorted", None)
+        _trading_day_set = set(_all_days) if _all_days else None
         assert_model_oos(
             trained_through=_trained_through,
             fold_boundaries=fold_boundaries,
             purge_days=self.purge_days,
             model_label=_model_label,
             allow_in_sample=allow_in_sample,
+            trading_day_set=_trading_day_set,
         )
 
         report = WalkForwardReport(
