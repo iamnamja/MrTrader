@@ -131,30 +131,40 @@ class FoldEngine:
                 raise DataSpanError(msg)
             logger.warning(msg)
 
+        # Per-fold mode plumbing: the strategy retrains a fresh model inside each
+        # run_fold and runs the per-fold OOS guard itself, so the global
+        # single-cutoff guard below is meaningless (and would reject the frozen
+        # self.model's cutoff). Pass purge/embargo through for the per-fold guard.
+        _per_fold = bool(getattr(self.strategy, "per_fold_retrain", False))
+        self.strategy._purge_days = self.purge_days
+        self.strategy._embargo_days = self.embargo_days
+
         # OOS-guard: every test fold must start strictly after the model's training cutoff.
-        from scripts.walkforward.oos_guard import assert_model_oos
-        _trained_through = getattr(getattr(self.strategy, "model", None), "trained_through", None)
-        _model_label = (
-            f"{getattr(self.strategy, 'model_type', 'unknown')} "
-            f"v{getattr(self.strategy, 'version', '?')}"
-        )
-        # C12-2: pass trading_day_set for intraday so purge_days is counted in
-        # trading days (not calendar days). A Friday trained_through + purge=2 with
-        # calendar counting admits a Monday te_start with 0 real trading-day gap.
-        _all_days = getattr(self.strategy, "all_days_sorted", None)
-        _trading_day_set = set(_all_days) if _all_days else None
-        assert_model_oos(
-            trained_through=_trained_through,
-            fold_boundaries=fold_boundaries,
-            purge_days=self.purge_days,
-            model_label=_model_label,
-            allow_in_sample=allow_in_sample,
-            trading_day_set=_trading_day_set,
-        )
+        if not _per_fold:
+            from scripts.walkforward.oos_guard import assert_model_oos
+            _trained_through = getattr(getattr(self.strategy, "model", None), "trained_through", None)
+            _model_label = (
+                f"{getattr(self.strategy, 'model_type', 'unknown')} "
+                f"v{getattr(self.strategy, 'version', '?')}"
+            )
+            # C12-2: pass trading_day_set for intraday so purge_days is counted in
+            # trading days (not calendar days). A Friday trained_through + purge=2 with
+            # calendar counting admits a Monday te_start with 0 real trading-day gap.
+            _all_days = getattr(self.strategy, "all_days_sorted", None)
+            _trading_day_set = set(_all_days) if _all_days else None
+            assert_model_oos(
+                trained_through=_trained_through,
+                fold_boundaries=fold_boundaries,
+                purge_days=self.purge_days,
+                model_label=_model_label,
+                allow_in_sample=allow_in_sample,
+                trading_day_set=_trading_day_set,
+            )
 
         report = WalkForwardReport(
             model_type=getattr(self.strategy, "model_type", "unknown"),
             in_sample_override=allow_in_sample,
+            is_true_walkforward=_per_fold,
         )
         report.data_span = (n_span, d0, d1, n_syms, src)
 

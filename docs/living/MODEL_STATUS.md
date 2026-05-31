@@ -35,6 +35,13 @@
 > The OOS invariant `te_start > trained_through + purge` can only hold if test folds are AFTER the
 > training cutoff — i.e. in the sacred holdout. The honest fix is **true per-fold retraining**
 > (retrain inside each fold on only that fold's train window). See PIPELINE_ARCHITECTURE.md KL-10.
+>
+> **UPDATE (2026-05-31, Phase 1 landed):** the swing per-fold-retrain mechanism now exists
+> (`--per-fold-retrain`, swing only). Each fold trains a fresh model on its own `[tr_start, tr_end]`
+> window (in-memory, no re-fetch; date-spine clamped to `train_end` so no label leaks). The run is
+> flagged `is_true_walkforward=True`, and `REQUIRE_TRUE_WF_FOR_PROMOTION` (default False, flip True in
+> Phase 3) will make frozen runs report-only. Swing must now be re-run with `--per-fold-retrain` to
+> earn a promotion-grade number. Intraday per-fold is Phase 2. See PIPELINE_ARCHITECTURE.md KL-10b.
 
 ---
 

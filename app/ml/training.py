@@ -1346,6 +1346,187 @@ class ModelTrainer:
         # the same (filtered) feature set that gets saved with the model.
         return X_train, y_train, X_test, y_test, feature_names, meta_train, meta_test
 
+    # ── Per-fold retraining (true out-of-sample WF/CPCV) ─────────────────────
+    def build_train_matrix_for_window(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        train_start,
+        train_end,
+        *,
+        spy_prices=None,
+        regime_score_map: Optional[Dict] = None,
+        fetch_fundamentals: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], List[dict]]:
+        """Build a TRAIN-ONLY feature matrix from in-memory bars sliced to
+        [train_start, train_end]. No internal test split. The forward-label purge
+        is inherited: windows whose label extends past train_end are dropped because
+        the date spine is clamped to train_end (the worker's
+        ``w_end_idx + FORWARD_DAYS >= len(all_dates)`` guard then drops any window
+        whose FORWARD_DAYS label would look past the clamped spine).
+
+        Returns (X, y, feature_names, meta).
+
+        NOTE: this method never fetches data or hits the network. It consumes only
+        the passed in-memory ``symbols_data`` / ``spy_prices``.
+        """
+        import pandas as _pd
+        from datetime import date as _date, datetime as _dt
+
+        def _to_date(d):
+            if isinstance(d, _dt):
+                return d.date()
+            if isinstance(d, _date):
+                return d
+            if hasattr(d, "date"):
+                return d.date()
+            return d
+
+        ts = _to_date(train_start)
+        te = _to_date(train_end)
+
+        # Defense in depth: never let a per-fold window touch sacred holdout data.
+        _assert_no_sacred_holdout(
+            te,
+            allow_sacred_holdout=getattr(self, "_allow_sacred_holdout", False),
+            context="ModelTrainer.build_train_matrix_for_window",
+        )
+
+        # Slice every symbol's bars to [train_start, train_end]. Build a fresh dict
+        # (never mutate the caller's symbols_data).
+        sliced: Dict[str, _pd.DataFrame] = {}
+        for sym, df in symbols_data.items():
+            if df is None or not hasattr(df, "index"):
+                continue
+            idx_dates = _pd.DatetimeIndex(df.index).date
+            mask = (idx_dates >= ts) & (idx_dates <= te)
+            if mask.any():
+                sliced[sym] = df.loc[mask]
+
+        # Inject SPY date spine if the caller supplied spy_prices separately and SPY
+        # is not already present in the sliced bars. _build_rolling_matrix / the
+        # window builder use SPY as the canonical trading-day spine.
+        if "SPY" not in sliced and spy_prices is not None:
+            spy_close = spy_prices
+            spy_idx = _pd.DatetimeIndex(spy_close.index).date
+            spy_mask = (spy_idx >= ts) & (spy_idx <= te)
+            spy_close = spy_close.loc[spy_mask]
+            if len(spy_close) > 0:
+                sliced["SPY"] = _pd.DataFrame({"close": spy_close})
+
+        if not sliced:
+            return np.array([]), np.array([]), [], []
+
+        # Date spine clamped to train_end — this is what guarantees no label leak.
+        spy_df = sliced.get("SPY")
+        if spy_df is not None:
+            all_dates = sorted(d for d in set(spy_df.index.date) if d <= te)
+        else:
+            from collections import Counter as _Counter
+            date_counts = _Counter(
+                d for df in sliced.values() for d in df.index.date if d <= te
+            )
+            min_symbols = max(1, len(sliced) // 2)
+            all_dates = sorted(d for d, cnt in date_counts.items() if cnt >= min_symbols)
+
+        if len(all_dates) < WINDOW_DAYS + FORWARD_DAYS:
+            logger.warning(
+                "build_train_matrix_for_window: only %d dates in [%s, %s] — "
+                "insufficient for rolling windows (need >= %d).",
+                len(all_dates), ts, te, WINDOW_DAYS + FORWARD_DAYS,
+            )
+            return np.array([]), np.array([]), [], []
+
+        # ALL windows are train (no TEST_FRACTION split). The worker drops any
+        # window whose w_end_idx + FORWARD_DAYS >= len(all_dates), so no label
+        # ever looks past train_end (the clamped spine end).
+        window_starts = list(range(0, len(all_dates) - WINDOW_DAYS - FORWARD_DAYS, STEP_DAYS))
+        if not window_starts:
+            return np.array([]), np.array([]), [], []
+
+        # Make the regime-score map available to the worker exactly like
+        # _build_rolling_matrix does (per-window regime_score lookup).
+        if regime_score_map is None:
+            try:
+                from app.ml.regime_score_pit import build_regime_score_map
+                regime_score_map = build_regime_score_map()
+            except Exception:
+                regime_score_map = {}
+        self._regime_score_map_cache = regime_score_map or {}
+
+        X, y, meta = self._windows_to_matrix(
+            sliced, all_dates, window_starts,
+            None, fetch_fundamentals, total_windows=len(window_starts),
+        )
+        feature_names = self._last_feature_names
+        self._last_all_dates = all_dates
+        return np.array(X) if not isinstance(X, np.ndarray) else X, \
+            np.array(y) if not isinstance(y, np.ndarray) else y, \
+            feature_names, meta
+
+    def fit_in_memory(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: List[str],
+        meta: List[dict],
+        *,
+        seed: int,
+    ):
+        """Fit the swing model on a prepared matrix and return it. No save, no
+        version bump, no DB record. Sets model.feature_names. Caller sets
+        trained_through.
+
+        Mirrors the fit body of train_model for the supported swing model types
+        (lambdarank uses grouped LGBMRanker; others use the standard classifier
+        path). The trainer is constructed with hpo_trials=0 (PER_FOLD_SWING_HPO_TRIALS)
+        — no per-fold HPO; model.train() does not run a search.
+        """
+        if len(X) == 0:
+            raise RuntimeError("fit_in_memory: empty training matrix.")
+
+        # Apply feature_keep_list restriction (mirror train_model).
+        if self.feature_keep_list:
+            keep_idx = [i for i, f in enumerate(feature_names) if f in self.feature_keep_list]
+            if keep_idx:
+                feature_names = [feature_names[i] for i in keep_idx]
+                X = X[:, keep_idx]
+
+        # Apply the per-window seed to the model's random_state for determinism.
+        try:
+            inner = getattr(self.model, "model", None)
+            if inner is not None and hasattr(inner, "set_params"):
+                inner.set_params(random_state=int(seed))
+        except Exception:
+            pass
+
+        if self.label_scheme == "lambdarank":
+            # No TS-norm for lambdarank (it destroys cross-sectional ranking signal).
+            from app.ml.ts_normalize import TSNormalizerState as _TSState
+            self._ts_norm_state = _TSState()
+            X_fit, y_fit, train_groups = self._build_lambdarank_groups(X, y, meta)
+            self.model.train(
+                X_fit, y_fit, feature_names,
+                scale_pos_weight=None,
+                early_stopping_rounds=30,
+                groups=train_groups,
+            )
+            self.model._ts_norm_state = None
+        else:
+            # Classifier path: class imbalance correction, no internal val split
+            # (per-fold training windows are short — fit on all rows).
+            n_neg = int((y == 0).sum())
+            n_pos = int((y == 1).sum())
+            spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+            self.model.train(
+                X, y, feature_names,
+                scale_pos_weight=spw,
+                early_stopping_rounds=30,
+            )
+            self.model._ts_norm_state = None
+
+        self.model.feature_names = feature_names
+        return self.model
+
     def _compute_cs_thresholds(
         self,
         symbols_data: Dict[str, pd.DataFrame],

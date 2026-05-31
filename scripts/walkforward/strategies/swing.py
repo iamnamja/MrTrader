@@ -115,6 +115,15 @@ class SwingStrategy:
         # OOS-guard escape hatch: set True to allow test folds inside training period.
         # Results labeled in-sample; gate_passed() always returns False.
         self.allow_in_sample: bool = False
+        # ── Per-fold retraining (true out-of-sample WF/CPCV) ──────────────────
+        # When per_fold_retrain=True, run_fold trains a fresh model on this fold's
+        # [tr_start, tr_end] window via _train_cache (no re-fetch). Otherwise the
+        # frozen self.model is scored across all test windows (generalization test).
+        self.retrainer = None
+        self.per_fold_retrain: bool = False
+        self._train_cache = None
+        self._purge_days: Optional[int] = None
+        self._embargo_days: Optional[int] = None
 
     def fetch_data(self, start: datetime, end: datetime) -> None:
         """Download daily bars for all symbols in the strategy universe."""
@@ -171,6 +180,26 @@ class SwingStrategy:
         from app.backtesting.agent_simulator import AgentSimulator
         from app.data.universe_history import pit_union as _pit_union, historical_trade_symbols as _hist_syms
 
+        # ── Per-fold retraining: train a fresh model on THIS fold's training
+        # window (true out-of-sample). Otherwise use the frozen self.model. ──
+        if self.per_fold_retrain:
+            fold_model = self._train_cache.get(
+                tr_start, tr_end, self.symbols_data,
+                self.spy_prices, getattr(self, "_global_regime_map", None),
+            )
+            from scripts.walkforward.oos_guard import assert_model_oos
+            assert_model_oos(
+                trained_through=fold_model.trained_through,
+                fold_boundaries=[(tr_start, tr_end, te_start, te_end)],
+                purge_days=self._purge_days if self._purge_days is not None else 0,
+                model_label=f"swing per-fold@{tr_end}",
+                allow_in_sample=getattr(self, "allow_in_sample", False),
+                trading_day_set=None,  # swing uses calendar-day purge
+            )
+            _fold_model = fold_model
+        else:
+            _fold_model = self.model
+
         # WF-A2/A3: use Russell 1000 PIT union (matches training universe).
         # Upper bound is tr_end, NOT te_end: names that joined the index between
         # tr_end and te_end are only known in the future — including them is
@@ -204,7 +233,7 @@ class SwingStrategy:
                     vix_df = fold_symbols_data.get("VIX")
                 vix_series = vix_df["close"] if vix_df is not None and "close" in vix_df.columns else None
 
-                feature_names = getattr(self.model, "feature_names", None) or []
+                feature_names = getattr(_fold_model, "feature_names", None) or []
                 cache_workers = self.feature_cache_workers or max(2, min(os.cpu_count() or 4, 12))
 
                 logger.info(
@@ -235,7 +264,7 @@ class SwingStrategy:
             )
 
         sim = AgentSimulator(
-            model=self.model,
+            model=_fold_model,
             atr_stop_mult=self.atr_stop_mult,
             atr_target_mult=self.atr_target_mult,
             meta_model=self.meta_model,

@@ -1513,6 +1513,26 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     )
     strategy.model_type = "swing"
     strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
+
+    # Phase 1: per-fold retraining (true out-of-sample). Construct the retrainer
+    # from the active SWING_RETRAIN architecture so each fold fits the same model
+    # type / feature set on only its own training window.
+    if getattr(args, "per_fold_retrain", False):
+        from scripts.walkforward.retrainers import SwingFoldRetrainer, TrainWindowCache
+        from app.ml.retrain_config import SWING_RETRAIN
+        _retrainer = SwingFoldRetrainer(base_config=dict(
+            model_type=SWING_RETRAIN["model_type"],
+            label_scheme=SWING_RETRAIN["label_scheme"],
+            feature_keep_list=SWING_RETRAIN["feature_keep_list"],
+            fetch_fundamentals=SWING_RETRAIN.get("fetch_fundamentals", False),
+            n_workers=SWING_RETRAIN.get("n_workers", 0),
+        ))
+        strategy.retrainer = _retrainer
+        strategy.per_fold_retrain = True
+        strategy._train_cache = TrainWindowCache(_retrainer)
+        _subheader("PER-FOLD RETRAIN MODE (swing): true out-of-sample — each fold "
+                   "fits a fresh model on its own training window")
+
     from datetime import datetime, timedelta
     # Anchor fetch window to the same clock as fold boundaries (retrain_as_of),
     # so data and folds are always aligned. Previously used datetime.now() which
@@ -1928,6 +1948,11 @@ def main() -> int:
                         help="Bypass the OOS guard — allow test folds inside the model's "
                              "training period. Results labeled in-sample; cannot promote "
                              "past gates. Use for diagnostics only.")
+    parser.add_argument("--per-fold-retrain", action="store_true", default=False,
+                        help="SWING ONLY (Phase 1): retrain a fresh model inside each "
+                             "WF/CPCV fold on only that fold's training window — true "
+                             "out-of-sample. Default (off) uses the frozen-model "
+                             "generalization test. See docs/living/PIPELINE_ARCHITECTURE.md.")
     args = parser.parse_args()
 
     # WF-C2: parse --as-of into a date
