@@ -11,7 +11,7 @@ Tracks model improvement iterations for active and recent phases.
 - Walk-forward gate (intraday): avg Sharpe > 1.50, no fold < -0.30
 - Walk-forward gate (swing): avg Sharpe > 0.80, no fold < -0.30
 
-> **2026-05-05 Meta-update:** Multi-LLM review revealed the walk-forward gate numbers to date are NOT reliable baselines because: (1) no transaction costs, (2) no PM opportunity score simulated, (3) no purge/embargo between folds, (4) NIS features encode time (NaN = pre-2025 regime). Phases 1–2 of MASTER_BACKLOG fix this. Re-run all champions after Phase 1+2 complete to get honest numbers. See `docs/llm_review_synthesis.md`.
+> **2026-05-05 Meta-update:** Multi-LLM review revealed the walk-forward gate numbers to date are NOT reliable baselines because: (1) no transaction costs, (2) no PM opportunity score simulated, (3) no purge/embargo between folds, (4) NIS features encode time (NaN = pre-2025 regime). Phases 1–2 of MASTER_BACKLOG fix this. Re-run all champions after Phase 1+2 complete to get honest numbers. See `docs/archive/phase-specs/llm_review_synthesis.md`.
 >
 > **2026-05-10 WF-A2/A3 Fix:** Two additional walk-forward errors corrected: (5) swing universe was SP_100 (~81 symbols, silent no-op via dead `sp100` parquet) while training used Russell 1000 (~750) — mismatch inflated Sharpe by over-filtering folds; (6) survivorship bias — only current index members downloaded, delisted names absent from all folds. Fixed: swing now uses `RUSSELL_1000_TICKERS` as download seed + `pit_union("russell1000", fold_start, fold_end, extra_symbols=db_hist)` per fold. Honest Sharpe likely drops. Re-run champions after WF-A1+A2+A3.
 
@@ -337,7 +337,7 @@ v142 restored as ACTIVE champion. Fold 3 (2025 regime) continues to collapse —
 **Context:** v29 passed walk-forward gate Apr 2026 (+1.807 avg Sharpe, 730d window).
 Re-tested May 2026 on most recent 365 days — fails (+0.611 avg Sharpe).
 **Root cause:** Cross-sectional top-20% label forces positive labels on low-opportunity days.
-**Full plan:** `docs/intraday_improvement_plan.md`
+**Full plan:** `docs/archive/ml-history/intraday_improvement_plan.md`
 
 ### Baseline — v29 Re-Test (2026-05-01)
 
@@ -848,7 +848,7 @@ Gate: avg Sharpe > 1.50, no fold < -0.30. Both failed.
 
 **Analysis:** Confirmed hypothesis — `regime_vix_proxy`, `regime_vix_pct60d`, `regime_spy_ma20_dist` are identical across all symbols on a given day, so `cs_normalize` (z-score within each day's symbol set) reduces them to exactly zero. The model never received the intended signal. Results are nearly identical to v29 baseline (-0.327), confirming zero information gain. This is the same failure mode as Phase 86 market-wide features.
 
-**Root cause resolution:** A separate Regime Model operating outside cs_normalize is required. See comprehensive architecture plan in `docs/MASTER_BACKLOG.md` — Phases R1-R6.
+**Root cause resolution:** A separate Regime Model operating outside cs_normalize is required. See comprehensive architecture plan in `docs/living/MASTER_BACKLOG.md` — Phases R1-R6.
 
 **Verdict:** ❌ GATE FAILED — v44 not deployed. v29 remains active champion. Regime features confirmed incompatible with cs_normalize architecture. Next step: build dedicated Regime Model pipeline.
 
@@ -7289,3 +7289,48 @@ All critical gates are now correctly wired:
 - ⚠️ Worst-regime-sharpe gate — wired in gate_passed() but FoldResult.regime_sharpes never populated in production (always waived). Design-level gap, not a bug per se.
 
 **Note from Opus 4.7 (round 4):** `N_TRIALS_TESTED=200` may be stale — last updated 2026-05-12; additional PRs #299–317 + multiple R-series runs have occurred since. Consider bumping to 250+ before next gate evaluation.
+
+---
+
+## System Improvement — 13-Round WF/CPCV Pipeline Audit — 2026-05-31
+
+**Type:** Pipeline hardening (not a model change)
+**PRs:** #323 (R9), #324 (R10), #325 (R11), #326 (R12), #327 (R13) — all merged to main
+**Audit tool:** Opus 4.7 adversarial audit; R14 confirmed PIPELINE CLEAN
+
+### Summary
+
+13-round adversarial audit of the walk-forward/CPCV pipeline, covering `gates.py`, `cpcv.py`, `engine.py`, `strategy_simulator.py`, `intraday_agent_simulator.py`, `regime.py`, `oos_guard.py`.
+
+**Round-by-round fixes (Rounds 9–13):**
+
+| Round | PR | Issues Fixed |
+|---|---|---|
+| R9 | #323 | Regime gate not active in production; intraday Sharpe/PF bugs (C9-1, C9-2, C9-3) |
+| R10 | #324 | Swing simulator Sharpe/PF parity with intraday (C10-1, C10-2, C10-3) |
+| R11 | #325 | CPCV min-paths floor; stable regime labels; data coverage guard (C11-2, C11-6, C11-10) |
+| R12 | #326 | CPCV embargo guard; intraday OOS trading-day purge; regime-gate warning (C12-1, C12-2, C12-3) |
+| R13 | #327 | OOS same-day overlap guard; `gate_detail` n_paths consistency (C13-1, C13-4) |
+
+**Deferred (accepted, not bugs):**
+- C10-4: Embargo shortens `test_end` rather than protecting next fold — structural refactor, conservative direction
+- C10-5/C10-6/C10-9: Minor CPCV asymmetries, all conservative direction
+- C11-3/4/5/7/8/9, C13-2/3: Cosmetic or safe-direction minor items
+
+### Current Pipeline Status (post-R13)
+
+All critical guards are active and correct:
+- ✅ Avg Sharpe gate (0.80 swing / 1.00 intraday)
+- ✅ Min fold Sharpe gate (-0.30)
+- ✅ DSR gate (p > 0.95, trading-day n_obs)
+- ✅ Profit-factor gate (avg PF > 1.10)
+- ✅ Calmar ratio gate (geometric CAGR, avg Calmar > 0.30)
+- ✅ OOS guard (trained_through + purge_days < te_start, same-day overlap blocked)
+- ✅ Sacred holdout guard
+- ✅ CPCV embargo guard (embargo applied between train/test in each path)
+- ✅ CPCV min-paths floor enforced
+- ✅ Regime gate active in production
+- ✅ Intraday trading-day purge in OOS overlap check
+- ⚠️ Worst-regime-sharpe: gate wired but FoldResult.regime_sharpes unpopulated (design gap, always waived)
+
+**All CPCV/WF results prior to 2026-05-30 should be considered pre-hardening.** Re-run swing_v224 and intraday_meta_v63 to get first post-audit validated results.

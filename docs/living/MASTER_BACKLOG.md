@@ -358,7 +358,7 @@ Is "Russell 1000" today's membership backfilled, or PIT? Count delisted symbols 
 - **Pass criterion:** Training IC (rank corr predicted vs realized 5d residual) > 0.02
 
 ### 2.3 — Retrain swing_v215
-- Log in `docs/ML_EXPERIMENT_LOG.md` with IC, fold Sharpes, gate result
+- Log in `docs/living/ML_EXPERIMENT_LOG.md` with IC, fold Sharpes, gate result
 
 ---
 
@@ -696,9 +696,9 @@ statistical validation. Be explicit about this in reporting.
 
 Earlier phases (A diagnostics, B build, C LambdaRank campaign, R regime model, WF-A alignment, Phases 1–5 statistical truth + simulation realism, Phase 6 live readiness, data tasks D0–D5) are preserved in:
 
-- `docs/phases_archive.md` — full completed phase history
-- `docs/ML_EXPERIMENT_LOG.md` — every retrain + WF result
-- `docs/ML_EXPERIMENT_LOG_archive.md` — older campaigns
+- `docs/archive/phase-specs/phases_archive.md` — full completed phase history
+- `docs/living/ML_EXPERIMENT_LOG.md` — every retrain + WF result
+- `docs/archive/ml-history/ML_EXPERIMENT_LOG_archive.md` — older campaigns
 
 **Key historical context:**
 - Phase A diagnostics (2026-05-13): naive baseline +0.808 beat best ML +0.106 → confirmed ML was destroying alpha vs trivial SPY timing
