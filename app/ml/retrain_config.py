@@ -184,7 +184,10 @@ INTRADAY_GATE = dict(
 #   250  — updated 2026-05-30: LX1–LX9 campaign (9 experiments) + v217–v224 retrains
 #          + 4 audit rounds with repeated WF re-runs ≈ 225 total; rounded to 250.
 #          Higher N makes DSR harder to pass — correct direction for selection bias.
-N_TRIALS_TESTED: int = 250
+#   300  — updated 2026-05-31: audit rounds 5-13 (9 more pipeline-verification WF runs)
+#          + Phase 1/2/3 gate-overhaul validation runs ≈ 275 total; rounded to 300.
+#          Conservative (higher N = harder DSR) — correct direction.
+N_TRIALS_TESTED: int = 300
 
 # ── CRITICAL-1: DSR implausibility ceiling ────────────────────────────────────
 SHARPE_IMPLAUSIBILITY_CEILING: float = 3.0

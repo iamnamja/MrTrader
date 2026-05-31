@@ -1489,8 +1489,11 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     strategy.model_type = "swing"
     strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
     from datetime import datetime, timedelta
-    # WF-R5: propagate --as-of into CPCV the same way run_swing_walkforward does
-    # so CPCV results are reproducible across runs.
+    # Anchor fetch window to the same clock as fold boundaries (retrain_as_of),
+    # so data and folds are always aligned. Previously used datetime.now() which
+    # could diverge from the retrain_as_of()-anchored fold boundaries in run_cpcv,
+    # silently truncating the final test fold when run near midnight or after the
+    # sacred-holdout clamp activates. --as-of override is still respected.
     _cpcv_as_of_raw = getattr(args, "as_of", None)
     if _cpcv_as_of_raw:
         try:
@@ -1498,9 +1501,12 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
             end_all = _cpcv_as_of
             logger.info("WF-R5: CPCV swing pinned to --as-of=%s", _cpcv_as_of.date())
         except Exception:
-            end_all = datetime.now()
+            from app.ml.retrain_config import retrain_as_of as _retrain_as_of_fn
+            end_all = datetime.combine(_retrain_as_of_fn(), datetime.min.time())
     else:
-        end_all = datetime.now()
+        from app.ml.retrain_config import retrain_as_of as _retrain_as_of_fn
+        end_all = datetime.combine(_retrain_as_of_fn(), datetime.min.time())
+        logger.info("CPCV swing: fetch window anchored to retrain_as_of()=%s", end_all.date())
     start_all = end_all - timedelta(days=args.years * 365 + 30)
     strategy.fetch_data(start_all, end_all)
     cpcv_result = run_cpcv(
@@ -1542,15 +1548,20 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
     )
     strategy.model_type = "intraday"
     strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
+    # Anchor fetch window to retrain_as_of() (same clock as fold boundaries in run_cpcv)
+    # to prevent silent truncation of the final test fold.
     _cpcv_intraday_as_of = getattr(args, "as_of", None)
     if _cpcv_intraday_as_of:
         try:
             end_date = datetime.strptime(_cpcv_intraday_as_of, "%Y-%m-%d").date()
             logger.info("WF-R5: CPCV intraday pinned to --as-of=%s", end_date)
         except Exception:
-            end_date = _date.today()
+            from app.ml.retrain_config import retrain_as_of as _retrain_as_of_fn
+            end_date = _retrain_as_of_fn()
     else:
-        end_date = _date.today()
+        from app.ml.retrain_config import retrain_as_of as _retrain_as_of_fn
+        end_date = _retrain_as_of_fn()
+        logger.info("CPCV intraday: fetch window anchored to retrain_as_of()=%s", end_date)
     start_date = end_date - timedelta(days=args.days + 10)
     strategy.fetch_data(start_date, end_date)
     cpcv_result = run_cpcv(
