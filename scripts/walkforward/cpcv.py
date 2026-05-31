@@ -153,6 +153,15 @@ class CPCVResult:
                   or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
                   or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
+        if wrs is None:
+            # C12-3: mirror WalkForwardReport warning so silent gate bypass is visible.
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "CPCVResult: worst_regime_sharpe gate INACTIVE — no regime data populated. "
+                "MIN_WORST_REGIME_SHARPE=%.1f is not being enforced. "
+                "Ensure fetch_data loaded _global_regime_map successfully.",
+                MIN_WORST_REGIME_SHARPE,
+            )
         regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.mean_sharpe >= sharpe_gate
@@ -315,12 +324,16 @@ def run_cpcv(
         f"{getattr(strategy, 'model_type', 'unknown')} "
         f"v{getattr(strategy, 'version', '?')}"
     )
+    # C12-2: pass trading_day_set for intraday so purge_days is in trading days.
+    _all_days = getattr(strategy, "all_days_sorted", None)
+    _trading_day_set = set(_all_days) if _all_days else None
     assert_model_oos(
         trained_through=_trained_through,
         fold_boundaries=all_boundaries,
         purge_days=purge_days,
         model_label=_model_label,
         allow_in_sample=_allow_in_sample,
+        trading_day_set=_trading_day_set,
     )
 
     result = CPCVResult(
@@ -409,17 +422,20 @@ def run_cpcv(
             # label-horizon leakage where training data starts within purge_days
             # of a prior test fold ending.
             prior_test_folds = [j for j in test_indices if j < ti]
-            _purge = _td(days=max(purge_days, 0))
+            # C12-1: use _embargo (not purge_days) for the post-test buffer.
+            # embargo_days >= purge_days is the typical setup; using the smaller
+            # purge_days would allow training windows within the embargo zone.
+            _embargo_td = _td(days=max(_embargo, 0))
             overlap = any(
-                real_tr_start < all_boundaries[j][3] + _purge  # te_end + purge buffer
-                and real_tr_end > all_boundaries[j][2]          # te_start of prior test
+                real_tr_start < all_boundaries[j][3] + _embargo_td  # te_end + embargo
+                and real_tr_end > all_boundaries[j][2]               # te_start of prior test
                 for j in prior_test_folds
             )
             if overlap:
                 logger.debug(
                     "CPCV overlap guard: combo %d ti=%d rolling window [%s, %s] "
                     "overlaps prior test fold (including %d-day post-test embargo) — skipping",
-                    combo_idx, ti, real_tr_start, real_tr_end, purge_days,
+                    combo_idx, ti, real_tr_start, real_tr_end, _embargo,
                 )
                 result.n_skipped += 1
                 continue
