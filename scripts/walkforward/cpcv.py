@@ -32,7 +32,7 @@ from scripts.walkforward.gates import (
     SHARPE_GATE, MIN_FOLD_SHARPE, MIN_PROFIT_FACTOR, MIN_CALMAR,
     MIN_WORST_REGIME_SHARPE, N_TRIALS_TESTED, deflated_sharpe_ratio,
     MAX_PF_FOR_AVG, CAL_NO_DD_SENTINEL, CAL_TOTAL_LOSS_SENTINEL,
-    MIN_TRADES_FOR_CAL_SENTINEL,
+    MIN_TRADES_FOR_CAL_SENTINEL, MIN_ACTIVE_FOLDS_FOR_GATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,8 +132,14 @@ class CPCVResult:
         _, dsr_p = deflated_sharpe_ratio(
             self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
-        pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
-        cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        # CR-1: close "avg==0 → pass" bypass — require MIN_ACTIVE_FOLDS_FOR_GATE paths
+        # contributing before treating the gate as optional.
+        n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
+        n_cal_active = sum(1 for c in self.path_calmars if c != 0)
+        pf_ok = (n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
         wrs = self.worst_regime_sharpe
         regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
@@ -156,9 +162,11 @@ class CPCVResult:
             "pct_positive": (self.pct_positive, self.pct_positive >= 0.75),
             "dsr_p": (dsr_p, dsr_p > 0.95),
             "avg_profit_factor": (self.avg_profit_factor,
-                                  self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
+                                  sum(1 for p in self.path_profit_factors if p > 0) < MIN_ACTIVE_FOLDS_FOR_GATE
+                                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
             "avg_calmar": (self.avg_calmar,
-                           self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+                           sum(1 for c in self.path_calmars if c != 0) < MIN_ACTIVE_FOLDS_FOR_GATE
+                           or self.avg_calmar >= MIN_CALMAR),
             "worst_regime_sharpe": (self.worst_regime_sharpe,
                                     self.worst_regime_sharpe is None
                                     or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE),
@@ -231,9 +239,16 @@ def run_cpcv(
 
     # Build the k fold segments
     if total_years is not None:
-        from datetime import datetime
-        end_all = datetime.now()
-        start_all = end_all - __import__("datetime").timedelta(days=total_years * 365 + 30)
+        from datetime import datetime, timedelta
+        # IM-6: anchor end_all to retrain_as_of() for reproducibility — datetime.now()
+        # drifts across reruns so two consecutive runs produce different fold boundaries,
+        # enabling "temporal multiple testing" (re-run until a favourable boundary).
+        try:
+            from app.ml.retrain_config import retrain_as_of
+            end_all = datetime.combine(retrain_as_of(), datetime.min.time())
+        except Exception:
+            end_all = datetime.now()
+        start_all = end_all - timedelta(days=total_years * 365 + 30)
         all_boundaries = engine._build_calendar_folds(
             n_folds, start_all, end_all, total_years, train_years
         )
@@ -276,7 +291,10 @@ def run_cpcv(
     combinations = list(itertools.combinations(fold_indices, n_paths))
     logger.info("CPCV: %d combinations (C(%d,%d))", len(combinations), n_folds, n_paths)
 
-    all_fold_regime_sharpes: List[float] = []  # C-2: accumulate across all combos
+    # IM-3/C-2: track per-regime sharpes across all folds so we aggregate
+    # regime-by-regime (mean across folds) then take the min over regimes,
+    # avoiding the raw-min-over-all-pairs noise bias.
+    all_regime_sharpes_by_regime: dict = {}  # regime_name -> [sharpe, ...]
 
     for combo_idx, test_indices in enumerate(combinations):
         train_indices = [i for i in fold_indices if i not in test_indices]
@@ -373,9 +391,9 @@ def run_cpcv(
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
-                fold_rs = getattr(fold, "regime_sharpes", {}).values()
-                combo_regime_sharpes.extend(fold_rs)
-                all_fold_regime_sharpes.extend(fold_rs)
+                for regime, sh in getattr(fold, "regime_sharpes", {}).items():
+                    combo_regime_sharpes.append(sh)
+                    all_regime_sharpes_by_regime.setdefault(regime, []).append(sh)
             except Exception as exc:
                 logger.warning("CPCV combo %d fold %d failed: %s", combo_idx, ti, exc)
 
@@ -399,9 +417,11 @@ def run_cpcv(
                         combo_idx + 1, len(combinations),
                         float(np.mean(result.path_sharpes)) if result.path_sharpes else 0)
 
-    # C-2: populate worst_regime_sharpe so regime gate is active in gate_passed().
-    if all_fold_regime_sharpes:
-        result.worst_regime_sharpe = float(min(all_fold_regime_sharpes))
+    # C-2 / IM-3: populate worst_regime_sharpe using per-regime mean (not raw min)
+    # so the gate is stable and not dominated by single-fold noise in one regime.
+    if all_regime_sharpes_by_regime:
+        per_regime_means = [float(np.mean(v)) for v in all_regime_sharpes_by_regime.values()]
+        result.worst_regime_sharpe = float(min(per_regime_means))
     else:
         logger.warning(
             "CPCV: no regime_sharpes recorded across any fold — "
