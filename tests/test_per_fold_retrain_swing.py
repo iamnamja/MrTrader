@@ -212,6 +212,30 @@ def test_frozen_cannot_promote_when_required_report():
         assert _passing_wf_report(is_true_wf=True).gate_passed() is True    # per-fold allowed
 
 
+def test_cpcv_swing_gate_ok_reflects_failure():
+    """Display-bug lock: a None result, a zero-path result, or a failed-gate
+    result must all report NOT-OK so the overall `passed` flag goes False
+    (previously _run_cpcv_swing's result was ignored and a failed/empty CPCV
+    still printed 'ALL GATES PASSED')."""
+    from scripts.walkforward_tier3 import _cpcv_swing_gate_ok
+    from scripts.walkforward.cpcv import CPCVResult, N_TRIALS_TESTED
+
+    _args = SimpleNamespace(dsr_n=N_TRIALS_TESTED, paper_gate=False)
+
+    # None (no model / skipped) → not ok.
+    assert _cpcv_swing_gate_ok(None, _args) is False
+
+    # Zero surviving paths (every fold skipped — the exact per-fold-empty-matrix
+    # failure mode) → not ok even though gate_passed would be evaluated.
+    empty = CPCVResult(model_type="swing", n_folds=6, n_paths=2, is_true_walkforward=True)
+    assert not empty.path_sharpes
+    assert _cpcv_swing_gate_ok(empty, _args) is False
+
+    # A genuinely passing per-fold result → ok.
+    good = _passing_cpcv_result(is_true_wf=True)
+    assert _cpcv_swing_gate_ok(good, _args) is True
+
+
 def test_frozen_cannot_promote_when_required_cpcv():
     from app.ml import retrain_config
 
@@ -244,7 +268,7 @@ def test_build_train_matrix_no_leak():
     training window's FORWARD_DAYS label looks past train_end. We spy on
     _windows_to_matrix to read the exact (all_dates, window_starts) the builder
     constructs and verify max label date <= train_end."""
-    from app.ml.training import ModelTrainer, WINDOW_DAYS, FORWARD_DAYS
+    from app.ml.training import ModelTrainer, WINDOW_DAYS
 
     symbols = ["AAA", "BBB", "CCC"]
     # Span well past train_end so a leak would be possible if not clamped.
@@ -282,13 +306,20 @@ def test_build_train_matrix_no_leak():
         f"date spine max {max(all_dates)} exceeds train_end {train_end} — clamp failed"
     )
 
+    # The builder labels at LABEL_HORIZON_DAYS (it sets the module FORWARD_DAYS to
+    # that horizon only WHILE it runs, then restores it). Use the production
+    # horizon for the no-leak arithmetic — reading the module constant after the
+    # call would see the restored default and understate the label reach.
+    from app.ml.retrain_config import LABEL_HORIZON_DAYS as _LHD
+    fwd = int(_LHD)
+
     # Property 2 (the real no-leak guarantee): for EVERY training window the
-    # worker would keep (w_end_idx + FORWARD_DAYS < len(all_dates)), the label
-    # date all_dates[w_end_idx + FORWARD_DAYS] must not exceed train_end.
+    # worker would keep (w_end_idx + fwd < len(all_dates)), the label
+    # date all_dates[w_end_idx + fwd] must not exceed train_end.
     max_label_date = None
     for w_start in window_starts:
         w_end_idx = w_start + WINDOW_DAYS
-        future_idx = w_end_idx + FORWARD_DAYS
+        future_idx = w_end_idx + fwd
         if future_idx >= len(all_dates):
             continue  # worker drops this window — no label used
         label_date = all_dates[future_idx]
@@ -298,3 +329,100 @@ def test_build_train_matrix_no_leak():
             f"> train_end {train_end}"
         )
     assert max_label_date is not None and max_label_date <= train_end
+
+
+# ── 8b. THE regression lock: matrix must be NON-EMPTY end-to-end ──────────────
+
+def test_build_train_matrix_is_non_empty():
+    """Regression lock for the per-fold empty-matrix bug.
+
+    The original PR mocked _windows_to_matrix, so it never exercised the real
+    feature/label/regime spine and a vacuously-empty X passed the no-leak test.
+    The production failure: SwingStrategy passes its {date: 'BULL'/'BEAR'} regime
+    *label* map as regime_score_map; the worker did float('BULL') -> ValueError,
+    swallowed by its bare except -> EVERY window dropped -> empty matrix.
+
+    This test runs the REAL builder (no mock) on realistic multi-symbol synthetic
+    data, passing exactly that string-label map, and asserts the matrix is
+    non-empty with consistent y and real feature columns. It FAILS against the
+    pre-fix code (X is empty) and PASSES after the fix (label map is rejected and
+    the PIT composite-score map is rebuilt).
+    """
+    from app.ml.training import ModelTrainer
+
+    symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    # ~3 years of business days — plenty of windows even at the 20d horizon.
+    sdata = _synthetic_symbols_data(date(2021, 1, 1), n_days=780, symbols=symbols)
+    spy = _synthetic_symbols_data(date(2021, 1, 1), n_days=780, symbols=["SPY"])["SPY"]["close"]
+
+    train_start = date(2021, 4, 30)
+    train_end = date(2023, 12, 29)
+
+    # The exact shape SwingStrategy._global_regime_map has: {date: str label}.
+    label_regime_map = {d.date(): "BULL" for d in spy.index}
+
+    trainer = ModelTrainer(model_type="lambdarank", label_scheme="lambdarank",
+                           use_feature_store=False, n_workers=1)
+    trainer._allow_sacred_holdout = False
+
+    X, y, fnames, meta = trainer.build_train_matrix_for_window(
+        sdata, train_start, train_end,
+        spy_prices=spy, regime_score_map=label_regime_map, fetch_fundamentals=False,
+    )
+
+    X = np.asarray(X)
+    assert len(X) > 0, "build_train_matrix_for_window returned an EMPTY matrix"
+    assert X.ndim == 2 and X.shape[1] > 0, f"matrix has no feature columns: shape {X.shape}"
+    assert len(y) == len(X), f"y/X length mismatch: {len(y)} vs {len(X)}"
+    assert len(meta) == len(X), f"meta/X length mismatch: {len(meta)} vs {len(X)}"
+    assert len(fnames) == X.shape[1], (
+        f"feature_names ({len(fnames)}) != matrix columns ({X.shape[1]})"
+    )
+    # Sanity: real engineered feature columns are present (not a degenerate frame).
+    # (regime_score itself is in PRUNED_FEATURES so it is intentionally absent from
+    # the final vector — its presence as input is proven by the non-empty matrix,
+    # since the buggy path crashed inside engineer_features on the string label.)
+    assert any(f.startswith("ema") for f in fnames), f"no EMA features in matrix: {fnames[:8]}"
+    assert np.isfinite(X).all(), "matrix contains non-finite values"
+
+
+def test_build_train_matrix_uses_production_horizon():
+    """The per-fold builder must label at LABEL_HORIZON_DAYS (production parity),
+    and must restore the module-level horizon constants on exit so it never
+    contaminates other code in the same process."""
+    import app.ml.training as T
+    from app.ml.retrain_config import LABEL_HORIZON_DAYS
+
+    symbols = ["AAA", "BBB", "CCC"]
+    sdata = _synthetic_symbols_data(date(2021, 1, 1), n_days=600, symbols=symbols)
+    spy = _synthetic_symbols_data(date(2021, 1, 1), n_days=600, symbols=["SPY"])["SPY"]["close"]
+
+    trainer = T.ModelTrainer(model_type="lambdarank", label_scheme="lambdarank",
+                             use_feature_store=False, n_workers=1)
+    trainer._allow_sacred_holdout = False
+
+    captured = {}
+
+    def _spy_windows(symbols_data, all_dates, window_starts, *a, **k):
+        # Capture the horizon the builder set WHILE it runs.
+        captured["forward_days"] = T.FORWARD_DAYS
+        captured["step_days"] = T.STEP_DAYS
+        trainer._last_feature_names = ["f1"]
+        return [], [], []
+
+    before = (T.FORWARD_DAYS, T.STEP_DAYS, T.EMBARGO_WINDOWS)
+    with patch.object(trainer, "_windows_to_matrix", side_effect=_spy_windows):
+        trainer.build_train_matrix_for_window(
+            sdata, date(2021, 4, 30), date(2022, 12, 30),
+            spy_prices=spy, regime_score_map={},
+        )
+    after = (T.FORWARD_DAYS, T.STEP_DAYS, T.EMBARGO_WINDOWS)
+
+    assert captured["forward_days"] == int(LABEL_HORIZON_DAYS), (
+        f"per-fold labeled at horizon {captured['forward_days']}, "
+        f"expected production LABEL_HORIZON_DAYS={LABEL_HORIZON_DAYS}"
+    )
+    assert captured["step_days"] == int(LABEL_HORIZON_DAYS)
+    assert before == after, (
+        f"module horizon not restored: before={before} after={after}"
+    )

@@ -1436,6 +1436,25 @@ def _momentum_baseline_scorer(lookback_days: int = 60):
     return _scorer
 
 
+def _cpcv_swing_gate_ok(cpcv_result, args) -> bool:
+    """Did the swing CPCV produce a genuine pass?
+
+    Returns True only when the run produced a result whose gate passed. A None
+    result (no model / skipped) or zero surviving paths (n_paths == 0) is a
+    FAILURE for the overall exit status — this is the fix for the display bug
+    where a failed/empty CPCV still printed "ALL GATES PASSED".
+    """
+    if cpcv_result is None:
+        return False
+    # Zero surviving paths (every fold skipped/failed) → not a pass.
+    if not getattr(cpcv_result, "path_sharpes", None):
+        return False
+    try:
+        return bool(cpcv_result.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate))
+    except Exception:
+        return False
+
+
 def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     """Run CPCV for swing model and print the result."""
     from scripts.walkforward.cpcv import run_cpcv
@@ -2193,7 +2212,12 @@ def main() -> int:
         # the legacy WF and run ONLY the genuine per-fold CPCV (the trustworthy number).
         if getattr(args, "per_fold_retrain", False) and args.cpcv:
             print("  Per-fold-retrain mode: skipping legacy frozen WF; running per-fold CPCV only.")
-            _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
+            _cpcv_res = _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
+            # The per-fold CPCV is the ONLY signal in this branch — its gate result
+            # IS the overall result. Previously the return value was ignored, so a
+            # failed CPCV (or zero surviving paths) still printed "ALL GATES PASSED".
+            if not _cpcv_swing_gate_ok(_cpcv_res, args):
+                passed = False
         else:
             swing_report = run_swing_walkforward(**_swing_kwargs)
             swing_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
@@ -2201,7 +2225,9 @@ def main() -> int:
             if args.bootstrap > 0:
                 _bootstrap_folds(run_swing_walkforward, n_bootstrap=args.bootstrap, **_swing_kwargs)
             if args.cpcv and args.model in ("swing", "both"):
-                _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
+                _cpcv_res = _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
+                if not _cpcv_swing_gate_ok(_cpcv_res, args):
+                    passed = False
             if not swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
                 passed = False
             # CRITICAL-1: block auto-promotion when the result is implausibly strong.
