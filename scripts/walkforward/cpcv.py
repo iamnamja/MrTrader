@@ -30,7 +30,9 @@ import numpy as np
 
 from scripts.walkforward.gates import (
     SHARPE_GATE, MIN_FOLD_SHARPE, MIN_PROFIT_FACTOR, MIN_CALMAR,
-    N_TRIALS_TESTED, deflated_sharpe_ratio,
+    MIN_WORST_REGIME_SHARPE, N_TRIALS_TESTED, deflated_sharpe_ratio,
+    MAX_PF_FOR_AVG, CAL_NO_DD_SENTINEL, CAL_TOTAL_LOSS_SENTINEL,
+    MIN_TRADES_FOR_CAL_SENTINEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,9 @@ class CPCVResult:
     # BUG-2: track skipped folds (fold 0 can't be tested — no prior training data).
     # n_skipped > 0 is normal for CPCV; a large fraction indicates a design problem.
     n_skipped: int = 0
+    # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
+    # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
+    worst_regime_sharpe: Optional[float] = None
 
     @property
     def n_combinations(self) -> int:
@@ -79,11 +84,15 @@ class CPCVResult:
 
     @property
     def avg_profit_factor(self) -> float:
-        pfs = [p for p in self.path_profit_factors if p > 0]
+        # Cap at MAX_PF_FOR_AVG before averaging — mirrors WalkForwardReport.avg_profit_factor.
+        # Include zero-PF paths (unfilled paths should pull the mean down, not be ignored).
+        pfs = [min(p, MAX_PF_FOR_AVG) for p in self.path_profit_factors]
         return float(np.mean(pfs)) if pfs else 0.0
 
     @property
     def avg_calmar(self) -> float:
+        # Drop zeros (uncomputed) but include negatives (bad paths) and sentinel
+        # values from no-DD profitable paths — mirrors WalkForwardReport.avg_calmar.
         cals = [c for c in self.path_calmars if c != 0]
         return float(np.mean(cals)) if cals else 0.0
 
@@ -125,6 +134,8 @@ class CPCVResult:
         )
         pf_ok = self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
+        wrs = self.worst_regime_sharpe
+        regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.mean_sharpe >= SHARPE_GATE
             and self.p5_sharpe >= MIN_FOLD_SHARPE
@@ -132,6 +143,7 @@ class CPCVResult:
             and dsr_p > 0.95
             and pf_ok
             and cal_ok
+            and regime_ok
         )
 
     def gate_detail(self) -> dict:
@@ -147,6 +159,9 @@ class CPCVResult:
                                   self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR),
             "avg_calmar": (self.avg_calmar,
                            self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR),
+            "worst_regime_sharpe": (self.worst_regime_sharpe,
+                                    self.worst_regime_sharpe is None
+                                    or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE),
         }
 
     def print(self) -> None:
@@ -361,8 +376,12 @@ def run_cpcv(
         if combo_sharpes:
             path_sharpe = float(np.mean(combo_sharpes))
             result.path_sharpes.append(path_sharpe)
-            result.path_profit_factors.append(float(np.mean([p for p in combo_pfs if p > 0]) if combo_pfs else 0))
-            result.path_calmars.append(float(np.mean([c for c in combo_cals if c != 0]) if combo_cals else 0))
+            # I3/I4: include all PFs (don't drop zero-PF folds), cap at MAX_PF_FOR_AVG.
+            capped_pfs = [min(p, MAX_PF_FOR_AVG) for p in combo_pfs]
+            result.path_profit_factors.append(float(np.mean(capped_pfs)) if capped_pfs else 0.0)
+            # I2: drop only uncomputed zeros; keep negatives (CAL_TOTAL_LOSS_SENTINEL).
+            valid_cals = [c for c in combo_cals if c != 0]
+            result.path_calmars.append(float(np.mean(valid_cals)) if valid_cals else 0.0)
             result.path_n_obs.append(int(sum(combo_n_obs)))
 
         if (combo_idx + 1) % 5 == 0 or combo_idx == len(combinations) - 1:

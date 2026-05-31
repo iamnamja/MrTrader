@@ -47,6 +47,9 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[flo
 
 PF_NO_LOSS_SENTINEL = 5.0   # all-wins fold → use cap value (not 0 or 999)
 MAX_PF_FOR_AVG = 5.0        # cap before averaging so one lucky fold can't dominate
+CAL_TOTAL_LOSS_SENTINEL = -5.0  # total loss >100% → negative sentinel so avg_calmar reflects disaster
+CAL_NO_DD_SENTINEL = 5.0    # max_drawdown=0 + profitable fold → cap value
+MIN_TRADES_FOR_CAL_SENTINEL = 5  # guard against abstaining models gaming no-DD calmar sentinel
 
 
 def compute_profit_factor(trade_returns: list) -> float:
@@ -74,13 +77,15 @@ def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: floa
     division (total/years) overstates multi-year returns and understates sub-year
     ones. This matches tier3._compute_calmar — intraday was already correct,
     now swing is too.
-    Returns 0.0 if max_drawdown_pct <= 0, years <= 0, or 1+total_return <= 0.
+    Returns 0.0 if max_drawdown_pct <= 0 or years <= 0.
+    Returns CAL_TOTAL_LOSS_SENTINEL (-5.0) when 1+total_return <= 0 (total wipeout)
+    so catastrophic folds pull down avg_calmar rather than disappearing silently.
     """
     if max_drawdown_pct <= 0 or years <= 0:
         return 0.0
     base = 1.0 + total_return_pct
     if base <= 0:
-        return 0.0
+        return CAL_TOTAL_LOSS_SENTINEL
     cagr = base ** (1.0 / years) - 1.0
     return float(cagr / max_drawdown_pct)
 
@@ -230,14 +235,17 @@ class WalkForwardReport:
         # A zero calmar_ratio can mean either (a) max_drawdown=0 (a good fold,
         # silently dropped by the old != 0 filter) or (b) a degenerate fold with
         # negative return and zero drawdown. Distinguish by checking total_return.
-        CAL_NO_DD_SENTINEL = 5.0
+        # CAL_NO_DD_SENTINEL guard: require MIN_TRADES_FOR_CAL_SENTINEL trades so
+        # an abstaining model (0 trades, 0 DD, 0 return) can't stack sentinel values
+        # and trivially pass the Calmar gate.
         cals: List[float] = []
         for f in self.folds:
             if f.calmar_ratio != 0:
                 cals.append(f.calmar_ratio)
-            elif f.max_drawdown == 0 and f.total_return > 0:
+            elif (f.max_drawdown == 0 and f.total_return > 0
+                  and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
                 cals.append(CAL_NO_DD_SENTINEL)
-            # else: degenerate (loss with no drawdown recorded) — skip
+            # else: degenerate or abstaining fold — skip
         return float(np.mean(cals)) if cals else 0.0
 
     @property
