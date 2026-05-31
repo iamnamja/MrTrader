@@ -12,9 +12,29 @@
 
 | Model | Version | Status | Last WF Sharpe | Last CPCV Result | Notes |
 |---|---|---|---|---|---|
-| swing | v224 | ACTIVE (paper) | Unknown (pre-audit baseline) | Not yet run post-audit | v222/v223 superseded; v224 trained 2026-05-29 |
-| intraday_meta | v63 | ACTIVE (paper) | +6.618 (WF, 2026-05-30) | +5.143 mean (2026-05-30, PASSED) | CPCV passed all gates post-13-round audit |
+| swing | v224 | ⚠️ UNVERIFIABLE | INVALID (in-sample) | Cannot run — trained_through=None | Saved 2026-05-29, predates trained_through feature (PR #311, 2026-05-30). Retrain required. |
+| intraday_meta | v63 | ⚠️ UNVERIFIABLE | **INVALID (in-sample memorization)** | +5.143 STRUCK FROM RECORD | Saved 2026-05-22. +5.14 was scored on its own training data — see below. Retrain required. |
 | regime | v5 | ACTIVE | — | — | Regime classifier; AUC gate separate |
+
+> ## 🔴 CRITICAL (2026-05-31): Both ML models are UNVERIFIABLE; prior results are in-sample
+>
+> Both `intraday_v63` (saved 2026-05-22) and `swing_v224` (saved 2026-05-29) were trained and
+> saved **before** the `trained_through` feature existed (PR #311, 2026-05-30 23:18). Neither
+> artifact records its training cutoff, so the OOS guard correctly refuses to validate them.
+>
+> **The intraday +5.143 CPCV / +6.618 WF result is in-sample memorization, NOT edge.** Confirmed
+> by Opus 4.8: the model's 730-day training window (2024-05 → 2026-05) fully contains all three
+> CPCV test folds (2024-11 → 2026-04). The run also started 9 minutes before the OOS guard commit
+> landed, so it had zero out-of-sample verification. Per-fold Sharpe of 2.05/9.64/8.16 is the
+> signature of memorization. **These numbers are struck from the record.**
+>
+> **Swing v224 has the identical disease** (same frozen-full-window architecture, 6-year window).
+>
+> **DEEPER STRUCTURAL FINDING:** frozen-model CPCV (one pre-trained model scored across all folds)
+> is *structurally incapable* of being out-of-sample when the model is trained on the full window.
+> The OOS invariant `te_start > trained_through + purge` can only hold if test folds are AFTER the
+> training cutoff — i.e. in the sacred holdout. The honest fix is **true per-fold retraining**
+> (retrain inside each fold on only that fold's train window). See PIPELINE_ARCHITECTURE.md KL-10.
 
 ---
 
