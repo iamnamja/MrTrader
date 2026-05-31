@@ -28,6 +28,10 @@ MIN_WORST_REGIME_SHARPE = -0.5
 MIN_ACTIVE_FOLDS_FOR_GATE = 2
 
 
+class DataSpanError(RuntimeError):
+    """Raised when strategy data covers fewer than MIN_DATA_SPAN_TRADING_DAYS trading days."""
+
+
 def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[float, float]:
     """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
     Returns (dsr_z, p_value). p_value > 0.95 = significant after selection bias correction.
@@ -74,24 +78,48 @@ def compute_profit_factor(trade_returns: list) -> float:
     return PF_NO_LOSS_SENTINEL if wins > 0 else 0.0
 
 
-def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float) -> float:
+def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: float,
+                   daily_returns: Optional[list] = None) -> float:
     """Calmar ratio = CAGR / max drawdown (inputs as fractions, e.g. 0.20 = 20%).
 
     Geometric annualisation: (1 + total_return)^(1/years) - 1. Arithmetic
     division (total/years) overstates multi-year returns and understates sub-year
     ones. This matches tier3._compute_calmar — intraday was already correct,
     now swing is too.
-    Returns 0.0 if max_drawdown_pct <= 0 or years <= 0.
+
+    MEDIUM-1 fix: when max_drawdown == 0, use a vol-based floor drawdown
+    (0.5 × monthly annualised vol from daily_returns) instead of CAL_NO_DD_SENTINEL.
+    Falls back to MIN_CALMAR_FLOOR_DD (1%) when daily_returns unavailable.
+    Controlled by USE_CALMAR_VOL_FLOOR flag; set False for legacy behaviour.
+
+    Returns 0.0 if years <= 0 or (legacy, no vol-floor) max_drawdown_pct <= 0.
     Returns CAL_TOTAL_LOSS_SENTINEL (-5.0) when 1+total_return <= 0 (total wipeout)
     so catastrophic folds pull down avg_calmar rather than disappearing silently.
     """
-    if max_drawdown_pct <= 0 or years <= 0:
+    from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR, MIN_CALMAR_FLOOR_DD
+    if years <= 0:
         return 0.0
     base = 1.0 + total_return_pct
     if base <= 0:
         return CAL_TOTAL_LOSS_SENTINEL
     cagr = base ** (1.0 / years) - 1.0
-    return float(cagr / max_drawdown_pct)
+    dd = max_drawdown_pct
+    if dd <= 0:
+        if USE_CALMAR_VOL_FLOOR:
+            if daily_returns and len(daily_returns) >= 2:
+                ann_vol = float(np.std(daily_returns, ddof=1)) * math.sqrt(252.0)
+                monthly_vol = ann_vol / 12.0
+                dd = max(0.5 * monthly_vol, MIN_CALMAR_FLOOR_DD)
+            else:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "compute_calmar: max_dd=0 and no daily_returns — "
+                    "using MIN_CALMAR_FLOOR_DD=%.3f floor", MIN_CALMAR_FLOOR_DD
+                )
+                dd = MIN_CALMAR_FLOOR_DD
+        else:
+            return 0.0  # legacy: caller applies sentinel in avg_calmar property
+    return float(cagr / dd)
 
 
 def compute_k_ratio(equity_curve) -> float:
@@ -160,6 +188,10 @@ class FoldResult:
     macro_gate_days: int = 0
     # Number of return observations (trading days) for DSR (0 = unknown).
     n_obs: int = 0
+    # CRITICAL-2: capital deployment tracking (diagnostic — not a gate).
+    avg_capital_deployed_pct: float = 0.0
+    deployment_adjusted_sharpe: float = 0.0
+    low_deployment_warning: bool = False
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated by the walk-forward engine when --compute-fold-ic is passed.
     # Not a gate — used to monitor feature decay between train and test.
@@ -192,6 +224,8 @@ class WalkForwardReport:
     # True only when per-fold retraining was performed (not just re-scoring one
     # frozen model). Affects DSR interpretation — set by FoldEngine when used.
     is_true_walkforward: bool = False
+    # MEDIUM-3: (n_days, start_date, end_date, n_symbols, source_hint) — set by engine.
+    data_span: Optional[tuple] = None
 
     # Paper-trade gate thresholds (less strict; for deploy-to-paper decisions)
     PAPER_SHARPE_GATE: float = 0.50
@@ -255,14 +289,22 @@ class WalkForwardReport:
         # CAL_NO_DD_SENTINEL guard: require MIN_TRADES_FOR_CAL_SENTINEL trades so
         # an abstaining model (0 trades, 0 DD, 0 return) can't stack sentinel values
         # and trivially pass the Calmar gate.
+        #
+        # MEDIUM-1: under USE_CALMAR_VOL_FLOOR (default), compute_calmar already
+        # returns a vol-floored value for profitable no-DD folds (calmar_ratio != 0),
+        # so the legacy sentinel branch is gated off. Set the flag False for legacy.
+        from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         cals: List[float] = []
         for f in self.folds:
             if f.calmar_ratio != 0:
                 cals.append(f.calmar_ratio)
-            elif (f.max_drawdown == 0 and f.total_return > 0
-                  and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
-                cals.append(CAL_NO_DD_SENTINEL)
-            # else: degenerate or abstaining fold — skip
+            elif not USE_CALMAR_VOL_FLOOR:
+                # Legacy sentinel path: no-DD + profitable + enough trades → sentinel
+                if (f.max_drawdown == 0 and f.total_return > 0
+                        and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
+                    cals.append(CAL_NO_DD_SENTINEL)
+            # USE_CALMAR_VOL_FLOOR=True: compute_calmar already floored profitable
+            # no-DD folds (calmar_ratio != 0, handled above); degenerate folds skip.
         return float(np.mean(cals)) if cals else 0.0
 
     @property
@@ -289,6 +331,42 @@ class WalkForwardReport:
         per_regime_means = [float(np.mean(v)) for v in regime_to_sharpes.values()]
         return float(min(per_regime_means))
 
+    # ── CRITICAL-1: DSR ceiling / human-review flags ──────────────────────────
+    def dsr_saturated(self, dsr_n: int = N_TRIALS_TESTED) -> bool:
+        """True when DSR p > DSR_SATURATION_P — gate is non-binding at this Sharpe."""
+        from app.ml.retrain_config import DSR_SATURATION_P
+        _, p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
+        return p > DSR_SATURATION_P
+
+    def requires_human_review(self) -> bool:
+        """True when avg_sharpe > SHARPE_IMPLAUSIBILITY_CEILING.
+        Does NOT affect gate_passed() — must be checked by the promotion runner."""
+        from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+        return self.avg_sharpe > SHARPE_IMPLAUSIBILITY_CEILING
+
+    # ── CRITICAL-2: deployment diagnostics ────────────────────────────────────
+    @property
+    def avg_deployment_pct(self) -> float:
+        """n_obs-weighted mean capital deployment across folds."""
+        weights = [getattr(f, "n_obs", 0) or 0 for f in self.folds]
+        total_w = sum(weights)
+        if total_w > 0:
+            return float(sum(f.avg_capital_deployed_pct * w for f, w in zip(self.folds, weights)) / total_w)
+        return float(np.mean([f.avg_capital_deployed_pct for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def avg_deployment_adjusted_sharpe(self) -> float:
+        weights = [getattr(f, "n_obs", 0) or 0 for f in self.folds]
+        total_w = sum(weights)
+        if total_w > 0:
+            return float(sum(f.deployment_adjusted_sharpe * w for f, w in zip(self.folds, weights)) / total_w)
+        return float(np.mean([f.deployment_adjusted_sharpe for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def low_deployment(self) -> bool:
+        from app.ml.retrain_config import MIN_DEPLOYMENT_PCT_WARN
+        return self.avg_deployment_pct < MIN_DEPLOYMENT_PCT_WARN
+
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
         import logging as _logging
         if self.in_sample_override:
@@ -298,11 +376,16 @@ class WalkForwardReport:
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
         # CR-1: "avg == 0 → pass" bypass closed: require at least MIN_ACTIVE_FOLDS_FOR_GATE
         # folds contributing to each metric before treating the gate as optional.
+        from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
-        n_cal_active = sum(1 for f in self.folds
-                           if f.calmar_ratio != 0
-                           or (f.max_drawdown == 0 and f.total_return > 0
-                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        if USE_CALMAR_VOL_FLOOR:
+            # Vol-floor folds have calmar_ratio != 0 for any profitable no-DD fold.
+            n_cal_active = sum(1 for f in self.folds if f.calmar_ratio != 0)
+        else:
+            n_cal_active = sum(1 for f in self.folds
+                               if f.calmar_ratio != 0
+                               or (f.max_drawdown == 0 and f.total_return > 0
+                                   and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
         pf_ok = (paper_gate
                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
@@ -331,11 +414,15 @@ class WalkForwardReport:
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE
+        from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
-        n_cal_active = sum(1 for f in self.folds
-                           if f.calmar_ratio != 0
-                           or (f.max_drawdown == 0 and f.total_return > 0
-                               and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        if USE_CALMAR_VOL_FLOOR:
+            n_cal_active = sum(1 for f in self.folds if f.calmar_ratio != 0)
+        else:
+            n_cal_active = sum(1 for f in self.folds
+                               if f.calmar_ratio != 0
+                               or (f.max_drawdown == 0 and f.total_return > 0
+                                   and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
         pf_ok = (paper_gate
                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
@@ -350,6 +437,11 @@ class WalkForwardReport:
             "avg_profit_factor": (self.avg_profit_factor, pf_ok),
             "avg_calmar": (self.avg_calmar, cal_ok),
             "worst_regime_sharpe": (wrs, wrs is None or wrs >= MIN_WORST_REGIME_SHARPE),
+            # CRITICAL-1/2: informational keys — NOT part of gate_passed() boolean AND.
+            # ok=True when NOT triggered, so they only appear in the failed-keys list
+            # when the condition fires.
+            "human_review_required": (self.avg_sharpe, not self.requires_human_review()),
+            "low_deployment_warning": (self.avg_deployment_pct, not self.low_deployment),
         }
 
     def print(self, dsr_n: int | None = None, paper_gate: bool = False) -> None:

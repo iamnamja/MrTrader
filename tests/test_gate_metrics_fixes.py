@@ -33,9 +33,19 @@ class TestComputeCalmar:
         for ret, dd, yrs in [(0.20, 0.10, 1.0), (0.50, 0.25, 3.0), (-0.10, 0.15, 0.5)]:
             assert abs(compute_calmar(ret, dd, yrs) - tier3_calmar(ret, dd, yrs)) < 1e-9
 
-    def test_zero_drawdown_returns_zero(self):
+    def test_zero_drawdown_legacy_returns_zero(self):
+        # MEDIUM-1: legacy behaviour (vol-floor disabled) still returns 0.0 for no-DD,
+        # no daily_returns. The avg_calmar property then applies CAL_NO_DD_SENTINEL.
+        from unittest.mock import patch
         from scripts.walkforward.gates import compute_calmar
-        assert compute_calmar(0.30, 0.0, 1.0) == 0.0
+        with patch("app.ml.retrain_config.USE_CALMAR_VOL_FLOOR", False):
+            assert compute_calmar(0.30, 0.0, 1.0) == 0.0
+
+    def test_zero_drawdown_vol_floor_default(self):
+        # MEDIUM-1: default (vol-floor ON) — no-DD with no daily_returns floors to
+        # MIN_CALMAR_FLOOR_DD (0.01): 0.30 / 0.01 = 30.0 (no longer the +5.0 sentinel).
+        from scripts.walkforward.gates import compute_calmar
+        assert abs(compute_calmar(0.30, 0.0, 1.0) - 30.0) < 1e-6
 
     def test_zero_years_returns_zero(self):
         from scripts.walkforward.gates import compute_calmar

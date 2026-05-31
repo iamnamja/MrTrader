@@ -57,6 +57,9 @@ class CPCVResult:
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
+    # CRITICAL-2: per-path deployment diagnostics (mirror WalkForwardReport).
+    path_deployments: List[float] = field(default_factory=list)
+    path_deployment_adj_sharpes: List[float] = field(default_factory=list)
 
     @property
     def n_combinations(self) -> int:
@@ -124,6 +127,34 @@ class CPCVResult:
     def _dsr_n_obs(self) -> int:
         """Unique trading-day count for DSR; fall back to n_combinations for legacy results."""
         return self.unique_obs if self.unique_obs > 0 else max(self.n_combinations, 1)
+
+    # ── CRITICAL-1: DSR ceiling / human-review flags (mirror WalkForwardReport) ──
+    def dsr_saturated(self, dsr_n: int = N_TRIALS_TESTED) -> bool:
+        """True when DSR p > DSR_SATURATION_P — gate is non-binding at this Sharpe."""
+        from app.ml.retrain_config import DSR_SATURATION_P
+        _, p = deflated_sharpe_ratio(self.mean_sharpe, dsr_n, self._dsr_n_obs())
+        return p > DSR_SATURATION_P
+
+    def requires_human_review(self) -> bool:
+        """True when mean_sharpe > SHARPE_IMPLAUSIBILITY_CEILING.
+        Does NOT affect gate_passed() — must be checked by the promotion runner."""
+        from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+        return self.mean_sharpe > SHARPE_IMPLAUSIBILITY_CEILING
+
+    # ── CRITICAL-2: deployment diagnostics (mirror WalkForwardReport) ──
+    @property
+    def avg_deployment_pct(self) -> float:
+        """Mean capital deployment across paths."""
+        return float(np.mean(self.path_deployments)) if self.path_deployments else 0.0
+
+    @property
+    def avg_deployment_adjusted_sharpe(self) -> float:
+        return float(np.mean(self.path_deployment_adj_sharpes)) if self.path_deployment_adj_sharpes else 0.0
+
+    @property
+    def low_deployment(self) -> bool:
+        from app.ml.retrain_config import MIN_DEPLOYMENT_PCT_WARN
+        return self.avg_deployment_pct < MIN_DEPLOYMENT_PCT_WARN
 
     # Paper-trade gate thresholds — mirror WalkForwardReport's relaxed values
     PAPER_SHARPE_GATE: float = 0.50
@@ -205,6 +236,10 @@ class CPCVResult:
                                     enough_paths and (
                                         self.worst_regime_sharpe is None
                                         or self.worst_regime_sharpe >= MIN_WORST_REGIME_SHARPE)),
+            # CRITICAL-1/2: informational keys — NOT part of gate_passed() boolean AND.
+            # ok=True when NOT triggered (appear in failed-keys list only when fired).
+            "human_review_required": (self.mean_sharpe, not self.requires_human_review()),
+            "low_deployment_warning": (self.avg_deployment_pct, not self.low_deployment),
         }
 
     def print(self) -> None:
@@ -223,6 +258,23 @@ class CPCVResult:
               f"{'OK' if self.pct_positive >= 0.75 else 'FAIL'}")
         _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs())
         print(f"  DSR p:        {dsr_p:.3f}  (gate: > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
+        from app.ml.retrain_config import (
+            DSR_SATURATION_P, SHARPE_IMPLAUSIBILITY_CEILING, MIN_DEPLOYMENT_PCT_WARN,
+        )
+        if dsr_p > DSR_SATURATION_P:
+            print(f"  *** DSR SATURATED (p > {DSR_SATURATION_P}) — NO selection-bias "
+                  f"screening at this Sharpe; rely on deployment-adjusted Sharpe ***")
+        if self.requires_human_review():
+            print(f"  *** HUMAN REVIEW REQUIRED: mean Sharpe {self.mean_sharpe:.3f} > "
+                  f"ceiling {SHARPE_IMPLAUSIBILITY_CEILING} — verify no deployment artifact ***")
+        if self.avg_deployment_pct > 0:
+            print(f"  Avg capital deployed:    {self.avg_deployment_pct:.1%}")
+            print(f"  Deployment-adj Sharpe:   {self.avg_deployment_adjusted_sharpe:+.3f}  "
+                  f"(diagnostic: scaled to 100% deployment)")
+            if self.low_deployment:
+                print(f"  *** LOW DEPLOYMENT ({self.avg_deployment_pct:.1%} < "
+                      f"{MIN_DEPLOYMENT_PCT_WARN:.0%}) — raw Sharpe not comparable to "
+                      f"fully-invested benchmarks ***")
         if self.avg_profit_factor > 0:
             print(f"  Avg PF:       {self.avg_profit_factor:.3f}  "
                   f"(gate: > {MIN_PROFIT_FACTOR})  "
@@ -298,6 +350,26 @@ def run_cpcv(
             n_folds=n_folds, n_paths=n_paths,
         )
 
+    # MEDIUM-3: data span gate — fail early when intraday data is too short to
+    # construct non-degenerate folds (e.g. 55-day yfinance fallback). Only the
+    # trading-day-fold path (total_years is None, intraday) derives folds from
+    # all_days_sorted; the calendar-fold path (swing) uses synthetic date ranges,
+    # so all_days_sorted is not its span source and must not be gated here.
+    if total_years is None:
+        from scripts.walkforward.gates import DataSpanError
+        from app.ml.retrain_config import MIN_DATA_SPAN_TRADING_DAYS, ENFORCE_MIN_DATA_SPAN
+
+        _all_days_check = getattr(strategy, "all_days_sorted", None)
+        if _all_days_check is not None:
+            _n_span = len(_all_days_check)
+            if _n_span < MIN_DATA_SPAN_TRADING_DAYS:
+                _src = getattr(strategy, "data_source", "unknown")
+                msg = (f"CPCV DATA SPAN TOO SHORT: {_n_span} days < {MIN_DATA_SPAN_TRADING_DAYS} "
+                       f"[source={_src}]. Re-fetch data.")
+                if ENFORCE_MIN_DATA_SPAN:
+                    raise DataSpanError(msg)
+                logger.warning(msg)
+
     # C11-10: verify strategy data range covers the constructed fold window so that
     # a caller who fetched a shorter range does not silently produce empty-fold results.
     if total_years is not None:
@@ -368,6 +440,8 @@ def run_cpcv(
         combo_pfs = []
         combo_cals = []
         combo_n_obs: List[int] = []
+        combo_deps: List[float] = []
+        combo_dep_adj: List[float] = []
         # C8-5: accumulate per-regime within this combo to average before global append,
         # so each combo contributes equally (not proportional to its fold count).
         combo_regime_by_name: dict = {}  # regime -> [sharpe, ...]
@@ -458,6 +532,8 @@ def run_cpcv(
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
+                combo_deps.append(getattr(fold, "avg_capital_deployed_pct", 0.0) or 0.0)
+                combo_dep_adj.append(getattr(fold, "deployment_adjusted_sharpe", 0.0) or 0.0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
                     combo_regime_by_name.setdefault(regime, []).append(sh)
             except Exception as exc:
@@ -477,6 +553,10 @@ def run_cpcv(
             # not the sum. Summing inflated _dsr_n_obs by n_paths, making the DSR
             # gate easier to pass (smaller sr_var → higher dsr_z).
             result.path_n_obs.append(int(np.mean(combo_n_obs)) if combo_n_obs else 0)
+            # CRITICAL-2: per-path deployment diagnostics (mean of fold values).
+            result.path_deployments.append(float(np.mean(combo_deps)) if combo_deps else 0.0)
+            result.path_deployment_adj_sharpes.append(
+                float(np.mean(combo_dep_adj)) if combo_dep_adj else 0.0)
             # C8-5: append per-combo regime mean (not per-fold raw value) so each
             # combo contributes equally to worst_regime_sharpe regardless of fold count.
             for regime, vals in combo_regime_by_name.items():

@@ -2134,6 +2134,17 @@ def main() -> int:
             _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed)
         if not swing_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
             passed = False
+        # CRITICAL-1: block auto-promotion when the result is implausibly strong.
+        # requires_human_review() does NOT affect gate_passed(); enforce it here at
+        # the runner level so an implausible Sharpe cannot silently auto-promote.
+        if swing_report.requires_human_review():
+            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+            logger.warning(
+                "AUTO-PROMOTION BLOCKED: swing avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
+                "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
+                swing_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+            )
+            passed = False
         if args.record_results and swing_report.folds:
             from app.ml.training import ModelTrainer
             loaded_ver = swing_report.folds[0].model_version if swing_report.folds else 0
@@ -2189,6 +2200,15 @@ def main() -> int:
         if args.cpcv and args.model in ("intraday", "both"):
             _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
         if not intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
+            passed = False
+        # CRITICAL-1: block auto-promotion when the result is implausibly strong.
+        if intraday_report.requires_human_review():
+            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+            logger.warning(
+                "AUTO-PROMOTION BLOCKED: intraday avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
+                "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
+                intraday_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+            )
             passed = False
         if args.record_results and intraday_report.folds:
             from app.ml.intraday_training import IntradayModelTrainer
