@@ -227,10 +227,14 @@ class StrategySimulator:
         daily_rets = [(eq_vals[i] - eq_vals[i-1]) / eq_vals[i-1]
                       for i in range(1, len(eq_vals))]
 
-        # Fall back to per-trade returns if equity curve is too short for daily stats
-        ret_series = daily_rets if len(daily_rets) >= 2 else [t.pnl_pct for t in accepted_trades]
-        sharpe = self._sharpe(ret_series, periods=252)
-        sortino = self._sortino(ret_series, periods=252)
+        # C10-1: return 0.0 when < 2 daily observations — per-trade fallback hides
+        # intraday variance and inflates Sharpe by applying sqrt(252) to trade returns.
+        if len(daily_rets) < 2:
+            sharpe = 0.0
+            sortino = 0.0
+        else:
+            sharpe = self._sharpe(daily_rets, periods=252)
+            sortino = self._sortino(daily_rets, periods=252)
         max_dd = self._max_drawdown(eq_vals)
         calmar = ann_return / max(max_dd, 1e-9)
 
@@ -241,8 +245,14 @@ class StrategySimulator:
         avg_pnl = sum(t.pnl_pct for t in accepted_trades) / len(accepted_trades)
         avg_hold = sum(t.hold_bars for t in accepted_trades) / len(accepted_trades)
         gross_win = sum(t.pnl_pct for t in winners) if winners else 0.0
-        gross_loss = max(abs(sum(t.pnl_pct for t in losers)), 1e-9)
-        profit_factor = gross_win / gross_loss
+        # C10-2: use PF_NO_LOSS_SENTINEL for all-wins folds instead of 1e-9 floor,
+        # matching intraday simulator and gates.compute_profit_factor behaviour.
+        from scripts.walkforward.gates import PF_NO_LOSS_SENTINEL as _PF_SENTINEL
+        if not losers:
+            profit_factor = _PF_SENTINEL if winners else 0.0
+        else:
+            gross_loss = abs(sum(t.pnl_pct for t in losers))
+            profit_factor = gross_win / gross_loss if gross_loss > 0 else _PF_SENTINEL
 
         exit_breakdown: Dict[str, int] = defaultdict(int)
         for t in accepted_trades:

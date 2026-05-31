@@ -92,8 +92,25 @@ class TestMetrics:
         res = self._sim_with([0.05, 0.05, -0.01])
         assert res.profit_factor > 1.0
 
-    def test_sharpe_positive_when_mostly_winning(self):
+    def test_sharpe_zero_when_all_trades_same_day(self):
+        # C10-1: when all trades share one entry date, equity_curve has 1 point
+        # → 0 daily returns → Sharpe must be 0.0 (not per-trade inflated fallback).
         res = self._sim_with([0.03] * 8 + [-0.005])
+        assert res.sharpe_ratio == 0.0
+
+    def test_sharpe_positive_when_trades_span_multiple_days(self):
+        # Sharpe is positive when equity curve has ≥ 2 distinct trading days.
+        from datetime import date, timedelta
+        trades = [
+            _trade(f"S{i}", 0.03, date(2024, 1, 2) + timedelta(days=i), date(2024, 2, 1))
+            for i in range(5)
+        ]
+        from app.backtesting.metrics import BacktestResult
+        res = StrategySimulator(max_positions=5).run(
+            BacktestResult.from_trades(trades, model_type="swing"),
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 2, 1),
+        )
         assert res.sharpe_ratio > 0
 
     def test_max_drawdown_non_negative(self):
