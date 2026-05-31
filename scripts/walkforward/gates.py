@@ -296,15 +296,31 @@ class WalkForwardReport:
         from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         cals: List[float] = []
         for f in self.folds:
-            if f.calmar_ratio != 0:
-                cals.append(f.calmar_ratio)
-            elif not USE_CALMAR_VOL_FLOOR:
+            # M-2 fix: calmar_ratio is stored rounded to 3 decimal places. A genuine
+            # small positive Calmar (e.g. 0.0004) rounds to exactly 0.0, making the
+            # != 0 filter falsely drop it. Use the (max_drawdown, total_return) pair
+            # as the primary activeness signal instead: a fold with no DD and positive
+            # return IS active regardless of the stored calmar float value.
+            if USE_CALMAR_VOL_FLOOR:
+                if f.calmar_ratio != 0:
+                    cals.append(f.calmar_ratio)
+                elif (f.max_drawdown == 0 and f.total_return > 0
+                      and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
+                    # calmar_ratio rounded to 0.0 but fold IS active — re-compute
+                    # from stored values so the fold contributes its real (floored) Calmar.
+                    from scripts.walkforward.gates import fold_years as _fy
+                    _years = _fy(f.test_start, f.test_end)
+                    _recomputed = compute_calmar(f.total_return, f.max_drawdown, _years)
+                    if _recomputed != 0:
+                        cals.append(_recomputed)
+                # else: degenerate fold (no trades, negative return, or tiny trade count) — skip
+            else:
                 # Legacy sentinel path: no-DD + profitable + enough trades → sentinel
-                if (f.max_drawdown == 0 and f.total_return > 0
+                if f.calmar_ratio != 0:
+                    cals.append(f.calmar_ratio)
+                elif (f.max_drawdown == 0 and f.total_return > 0
                         and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL):
                     cals.append(CAL_NO_DD_SENTINEL)
-            # USE_CALMAR_VOL_FLOOR=True: compute_calmar already floored profitable
-            # no-DD folds (calmar_ratio != 0, handled above); degenerate folds skip.
         return float(np.mean(cals)) if cals else 0.0
 
     @property
@@ -378,14 +394,15 @@ class WalkForwardReport:
         # folds contributing to each metric before treating the gate as optional.
         from app.ml.retrain_config import USE_CALMAR_VOL_FLOOR
         n_pf_active = sum(1 for f in self.folds if f.profit_factor > 0)
-        if USE_CALMAR_VOL_FLOOR:
-            # Vol-floor folds have calmar_ratio != 0 for any profitable no-DD fold.
-            n_cal_active = sum(1 for f in self.folds if f.calmar_ratio != 0)
-        else:
-            n_cal_active = sum(1 for f in self.folds
-                               if f.calmar_ratio != 0
-                               or (f.max_drawdown == 0 and f.total_return > 0
-                                   and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL))
+        # M-2 fix: count a fold as "active" when it has a meaningful Calmar OR when it
+        # is a no-DD profitable fold with enough trades (calmar_ratio may round to 0.0
+        # but the fold still contributed to avg_calmar via the re-computation branch).
+        n_cal_active = sum(
+            1 for f in self.folds
+            if f.calmar_ratio != 0
+            or (f.max_drawdown == 0 and f.total_return > 0
+                and f.trades >= MIN_TRADES_FOR_CAL_SENTINEL)
+        )
         pf_ok = (paper_gate
                  or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
                  or self.avg_profit_factor >= MIN_PROFIT_FACTOR)

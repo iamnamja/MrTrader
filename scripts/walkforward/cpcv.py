@@ -350,15 +350,16 @@ def run_cpcv(
             n_folds=n_folds, n_paths=n_paths,
         )
 
-    # MEDIUM-3: data span gate — fail early when intraday data is too short to
-    # construct non-degenerate folds (e.g. 55-day yfinance fallback). Only the
-    # trading-day-fold path (total_years is None, intraday) derives folds from
-    # all_days_sorted; the calendar-fold path (swing) uses synthetic date ranges,
-    # so all_days_sorted is not its span source and must not be gated here.
-    if total_years is None:
-        from scripts.walkforward.gates import DataSpanError
-        from app.ml.retrain_config import MIN_DATA_SPAN_TRADING_DAYS, ENFORCE_MIN_DATA_SPAN
+    # MEDIUM-3 / H-1: data span gate — fail early when data is too short to
+    # construct non-degenerate folds.
+    # Intraday (total_years is None): gate on len(all_days_sorted).
+    # Swing (total_years is not None): gate on distinct dates in symbols_data
+    #   (the calendar-fold path does not populate all_days_sorted, so we count
+    #   distinct trading days from the loaded bars instead).
+    from scripts.walkforward.gates import DataSpanError
+    from app.ml.retrain_config import MIN_DATA_SPAN_TRADING_DAYS, ENFORCE_MIN_DATA_SPAN
 
+    if total_years is None:
         _all_days_check = getattr(strategy, "all_days_sorted", None)
         if _all_days_check is not None:
             _n_span = len(_all_days_check)
@@ -366,6 +367,23 @@ def run_cpcv(
                 _src = getattr(strategy, "data_source", "unknown")
                 msg = (f"CPCV DATA SPAN TOO SHORT: {_n_span} days < {MIN_DATA_SPAN_TRADING_DAYS} "
                        f"[source={_src}]. Re-fetch data.")
+                if ENFORCE_MIN_DATA_SPAN:
+                    raise DataSpanError(msg)
+                logger.warning(msg)
+    else:
+        # Swing calendar-fold path: count distinct dates from symbols_data (H-1 fix).
+        import pandas as _pd
+        _sd = getattr(strategy, "symbols_data", None) or {}
+        if _sd:
+            _all_dates_set: set = set()
+            for _df in _sd.values():
+                if hasattr(_df, "index"):
+                    for _d in _pd.DatetimeIndex(_df.index).date:
+                        _all_dates_set.add(_d)
+            _n_swing_span = len(_all_dates_set)
+            if _n_swing_span > 0 and _n_swing_span < MIN_DATA_SPAN_TRADING_DAYS:
+                msg = (f"CPCV (swing) DATA SPAN TOO SHORT: {_n_swing_span} distinct trading days "
+                       f"< MIN_DATA_SPAN_TRADING_DAYS={MIN_DATA_SPAN_TRADING_DAYS}. Re-fetch data.")
                 if ENFORCE_MIN_DATA_SPAN:
                     raise DataSpanError(msg)
                 logger.warning(msg)
