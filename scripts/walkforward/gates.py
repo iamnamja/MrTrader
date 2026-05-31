@@ -262,6 +262,7 @@ class WalkForwardReport:
         return float(min(all_regime_sharpes)) if all_regime_sharpes else None
 
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
+        import logging as _logging
         if self.in_sample_override:
             return False
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
@@ -270,6 +271,13 @@ class WalkForwardReport:
         pf_ok = paper_gate or self.avg_profit_factor == 0 or self.avg_profit_factor >= MIN_PROFIT_FACTOR
         cal_ok = paper_gate or self.avg_calmar == 0 or self.avg_calmar >= MIN_CALMAR
         wrs = self.worst_regime_sharpe
+        if wrs is None:
+            _logging.getLogger(__name__).warning(
+                "WalkForwardReport: worst_regime_sharpe gate is INACTIVE — "
+                "FoldResult.regime_sharpes is empty on all folds. The regime-Sharpe "
+                "gate (MIN_WORST_REGIME_SHARPE=%.1f) is not being enforced. "
+                "Populate FoldResult.regime_sharpes to activate.", MIN_WORST_REGIME_SHARPE
+            )
         regime_ok = wrs is None or wrs >= MIN_WORST_REGIME_SHARPE
         return (
             self.avg_sharpe >= sharpe_gate
