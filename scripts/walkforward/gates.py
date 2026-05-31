@@ -387,6 +387,11 @@ class WalkForwardReport:
         import logging as _logging
         if self.in_sample_override:
             return False
+        # Frozen-mode (not true per-fold) runs cannot promote when the project-wide
+        # flag is set. Default False during Phase 1 rollout — flip to True in Phase 3.
+        from app.ml.retrain_config import REQUIRE_TRUE_WF_FOR_PROMOTION
+        if REQUIRE_TRUE_WF_FOR_PROMOTION and not self.is_true_walkforward:
+            return False
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE

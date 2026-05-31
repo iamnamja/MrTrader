@@ -51,6 +51,11 @@ class CPCVResult:
     path_n_obs: List[int] = field(default_factory=list)
     # True when the OOS guard was bypassed with allow_in_sample=True.
     in_sample_override: bool = False
+    # True only when per-fold retraining was performed (genuine out-of-sample).
+    # Set by run_cpcv from strategy.per_fold_retrain. When False the run scored
+    # one frozen model across all folds (generalization test, cannot promote when
+    # REQUIRE_TRUE_WF_FOR_PROMOTION=True). Mirrors WalkForwardReport.
+    is_true_walkforward: bool = False
     # BUG-2: track skipped folds (fold 0 can't be tested — no prior training data).
     # n_skipped > 0 is normal for CPCV; a large fraction indicates a design problem.
     n_skipped: int = 0
@@ -185,6 +190,11 @@ class CPCVResult:
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
         # In-sample runs (allow_in_sample override) can never promote past gates.
         if self.in_sample_override:
+            return False
+        # Frozen-mode (not true per-fold) runs cannot promote when the project-wide
+        # flag is set. Default False during Phase 1 rollout — flip to True in Phase 3.
+        from app.ml.retrain_config import REQUIRE_TRUE_WF_FOR_PROMOTION
+        if REQUIRE_TRUE_WF_FOR_PROMOTION and not self.is_true_walkforward:
             return False
         _, dsr_p = deflated_sharpe_ratio(
             self.mean_sharpe, dsr_n, self._dsr_n_obs()
@@ -471,31 +481,40 @@ def run_cpcv(
                         _data_start, _fold_start,
                     )
 
+    # Per-fold mode plumbing: the strategy retrains a fresh model inside each
+    # run_fold and runs the per-fold OOS guard there, so the global single-cutoff
+    # guard below is meaningless. Pass purge/embargo through for the per-fold guard.
+    _per_fold = bool(getattr(strategy, "per_fold_retrain", False))
+    strategy._purge_days = purge_days
+    strategy._embargo_days = _embargo
+
     # OOS-guard: every test fold must start strictly after the model's training cutoff.
-    from scripts.walkforward.oos_guard import assert_model_oos
-    _trained_through = getattr(getattr(strategy, "model", None), "trained_through", None)
     _allow_in_sample = getattr(strategy, "allow_in_sample", False)
-    _model_label = (
-        f"{getattr(strategy, 'model_type', 'unknown')} "
-        f"v{getattr(strategy, 'version', '?')}"
-    )
-    # C12-2: pass trading_day_set for intraday so purge_days is in trading days.
-    _all_days = getattr(strategy, "all_days_sorted", None)
-    _trading_day_set = set(_all_days) if _all_days else None
-    assert_model_oos(
-        trained_through=_trained_through,
-        fold_boundaries=all_boundaries,
-        purge_days=purge_days,
-        model_label=_model_label,
-        allow_in_sample=_allow_in_sample,
-        trading_day_set=_trading_day_set,
-    )
+    if not _per_fold:
+        from scripts.walkforward.oos_guard import assert_model_oos
+        _trained_through = getattr(getattr(strategy, "model", None), "trained_through", None)
+        _model_label = (
+            f"{getattr(strategy, 'model_type', 'unknown')} "
+            f"v{getattr(strategy, 'version', '?')}"
+        )
+        # C12-2: pass trading_day_set for intraday so purge_days is in trading days.
+        _all_days = getattr(strategy, "all_days_sorted", None)
+        _trading_day_set = set(_all_days) if _all_days else None
+        assert_model_oos(
+            trained_through=_trained_through,
+            fold_boundaries=all_boundaries,
+            purge_days=purge_days,
+            model_label=_model_label,
+            allow_in_sample=_allow_in_sample,
+            trading_day_set=_trading_day_set,
+        )
 
     result = CPCVResult(
         model_type=getattr(strategy, "model_type", "unknown"),
         n_folds=n_folds,
         n_paths=n_paths,
         in_sample_override=_allow_in_sample,
+        is_true_walkforward=_per_fold,
     )
 
     # Generate C(k, paths) combinations

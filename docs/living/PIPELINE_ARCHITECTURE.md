@@ -451,6 +451,26 @@ CPCV run (separate from WF, no auto-promotion):
 
 ---
 
+### KL-10b — Frozen vs. per-fold retraining (the structural OOS fix) — 🔄 Phase 1 (swing) in progress
+
+**Two WF/CPCV modes:**
+
+1. **Frozen mode (default).** One pre-trained model is loaded and scored across every test fold. This is a *generalization test*, NOT out-of-sample: every fold's test window may overlap the model's (single) training span, and the OOS guard can only certify this when `test_start > trained_through + purge` for ALL folds — which a frozen model rarely satisfies across an expanding-window layout. Frozen runs set `is_true_walkforward=False`.
+
+2. **Per-fold retrain mode (`--per-fold-retrain`, swing only).** Inside `SwingStrategy.run_fold`, a *fresh* model is trained on ONLY that fold's `[tr_start, tr_end]` window (from the already-in-memory bars — no re-fetch, no network), `trained_through` is set to `tr_end`, a per-fold OOS assertion runs (`te_start > tr_end + purge`), then the fold is simulated on `[te_start, te_end]` with that fresh model. This is genuinely out-of-sample. Per-fold runs set `is_true_walkforward=True`.
+
+**No-leak guarantee.** `ModelTrainer.build_train_matrix_for_window` slices `symbols_data` to `[train_start, train_end]` and clamps the SPY date spine to end at `train_end`. The existing worker guard `w_end_idx + FORWARD_DAYS >= len(all_dates)` then drops any window whose forward label would look past the clamped spine — so no training row can use a label beyond `train_end`. Proven by `test_build_train_matrix_no_leak`.
+
+**Dedup.** CPCV's C(k,p) combinations reuse the same k folds, so `TrainWindowCache` (lifetime = one run) memoizes fitted models by `(tr_start, tr_end)` — each unique training window is retrained exactly once.
+
+**No per-fold HPO.** `PER_FOLD_SWING_HPO_TRIALS=0` — per-fold HPO is both prohibitively expensive and methodologically wrong (in-fold selection). Per-fold models use the frozen production hyperparameters; a deterministic per-window seed (`seed_base + tr_end.toordinal() % 100000`) keeps runs reproducible.
+
+**Promotion gate.** `REQUIRE_TRUE_WF_FOR_PROMOTION` (default False during Phase 1) makes `gate_passed()` return False for any `is_true_walkforward=False` run regardless of metrics, in BOTH `WalkForwardReport` and `CPCVResult`. Flip to True in Phase 3 once swing per-fold is validated so frozen runs can no longer promote project-wide.
+
+**Scope.** Phase 1 is SWING ONLY (daily bars — feasible). Intraday per-fold is Phase 2; intraday continues to run frozen.
+
+---
+
 ## 13. Feature Flags
 
 All live in `app/ml/retrain_config.py`.
@@ -473,6 +493,9 @@ All live in `app/ml/retrain_config.py`.
 | `CPCVResult.require_tstat_gate` | False | True = path_sharpe_tstat < CPCV_MIN_TSTAT blocks gate | Phase 3 ✅ |
 | `ENFORCE_MIN_DATA_SPAN` | *planned* | Raise DataSpanError if data < 250 days | Phase 1 planned |
 | `REQUIRE_TRAINED_THROUGH` | True | True = `save()` refuses to persist a model whose `trained_through` is None (cannot be OOS-gate-evaluated). False only for diagnostic saves. See KL-10. | save-guard |
+| `PER_FOLD_RETRAIN` | False | Default per-fold-retrain mode when `--per-fold-retrain` not passed. True = WF/CPCV train a fresh model per fold (true OOS). See KL-10b. | Phase 1 |
+| `REQUIRE_TRUE_WF_FOR_PROMOTION` | False | True = `gate_passed()` returns False for any non-per-fold (`is_true_walkforward=False`) run, even if metrics pass. Flip True in Phase 3. See KL-10b. | Phase 1 |
+| `PER_FOLD_SWING_HPO_TRIALS` | 0 | HPO trials for per-fold swing retraining. 0 = frozen production hyperparameters (per-fold HPO is in-fold selection — keep 0). See KL-10b. | Phase 1 |
 
 ---
 
@@ -482,6 +505,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-05-31 | #PERFOLD1 | **Phase 1 — swing per-fold retraining (true out-of-sample WF/CPCV) (KL-10b):** `--per-fold-retrain` (swing only) trains a fresh model inside each fold on only that fold's `[tr_start, tr_end]` window (in-memory, no re-fetch); `ModelTrainer.build_train_matrix_for_window` (date-spine clamped to `train_end` → no label leak, proven by test) + `fit_in_memory`; `SwingFoldRetrainer` + `TrainWindowCache` (dedup CPCV combos); `SwingStrategy.run_fold` uses the fold model + per-fold OOS guard when `per_fold_retrain=True`, else frozen `self.model`; `is_true_walkforward` set by engine/cpcv; `REQUIRE_TRUE_WF_FOR_PROMOTION` (default False) blocks frozen-mode promotion in both `WalkForwardReport` and `CPCVResult`; new flags `PER_FOLD_RETRAIN`/`REQUIRE_TRUE_WF_FOR_PROMOTION`/`PER_FOLD_SWING_HPO_TRIALS`. Frozen-mode behavior unchanged by default. | `training.py`, `retrain_config.py`, `retrainers.py`, `strategies/swing.py`, `engine.py`, `cpcv.py`, `gates.py`, `walkforward_tier3.py`, `tests/test_per_fold_retrain_swing.py` |
 | 2026-05-31 | #KL10 | **Save-guard — refuse to persist a model without `trained_through` (KL-10):** `_assert_trained_through()` at the top of every trained-model `save()` raises `ValueError` when the cutoff is None (flag `REQUIRE_TRAINED_THROUGH`, default True); `trained_through` attribute added to `LambdaRankModel`/`TwoStageModel`/`ThreeStageModel`/`DoubleEnsembleModel` (was missing — the v224 bug); `_load_model` logs a clear stale-artifact error; `trained_through` documented as artifact-sourced, never DB-sourced. KL-10 RESOLVED. | `model.py`, `retrain_config.py`, `walkforward_tier3.py`, `tests/test_trained_through_guard.py` |
 | 2026-05-31 | #PHASE3 | **Phase 3 — CPCV path t-stat + StrategySimulator tier-2 (HIGH-3):** added `CPCVResult.path_sharpe_tstat` (N_eff=n_folds, NOT n_paths) reported + warned, gateable via `require_tstat_gate` (off by default, `CPCV_MIN_TSTAT=2.0`); StrategySimulator gains a TIER-2-ONLY banner + `build_daily_equity_curve` opt-in flag (forward-fills entry-date equity onto daily calendar). KL-4 partially addressed, KL-8 addressed. | `cpcv.py`, `strategy_simulator.py`, `retrain_config.py`, `tests/test_cpcv_tstat.py`, `tests/test_strategy_sim_daily_curve.py` |
 | 2026-05-31 | #PHASE2 | **Phase 2 — Regime gate overhaul (HIGH-2 + MEDIUM-4):** coarse3 BULL/BEAR/NEUTRAL labeler with expanding-quantile VIX thresholds (PIT-correct, no look-ahead); `REGIME_MIN_OBS=20` bucket floor; `worst_regime_sharpe is None` now HARD-FAILS `gate_passed()` (WF + CPCV) unless `ALLOW_NO_REGIME_GATE=True`. KL-2 + KL-7 RESOLVED. | `regime.py`, `gates.py`, `cpcv.py`, `reports.py`, `retrain_config.py`, `tests/test_regime_coarse3.py` |

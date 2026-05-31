@@ -19,6 +19,26 @@ Rules:
 import os as _os
 import sys as _sys
 
+# ── Per-fold retraining (true out-of-sample WF/CPCV) ──────────────────────────
+PER_FOLD_RETRAIN: bool = False
+"""Default per-fold-retrain mode when not overridden by --per-fold-retrain CLI.
+When True, WF/CPCV retrain a fresh model inside each fold on only that fold's
+training window (genuinely out-of-sample). When False (default), the legacy
+frozen-model 'generalization test' runs (NOT out-of-sample, cannot promote).
+See docs/living/PIPELINE_ARCHITECTURE.md KL-10."""
+
+REQUIRE_TRUE_WF_FOR_PROMOTION: bool = False
+"""When True, gate_passed() returns False for any run that is not a true
+per-fold walk-forward (is_true_walkforward=False), even if all metric thresholds
+pass. This makes frozen-mode runs report-only. Default False during Phase 1
+rollout (swing per-fold proving); flip to True in Phase 3 once swing per-fold
+is validated, so frozen runs can no longer promote project-wide."""
+
+PER_FOLD_SWING_HPO_TRIALS: int = 0
+"""HPO trials for per-fold swing retraining. 0 = use frozen production
+hyperparameters (no per-fold HPO). Per-fold HPO is both prohibitively expensive
+and methodologically wrong (in-fold selection). Keep 0."""
+
 # ── Worker / parallelism caps ─────────────────────────────────────────────────
 # Single source of truth for process/thread counts across all training entry points.
 #
