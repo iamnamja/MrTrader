@@ -38,6 +38,25 @@ def _atomic_pickle_dump(obj: Any, path: Path) -> None:
     os.replace(tmp, str(path))
 
 
+def _assert_trained_through(obj: Any, model_name: str, version: int) -> None:
+    """KL-10 save-guard: refuse to persist a trained model lacking a training cutoff.
+
+    A model whose ``trained_through`` is None cannot be OOS-gate-evaluated; shipping
+    one (as happened with intraday_v63 / swing_v224) produces silently in-sample
+    walk-forward/CPCV results. Called at the top of every trained-model save().
+    Feature-flagged by REQUIRE_TRAINED_THROUGH (default True); set False only for
+    explicit diagnostic saves that will never be gate-evaluated.
+    """
+    from app.ml.retrain_config import REQUIRE_TRAINED_THROUGH
+    if REQUIRE_TRAINED_THROUGH and getattr(obj, "trained_through", None) is None:
+        raise ValueError(
+            f"Refusing to save {model_name} v{version}: trained_through is None. "
+            "A model without a verifiable training cutoff cannot be gate-evaluated "
+            "(see docs/living/PIPELINE_ARCHITECTURE.md KL-10). Set the cutoff before "
+            "save(), or set REQUIRE_TRAINED_THROUGH=False for a diagnostic-only save."
+        )
+
+
 # R4: Optional XGBoost hyperparameter overrides for regularization experiments.
 # Set before calling train_model() to override defaults without code changes.
 # Example: EXPERIMENT_OVERRIDES = {"reg_alpha": 2.0, "reg_lambda": 2.0, "colsample_bytree": 0.5}
@@ -408,6 +427,7 @@ class PortfolioSelectorModel:
 
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
         """Pickle model + scaler to directory. Returns model file path."""
+        _assert_trained_through(self, model_name, version)
         Path(directory).mkdir(parents=True, exist_ok=True)
         model_path = Path(directory) / f"{model_name}_v{version}.pkl"
         scaler_path = Path(directory) / f"{model_name}_scaler_v{version}.pkl"
@@ -644,6 +664,8 @@ class TwoStageModel:
         self.stage2_idx: List[int] = []
         self.is_trained = False
         self.predict_threshold: float = 0.35
+        # OOS-guard cutoff; pickled with the whole object (see _assert_trained_through).
+        self.trained_through: Optional[date] = None
 
     def _split_feature_indices(self, feature_names: List[str]):
         self.stage1_idx = [i for i, n in enumerate(feature_names) if n in FUNDAMENTAL_FEATURES]
@@ -738,6 +760,7 @@ class TwoStageModel:
         return sorted(combined.items(), key=lambda x: x[1], reverse=True) if combined else None
 
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        _assert_trained_through(self, model_name, version)
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
         _atomic_pickle_dump(self, path)
@@ -788,6 +811,8 @@ class ThreeStageModel:
         self.stage3_idx: List[int] = []
         self.is_trained = False
         self.predict_threshold: float = 0.35
+        # OOS-guard cutoff; pickled with the whole object (see _assert_trained_through).
+        self.trained_through: Optional[date] = None
 
     def _split_feature_indices(self, feature_names: List[str]) -> None:
         s1 = set(FUNDAMENTAL_FEATURES)
@@ -884,6 +909,7 @@ class ThreeStageModel:
         return sorted(combined.items(), key=lambda x: x[1], reverse=True) if combined else None
 
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        _assert_trained_through(self, model_name, version)
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
         _atomic_pickle_dump(self, path)
@@ -921,6 +947,8 @@ class LambdaRankModel:
         self.predict_threshold: float = 0.5
         self._feature_weights: Optional[np.ndarray] = None
         self._ts_norm_state = None  # set by training.py Bug 5 fix; included in pickle
+        # OOS-guard cutoff; pickled with the whole object (see _assert_trained_through).
+        self.trained_through: Optional[date] = None
         self.model = LGBMRanker(
             objective="lambdarank",
             n_estimators=600,
@@ -1037,6 +1065,7 @@ class LambdaRankModel:
         return sorted(zip(names, self.model.feature_importances_), key=lambda x: x[1], reverse=True)
 
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        _assert_trained_through(self, model_name, version)
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
         _atomic_pickle_dump(self, path)
@@ -1101,6 +1130,8 @@ class DoubleEnsembleModel:
         self._feature_weights: Optional[np.ndarray] = None
         self._learners: List = []          # fitted LGBMRanker instances
         self._feature_indices: List[List[int]] = []  # which features each learner uses
+        # OOS-guard cutoff; pickled with the whole object (see _assert_trained_through).
+        self.trained_through: Optional[date] = None
 
     def _make_learner(self) -> "LGBMRanker":
         return LGBMRanker(
@@ -1267,6 +1298,7 @@ class DoubleEnsembleModel:
         return sorted(combined.items(), key=lambda x: x[1], reverse=True) if combined else None
 
     def save(self, directory: str, version: int, model_name: str = "model") -> str:
+        _assert_trained_through(self, model_name, version)
         Path(directory).mkdir(parents=True, exist_ok=True)
         path = Path(directory) / f"{model_name}_v{version}.pkl"
         _atomic_pickle_dump(self, path)

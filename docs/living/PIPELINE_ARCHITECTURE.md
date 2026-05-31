@@ -436,6 +436,21 @@ CPCV run (separate from WF, no auto-promotion):
 
 ---
 
+### KL-10 — Model without `trained_through` cannot be OOS-evaluated (CRITICAL) — ✅ RESOLVED (save-guard)
+**Description:** `trained_through` is the model's training-data cutoff. The OOS guard (§9) certifies a result is out-of-sample only when `test_start > trained_through + purge`. A model whose `trained_through` is `None` has no verifiable cutoff, so any walk-forward/CPCV result on it is silently **in-sample**. Two shipped models (`intraday_v63`, `swing_v224`) predate the feature (PR #311) and so their artifacts never recorded it; `_load_model` had been injecting it from the model DB at load time, but the DB is now empty, so the value is gone. Worse, `LambdaRankModel` (swing) had no `trained_through` attribute on the class at all.
+
+**Frozen-model CPCV cannot be OOS:** running CPCV/WF over a *frozen, already-trained* model whose cutoff is unknown can never be certified OOS — every fold's test window may overlap the (unknown) training span. Such results are diagnostic-only, never promotion-grade.
+
+**Fix (this PR):**
+1. **Save-guard (keystone):** `_assert_trained_through()` at the top of every trained-model `save()` (`PortfolioSelectorModel`, `TwoStageModel`, `ThreeStageModel`, `LambdaRankModel`, `DoubleEnsembleModel`) raises `ValueError` if `trained_through is None`, feature-flagged by `REQUIRE_TRAINED_THROUGH` (default True). A model can never again be persisted without a verifiable cutoff.
+2. **Attribute on every trained class:** `self.trained_through: Optional[date] = None` added to the four classes that lacked it; carried through pickle save/load.
+3. **Load-time clarity:** `_load_model` in `walkforward_tier3.py` logs a clear error (not a raise) when a loaded ML model lacks `trained_through`, surfacing the stale-artifact cause earlier; the OOS guard remains the authoritative enforcement point.
+4. **Artifact-sourced, never DB-sourced:** `trained_through` is read from the pickled model object only; the DB path does not override it.
+
+**Impact:** v63/v224 must be retrained to regain a verifiable cutoff before any promotion; their historical gate numbers were unverifiable (in-sample).
+
+---
+
 ## 13. Feature Flags
 
 All live in `app/ml/retrain_config.py`.
@@ -457,6 +472,7 @@ All live in `app/ml/retrain_config.py`.
 | `CPCV_MIN_TSTAT` | 2.0 | Min path-Sharpe t-stat (N_eff=n_folds); gate via `require_tstat_gate` | Phase 3 ✅ |
 | `CPCVResult.require_tstat_gate` | False | True = path_sharpe_tstat < CPCV_MIN_TSTAT blocks gate | Phase 3 ✅ |
 | `ENFORCE_MIN_DATA_SPAN` | *planned* | Raise DataSpanError if data < 250 days | Phase 1 planned |
+| `REQUIRE_TRAINED_THROUGH` | True | True = `save()` refuses to persist a model whose `trained_through` is None (cannot be OOS-gate-evaluated). False only for diagnostic saves. See KL-10. | save-guard |
 
 ---
 
@@ -466,6 +482,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-05-31 | #KL10 | **Save-guard — refuse to persist a model without `trained_through` (KL-10):** `_assert_trained_through()` at the top of every trained-model `save()` raises `ValueError` when the cutoff is None (flag `REQUIRE_TRAINED_THROUGH`, default True); `trained_through` attribute added to `LambdaRankModel`/`TwoStageModel`/`ThreeStageModel`/`DoubleEnsembleModel` (was missing — the v224 bug); `_load_model` logs a clear stale-artifact error; `trained_through` documented as artifact-sourced, never DB-sourced. KL-10 RESOLVED. | `model.py`, `retrain_config.py`, `walkforward_tier3.py`, `tests/test_trained_through_guard.py` |
 | 2026-05-31 | #PHASE3 | **Phase 3 — CPCV path t-stat + StrategySimulator tier-2 (HIGH-3):** added `CPCVResult.path_sharpe_tstat` (N_eff=n_folds, NOT n_paths) reported + warned, gateable via `require_tstat_gate` (off by default, `CPCV_MIN_TSTAT=2.0`); StrategySimulator gains a TIER-2-ONLY banner + `build_daily_equity_curve` opt-in flag (forward-fills entry-date equity onto daily calendar). KL-4 partially addressed, KL-8 addressed. | `cpcv.py`, `strategy_simulator.py`, `retrain_config.py`, `tests/test_cpcv_tstat.py`, `tests/test_strategy_sim_daily_curve.py` |
 | 2026-05-31 | #PHASE2 | **Phase 2 — Regime gate overhaul (HIGH-2 + MEDIUM-4):** coarse3 BULL/BEAR/NEUTRAL labeler with expanding-quantile VIX thresholds (PIT-correct, no look-ahead); `REGIME_MIN_OBS=20` bucket floor; `worst_regime_sharpe is None` now HARD-FAILS `gate_passed()` (WF + CPCV) unless `ALLOW_NO_REGIME_GATE=True`. KL-2 + KL-7 RESOLVED. | `regime.py`, `gates.py`, `cpcv.py`, `reports.py`, `retrain_config.py`, `tests/test_regime_coarse3.py` |
 | 2026-05-31 | — | Document created; reflects post-13-round-audit state | This file |

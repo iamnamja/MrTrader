@@ -273,6 +273,11 @@ class TestModelTrainerIntegration:
         y = np.array([i % 2 for i in range(n)])   # balanced 0/1 labels
         names = [f"f{i}" for i in range(10)]
 
+        # _build_rolling_matrix is mocked, so it won't populate _last_all_dates;
+        # set it explicitly so train_model can derive trained_through (KL-10 save-guard).
+        from datetime import date as _date, timedelta as _td
+        trainer._last_all_dates = [_date(2024, 1, 1) + _td(days=i) for i in range(n)]
+
         with patch.object(trainer, "_fetch_data", return_value=data):
             with patch.object(
                 trainer, "_build_rolling_matrix",

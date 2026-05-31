@@ -229,9 +229,28 @@ def _subheader(msg):
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
+def _check_trained_through(obj, model_name, ver):
+    """Log a clear error if a loaded ML model lacks trained_through (stale pre-#311 artifact).
+
+    Does NOT raise — the object is still returned so the existing OOS guard
+    produces the authoritative failure. This surfaces a clearer, earlier message
+    pointing at the artifact (see docs/living/PIPELINE_ARCHITECTURE.md KL-10).
+    """
+    if getattr(obj, "trained_through", None) is None:
+        logger.error(
+            "%s v%d has no trained_through — stale pre-#311 artifact or DB-injected metadata lost. "
+            "The OOS guard will reject it. Retrain the model to persist a training cutoff.",
+            model_name, ver,
+        )
+
+
 def _load_model(model_name: str, version: Optional[int] = None):
     """Load a model by name. If version is given, load that specific version
-    regardless of status — used for re-testing historical models."""
+    regardless of status — used for re-testing historical models.
+
+    trained_through is artifact-sourced (carried in the pickled model object),
+    NEVER DB-sourced. The DB path below loads the pickle directly and does not
+    override trained_through from the ModelVersion record. See KL-10."""
     import pickle
     try:
         from app.database.models import ModelVersion as MV
@@ -273,12 +292,14 @@ def _load_model(model_name: str, version: Optional[int] = None):
                     if hasattr(obj, "is_trained"):
                         logger.info("Loaded %s model v%d (status=%s)",
                                     model_name, mv.version, mv.status)
+                        _check_trained_through(obj, model_name, mv.version)
                         return obj, mv.version
                 from app.ml.model import PortfolioSelectorModel
                 m = PortfolioSelectorModel(model_type="xgboost")
                 m.load(str(path.parent), mv.version, model_name=model_name)
                 logger.info("Loaded %s model v%d (status=%s)",
                             model_name, mv.version, mv.status)
+                _check_trained_through(m, model_name, mv.version)
                 return m, mv.version
         finally:
             db.close()
@@ -295,10 +316,12 @@ def _load_model(model_name: str, version: Optional[int] = None):
                 obj = pickle.load(f)
             if hasattr(obj, "is_trained"):
                 logger.info("Loaded %s model v%d from file", model_name, version)
+                _check_trained_through(obj, model_name, version)
                 return obj, version
             from app.ml.model import PortfolioSelectorModel
             m = PortfolioSelectorModel(model_type="xgboost")
             m.load(str(model_dir), version, model_name=model_name)
+            _check_trained_through(m, model_name, version)
             return m, version
 
     # When no version specified: only consider pkls that have a .gate_passed sentinel.
@@ -327,12 +350,14 @@ def _load_model(model_name: str, version: Optional[int] = None):
     if hasattr(obj, "is_trained"):
         logger.info("Loaded %s model v%d from file (gate_passed sentinel present)",
                     model_name, ver)
+        _check_trained_through(obj, model_name, ver)
         return obj, ver
     from app.ml.model import PortfolioSelectorModel
     m = PortfolioSelectorModel(model_type="xgboost")
     m.load(str(latest_gated.parent), ver, model_name=model_name)
     logger.info("Loaded %s model v%d from file (gate_passed sentinel present)",
                 model_name, ver)
+    _check_trained_through(m, model_name, ver)
     return m, ver
 
 

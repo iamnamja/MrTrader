@@ -340,11 +340,19 @@ class TestIntradayTrainingPipeline:
         X = np.random.randn(n, 13).astype(np.float32)
         y = np.array([i % 2 for i in range(n)])
         names = [f"f{i}" for i in range(13)]
+        # raw_train[:, 0] = day_ordinal; needed so train_model can set trained_through
+        # (KL-10 save-guard). Use a realistic ascending ordinal range.
+        from datetime import date as _date
+        base_ord = _date(2024, 1, 1).toordinal()
+        raw_train = np.column_stack([
+            np.arange(base_ord, base_ord + n, dtype=float),
+            np.random.randn(n),
+        ])
 
         with patch.object(trainer, "_fetch_data", return_value=data):
             with patch.object(
                 trainer, "_build_daily_matrix",
-                return_value=(X, y, X[:10], y[:10], names, [])
+                return_value=(X, y, X[:10], y[:10], names, raw_train)
             ):
                 with patch.object(trainer, "_record_version"):
                     with patch.object(trainer, "_next_version", return_value=1):
