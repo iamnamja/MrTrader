@@ -121,8 +121,11 @@ class TestWalkForwardReport:
         r = WalkForwardReport(model_type="swing")
         # Phase 1e: DSR gate requires high Sharpe + sufficient trades to be significant.
         # Use Sharpe=3.5 with 500 trades/fold so DSR p > 0.95 is satisfied.
+        # Phase 2: folds carry no regime data → bypass the now-enforced regime gate
+        # (this test verifies the avg/min-Sharpe path, not the regime gate).
         r.folds = [_fold(3.5, trades=500), _fold(3.5, trades=500)]
-        assert r.gate_passed() is True
+        with patch("app.ml.retrain_config.ALLOW_NO_REGIME_GATE", True):
+            assert r.gate_passed() is True
 
     def test_gate_fails_when_avg_below(self):
         from scripts.walkforward_tier3 import WalkForwardReport, SHARPE_GATE

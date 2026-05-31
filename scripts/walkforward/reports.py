@@ -22,7 +22,7 @@ def print_report(
 ) -> None:
     from scripts.walkforward.gates import (
         SHARPE_GATE, MIN_FOLD_SHARPE, N_TRIALS_TESTED,
-        MIN_PROFIT_FACTOR, MIN_CALMAR, deflated_sharpe_ratio,
+        MIN_PROFIT_FACTOR, MIN_CALMAR, MIN_WORST_REGIME_SHARPE, deflated_sharpe_ratio,
     )
     if dsr_n is None:
         dsr_n = N_TRIALS_TESTED
@@ -77,10 +77,16 @@ def print_report(
               f"{'OK' if detail['avg_calmar'][1] else 'FAIL'}")
     if report.avg_k_ratio != 0:
         print(f"  Avg K-ratio:       {report.avg_k_ratio:.3f}  (directional; > 0 = improving)")
+    from app.ml.retrain_config import ALLOW_NO_REGIME_GATE, REGIME_SCHEME
     wrs = report.worst_regime_sharpe
     if wrs is not None:
-        print(f"  Worst regime Sharpe: {wrs:+.3f}  (gate: > -0.5)  "
-              f"{'OK' if detail.get('worst_regime_sharpe', (None, True))[1] else 'FAIL'}")
+        print(f"  Worst regime Sharpe: {wrs:+.3f}  (gate: > {MIN_WORST_REGIME_SHARPE})  "
+              f"{'OK' if wrs >= MIN_WORST_REGIME_SHARPE else 'FAIL'}"
+              f"  [scheme={REGIME_SCHEME}]")
+    elif ALLOW_NO_REGIME_GATE:
+        _warn("Worst regime Sharpe: N/A  (gate bypassed — ALLOW_NO_REGIME_GATE=True)")
+    else:
+        _err("Worst regime Sharpe: N/A  *** REGIME DATA INSUFFICIENT — GATE FAILS ***")
     print()
     if report.gate_passed(dsr_n=dsr_n, paper_gate=paper_gate):
         mode = "PAPER GATE" if paper_gate else "GATE"

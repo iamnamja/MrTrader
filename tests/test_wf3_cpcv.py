@@ -26,6 +26,9 @@ def _cpcv_result(sharpes, pf=1.5, calmar=0.5):
     r.path_sharpes = list(sharpes)
     r.path_profit_factors = [pf] * len(sharpes)
     r.path_calmars = [calmar] * len(sharpes)
+    # Phase 2: passing regime value so the now-enforced regime gate is not the
+    # blocker in these mean/p5/pct-positive gate tests.
+    r.worst_regime_sharpe = 0.5
     return r
 
 

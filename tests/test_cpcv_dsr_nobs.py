@@ -64,4 +64,7 @@ def test_no_in_sample_override_allows_gate_pass():
     r.path_profit_factors = [1.5] * 15
     r.path_calmars = [1.0] * 15
     r.path_n_obs = [120] * 15
+    # Phase 2: real regime value so the now-enforced regime gate isn't the blocker
+    # (this test verifies the in-sample-override path, not regime).
+    r.worst_regime_sharpe = 0.5
     assert r.gate_passed() is True

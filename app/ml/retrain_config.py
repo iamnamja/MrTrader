@@ -238,6 +238,50 @@ ENFORCE_MIN_DATA_SPAN: bool = True
 """When True, raise DataSpanError if data span < MIN_DATA_SPAN_TRADING_DAYS.
 Set False for warn-only legacy behavior (e.g. intentional short-window experiments)."""
 
+# ── Phase 2: Regime gate overhaul ────────────────────────────────────────────
+REGIME_SCHEME: str = "coarse3"
+"""Regime label scheme for fold stratification and worst-regime-sharpe gate.
+'coarse3' (default): BULL/BEAR/NEUTRAL — 3 buckets with expanding-quantile VIX
+  thresholds (PIT-correct, no look-ahead). Gives enough obs per bucket for the
+  gate to be meaningful.
+'legacy16': VIX-quartile(4) × trend(2) × momentum(2) = up to 16 buckets. The
+  original scheme; produces too-sparse per-bucket obs for most fold windows.
+  Retained for backward compat and baseline comparison."""
+
+REGIME_BULL_VIX_PCTILE: float = 25.0
+"""VIX expanding-percentile threshold below which a day is BULL-eligible (coarse3).
+Default 25 = lower quartile. VIX below this AND SPY above REGIME_SPY_MA_BULL-day
+MA → BULL label."""
+
+REGIME_BEAR_VIX_PCTILE: float = 75.0
+"""VIX expanding-percentile threshold above which a day is BEAR (coarse3).
+Default 75 = upper quartile. VIX above this OR SPY below REGIME_SPY_MA_BEAR-day
+MA → BEAR label."""
+
+REGIME_SPY_MA_BULL: int = 50
+"""SPY MA period for BULL regime detection (coarse3). SPY must be above this
+MA for a day to qualify as BULL. Default 50 (50-day MA)."""
+
+REGIME_SPY_MA_BEAR: int = 200
+"""SPY MA period for BEAR regime detection (coarse3). SPY below this MA → BEAR
+regardless of VIX level. Default 200 (200-day MA)."""
+
+REGIME_MIN_OBS: int = 20
+"""Minimum daily-return observations required per regime bucket before that
+bucket's Sharpe is included in worst_regime_sharpe. Below this, the bucket is
+too noisy (sqrt(252) on 5 returns is not a Sharpe). Default 20 trading days."""
+
+REGIME_VIX_WARMUP_DAYS: int = 60
+"""Minimum VIX history before a day gets a non-NEUTRAL coarse3 label. Below
+this, the expanding-quantile thresholds are unstable. Default 60 trading days."""
+
+ALLOW_NO_REGIME_GATE: bool = False
+"""When False (default), worst_regime_sharpe=None causes gate_passed() to return
+False with a clear 'REGIME DATA INSUFFICIENT' message. This prevents the silent
+pass that has historically made the regime gate a no-op.
+Set True to restore old silent-pass behavior (for diagnostic runs or legacy
+comparisons where regime data is unavailable)."""
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
 #   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025

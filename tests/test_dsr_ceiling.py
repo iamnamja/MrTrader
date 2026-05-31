@@ -15,6 +15,9 @@ def _fold(sharpe: float, n_obs: int = 250) -> FoldResult:
         test_start=date(2022, 1, 1), test_end=date(2023, 1, 1),
         trades=100, win_rate=0.6, sharpe=sharpe,
         max_drawdown=0.02, total_return=0.5, stop_exit_rate=0.1, n_obs=n_obs,
+        # Phase 2: populate regime data so the (now-enforced) regime gate has a
+        # real value to check — this test is about the human-review flag, not regime.
+        regime_sharpes={"BULL": 1.0, "BEAR": 0.5, "NEUTRAL": 0.8},
     )
 
 
@@ -68,6 +71,8 @@ def _cpcv(sharpe: float) -> CPCVResult:
         path_profit_factors=[2.0] * 10,
         path_calmars=[1.0] * 10,
         path_n_obs=[250] * 10,
+        # Phase 2: real regime value so the now-enforced regime gate isn't the blocker.
+        worst_regime_sharpe=0.5,
     )
 
 

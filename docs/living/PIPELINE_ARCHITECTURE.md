@@ -227,7 +227,7 @@ run_cpcv(strategy, purge_days, embargo_days, n_folds=6, n_paths=2)
 | DSR | `deflated_sharpe_ratio(avg_sharpe, N_TRIALS_TESTED=250, total_obs)` | p > 0.95 | ⚠️ **NON-BINDING** above Sharpe ~2 | p = 1.0 for any Sharpe > 2; provides zero discrimination (see Known Limitation #1) |
 | Profit factor | `avg_profit_factor` (capped at 5.0) | ≥ 1.10 | ✅ **ACTIVE** | Waived if < 2 folds have PF > 0 |
 | Calmar | `avg_calmar` (geometric CAGR / max DD) | ≥ 0.30 | ⚠️ **WEAK** | No-DD folds get CAL_NO_DD_SENTINEL=+5.0 which trivially passes (see Known Limitation #3) |
-| Worst regime Sharpe | `worst_regime_sharpe` | ≥ -0.50 | ⚠️ **SILENTLY INACTIVE** | Returns `None` when regime_sharpes unpopulated or insufficient obs; `None` silently passes (see Known Limitation #2) |
+| Worst regime Sharpe | `worst_regime_sharpe` | ≥ -0.50 | ✅ **ACTIVE when regime_map populated; HARD FAIL when None** (Phase 2) | `None` now fails the gate unless `ALLOW_NO_REGIME_GATE=True`. coarse3 scheme (BULL/BEAR/NEUTRAL, expanding-quantile VIX) gives enough obs/bucket; REGIME_MIN_OBS=20 floor (see Known Limitation #2 RESOLVED) |
 
 **Paper-trade variant:** `gate_passed(paper_gate=True)` uses relaxed thresholds (Sharpe ≥ 0.50, min fold ≥ -0.40) and waives PF + Calmar gates entirely.
 
@@ -241,7 +241,7 @@ run_cpcv(strategy, purge_days, embargo_days, n_folds=6, n_paths=2)
 | DSR | as above | p > 0.95 | ⚠️ **NON-BINDING** | Same saturation issue |
 | Profit factor | `avg_profit_factor` | ≥ 1.10 | ✅ **ACTIVE** | Waived if < 2 paths |
 | Calmar | `avg_calmar` | ≥ 0.30 | ⚠️ **WEAK** | Same sentinel issue as WF |
-| Worst regime Sharpe | as WF | ≥ -0.50 | ⚠️ **SILENTLY INACTIVE** | `None` silently passes |
+| Worst regime Sharpe | as WF | ≥ -0.50 | ✅ **ACTIVE; HARD FAIL when None** (Phase 2) | `None` fails unless `ALLOW_NO_REGIME_GATE=True` (mirrors WalkForwardReport) |
 | Min active paths | `len(path_sharpes) >= 2` | | ✅ **ACTIVE** | Must have ≥ 2 paths before any gate fires |
 
 ### 7c. What gate_passed() does NOT check (not in the boolean AND)
@@ -377,12 +377,12 @@ CPCV run (separate from WF, no auto-promotion):
 
 **Fix status:** Planned Phase 1. Will add `SHARPE_IMPLAUSIBILITY_CEILING=3.0` and `requires_human_review()` flag. DSR retained as secondary but labeled SATURATED when p > 0.999.
 
-### KL-2 — Regime gate silently passes (HIGH)
-**Description:** `worst_regime_sharpe is None` → `regime_ok = True` in `gate_passed()`. The regime gate has never blocked any model promotion. Combined with 16-bucket label scheme producing too-sparse per-regime samples, the gate is effectively a no-op.
+### KL-2 — Regime gate silently passes (HIGH) — ✅ RESOLVED (Phase 2)
+**Description:** `worst_regime_sharpe is None` → `regime_ok = True` in `gate_passed()`. The regime gate had never blocked any model promotion. Combined with 16-bucket label scheme producing too-sparse per-regime samples, the gate was effectively a no-op.
 
-**Impact:** Models with poor performance in specific market regimes (bear markets, VIX spikes) can pass the gate while being regime-sensitive.
+**Impact:** Models with poor performance in specific market regimes (bear markets, VIX spikes) could pass the gate while being regime-sensitive.
 
-**Fix status:** Planned Phase 2. Will coarsen to 3 buckets, set `ALLOW_NO_REGIME_GATE=False`, make None a blocking failure.
+**Fix status:** ✅ RESOLVED Phase 2 (PR #PHASE2). `REGIME_SCHEME="coarse3"` coarsens to BULL/BEAR/NEUTRAL (3 buckets) so per-bucket obs are sufficient; `REGIME_MIN_OBS=20` floor drops too-noisy buckets; `ALLOW_NO_REGIME_GATE=False` (default) makes `worst_regime_sharpe is None` a HARD FAIL in both `WalkForwardReport.gate_passed()` and `CPCVResult.gate_passed()` (with a clear "REGIME DATA INSUFFICIENT" error log). Set `ALLOW_NO_REGIME_GATE=True` to restore legacy silent-pass for diagnostic runs.
 
 ### KL-3 — Calmar gate trivially passes via no-DD sentinel (MEDIUM)
 **Description:** No-DD profitable folds receive `CAL_NO_DD_SENTINEL=+5.0`. Intraday tight-stop strategies with multiple no-DD folds trivially clear `avg_calmar ≥ 0.30`.
@@ -412,12 +412,12 @@ CPCV run (separate from WF, no auto-promotion):
 
 **Fix status:** Planned Phase 1. Will add `avg_capital_deployed_pct` and `deployment_adjusted_sharpe` to SimResult/FoldResult, with `LOW DEPLOYMENT WARNING` in reports.
 
-### KL-7 — VIX quantile thresholds use look-ahead (MEDIUM)
-**Description:** `pd.qcut(vix, q=4)` in `regime.py` computes quartile boundaries over the full evaluation window including future data.
+### KL-7 — VIX quantile thresholds use look-ahead (MEDIUM) — ✅ RESOLVED (Phase 2)
+**Description:** `pd.qcut(vix, q=4)` in `regime.py` computed quartile boundaries over the full evaluation window including future data.
 
-**Impact:** Regime labels for early dates are influenced by VIX values that occur after them. Mild look-ahead in regime classification.
+**Impact:** Regime labels for early dates were influenced by VIX values that occur after them. Mild look-ahead in regime classification.
 
-**Fix status:** Resolved by Phase 2 coarsening (expanding quantile for VIX thresholds in BULL/BEAR/NEUTRAL scheme).
+**Fix status:** ✅ RESOLVED Phase 2. The coarse3 scheme (`_load_coarse3`) computes VIX BULL/BEAR thresholds with **expanding quantiles** (`np.percentile(vix_arr[:i+1], pctile)`) using only data up to and including day `i` — PIT-correct, no look-ahead. Days with `< REGIME_VIX_WARMUP_DAYS=60` of prior history are labeled NEUTRAL. Regression-tested by `tests/test_regime_coarse3.py::test_coarse3_no_lookahead` (label at date t is identical whether the series ends at t or extends 200 days further). The legacy16 path (`pd.qcut`) is retained only under `REGIME_SCHEME="legacy16"` for baseline comparison.
 
 ### KL-8 — StrategySimulator equity curve entry-date only (LOW, tier-2 only)
 **Description:** `strategy_simulator.py:StrategySimulator.run()` records equity only on trade-entry dates, not daily. Sharpe annualization is incorrect for sparse-entry strategies.
@@ -449,8 +449,10 @@ All live in `app/ml/retrain_config.py`.
 | `INTRADAY_ENABLED` | False | Enable scheduled intraday retrain | Phase C |
 | `REGIME_SPLIT_VIX_THRESHOLD` | 0.0 | Train separate calm/shock models; 0 = disabled | Phase B |
 | `USE_CALMAR_VOL_FLOOR` | *planned* | No-DD folds: vol-floor DD instead of sentinel | Phase 1 planned |
-| `REGIME_SCHEME` | *planned* | `"coarse3"` vs `"legacy16"` regime labeler | Phase 2 planned |
-| `ALLOW_NO_REGIME_GATE` | *planned* | False = None worst_regime_sharpe fails gate | Phase 2 planned |
+| `REGIME_SCHEME` | `"coarse3"` | `"coarse3"` (BULL/BEAR/NEUTRAL, expanding-quantile VIX) vs `"legacy16"` | Phase 2 ✅ |
+| `REGIME_MIN_OBS` | 20 | Min daily-return obs per regime bucket before its Sharpe counts | Phase 2 ✅ |
+| `REGIME_VIX_WARMUP_DAYS` | 60 | Min VIX history before a day gets a non-NEUTRAL coarse3 label | Phase 2 ✅ |
+| `ALLOW_NO_REGIME_GATE` | False | False = None worst_regime_sharpe HARD-FAILS gate (no silent pass) | Phase 2 ✅ |
 | `ENFORCE_MIN_DATA_SPAN` | *planned* | Raise DataSpanError if data < 250 days | Phase 1 planned |
 
 ---
@@ -461,6 +463,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-05-31 | #PHASE2 | **Phase 2 — Regime gate overhaul (HIGH-2 + MEDIUM-4):** coarse3 BULL/BEAR/NEUTRAL labeler with expanding-quantile VIX thresholds (PIT-correct, no look-ahead); `REGIME_MIN_OBS=20` bucket floor; `worst_regime_sharpe is None` now HARD-FAILS `gate_passed()` (WF + CPCV) unless `ALLOW_NO_REGIME_GATE=True`. KL-2 + KL-7 RESOLVED. | `regime.py`, `gates.py`, `cpcv.py`, `reports.py`, `retrain_config.py`, `tests/test_regime_coarse3.py` |
 | 2026-05-31 | — | Document created; reflects post-13-round-audit state | This file |
 | 2026-05-30 | #327 | OOS same-day overlap guard; gate_detail n_paths consistency | `cpcv.py`, `oos_guard.py` |
 | 2026-05-30 | #326 | CPCV embargo guard; intraday OOS trading-day purge; regime-gate warning | `cpcv.py`, `engine.py`, `gates.py` |

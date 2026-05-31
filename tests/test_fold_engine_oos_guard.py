@@ -26,6 +26,9 @@ def _make_passing_report(in_sample_override: bool) -> WalkForwardReport:
             trades=100, win_rate=0.60, sharpe=2.5, max_drawdown=0.05,
             total_return=0.20, stop_exit_rate=0.1, model_version=63,
             profit_factor=1.8, calmar_ratio=1.5, n_obs=120,
+            # Phase 2: passing regime data so the now-enforced regime gate isn't
+            # the blocker (this test checks the OOS-guard path, not regime).
+            regime_sharpes={"BULL": 1.0, "BEAR": 0.5, "NEUTRAL": 0.8},
         ))
     return r
 
