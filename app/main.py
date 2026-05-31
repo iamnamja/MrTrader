@@ -278,6 +278,22 @@ async def lifespan(app: FastAPI):
     app.state.market_task = asyncio.create_task(_refresh_market_data(), name="market_data")
     app.state.wf_recon_task = asyncio.create_task(_schedule_wf_reconciliation(), name="wf_reconciliation")
 
+    # ── 10. Notification watcher ──────────────────────────────────────────────
+    app.state.notify_proc = None
+    try:
+        _nw_script = Path(__file__).resolve().parents[1] / "scripts" / "notify_watcher.py"
+        _nw_log = Path(__file__).resolve().parents[1] / "logs" / "notify_watcher.log"
+        app.state.notify_proc = subprocess.Popen(
+            [sys.executable, str(_nw_script)],
+            stdout=open(_nw_log, "a"),
+            stderr=subprocess.STDOUT,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        log.info("Notification watcher started (pid=%d, log=%s)",
+                 app.state.notify_proc.pid, _nw_log)
+    except Exception as e:
+        log.warning("Notification watcher failed to start: %s", e)
+
     log.info("MrTrader application started successfully")
 
     # ── Serve requests ────────────────────────────────────────────────────────
@@ -287,6 +303,15 @@ async def lifespan(app: FastAPI):
     _log_shutdown = logging.getLogger("mrtrader.shutdown")
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     _log_shutdown.info("%s\n  MRTRADER SHUTDOWN  %s\n%s", "=" * 72, now_utc, "=" * 72)
+
+    # Stop notification watcher
+    _nw = getattr(app.state, "notify_proc", None)
+    if _nw and _nw.poll() is None:
+        _nw.terminate()
+        try:
+            _nw.wait(timeout=5)
+        except Exception:
+            _nw.kill()
 
     from app.orchestrator import orchestrator
     await orchestrator.stop()
