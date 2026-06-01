@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CPCV_K = 6       # number of fold groups
+CPCV_K = 8       # number of fold groups
 CPCV_PATHS = 2   # test groups per combination → C(6,2)=15 paths
 TOTAL_YEARS = 6
 
@@ -105,6 +105,19 @@ class PEADStrategy:
             for d in df.index
         })
         self.all_days_sorted = all_days
+
+        # Pre-compute global regime map over the full evaluation window so VIX
+        # quartile thresholds are stable across folds (mirrors swing.py:174-179).
+        # Required for compute_regime_sharpes / worst-regime-sharpe gate.
+        try:
+            from scripts.walkforward.regime import load_regime_map as _lrm
+            self._global_regime_map = _lrm(
+                start.date() if hasattr(start, "date") else start,
+                end.date() if hasattr(end, "date") else end,
+            )
+        except Exception:
+            self._global_regime_map = {}
+
         logger.info("Data loaded: %d symbols, %d days in %.1fs",
                     len(self.symbols_data), len(all_days), time.time() - t0)
 
@@ -136,11 +149,23 @@ class PEADStrategy:
             spy_prices=self.spy_prices,
         )
 
+        from scripts.walkforward.regime import compute_regime_sharpes as _crs
+
         stop_exits = result.exit_breakdown.get("STOP", 0)
         n_trades = int(result.total_trades)
         stop_rate = float(stop_exits) / max(n_trades, 1)
-        trade_returns = getattr(result, "trade_returns", [])
+        # PF: use AgentSimulator's result.profit_factor directly (computed with
+        # _PF_NO_LOSS_SENTINEL); SimResult has no trade_returns attr. Fall back to
+        # per-trade pnl_pct extraction. Mirrors swing.py:317-343.
+        trades_list = getattr(result, "trades", None) or []
+        trade_returns = [t.pnl_pct for t in trades_list if hasattr(t, "pnl_pct")]
         equity_curve = getattr(result, "equity_curve", [])
+        # n_obs = trading-day return observations for DSR. equity_curve is one
+        # (date, equity) point per trading day; diffs give daily returns → len-1.
+        # Mirrors swing.py:320-323. Without this DSR falls back to ~path-count.
+        n_obs = max(len(equity_curve) - 1, 0)
+        regime_sharpes = _crs(equity_curve, te_start, te_end,
+                              regime_map=getattr(self, "_global_regime_map", None))
         years = fold_years(te_start, te_end)
         sharpe = float(result.sharpe_ratio)
         total_ret = float(result.total_return_pct)
@@ -162,9 +187,11 @@ class PEADStrategy:
             total_return=total_ret,
             stop_exit_rate=stop_rate,
             model_version=0,
-            profit_factor=compute_profit_factor(trade_returns),
+            profit_factor=getattr(result, "profit_factor", compute_profit_factor(trade_returns)),
             calmar_ratio=compute_calmar(total_ret, max_dd, years),
             k_ratio=compute_k_ratio(equity_curve),
+            n_obs=n_obs,
+            regime_sharpes=regime_sharpes,
         )
 
 
@@ -180,7 +207,7 @@ def main() -> int:
         long_threshold=0.05,
         short_threshold=-0.05,
         long_short=False,
-        vix_block_all=100.0,
+        vix_block_all=30.0,
         vix_block_short=100.0,
         vix_conf_ref=100.0,
         max_announce_day_move=1.0,  # disabled — large gaps retain drift signal
