@@ -145,10 +145,42 @@ class IntradayStrategy:
             except Exception as exc:
                 logger.warning("VIX download failed: %s", exc)
 
+        # C14-1: defensively clamp the trading-day axis to the requested
+        # [start, end] window. load_many() already filters by date, but the fold
+        # boundaries (engine._build_trading_day_folds) AND the per-fold train
+        # matrix (build_train_matrix_for_window) must agree on the exact same
+        # day set, otherwise an early fold can get tr_start before any bars exist
+        # → empty train matrix → "no training samples" (the 2nd per-fold empty-
+        # matrix bug). Clamping here makes all_days_sorted authoritative and
+        # independent of any provider/cache filtering quirk.
+        _start_d = start.date() if hasattr(start, "date") else start
+        _end_d = end.date() if hasattr(end, "date") else end
         self.all_days_sorted = sorted({
             d for df in self.symbols_data.values()
             for d in pd.to_datetime(df.index).date
+            if _start_d <= d <= _end_d
         })
+        # C14-1: also clamp the per-symbol 5-min bars to the same window so the
+        # matrix builder's train_days (derived from symbols_data) can never span
+        # a day outside all_days_sorted. Keeps the two day-axes in lock-step.
+        # ^VIX is a DAILY overlay deliberately fetched with a 1-year warm-up
+        # buffer (line ~138) — do NOT clamp it, or its rolling/quantile lookback
+        # would be stripped. Only the per-symbol 5-min equity bars are clamped.
+        _clamped: Dict[str, pd.DataFrame] = {}
+        for _sym, _df in self.symbols_data.items():
+            if _df is None or len(_df) == 0:
+                continue
+            if _sym in ("^VIX", "VIX"):
+                _clamped[_sym] = _df
+                continue
+            _idx = pd.to_datetime(_df.index)
+            _mask = (_idx.date >= _start_d) & (_idx.date <= _end_d)
+            _sub = _df[_mask]
+            if len(_sub) > 0:
+                _clamped[_sym] = _sub
+        self.symbols_data = _clamped
+        # Re-point SPY after clamping (object identity changed).
+        self.spy_data = self.symbols_data.get("SPY", self.spy_data)
         # C11-6: pre-compute regime_map over the full evaluation window so VIX quartile
         # thresholds are stable across all folds (not re-computed per test window).
         try:
@@ -179,6 +211,12 @@ class IntradayStrategy:
         if not self.all_days_sorted:
             self._daily_data = {}
             return self._daily_data
+        # C14-1: anchor the daily-bar fetch to the EARLIEST fold train start
+        # (all_days_sorted[0], now clamped to the requested window in fetch_data).
+        # _fetch_daily_all subtracts a further 365 calendar days internally, so the
+        # 52-week / vol-percentile features get ~1yr of daily warm-up BEFORE the
+        # first training day. This keeps daily coverage = [first_fold_start - 1yr,
+        # last_day] in lock-step with the 5-min day-axis the folds are built from.
         start = datetime.combine(self.all_days_sorted[0], datetime.min.time())
         end = datetime.combine(self.all_days_sorted[-1], datetime.min.time()) + timedelta(days=1)
         trainer = IntradayModelTrainer(provider="alpaca")

@@ -710,6 +710,20 @@ class IntradayModelTrainer:
         train_days = {d for d in all_days if ts <= d <= te}
         test_days: set = set()
 
+        # C14-1: surface a data-span mismatch as a clear diagnostic instead of a
+        # generic empty matrix. When the window [ts, te] does not overlap ANY
+        # loaded 5-min trading day, the fold boundaries were built from a wider
+        # day-axis than the bars actually cover (the per-fold empty-matrix bug).
+        if all_days and not train_days:
+            _bars_lo, _bars_hi = min(all_days), max(all_days)
+            raise RuntimeError(
+                f"build_train_matrix_for_window: window [{ts}, {te}] does not "
+                f"overlap any loaded 5-min trading day (bars span "
+                f"[{_bars_lo}, {_bars_hi}]). The fold boundary axis "
+                f"(all_days_sorted) is wider than the loaded bars — clamp them in "
+                f"IntradayStrategy.fetch_data so fold windows never precede the data."
+            )
+
         X_train, y_train, _, _, feature_names, raw_train = self._build_matrix_parallel(
             symbols_data, spy_data, daily_data or {}, spy_daily_data,
             train_days=train_days, test_days=test_days,

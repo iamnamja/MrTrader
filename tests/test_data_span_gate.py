@@ -78,6 +78,31 @@ def test_run_cpcv_short_span_raises():
         run_cpcv(s, purge_days=2, embargo_days=2, n_folds=6, n_paths=2, total_days=300)
 
 
+def test_intraday_coverage_mismatch_raises():
+    """C14-1: intraday CPCV must fail loudly when the fold-boundary day-axis
+    (all_days_sorted) starts BEFORE the loaded 5-min bars (symbols_data). Without
+    this guard, early folds silently produce empty train matrices."""
+    # all_days_sorted spans 2024-01-02 + 300 days, but symbols_data bars only
+    # cover the LAST ~150 of those days → fold[0].train_start precedes the bars.
+    all_days = _trading_days(300)  # starts 2022-01-03 (see _trading_days)
+    late_idx = pd.DatetimeIndex(all_days[150:])  # bars only for the later half
+    df_late = pd.DataFrame({"close": range(len(late_idx))}, index=late_idx)
+    s = _StubStrategy(all_days=all_days, symbols_data={"AAA": df_late})
+    with pytest.raises(DataSpanError):
+        run_cpcv(s, purge_days=2, embargo_days=2, n_folds=5, n_paths=2, total_days=300)
+
+
+def test_intraday_coverage_ok_no_raise():
+    """C14-1: when symbols_data covers all_days_sorted, no mismatch error."""
+    all_days = _trading_days(300)
+    full_idx = pd.DatetimeIndex(all_days)
+    df_full = pd.DataFrame({"close": range(len(full_idx))}, index=full_idx)
+    s = _StubStrategy(all_days=all_days, symbols_data={"AAA": df_full})
+    s.allow_in_sample = True
+    # Must not raise a DataSpanError for the coverage check (folds covered).
+    run_cpcv(s, purge_days=2, embargo_days=2, n_folds=5, n_paths=2, total_days=300)
+
+
 def test_swing_path_span():
     # Swing: span derived from symbols_data distinct dates (no all_days_sorted).
     idx_300 = pd.DatetimeIndex([date(2021, 1, 1) + timedelta(days=i) for i in range(300)])

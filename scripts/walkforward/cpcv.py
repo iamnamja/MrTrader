@@ -458,6 +458,39 @@ def run_cpcv(
                     raise DataSpanError(msg)
                 logger.warning(msg)
 
+    # C14-1: intraday (trading-day) coverage guard. The fold boundaries are built
+    # from strategy.all_days_sorted, but the per-fold TRAIN matrix is built from
+    # strategy.symbols_data (build_train_matrix_for_window derives train_days from
+    # the loaded 5-min bars). If all_days_sorted spans EARLIER than the actual
+    # 5-min bars, the first folds get train_start before any bars exist →
+    # train_days={} → empty matrix → "no training samples" (the 2nd per-fold
+    # empty-matrix bug). Fail loudly here with the concrete span numbers instead
+    # of emitting N silent per-fold warnings.
+    if total_years is None:
+        import pandas as _pd
+        _sd = getattr(strategy, "symbols_data", None) or {}
+        _data_dates: set = set()
+        for _df in _sd.values():
+            if hasattr(_df, "index"):
+                for _d in _pd.DatetimeIndex(_df.index).date:
+                    _data_dates.add(_d)
+        if _data_dates:
+            _data_start = min(_data_dates)
+            _fold_start = all_boundaries[0][0]
+            _fold_start = _fold_start.date() if hasattr(_fold_start, "date") else _fold_start
+            if _data_start > _fold_start:
+                from app.ml.retrain_config import ENFORCE_MIN_DATA_SPAN
+                msg = (
+                    f"CPCV (intraday) DATA-SPAN MISMATCH: fold train windows start "
+                    f"{_fold_start} but 5-min bars start {_data_start}. Folds before "
+                    f"the data start produce EMPTY train matrices ('no training "
+                    f"samples'). all_days_sorted must be clamped to the loaded bars "
+                    f"(IntradayStrategy.fetch_data). Re-fetch with a consistent window."
+                )
+                if ENFORCE_MIN_DATA_SPAN:
+                    raise DataSpanError(msg)
+                logger.warning(msg)
+
     # C11-10: verify strategy data range covers the constructed fold window so that
     # a caller who fetched a shorter range does not silently produce empty-fold results.
     if total_years is not None:
