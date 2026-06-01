@@ -479,6 +479,8 @@ CPCV run (separate from WF, no auto-promotion):
 
 **Scope.** Phase 1 = SWING (daily bars). Phase 2 = INTRADAY (5-min, reduced universe). Both ship the same seam; frozen-mode behavior is UNCHANGED when `per_fold_retrain=False`.
 
+**Real-data smoke test (guards the per-fold empty-matrix bug class).** `scripts/smoke_test_per_fold.py` runs a MINIMAL real per-fold CPCV (swing + intraday; 30 symbols, k=4, paths=2, `--as-of 2026-05-29`) and asserts the non-vacuous invariants the unit suite could not: `n_combinations > 0` (≥1 surviving path), ≥1 fold actually fit a model, `is_true_walkforward is True`, per-fold `trained_through == tr_end` for ≥1 fold, and (intraday) that the shallow daily-coverage warning did NOT fire (PR #343). It exists because PR #339 (swing regime-map crash) and PR #342 (intraday day-axis desync) BOTH shipped to prod and BOTH passed the unit suite vacuously — the tests fed mocked/synthetic frames with full coverage and asserted `len(X)>0` only on those, so the real-data "every row dropped → 0 paths" failure mode was never exercised. It is NOT in the pytest suite (too slow, needs real data/network) — run `python scripts/smoke_test_per_fold.py --model both` NIGHTLY or before merging any pipeline-touching PR (`--dry-run` validates wiring without fetching). Importing the module triggers no data fetch (lazy imports; fetch only inside `run()`).
+
 ---
 
 ## 13. Feature Flags
