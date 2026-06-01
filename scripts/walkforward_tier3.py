@@ -1612,6 +1612,35 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
     )
     strategy.model_type = "intraday"
     strategy.allow_in_sample = getattr(args, "allow_in_sample", False)
+
+    # Phase 2: per-fold retraining (true out-of-sample) for intraday. Construct
+    # the retrainer from the active INTRADAY_RETRAIN architecture so each fold
+    # fits a fresh model on only its own training window.
+    if getattr(args, "per_fold_retrain", False):
+        from scripts.walkforward.retrainers import IntradayFoldRetrainer, TrainWindowCache
+        from app.ml.retrain_config import INTRADAY_RETRAIN
+        _retrainer = IntradayFoldRetrainer(base_config=dict(
+            model_dir="app/ml/models",
+            provider=INTRADAY_RETRAIN.get("provider", "alpaca"),
+        ))
+        strategy.retrainer = _retrainer
+        strategy.per_fold_retrain = True
+        strategy._train_cache = TrainWindowCache(_retrainer)
+        # Feasibility guard: full Russell-1000 intraday per-fold is OOM-infeasible.
+        # Force a reduced liquidity universe; warn loudly when full CPCV is asked.
+        _top_n = getattr(args, "intraday_top_n", 150) or 150
+        strategy.top_n_by_liquidity = _top_n
+        _subheader("PER-FOLD RETRAIN MODE (intraday): true out-of-sample — each fold "
+                   f"fits a fresh model on its own training window (universe capped to "
+                   f"top-{_top_n} by liquidity)")
+        if args.cpcv_k > 4:
+            _warn(
+                f"INTRADAY PER-FOLD FEASIBILITY: cpcv_k={args.cpcv_k} > 4. Full CPCV "
+                f"retrains C(k,p) windows of 5-min features and is expensive/OOM-prone. "
+                f"The design recommends reduced-universe WF with k=4. Proceeding, but "
+                f"expect long runtime and high memory."
+            )
+
     # Anchor fetch window to retrain_as_of() (same clock as fold boundaries in run_cpcv)
     # to prevent silent truncation of the final test fold.
     _cpcv_intraday_as_of = getattr(args, "as_of", None)
@@ -1968,10 +1997,18 @@ def main() -> int:
                              "training period. Results labeled in-sample; cannot promote "
                              "past gates. Use for diagnostics only.")
     parser.add_argument("--per-fold-retrain", action="store_true", default=False,
-                        help="SWING ONLY (Phase 1): retrain a fresh model inside each "
-                             "WF/CPCV fold on only that fold's training window — true "
+                        help="SWING + INTRADAY (Phase 1/2): retrain a fresh model inside "
+                             "each WF/CPCV fold on only that fold's training window — true "
                              "out-of-sample. Default (off) uses the frozen-model "
-                             "generalization test. See docs/living/PIPELINE_ARCHITECTURE.md.")
+                             "generalization test. For intraday this forces a reduced "
+                             "liquidity universe (--intraday-top-n) for feasibility. "
+                             "See docs/living/PIPELINE_ARCHITECTURE.md.")
+    parser.add_argument("--intraday-top-n", type=int, default=150,
+                        help="Intraday per-fold-retrain universe cap: keep top-N symbols "
+                             "by 20-day median dollar volume before building the per-fold "
+                             "matrix. Full Russell-1000 per-fold intraday is OOM-infeasible; "
+                             "the design recommends reduced-universe WF (k=4), not full CPCV. "
+                             "Default 150. Ignored in frozen intraday mode.")
     args = parser.parse_args()
 
     # WF-C2: parse --as-of into a date
@@ -2292,36 +2329,54 @@ def main() -> int:
             as_of=_as_of_date,
             allow_in_sample=getattr(args, "allow_in_sample", False),
         )
-        intraday_report = run_intraday_walkforward(**_intraday_kwargs)
-        intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
-        print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
-        if args.bootstrap > 0:
-            _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
-        if args.cpcv and args.model in ("intraday", "both"):
-            _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
-        if not intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
-            passed = False
-        # CRITICAL-1: block auto-promotion when the result is implausibly strong.
-        if intraday_report.requires_human_review():
-            from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
-            logger.warning(
-                "AUTO-PROMOTION BLOCKED: intraday avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
-                "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
-                intraday_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
-            )
-            passed = False
-        if args.record_results and intraday_report.folds:
-            from app.ml.intraday_training import IntradayModelTrainer
-            loaded_ver = intraday_report.folds[0].model_version if intraday_report.folds else 0
-            # C-1 fix: gate sentinel on combined decision — mirrors swing fix above.
-            _intraday_promotable = (intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
-                                    and not intraday_report.requires_human_review())
-            IntradayModelTrainer.record_tier3_result(
-                version=loaded_ver,
-                avg_sharpe=intraday_report.avg_sharpe,
-                fold_sharpes=[f.sharpe for f in intraday_report.folds],
-                gate_passed=_intraday_promotable,
-            )
+        # Per-fold-retrain short-circuit (mirror swing): run_intraday_walkforward
+        # is a frozen-model generalization test (is_true_walkforward=False) with a
+        # bespoke loop and NO per-fold path — it calls assert_model_oos on the
+        # frozen model and would either run an in-sample frozen number or, with a
+        # per-fold model, has no plumbing. When --per-fold-retrain + --cpcv are
+        # set, skip the legacy WF and run ONLY the genuine per-fold CPCV.
+        if getattr(args, "per_fold_retrain", False) and args.cpcv:
+            print("  Per-fold-retrain mode (intraday): skipping legacy frozen WF; "
+                  "running per-fold CPCV only.")
+            _cpcv_intra_res = _run_cpcv_intraday(
+                args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
+            # The per-fold CPCV is the ONLY signal in this branch — its gate result
+            # IS the intraday result (mirrors the swing per-fold short-circuit).
+            if _cpcv_intra_res is None or not _cpcv_intra_res.gate_passed(
+                    dsr_n=args.dsr_n, paper_gate=args.paper_gate):
+                passed = False
+            print(f"  Intraday per-fold CPCV elapsed: {time.time()-t0:.0f}s")
+        else:
+            intraday_report = run_intraday_walkforward(**_intraday_kwargs)
+            intraday_report.print(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+            print(f"  Intraday walk-forward elapsed: {time.time()-t0:.0f}s")
+            if args.bootstrap > 0:
+                _bootstrap_folds(run_intraday_walkforward, n_bootstrap=args.bootstrap, **_intraday_kwargs)
+            if args.cpcv and args.model in ("intraday", "both"):
+                _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed)
+            if not intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate):
+                passed = False
+            # CRITICAL-1: block auto-promotion when the result is implausibly strong.
+            if intraday_report.requires_human_review():
+                from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
+                logger.warning(
+                    "AUTO-PROMOTION BLOCKED: intraday avg Sharpe %.3f > SHARPE_IMPLAUSIBILITY_CEILING %.1f. "
+                    "Manual review required before promoting. See docs/living/PIPELINE_ARCHITECTURE.md §12 KL-6.",
+                    intraday_report.avg_sharpe, SHARPE_IMPLAUSIBILITY_CEILING,
+                )
+                passed = False
+            if args.record_results and intraday_report.folds:
+                from app.ml.intraday_training import IntradayModelTrainer
+                loaded_ver = intraday_report.folds[0].model_version if intraday_report.folds else 0
+                # C-1 fix: gate sentinel on combined decision — mirrors swing fix above.
+                _intraday_promotable = (intraday_report.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate)
+                                        and not intraday_report.requires_human_review())
+                IntradayModelTrainer.record_tier3_result(
+                    version=loaded_ver,
+                    avg_sharpe=intraday_report.avg_sharpe,
+                    fold_sharpes=[f.sharpe for f in intraday_report.folds],
+                    gate_passed=_intraday_promotable,
+                )
 
     print()
     if passed:
