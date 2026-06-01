@@ -7534,3 +7534,23 @@ This **confirms the ~0.5-0.7 academic ceiling** for long-only large-cap PEAD aft
 1. **PEAD long-only (+0.546) is paper-gate-ready** (clears 0.50 PAPER_SHARPE_GATE; t=2.26, 95% pos, PF 1.54, DSR-pass). Paper-trade it.
 2. The **0.80 promotion gate may be too strict** for a real edge with PF 1.54 / 95%-positive / DSR-pass / Calmar 0.77 — worth a deliberate decision (the multi-LLM reviews flagged 0.80 + P5>-0.30 as unusually strict).
 3. **Second-edge hunt:** honest re-test of `QualityShortScorer` (purpose-built fundamental-deterioration short, never validated on the honest pipeline) — the structurally-sound L/S the deep-dive recommended.
+
+---
+
+## QualityShort shorts-only — honest CPCV — RULED OUT — 2026-06-01
+
+**Run:** `scripts/run_qualityshort_cpcv.py` (PR #354) — `QualityShortScorer(legs_mode="shorts_only")` through the honest CPCV harness (C(8,2), k=8, ~6yr, 5bps, real n_obs/DSR/regime/PF, PIT-safe, shorts confirmed executing).
+**Log:** `logs/p0_qualityshort_cpcv.log`
+
+| Metric | Value | Gate | Pass |
+|---|---|---|---|
+| Mean Sharpe | **-0.903** | ≥ 0.80 | ❌ |
+| Path t-stat (N_eff=8) | **-3.19** | ≥ 2.0 | ❌ (significantly NEGATIVE) |
+| % positive | 23.8% | ≥ 75% | ❌ |
+| P5 / P95 | -1.994 / +0.288 | — | — |
+| Avg PF | 0.625 | > 1.1 | ❌ |
+| Avg Calmar | -0.699 | > 0.3 | ❌ |
+
+**Verdict:** another inflated number deflated to honesty — worse, to significantly NEGATIVE. Old Phase-H (pre-honest pipeline) showed +5.95; honest = -0.903 (t=-3.19). Confirms the LX7 failure mode quantitatively: fundamentally-"broken" names (negative margins, falling revenue, high leverage) are beaten-down high-beta value names that RALLY on any risk-on bounce → systematically shorting them bleeds. **Shorting on fundamental deterioration has anti-edge.**
+
+**Two short approaches now ruled out honestly:** inverted-long-composite (LX7, +0.036) and fundamental-deterioration (QualityShort, -0.903). PEAD long-only (+0.546) remains the project's SOLE validated edge. Remaining untested shorts (MeanReversion, AnalystRevision) are LOW priority — the harness exists to test them by swapping the scorer, but two short failures make further short research low-EV vs deepening PEAD.

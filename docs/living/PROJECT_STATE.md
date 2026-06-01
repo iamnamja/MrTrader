@@ -24,15 +24,31 @@ the key lever — it trimmed the crisis-fold left tail (P5 -0.288 → +0.009, %p
 short of the 0.80 promotion gate but comfortably clears the 0.50 PAPER gate. PEAD is event-driven (F2-immune),
 rules-based (no leakage risk).
 
-**What this means / next steps (your call):**
-1. **Paper-trade PEAD** — it clears the 0.50 paper gate today; collect real fills for 1-2 earnings seasons.
-2. **Push PEAD toward 0.80** — remaining levers (Opus deep-dive): hold-extension (5→10→15d), earnings-quality
-   split (beat+guidance via analyst revisions), threshold tuning. See `SWING_STRATEGY_DIRECTION.md`.
-3. **STOP** all long-only price-feature ML (swing + intraday both confirmed dead).
-4. Higher-ceiling future bets: true dollar-neutral L/S (purpose-built short signal), options-PEAD (IV-crush).
+### UPDATE (2026-06-01 workday) — PEAD lever sweep + second-edge hunt COMPLETE
+All high-EV experiments now run. PEAD config tuning is exhausted; the short-side second-edge hunt failed.
 
-**Caveats on PEAD:** edge rests on ~5-8 fold outcomes concentrated in a few windows (N_eff=8); ~15%
-survivorship upper-bound; verify FMP `date`=announcement-date PIT (5-min spot check). Solid signal, under-powered.
+| Experiment | Mean | t-stat | Verdict |
+|---|---|---|---|
+| **PEAD long-only (baseline)** | **+0.546** | **2.26** | ✅ KEEPER, paper-ready |
+| PEAD hold-15 | +0.411 | 1.19 | ❌ killed (drift wants longer hold) |
+| PEAD long-short | +0.456 | 2.61 | robust lower-return variant (regime-pass) |
+| PEAD earnings-quality | +0.449 | 1.02 | ❌ killed (power collapse) |
+| QualityShort shorts-only | **-0.903** | -3.19 | ❌ ANTI-EDGE (old +5.95 was inflated) |
+
+**Conclusion:** PEAD long-only +0.546 is the SOLE validated edge. Config tuning can't reach 0.80 (~0.5-0.7
+academic ceiling confirmed). Two short approaches ruled out honestly (inverted-long LX7 +0.036; fundamental-
+deterioration QualityShort -0.903) — shorting beaten-down names bleeds (they rally on bounces).
+
+**🔵 DECISIONS NOW YOURS (autonomous experiment ladder exhausted):**
+1. **Paper-trade PEAD long-only** — clears the 0.50 paper gate today (t=2.26, 95% pos, PF 1.54, DSR-pass).
+2. **Is 0.80 the right promotion gate?** For a PF-1.54 / 95%-positive / DSR-pass / Calmar-0.77 real edge,
+   0.80 + P5>-0.30 may be too strict (multi-LLM reviews flagged it). A deliberate gate decision is warranted.
+3. **STOP** long-only price-feature ML (swing+intraday dead) AND fundamental/inverted-long shorts (both dead).
+4. **Higher-ceiling future bets** (need new infra/data, not just config): options-PEAD (IV-crush), or the two
+   remaining untested shorts (MeanReversion, AnalystRevision momentum) — but LOW priority after 2 short failures.
+
+**Caveats on PEAD:** edge rests on ~8 fold outcomes (N_eff=8); ~15% survivorship upper-bound; verify FMP
+`date`=announcement-date PIT (5-min spot check). Solid, economically-grounded, but under-powered.
 
 **9 PRs merged overnight (#335–#348):** save-guard, swing+intraday per-fold retraining, 6 latent integration
 bugs (all surfaced only on real runs — mocked tests passed vacuously), daily-source fix (aggregate_5min),
