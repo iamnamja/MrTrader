@@ -190,13 +190,29 @@ INTRADAY_RETRAIN: dict = dict(
     wf_folds=5,                  # Phase 88: 5 folds (was 3)
 )
 
-INTRADAY_DAILY_FEATURE_PROVIDER: str = "yfinance"
-"""Provider for the per-symbol DAILY bars that feed intraday 52-week / vol-percentile
-features. The intraday 5-min bars come from the Polygon cache, but daily bars were
-historically fetched via the Alpaca provider, which caps at ~100 recent bars on this
-deployment — silently degrading 52w/vol features to 0.5 defaults across most of the
-training window. 'yfinance' (default) has full multi-year daily history. Set to 'alpaca'
-to restore legacy behavior, or 'polygon' to use the Polygon daily cache+S3."""
+INTRADAY_DAILY_FEATURE_PROVIDER: str = "aggregate_5min"
+"""Source for the per-symbol DAILY bars that feed intraday 52-week / vol-percentile
+features. The intraday 5-min bars come from the Polygon cache; the daily bars feed a
+separate set of features. History of this knob:
+  - 'alpaca' (original): caps at ~100 recent daily bars on this deployment — silently
+    degraded 52w/vol features to 0.5 defaults across most of the training window.
+  - 'yfinance' (PR #343): full multi-year daily history, BUT (a) its cache compared the
+    requested range against datetime.date and raised "can't compare datetime.datetime to
+    datetime.date" when the per-fold path passed datetime — returning 0/703 symbols (now
+    type-fixed), and (b) it can rate-limit (YFRateLimitError) on 150-700 symbols.
+  - 'aggregate_5min' (DEFAULT): aggregate the ALREADY-LOADED in-memory 5-min bars to
+    daily OHLCV (open=first, high=max, low=min, close=last, volume=sum). Zero network,
+    no rate-limit, and daily coverage == the 5-min span the folds are built from, so a
+    daily/5-min span mismatch can never empty the per-fold matrix. This is the most
+    robust choice for the per-fold CPCV path and is therefore the default.
+    TRADEOFF: the 5-min cache is ~2yr, so windows near the cache START get <252 trading
+    days of backward lookback for the 52w/vol features (degrades to a shorter window,
+    NOT to 0.5 defaults). For a 504-day run with ~2yr (≈504-day) of 5-min cache, only
+    the earliest ~252 trading days have a truncated 52w lookback; the rest get the full
+    252d. Materially: the 52w/vol features are a small slice of the intraday feature set
+    and degrade gracefully, so this does not invalidate the result.
+  - 'polygon': Polygon daily cache + S3 (full history) if available.
+Set to 'yfinance'/'alpaca'/'polygon' to use a network/full-history source instead."""
 
 INTRADAY_GATE = dict(
     min_avg_sharpe=1.00,        # recalibrated from 1.50 — best honest 365d result is +0.786 (v51 Run B)
