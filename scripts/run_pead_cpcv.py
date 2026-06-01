@@ -141,12 +141,19 @@ class PEADStrategy:
         # (e.g. 15 ≈ 3wk, matching the academic drift half-life). Unset → default 40.
         _hold_override = (int(os.environ["PEAD_MAX_HOLD_BARS"])
                           if os.environ.get("PEAD_MAX_HOLD_BARS") else None)
+        # PEAD_CONVICTION_SIZE=1 → size new long entries by clip(SUE_z,0,3)/realized_vol,
+        # gross-normalized to the equal-weight book (same names, same per-day gross,
+        # only the per-name weight changes). Default OFF → committed equal-weight
+        # +0.546 config is byte-identical. PIT-safe SUE (expanding cross-section) +
+        # realized vol (bars strictly before entry day).
+        _conviction = os.environ.get("PEAD_CONVICTION_SIZE") == "1"
         sim = AgentSimulator(
             model=None,
             factor_scorer=self.scorer,
             transaction_cost_pct=self.transaction_cost_pct,
             no_prefilters=True,
             max_hold_bars_override=_hold_override,
+            pead_conviction_size=_conviction,
         )
         result = sim.run(
             fold_symbols_data,
@@ -232,6 +239,11 @@ def main() -> int:
     )
     if _quality_gate:
         logger.info("PEAD_QUALITY_GATE=1 — long signals require positive analyst revision")
+    if os.environ.get("PEAD_CONVICTION_SIZE") == "1":
+        logger.info(
+            "PEAD_CONVICTION_SIZE=1 — long entries weighted by clip(SUE_z,0,3)/realized_vol, "
+            "gross-normalized to the equal-weight book (same entry set, no leverage confound)"
+        )
     strategy = PEADStrategy(
         scorer=scorer,
         symbols=list(RUSSELL_1000_TICKERS),

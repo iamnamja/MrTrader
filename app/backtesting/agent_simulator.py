@@ -206,6 +206,7 @@ class AgentSimulator:
         feature_cache=None,          # FeatureCache: pre-computed raw features (WF speedup)
         sim_scan_interval_days: int = 1,  # score every N days (1=daily, 5=weekly)
         factor_scorer=None,          # Phase D: callable(day, symbols_data, vix_history) -> [(sym, conf)]
+        pead_conviction_size: bool = False,  # PEAD conviction sizing: weight new long entries by clip(SUE_z,0,3)/realized_vol, gross-normalized to the equal-weight book
         max_hold_bars_override: Optional[int] = None,  # Phase H+: force hold cap (bars) for both legs
         short_borrow_rate_annual: float = 0.05,  # Bug fix: realistic borrow cost (5%/yr default; was 0.005)
         proposal_pool_size: Optional[int] = None,  # Lockstep: candidates forwarded to Trader/RM (default: max(top_n*5, 50))
@@ -279,6 +280,18 @@ class AgentSimulator:
         self.feature_cache = feature_cache
         self.sim_scan_interval_days = max(1, sim_scan_interval_days)
         self.factor_scorer = factor_scorer  # Phase D: optional callable override
+        # PEAD conviction sizing (default OFF → equal-weight book byte-identical).
+        # When ON (and a factor_scorer is set), new LONG entries on each day are
+        # weighted by conviction = clip(SUE_z, 0, 3) / realized_vol, normalized so
+        # the day's new-entry gross equals the equal-weight book's gross for the
+        # SAME names (no leverage confound). Short leg is unaffected.
+        self.pead_conviction_size = pead_conviction_size
+        # Expanding, PIT-safe pool of (obs_day, surprise) used to standardize SUE.
+        # Each surprise is sourced from get_earnings_features_at(sym, as_of) which
+        # only returns reports with report_date <= as_of, and we additionally key
+        # by the scoring day so z-scores on day D use ONLY surprises observed on
+        # days <= D (robust to fold/call ordering — no full-sample leak).
+        self._sue_pool: List[Tuple[date, float]] = []
         self.max_hold_bars_override = max_hold_bars_override  # Phase H+: PEAD short hold
         self.short_borrow_rate_annual = short_borrow_rate_annual  # Bug fix: configurable borrow
         # Lockstep: how many top-ranked candidates to forward to Trader/RM before entry cap.
@@ -1035,8 +1048,17 @@ class AgentSimulator:
         portfolio: _PortfolioState,
         sector: str,
         direction: str = "BUY",
+        bypass_position_cap: bool = False,
     ) -> Tuple[bool, str]:
-        """Run key RM rules against current portfolio state. Returns (ok, reason)."""
+        """Run key RM rules against current portfolio state. Returns (ok, reason).
+
+        bypass_position_cap: skip the per-position-size and sector-concentration
+        caps. Used ONLY by PEAD conviction sizing, where the conviction weight is
+        itself the cap (Σ allocations == equal-weight book gross). Re-applying the
+        5% cap would clamp the most-conviction names and shrink the book below the
+        equal-weight gross, reintroducing a leverage confound and dropping names
+        from the entry set (which must stay identical to equal-weight).
+        """
         trade_cost = entry_price * quantity
         equity = portfolio.equity_decision  # MTM-aware: avoids phantom equity from short opens
 
@@ -1044,16 +1066,17 @@ class AgentSimulator:
         if not ok:
             return False, msg
 
-        ok, msg = validate_position_size(trade_cost, equity, self.limits)
-        if not ok:
-            return False, msg
+        if not bypass_position_cap:
+            ok, msg = validate_position_size(trade_cost, equity, self.limits)
+            if not ok:
+                return False, msg
 
-        sector_val = portfolio.sector_values.get(sector, 0.0)
-        ok, msg = validate_sector_concentration(
-            trade_cost, sector_val, equity, sector, self.limits, direction=direction
-        )
-        if not ok:
-            return False, msg
+            sector_val = portfolio.sector_values.get(sector, 0.0)
+            ok, msg = validate_sector_concentration(
+                trade_cost, sector_val, equity, sector, self.limits, direction=direction
+            )
+            if not ok:
+                return False, msg
 
         ok, msg = validate_daily_loss(portfolio.daily_pnl, equity, self.limits)
         if not ok:
@@ -1076,6 +1099,127 @@ class AgentSimulator:
 
         return True, "ok"
 
+    # ─── PEAD conviction sizing helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _realized_vol_pit(df: "pd.DataFrame", day: date, lookback: int = 20) -> Optional[float]:
+        """Realized daily-return vol from bars STRICTLY BEFORE `day` (PIT-safe).
+
+        Uses the trailing `lookback` daily log/simple returns computed from closes
+        with index date < `day`. Returns None when insufficient history. The entry
+        day's bar (and any future bar) is never touched — only `exclude_today=True`
+        history feeds the std.
+        """
+        try:
+            mask = np.array([
+                (d.date() if hasattr(d, "date") else d) < day for d in df.index
+            ])
+            closes = df["close"].to_numpy(dtype=float)[mask]
+            if len(closes) < lookback + 1:
+                # Need lookback+1 closes for `lookback` returns; fall back to what we have.
+                if len(closes) < 3:
+                    return None
+                rets = np.diff(closes[-(lookback + 1):]) / closes[-(lookback + 1):-1]
+            else:
+                rets = np.diff(closes[-(lookback + 1):]) / closes[-(lookback + 1):-1]
+            vol = float(np.std(rets, ddof=1)) if len(rets) >= 2 else None
+            if vol is None or not np.isfinite(vol) or vol <= 0:
+                return None
+            return vol
+        except Exception:
+            return None
+
+    def _sue_zscore_pit(self, surprise: float, day: date) -> float:
+        """Standardize a raw EPS surprise against the expanding, PIT-safe pool.
+
+        z = (surprise - mu) / sigma, where mu/sigma are the mean/std of all
+        surprises OBSERVED ON DAYS <= `day`. This uses only the trailing
+        cross-section available as of the entry day — never the full-sample
+        distribution (no look-ahead). With <2 prior observations sigma is
+        undefined; we return 0.0 (neutral) so the first names default to the
+        equal-weight tilt rather than an unstable z.
+        """
+        prior = [s for (d, s) in self._sue_pool if d <= day]
+        if len(prior) < 2:
+            return 0.0
+        arr = np.asarray(prior, dtype=float)
+        mu = float(np.mean(arr))
+        sigma = float(np.std(arr, ddof=1))
+        if not np.isfinite(sigma) or sigma <= 1e-9:
+            return 0.0
+        return (float(surprise) - mu) / sigma
+
+    def _record_surprise(self, surprise: float, day: date) -> None:
+        """Add an observed surprise to the expanding PIT pool (keyed by scoring day)."""
+        try:
+            if surprise is not None and np.isfinite(float(surprise)):
+                self._sue_pool.append((day, float(surprise)))
+        except Exception:
+            pass
+
+    def _pead_conviction_dollars(
+        self,
+        day: date,
+        long_candidates: List[str],
+        symbols_data: Dict[str, "pd.DataFrame"],
+        equity: float,
+        baseline_pos_pct: float,
+    ) -> Dict[str, float]:
+        """Compute gross-normalized conviction target-dollars for the day's new longs.
+
+        Steps (per Step-1 design):
+          1. raw_w_i = clip(SUE_z_i, 0, 3) / realized_vol_i   (vol from bars < day)
+          2. normalize: w_i = raw_w_i / Σ_j raw_w_j
+          3. target_dollars_i = w_i × (n × baseline_pos_pct × equity)
+             where n = number of new longs entering today.
+
+        The total Σ target_dollars = n × baseline_pos_pct × equity is EXACTLY the
+        gross the equal-weight book would deploy for these same n names (each at
+        baseline_pos_pct of equity). Only the *distribution* across names changes —
+        no extra leverage. Returns {} when conviction inputs are unavailable for
+        every name (caller then falls back to equal-weight sizing).
+        """
+        from app.data.fmp_provider import get_earnings_features_at
+        as_of = day  # PIT: surprise is windowed to reports <= as_of
+        raw = {}
+        for sym in long_candidates:
+            df = symbols_data.get(sym)
+            if df is None:
+                continue
+            try:
+                feats = get_earnings_features_at(sym, as_of)
+            except Exception:
+                feats = None
+            if not feats:
+                continue
+            surprise = feats.get("fmp_surprise_1q")
+            if surprise is None:
+                continue
+            # Record into the expanding pool FIRST so today's own cross-section is
+            # usable, then z-score against observations on days <= today (PIT-safe).
+            self._record_surprise(surprise, day)
+            sue_z = self._sue_zscore_pit(surprise, day)
+            vol = self._realized_vol_pit(df, day)
+            if vol is None:
+                continue
+            sue_clip = float(np.clip(sue_z, 0.0, 3.0))
+            # Names below the cross-section mean (sue_z<=0) get the floor weight so
+            # they still receive a (small) allocation rather than zero — keeps the
+            # entry set identical to equal-weight; only the tilt differs.
+            raw_w = max(sue_clip, 0.10) / vol
+            if np.isfinite(raw_w) and raw_w > 0:
+                raw[sym] = raw_w
+
+        if not raw:
+            return {}
+
+        total_raw = sum(raw.values())
+        if total_raw <= 0:
+            return {}
+        n = len(raw)
+        book_gross = n * baseline_pos_pct * equity
+        return {sym: (w / total_raw) * book_gross for sym, w in raw.items()}
+
     # ─── Entry simulation ──────────────────────────────────────────────────────
 
     def _process_entries(
@@ -1091,6 +1235,33 @@ class AgentSimulator:
         entered_trades: List[Trade] = []
         tx_costs_total = 0.0
         _max_pos = max_positions if max_positions is not None else self.limits.MAX_OPEN_POSITIONS
+
+        # ── PEAD conviction sizing pre-pass (flagged; factor mode only) ──────────
+        # Compute gross-normalized conviction target-dollars for the LONG names that
+        # are eligible to enter today (slot-available, not already held). The set of
+        # names is the SAME as equal-weight; only the per-name dollar weight changes.
+        # Σ target-dollars == n × MAX_POSITION_SIZE_PCT × equity (the equal-weight
+        # book's gross for these n names) → no leverage confound.
+        _conviction_dollars: Dict[str, float] = {}
+        if self.pead_conviction_size and self.factor_scorer is not None:
+            _open_slots = max(0, _max_pos - len(portfolio.positions))
+            _long_candidates: List[str] = []
+            for _p in proposals:
+                _sym = _p[0]
+                _dir = _p[2] if len(_p) == 3 else "long"
+                if _dir != "long":
+                    continue
+                if _sym in portfolio.positions:
+                    continue
+                _long_candidates.append(_sym)
+                if len(_long_candidates) >= _open_slots:
+                    break
+            if _long_candidates:
+                _conviction_dollars = self._pead_conviction_dollars(
+                    day, _long_candidates, symbols_data,
+                    equity=portfolio.equity_decision,
+                    baseline_pos_pct=self.limits.MAX_POSITION_SIZE_PCT,
+                )
 
         # Entry price: today's open (PM runs premarket; Trader executes post-open)
         for proposal in proposals:
@@ -1231,18 +1402,33 @@ class AgentSimulator:
                 stop_for_sizing = sizing_stop
             else:
                 stop_for_sizing = (2 * entry_price - stop_price) if is_short else stop_price
-            quantity = size_position(
-                account_equity=portfolio.equity_decision,
-                available_cash=portfolio.cash,
-                entry_price=entry_price,
-                stop_price=stop_for_sizing,
-                ml_score=conf_for_sizing,
-            )
-            # Apply RM position-size cap so the trade doesn't auto-reject
-            max_position_dollars = portfolio.equity_decision * self.limits.MAX_POSITION_SIZE_PCT
-            quantity = min(quantity, max(1, int(max_position_dollars / entry_price)))
-            if quantity <= 0:
-                continue
+
+            # PEAD conviction sizing: when a target-dollar allocation was computed
+            # for this LONG name, size directly to it (gross-normalized to the
+            # equal-weight book). The per-name conviction weight already encodes the
+            # cap (Σ allocations == equal-weight gross), so the 5% per-position cap
+            # is intentionally NOT re-applied here — re-applying it would shrink the
+            # book gross below baseline and re-introduce a (downward) leverage
+            # confound, defeating the shape-only A/B. RM validate_position_size is
+            # likewise relaxed for these names via the conviction flag in _rm_validate.
+            _conv_target = _conviction_dollars.get(sym) if not is_short else None
+            if _conv_target is not None and _conv_target > 0:
+                quantity = int(_conv_target / entry_price)
+                if quantity <= 0:
+                    continue
+            else:
+                quantity = size_position(
+                    account_equity=portfolio.equity_decision,
+                    available_cash=portfolio.cash,
+                    entry_price=entry_price,
+                    stop_price=stop_for_sizing,
+                    ml_score=conf_for_sizing,
+                )
+                # Apply RM position-size cap so the trade doesn't auto-reject
+                max_position_dollars = portfolio.equity_decision * self.limits.MAX_POSITION_SIZE_PCT
+                quantity = min(quantity, max(1, int(max_position_dollars / entry_price)))
+                if quantity <= 0:
+                    continue
 
             sector = sector_map.get(sym, "UNKNOWN")
             # When no_atr_stops is on, sentinel stop_price is unrealistic for risk sizing.
@@ -1251,6 +1437,7 @@ class AgentSimulator:
             ok, reason = self._rm_validate(
                 sym, entry_price, _rm_stop, quantity, portfolio, sector,
                 direction="SELL_SHORT" if is_short else "BUY",
+                bypass_position_cap=(_conv_target is not None and _conv_target > 0),
             )
             if not ok:
                 logger.debug("RM rejected %s on %s: %s", sym, day, reason)
