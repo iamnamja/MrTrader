@@ -7554,3 +7554,24 @@ This **confirms the ~0.5-0.7 academic ceiling** for long-only large-cap PEAD aft
 **Verdict:** another inflated number deflated to honesty — worse, to significantly NEGATIVE. Old Phase-H (pre-honest pipeline) showed +5.95; honest = -0.903 (t=-3.19). Confirms the LX7 failure mode quantitatively: fundamentally-"broken" names (negative margins, falling revenue, high leverage) are beaten-down high-beta value names that RALLY on any risk-on bounce → systematically shorting them bleeds. **Shorting on fundamental deterioration has anti-edge.**
 
 **Two short approaches now ruled out honestly:** inverted-long-composite (LX7, +0.036) and fundamental-deterioration (QualityShort, -0.903). PEAD long-only (+0.546) remains the project's SOLE validated edge. Remaining untested shorts (MeanReversion, AnalystRevision) are LOW priority — the harness exists to test them by swapping the scorer, but two short failures make further short research low-EV vs deepening PEAD.
+
+---
+
+## PEAD conviction-sizing — REJECTED — 2026-06-01
+
+**Run:** `PEAD_CONVICTION_SIZE=1 python scripts/run_pead_cpcv.py` (PR #356). Sizes positions by standardized surprise (SUE_z, clip[0,3]) / realized-vol, gross-normalized to the equal-weight book's gross (so it tests sizing SHAPE, not leverage). PIT-safe SUE (expanding pool ≤ entry day) + PIT vol. Entry set identical to baseline.
+**Log:** `logs/p0_pead_cpcv_conviction.log`
+
+| Metric | Conviction | Equal-weight baseline | |
+|---|---|---|---|
+| Mean Sharpe | +0.515 | +0.546 | worse |
+| Path t-stat | 2.03 | 2.26 | worse |
+| % positive | 71.4% | 95.2% | worse |
+| P5 | -0.483 | +0.009 | worse |
+| PF / Calmar | 1.56 / 0.82 | 1.54 / 0.77 | ~same |
+
+Distinct fold Sharpes: {-1.444, -0.483, +0.520, +0.617, +0.878, +0.986, +1.748}. Leave-best-fold-out mean ≈ **0.18** (< 0.20 robustness bar).
+
+**Verdict: REJECTED.** Fails the pre-registered ADVANCE bar (mean≥0.65 ✗, t≥2.4 ✗, %pos≥0.90 ✗, leave-best-out≥0.20 ✗). Conviction sizing slightly HURT — the SUE tilt + vol-scale concentrated downside in bad folds (more negative folds) without lifting the median, exactly the "concentration not edge" failure the reject rule guards against. **Equal-weight long-only +0.546 remains the best PEAD config.**
+
+**4 PEAD config/sizing levers now all fail to beat equal-weight +0.546** (hold-15, long-short, earnings-quality, conviction-sizing). PEAD's honest ceiling on this universe is ~0.55 — config tuning cannot move it. To raise PEAD's ceiling needs new structure (small-cap universe, options overlay); to diversify needs a new independent edge (insider clusters, buybacks). Stop tuning PEAD config.
