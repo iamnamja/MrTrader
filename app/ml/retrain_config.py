@@ -190,6 +190,14 @@ INTRADAY_RETRAIN: dict = dict(
     wf_folds=5,                  # Phase 88: 5 folds (was 3)
 )
 
+INTRADAY_DAILY_FEATURE_PROVIDER: str = "yfinance"
+"""Provider for the per-symbol DAILY bars that feed intraday 52-week / vol-percentile
+features. The intraday 5-min bars come from the Polygon cache, but daily bars were
+historically fetched via the Alpaca provider, which caps at ~100 recent bars on this
+deployment — silently degrading 52w/vol features to 0.5 defaults across most of the
+training window. 'yfinance' (default) has full multi-year daily history. Set to 'alpaca'
+to restore legacy behavior, or 'polygon' to use the Polygon daily cache+S3."""
+
 INTRADAY_GATE = dict(
     min_avg_sharpe=1.00,        # recalibrated from 1.50 — best honest 365d result is +0.786 (v51 Run B)
     min_fold_sharpe=-0.30,      # no single fold below this floor

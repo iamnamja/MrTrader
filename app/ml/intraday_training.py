@@ -802,10 +802,36 @@ class IntradayModelTrainer:
     def _fetch_daily_all(
         self, symbols: List[str], start: datetime, end: datetime
     ) -> Dict[str, pd.DataFrame]:
+        from app.ml.retrain_config import INTRADAY_DAILY_FEATURE_PROVIDER
+        from app.data import get_provider
         try:
-            daily_start = start - timedelta(days=365)  # extra year for vol percentile
-            data = self._provider.get_daily_bars_bulk(symbols, daily_start, end)
-            logger.info("Daily bars: %d/%d symbols", len(data), len(symbols))
+            daily_start = start - timedelta(days=365)  # 1yr buffer for 52w/vol percentile
+            # The per-symbol DAILY bars feed the 52-week-position / vol-percentile
+            # features. These must come from a FULL-HISTORY provider, NOT the trainer's
+            # 5-min provider (self._provider="alpaca"), which caps at ~100 recent daily
+            # bars on this deployment — silently degrading those features to 0.5 defaults
+            # across most of the training window. See INTRADAY_DAILY_FEATURE_PROVIDER.
+            provider = get_provider(INTRADAY_DAILY_FEATURE_PROVIDER)
+            data = provider.get_daily_bars_bulk(symbols, daily_start, end)
+            logger.info("Daily bars (%s): %d/%d symbols",
+                        INTRADAY_DAILY_FEATURE_PROVIDER, len(data), len(symbols))
+            # Diagnostic: warn if coverage is suspiciously shallow (the Alpaca-cap symptom)
+            if data:
+                import numpy as _np
+                spans = []
+                for df in data.values():
+                    if df is not None and len(df) > 0:
+                        spans.append(len(df))
+                if spans:
+                    _med = float(_np.median(spans))
+                    _expected_days = (end - daily_start).days * 0.65  # ~trading-day fraction
+                    if _med < 0.5 * _expected_days:
+                        logger.warning(
+                            "Daily bars look shallow: median %d bars/symbol vs ~%d expected "
+                            "for the requested span. 52w/vol features may degrade to defaults. "
+                            "Check provider '%s'.",
+                            int(_med), int(_expected_days), INTRADAY_DAILY_FEATURE_PROVIDER,
+                        )
             return data
         except Exception as exc:
             logger.warning("Daily bar fetch failed: %s", exc)
