@@ -270,6 +270,63 @@ def test_build_train_matrix_non_empty_and_no_leak():
     )
 
 
+def test_build_train_matrix_span_mismatch_raises():
+    """C14-1: a fold window that does NOT overlap any loaded 5-min day must raise
+    a clear span-mismatch error — NOT silently return an empty matrix.
+
+    This is the regression lock for the 2nd per-fold empty-matrix bug: the fold
+    boundary axis (all_days_sorted) was wider than the loaded bars, so early
+    folds got a train window before any 5-min bar existed → 'no training samples'.
+    """
+    from app.ml.intraday_training import IntradayModelTrainer
+
+    symbols = ["AAA", "BBB", "CCC", "DDD"]
+    # 5-min bars only from 2025-01-02 onward...
+    sdata = _synthetic_intraday_data(date(2025, 1, 2), n_days=40, symbols=symbols)
+    trainer = IntradayModelTrainer(provider="alpaca")
+    trainer._allow_sacred_holdout = False
+
+    # ...but ask for a 2024 window (mirrors all_days_sorted starting a year early).
+    with pytest.raises(RuntimeError, match="does not overlap any loaded 5-min"):
+        trainer.build_train_matrix_for_window(
+            sdata, None, {}, None, date(2024, 1, 2), date(2024, 6, 25),
+        )
+
+
+def test_fetch_data_clamps_all_days_to_window(monkeypatch):
+    """C14-1: fetch_data must clamp all_days_sorted AND symbols_data to the
+    requested [start, end], independent of what load_many returns. Otherwise the
+    fold-boundary day-axis can precede the matrix-builder's bar coverage."""
+    import app.data.intraday_cache as ic
+    import yfinance as yf
+
+    # load_many returns bars spanning a FULL year before `start` (simulating a
+    # cache/provider that ignored the start filter).
+    wide_idx = pd.DatetimeIndex(
+        pd.date_range("2024-01-02", "2025-06-01", freq="h", tz="UTC"), name="timestamp"
+    )
+    wide_df = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=wide_idx,
+    )
+    monkeypatch.setattr(ic, "available_symbols", lambda: ["AAA"])
+    monkeypatch.setattr(ic, "load_many", lambda syms, start, end: {"AAA": wide_df})
+    monkeypatch.setattr(yf, "download", lambda *a, **k: pd.DataFrame())
+
+    strat = IntradayStrategy(model=SimpleNamespace(trained_through=date(2000, 1, 1)),
+                             version=1, symbols=["AAA"])
+    strat.fetch_data(date(2025, 1, 1), date(2025, 6, 1))
+
+    assert strat.all_days_sorted, "all_days_sorted unexpectedly empty"
+    assert strat.all_days_sorted[0] >= date(2025, 1, 1), (
+        f"all_days_sorted not clamped: starts {strat.all_days_sorted[0]}"
+    )
+    assert strat.all_days_sorted[-1] <= date(2025, 6, 1)
+    # symbols_data bars must be clamped too (lock-step with the day-axis).
+    bar_dates = pd.DatetimeIndex(strat.symbols_data["AAA"].index).date
+    assert bar_dates.min() >= date(2025, 1, 1)
+
+
 def test_fit_in_memory_trains_on_synthetic_matrix():
     """fit_in_memory produces a usable model (ensemble + feature_names) without
     save/version/DB. Skips if xgboost is unavailable."""
