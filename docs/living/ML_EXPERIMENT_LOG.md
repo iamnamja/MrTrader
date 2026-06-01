@@ -7508,3 +7508,29 @@ DSR "passes" only by saturating (CRITICAL-1) — not extra confidence; t=2.26 is
    revisions), threshold tuning. See `docs/living/SWING_STRATEGY_DIRECTION.md`.
 3. **STOP** all long-only price-feature ML (swing + intraday confirmed dead).
 4. Higher-ceiling future: dollar-neutral L/S (purpose-built short signal), options-PEAD (IV-crush).
+
+---
+
+## PEAD lever sweep — config tuning exhausted, +0.546 long-only is the keeper — 2026-06-01
+
+Tested the 3 levers from the Opus deep-dive to push PEAD honest CPCV mean Sharpe 0.546 → 0.80 gate. All env-gated (committed config stays the +0.546 long-only baseline). C(8,2), VIX>30 block, ~6yr.
+
+| Config | Mean | t-stat | %pos | P5 | PF | Calmar | Verdict |
+|---|---|---|---|---|---|---|---|
+| **Long-only (baseline)** | **+0.546** | **2.26** | 95% | +0.009 | 1.54 | 0.77 | ✅ KEEPER |
+| hold-15 (PEAD_MAX_HOLD_BARS=15) | +0.411 | 1.19 | 57% | -0.739 | 1.47 | 0.84 | ❌ killed — drift wants longer hold |
+| Long-short (PEAD_LONG_SHORT=1, vix_block_short=20) | +0.456 | 2.61 | 76% | -0.256 | 1.33 | 0.71 | robust variant (tighter std, regime-PASS) but lower mean |
+| Earnings-quality (PEAD_QUALITY_GATE=1) | +0.449 | 1.02 | 71% | -1.530 | 1.73 | 1.71 | ❌ killed — higher per-trade quality but fewer trades → power collapse |
+
+### Conclusion
+**The +0.546 long-only config is the best PEAD.** No lever beat it on mean Sharpe (the 0.80-gate metric):
+- hold-shortening cut the drift short (drift wants the full ~8wk hold)
+- the short leg lowers mean but tightens distribution + passes the regime gate (a more *robust*, lower-return variant — interesting for deployment, not for the mean gate)
+- the quality gate raises per-trade PF/Calmar (best: 1.73/1.71) but slashes trade count → t-stat collapses to 1.02
+
+This **confirms the ~0.5-0.7 academic ceiling** for long-only large-cap PEAD after costs (we're at the low end ~0.55). Config tuning cannot reach the 0.80 promotion gate.
+
+### Standing recommendation
+1. **PEAD long-only (+0.546) is paper-gate-ready** (clears 0.50 PAPER_SHARPE_GATE; t=2.26, 95% pos, PF 1.54, DSR-pass). Paper-trade it.
+2. The **0.80 promotion gate may be too strict** for a real edge with PF 1.54 / 95%-positive / DSR-pass / Calmar 0.77 — worth a deliberate decision (the multi-LLM reviews flagged 0.80 + P5>-0.30 as unusually strict).
+3. **Second-edge hunt:** honest re-test of `QualityShortScorer` (purpose-built fundamental-deterioration short, never validated on the honest pipeline) — the structurally-sound L/S the deep-dive recommended.
