@@ -39,6 +39,14 @@ PER_FOLD_SWING_HPO_TRIALS: int = 0
 hyperparameters (no per-fold HPO). Per-fold HPO is both prohibitively expensive
 and methodologically wrong (in-fold selection). Keep 0."""
 
+PER_FOLD_INTRADAY_HPO_TRIALS: int = 0
+"""HPO trials for per-fold INTRADAY retraining. 0 = use the frozen production
+hyperparameters (FROZEN_HPO_PARAMS in app/ml/intraday_training.py) — no per-fold
+HPO. Same rationale as swing: per-fold HPO is prohibitively expensive (an Optuna
+search inside every fold of every CPCV combination) and methodologically wrong
+(in-fold model selection leaks the test distribution). Keep 0. Mirrors
+PER_FOLD_SWING_HPO_TRIALS. See docs/living/PIPELINE_ARCHITECTURE.md KL-10."""
+
 # ── Worker / parallelism caps ─────────────────────────────────────────────────
 # Single source of truth for process/thread counts across all training entry points.
 #

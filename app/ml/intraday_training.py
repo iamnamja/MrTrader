@@ -652,6 +652,139 @@ class IntradayModelTrainer:
         )
         return X_tr, y_tr, X_te, y_te, fnames, raw_tr
 
+    # ── Per-fold (true out-of-sample) matrix + in-memory fit ──────────────────
+
+    def build_train_matrix_for_window(
+        self,
+        symbols_data: Dict[str, pd.DataFrame],
+        spy_data: Optional[pd.DataFrame],
+        daily_data: Dict[str, pd.DataFrame],
+        spy_daily_data: Optional[pd.DataFrame],
+        train_start,
+        train_end,
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
+        """TRAIN-ONLY intraday matrix from in-memory bars.
+
+        train_days = {d : train_start <= d <= train_end}; test_days = {} (no split).
+        The intraday label is SAME-DAY (future_bars are sliced WITHIN day_bars in
+        _symbol_to_rows), and all daily/prior-day lookbacks are strictly backward
+        (daily_date_arr < day). Restricting train_days to {d <= train_end} is
+        therefore sufficient for zero forward leak past train_end — no multi-day
+        purge is needed (unlike swing's FORWARD_DAYS label).
+
+        Reuses _build_matrix_parallel + _apply_labels verbatim so the per-fold
+        labeling rules cannot drift from production. Never fetches/touches the
+        network — consumes only the passed in-memory bars.
+
+        Returns (X_train, y_train, feature_names, raw_train).
+        """
+        from datetime import date as _date, datetime as _dt
+
+        def _to_date(d):
+            if isinstance(d, _dt):
+                return d.date()
+            if isinstance(d, _date):
+                return d
+            if hasattr(d, "date"):
+                return d.date()
+            return d
+
+        ts = _to_date(train_start)
+        te = _to_date(train_end)
+
+        # Defense in depth — never let a per-fold window touch sacred holdout data.
+        from app.ml.retrain_config import assert_no_sacred_holdout
+        assert_no_sacred_holdout(
+            te,
+            allow_sacred_holdout=getattr(self, "_allow_sacred_holdout", False),
+            context="IntradayModelTrainer.build_train_matrix_for_window",
+        )
+
+        # Collect all trading days from the 5-min bars and clamp to the window.
+        all_days: set = set()
+        for df in symbols_data.values():
+            if df is not None and len(df) > 0:
+                idx = pd.DatetimeIndex(df.index)
+                for d in idx.normalize().unique():
+                    all_days.add(d.date())
+        train_days = {d for d in all_days if ts <= d <= te}
+        test_days: set = set()
+
+        X_train, y_train, _, _, feature_names, raw_train = self._build_matrix_parallel(
+            symbols_data, spy_data, daily_data or {}, spy_daily_data,
+            train_days=train_days, test_days=test_days,
+        )
+        return X_train, y_train, feature_names, raw_train
+
+    def fit_in_memory(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: List[str],
+        raw_train: np.ndarray,
+        *,
+        seed: int,
+    ):
+        """Fit the intraday model on a prepared matrix and return it. No save, no
+        version bump, no DB record. Sets model.feature_names. The caller (the
+        retrainer) sets model.trained_through = tr_end.
+
+        Mirrors the fit body of train_model with hpo_trials=0 (always uses
+        FROZEN_HPO_PARAMS) and the XGBoost 3-seed ensemble + LightGBM soft-vote.
+        ``seed`` shifts the ensemble seed base so each per-fold window is
+        deterministic-yet-distinct.
+        """
+        if len(X) == 0:
+            raise RuntimeError("fit_in_memory: empty training matrix.")
+
+        # Class balance correction.
+        n_neg = int((y == 0).sum())
+        n_pos = int((y == 1).sum())
+        spw = round(n_neg / n_pos, 2) if n_pos > 0 else 1.0
+
+        # Recency-decay sample weights (half-life 180d), mirroring train_model.
+        sample_weight = None
+        if raw_train is not None and len(raw_train) > 0:
+            day_ords = raw_train[:, 0]
+            max_ord = day_ords.max()
+            half_life = 180.0
+            recency_w = np.exp((day_ords - max_ord) * np.log(2) / half_life).astype(np.float32)
+            sample_weight = recency_w / recency_w.mean()
+
+        from xgboost import XGBClassifier
+        hpo_params = FROZEN_HPO_PARAMS or {}
+
+        # Per-fold deterministic ensemble seeds: shift the production seed base by
+        # the window seed so different fold windows train distinct-yet-reproducible
+        # ensembles. PER_FOLD_INTRADAY_HPO_TRIALS=0 → no per-fold HPO.
+        seed_offset = int(seed)
+        ensemble_seeds = [s + seed_offset for s in ENSEMBLE_SEEDS]
+
+        ensemble_models = []
+        for sd in ensemble_seeds:
+            seed_params = {**hpo_params, "random_state": sd, "scale_pos_weight": spw,
+                           "nthread": _MAX_THREADS, "verbosity": 0, "eval_metric": "auc"}
+            clf = XGBClassifier(**seed_params)
+            clf.fit(X, y, sample_weight=sample_weight)
+            ensemble_models.append(clf)
+
+        self.model = PortfolioSelectorModel(model_type="xgboost")
+        self.model.ensemble_models = ensemble_models
+        self.model.model.set_params(**hpo_params, random_state=ensemble_seeds[0],
+                                    scale_pos_weight=spw)
+        self.model.train(X, y, feature_names, scale_pos_weight=spw,
+                         sample_weight=sample_weight)
+
+        # NOTE: train_model trains a LightGBM partner only to blend its
+        # probabilities into the OFFLINE evaluation metrics — the SAVED/inference
+        # model (PortfolioSelectorModel "xgboost") blends only `ensemble_models`
+        # at predict time (see PortfolioSelectorModel.predict). The per-fold
+        # simulator scores via .predict, so a LightGBM here would be dead weight
+        # and would NOT match inference. Intentionally omitted for fidelity+speed.
+
+        self.model.feature_names = feature_names
+        return self.model
+
     def _fetch_daily_all(
         self, symbols: List[str], start: datetime, end: datetime
     ) -> Dict[str, pd.DataFrame]:
@@ -672,7 +805,16 @@ class IntradayModelTrainer:
         spy_data: Optional[pd.DataFrame],
         daily_data: Dict[str, pd.DataFrame],
         spy_daily_data: Optional[pd.DataFrame] = None,
+        *,
+        train_days: Optional[set] = None,
+        test_days: Optional[set] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+        """Build (X_train, y_train, X_test, y_test, feature_names, raw_train).
+
+        When ``train_days`` / ``test_days`` are passed (per-fold path), they are
+        used verbatim — no internal time-based split. Otherwise the default
+        production split applies (last TEST_FRACTION of days = test, 1-day embargo).
+        """
         # Collect all trading days across all symbols
         all_days: set = set()
         for df in symbols_data.values():
@@ -682,16 +824,26 @@ class IntradayModelTrainer:
                     all_days.add(d.date())
 
         sorted_days = sorted(all_days)
-        if len(sorted_days) < MIN_DAYS:
-            logger.warning("Only %d trading days — need at least %d", len(sorted_days), MIN_DAYS)
-            return np.array([]), np.array([]), np.array([]), np.array([]), [], []
 
-        split_idx = max(1, int(len(sorted_days) * (1 - TEST_FRACTION)))
-        train_days = set(sorted_days[:split_idx])
-        # Embargo: skip 1 day so the last training day's 2h label period
-        # does not bleed into the first test day's features via daily bar history.
-        embargo_start = min(split_idx + 1, len(sorted_days))
-        test_days = set(sorted_days[embargo_start:])
+        if train_days is not None:
+            # Per-fold path: caller supplies the exact train/test day sets.
+            test_days = test_days if test_days is not None else set()
+            if len(train_days) < MIN_DAYS:
+                logger.warning(
+                    "Per-fold matrix: only %d training days — need at least %d",
+                    len(train_days), MIN_DAYS,
+                )
+                return np.array([]), np.array([]), np.array([]), np.array([]), [], []
+        else:
+            if len(sorted_days) < MIN_DAYS:
+                logger.warning("Only %d trading days — need at least %d", len(sorted_days), MIN_DAYS)
+                return np.array([]), np.array([]), np.array([]), np.array([]), [], []
+            split_idx = max(1, int(len(sorted_days) * (1 - TEST_FRACTION)))
+            train_days = set(sorted_days[:split_idx])
+            # Embargo: skip 1 day so the last training day's 2h label period
+            # does not bleed into the first test day's features via daily bar history.
+            embargo_start = min(split_idx + 1, len(sorted_days))
+            test_days = set(sorted_days[embargo_start:])
 
         # Precompute SPY day-slices once to avoid per-symbol work
         spy_by_day = _index_by_day(spy_data) if spy_data is not None else {}
@@ -731,60 +883,67 @@ class IntradayModelTrainer:
         # ── Labeling: realized-R outcome or cross-sectional top-20% ─────────────
         # raw_parts carry [day_ordinal, raw_2h_return, atr_target_pct].
         # cs_normalize applied to features for cross-sectional alignment.
-
-        CS_ABSOLUTE_HURDLE = 0.0030  # used by both schemes
-
-        def _apply_labels(X_parts, raw_parts):
-            if not X_parts:
-                return np.array([]), np.array([]), np.array([])
-            X = np.vstack(X_parts)
-            raws = np.concatenate(raw_parts)   # shape (N, 3): [day_ordinal, return, atr_target_pct]
-            days_ord = raws[:, 0].copy()
-            raw_returns = raws[:, 1]
-            atr_targets = raws[:, 2]
-
-            if USE_REALIZED_R_LABELS:
-                # Realized-R outcome labels: return must be ≥ MIN_REALIZED_R × ATR_target.
-                # Zero positives allowed on bad days — model can learn to abstain.
-                realized_r = raw_returns / np.maximum(atr_targets, 1e-8)
-                labels = (
-                    (realized_r >= MIN_REALIZED_R) & (raw_returns >= CS_ABSOLUTE_HURDLE)
-                ).astype(np.int8)
-            else:
-                # Cross-sectional top-20% label with absolute return floor.
-                # Phase 91 hybrid (intersection with realized-R) REVERTED: the
-                # intersection dropped positive class below a learnable rate
-                # (precision 16% OOS — worse than 20% base rate), causing avg
-                # Sharpe -3.72 in WF. Pure top-20% with CS_ABSOLUTE_HURDLE preserves
-                # 20% positive class and the model's ability to rank.
-                labels = np.zeros(len(raw_returns), dtype=np.int8)
-                for day_val in np.unique(days_ord):
-                    mask = days_ord == day_val
-                    day_rets = raw_returns[mask]
-                    if mask.sum() < 2:
-                        continue
-                    threshold = np.percentile(day_rets, 80)  # top 20%
-                    labels[mask] = (
-                        (day_rets >= threshold)
-                        & (day_rets >= CS_ABSOLUTE_HURDLE)
-                    ).astype(np.int8)
-
-            # Cross-sectional normalization: Branch A (stock-specific) only.
-            # Branch B (global market features) are identical across symbols on
-            # the same day — cs_normalize would zero them out. Save and restore.
-            from app.ml.intraday_features import BRANCH_B_FEATURES, FEATURE_NAMES as _FN
-            _branch_b_idx = [
-                _FN.index(f) for f in BRANCH_B_FEATURES if f in _FN
-            ]
-            _branch_b_saved = X[:, _branch_b_idx].copy() if _branch_b_idx else None
-            X = cs_normalize_by_group(X, days_ord)
-            if _branch_b_idx and _branch_b_saved is not None:
-                X[:, _branch_b_idx] = _branch_b_saved
-            return X, labels, raws
-
-        X_train, y_train, raw_train = _apply_labels(X_train_parts, raw_train_parts)
-        X_test, y_test, _ = _apply_labels(X_test_parts, raw_test_parts)
+        X_train, y_train, raw_train = self._apply_labels(X_train_parts, raw_train_parts)
+        X_test, y_test, _ = self._apply_labels(X_test_parts, raw_test_parts)
         return X_train, y_train, X_test, y_test, feature_names, raw_train
+
+    # CS absolute return floor — used by both labeling schemes.
+    CS_ABSOLUTE_HURDLE = 0.0030
+
+    def _apply_labels(self, X_parts, raw_parts):
+        """Assign labels + cross-sectional normalization for a set of feature rows.
+
+        Single source of truth for the intraday labeling rules (realized-R OR
+        cross-sectional top-20% with absolute floor) and the Branch-A-only
+        cs_normalize. Both the production split path and the per-fold path call
+        this so they CANNOT drift apart.
+        """
+        if not X_parts:
+            return np.array([]), np.array([]), np.array([])
+        X = np.vstack(X_parts)
+        raws = np.concatenate(raw_parts)   # shape (N, 3): [day_ordinal, return, atr_target_pct]
+        days_ord = raws[:, 0].copy()
+        raw_returns = raws[:, 1]
+        atr_targets = raws[:, 2]
+
+        if USE_REALIZED_R_LABELS:
+            # Realized-R outcome labels: return must be ≥ MIN_REALIZED_R × ATR_target.
+            # Zero positives allowed on bad days — model can learn to abstain.
+            realized_r = raw_returns / np.maximum(atr_targets, 1e-8)
+            labels = (
+                (realized_r >= MIN_REALIZED_R) & (raw_returns >= self.CS_ABSOLUTE_HURDLE)
+            ).astype(np.int8)
+        else:
+            # Cross-sectional top-20% label with absolute return floor.
+            # Phase 91 hybrid (intersection with realized-R) REVERTED: the
+            # intersection dropped positive class below a learnable rate
+            # (precision 16% OOS — worse than 20% base rate), causing avg
+            # Sharpe -3.72 in WF. Pure top-20% with CS_ABSOLUTE_HURDLE preserves
+            # 20% positive class and the model's ability to rank.
+            labels = np.zeros(len(raw_returns), dtype=np.int8)
+            for day_val in np.unique(days_ord):
+                mask = days_ord == day_val
+                day_rets = raw_returns[mask]
+                if mask.sum() < 2:
+                    continue
+                threshold = np.percentile(day_rets, 80)  # top 20%
+                labels[mask] = (
+                    (day_rets >= threshold)
+                    & (day_rets >= self.CS_ABSOLUTE_HURDLE)
+                ).astype(np.int8)
+
+        # Cross-sectional normalization: Branch A (stock-specific) only.
+        # Branch B (global market features) are identical across symbols on
+        # the same day — cs_normalize would zero them out. Save and restore.
+        from app.ml.intraday_features import BRANCH_B_FEATURES, FEATURE_NAMES as _FN
+        _branch_b_idx = [
+            _FN.index(f) for f in BRANCH_B_FEATURES if f in _FN
+        ]
+        _branch_b_saved = X[:, _branch_b_idx].copy() if _branch_b_idx else None
+        X = cs_normalize_by_group(X, days_ord)
+        if _branch_b_idx and _branch_b_saved is not None:
+            X[:, _branch_b_idx] = _branch_b_saved
+        return X, labels, raws
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 

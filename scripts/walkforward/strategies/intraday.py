@@ -52,6 +52,22 @@ class IntradayStrategy:
         # OOS-guard escape hatch: set True to allow test folds inside training period.
         # Results labeled in-sample; gate_passed() always returns False.
         self.allow_in_sample: bool = False
+        # ── Per-fold retraining (Phase 2: true out-of-sample WF/CPCV) ─────────
+        # When per_fold_retrain=True, run_fold trains a fresh intraday model on
+        # this fold's [tr_start, tr_end] window via _train_cache (no 5-min
+        # re-fetch). Otherwise the frozen self.model is scored across all test
+        # windows (generalization test, cannot promote).
+        self.retrainer = None
+        self.per_fold_retrain: bool = False
+        self._train_cache = None
+        self._purge_days: Optional[int] = None
+        self._embargo_days: Optional[int] = None
+        # Per-symbol DAILY bars (vol-percentile / 52w features). Fetched ONCE on
+        # first per-fold use (cheap vs 5-min) and reused across all folds. The
+        # 5-min path never re-fetches per fold (constraint #4).
+        self._daily_data: Optional[Dict[str, pd.DataFrame]] = None
+        # Liquidity cap forced on by the runner for intraday per-fold feasibility.
+        self.top_n_by_liquidity: Optional[int] = None
 
     def fetch_data(self, start, end) -> None:
         """Load 5-min data from Polygon cache (or yfinance fallback)."""
@@ -144,10 +160,88 @@ class IntradayStrategy:
             self._global_regime_map = {}
         logger.info("Intraday data loaded: %d symbols", len(self.symbols_data))
 
+    def _ensure_daily_data(self) -> Dict[str, pd.DataFrame]:
+        """Per-fold path only: fetch per-symbol DAILY bars ONCE and cache them.
+
+        _symbol_to_rows needs per-symbol daily bars for the vol-percentile / 52w
+        features (daily_df). IntradayStrategy.fetch_data deliberately loads only
+        the 5-min bars (+ SPY daily overlay), so we lazily fetch the daily bars
+        here on first per-fold use. Daily bars for the (reduced) universe over
+        ~2yr are cheap relative to the 5-min data and are reused across every
+        fold — the hot 5-min path is never re-fetched. Mirrors
+        IntradayModelTrainer._fetch_daily_all (same provider helper)."""
+        if self._daily_data is not None:
+            return self._daily_data
+        from datetime import datetime, timedelta
+        from app.ml.intraday_training import IntradayModelTrainer
+        # Universe = the 5-min symbols actually loaded (excl. daily overlays).
+        syms = [s for s in self.symbols_data.keys() if s not in ("^VIX", "VIX")]
+        if not self.all_days_sorted:
+            self._daily_data = {}
+            return self._daily_data
+        start = datetime.combine(self.all_days_sorted[0], datetime.min.time())
+        end = datetime.combine(self.all_days_sorted[-1], datetime.min.time()) + timedelta(days=1)
+        trainer = IntradayModelTrainer(provider="alpaca")
+        try:
+            self._daily_data = trainer._fetch_daily_all(syms, start, end) or {}
+        except Exception as exc:
+            logger.warning("Per-fold daily-bar fetch failed (%s) — vol/52w features "
+                           "will use defaults for this run.", exc)
+            self._daily_data = {}
+        logger.info("Per-fold: cached daily bars for %d/%d symbols (fetched once)",
+                    len(self._daily_data), len(syms))
+
+        # Feasibility: cap the universe to top-N by 20-day median dollar volume.
+        # Full Russell-1000 per-fold intraday is OOM-infeasible (5-min features
+        # rebuilt per training window). Applied ONCE here; shrinks both the 5-min
+        # symbols_data the matrix builder iterates and the cached daily_data.
+        top_n = getattr(self, "top_n_by_liquidity", None)
+        if top_n is not None and self._daily_data:
+            dv_scores: Dict[str, float] = {}
+            for sym, df in self._daily_data.items():
+                if df is None or len(df) < 5:
+                    continue
+                tail = df.tail(20)
+                dv = (tail["close"] * tail["volume"]).median()
+                dv_scores[sym] = float(dv) if pd.notna(dv) else 0.0
+            keep = set(sorted(dv_scores, key=lambda s: dv_scores[s], reverse=True)[:top_n])
+            before = len([s for s in self.symbols_data if s not in ("^VIX", "VIX", "SPY")])
+            self.symbols_data = {
+                s: d for s, d in self.symbols_data.items()
+                if s in keep or s in ("^VIX", "VIX", "SPY")
+            }
+            self._daily_data = {s: d for s, d in self._daily_data.items() if s in keep}
+            logger.info("Per-fold liquidity filter: kept %d/%d symbols (top-%d by 20d "
+                        "median dollar volume)", len(keep), before, top_n)
+        return self._daily_data
+
     def run_fold(self, fold_idx: int, n_folds: int,
                  tr_start, tr_end, te_start, te_end) -> FoldResult:
         from app.backtesting.intraday_agent_simulator import IntradayAgentSimulator
         from app.data.universe_history import members_at as _members_at
+
+        # ── Per-fold retraining: train a fresh model on THIS fold's training
+        # window (true out-of-sample). Otherwise use the frozen self.model. ──
+        if self.per_fold_retrain:
+            daily_data = self._ensure_daily_data()
+            fold_model = self._train_cache.get(
+                tr_start, tr_end, self.symbols_data,
+                self.spy_data, daily_data, self.spy_daily_data,
+            )
+            from scripts.walkforward.oos_guard import assert_model_oos
+            # Intraday uses TRADING-day purge — pass the trading_day_set so the
+            # purge gap is counted in trading days, not calendar days.
+            assert_model_oos(
+                trained_through=fold_model.trained_through,
+                fold_boundaries=[(tr_start, tr_end, te_start, te_end)],
+                purge_days=self._purge_days if self._purge_days is not None else 0,
+                model_label=f"intraday per-fold@{tr_end}",
+                allow_in_sample=getattr(self, "allow_in_sample", False),
+                trading_day_set=set(self.all_days_sorted) if self.all_days_sorted else None,
+            )
+            _fold_model = fold_model
+        else:
+            _fold_model = self.model
 
         # BUG-9 fix: use PIT membership at te_start, not tr_start.
         # _members_at(tr_start) includes stocks that delisted/crashed between tr_start
@@ -157,7 +251,7 @@ class IntradayStrategy:
         pit_members = set(_members_at("russell1000", te_start))
         fold_symbols_data = {s: d for s, d in self.symbols_data.items() if s in pit_members}
         sim = IntradayAgentSimulator(
-            model=self.model,
+            model=_fold_model,
             meta_model=self.meta_model,
             pm_abstention_vix=self.pm_abstention_vix,
             pm_abstention_spy_ma_days=self.pm_abstention_spy_ma_days,

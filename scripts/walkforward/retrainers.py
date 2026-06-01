@@ -95,3 +95,65 @@ class SwingFoldRetrainer:
             self._seed_for(tr_start, tr_end), model.trained_through,
         )
         return model
+
+
+class IntradayFoldRetrainer:
+    """Trains a fresh INTRADAY model on a single fold's training window.
+
+    Phase 2 (intraday per-fold). Mirrors SwingFoldRetrainer. The intraday label
+    is SAME-DAY (future_bars are a window WITHIN the entry day's 5-min bars; all
+    daily/prior-day lookbacks are strictly backward), so restricting train_days
+    to {d <= tr_end} is sufficient for zero forward leak — no multi-day label
+    purge is needed (unlike swing's FORWARD_DAYS label).
+
+    base_config carries the intraday architecture knobs (provider, model_dir).
+    The XGBoost ensemble HP is the production FROZEN_HPO_PARAMS; per-fold HPO is
+    disabled (PER_FOLD_INTRADAY_HPO_TRIALS=0). seed_base + a deterministic
+    per-window offset gives a reproducible-yet-window-distinct ensemble seed.
+    """
+
+    def __init__(self, base_config: Optional[dict] = None, seed_base: int = 42):
+        self._base_config = dict(base_config or {})
+        self._seed_base = seed_base
+
+    def _seed_for(self, tr_start, tr_end) -> int:
+        """Deterministic per-window seed. Same window → same seed; different
+        tr_end → (almost surely) different seed."""
+        return self._seed_base + tr_end.toordinal() % 100000
+
+    def train_for_window(self, symbols_data, spy_data, daily_data, spy_daily_data,
+                         tr_start, tr_end):
+        from app.ml.intraday_training import IntradayModelTrainer
+        from app.ml.retrain_config import assert_no_sacred_holdout
+
+        # Defense in depth — never train through the sacred holdout.
+        assert_no_sacred_holdout(tr_end, context="per-fold-retrain (intraday)")
+
+        cfg = self._base_config
+        trainer = IntradayModelTrainer(
+            model_dir=cfg.get("model_dir", "app/ml/models"),
+            provider=cfg.get("provider", "alpaca"),
+        )
+        # Per-fold training never touches the network; mark so the matrix
+        # builder's secondary sacred-holdout guard respects the bypass flag.
+        trainer._allow_sacred_holdout = False
+
+        X, y, fnames, raw = trainer.build_train_matrix_for_window(
+            symbols_data, spy_data, daily_data, spy_daily_data, tr_start, tr_end,
+        )
+        if len(X) == 0:
+            raise RuntimeError(
+                f"per-fold-retrain: no training samples in window "
+                f"[{tr_start}, {tr_end}] — cannot fit a fold model."
+            )
+        model = trainer.fit_in_memory(
+            X, y, fnames, raw, seed=self._seed_for(tr_start, tr_end)
+        )
+        model.trained_through = tr_end  # EXPLICIT — the training-window upper bound
+        logger.info(
+            "per-fold-retrain: fit fresh intraday model for window [%s, %s] "
+            "(%d samples, %d features, seed=%d, trained_through=%s)",
+            tr_start, tr_end, len(X), len(fnames),
+            self._seed_for(tr_start, tr_end), model.trained_through,
+        )
+        return model

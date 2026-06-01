@@ -42,6 +42,14 @@
 > flagged `is_true_walkforward=True`, and `REQUIRE_TRUE_WF_FOR_PROMOTION` (default False, flip True in
 > Phase 3) will make frozen runs report-only. Swing must now be re-run with `--per-fold-retrain` to
 > earn a promotion-grade number. Intraday per-fold is Phase 2. See PIPELINE_ARCHITECTURE.md KL-10b.
+>
+> **UPDATE (2026-05-31, Phase 2 landed):** intraday per-fold-retrain now exists too. `--per-fold-retrain`
+> trains a fresh intraday model per fold on its own `[tr_start, tr_end]` 5-min window (same-day label →
+> leak-free with no FORWARD_DAYS purge; per-symbol daily bars fetched once and cached). Feasibility:
+> a reduced liquidity universe is forced (`--intraday-top-n`, default 150) and the design recommends
+> reduced-universe WF (k=4), not full CPCV (WARN when cpcv_k>4). The frozen intraday CPCV numbers below
+> are INVALID (in-sample); intraday must be re-run with `--per-fold-retrain` (reduced universe) to earn
+> an honest number. See PIPELINE_ARCHITECTURE.md KL-10b.
 
 ---
 
