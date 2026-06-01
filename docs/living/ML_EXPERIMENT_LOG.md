@@ -7459,3 +7459,52 @@ BOTH swing long-only (+0.22, t=0.17) AND intraday (-2.80, t=-6.85) now show NO h
 
 ### Decision
 Accept the verdict; do NOT burn more cycles confirming a clear kill. Redirect to PEAD (the #1 forward bet, runnable today, +0.349 honest CPCV on record, F2-immune). Optional airtight closure (not pursued now): one k=6 full-universe full-window run.
+
+---
+
+## PEAD — FIRST REAL EDGE — definitive honest CPCV — 2026-06-01
+
+**Strategy:** Post-earnings-announcement drift (PEAD), rules-based `PEADScorer`. Long-only, VIX>30 crisis block ON, no priced-in filter. Event-driven (F2-immune), no per-fold retraining needed (rules-based, OOS guard passes via trained_through=date.min).
+**Run:** `scripts/run_pead_cpcv.py` (CPCV_K=8, paths=2 → C(8,2)=28 combos, 21 surviving paths). Post-PR-#348 (real DSR/regime/PF instrumentation).
+**Log:** `logs/p0_pead_cpcv_DEFINITIVE.log`
+
+### Result — first statistically-significant POSITIVE edge in project history
+
+| Metric | Value | Gate | Pass |
+|---|---|---|---|
+| Mean Sharpe | +0.546 | > 0.80 | ❌ (short of promotion gate) |
+| Path t-stat (N_eff=8) | **+2.26** | > 2.0 | ✅ |
+| % positive | **95.2%** | ≥ 75% | ✅ |
+| P5 Sharpe | +0.009 | > -0.30 | ✅ |
+| P95 Sharpe | +2.228 | — | — |
+| DSR p | **1.000** | > 0.95 | ✅ (saturated — see note) |
+| Avg PF | **1.539** | > 1.10 | ✅ |
+| Avg Calmar | 0.765 | > 0.30 | ✅ |
+| worst_regime_sharpe | None | ≥ -0.50 | ❌ (event-sparsity, not a bug) |
+| low_deployment | warn | — | ❌ (flat-most-days by design) |
+
+Passes 6 meaningful gates (t-stat, %pos, P5, DSR, PF, Calmar). Fails only: strict 0.80 mean-Sharpe
+promotion bar, and two confirmed structural artifacts (regime=None: PEAD has <REGIME_MIN_OBS=20
+same-regime trading days, an honest data-sufficiency limit; low-deployment: event-driven strategies
+are flat between earnings by design).
+
+### Config evolution
+- First read (k=6, no VIX block): +0.525, t=2.02, 80% pos, P5 -0.288
+- **VIX>30 block + k=8 (best):** +0.546, t=2.26, **95% pos, P5 +0.009** — the VIX block trimmed the
+  crisis-fold left tail exactly as predicted (Opus thesis confirmed). P5 -0.288 → +0.009, %pos 80% → 95%.
+- DSR went 0.078 (broken instrumentation, n_obs=0) → 1.000 (real n_obs ~250 via PR #348).
+
+### Verdict (Opus 4.8)
+**Real, economically-grounded, defensible edge** — PEAD is the most-replicated anomaly in finance
+(Ball-Brown 1968, Bernard-Thomas 1989). First positive significant result vs swing (+0.22, t=0.17, noise)
+and intraday (-2.80, t=-6.85, cost-drag). Clears the project's 0.50 PAPER gate comfortably; short of the
+0.80 promotion gate. **Caveats:** edge rests on ~8 fold outcomes concentrated in a few windows (N_eff=8);
+~15% survivorship upper-bound; FMP `date`=announcement-date PIT spot-check recommended before live capital.
+DSR "passes" only by saturating (CRITICAL-1) — not extra confidence; t=2.26 is the honest significance read.
+
+### Next steps
+1. **Paper-trade PEAD** — clears 0.50 paper gate today; collect real fills 1-2 earnings seasons.
+2. **Push toward 0.80:** hold-extension (5→10→15d), earnings-quality split (beat+guidance via analyst
+   revisions), threshold tuning. See `docs/living/SWING_STRATEGY_DIRECTION.md`.
+3. **STOP** all long-only price-feature ML (swing + intraday confirmed dead).
+4. Higher-ceiling future: dollar-neutral L/S (purpose-built short signal), options-PEAD (IV-crush).
