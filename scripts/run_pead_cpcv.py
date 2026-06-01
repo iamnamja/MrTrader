@@ -136,11 +136,17 @@ class PEADStrategy:
             if s in pit_members or s in _synthetic
         }
 
+        # Hold-period lever: PEAD positions exit via max_hold_bars (default 40 ≈ 8wk,
+        # which over-stays and gives back drift). PEAD_MAX_HOLD_BARS env var caps it
+        # (e.g. 15 ≈ 3wk, matching the academic drift half-life). Unset → default 40.
+        _hold_override = (int(os.environ["PEAD_MAX_HOLD_BARS"])
+                          if os.environ.get("PEAD_MAX_HOLD_BARS") else None)
         sim = AgentSimulator(
             model=None,
             factor_scorer=self.scorer,
             transaction_cost_pct=self.transaction_cost_pct,
             no_prefilters=True,
+            max_hold_bars_override=_hold_override,
         )
         result = sim.run(
             fold_symbols_data,
@@ -203,15 +209,29 @@ def main() -> int:
     # Best config found: long-only, no VIX gate, no priced-in filter.
     # CPCV campaign (4 runs): Run 3 (this config) achieved mean=0.349 — the best result.
     # Priced-in filter (Run 4) hurt: large announce-day gaps have strongest drift continuation.
+    # Default = best long-only config (+0.546 honest CPCV). PEAD_LONG_SHORT=1 enables
+    # the short leg (long positive-surprise + short negative-surprise) with a VIX>20
+    # squeeze-guard on shorts — the untried dollar-neutral test.
+    _ls = os.environ.get("PEAD_LONG_SHORT") == "1"
+    # Earnings-quality split (last high-EV lever): PEAD_QUALITY_GATE=1 requires a
+    # long signal to be "EPS beat + analysts revising up" (positive analyst-revision
+    # momentum as-of the scoring day) rather than a bare beat. Higher-conviction
+    # drift, fewer trades. PIT-safe (analyst feature windowed to <= scoring day).
+    # Default OFF → committed long-only +0.546 config is unchanged.
+    _quality_gate = os.environ.get("PEAD_QUALITY_GATE") == "1"
     scorer = PEADScorer(
         long_threshold=0.05,
         short_threshold=-0.05,
-        long_short=False,
+        long_short=_ls,
         vix_block_all=30.0,
-        vix_block_short=100.0,
+        vix_block_short=(20.0 if _ls else 100.0),  # squeeze guard when short leg active
         vix_conf_ref=100.0,
         max_announce_day_move=1.0,  # disabled — large gaps retain drift signal
+        require_positive_revision=_quality_gate,
+        min_analyst_momentum=0.0,
     )
+    if _quality_gate:
+        logger.info("PEAD_QUALITY_GATE=1 — long signals require positive analyst revision")
     strategy = PEADStrategy(
         scorer=scorer,
         symbols=list(RUSSELL_1000_TICKERS),
