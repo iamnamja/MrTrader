@@ -219,6 +219,10 @@ class IntradayStrategy:
         # last_day] in lock-step with the 5-min day-axis the folds are built from.
         start = datetime.combine(self.all_days_sorted[0], datetime.min.time())
         end = datetime.combine(self.all_days_sorted[-1], datetime.min.time()) + timedelta(days=1)
+        # NOTE: the provider arg here only sets the (unused-for-daily) 5-min
+        # self._provider. _fetch_daily_all sources the per-symbol DAILY bars from
+        # INTRADAY_DAILY_FEATURE_PROVIDER (full-history, default yfinance), NOT from
+        # self._provider — so the 52w/vol features get full daily coverage here too.
         trainer = IntradayModelTrainer(provider="alpaca")
         try:
             self._daily_data = trainer._fetch_daily_all(syms, start, end) or {}
