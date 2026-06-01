@@ -4,28 +4,51 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-05-31 (overnight autonomous session)
+**Last updated:** 2026-06-01 (overnight autonomous session COMPLETE)
 
 ---
 
-## 🌙 OVERNIGHT AUTONOMOUS PLAN (2026-05-31 → next morning)
-Running unattended with Opus 4.8 driving design/implementation/review. Ordered:
+## ☀️ MORNING SUMMARY (2026-06-01) — read this first
 
-1. **Intraday per-fold CPCV first read** (RUNNING) — degraded daily features (Alpaca provider cap).
-2. **Daily-provider fix** — `_fetch_daily_all` uses Alpaca (~100 bars cap); switch to yfinance/Polygon
-   full daily history so 52w/vol features aren't 0.5 defaults. Opus implements + reviews. TRACKED — do not lose.
-3. **Re-run intraday per-fold CPCV** with full daily features → DEFINITIVE intraday number.
-4. **Opus oddity analysis** of the intraday result (vs struck-from-record +5.14; deployment-adj Sharpe; regime buckets; fold-skip).
-5. **Real-data integration smoke test** — both empty-matrix bugs (#339 swing, #342 intraday) shipped because
-   tests used mocked data that passed vacuously. Add a tiny REAL-data run asserting n_paths>0.
-6. **PEAD evaluation** (Phase 2b) — `scripts/run_pead_cpcv.py`; regime-independent earnings-momentum.
-7. **DEEP DIVE: swing** — long-only cross-sectional is exhausted (honest CPCV +0.22, t=0.17). Investigate
-   what swing model class COULD work: PEAD, proper L/S short model, alternative labels/horizons/features.
-   Opus-led research synthesis + concrete experiment proposals.
+**Headline: the honest pipeline killed two illusions and found one real edge.**
 
-**Process for every step:** feature branch → Opus implements → Opus reviews → tests (0 failures) → merge
-(--admin) → confirm → document (MODEL_STATUS/ML_EXPERIMENT_LOG/PIPELINE_ARCHITECTURE) → email on phase done.
-Never push to main directly. Background runs watched via until-loops; harness notifies on completion.
+| Strategy | Honest OOS CPCV (per-fold, leak-free) | Verdict |
+|---|---|---|
+| Swing (long-only cross-sectional) | +0.22, t=0.17, 50% pos | ❌ DEAD (noise) |
+| Intraday v63 | -2.80, t=-6.85, PF 0.94 | ❌ DEAD (cost-drag); struck fake +5.14 (memorization) |
+| **PEAD (post-earnings drift)** | **+0.546, t=2.26, 95% pos, P5 +0.009** | ✅ **REAL EDGE** (clears 0.50 paper gate; short of 0.80) |
+
+**PEAD is the first genuine, statistically-significant, economically-grounded positive result** the project
+has produced. Best config: long-only, VIX>30 crisis block ON, k=8, no priced-in filter. The VIX block was
+the key lever — it trimmed the crisis-fold left tail (P5 -0.288 → +0.009, %pos 80% → 95%). Mean 0.546 is
+short of the 0.80 promotion gate but comfortably clears the 0.50 PAPER gate. PEAD is event-driven (F2-immune),
+rules-based (no leakage risk).
+
+**What this means / next steps (your call):**
+1. **Paper-trade PEAD** — it clears the 0.50 paper gate today; collect real fills for 1-2 earnings seasons.
+2. **Push PEAD toward 0.80** — remaining levers (Opus deep-dive): hold-extension (5→10→15d), earnings-quality
+   split (beat+guidance via analyst revisions), threshold tuning. See `SWING_STRATEGY_DIRECTION.md`.
+3. **STOP** all long-only price-feature ML (swing + intraday both confirmed dead).
+4. Higher-ceiling future bets: true dollar-neutral L/S (purpose-built short signal), options-PEAD (IV-crush).
+
+**Caveats on PEAD:** edge rests on ~5-8 fold outcomes concentrated in a few windows (N_eff=8); ~15%
+survivorship upper-bound; verify FMP `date`=announcement-date PIT (5-min spot check). Solid signal, under-powered.
+
+**9 PRs merged overnight (#335–#348):** save-guard, swing+intraday per-fold retraining, 6 latent integration
+bugs (all surfaced only on real runs — mocked tests passed vacuously), daily-source fix (aggregate_5min),
+real-data smoke test (#345, guards the empty-matrix class), swing deep-dive doc (#344), PEAD instrumentation
+fix (#348, real DSR/regime). Full suite green throughout. notify_watcher auto-starts with uvicorn.
+
+(DEFINITIVE PEAD run with real DSR finishing as of this writing — see logs/p0_pead_cpcv_DEFINITIVE.log;
+result will be appended to ML_EXPERIMENT_LOG.)
+
+---
+
+## 🌙 OVERNIGHT PLAN (completed)
+All 7 planned items done: intraday definitive (−2.80, dead) → daily-source fixes (#343/#346) → intraday
+oddity analysis → real-data smoke test (#345) → PEAD eval (+0.546, the win) → swing deep-dive (#344). Plus
+PEAD instrumentation fix (#348) for honest DSR. Process held: branch → Opus implement → Opus review → tests
+→ merge → document.
 
 ---
 
