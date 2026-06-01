@@ -7366,3 +7366,54 @@ All critical guards are active and correct:
 - ⚠️ Worst-regime-sharpe: gate wired but FoldResult.regime_sharpes unpopulated (design gap, always waived)
 
 **All CPCV/WF results prior to 2026-05-30 should be considered pre-hardening.** Re-run swing_v224 and intraday_meta_v63 to get first post-audit validated results.
+
+---
+
+## FIRST GENUINE OUT-OF-SAMPLE SWING RESULT — swing v224 per-fold CPCV — 2026-05-31
+
+**Run:** `walkforward_tier3.py --model swing --swing-model-version 224 --cpcv --cpcv-k 6 --cpcv-paths 2 --per-fold-retrain --as-of 2026-05-29`
+**Mode:** TRUE per-fold retraining (`is_true_walkforward=True`) — each fold trains a fresh LambdaRank model on only its own causal `[tr_start, tr_end]` window; verified no-leak; 20d label horizon (production parity); trained_through=fold train_end; ~15–22k samples / 72 features per fold.
+**Log:** `logs/p0_swing_v224_cpcv_perfold.log`
+
+### Result — NO out-of-sample edge
+
+| Metric | Value | Gate | Pass |
+|---|---|---|---|
+| Mean Sharpe | +0.220 | > 0.80 | ❌ |
+| Std Sharpe | 3.130 | — | — |
+| P5 / P95 | -3.969 / +3.676 | P5 > -0.30 | ❌ |
+| % positive | 50.0% | ≥ 75% | ❌ |
+| Path t-stat (N_eff=6) | **0.17** | > 2.0 | ❌ (≈ zero — noise) |
+| DSR p | 0.300 | > 0.95 | ❌ |
+| Avg capital deployed | 16.5% | — | — |
+| Deployment-adj Sharpe | +0.166 | — | ≈ raw mean → no hidden edge |
+| Avg PF | 1.256 | > 1.10 | ⚠️ short-window artifact |
+| Avg Calmar | 6.529 | > 0.30 | ⚠️ vol-floor sentinel artifact |
+| worst_regime_sharpe | None | ≥ -0.50 | ❌ instrumentation gap (fails-closed) |
+
+CPCV: C(6,2)=15 combos, 10 surviving paths, 16/30 fold-evals skipped (53%).
+
+### Interpretation (Opus 4.8)
+
+**Swing v224 has no detectable out-of-sample edge.** +0.22 ± 3.13 with t=0.17 is statistically indistinguishable from zero. This is convergent with the entire swing campaign: 9 LX experiments failed (LX9-A beta-neutral +0.031, F2=-0.70), honest LX1 baseline +0.079. **Long-only cross-sectional swing ranking is exhausted** — the failure mode (long-only beta exposure destroyed in VIX spikes) is structural to the strategy class.
+
+**Oddities (all bias the number UPWARD, so a cleaner run would be lower):**
+- 53% fold-skip over-weights friendly 2023-24 bull folds, omits the 2022 bear (fold 0 always skipped — no causal prior train).
+- Std 3.13 is a measurement artifact: purge=embargo=85 shrinks each ~260-day test window to ~62 trading days → high Sharpe sampling error, NOT genuine regime sensitivity.
+- Calmar 6.53 / PF 1.26 "OK" are short-window aggregation artifacts (vol-floor DD sentinel; PF cap). Non-informative here.
+- Deployment-adj Sharpe (+0.166) ≈ raw mean → deployment is NOT distorting the result.
+
+**The real win:** the validation pipeline is now honest. It turned the inflated frozen numbers (+0.08 to +5.14, all in-sample) into the noise they always were.
+
+### Pre-existing bugs fixed to obtain this result (this session)
+- PR #335: save-guard — refuse to persist a model without `trained_through` (KL-10).
+- PR #336: per-fold retraining mechanism (swing).
+- PR #337: `--per-fold-retrain + --cpcv` skips the legacy frozen WF (which crashed on None cutoff before reaching CPCV).
+- PR #338: `SwingStrategy` accepts `rebalance_hard_exit_bear` / `rebalance_flat_stop_pct` (CPCV path had never been exercised).
+- PR #339: per-fold empty-matrix bug — regime **label** map passed where numeric **score** map expected → `float("BULL")` crash swallowed by bare `except` → every training row dropped; also fixed 5d→20d label horizon parity, the "ALL GATES PASSED" display bug, and the vacuous no-leak test (added `len(X)>0` regression lock).
+
+### Known gap (non-blocking)
+`worst_regime_sharpe=None` in per-fold CPCV: per-fold equity curves at 16.5% deployment yield too few same-regime daily returns to clear REGIME_MIN_OBS=20, so regime buckets stay empty. Gate correctly fails-closed. `compute_regime_sharpes` works on adequate daily data (verified). Fix opportunistically — does not change this verdict.
+
+### Decision
+Stop iterating long-only cross-sectional swing. Next: (1) intraday Phase 2 per-fold validation as lead strategy, (2) PEAD (earnings-momentum, regime-independent) as 2nd strategy.

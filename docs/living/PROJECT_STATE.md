@@ -24,7 +24,14 @@ All 3 phases of the gate integrity overhaul are merged (PRs #329–#334). Pipeli
 
 ---
 
-## Tonight's Jobs (launched 2026-05-31)
+## RUNNING NOW (2026-05-31): First honest swing CPCV
+`logs/p0_swing_v224_cpcv_perfold.log` — swing per-fold CPCV C(6,2), `--per-fold-retrain --as-of 2026-05-29`.
+This is the FIRST genuinely out-of-sample ML result in project history. Each fold trains a fresh
+model on only its own window (Opus-verified no-leak + per-fold OOS guard, verdict "RUN IT"). ETA ~20-60min.
+**The gap between this number and the old frozen +0.08-0.55 swing numbers = the leakage that was inflating them.**
+Expect it to be honest-low. A pass (mean Sharpe > 0.80) would be the first promotable swing result.
+
+## Superseded Jobs (2026-05-31, earlier)
 1. **CPCV swing v224** (~4h) → `logs/p0_swing_v224_cpcv.log` — first honest swing baseline
 2. **CPCV intraday v63 re-run** (~4h) → `logs/p0_intraday_v63_cpcv_postaudit.log` — deployment-adjusted Sharpe on fully-corrected pipeline
 3. Macro history + yfinance incremental data updates (~12min)

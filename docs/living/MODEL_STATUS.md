@@ -49,9 +49,31 @@
 
 | Gate | Status | Notes |
 |---|---|---|
-| Swing WF | ⏳ Pending | v224 not yet walk-forward validated post-audit |
-| Intraday WF | ✅ PASSED | avg +6.618, DSR p=1.000, PF=2.67, Cal=32.43 |
-| Intraday CPCV | ✅ PASSED | mean +5.143, P5=+0.533, 92.9% pos, DSR p=0.984 |
+| **Swing CPCV (per-fold, HONEST)** | ❌ **FAILED — no edge** | mean +0.22 ± 3.13, t-stat 0.17, 50% pos, DSR p=0.30. First genuine OOS result. See below. |
+| Intraday WF (frozen) | ⚠️ INVALID (in-sample) | +6.618 — struck; predates per-fold |
+| Intraday CPCV (frozen) | ⚠️ INVALID (in-sample) | +5.143 — struck; Phase 2 per-fold pending |
+
+> ## ✅ FIRST HONEST SWING RESULT (2026-05-31): swing v224 has NO out-of-sample edge
+>
+> Per-fold-retrain CPCV C(6,2), `--as-of 2026-05-29` — genuinely out-of-sample (each fold trains a
+> fresh model on its own causal window, verified no-leak, 20d horizon, trained_through=fold train_end):
+> - **Mean Sharpe +0.220 ± 3.130, path t-stat 0.17** (statistically indistinguishable from zero)
+> - 50% paths positive (coin flip), DSR p=0.30, P5 -3.97 / P95 +3.68
+> - Deployment-adjusted Sharpe +0.166 ≈ raw mean → **not a deployment artifact; there is simply no edge**
+> - PF 1.256 / Calmar 6.53 "OK" are short-window aggregation artifacts (62-day test windows from
+>   purge=embargo=85), NOT evidence of edge — ignore them.
+> - worst_regime_sharpe=None: real CPCV instrumentation gap (per-fold equity too sparse to fill
+>   regime buckets); gate correctly fails-closed. Does not change verdict.
+>
+> **Opus 4.8 verdict:** Long-only cross-sectional swing ranking is **exhausted**. Convergent evidence:
+> 9 LX experiments failed (LX9-A beta-neutral +0.031, F2=-0.70), honest LX1 baseline +0.079, and now
+> the first true OOS CPCV of the production v224 architecture is noise (+0.22, t=0.17). The recurring
+> failure (long-only beta exposure destroyed in VIX spikes) is structural to the strategy class.
+> The oddities (53% fold-skip biased toward friendly 2023-24 bull folds, omitting the 2022 bear) all
+> bias the number UPWARD — a cleaner run would be lower, not higher.
+>
+> **The real win: the validation pipeline is now honest.** It turned the inflated frozen swing numbers
+> (+0.08 to +5.14) into the noise they always were. Next: apply it to intraday (Phase 2) + evaluate PEAD.
 
 > **NOTE (2026-05-31):** All WF/CPCV results prior to the 13-round audit (PRs #323–327) must be re-run. Pipeline hardening changes gate behavior for Calmar, PF, and OOS guard. The intraday CPCV result above was produced on the corrected pipeline.
 >
