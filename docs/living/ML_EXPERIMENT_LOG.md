@@ -7417,3 +7417,45 @@ CPCV: C(6,2)=15 combos, 10 surviving paths, 16/30 fold-evals skipped (53%).
 
 ### Decision
 Stop iterating long-only cross-sectional swing. Next: (1) intraday Phase 2 per-fold validation as lead strategy, (2) PEAD (earnings-momentum, regime-independent) as 2nd strategy.
+
+---
+
+## FIRST HONEST INTRADAY OOS RESULT — intraday v63 per-fold CPCV — 2026-06-01
+
+**Run:** `walkforward_tier3.py --model intraday --intraday-model-version 63 --per-fold-retrain --cpcv --cpcv-k 4 --cpcv-paths 2 --intraday-top-n 150 --days 504 --as-of 2026-05-29`
+**Mode:** TRUE per-fold retraining; daily 52w/vol features fully populated via aggregate_5min (703/703 symbols).
+**Log:** `logs/p0_intraday_v63_cpcv_DEFINITIVE.log`
+
+### Result — NO out-of-sample edge (cost-drag dominated)
+
+| Metric | Value | Gate | Pass |
+|---|---|---|---|
+| Mean Sharpe | **-2.798** | > 1.00 | ❌ |
+| Path t-stat (N_eff=4) | **-6.85** | > 2.0 | ❌ (significant in LOSING direction) |
+| % positive | 0.0% | ≥ 75% | ❌ |
+| DSR p | 0.000 | > 0.95 | ❌ |
+| Avg PF | 0.944 | > 1.10 | ❌ (below break-even) |
+| Std Sharpe | 0.817 | — | tight = consistent loss, not noise |
+
+3 surviving paths, 2 distinct fits, 58% fold-eval skip (k=4 too small for per-fold intraday).
+
+### Three honest runs, converging negative
+1. Alpaca-degraded daily (~100-bar cap): mean -2.45, t=-2.29
+2. yfinance type-bug (0 daily): killed throwaway
+3. Full daily (aggregate_5min): mean -2.80, t=-6.85
+
+vs the STRUCK-FROM-RECORD frozen in-sample +5.14/+6.62 (model trained through 2026-05, scored 2024-11→2026-04 — pure memorization).
+
+### Opus 4.8 analysis — verdict + key findings
+**Effectively dead as configured.** The negative result is DOMINATED by transaction-cost drag, not a tradeable inverse signal:
+- **Cost math (smoking gun):** 5bps/side × ~15% equity traded/day ≈ 3.8%/yr drag on a ~2% annualized-vol same-day-flat equity curve → ~-1.9 Sharpe from costs ALONE on a zero-edge model. Gross PF≈0.94 is below the cost hurdle.
+- **-2.80 overstates badness** (magnitude fragile: 3 paths, k=4, top-150 undertrained on ~10-21k samples / ~353-day Polygon cache, not the requested 504d). But sign is robust (both honest runs negative, 0% positive, PF<1.0).
+- **t=-6.85 is NOT a tradeable inverse signal** — it tightened only because top-150 collapsed path dispersion; it's consistent friction on a coin-flip model, not anti-prediction.
+- **Deployment metric meaningless** for same-day-flat intraday (positions close EOD → measured deployment ≈0; ignore the low-deployment warning here).
+- **Per-fold undertraining** is a real confound (each fold ~70-day train vs production 730d) — explains some gap from +5.14, but does NOT rescue the edge (gross PF≈nil).
+
+### Strategic conclusion
+BOTH swing long-only (+0.22, t=0.17) AND intraday (-2.80, t=-6.85) now show NO honest OOS edge across independent horizons/architectures. Strong convergent evidence that **price/technical features alone, long-only, after costs, do not produce tradeable alpha in this universe.** Strengthens the swing-deep-dive pivot: PEAD / dollar-neutral L/S / event-driven strategies (structural edge source, market-neutral cost/beta profile).
+
+### Decision
+Accept the verdict; do NOT burn more cycles confirming a clear kill. Redirect to PEAD (the #1 forward bet, runnable today, +0.349 honest CPCV on record, F2-immune). Optional airtight closure (not pursued now): one k=6 full-universe full-window run.

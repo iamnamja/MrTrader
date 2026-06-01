@@ -67,9 +67,16 @@
 
 | Gate | Status | Notes |
 |---|---|---|
-| **Swing CPCV (per-fold, HONEST)** | ❌ **FAILED — no edge** | mean +0.22 ± 3.13, t-stat 0.17, 50% pos, DSR p=0.30. First genuine OOS result. See below. |
-| Intraday WF (frozen) | ⚠️ INVALID (in-sample) | +6.618 — struck; predates per-fold |
-| Intraday CPCV (frozen) | ⚠️ INVALID (in-sample) | +5.143 — struck; Phase 2 per-fold pending |
+| **Swing CPCV (per-fold, HONEST)** | ❌ **FAILED — no edge** | mean +0.22 ± 3.13, t-stat 0.17, 50% pos, DSR p=0.30. First genuine OOS. |
+| **Intraday CPCV (per-fold, HONEST)** | ❌ **FAILED — no edge (cost-drag)** | mean -2.80, t-stat -6.85, 0% pos, PF 0.94. Gross edge below cost hurdle. First genuine OOS. |
+| Intraday CPCV (frozen) | ⚠️ INVALID (in-sample) | +5.143 — STRUCK (memorization) |
+
+> ## 🔴 BOTH ML STRATEGIES HAVE NO HONEST OOS EDGE (2026-06-01)
+> Swing long-only per-fold CPCV **+0.22, t=0.17** (noise); intraday per-fold CPCV **-2.80, t=-6.85**
+> (cost-drag dominated, gross PF 0.94 below break-even). Struck frozen intraday +5.14 was in-sample
+> memorization. Convergent across independent horizons: price/technical features, long-only, after
+> costs → no tradeable alpha in this universe. Pivot (`SWING_STRATEGY_DIRECTION.md`): PEAD #1
+> (runnable, +0.349 on record, F2-immune), dollar-neutral L/S #2. STOP long-only price-feature ML.
 
 > ## ✅ FIRST HONEST SWING RESULT (2026-05-31): swing v224 has NO out-of-sample edge
 >
