@@ -33,6 +33,71 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## P0 — Insider-Buying-Cluster Edge (candidate 2nd edge) — 2026-06-01 — VERDICT: FAIL / weak
+
+**Goal:** Validate an insider-buying-cluster event strategy as a SECOND independent
+edge to diversify beyond PEAD (+0.546). Rules-based, run through the proven honest
+CPCV harness (clone of `run_pead_cpcv.py`).
+
+**Data (Step 0 — verified PIT-safe):** FMP `/stable/insider-trading/search` (Form 4).
+Returns BOTH `filingDate` (PIT-public date) and `transactionDate`, plus
+`transactionType` (P-Purchase / S-Sale / A-Award / M-Exempt / G-Gift / F-InKind),
+`securitiesTransacted`, `price`, `reportingName`, `typeOfOwner`. History back to
+~2016, covers the 6yr window. **We act on `filingDate` only** (transaction date is not
+public until the Form 4 is filed within 2 business days — acting earlier = look-ahead).
+638/664 R1K symbols had open-market purchase history. PIT enforced via
+`get_insider_features_at(sym, as_of)` (filing_date <= as_of), cached per-symbol
+(paginated full-history fetch, sliced in memory — no per-day API spam).
+
+**Signal (a-priori, academic basis — NOT tuned):** Long-only. Open-market PURCHASES
+only (transactionType "P*"). CLUSTER = ≥2 distinct insiders buying within a trailing
+30-day window, OR a single purchase ≥ $1M notional. Fires on the cluster's latest
+filing date; enter within 5 days; hold = AgentSimulator default (~40 bars ≈ 8wk).
+Basis: Cohen-Malloy-Pomorski (2012) "opportunistic" insiders; Lakonishok-Lee (2001) —
+cluster BUYING is informative, multiple buyers + larger size are the strong signals.
+Shorting insider SELLING deliberately excluded (insiders sell for non-informational
+reasons — known weak signal).
+
+**Config:** C(8,2)=28 combos (21 paths), k=8, ~6yr, purge=embargo=10d, 5bps costs,
+PIT universe via te_start, OOS guard trained_through=date.min. Longs verified to
+execute (scorer probe emits `[('OXY',0.75,'long')]` on a known 2020-03 cluster;
+folds book 24-35 long trades each, incl. a +5.9%/Sharpe 2.30 fold).
+
+**Result:**
+| Metric | Value | Gate | |
+|---|---|---|---|
+| Mean Sharpe | **+0.228** | >0.80 | FAIL |
+| P5 Sharpe | -0.954 | >-0.30 | FAIL |
+| P95 Sharpe | +1.346 | | |
+| % positive | 76.2% | ≥75% | OK |
+| Path t-stat | +0.88 (N_eff=8) | >2.0 | WARN |
+| DSR p | 0.972 | >0.95 | OK |
+| Avg PF | 1.379 | >1.1 | OK |
+| Avg Calmar | 0.827 | >0.3 | OK |
+| Skipped fold evals | 52% (low deployment) | | WARN |
+
+**Pre-registered bar:** REAL EDGE if mean ≥ 0.35 AND t ≥ 2.0 AND %pos ≥ 0.65.
+NOISE if mean < 0.20 or t < 1.0. **Actual: mean 0.228, t 0.88 → FAILS the edge bar,
+sits in the weak/marginal zone (just above the noise floor on mean, below on t).**
+
+**Verdict:** NOT a deployable second edge. The directional thesis shows weak positive
+tilt (76% of paths positive, PF 1.38, mean +0.23) but it is statistically
+indistinguishable from zero (t=0.88) and has a negative worst-regime tail (P5 -0.95).
+**Honest structural reason:** insider-buying clusters are genuinely RARE in the liquid
+Russell-1000 (large-cap insiders rarely make open-market purchases — the documented
+edge concentrates in small/mid-caps and beaten-down names outside our tradable
+universe). Only ~24-35 trades fire per ~9-month fold, and 52% of fold evaluations are
+empty. The honest pipeline correctly deflates this to noise within the R1K constraint.
+Compare PEAD +0.546 (frequent earnings-clock events) — insider clusters do not clear
+the second-edge bar here. Possible (deferred) extension: widen universe beyond R1K to
+small/mid-caps where the academic edge lives, then re-run.
+
+**Files:** `app/data/fmp_provider.py` (get_insider_trades_fmp / get_insider_features_at),
+`app/ml/insider_scorer.py`, `scripts/run_insider_cpcv.py`, `tests/test_insider_scorer.py`,
+log `logs/p0_insider_cpcv.log`.
+
+---
+
 ## System Improvement — Gate Integrity Phase 2 + Phase 3 — 2026-05-31 (PRs #331, #332)
 
 Pipeline gate hardening (no model retrain — these change how WF/CPCV results are
