@@ -79,6 +79,8 @@ class PEADScorer:
         max_announce_day_move: float = MAX_ANNOUNCE_DAY_MOVE,
         long_threshold_hv: float = None,  # high-vol threshold override
         vix_adaptive: float = 20.0,       # VIX level above which to use long_threshold_hv
+        require_positive_revision: bool = False,  # earnings-quality gate (default OFF)
+        min_analyst_momentum: float = 0.0,        # net up-down threshold (strictly >)
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
@@ -90,6 +92,14 @@ class PEADScorer:
         self.max_announce_day_move = max_announce_day_move
         self.long_threshold_hv = long_threshold_hv
         self.vix_adaptive = vix_adaptive
+        # Earnings-quality split: when ON, a long signal requires not just an EPS
+        # beat but also POSITIVE analyst-revision momentum as-of the scoring day
+        # (beat + analysts revising up = higher-conviction drift). PIT-safe: the
+        # analyst feature is fetched via get_analyst_features_at(sym, as_of) which
+        # only uses grade records dated <= as_of. Default OFF → committed +0.546
+        # long-only config is unchanged.
+        self.require_positive_revision = require_positive_revision
+        self.min_analyst_momentum = min_analyst_momentum
 
     def _vix_today(self, day, symbols_data: dict):
         """Extract PIT VIX close for `day` from symbols_data. Returns None if unavailable."""
@@ -113,6 +123,8 @@ class PEADScorer:
         """Score symbols on `day` using PEAD signal. Returns [(sym, conf, direction)]."""
         import pandas as pd
         from app.data.fmp_provider import get_earnings_features_at
+        if self.require_positive_revision:
+            from app.data.fmp_provider import get_analyst_features_at
 
         _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
         as_of = _ts.date()  # get_earnings_features_at requires datetime.date
@@ -194,6 +206,22 @@ class PEADScorer:
             conf_gated = conf * vix_mult
 
             if surprise >= effective_long_threshold:
+                # Earnings-quality gate (optional): only take the long if analysts
+                # are revising UP as-of the scoring day. PIT-safe — get_analyst_
+                # features_at(sym, as_of) windows grade records to <= as_of only.
+                if self.require_positive_revision:
+                    try:
+                        afeats = get_analyst_features_at(sym, as_of)
+                        momentum = afeats.get("fmp_analyst_momentum_30d", 0.0)
+                    except Exception as e:
+                        logger.debug("PEAD: %s analyst fetch failed: %s", sym, e)
+                        momentum = 0.0
+                    if momentum <= self.min_analyst_momentum:
+                        logger.debug(
+                            "PEAD quality-gate skip %s: analyst momentum=%.1f <= %.1f",
+                            sym, momentum, self.min_analyst_momentum,
+                        )
+                        continue
                 results.append((sym, conf_gated, "long"))
             elif short_enabled and surprise <= self.short_threshold:
                 results.append((sym, -conf_gated, "short"))
