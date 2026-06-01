@@ -7640,3 +7640,28 @@ Distinct fold Sharpes: {-1.444, -0.483, +0.520, +0.617, +0.878, +0.986, +1.748}.
 **Verdict: REJECTED.** Fails the pre-registered ADVANCE bar (mean≥0.65 ✗, t≥2.4 ✗, %pos≥0.90 ✗, leave-best-out≥0.20 ✗). Conviction sizing slightly HURT — the SUE tilt + vol-scale concentrated downside in bad folds (more negative folds) without lifting the median, exactly the "concentration not edge" failure the reject rule guards against. **Equal-weight long-only +0.546 remains the best PEAD config.**
 
 **4 PEAD config/sizing levers now all fail to beat equal-weight +0.546** (hold-15, long-short, earnings-quality, conviction-sizing). PEAD's honest ceiling on this universe is ~0.55 — config tuning cannot move it. To raise PEAD's ceiling needs new structure (small-cap universe, options overlay); to diversify needs a new independent edge (insider clusters, buybacks). Stop tuning PEAD config.
+
+---
+
+## Free-data event-edge sweep COMPLETE — no validated second edge — 2026-06-01
+
+Hunted for a second independent edge to diversify beyond PEAD. Results:
+
+| Edge | Honest CPCV | Verdict |
+|---|---|---|
+| **PEAD long-only** | **+0.546, t=2.26, 95% pos** | ✅ SOLE validated edge |
+| Insider clusters (#6) | +0.228, t=0.88, 76% pos | ❌ weak — clusters rare in R1K large-caps |
+| Buyback announce (#7) | UNTESTABLE | ⏸️ no PIT announcement feed on FMP plan (clean STOP — refused to build on bad data) |
+| Index rebalance (#8) | deferred | ⏸️ no reliable PIT add/delete dates + needs different harness |
+
+**Pattern confirmed:** R1K large-cap event edges work when events are FREQUENT (PEAD/earnings, +0.546) and fade when RARE (insider clusters, +0.228). The academic literature + the insider deflation both point to event-drift edges being STRONGEST in small/mid-caps (less arbitraged, longer drift half-life) — outside our current R1K universe.
+
+### State of the search (all honest, post-pipeline-fix)
+- Long-only price-feature ML: DEAD (swing +0.22, intraday -2.80).
+- PEAD long-only: REAL (+0.546), paper-gate-ready, ~0.55 ceiling. 4 config/sizing levers all failed to beat it (hold, L/S, quality, conviction).
+- Free-data R1K event diversification: exhausted (insider weak, buyback no-data, index deferred). No second edge.
+
+### Highest-EV remaining moves (require a decision — free-data ladder exhausted)
+1. **Small/mid-cap PEAD expansion** (P~0.45, the strongest-EV remaining): PEAD works in R1K; the literature + insider result say event edges are strongest in smaller names. Needs yfinance universe extension (S&P 600 / Russell 2000) + a liquidity/cost filter (ADV>$2M, 15-25bps). The one experiment most likely to push PEAD above its R1K ceiling.
+2. **Recalibrate the promotion gate** (the 0.80 mean-Sharpe is a frozen-WF relic; t-stat ≥2.0 + the 3-tier ladder is defensible) and **paper-trade PEAD long-only** (clears the proposed paper bar cleanly).
+3. **Paid-data bets** (need spend): buyback press-releases (FMP upgrade), options-PEAD (IV-crush, highest ceiling).
