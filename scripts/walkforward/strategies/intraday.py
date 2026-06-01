@@ -219,19 +219,42 @@ class IntradayStrategy:
         # last_day] in lock-step with the 5-min day-axis the folds are built from.
         start = datetime.combine(self.all_days_sorted[0], datetime.min.time())
         end = datetime.combine(self.all_days_sorted[-1], datetime.min.time()) + timedelta(days=1)
-        # NOTE: the provider arg here only sets the (unused-for-daily) 5-min
-        # self._provider. _fetch_daily_all sources the per-symbol DAILY bars from
-        # INTRADAY_DAILY_FEATURE_PROVIDER (full-history, default yfinance), NOT from
-        # self._provider — so the 52w/vol features get full daily coverage here too.
-        trainer = IntradayModelTrainer(provider="alpaca")
-        try:
-            self._daily_data = trainer._fetch_daily_all(syms, start, end) or {}
-        except Exception as exc:
-            logger.warning("Per-fold daily-bar fetch failed (%s) — vol/52w features "
-                           "will use defaults for this run.", exc)
-            self._daily_data = {}
-        logger.info("Per-fold: cached daily bars for %d/%d symbols (fetched once)",
-                    len(self._daily_data), len(syms))
+        from app.ml.retrain_config import INTRADAY_DAILY_FEATURE_PROVIDER
+        if INTRADAY_DAILY_FEATURE_PROVIDER == "aggregate_5min":
+            # ROBUST DEFAULT for the per-fold path: aggregate the already-loaded
+            # 5-min bars to daily OHLCV. Zero network, no rate-limit, and coverage
+            # == the 5-min span the folds are built from (so a daily/5-min span
+            # mismatch can never empty the matrix). Tradeoff: the 5-min cache is
+            # ~2yr, so windows near the cache start get <252d of backward lookback
+            # for the 52w/vol features — degraded gracefully, NOT zeroed to 0.5.
+            from app.ml.intraday_training import aggregate_5min_to_daily
+            self._daily_data = aggregate_5min_to_daily(self.symbols_data) or {}
+            logger.info(
+                "Per-fold: aggregated 5-min→daily for %d/%d symbols (zero network, "
+                "coverage == 5-min span)", len(self._daily_data), len(syms),
+            )
+            if syms and len(self._daily_data) < 0.5 * len(syms):
+                logger.warning(
+                    "DAILY COVERAGE LOW: aggregate_5min produced daily bars for only "
+                    "%d/%d symbols (%.0f%%) — 52w/vol features degraded for the rest.",
+                    len(self._daily_data), len(syms),
+                    100.0 * len(self._daily_data) / max(len(syms), 1),
+                )
+        else:
+            # NOTE: the provider arg here only sets the (unused-for-daily) 5-min
+            # self._provider. _fetch_daily_all sources the per-symbol DAILY bars from
+            # INTRADAY_DAILY_FEATURE_PROVIDER (full-history yfinance/polygon), NOT
+            # from self._provider — so the 52w/vol features get full daily coverage.
+            trainer = IntradayModelTrainer(provider="alpaca")
+            try:
+                self._daily_data = trainer._fetch_daily_all(syms, start, end) or {}
+            except Exception as exc:
+                logger.warning("Per-fold daily-bar fetch failed (%s: %s) — vol/52w "
+                               "features will use defaults for this run.",
+                               type(exc).__name__, exc, exc_info=True)
+                self._daily_data = {}
+            logger.info("Per-fold: cached daily bars for %d/%d symbols (fetched once)",
+                        len(self._daily_data), len(syms))
 
         # Feasibility: cap the universe to top-N by 20-day median dollar volume.
         # Full Russell-1000 per-fold intraday is OOM-infeasible (5-min features

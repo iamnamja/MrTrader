@@ -41,6 +41,74 @@ from app.ml.model import PortfolioSelectorModel
 
 logger = logging.getLogger(__name__)
 
+
+def _to_date(d):
+    """Coerce a date/datetime (or anything with a .date() method, e.g.
+    pandas.Timestamp) to a plain datetime.date. Leaves None / already-date
+    values untouched. Used to give all daily providers a consistent date type —
+    the yfinance cache compares against datetime.date and raises TypeError when
+    handed a datetime (the PR #343 'can't compare datetime.datetime to
+    datetime.date' bug)."""
+    if d is None:
+        return d
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, date):
+        return d
+    if hasattr(d, "date"):
+        return d.date()
+    return d
+
+
+def aggregate_5min_to_daily(
+    symbols_data: Dict[str, pd.DataFrame],
+    exclude: tuple = ("^VIX", "VIX"),
+) -> Dict[str, pd.DataFrame]:
+    """Aggregate in-memory 5-min OHLCV bars to daily OHLCV — zero network.
+
+    For each symbol, group the intraday bars by calendar day and reduce:
+      open   = first bar's open      high  = max high
+      low    = min low               close = last bar's close
+      volume = sum volume
+    Produces one daily row per trading day present in the 5-min data, indexed by
+    the (midnight-normalized) day. Coverage therefore == the 5-min span exactly,
+    which guarantees the per-fold matrix is never emptied by a daily/5-min span
+    mismatch and never rate-limited.
+
+    TRADEOFF: the 5-min Polygon cache is ~2yr, so for windows near the cache
+    start the 52w/vol-percentile features have <252 trading days of backward
+    lookback (they degrade to a shorter window, NOT to 0.5 defaults). Providers
+    with full daily history (yfinance/polygon) give the full 252d lookback at
+    the cost of a network fetch that can rate-limit.
+    """
+    out: Dict[str, pd.DataFrame] = {}
+    for sym, df in symbols_data.items():
+        if sym in exclude:
+            continue
+        if df is None or len(df) == 0:
+            continue
+        cols = {c.lower(): c for c in df.columns}
+        # Require OHLCV columns (case-insensitive); skip anything malformed.
+        if not all(k in cols for k in ("open", "high", "low", "close", "volume")):
+            continue
+        idx = pd.DatetimeIndex(df.index)
+        day_key = idx.normalize()
+        grouped = df.groupby(day_key)
+        daily = pd.DataFrame(
+            {
+                "open": grouped[cols["open"]].first(),
+                "high": grouped[cols["high"]].max(),
+                "low": grouped[cols["low"]].min(),
+                "close": grouped[cols["close"]].last(),
+                "volume": grouped[cols["volume"]].sum(),
+            }
+        )
+        daily = daily.sort_index()
+        if len(daily) > 0:
+            out[sym] = daily
+    return out
+
+
 MODEL_DIR = "app/ml/models"
 CACHE_DIR = Path("data/cache/5min")
 META_FILE = CACHE_DIR / "_meta.json"
@@ -155,8 +223,15 @@ class IntradayModelTrainer:
         t0 = datetime.now()
         symbols_data = self._fetch_data(symbols, start_dt, end_dt)
         spy_data = self._fetch_spy(start_dt, end_dt, force_refresh) if fetch_spy else None
-        daily_data = self._fetch_daily_all(symbols, start_dt, end_dt)
-        spy_daily_data = self._fetch_daily_all(["SPY"], start_dt, end_dt).get("SPY")
+        daily_data = self._fetch_daily_all(symbols, start_dt, end_dt,
+                                           symbols_data=symbols_data)
+        # SPY daily: aggregate_5min needs the SPY 5-min frame; pass whatever SPY
+        # 5-min bars we have (spy_data, or the SPY entry of symbols_data).
+        _spy_5min = spy_data if spy_data is not None else symbols_data.get("SPY")
+        spy_daily_data = self._fetch_daily_all(
+            ["SPY"], start_dt, end_dt,
+            symbols_data={"SPY": _spy_5min} if _spy_5min is not None else None,
+        ).get("SPY")
         logger.info("Data fetch complete in %.1fs — %d/%d symbols",
                     (datetime.now() - t0).total_seconds(), len(symbols_data), len(symbols))
 
@@ -800,21 +875,78 @@ class IntradayModelTrainer:
         return self.model
 
     def _fetch_daily_all(
-        self, symbols: List[str], start: datetime, end: datetime
+        self, symbols: List[str], start: datetime, end: datetime,
+        symbols_data: Optional[Dict[str, pd.DataFrame]] = None,
     ) -> Dict[str, pd.DataFrame]:
         from app.ml.retrain_config import INTRADAY_DAILY_FEATURE_PROVIDER
         from app.data import get_provider
+        # aggregate_5min: a non-registry "provider" that derives daily OHLCV from
+        # the in-memory 5-min bars (zero network, coverage == 5-min span). When
+        # selected, bypass get_provider entirely and aggregate symbols_data if it
+        # was passed (the production train_model path supplies it; the per-fold
+        # path aggregates directly in IntradayStrategy._ensure_daily_data).
+        if INTRADAY_DAILY_FEATURE_PROVIDER == "aggregate_5min":
+            if symbols_data:
+                data = aggregate_5min_to_daily(symbols_data)
+                want = {s for s in symbols if s not in ("^VIX", "VIX")}
+                data = {s: df for s, df in data.items() if s in want}
+                logger.info("Daily bars (aggregate_5min): %d/%d symbols (from 5-min)",
+                            len(data), len(symbols))
+                if symbols and len(data) < 0.5 * len(symbols):
+                    logger.warning(
+                        "DAILY COVERAGE LOW: aggregate_5min produced bars for only "
+                        "%d/%d symbols (%.0f%%) — 52w/vol features degraded for rest.",
+                        len(data), len(symbols),
+                        100.0 * len(data) / max(len(symbols), 1),
+                    )
+                return data
+            logger.warning(
+                "INTRADAY_DAILY_FEATURE_PROVIDER='aggregate_5min' but no 5-min "
+                "symbols_data was passed to _fetch_daily_all — falling back to "
+                "yfinance for this fetch.",
+            )
         try:
             daily_start = start - timedelta(days=365)  # 1yr buffer for 52w/vol percentile
+            # PR #343 follow-up: the yfinance provider's cache compares the requested
+            # range against datetime.date objects (DatetimeIndex.date). When the caller
+            # passes datetime.datetime (the per-fold path does), that surfaces as
+            #   "can't compare datetime.datetime to datetime.date"
+            # inside cache.missing_daily_range — which the bare except below used to
+            # swallow, returning {} and degrading EVERY symbol to 0.5 defaults. The
+            # Alpaca provider happened to tolerate datetime; yfinance/its cache does
+            # not. Coerce to date so all providers see a consistent type.
+            daily_start = _to_date(daily_start)
+            end = _to_date(end)
             # The per-symbol DAILY bars feed the 52-week-position / vol-percentile
             # features. These must come from a FULL-HISTORY provider, NOT the trainer's
             # 5-min provider (self._provider="alpaca"), which caps at ~100 recent daily
             # bars on this deployment — silently degrading those features to 0.5 defaults
             # across most of the training window. See INTRADAY_DAILY_FEATURE_PROVIDER.
-            provider = get_provider(INTRADAY_DAILY_FEATURE_PROVIDER)
+            # aggregate_5min reaching here means symbols_data was unavailable;
+            # fall back to the full-history default (yfinance) rather than asking
+            # the registry for a non-existent 'aggregate_5min' provider.
+            _provider_name = (
+                "yfinance" if INTRADAY_DAILY_FEATURE_PROVIDER == "aggregate_5min"
+                else INTRADAY_DAILY_FEATURE_PROVIDER
+            )
+            provider = get_provider(_provider_name)
             data = provider.get_daily_bars_bulk(symbols, daily_start, end)
             logger.info("Daily bars (%s): %d/%d symbols",
-                        INTRADAY_DAILY_FEATURE_PROVIDER, len(data), len(symbols))
+                        _provider_name, len(data), len(symbols))
+            # Loud guard: a degraded daily fetch silently zeroes the 52w/vol
+            # features to 0.5 defaults for the missing symbols and quietly poisons
+            # a research number. If <50% of requested symbols came back with data,
+            # WARN prominently so a degraded run is never silently trusted.
+            if symbols and len(data) < 0.5 * len(symbols):
+                logger.warning(
+                    "DAILY COVERAGE LOW: only %d/%d symbols (%.0f%%) returned daily "
+                    "bars from provider '%s'. 52w/vol features fall back to 0.5 "
+                    "defaults for the rest — this run's intraday metrics are DEGRADED. "
+                    "Consider INTRADAY_DAILY_FEATURE_PROVIDER='aggregate_5min'.",
+                    len(data), len(symbols),
+                    100.0 * len(data) / max(len(symbols), 1),
+                    INTRADAY_DAILY_FEATURE_PROVIDER,
+                )
             # Diagnostic: warn if coverage is suspiciously shallow (the Alpaca-cap symptom)
             if data:
                 import numpy as _np
@@ -834,7 +966,16 @@ class IntradayModelTrainer:
                         )
             return data
         except Exception as exc:
-            logger.warning("Daily bar fetch failed: %s", exc)
+            # Do NOT swallow the cause silently (PR #343's bare except hid the
+            # datetime-vs-date TypeError for a whole live run). Log the exception
+            # type + message + traceback at WARNING so a future failure is
+            # immediately diagnosable.
+            logger.warning(
+                "Daily bar fetch FAILED (%s: %s) — provider '%s' returned nothing; "
+                "52w/vol features will use 0.5 defaults for ALL symbols this run.",
+                type(exc).__name__, exc, INTRADAY_DAILY_FEATURE_PROVIDER,
+                exc_info=True,
+            )
             return {}
 
     # ── Feature matrix (parallel) ─────────────────────────────────────────────
