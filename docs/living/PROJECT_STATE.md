@@ -4,7 +4,28 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-05-31 (overnight autonomous session)
+
+---
+
+## 🌙 OVERNIGHT AUTONOMOUS PLAN (2026-05-31 → next morning)
+Running unattended with Opus 4.8 driving design/implementation/review. Ordered:
+
+1. **Intraday per-fold CPCV first read** (RUNNING) — degraded daily features (Alpaca provider cap).
+2. **Daily-provider fix** — `_fetch_daily_all` uses Alpaca (~100 bars cap); switch to yfinance/Polygon
+   full daily history so 52w/vol features aren't 0.5 defaults. Opus implements + reviews. TRACKED — do not lose.
+3. **Re-run intraday per-fold CPCV** with full daily features → DEFINITIVE intraday number.
+4. **Opus oddity analysis** of the intraday result (vs struck-from-record +5.14; deployment-adj Sharpe; regime buckets; fold-skip).
+5. **Real-data integration smoke test** — both empty-matrix bugs (#339 swing, #342 intraday) shipped because
+   tests used mocked data that passed vacuously. Add a tiny REAL-data run asserting n_paths>0.
+6. **PEAD evaluation** (Phase 2b) — `scripts/run_pead_cpcv.py`; regime-independent earnings-momentum.
+7. **DEEP DIVE: swing** — long-only cross-sectional is exhausted (honest CPCV +0.22, t=0.17). Investigate
+   what swing model class COULD work: PEAD, proper L/S short model, alternative labels/horizons/features.
+   Opus-led research synthesis + concrete experiment proposals.
+
+**Process for every step:** feature branch → Opus implements → Opus reviews → tests (0 failures) → merge
+(--admin) → confirm → document (MODEL_STATUS/ML_EXPERIMENT_LOG/PIPELINE_ARCHITECTURE) → email on phase done.
+Never push to main directly. Background runs watched via until-loops; harness notifies on completion.
 
 ---
 
