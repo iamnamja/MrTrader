@@ -51,6 +51,16 @@
 > are INVALID (in-sample); intraday must be re-run with `--per-fold-retrain` (reduced universe) to earn
 > an honest number. See PIPELINE_ARCHITECTURE.md KL-10b.
 
+> **UPDATE (2026-05-31, #343 — daily-feature data-quality fix):** ANY intraday per-fold (or
+> frozen) result produced BEFORE this PR used **degraded daily features**. The per-symbol DAILY bars
+> that feed the 52-week-position / vol-percentile features were fetched via the Alpaca provider, which
+> caps at ~100 recent daily bars on this deployment — so those features silently fell back to their
+> 0.5/1.0/0.0 defaults across most of the training window (the 5-min Polygon bars were fine; only the
+> daily features were blinded). #343 routes the daily fetch through `INTRADAY_DAILY_FEATURE_PROVIDER`
+> (default `"yfinance"`, full multi-year history). Any future intraday WF/CPCV must be re-run on the
+> fixed daily-feature path before the numbers are comparable; the new shallow-coverage WARNING will
+> flag if daily depth is still inadequate on a real run.
+
 ---
 
 ## Current Gate Status
