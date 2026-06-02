@@ -138,6 +138,32 @@ class PolygonS3:
         )
         return result
 
+    def get_grouped_daily(self, day: date) -> Optional[pd.DataFrame]:
+        """
+        Return the FULL grouped-daily panel for *day* — every ticker that traded.
+
+        This is the survivorship-safe candidate source: the flat file contains
+        every symbol that printed a bar that day, including names that were later
+        delisted. Returns a DataFrame with columns
+        ['symbol', 'open', 'high', 'low', 'close', 'volume'] (a 'timestamp'
+        column is preserved if present) and a RangeIndex. Returns None if the
+        file is missing (e.g. market holiday) or malformed.
+        """
+        df = self._fetch_day_file("day_aggs_v1", day)
+        if df is None:
+            return None
+        needed = {"symbol", "open", "high", "low", "close", "volume"}
+        if not needed.issubset(df.columns):
+            return None
+        keep = ["symbol", "open", "high", "low", "close", "volume"]
+        if "timestamp" in df.columns:
+            keep.append("timestamp")
+        out = df[keep].copy()
+        for col in ("open", "high", "low", "close", "volume"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out = out.dropna(subset=["close", "volume"])
+        return out.reset_index(drop=True)
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _fetch_day_file(self, prefix: str, day: date) -> Optional[pd.DataFrame]:
