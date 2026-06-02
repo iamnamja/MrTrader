@@ -97,6 +97,18 @@ python scripts/build_smallmid_universe.py --years 6     # builds + caches the un
 python scripts/run_pead_smallmid_cpcv.py                # runs the C(8,2) CPCV off the cache
 ```
 
+**PR #362 — pre-run correctness fixes to smallmid PEAD harness:** `delisted_haircut`
+now bites on data-ended-while-held (was a no-op — the end-of-fold FORCE_CLOSE always
+found a last-traded bar on-or-before `end_date`, so the haircut branch was dead code
+and a mid-fold delisting booked only its last-close loss, not the gap-to-zero; now
+detects ≥3 fold trading days with no bar after the last bar and applies the haircut to
+the last close, long `×(1-h)` / short `×(1+h)`); per-fold universe tightened to
+`te_start` eligibility (PIT — was union over `[te_start, te_end]`, leaking late-liquid
+names). No change to R1K paths (strict no-op at `delisted_haircut=0.0`). Tests:
+`test_delisted_haircut_bites_on_data_ended_while_held`, `…_not_applied_when_name_trades_to_fold_boundary`,
+`…_constructor_clamps`, `test_universe_selection_is_as_of_te_start_pit`,
+`test_eligible_as_of_uses_latest_snapshot_on_or_before`. Full suite: 2471 passed, 8 skipped, 0 fail.
+
 ---
 
 ## P0 — Insider-Buying-Cluster Edge (candidate 2nd edge) — 2026-06-01 — VERDICT: FAIL / weak
