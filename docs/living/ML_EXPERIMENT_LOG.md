@@ -7761,3 +7761,31 @@ Before extending PEAD to small/mid-caps, audited the full PEAD/event CPCV harnes
 | M-1/2/3 | MED | per-fold short-history (IPO mid-window), fold-skip shift, thin-curve regime=None | per-fold min-history guard; verify ALLOW_NO_REGIME_GATE=False |
 
 **Key reality:** a trustworthy small/mid-cap PEAD number requires (1) survivorship-safe price data incl. delisted names, and (2) a PIT small/mid-cap universe. yfinance is survivorship-biased for small-caps. Verifying whether Polygon S3 flat-files (which include delisted tickers) can serve this is the feasibility gate. Building on yfinance small-cap data would reproduce exactly the inflation this whole effort eliminated.
+
+---
+
+## Small/mid-cap PEAD CPCV — REAL FAILURE, large-cap PEAD remains sole edge — 2026-06-01
+
+Ran the survivorship-safe small/mid-cap PEAD CPCV (harness PRs #361/#362/#363, Opus pre-run verdict "RUN IT" after 2 correctness fixes). **Result FAILS the gate and is genuinely weaker than R1K large-cap PEAD.**
+
+**Harness (truly bug-free this time):** Polygon grouped-daily flat files (survivorship-safe, delisted-inclusive); PIT small/mid universe = trailing-20d ADV in [$2M,$50M] band, top-300/day cap, `te_start`-snapshot eligibility (PIT); 20bps cost; `delisted_haircut=0.70` NOW wired to bite on data-ended-while-held (PR #362); per-fold min-history 60 bars.
+
+**Universe built:** 1514 trading days (2020-05-20→2026-05-29), 3552 distinct band names, 300/day cap binding, **8755 delisted/halted names retained** (Mellanox, SPAC unwinds, etc.) — confirmed survivorship-safe.
+
+| Metric | Small/mid-cap | R1K large-cap (baseline) |
+|---|---|---|
+| Mean Sharpe | **+0.361** (gate >0.8 FAIL) | +0.546 |
+| Path t-stat (N_eff=8) | **+0.95** (gate >2.0, coin flip) | +2.26 |
+| P5 Sharpe | -1.368 (FAIL) | +0.009 |
+| % positive | 76.2% | 95% |
+| Avg PF / Calmar | 1.78 / 1.45 (small-sample artifacts) | 1.54 / 0.77 |
+| DSR p | 1.000 (SATURATED) | 1.0 |
+
+**Opus 4.8 oddity review — VERDICT (A) REAL FAILURE, result trustworthy (not under-tested):**
+- **Low trade counts (17-31/fold) are NOT a symbology bug.** The #1 suspect (Polygon dot-tickers vs FMP dash-tickers gutting earnings lookups) was disproven: only 10/3552 names use dot-tickers, ~50 are warrants/units/ETFs with no earnings by definition, and 26/26 tested ordinary small-caps returned full 20-quarter FMP earnings. The trade count is capped by `RiskLimits.MAX_OPEN_POSITIONS=5` — **identical to the R1K baseline (25-34 trades/fold)**, so the comparison is apples-to-apples.
+- **Identical fold results** (e.g. 6 folds = -1.368/17 trades) = textbook CPCV base-fold reuse: 28 paths collapse to 8 distinct base folds (why N_eff=8, not 21). Benign; the engine's correlation accounting is correct.
+- **delisted_haircut fired 0×** — benign scenario (a): PEAD exits via max_hold_bars (~40 bars/8wk) or stop well before fold-end, so holds rarely span a delisting. The PR #362 fix is live and unit-tested; it just didn't apply here.
+- **52% fold-skip** = same OOS-guard/embargo pruning as the swing run (drops the 2020 COVID-recovery melt-up); biases the +0.361 slightly DOWN if anything, and is identical CPCV structure to R1K → does not distort the comparison.
+- **worst_regime_sharpe / low_deployment_warning "fails"** are non-informative plumbing artifacts present in BOTH runs — carry no small-vs-large signal.
+
+**Conclusion:** The only differentiating signals — mean Sharpe and t-stat — are computed correctly and are genuinely weaker for small/mid (+0.361, t=0.95 ≈ statistically zero, vs +0.546, t=2.26; below the pre-registered ≥+0.70 bar to prefer small/mid). Part of the gap is deliberately harsher realism (20bps vs 5bps cost + haircut mechanism), but even crediting that, t=0.95 is a coin flip — not a near-miss worth a re-run. **Reject small/mid-cap PEAD. R1K large-cap PEAD (+0.546) remains the sole validated edge.** The "event edges are stronger in smaller names" literature hypothesis did NOT hold here once survivorship bias and realistic costs were honestly modeled — which is itself a meaningful (negative) result: the apparent small-cap event premium in the literature may partly be survivorship/illiquidity that our honest harness correctly strips out.
