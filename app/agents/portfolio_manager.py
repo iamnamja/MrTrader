@@ -1470,11 +1470,27 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         return proposals
 
     async def _analyze_swing_pead(self) -> None:
-        """PEAD scorer: enter long (and optionally short) within 3 days of EPS surprise > ±5%.
-        Hold cap: 5 trading days (max_hold_days=5 annotated on each proposal).
+        """PEAD scorer wired to the validated +0.546 CPCV config (risk-managed live variant).
+
+        Faithfully runs the long-only PEAD strategy that produced +0.546 in honest CPCV
+        (scripts/run_pead_cpcv.py), then layers the live risk overlays on top
+        (regime multiplier, NIS sizing, opportunity gate, macro block, RM chain). The
+        overlays cause expected tracking error vs the clean backtest — surfaced via the
+        PEAD daily tracking artifact (app.live_trading.pead_tracker).
+
+        Validated config (pinned via pm.pead_* agent_config, defaults = backtest values):
+          long_threshold=0.05, short_threshold=-0.05, max_days_after=3, long_short=False,
+          vix_block_all=30.0, vix_block_short=100.0, vix_conf_ref=100.0,
+          max_announce_day_move=1.0 (priced-in filter OFF), require_positive_revision=False,
+          max_hold=40 trading days, entry excludes announce day (days_since>=1), long-only.
+
+        FIX A: a daily VIX SERIES is injected under symbols_data["^VIX"] so the
+               crisis block (VIX>30 → return []) actually fires.
+        FIX B: max_hold_days=40 (the hold-5/hold-15 variants were killed — drift wants longer).
+        FIX C: scorer is constructed pinning EVERY validated parameter, not a subset.
 
         Short support requires pm.pead_enable_shorts=true AND a margin-enabled Alpaca account.
-        Default is longs-only to allow paper trading before short order routing is wired.
+        Default is longs-only (matches the validated +0.546 long-only config).
         """
         from app.ml.pead_scorer import PEADScorer
         from app.database.session import get_session as _gs_pead
@@ -1482,21 +1498,43 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         from datetime import date as _date
         import pandas as _pd
 
-        # Check whether short PEAD signals are enabled (default: longs only for Phase I)
+        # ── Read the PEAD live config surface (defaults pin the +0.546 config) ──────
         _shorts_enabled = False
+        _cfg = {
+            "long_threshold": 0.05,
+            "short_threshold": -0.05,
+            "max_days_after": 3,
+            "max_hold_days": 40,
+            "vix_block_all": 30.0,
+            "vix_block_short": 100.0,
+            "vix_conf_ref": 100.0,
+            "max_announce_day_move": 1.0,
+            "require_positive_revision": False,
+        }
         try:
             _db_pead = _gs_pead()
             try:
                 _shorts_enabled = str(_gac_pead(_db_pead, "pm.pead_enable_shorts") or "false").lower() == "true"
+                _cfg["long_threshold"] = float(_gac_pead(_db_pead, "pm.pead_long_threshold"))
+                _cfg["short_threshold"] = float(_gac_pead(_db_pead, "pm.pead_short_threshold"))
+                _cfg["max_days_after"] = int(_gac_pead(_db_pead, "pm.pead_max_days_after"))
+                _cfg["max_hold_days"] = int(_gac_pead(_db_pead, "pm.pead_max_hold_days"))
+                _cfg["vix_block_all"] = float(_gac_pead(_db_pead, "pm.pead_vix_block_all"))
+                _cfg["vix_block_short"] = float(_gac_pead(_db_pead, "pm.pead_vix_block_short"))
+                _cfg["vix_conf_ref"] = float(_gac_pead(_db_pead, "pm.pead_vix_conf_ref"))
+                _cfg["max_announce_day_move"] = float(_gac_pead(_db_pead, "pm.pead_max_announce_day_move"))
+                _cfg["require_positive_revision"] = (
+                    str(_gac_pead(_db_pead, "pm.pead_require_positive_revision") or "false").lower() == "true"
+                )
             finally:
                 _db_pead.close()
-        except Exception:
-            pass
+        except Exception as _cexc:
+            self.logger.warning("PEAD: config read failed (%s) — using validated defaults", _cexc)
 
         universe = self._get_universe()
         self._swing_proposals = []  # always reset before early returns
-        self.logger.info("PEAD scan: fetching bars for %d symbols (shorts_enabled=%s)...",
-                         len(universe), _shorts_enabled)
+        self.logger.info("PEAD scan: fetching bars for %d symbols (shorts_enabled=%s, hold=%d)...",
+                         len(universe), _shorts_enabled, _cfg["max_hold_days"])
         try:
             bars_by_symbol = await asyncio.wait_for(
                 asyncio.to_thread(self._alpaca.get_bars_batch, universe, "1D", 60),
@@ -1511,28 +1549,97 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             return
 
         symbols_data = {s: df for s, df in bars_by_symbol.items() if df is not None and not df.empty}
-        scorer = PEADScorer(long_threshold=0.05, short_threshold=-0.05,
-                            max_days_after=3, long_short=_shorts_enabled)
+
+        # ── FIX A: inject a daily VIX SERIES so the crisis block (VIX>30) fires ──────
+        # FAIL-CLOSED: the entire +0.546 edge rests on the VIX>30 crisis block, so a
+        # missing VIX reading must NOT silently let PEAD trade through a vol spike.
+        # If the real daily series is unavailable, fall back to the robust scalar
+        # fetcher (yfinance scalar → FRED 1d-lag → conservative 30.0 sentinel) and
+        # inject a one-row series. When truly blind (sentinel 30.0) we force a block;
+        # a genuine low reading from FRED is authoritative and trades normally.
+        _vix_series = await asyncio.to_thread(self._fetch_vix_series, 60)
+        _vix_level = None
+        if _vix_series is not None and not _vix_series.empty:
+            symbols_data["^VIX"] = _vix_series
+            try:
+                _vix_level = float(_vix_series["close"].iloc[-1])
+            except Exception:
+                _vix_level = None
+        else:
+            _fallback_level = await asyncio.to_thread(self._fetch_vix_level)
+            # < 30 → real reading, trade; >= 30 (incl. the blind 30.0 sentinel) → block.
+            _inject_level = _fallback_level if _fallback_level < 30.0 else max(_fallback_level, 30.01)
+            symbols_data["^VIX"] = _pd.DataFrame(
+                {"close": [_inject_level]},
+                index=_pd.to_datetime([_date.today()]),
+            )
+            _vix_level = _inject_level
+            self.logger.warning(
+                "PEAD: VIX daily series unavailable — fail-closed via scalar fetch "
+                "(level=%.2f; crisis block %s)",
+                _inject_level, "ON" if _inject_level > 30.0 else "OFF",
+            )
+
+        # ── FIX C: construct the scorer pinning EVERY validated parameter ───────────
+        scorer = PEADScorer(
+            long_threshold=_cfg["long_threshold"],
+            short_threshold=_cfg["short_threshold"],
+            max_days_after=_cfg["max_days_after"],
+            long_short=_shorts_enabled,
+            vix_block_all=_cfg["vix_block_all"],
+            vix_block_short=_cfg["vix_block_short"],
+            vix_conf_ref=_cfg["vix_conf_ref"],
+            max_announce_day_move=_cfg["max_announce_day_move"],
+            require_positive_revision=_cfg["require_positive_revision"],
+            min_analyst_momentum=0.0,
+        )
         scored = scorer(day=_pd.Timestamp(_date.today()), symbols_data=symbols_data)
         # If shorts disabled, filter to longs only
         if not _shorts_enabled:
             scored = [(s, c, d) for s, c, d in scored if d == "long"]
 
-        self.logger.info("PEAD: %d signals generated (long+short)", len(scored))
+        # vix_block fired if VIX is known to be above the crisis threshold (scorer returned [])
+        _vix_block_fired = bool(
+            _vix_level is not None and _vix_level > _cfg["vix_block_all"]
+        )
+
+        self.logger.info("PEAD: %d signals generated (vix=%.1f block_all=%.0f fired=%s)",
+                         len(scored), (_vix_level or -1.0), _cfg["vix_block_all"], _vix_block_fired)
+
+        # ── Observability: record the daily PEAD tracking row (signals stage) ───────
+        try:
+            from app.live_trading import pead_tracker
+            await asyncio.to_thread(
+                pead_tracker.record_daily,
+                _date.today(),
+                n_signals=len(scored),
+                vix_level=_vix_level,
+                vix_block_fired=_vix_block_fired,
+                extra={"max_hold_days": _cfg["max_hold_days"],
+                       "max_announce_day_move": _cfg["max_announce_day_move"]},
+            )
+        except Exception as _texc:
+            self.logger.debug("PEAD daily tracking write failed (non-fatal): %s", _texc)
+
         if not scored:
             await self.log_decision("SELECTION_SKIPPED", reasoning={
-                "reason": "no_pead_signals", "selector": "pead",
+                "reason": ("vix_crisis_block" if _vix_block_fired else "no_pead_signals"),
+                "selector": "pead",
+                "vix": _vix_level,
             })
             return
 
+        # FIX B: max_hold_days=40 (validated run) annotated on every proposal.
         self._swing_proposals = await self._build_directional_proposals(
-            scored, selector="pead", max_hold_days=5,
+            scored, selector="pead", max_hold_days=_cfg["max_hold_days"],
         )
         await self.log_decision("SWING_PREMARKET_ANALYSIS", reasoning={
             "selector": "pead",
             "signals": [{"symbol": s, "conf": round(abs(c), 4), "direction": d} for s, c, d in scored[:10]],
             "total_signals": len(scored),
             "proposals": len(self._swing_proposals),
+            "max_hold_days": _cfg["max_hold_days"],
+            "vix": _vix_level,
             "send_time": "09:50 ET",
         })
 
@@ -1842,6 +1949,41 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
 
         self.logger.warning("VIX unavailable from all sources — assuming VIX=30 (conservative)")
         return 30.0
+
+    def _fetch_vix_series(self, min_bars: int = 60):
+        """Fetch a daily VIX close SERIES for injection into PEADScorer.
+
+        PEADScorer._vix_today reads symbols_data["^VIX"] expecting a DataFrame
+        with a lowercase 'close' column and a DatetimeIndex (pead_scorer.py:104-115).
+        The scalar _fetch_vix_level() is insufficient — the scorer's crisis block
+        (VIX > 30 → return []) never fires without this series, and that block is
+        credited with the entire +0.546 edge. Returns a DataFrame or None.
+        """
+        try:
+            import yfinance as yf
+            import pandas as pd
+            from datetime import date as _date, timedelta as _td
+            _end = _date.today() + _td(days=1)
+            # ~min_bars trading days needs ~1.5x calendar days; pad generously.
+            _start = _end - _td(days=int(min_bars * 1.8) + 30)
+            vix = yf.download(
+                "^VIX", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True,
+            )
+            if vix is None or len(vix) == 0:
+                self.logger.warning("PEAD: VIX series fetch returned empty — crisis block will not fire")
+                return None
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.get_level_values(0)
+            vix.columns = [str(c).lower() for c in vix.columns]
+            if "close" not in vix.columns:
+                self.logger.warning("PEAD: VIX series missing 'close' column — crisis block will not fire")
+                return None
+            vix.index = pd.to_datetime(vix.index)
+            return vix[["close"]].dropna()
+        except Exception as exc:
+            self.logger.warning("PEAD: VIX series fetch failed (%s) — crisis block will not fire", exc)
+            return None
 
     def _compute_opportunity_score(self) -> tuple:
         """

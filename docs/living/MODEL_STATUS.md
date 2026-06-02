@@ -4,7 +4,40 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-06-02
+
+---
+
+## PEAD long-only — WIRED for paper (NOT yet activated) — 2026-06-02
+
+The live PEAD selector path (`pm.swing_selector="pead"` → `_analyze_swing_pead`) has been
+**re-wired to faithfully run the validated +0.546 CPCV config** (branch `feat/pead-live-wiring`).
+A prior Opus review found the live path silently diverged from the backtest; that is now fixed.
+
+- **Risk-managed live variant** (owner decision): the validated long-only PEAD config runs with
+  the live risk overlays KEPT on top (regime sizing multiplier, NIS news sizing, opportunity-score
+  gate, macro-calendar block, RM 10-rule chain) and the live `_calculate_quantity` sizing (NOT
+  forced 5% equal-weight). Expected tracking error vs the clean backtest — surfaced by the
+  observability layer, not silently swallowed.
+- **Marketable entries** (owner decision): PEAD entries route as a marketable limit (crosses the
+  spread, ask+10bps for longs) so fills track the backtest's next-open assumption — scoped to
+  `selector=="pead"` only; swing/intraday entry routing unchanged.
+- **Full swing budget** (owner decision): PEAD uses the entire ~70% swing book; swing/intraday ML
+  stay dormant.
+- **Config-aligned to +0.546**: long_threshold=0.05, short_threshold=-0.05, max_days_after=3,
+  long_short=False, vix_block_all=30, vix_block_short=100, vix_conf_ref=100,
+  max_announce_day_move=1.0 (priced-in filter OFF), require_positive_revision=False,
+  **max_hold=40 trading days**, long-only. All pinned via `pm.pead_*` agent_config keys
+  (defaults = validated values) so the config is inspectable and cannot silently drift.
+- **FIX A**: a daily VIX **series** is now injected under `symbols_data["^VIX"]` so the crisis
+  block (VIX>30 → no entries) actually fires — previously a scalar/no-key bug meant the block,
+  which is credited with the entire edge (P5 −0.29→+0.01), NEVER fired live.
+- **Observability**: per-day tracking artifact (`app/live_trading/pead_tracker.py`,
+  `data/pead_tracking.db`) records signals/entered/filled/fill-rate/gross/daily+cum P&L/VIX/
+  vix_block_fired and per-overlay suppression counts; weekly rollup emails realized Sharpe vs the
+  +0.546 expectation via `notifier.enqueue("pead_weekly", …)`.
+- **Status:** wired + fully tested (`tests/test_pead_live_wiring.py`); **NOT activated**.
+  Activation = flip `pm.swing_selector` to `"pead"` (separate deliberate step).
 
 ---
 

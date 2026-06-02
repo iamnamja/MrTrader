@@ -981,6 +981,66 @@ class Trader(BaseAgent):
             return
         pending_trade_id = pending_trade
 
+        # ── PEAD marketable entry routing (owner decision #2) ──────────────────
+        # The validated +0.546 backtest assumes next-open fills. The standard swing
+        # below-ask limit (offset below ask) only fills the names that DON'T run —
+        # an adverse-selection trap that systematically drops the high-drift winners.
+        # For the PEAD selector, route a MARKETABLE limit (ask + offset) so fills
+        # track the backtest's next-open assumption. Scoped to selector=="pead";
+        # swing/intraday routing is byte-identical below.
+        is_pead = proposal.get("selector") == "pead"
+        if trade_type == "swing" and is_pead:
+            marketable_offset = 0.001  # 10bps THROUGH the touch to cross the spread
+            quote = alpaca.get_quote(symbol)
+            if is_short:
+                # Short PEAD: marketable sell — cross at bid - offset (aggressive)
+                if quote and quote.get("bid", 0) > 0:
+                    limit_price = round(quote["bid"] * (1 - marketable_offset), 2)
+                    intended_price = quote["bid"]
+                else:
+                    limit_price = round(intended_price * (1 - marketable_offset), 2)
+                order_side = "sell"
+            else:
+                # Long PEAD: marketable buy — cross at ask + offset (aggressive)
+                if quote and quote.get("ask", 0) > 0:
+                    limit_price = round(quote["ask"] * (1 + marketable_offset), 2)
+                    intended_price = quote["ask"]
+                else:
+                    limit_price = round(intended_price * (1 + marketable_offset), 2)
+                order_side = "buy"
+
+            try:
+                order = alpaca.place_limit_order(
+                    symbol, shares, order_side, limit_price, client_order_id=proposal_uuid,
+                )
+            except Exception as exc:
+                self.logger.error("PEAD marketable entry order failed for %s: %s", symbol, exc)
+                self._cancel_pending_fill(pending_trade_id)
+                return
+
+            order_id = order.get("order_id")
+            self._update_pending_fill_order_id(pending_trade_id, order_id)
+
+            pending_entry = {
+                "order_id": order_id,
+                "trade_id": pending_trade_id,
+                "shares": shares,
+                "intended_price": intended_price,
+                "limit_price": limit_price,
+                "result": result,
+                "proposal": proposal,
+                "queued_at": datetime.now(ET),
+                "requote_count": 0,
+                "escalated": False,
+            }
+            self._pending_limit_orders[symbol] = pending_entry
+            self._save_pending_limit_db(symbol, pending_entry, result)
+            self.logger.info(
+                "PEAD MARKETABLE order placed %s x%d @ $%.4f (%s touch=%.4f offset=%.1f%%) — crossing spread",
+                symbol, shares, limit_price, order_side, intended_price, marketable_offset * 100,
+            )
+            return  # fill confirmed in _poll_pending_limit_orders
+
         if trade_type == "swing":
             # Use limit order ~10bps below ask for better execution (configurable)
             limit_offset = 0.001

@@ -45,6 +45,48 @@ All agents communicate via an in-process async message queue. No HTTP between ag
 **Top SHAP signals:** atr_norm (0.114), volatility (0.064), realized_vol_20d (0.062)
 **Note:** Tier 3 Sharpe +0.34 (as of v110). Paper trading gate requires > 0.8.
 
+### PEAD Selector (`pm.swing_selector="pead"`) — wired 2026-06-02, NOT activated
+When the swing selector is set to `"pead"`, `_analyze_swing_premarket` routes to
+`_analyze_swing_pead`, which faithfully runs the **validated +0.546 long-only PEAD config**
+(`scripts/run_pead_cpcv.py`) as a *risk-managed live variant*:
+
+1. Fetch 60 daily bars for the universe (`get_bars_batch`).
+2. **VIX-series injection (FIX A):** fetch a **daily VIX close series** (`_fetch_vix_series`, ≥60
+   bars, lowercase `close`, DatetimeIndex) and inject it under `symbols_data["^VIX"]`. The
+   `PEADScorer._vix_today` crisis block (VIX>30 → return `[]`) only fires with this series — a
+   prior scalar/no-key bug meant the block, which is credited with the entire edge (P5
+   −0.29→+0.01), never fired live.
+3. **Validated config pinned (FIX C):** construct `PEADScorer` with **every** validated parameter,
+   read from `pm.pead_*` agent_config keys (defaults = validated values): `long_threshold=0.05`,
+   `short_threshold=-0.05`, `max_days_after=3`, `long_short=False`, `vix_block_all=30`,
+   `vix_block_short=100`, `vix_conf_ref=100`, `max_announce_day_move=1.0` (priced-in filter OFF —
+   the backtest KEEPS the large-gap high-drift names), `require_positive_revision=False`.
+4. Score; long-only filter applied (shorts require `pm.pead_enable_shorts=true` + margin account).
+5. **Hold = 40 trading days (FIX B):** proposals annotated `max_hold_days=40` (the hold-5/hold-15
+   variants were killed — drift wants a longer hold). The Trader enforces this per-position.
+6. Proposals built via `_build_directional_proposals` using the **live `_calculate_quantity`**
+   sizing (NOT 5% equal-weight), then pass through the **kept risk overlays**: regime sizing
+   multiplier, NIS news sizing, opportunity-score gate (`_send_swing_proposals`), macro-calendar
+   block, and the RM 10-rule chain. These overlays cause expected tracking error vs the clean
+   backtest.
+7. **Marketable entries (Trader, scoped to `selector=="pead"`):** PEAD entries route as a
+   **marketable limit** that crosses the spread (long = ask+10bps, short = bid−10bps) instead of
+   the standard below-ask swing limit, so fills track the backtest's next-open assumption and
+   avoid the adverse-selection trap (below-ask limits fill only the names that DON'T run).
+   Swing/intraday entry routing is byte-identical.
+
+**Observability (PEAD-only):** `app/live_trading/pead_tracker.py` (sqlite `data/pead_tracking.db`)
+records a daily row — date, #signals, #entered, #filled, fill-rate, gross deployed, realized +
+unrealized + cumulative P&L, VIX level, `vix_block_fired`, and per-overlay suppression counts
+(opportunity / macro / RM) for tracking-error attribution. `weekly_rollup()` computes the realized
+Sharpe of the PEAD book vs the +0.546 expectation and emails it via
+`notifier.enqueue("pead_weekly", …)`. Kill-switch / circuit-breaker reuse the existing swing path.
+
+**Activation (separate deliberate step):** set agent config `pm.swing_selector="pead"` (DB key
+`agent.pm.swing_selector`). The PM reads `swing_selector` at decision time, so **no uvicorn restart
+is required** for the config flip; restart only if the new module files were added while the agent
+process was already running.
+
 ### Intraday Selection (09:45)
 1. Fetch 5-min bars for Russell 1000 symbols (Polygon Parquet cache-first, Alpaca fallback)
 2. Run `compute_intraday_features()` → 50-feature vector per symbol (model selects its 42 by name)
