@@ -296,20 +296,28 @@ async def lifespan(app: FastAPI):
     app.state.wf_recon_task = asyncio.create_task(_schedule_wf_reconciliation(), name="wf_reconciliation")
 
     # ── 10. Notification watcher ──────────────────────────────────────────────
+    # Test isolation: never spawn the live email drainer under pytest. The
+    # TestClient runs this lifespan on every session that uses it, which would
+    # otherwise leak an un-terminated notify_watcher subprocess per test file.
+    # Same pytest detection as _DailyFileHandler._prefix above.
     app.state.notify_proc = None
-    try:
-        _nw_script = Path(__file__).resolve().parents[1] / "scripts" / "notify_watcher.py"
-        _nw_log = Path(__file__).resolve().parents[1] / "logs" / "notify_watcher.log"
-        app.state.notify_proc = subprocess.Popen(
-            [sys.executable, str(_nw_script)],
-            stdout=open(_nw_log, "a"),
-            stderr=subprocess.STDOUT,
-            cwd=str(Path(__file__).resolve().parents[1]),
-        )
-        log.info("Notification watcher started (pid=%d, log=%s)",
-                 app.state.notify_proc.pid, _nw_log)
-    except Exception as e:
-        log.warning("Notification watcher failed to start: %s", e)
+    _under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+    if _under_pytest:
+        log.info("Notification watcher skipped (running under pytest)")
+    else:
+        try:
+            _nw_script = Path(__file__).resolve().parents[1] / "scripts" / "notify_watcher.py"
+            _nw_log = Path(__file__).resolve().parents[1] / "logs" / "notify_watcher.log"
+            app.state.notify_proc = subprocess.Popen(
+                [sys.executable, str(_nw_script)],
+                stdout=open(_nw_log, "a"),
+                stderr=subprocess.STDOUT,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+            log.info("Notification watcher started (pid=%d, log=%s)",
+                     app.state.notify_proc.pid, _nw_log)
+        except Exception as e:
+            log.warning("Notification watcher failed to start: %s", e)
 
     log.info("MrTrader application started successfully")
 
