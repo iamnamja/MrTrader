@@ -71,6 +71,7 @@
 | **Intraday CPCV (per-fold, HONEST)** | ❌ **FAILED — no edge (cost-drag)** | mean -2.80, t-stat -6.85, 0% pos, PF 0.94. Gross edge below cost hurdle. First genuine OOS. |
 | Intraday CPCV (frozen) | ⚠️ INVALID (in-sample) | +5.143 — STRUCK (memorization) |
 | **PEAD CPCV (honest, definitive)** | 🟡 **REAL EDGE — paper-gate-ready** | mean +0.546, t-stat +2.26, 95% pos, P5 +0.009, DSR p=1.0, PF 1.54, Calmar 0.77. Passes 6 gates; short of 0.80 promotion bar. Clears 0.50 PAPER gate. First positive edge. |
+| **Small/mid-cap PEAD CPCV** | ❌ **REJECTED — weaker venue** | mean +0.361, t-stat +0.95 (N_eff=8, coin flip), P5 -1.368, 76% pos. Survivorship-safe (Polygon flat files, 8755 delisted retained), 20bps cost, delisted-haircut wired. Opus oddity review: REAL failure, not under-tested (symbology gap disproven). Below R1K +0.546 and the ≥+0.70 pre-reg bar. Not worth a re-run. R1K PEAD stays sole edge. |
 
 > ## 🔴 BOTH ML STRATEGIES HAVE NO HONEST OOS EDGE (2026-06-01)
 > Swing long-only per-fold CPCV **+0.22, t=0.17** (noise); intraday per-fold CPCV **-2.80, t=-6.85**

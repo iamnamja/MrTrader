@@ -39,6 +39,19 @@ All high-EV experiments now run. PEAD config tuning is exhausted; the short-side
 academic ceiling confirmed). Two short approaches ruled out honestly (inverted-long LX7 +0.036; fundamental-
 deterioration QualityShort -0.903) — shorting beaten-down names bleeds (they rally on bounces).
 
+### UPDATE (2026-06-01) — Small/mid-cap PEAD expansion REJECTED (honest result)
+Built a survivorship-safe small/mid-cap PEAD harness (Polygon grouped-daily flat files, 8755 delisted names
+retained, [$2M,$50M] ADV band, top-300/day, 20bps cost, delisted-haircut wired) — 2 Opus pre-run correctness
+fixes (PR #362: haircut no-op + eligibility lookahead), full suite green. **Result: mean +0.361, t-stat +0.95
+(coin flip), P5 -1.368 → FAILS, and is WEAKER than R1K large-cap PEAD (+0.546, t=2.26).** Opus oddity review:
+REAL failure, result trustworthy (the symbology-gap suspect was disproven — FMP covers the tradeable universe;
+low trade count is the shared 5-position cap). The literature's "event edges stronger in small-caps" did NOT
+survive honest survivorship + cost modeling. **R1K large-cap PEAD remains the sole edge. Small/mid not worth a re-run.**
+
+**The free-data experiment ladder is now fully exhausted** (swing dead, intraday dead, PEAD levers exhausted,
+short edges dead, insider weak, buyback no-data, small/mid-cap rejected). The two decisions below are now the
+only remaining moves without new infra/data spend.
+
 **🔵 DECISIONS NOW YOURS (autonomous experiment ladder exhausted):**
 1. **Paper-trade PEAD long-only** — clears the 0.50 paper gate today (t=2.26, 95% pos, PF 1.54, DSR-pass).
 2. **Is 0.80 the right promotion gate?** For a PF-1.54 / 95%-positive / DSR-pass / Calmar-0.77 real edge,
