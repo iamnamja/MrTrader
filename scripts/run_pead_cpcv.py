@@ -192,6 +192,13 @@ class PEADStrategy:
         # crisis-robustness harness can recompute masked path Sharpes WITHOUT
         # re-simulating. Harmless to the default CPCV run (just an extra attribute).
         self._last_equity_curve = equity_curve
+        # §1.3 significance side-channel (PURE-ADDITIVE): stash this fold's realized
+        # trade objects so the event-clustered significance harness can capture the
+        # per-TRADE return stream tagged with each trade's earnings-proximate entry
+        # date + symbol, WITHOUT re-simulating. Byte-identical to the committed run
+        # (just an extra attribute; never read by run_cpcv or the gate). Mirrors the
+        # §1.2 _last_equity_curve discipline.
+        self._last_trades = list(trades_list)
         # n_obs = trading-day return observations for DSR. equity_curve is one
         # (date, equity) point per trading day; diffs give daily returns → len-1.
         # Mirrors swing.py:320-323. Without this DSR falls back to ~path-count.

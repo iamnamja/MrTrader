@@ -7861,3 +7861,29 @@ A GENERIC, untuned SPY<200d trend filter **reproduces and EXCEEDS** the hand-tun
 - **PEAD's left tail is DIRECTIONAL, not volatility-level.** vol_target fails (high vol is symmetric — occurs at great recovery bottoms too); trend/direction is the protective axis. The VIX>30 spike-block catches discrete panics but MISSES the bear *grind* (2022, VIX mostly 25-32, was largely unblocked → PEAD bled into the declining tape). A trend filter de-risks the whole downtrend, not just spikes.
 
 **RECOMMENDATION:** Keep PEAD live in paper (GO). **Intent: replace VIX>30 with the SPY<200d trend filter** (more robust, higher Sharpe, addresses the bear-grind exposure) — but GATE the swap behind validation so we don't swap one overfit knob for another: (1) MA-length sensitivity sweep {100..250d} must show a PLATEAU not a spike at 200; (2) the trend-gated edge's own leave-one-crisis-out; (3) ≥1 alt trend-rule form (50/200 cross, 12-1 momentum sign); (4) paper shadow-run vs the VIX>30 incumbent. **Keep VIX>30 live as the validated incumbent until (1)-(4) pass.** **§1.3 addition:** event-clustered significance should additionally stratify on trend regime (SPY above/below 200d) — confirm the t=2.26 isn't driven by a few correlated up-trend clusters and that the edge is significant within the down-trend regime where protection matters.
+
+---
+
+## Alpha v2 Phase-1 §1.3 — PEAD honest significance: FAIL (real-but-underpowered) — CAPSTONE — 2026-06-02
+
+The last Phase-1 de-risk gate: significance whose unit of independence is the EARNINGS EVENT, not the CPCV fold/day. Tool: `scripts/pead_significance.py` (three lenses + trend stratification). Opus deep-dive **caught a CRITICAL bug** (the Newey-West daily series was corrupted ~7× by CPCV fold-overlap — `_pool_unique_daily_returns` deduped on global fold-id, distinct per combo, instead of calendar window); root-cause fixed (dedup by window) + loud self-validation assertion + textbook return-shift bootstrap null. Re-review MERGE. Self-validated: recomputed path Sharpe 0.5484 == run_cpcv 0.5483.
+
+**Pre-registered acceptance: event-clustered bootstrap p<0.05 AND Newey-West HAC t≥2.0.**
+
+| Lens | Statistic | Significant? |
+|---|---|---|
+| CPCV path t-stat (anchor, optimistic) | mean Sharpe 0.546, t=2.26, N_eff=8 folds | (looks yes) |
+| **Event-clustered block bootstrap** | per-trade Sharpe 0.076; **p=0.19**; 95% CI [−0.104, +0.257] (incl. 0); **n_clusters=19** quarters; 203 trades | **NO** |
+| **Newey-West HAC** (daily, lag 60) | **t_hac=1.04** (p=0.148); realized ann. Sharpe **0.40**; n=1065 | **NO** |
+
+Clustered CI (0.361) > iid CI (0.285) — event-clustering reduces effective N as expected. **Trend stratification:** up-trend 73% trades / **87% of P&L** / Sharpe 0.093 / p=0.169 (17 clusters); down-trend 27% / 13% / 0.040 / p=0.40 (8 clusters). Neither regime significant alone.
+
+**Opus 4.8 verdict — §1.3 FAIL (unambiguous: p=0.19 vs <0.05, t_hac=1.04 vs ≥2.0):**
+- **The honest truth is the event-level lenses.** The CPCV path t=2.26 OVERSTATED significance by counting 8 correlated, overlapping-hold folds as independent. The real independence unit is ~19 quarterly clusters; the two event-level methods (bootstrap p=0.19, HAC t=1.04) agree closely — that convergence is the tell.
+- **Real-but-underpowered, NOT dead.** Every lens agrees on sign + rough magnitude (Sharpe positive, ~0.40-0.55); the CI is asymmetric-positive and the failure is a WIDTH (power) problem, not a location problem. §1.1 (cost) + §1.2 (crisis) already passed.
+- **Honest one-liner:** *PEAD is a real-but-underpowered, long-biased up-trend drift harvester — realized Sharpe ~0.40, positive point estimate, but statistically indistinguishable from zero at the event level (~19 clusters).*
+- **CAPITAL: HOLD confirmed + structurally justified.** To reach p<0.05 standalone would need ~4× the clusters (~76 ≈ **~19 years** of forward earnings seasons) even if true Sharpe ~0.4-0.55. A ~19-cluster event sleeve cannot self-certify on a useful horizon.
+- **LIVE-PAPER: KEEP RUNNING (do NOT pause).** §1.3 is a power result, not the pre-committed pause trigger (only §1.2 crisis was, and it passed). Forward quarters are the ONLY source of new independent clusters — pausing freezes evidence at 19 forever. Re-test §1.3 annually as clusters compound.
+- **Trend filter (§1.2b) is a DEFENSIVE overlay, not a significance fix** — gating to up-trends drops to 17 clusters/p=0.169 (spends degrees of freedom, doesn't buy significance).
+
+**STRATEGIC CAPSTONE (Phase-1 PEAD de-risk complete):** §1.1 cost ✅ GO, §1.2 crisis ✅ GO, §1.3 significance ❌ FAIL (underpowered). Net: **PEAD = keep paper-trading, use as a small diversifier, NEVER a capital centerpiece.** A single event sleeve is cluster-rate-limited (~4 independent clusters/yr) and structurally incapable of capital-grade significance in time. **This materially STRENGTHENS the dollar-neutral high-breadth ranker (Phase 2) as the primary hope for capital-grade alpha** — breadth (many weakly-correlated bets, Fundamental Law IR≈IC×√breadth) is the direct statistical remedy for PEAD's power problem, and dollar-neutrality removes the up-trend-beta confound. **Prioritize the ranker.**

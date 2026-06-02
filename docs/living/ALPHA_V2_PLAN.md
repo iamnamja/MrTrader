@@ -7,6 +7,9 @@
 
 **Locked decisions (§7):** (1) **Short interest first** — FINRA SI + borrow feed before options; cheap read-only IV later; defer options-trading infra. (2) **Carve a recent historical holdout** (reserve ~post-2024-06-01 for one-shot promotion eval; dev uses DSR-controlled full-window CPCV). (3) **Dollar-neutral shorting approved in paper** (gated on the borrow-data POC; gross ≤80%, 40–60/side). (4) **Keep live PEAD running** in paper while the de-risk tests run; pause ONLY if §1.2 leave-one-crisis-out fails.
 
+> ## ✅ PHASE-1 PEAD DE-RISK COMPLETE (2026-06-02) — the verdict that reshapes the plan
+> **§1.1 cost ✅ GO · §1.2 crisis ✅ GO · §1.3 significance ❌ FAIL (real-but-underpowered).** Honest event-level significance (bootstrap p=0.19, HAC t=1.04 on ~19 quarterly clusters) shows the CPCV +0.546/t=2.26 OVERSTATED significance — PEAD is a real-but-underpowered, **long-biased up-trend drift harvester** (realized SR ~0.40; 87% of P&L in up-trends), positive point estimate but NOT statistically distinguishable from zero at the event level. **PEAD = keep paper-trading as a SMALL DIVERSIFIER, NEVER a capital centerpiece** (a ~19-cluster sleeve would need ~19yr to self-certify). **→ The dollar-neutral high-breadth ranker (§3.1) is now the PRIMARY hope for capital-grade alpha** (breadth is the statistical remedy PEAD structurally lacks). Phase-2 priority: short-interest data POC → the residualized dollar-neutral ranker.
+
 ---
 
 ## 0. Executive summary
@@ -150,7 +153,7 @@ All Phase-1 items operate on the **existing** PEAD CPCV harness (`run_pead_cpcv.
 | P1 | 1.1 Cost-sensitivity sweep | S | — | net SR ≥0.40 @20bps | ✅ **DONE 2026-06-02 — PASS (+0.402@20bps; anchor +0.548≈+0.546; cost-robust but t<2.0/%pos 57% by 20bps). Working assumption 15bps→SR≈0.45. See ML_EXPERIMENT_LOG.** |
 | P1 | 1.2 Crisis-block robustness | M | — | survives leave-one-crisis-out + generic regime control | ✅ **DONE 2026-06-02 — GO (pause trigger NOT fired). Survives LOCO (2022 is a drag, removal→1.17) + a generic SPY<200d trend control (0.661 > 0.548 baseline). VIX=30 is an overfit scalar but the edge/principle are robust. PEAD's tail is DIRECTIONAL not vol-level. See ML_EXPERIMENT_LOG.** |
 | P1b | 1.2b Trend-filter swap (replace VIX>30 with SPY<200d) — GATED | M | 1.2 | MA-sensitivity plateau + trend-LOCO + alt-rule + paper shadow-run | 🔲 follow-up: SPY<200d beat the VIX block (0.661 vs 0.548) & addresses the bear-grind; swap ONLY after the 4 validation gates, keep VIX>30 incumbent until then |
-| P1 | 1.3 Event-clustered bootstrap + NW | M–L | — | block-boot p<0.05 & NW t≥2.0 | NEXT. **§1.2 addition:** also stratify on trend regime (SPY ≷ 200d) — confirm t=2.26 isn't driven by a few correlated up-trend clusters + that the edge is significant within the down-trend regime |
+| P1 | 1.3 Event-clustered bootstrap + NW | M–L | — | block-boot p<0.05 & NW t≥2.0 | ✅ **DONE 2026-06-02 — FAIL (real-but-underpowered).** Bootstrap p=0.19, HAC t=1.04 (both fail). CPCV path t=2.26 overstated significance (8 correlated folds counted as independent; real unit = ~19 quarterly clusters). PEAD = long-biased up-trend drift harvester (87% P&L up-trends), realized SR ~0.40, positive but NOT event-level significant. **CAPITAL-HOLD confirmed** (~19yr to self-certify). Keep paper-trading (only forward-cluster source). See ML_EXPERIMENT_LOG. |
 | P1 | 1.4 SUE conversion | M | — | SUE-PEAD ≥ current, cleaner tails | — |
 | P1 | 1.5 Swing purge + holdout policy | M | Q2 | purge ≤30d, no synthetic leak; policy asserted | Q2 |
 | P1 | 1.6 Overlay ablation → RM safety net | M | — | each overlay earns its place; live==backtest | — |
