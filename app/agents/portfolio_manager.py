@@ -1013,6 +1013,128 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         except Exception as exc:
             self.logger.warning("Regime divergence log failed (non-fatal): %s", exc)
 
+        # PEAD EOD P&L update: overwrite today's pead_daily P&L/fill fields with the
+        # PEAD book's REAL numbers (the signals-stage row left gross/realized=0). The
+        # upsert (ON CONFLICT(trade_date) DO UPDATE) preserves n_signals/vix from the
+        # signals stage. Without this the weekly Sharpe is "n/a" forever.
+        try:
+            from app.live_trading import pead_tracker
+            from datetime import date as _date
+            eod_stats = await asyncio.to_thread(self._compute_pead_eod_stats)
+            if eod_stats is not None:
+                await asyncio.to_thread(
+                    pead_tracker.record_daily, _date.today(), **eod_stats
+                )
+                self.logger.info(
+                    "PEAD EOD P&L recorded: gross=%.2f realized=%.2f unrealized=%.2f "
+                    "n_entered=%d n_filled=%d",
+                    eod_stats.get("gross_deployed", 0.0),
+                    eod_stats.get("realized_pnl", 0.0),
+                    eod_stats.get("unrealized_pnl", 0.0),
+                    eod_stats.get("n_entered", 0),
+                    eod_stats.get("n_filled", 0),
+                )
+        except Exception as exc:
+            self.logger.warning("PEAD EOD P&L update failed (non-fatal): %s", exc)
+
+        # PEAD weekly rollup (Friday only, AFTER the EOD daily-row update above so
+        # Friday's final row is written immediately before the rollup reads it —
+        # guaranteed ordering, no cross-process race). Skips emailing when there is
+        # insufficient data (see weekly_rollup min_days guard).
+        try:
+            if datetime.now(ET).weekday() == 4:  # Friday in ET
+                from app.live_trading import pead_tracker
+                await asyncio.to_thread(pead_tracker.weekly_rollup)
+                self.logger.info("PEAD weekly rollup ran (Friday EOD)")
+        except Exception as exc:
+            self.logger.warning("PEAD weekly rollup failed (non-fatal): %s", exc)
+
+    def _compute_pead_eod_stats(self) -> dict | None:
+        """Compute the PEAD-tagged book's EOD numbers for today's pead_daily row.
+
+        Sources (filtered to Trade.selector == "pead"):
+          - gross_deployed: sum of cost basis (entry_price * quantity) of PEAD
+            positions OPEN today (status ACTIVE / PENDING_FILL).
+          - realized_pnl:   sum of pnl for PEAD trades CLOSED today.
+          - unrealized_pnl: mark-to-market of open PEAD positions via Alpaca
+            (sum of Alpaca unrealized_pl for symbols held by open PEAD trades).
+          - n_entered:      count of PEAD trades created today (any status).
+          - n_filled:       count of PEAD trades that reached ACTIVE/CLOSED today.
+
+        Mirrors _record_daily_benchmark's CLOSED-trade P&L + Alpaca pattern, but
+        filtered to the PEAD selector. Returns None on failure (caller skips the
+        upsert so the signals-stage row is preserved unchanged). Never raises.
+        """
+        from app.database.session import get_session
+        from app.database.models import Trade
+        from datetime import datetime as _dt
+
+        today_start = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        db = get_session()
+        try:
+            # Open PEAD positions (cost basis = gross deployed today)
+            open_pead = (
+                db.query(Trade)
+                .filter(
+                    Trade.selector == "pead",
+                    Trade.status.in_(["ACTIVE", "PENDING_FILL"]),
+                )
+                .all()
+            )
+            gross_deployed = sum(
+                float(t.entry_price or 0.0) * int(t.quantity or 0) for t in open_pead
+            )
+            open_symbols = {t.symbol for t in open_pead}
+
+            # PEAD trades closed today → realized P&L
+            closed_today = (
+                db.query(Trade)
+                .filter(
+                    Trade.selector == "pead",
+                    Trade.status == "CLOSED",
+                    Trade.closed_at >= today_start,
+                )
+                .all()
+            )
+            realized_pnl = sum(float(t.pnl) for t in closed_today if t.pnl is not None)
+
+            # PEAD trades created today → entered / filled counts
+            created_today = (
+                db.query(Trade)
+                .filter(
+                    Trade.selector == "pead",
+                    Trade.created_at >= today_start,
+                )
+                .all()
+            )
+            n_entered = len(created_today)
+            n_filled = sum(
+                1 for t in created_today if t.status in ("ACTIVE", "CLOSED")
+            )
+        finally:
+            db.close()
+
+        # Mark-to-market unrealized P&L of open PEAD positions via Alpaca.
+        unrealized_pnl = 0.0
+        if open_symbols:
+            try:
+                positions = self._alpaca.get_positions()
+                for pos in positions:
+                    if pos.get("symbol") in open_symbols:
+                        unrealized_pnl += float(pos.get("unrealized_pl", 0.0) or 0.0)
+            except Exception as exc:
+                self.logger.warning(
+                    "PEAD EOD: Alpaca unrealized P&L fetch failed (using 0): %s", exc
+                )
+
+        return {
+            "gross_deployed": float(gross_deployed),
+            "realized_pnl": float(realized_pnl),
+            "unrealized_pnl": float(unrealized_pnl),
+            "n_entered": int(n_entered),
+            "n_filled": int(n_filled),
+        }
+
     def _log_regime_divergence_today(self) -> None:
         """EOD: log days where regime model and opportunity score disagree."""
         from app.database.session import get_session

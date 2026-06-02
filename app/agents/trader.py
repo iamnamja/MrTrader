@@ -1186,6 +1186,7 @@ class Trader(BaseAgent):
                 highest_price=intended_price,
                 bars_held=0,
                 proposal_id=proposal_uuid,
+                selector=(proposal.get("selector") or ""),
             )
             db.add(trade)
             db.commit()
@@ -1386,6 +1387,7 @@ class Trader(BaseAgent):
                     target_price=_fb_target, highest_price=filled_price,
                     bars_held=0, alpaca_order_id=order_id,
                     proposal_id=proposal.get("proposal_uuid"),
+                    selector=(proposal.get("selector") or ""),
                 )
                 db.add(trade)
 

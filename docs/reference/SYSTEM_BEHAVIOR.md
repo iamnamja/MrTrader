@@ -78,14 +78,42 @@ When the swing selector is set to `"pead"`, `_analyze_swing_premarket` routes to
 **Observability (PEAD-only):** `app/live_trading/pead_tracker.py` (sqlite `data/pead_tracking.db`)
 records a daily row — date, #signals, #entered, #filled, fill-rate, gross deployed, realized +
 unrealized + cumulative P&L, VIX level, `vix_block_fired`, and per-overlay suppression counts
-(opportunity / macro / RM) for tracking-error attribution. `weekly_rollup()` computes the realized
-Sharpe of the PEAD book vs the +0.546 expectation and emails it via
-`notifier.enqueue("pead_weekly", …)`. Kill-switch / circuit-breaker reuse the existing swing path.
+(opportunity / macro / RM) for tracking-error attribution. The row is written in **two stages**:
+
+- **Signals stage (premarket, `_analyze_swing_pead`):** writes `n_signals`, `vix_level`,
+  `vix_block_fired`, `extra`. Leaves the P&L/fill fields untouched (NULL).
+- **EOD stage (16:30–16:59 ET, `_run_eod_jobs` → `_compute_pead_eod_stats`):** upserts the same
+  day's row with the PEAD book's REAL numbers after close — `gross_deployed` (cost basis of open
+  PEAD positions), `realized_pnl` (today's CLOSED PEAD trades), `unrealized_pnl` (mark-to-market of
+  open PEAD positions via Alpaca `get_positions`), `n_entered`/`n_filled`. `record_daily` is a
+  **partial upsert** (`ON CONFLICT(trade_date) DO UPDATE … COALESCE(excluded.X, X)`): each stage
+  sets only its own fields and preserves the other's, so the EOD P&L update does not clobber
+  `n_signals`/`vix`. Without this EOD stage the weekly Sharpe was "n/a" forever (gross stayed 0).
+
+**PEAD trade attribution — `Trade.selector` column:** PEAD trades are identified via a new
+`Trade.selector` column (`VARCHAR(32)`, default `""`). The Trader populates it from
+`proposal["selector"]` when writing the Trade (`_write_pending_fill` + the reconciler fallback
+path). A startup migration in `session.py::_migrate_columns` adds the column; pre-existing rows
+default to `""` (non-PEAD). `_compute_pead_eod_stats` filters on `Trade.selector == "pead"`.
+
+**Weekly rollup (Friday EOD):** at the END of `_run_eod_jobs`, Friday-only (ET weekday == 4) and
+AFTER the EOD daily-row update above, the PM calls `pead_tracker.weekly_rollup()`. Running it inside
+the same coroutine, after the day's final row is written, gives **guaranteed ordering** (no
+cross-process race). It computes the trailing-7-day realized Sharpe of the PEAD book vs the +0.546
+backtest expectation and emails it via `notifier.enqueue("pead_weekly", …)` (dedup_key
+`pead_weekly_{week_ending}`). **Vacuous-email guard:** if fewer than `min_days` (=3) daily rows in
+the window have `gross_deployed > 0`, the email is SKIPPED (payload returned with
+`skipped="insufficient data"`). Both the EOD update and the rollup are wrapped in try/except and are
+non-fatal to the PM loop. Kill-switch / circuit-breaker reuse the existing swing path.
 
 **Activation (separate deliberate step):** set agent config `pm.swing_selector="pead"` (DB key
 `agent.pm.swing_selector`). The PM reads `swing_selector` at decision time, so **no uvicorn restart
 is required** for the config flip; restart only if the new module files were added while the agent
 process was already running.
+
+> **Restart required for the EOD P&L update + Friday rollup:** the two-stage daily row and the
+> Friday weekly rollup are new code in `_run_eod_jobs`. A **uvicorn restart is required** to load
+> them into the running PM process (the EOD window code only takes effect after restart).
 
 ### Intraday Selection (09:45)
 1. Fetch 5-min bars for Russell 1000 symbols (Polygon Parquet cache-first, Alpaca fallback)

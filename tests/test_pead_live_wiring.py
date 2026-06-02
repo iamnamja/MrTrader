@@ -385,6 +385,9 @@ class TestPeadTracker:
     def test_weekly_rollup_enqueues_notification(self, tmp_path, monkeypatch):
         import app.live_trading.pead_tracker as pt
         monkeypatch.setattr(pt, "DB_PATH", tmp_path / "pead_tracking.db")
+        # Seed >= min_days (3) deployed days so the vacuous-email guard lets it send.
+        pt.record_daily(date(2026, 5, 26), realized_pnl=50.0, gross_deployed=1000.0)
+        pt.record_daily(date(2026, 5, 27), realized_pnl=-20.0, gross_deployed=1000.0)
         pt.record_daily(date(2026, 5, 28), realized_pnl=30.0, gross_deployed=1000.0)
 
         called = {}

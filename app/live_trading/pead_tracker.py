@@ -24,7 +24,7 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import date as _date, datetime, timedelta
+from datetime import date as _date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -69,40 +69,67 @@ def _conn() -> sqlite3.Connection:
 def record_daily(
     trade_date: _date | str | None = None,
     *,
-    n_signals: int = 0,
-    n_entered: int = 0,
-    n_filled: int = 0,
-    gross_deployed: float = 0.0,
-    realized_pnl: float = 0.0,
-    unrealized_pnl: float = 0.0,
+    n_signals: int | None = None,
+    n_entered: int | None = None,
+    n_filled: int | None = None,
+    gross_deployed: float | None = None,
+    realized_pnl: float | None = None,
+    unrealized_pnl: float | None = None,
     vix_level: float | None = None,
-    vix_block_fired: bool = False,
-    suppressed_opportunity: int = 0,
-    suppressed_macro: int = 0,
-    suppressed_rm: int = 0,
+    vix_block_fired: bool | None = None,
+    suppressed_opportunity: int | None = None,
+    suppressed_macro: int | None = None,
+    suppressed_rm: int | None = None,
     extra: dict[str, Any] | None = None,
 ) -> bool:
     """Upsert today's PEAD tracking row. Never raises.
 
-    cumulative_pnl is computed as prior-day cumulative + this day's daily P&L
-    (realized + unrealized). Returns True on success.
+    PARTIAL UPSERT semantics: every field defaults to None meaning "don't touch".
+    On INSERT a None field is stored as its column default (0 / NULL / False); on
+    CONFLICT a None field is left UNCHANGED (COALESCE(excluded, existing)). This lets
+    the signals-stage writer set n_signals/vix while the EOD writer sets
+    gross/realized/unrealized — each preserves the other's fields.
+
+    fill_rate, daily_pnl, cumulative_pnl are DERIVED. They are recomputed only when
+    their inputs are supplied this call (n_entered/n_filled for fill_rate;
+    realized_pnl/unrealized_pnl for the P&L fields); otherwise the existing values
+    are preserved. Returns True on success.
     """
     if trade_date is None:
         trade_date = _date.today()
     td = trade_date.isoformat() if isinstance(trade_date, _date) else str(trade_date)
 
-    fill_rate = (n_filled / n_entered) if n_entered else 0.0
-    daily_pnl = float(realized_pnl) + float(unrealized_pnl)
+    # Derived fields are recomputed only when their inputs are supplied this call.
+    fill_rate = None
+    if n_entered is not None or n_filled is not None:
+        _ne = int(n_entered or 0)
+        _nf = int(n_filled or 0)
+        fill_rate = round((_nf / _ne) if _ne else 0.0, 4)
+
+    daily_pnl = None
+    pnl_supplied = realized_pnl is not None or unrealized_pnl is not None
+    if pnl_supplied:
+        daily_pnl = float(realized_pnl or 0.0) + float(unrealized_pnl or 0.0)
+
+    def _i(x):
+        return int(x) if x is not None else None
+
+    def _f(x):
+        return float(x) if x is not None else None
 
     try:
         with _conn() as c:
-            prior = c.execute(
-                "SELECT cumulative_pnl FROM pead_daily "
-                "WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
-                (td,),
-            ).fetchone()
-            prior_cum = float(prior[0]) if prior and prior[0] is not None else 0.0
-            cumulative_pnl = prior_cum + daily_pnl
+            # cumulative_pnl = prior-day cumulative + this day's daily P&L. Only
+            # recomputed when P&L was supplied this call.
+            cumulative_pnl = None
+            if pnl_supplied:
+                prior = c.execute(
+                    "SELECT cumulative_pnl FROM pead_daily "
+                    "WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
+                    (td,),
+                ).fetchone()
+                prior_cum = float(prior[0]) if prior and prior[0] is not None else 0.0
+                cumulative_pnl = prior_cum + daily_pnl
 
             c.execute(
                 "INSERT INTO pead_daily(trade_date, n_signals, n_entered, n_filled, "
@@ -111,23 +138,30 @@ def record_daily(
                 "suppressed_macro, suppressed_rm, extra, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
-                "n_signals=excluded.n_signals, n_entered=excluded.n_entered, "
-                "n_filled=excluded.n_filled, fill_rate=excluded.fill_rate, "
-                "gross_deployed=excluded.gross_deployed, realized_pnl=excluded.realized_pnl, "
-                "unrealized_pnl=excluded.unrealized_pnl, daily_pnl=excluded.daily_pnl, "
-                "cumulative_pnl=excluded.cumulative_pnl, vix_level=excluded.vix_level, "
-                "vix_block_fired=excluded.vix_block_fired, "
-                "suppressed_opportunity=excluded.suppressed_opportunity, "
-                "suppressed_macro=excluded.suppressed_macro, "
-                "suppressed_rm=excluded.suppressed_rm, extra=excluded.extra",
+                "n_signals=COALESCE(excluded.n_signals, n_signals), "
+                "n_entered=COALESCE(excluded.n_entered, n_entered), "
+                "n_filled=COALESCE(excluded.n_filled, n_filled), "
+                "fill_rate=COALESCE(excluded.fill_rate, fill_rate), "
+                "gross_deployed=COALESCE(excluded.gross_deployed, gross_deployed), "
+                "realized_pnl=COALESCE(excluded.realized_pnl, realized_pnl), "
+                "unrealized_pnl=COALESCE(excluded.unrealized_pnl, unrealized_pnl), "
+                "daily_pnl=COALESCE(excluded.daily_pnl, daily_pnl), "
+                "cumulative_pnl=COALESCE(excluded.cumulative_pnl, cumulative_pnl), "
+                "vix_level=COALESCE(excluded.vix_level, vix_level), "
+                "vix_block_fired=COALESCE(excluded.vix_block_fired, vix_block_fired), "
+                "suppressed_opportunity=COALESCE(excluded.suppressed_opportunity, suppressed_opportunity), "
+                "suppressed_macro=COALESCE(excluded.suppressed_macro, suppressed_macro), "
+                "suppressed_rm=COALESCE(excluded.suppressed_rm, suppressed_rm), "
+                "extra=COALESCE(excluded.extra, extra)",
                 (
-                    td, int(n_signals), int(n_entered), int(n_filled),
-                    round(fill_rate, 4), float(gross_deployed), float(realized_pnl),
-                    float(unrealized_pnl), float(daily_pnl), float(cumulative_pnl),
-                    (float(vix_level) if vix_level is not None else None),
-                    1 if vix_block_fired else 0,
-                    int(suppressed_opportunity), int(suppressed_macro), int(suppressed_rm),
-                    json.dumps(extra or {}, default=str), time.time(),
+                    td, _i(n_signals), _i(n_entered), _i(n_filled),
+                    fill_rate, _f(gross_deployed), _f(realized_pnl),
+                    _f(unrealized_pnl), daily_pnl, cumulative_pnl,
+                    _f(vix_level),
+                    (None if vix_block_fired is None else (1 if vix_block_fired else 0)),
+                    _i(suppressed_opportunity), _i(suppressed_macro), _i(suppressed_rm),
+                    (json.dumps(extra, default=str) if extra is not None else None),
+                    time.time(),
                 ),
             )
         return True
@@ -173,9 +207,17 @@ def _realized_sharpe(daily_pnls: list[float], gross: list[float]) -> float | Non
     return float(arr.mean() / sd * np.sqrt(252))
 
 
-def weekly_rollup(week_ending: _date | str | None = None, send: bool = True) -> dict[str, Any]:
+def weekly_rollup(
+    week_ending: _date | str | None = None,
+    send: bool = True,
+    min_days: int = 3,
+) -> dict[str, Any]:
     """Compute the trailing-7-day PEAD realized Sharpe vs the +0.546 backtest and
     (optionally) email it via notifier.enqueue("pead_weekly", ...). Never raises.
+
+    Vacuous-email guard: if fewer than ``min_days`` daily rows in the window have
+    gross_deployed > 0 (i.e. the PEAD book wasn't actually deployed), the email is
+    SKIPPED — the payload is returned with skipped="insufficient data" and not sent.
 
     Returns the payload dict (also when send=False, for testing).
     """
@@ -185,20 +227,28 @@ def weekly_rollup(week_ending: _date | str | None = None, send: bool = True) -> 
     since = we - timedelta(days=6)
 
     rows = read_daily(since=since)
-    daily_pnls = [r["daily_pnl"] for r in rows]
-    gross = [r["gross_deployed"] for r in rows]
-    sharpe = _realized_sharpe(daily_pnls, gross)
 
-    n_signals = sum(r["n_signals"] for r in rows)
-    n_entered = sum(r["n_entered"] for r in rows)
-    n_filled = sum(r["n_filled"] for r in rows)
-    cum_pnl = rows[-1]["cumulative_pnl"] if rows else 0.0
-    fill_rates = [r["fill_rate"] for r in rows if r["n_entered"]]
+    # Partial-upsert rows may carry NULLs for fields a given writer didn't set; treat
+    # NULL as 0 for aggregation.
+    def _g(r, k, default=0):
+        v = r.get(k)
+        return default if v is None else v
+
+    daily_pnls = [_g(r, "daily_pnl", 0.0) for r in rows]
+    gross = [_g(r, "gross_deployed", 0.0) for r in rows]
+    sharpe = _realized_sharpe(daily_pnls, gross)
+    n_deployed_days = sum(1 for g in gross if g and g > 0)
+
+    n_signals = sum(_g(r, "n_signals") for r in rows)
+    n_entered = sum(_g(r, "n_entered") for r in rows)
+    n_filled = sum(_g(r, "n_filled") for r in rows)
+    cum_pnl = _g(rows[-1], "cumulative_pnl", 0.0) if rows else 0.0
+    fill_rates = [_g(r, "fill_rate", 0.0) for r in rows if _g(r, "n_entered")]
     avg_fill = round(sum(fill_rates) / len(fill_rates), 4) if fill_rates else None
-    vix_blocks = sum(r["vix_block_fired"] for r in rows)
-    sup_opp = sum(r["suppressed_opportunity"] for r in rows)
-    sup_macro = sum(r["suppressed_macro"] for r in rows)
-    sup_rm = sum(r["suppressed_rm"] for r in rows)
+    vix_blocks = sum(_g(r, "vix_block_fired") for r in rows)
+    sup_opp = sum(_g(r, "suppressed_opportunity") for r in rows)
+    sup_macro = sum(_g(r, "suppressed_macro") for r in rows)
+    sup_rm = sum(_g(r, "suppressed_rm") for r in rows)
 
     payload: dict[str, Any] = {
         "week_ending": we.isoformat(),
@@ -211,6 +261,17 @@ def weekly_rollup(week_ending: _date | str | None = None, send: bool = True) -> 
         "vix_blocks_fired": vix_blocks,
         "suppressed_breakdown": f"opp={sup_opp} macro={sup_macro} rm={sup_rm}",
     }
+
+    # Vacuous-email guard: don't send a "Sharpe: n/a" weekly when the PEAD book was
+    # barely (or never) deployed. The dedup_key is still honoured when we DO send.
+    if n_deployed_days < min_days:
+        payload["skipped"] = "insufficient data"
+        log.info(
+            "pead_tracker.weekly_rollup: only %d deployed day(s) (< min_days=%d) — "
+            "skipping email for week_ending=%s",
+            n_deployed_days, min_days, we.isoformat(),
+        )
+        return payload
 
     if send:
         try:
