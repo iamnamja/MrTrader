@@ -42,6 +42,7 @@ RATE_LIMITS: dict[str, int] = {
     "kill_switch":       0,
     "training_complete": 0,
     "phase_complete":    0,
+    "pead_weekly":       0,
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -231,6 +232,21 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Tasks completed", p.get("tasks_done")),
             ("Outcome", p.get("outcome", "")),
             ("Next phase", p.get("next_phase", "")),
+            ("Notes", p.get("notes", "")),
+        ])
+
+    elif event_type == "pead_weekly":
+        subj = f"[MrTrader] PEAD weekly rollup — {p.get('week_ending', '?')}"
+        body = _section("PEAD live-vs-backtest weekly rollup", [
+            ("Week ending", p.get("week_ending")),
+            ("Realized Sharpe (PEAD book)", p.get("realized_sharpe")),
+            ("Backtest expectation", p.get("backtest_sharpe", "+0.546")),
+            ("Trading days", p.get("n_days")),
+            ("Signals / entered / filled", p.get("signals_entered_filled")),
+            ("Cumulative P&L", p.get("cumulative_pnl")),
+            ("Avg fill rate", p.get("avg_fill_rate")),
+            ("VIX blocks fired", p.get("vix_blocks_fired")),
+            ("Suppressed (opp/macro/RM)", p.get("suppressed_breakdown")),
             ("Notes", p.get("notes", "")),
         ])
 
