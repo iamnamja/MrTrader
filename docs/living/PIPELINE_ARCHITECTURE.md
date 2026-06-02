@@ -235,7 +235,106 @@ run_cpcv(strategy, purge_days, embargo_days, n_folds=6, n_paths=2)
 
 ## 7. Gate Inventory
 
-### 7a. WalkForwardReport.gate_passed() — all must pass
+### 7.0 — `GATE_MODE`: significance-first two-tier gate (Phase-4, DEFAULT)
+
+`app/ml/retrain_config.py::GATE_MODE` selects the promotion gate:
+
+- **`"significance"` (DEFAULT, owner-approved):** the new significance-first
+  two-tier gate. Mean Sharpe is NO LONGER the primary discriminator — it is an
+  economic-materiality floor. Promotion is gated on the path-Sharpe **t-stat**
+  (N_eff=n_folds), sign-consistency (%positive), the tail (P5), with PF/Calmar/
+  regime kept as backstops. Two tiers:
+  - **PAPER** (forward-validate, NO capital): passes iff
+    `tstat ≥ PAPER_GATE_MIN_TSTAT(2.0)` **AND** `pct_positive ≥ PAPER_GATE_MIN_PCT_POSITIVE(0.75)`
+    **AND** `p5_sharpe ≥ PAPER_GATE_MIN_P5_SHARPE(0.0)` **AND**
+    `mean_sharpe ≥ PAPER_GATE_MIN_MEAN_SHARPE(0.35)` **AND** PF/Calmar/regime backstops OK.
+  - **CAPITAL** (real money): PAPER criteria with the capital mean floor
+    `CAPITAL_GATE_MIN_MEAN_SHARPE(0.50)` **AND** `n_folds ≥ CAPITAL_GATE_MIN_N_FOLDS(10)`
+    **AND** (`tstat ≥ CAPITAL_GATE_MIN_TSTAT(2.5)` **OR** a documented live-paper
+    confirmation, when `CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION=True`).
+  - **CPCV-required rule + WF-report-only (FIX-1):** a standard (non-CPCV)
+    `WalkForwardReport` has only a single point estimate and NO path-Sharpe
+    distribution → no t-stat. Under significance mode `WalkForwardReport.gate_passed()`
+    **HARD-FAILS** with `"CPCV required for significance gate (WF has no path
+    t-stat)"` — it does NOT fabricate a t-stat. BUT "cannot evaluate for promotion"
+    is **distinct** from "gate failed → retire." `WalkForwardReport.gate_outcome()`
+    returns a tri-state `GateOutcome` (`scripts/walkforward/gates.py`): under
+    significance a WF-only run is **`INCONCLUSIVE`** (report-only), NOT `RETIRE`.
+    `scripts/retrain_cron.py` reads `gate_outcome()`: on `INCONCLUSIVE` it KEEPS the
+    current model status (no auto-RETIRE, no `_restore_previous` rollback, no
+    `record_tier3_result(gate_passed=False)`) and logs that CPCV is required for a
+    promotion decision. This prevents the prior bug where every scheduled WF retrain
+    auto-retired the fresh model. Legacy `mean_sharpe` mode is unchanged: `PROMOTE`
+    on pass, `RETIRE` on a real legacy fail.
+  - **CAPITAL tier reachability (FIX-1):** `scripts/walkforward_tier3.py` threads a
+    `--gate-tier {paper,capital}` flag (default `paper`) plus `--paper-confirmation`
+    and `--regime-waiver-approved` into the CPCV gate (`_cpcv_swing_gate_ok` and the
+    intraday per-fold short-circuit call `gate_passed(tier=args.gate_tier, ...)`). An
+    explicit promotion run with `--gate-tier capital` is the real code path that
+    evaluates the CAPITAL tier (default runs stay PAPER). The cron retrain path never
+    requests capital — capital is an explicit, deliberate promotion action.
+  - **Event-sparsity regime waiver (FIX-2):** PEAD is event-driven and produces
+    `< REGIME_MIN_OBS(20)` same-regime trading days per bucket, so
+    `worst_regime_sharpe` is legitimately `None` (documented in ML_EXPERIMENT_LOG as
+    "not a bug"). `compute_regime_sharpes` now fills an `obs_counts` out-dict (raw
+    per-regime counts BEFORE the REGIME_MIN_OBS filter), threaded into
+    `FoldResult.regime_obs_counts`; `run_cpcv` aggregates it into
+    `CPCVResult.regime_insufficient_obs` — **True** when obs WERE observed but all
+    buckets fell below the floor (**event-sparsity**), **False** when no obs at all
+    (**data-bug**). The gate then:
+    - **PAPER tier (zero capital):** when `worst_regime_sharpe is None` AND
+      `regime_insufficient_obs` → regime backstop **WAIVED** (`regime_ok=True`) AND
+      `requires_human_review_flag=True` (surfaced in `gate_detail` as a
+      `requires_human_review` key, ok=False). This is the ONLY way PEAD reaches paper
+      PASS — a narrow, flagged, paper-only waiver, NOT a global fail-open.
+    - **CAPITAL tier:** NO auto-waive. `worst_regime_sharpe=None` fails the capital
+      regime backstop UNLESS an explicit human sign-off `regime_waiver_approved=True`
+      (`--regime-waiver-approved`) is passed. Real capital requires real regime data
+      or documented sign-off.
+    - **Data-bug `None`** (`regime_insufficient_obs=False`): fails CLOSED on BOTH
+      tiers (unless legacy `ALLOW_NO_REGIME_GATE` diagnostic bypass).
+  - API: `CPCVResult.gate_passed(tier="paper"|"capital", paper_confirmation=False,
+    regime_waiver_approved=False)` and `gate_detail(tier=...)`. The legacy
+    relaxed-threshold `paper_gate` kwarg is **ignored** under significance mode (it
+    relaxed Sharpe/PF, contradicting a significance-first promotion); use `tier`.
+
+- **`"mean_sharpe"` (LEGACY reproduction):** a faithful no-op reproduction of the
+  pre-Phase-4 gate — `avg_sharpe ≥ 0.80` (swing) / `≥ 1.00` (intraday) primary,
+  t-stat WARN-only (`require_tstat_gate=False`), WF promotion allowed. Used for
+  reversibility and historical re-scoring. Verified no-op: the entire pre-Phase-4
+  gate test corpus passes unchanged under this mode (the test suite forces
+  `mean_sharpe` by default via `tests/conftest.py`; new significance tests opt in
+  with the `significance_gate_mode` fixture).
+
+**Why:** 0.80/1.00 were calibrated against now-struck IN-SAMPLE numbers (intraday
++5.14, QualityShort +3.25). A bare mean-Sharpe threshold cannot separate a
+`+0.22 / t=0.17` noise result from a `+0.546 / t=2.26` genuine-signal result. The
+re-score artifact (`scripts/rescore_gates.py`, `python -m scripts.rescore_gates`)
+shows the new gate promotes **only PEAD R1K → PAPER PASS (with a mandatory
+`requires_human_review` flag, via the event-sparsity regime waiver) / CAPITAL
+HOLD**; every other strategy on record FAILs all tiers, and the LEGACY(0.80) column
+is all-FAIL. FIX-3: the artifact is produced by the **REAL** production gate
+(`CPCVResult.gate_passed`) on reconstructed `CPCVResult`s carrying each strategy's
+actual fields (incl. `worst_regime_sharpe`; PEAD = `None` + `regime_insufficient_obs
+=True`) — it no longer reimplements the threshold math or hardcodes `backstops_ok=
+True` (the prior version did both, which falsely showed PEAD an unconditional PASS).
+PEAD's paper PASS is **conditional on the flagged waiver**, not unconditional.
+
+| Threshold | Value | Tier |
+|---|---|---|
+| `PAPER_GATE_MIN_TSTAT` | 2.0 | paper |
+| `PAPER_GATE_MIN_PCT_POSITIVE` | 0.75 | paper |
+| `PAPER_GATE_MIN_P5_SHARPE` | 0.0 | paper (stricter than legacy MIN_FOLD −0.30) |
+| `PAPER_GATE_MIN_MEAN_SHARPE` | 0.35 | paper (materiality floor) |
+| `CAPITAL_GATE_MIN_TSTAT` | 2.5 | capital (multiple-testing haircut) |
+| `CAPITAL_GATE_MIN_N_FOLDS` | 10 | capital (power floor) |
+| `CAPITAL_GATE_MIN_MEAN_SHARPE` | 0.50 | capital |
+| `CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION` | True | capital OR-path |
+
+The tables in §7a/§7b below describe the **legacy `mean_sharpe`** gate (active only
+when `GATE_MODE="mean_sharpe"`).
+
+### 7a. WalkForwardReport.gate_passed() — all must pass (LEGACY `mean_sharpe` mode)
 
 | Gate | Metric | Threshold | Status | Notes |
 |---|---|---|---|---|
@@ -248,7 +347,7 @@ run_cpcv(strategy, purge_days, embargo_days, n_folds=6, n_paths=2)
 
 **Paper-trade variant:** `gate_passed(paper_gate=True)` uses relaxed thresholds (Sharpe ≥ 0.50, min fold ≥ -0.40) and waives PF + Calmar gates entirely.
 
-### 7b. CPCVResult.gate_passed() — all must pass
+### 7b. CPCVResult.gate_passed() — all must pass (LEGACY `mean_sharpe` mode)
 
 | Gate | Metric | Threshold | Status | Notes |
 |---|---|---|---|---|
@@ -532,6 +631,8 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-06-02 | #TBD | **Phase-4 significance-gate review fixes (FIX-1/2/3 + coverage) — blocking defects in the two-tier gate:** **FIX-1 (cron auto-retire + capital unreachable):** under `GATE_MODE="significance"` a WF-only retrain HARD-FAILED `WalkForwardReport.gate_passed()`, and `retrain_cron.py` fed that boolean to `record_tier3_result(gate_passed=False)` → `status="RETIRED"` + `_restore_previous()`, so EVERY scheduled WF retrain auto-retired the fresh model and rolled back. Added a tri-state `GateOutcome{PROMOTE,RETIRE,INCONCLUSIVE}` enum + `WalkForwardReport.gate_outcome()`: significance+WF → `INCONCLUSIVE` (report-only). `retrain_cron.py` (swing+intraday) now reads `gate_outcome()` and on `INCONCLUSIVE` keeps current model status untouched (no retire/rollback/record-fail), logging that CPCV is required. Legacy `mean_sharpe` path unchanged (PROMOTE on pass, RETIRE on real fail). Made the CAPITAL tier reachable: `walkforward_tier3.py` threads `--gate-tier {paper,capital}` (default paper) + `--paper-confirmation` + `--regime-waiver-approved` into `_cpcv_swing_gate_ok` / intraday short-circuit `gate_passed(tier=...)`. **FIX-2 (gate BLOCKED PEAD):** PEAD's real CPCV has `worst_regime_sharpe=None` (event-sparsity: `<REGIME_MIN_OBS` same-regime days — documented "not a bug"); `_significance_backstops_ok` failed-closed on None → PEAD FAILED paper. Distinguished event-sparsity from data-bug at the SOURCE: `compute_regime_sharpes` now fills an `obs_counts` out-dict (raw per-regime counts BEFORE the REGIME_MIN_OBS filter) → `FoldResult.regime_obs_counts` → `run_cpcv` sets `CPCVResult.regime_insufficient_obs` (True = obs seen but all buckets sub-floor = event-sparsity; False = no obs = data-bug). Gate: PAPER WAIVES regime backstop for event-sparsity AND sets `requires_human_review_flag=True` (surfaced in `gate_detail`); CAPITAL never auto-waives (needs `regime_waiver_approved=True` explicit sign-off); data-bug None fails closed BOTH tiers. Narrow, flagged, paper-only waiver — NOT a global fail-open. **FIX-3 (dishonest rescore):** `scripts/rescore_gates.py` reimplemented the threshold math and hardcoded `backstops_ok=True` (falsely showed PEAD PASS). Rewrote it to construct REAL `CPCVResult`s (actual mean/tstat/%pos/P5/n_folds/PF/Calmar/`worst_regime_sharpe`; PEAD=None+`regime_insufficient_obs=True`) and call the REAL `gate_passed(tier=...)`/`gate_detail`. Output: PEAD R1K → PAPER PASS (HUMAN-REV=YES) / CAPITAL HOLD; Swing/Intraday/Small-mid/QualityShort/Insider → FAIL all tiers; LEGACY(0.80) all-FAIL. **Coverage:** `tests/test_significance_gate.py` +7 (18 total) — PEAD event-sparsity PAPER-PASS+flag/CAPITAL-FAIL, capital regime-waiver-requires-signoff, data-bug-None fails-closed-both-tiers, WF-only-INCONCLUSIVE-not-RETIRE, cron-decision-no-retire, mean_sharpe-outcome-PROMOTE/RETIRE-unchanged, capital-tier-reachable-via-`_cpcv_swing_gate_ok`. Legacy mean_sharpe corpus unchanged. | `scripts/walkforward/cpcv.py`, `scripts/walkforward/gates.py`, `scripts/walkforward/regime.py`, `scripts/walkforward/strategies/swing.py`, `scripts/run_pead_cpcv.py`, `scripts/retrain_cron.py`, `scripts/walkforward_tier3.py`, `scripts/rescore_gates.py`, `tests/test_significance_gate.py` |
+| 2026-06-02 | #TBD | **Significance-first two-tier promotion gate (Phase-4) — replaces mean-Sharpe≥0.80 as the PRIMARY discriminator:** new `GATE_MODE` flag (`app/ml/retrain_config.py`, default `"significance"`; `"mean_sharpe"` = faithful legacy reproduction). Under `"significance"`, `CPCVResult.gate_passed(tier="paper"|"capital", paper_confirmation=False)` gates on path-Sharpe **t-stat** (N_eff=n_folds, flipped WARN→BLOCK), `pct_positive`, `p5_sharpe`, and a mean-Sharpe materiality FLOOR — not the 0.80 mean. **PAPER** (forward-validate, no capital): t≥2.0 AND %pos≥0.75 AND P5≥0.0 AND mean≥0.35 + PF/Calmar/regime backstops. **CAPITAL** (real money): PAPER + mean≥0.50 + n_folds≥10 + (t≥2.5 OR documented paper confirmation). A bare `WalkForwardReport` (no path t-stat) HARD-FAILS under significance with "CPCV required for significance gate (WF has no path t-stat)" — does not fabricate a t-stat. Legacy 0.80/1.00 `SWING_GATE`/`INTRADAY_GATE` thresholds kept INTACT (commented LEGACY) for the `mean_sharpe` reproduction path. New re-score artifact `scripts/rescore_gates.py` (`python -m scripts.rescore_gates`): proves the gate promotes ONLY PEAD R1K → PAPER PASS / CAPITAL HOLD; Swing/Intraday/Small-mid-PEAD/QualityShort/Insider → FAIL all tiers; LEGACY(0.80) col all-FAIL. **`mean_sharpe` no-op verified:** the entire pre-Phase-4 gate test corpus (175 tests) passes unchanged under `mean_sharpe` (forced via `tests/conftest.py` autouse fixture); new tests opt into `significance` via the `significance_gate_mode` fixture. No change to DSR math, N_eff=n_folds, OOS/sacred-holdout machinery, simulators, or PEAD scorer. Tests: `tests/test_significance_gate.py` (11) — PEAD paper-PASS/capital-HOLD, capital-fails-on-nfolds, swing FAIL-all, small/mid FAIL (t AND P5), synthetic capital PASS, capital-via-paper-confirmation OR-path, WF-only hard-fail, dispatch, mean_sharpe no-op (0.85 pass / 0.50 fail), rescore-table lock. Full suite 2482 passed / 8 skipped / 0 failed. | `app/ml/retrain_config.py`, `scripts/walkforward/cpcv.py`, `scripts/walkforward/gates.py`, `scripts/rescore_gates.py`, `tests/conftest.py`, `tests/test_significance_gate.py` |
 | 2026-06-01 | #TBD | **Pre-run correctness fixes to small/mid-cap PEAD harness (PR #361 review blockers; must be bug-free before CPCV):** **FIX 1 — `delisted_haircut` was a no-op for held delisted names.** The end-of-fold FORCE_CLOSE computed `exit_price` from the name's LAST TRADED bar on-or-before `end_date`, so for a held name `exit_price` was never `None` and the `delisted_haircut=0.70` branch was DEAD CODE — a name that delisted mid-fold booked only the loss already in its last close, not the gap-to-zero a delisting implies (UNDER-penalized delistings, flattered small-cap returns). FIX: in `AgentSimulator.run()` force-close, detect "data-ended while held" — the name's last bar is materially BEFORE `end_date` (≥3 of the fold's SPY-calendar `trading_days` after the last bar had NO bar) → it survived only because no bars existed to trigger an exit, not because it traded to the boundary. For such a name apply the haircut to the LAST CLOSE (long `last_close×(1−h)`, short `last_close×(1+h)`) and log a `FORCE_CLOSE: <sym> data-ended … while held …` warning. A name that DID trade to/near the boundary keeps the full-close MTM behavior. Also fixed the existing wrong SHORT arithmetic in the `exit_price is None` fallback (`×(1−h)` → `×(1+h)`). **Strict no-op when `delisted_haircut=0.0`** (the default) → R1K large-cap `run_pead_cpcv.py` + swing/intraday `walkforward_tier3.py` (both pass 0.0) unchanged; bites ONLY where a non-zero haircut is configured (smallmid passes 0.70). **FIX 2 — eligibility-window look-ahead (minor universe-membership leak).** `run_pead_smallmid_cpcv.run_fold` selected the per-fold universe via `symbols_eligible_in_window(elig, te_start, te_end)` (union over the whole test window) → admitted names that only became liquid LATE in the fold. FIX: new `symbols_eligible_as_of(elig, te_start)` (latest eligibility snapshot on-or-before `te_start`; depends only on data ≤ te_start → PIT) matching the large-cap `run_pead_cpcv.py` "as-of te_start" convention. Tests (`tests/test_smallmid_universe.py`): `test_delisted_haircut_bites_on_data_ended_while_held` (drives the REAL force-close: held long whose data ends ~mid-fold → exit `last_close×0.30`, deep loss; control `haircut=0.0` → full last close, break-even), `test_haircut_not_applied_when_name_trades_to_fold_boundary` (name trading to boundary NOT haircut), `test_delisted_haircut_constructor_clamps`, `test_universe_selection_is_as_of_te_start_pit` (LATE-liquid name excluded, was leaked by the old window form), `test_eligible_as_of_uses_latest_snapshot_on_or_before`. NO change to R1K paths. | `app/backtesting/agent_simulator.py`, `scripts/build_smallmid_universe.py`, `scripts/run_pead_smallmid_cpcv.py`, `tests/test_smallmid_universe.py` |
 | 2026-06-01 | #TBD | **Survivorship-safe small/mid-cap PEAD CPCV harness (build-only; highest-EV remaining PEAD experiment):** PEAD works in large-caps (+0.546 honest CPCV); literature says event-drift is strongest in small/mid-caps. Built a NEW harness `scripts/run_pead_smallmid_cpcv.py` cloning `run_pead_cpcv.py`'s verified honest-pipeline machinery (per-fold `n_obs`+`regime_sharpes`+`profit_factor`, OOS guard `trained_through=date.min`, CPCV C(8,2)/k=8/6yr) with FOUR bug-check fixes. **UNIVERSE (C-1 survivorship + H-1 ADV filter in ONE definition):** new `scripts/build_smallmid_universe.py` walks **Polygon grouped-daily flat files** (`PolygonProvider.get_grouped_daily` → new `PolygonS3.get_grouped_daily`, the all-tickers-per-day panel; verified live: 10,822 symbols on 2023-03-08 INCLUDING delisted SIVB+FRC) — the GOLD-STANDARD survivorship-safe candidate source (every ticker that printed a bar that day, kept to its final traded day, never retroactively dropped). Per (day,symbol) it computes trailing-20d `ADV = mean(close×volume)` over days `<=` that day (PIT — a future spike can't change today's eligibility) and keeps names in `[$2M, $50M]` (`ADV_MIN`/`ADV_MAX`; small/mid-cap liquid range), capped top-300/day by PIT-ADV rank (`MAX_NAMES_PER_DAY` — ranked on trailing ADV, not current existence → no survivorship reintroduction). Cached to `data/smallmid/{panel,eligibility}.parquet` (gitignored) so the grouped-daily walk runs ONCE. Replaces the hardcoded `pit_union("russell1000")` in `run_fold` with the PIT band-eligibility set. **PRICES:** Polygon grouped-daily (delisted-inclusive), NOT yfinance. **C-2:** `delisted_haircut=0.70` (held-through-delisting books -70%, not break-even). **H-2:** `transaction_cost_pct=0.0020` (20bps). **M-1:** per-fold guard skips names with `<MIN_HISTORY_BARS=60` bars before `te_start`. Scorer = validated long-only baseline. HONEST FLAGS: (1) shares-outstanding not survivorship-safe-available → ADV dollar-volume BAND is the size proxy (liquidity band, not strict market-cap band); (2) 300/day cap binds (>300 names/day) — PIT-rank-based so survivorship-safe. Validation (Q1-2023, 62 days): ~300 band names/day, 738 distinct; delisted small/mid-caps (COWN, ONEM, UMPQ) correctly retained to last bar; mega-caps SIVB/FRC correctly EXCLUDED (ADV>$50M). Tests: `tests/test_smallmid_universe.py` (6 + 1 skip-network). BUILD ONLY — full CPCV not run. | `app/data/polygon_s3.py`, `app/data/polygon_provider.py`, `scripts/build_smallmid_universe.py`, `scripts/run_pead_smallmid_cpcv.py`, `tests/test_smallmid_universe.py` |
 | 2026-06-01 | #TBD | **PEAD conviction sizing (default OFF) — Opus #1 experiment to beat the +0.546 equal-weight ceiling:** added an OPTIONAL conviction-sizing path to `AgentSimulator` that weights each day's NEW long entries by `w_i ∝ clip(SUE_z_i, 0, 3) / realized_vol_i`, normalized so the day's new-entry gross equals the EQUAL-WEIGHT book's gross for the SAME n names (`Σ target-dollars = n × MAX_POSITION_SIZE_PCT × equity`). **Implemented in the SIMULATOR, not the scorer** — STEP-0 finding: in factor mode the sim sizes each PEAD long with a FIXED 20% circuit-breaker stop and passes `conf` only through `size_position`'s weak `conviction_multiplier` (clipped [0.75,1.25]), then clamps every name to the `MAX_POSITION_SIZE_PCT=5%` per-position cap. With `MAX_OPEN_POSITIONS=5` the 5% cap binds for nearly every name → the committed +0.546 baseline is effectively EQUAL-WEIGHT at the 5% cap. There is NO day-level gross normalization in the sim, so true conviction sizing (gross-normalized tilt) MUST be a sim sizing change, not a smarter `conf`. New params: `AgentSimulator(pead_conviction_size=False)`; `_rm_validate(..., bypass_position_cap=False)`. CONFOUND CONTROLS (all three from the task): (1) **gross-normalized** — Σ allocations == equal-weight gross; the 5% per-position cap AND `validate_position_size`/`validate_sector_concentration` are intentionally bypassed for conviction longs (`bypass_position_cap=True`) because re-applying the 5% clamp would shrink the book below the equal-weight gross and reintroduce a (downward) leverage confound + drop the most-conviction names from the entry set. (2) **PIT-safe inputs** — SUE_z standardizes the raw `fmp_surprise_1q` against an EXPANDING pool of surprises observed ONLY on days `<= entry day` (`_sue_pool` keyed by observation day; `_sue_zscore_pit` filters `d <= day`; pool is per-fold so it never spans the embargo), returning neutral z=0 with <2 prior obs; realized vol (`_realized_vol_pit`, 20d) uses closes with index date STRICTLY `< entry day`. (3) **entry set unchanged** — the conviction pre-pass only re-weights the SAME long names the equal-weight book would enter (same `long_threshold`, same VIX block, same slot order); verified at sim level (entry set identical ON vs OFF, only quantities differ). Env-gated from `run_pead_cpcv.py`: `PEAD_CONVICTION_SIZE=1` → `pead_conviction_size=True`. DEFAULT OFF → committed equal-weight +0.546 config byte-identical (regression-locked by `test_flag_off_unchanged`/`test_flag_off_no_surprise_fetch`; verified OFF trades == no-param-default trades). Tests: `tests/test_pead_conviction_sizing.py` (11) — flag-off-unchanged, sue-zscore-pit (future surprise cannot move today's z), vol-scale-pit (future/entry-day bar cannot move vol), gross-normalized (Σ == n×5%×equity), single-name==5%, higher-SUE-bigger-weight (vol held equal), clip(0,3)-bounds-tilt, insufficient-history neutral z, record-keyed-by-day. All synthetic, no network. | `app/backtesting/agent_simulator.py`, `scripts/run_pead_cpcv.py`, `tests/test_pead_conviction_sizing.py` |

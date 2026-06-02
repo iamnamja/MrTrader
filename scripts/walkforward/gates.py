@@ -8,10 +8,35 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
+from enum import Enum
 from typing import Dict, List, Optional
 
 import numpy as np
 from scipy.stats import norm
+
+
+class GateOutcome(str, Enum):
+    """Tri-state promotion outcome for a gate evaluation.
+
+    Phase-4 FIX-1: distinguishes "gate failed → retire/rollback" from "gate could
+    not be evaluated for promotion → keep current model status, do nothing."
+
+    Under GATE_MODE='significance', a bare WalkForwardReport carries only a single
+    point estimate — no path-Sharpe distribution and therefore NO t-stat — so it
+    cannot EARN promotion (the significance gate is a distribution test). But
+    "can't evaluate for promotion" is NOT "failed → retire." Conflating the two
+    auto-retires every scheduled WF retrain and rolls back the fresh model. The
+    cron caller must treat INCONCLUSIVE as report-only: do not retire, do not roll
+    back, log that CPCV is required for a promotion decision.
+
+      PROMOTE      — gate evaluated and PASSED. Promote / keep ACTIVE.
+      RETIRE       — gate evaluated and FAILED. Retire new, restore previous.
+      INCONCLUSIVE — gate could not be evaluated for promotion (e.g. significance
+                     mode + WF-only). Report-only: keep current status untouched.
+    """
+    PROMOTE = "promote"
+    RETIRE = "retire"
+    INCONCLUSIVE = "inconclusive"
 
 # ── Gate thresholds ───────────────────────────────────────────────────────────
 SHARPE_GATE = 0.8
@@ -182,6 +207,12 @@ class FoldResult:
     k_ratio: float = 0.0
     regime_sharpes: Dict[str, float] = field(default_factory=dict)
     regime_diversity: int = 0
+    # Phase-4 FIX-2: RAW per-regime observation counts BEFORE the REGIME_MIN_OBS
+    # filter (populated by compute_regime_sharpes via its obs_counts out-param).
+    # Used to distinguish EVENT-SPARSITY (counts present but all < REGIME_MIN_OBS →
+    # regime_sharpes empty) from a DATA-BUG (no counts at all). See cpcv.py
+    # run_cpcv regime aggregation and CPCVResult.regime_insufficient_obs.
+    regime_obs_counts: Dict[str, int] = field(default_factory=dict)
     # WF-5a: abstention tracking
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0
@@ -383,8 +414,26 @@ class WalkForwardReport:
         from app.ml.retrain_config import MIN_DEPLOYMENT_PCT_WARN
         return self.avg_deployment_pct < MIN_DEPLOYMENT_PCT_WARN
 
+    # Phase-4: human-readable reason a WF-only run cannot promote under significance.
+    SIGNIFICANCE_WF_BLOCK_REASON = (
+        "CPCV required for significance gate (WF has no path t-stat)"
+    )
+
     def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
         import logging as _logging
+        # Phase-4: a standard (non-CPCV) WalkForwardReport has only a single point
+        # estimate — no path-Sharpe distribution and therefore no t-stat. The
+        # significance gate is fundamentally a distribution test, so a WF-only
+        # promotion HARD-FAILS under significance mode (it must NOT fabricate a
+        # t-stat). Legacy mean_sharpe mode keeps the original WF behavior.
+        from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "significance":
+            _logging.getLogger(__name__).error(
+                "WalkForwardReport.gate_passed under GATE_MODE='significance': %s. "
+                "Run CPCV (CPCVResult.gate_passed) to obtain a path-Sharpe t-stat.",
+                self.SIGNIFICANCE_WF_BLOCK_REASON,
+            )
+            return False
         if self.in_sample_override:
             return False
         # Frozen-mode (not true per-fold) runs cannot promote when the project-wide
@@ -441,7 +490,33 @@ class WalkForwardReport:
             and regime_ok
         )
 
+    def gate_outcome(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> GateOutcome:
+        """Tri-state promotion outcome (Phase-4 FIX-1).
+
+        Under GATE_MODE='significance', a WF-only report cannot be evaluated for
+        promotion (no path t-stat) → INCONCLUSIVE. This is REPORT-ONLY: the cron
+        caller must NOT retire/roll back a freshly trained model on this outcome.
+        Under GATE_MODE='mean_sharpe' (legacy), the outcome maps directly from the
+        boolean gate: PROMOTE on pass, RETIRE on a real legacy fail (unchanged).
+        """
+        from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "significance":
+            # WF carries no path-Sharpe distribution → cannot earn promotion, but
+            # this is "not evaluable", NOT a failure. CPCV is required for a verdict.
+            return GateOutcome.INCONCLUSIVE
+        return (GateOutcome.PROMOTE
+                if self.gate_passed(dsr_n=dsr_n, paper_gate=paper_gate)
+                else GateOutcome.RETIRE)
+
     def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
+        # Phase-4: under significance mode a WF-only run cannot promote (no path
+        # t-stat). Surface that as a single failed criterion so the reporter prints
+        # the "CPCV required" reason rather than a misleading per-metric breakdown.
+        from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "significance":
+            return {
+                "cpcv_required_for_significance": (self.avg_sharpe, False),
+            }
         _, dsr_p = deflated_sharpe_ratio(self.avg_sharpe, dsr_n, self.total_obs)
         sharpe_gate = self.PAPER_SHARPE_GATE if paper_gate else SHARPE_GATE
         min_fold_gate = self.PAPER_MIN_FOLD_SHARPE if paper_gate else MIN_FOLD_SHARPE

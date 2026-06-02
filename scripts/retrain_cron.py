@@ -129,11 +129,27 @@ def run_swing(dry_run: bool) -> bool:
         )
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
-        # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
-        # than a local Sharpe-only approximation that can diverge from the real gate.
-        # Mirror walkforward_tier3.py: block promotion on implausible Sharpe.
-        gate_ok = wf.gate_passed() and not wf.requires_human_review()
-        if wf.requires_human_review() and wf.gate_passed():
+        # Phase-4 FIX-1: use the tri-state gate outcome, NOT the raw boolean.
+        # Under GATE_MODE='significance' a WF-only run is INCONCLUSIVE (no path
+        # t-stat → cannot earn promotion) — that must NOT auto-RETIRE or roll back
+        # the freshly trained model. Only a genuine RETIRE outcome (legacy real
+        # fail) restores the previous champion.
+        from scripts.walkforward.gates import GateOutcome
+        outcome = wf.gate_outcome()
+        if outcome == GateOutcome.INCONCLUSIVE:
+            logger.warning(
+                "Swing v%d: WF run is REPORT-ONLY under GATE_MODE='significance' "
+                "(avg_sharpe=%.3f min_sharpe=%.3f) — %s. NOT retiring/rolling back; "
+                "current model status kept. Run CPCV to obtain a promotion decision.",
+                version, avg_sh, min_sh, wf.SIGNIFICANCE_WF_BLOCK_REASON,
+            )
+            # Record the metrics WITHOUT flipping status (record_tier3_result with
+            # gate_passed=False would RETIRE the model — do not call it here).
+            return False
+
+        # mean_sharpe (legacy) path — block promotion on implausible Sharpe too.
+        gate_ok = (outcome == GateOutcome.PROMOTE) and not wf.requires_human_review()
+        if wf.requires_human_review() and outcome == GateOutcome.PROMOTE:
             from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
             logger.warning(
                 "AUTO-PROMOTION BLOCKED: swing v%d avg Sharpe %.3f > "
@@ -196,11 +212,21 @@ def run_intraday(dry_run: bool) -> bool:
                                       use_opportunity_score=True)
         avg_sh = wf.avg_sharpe
         min_sh = wf.min_sharpe
-        # Use the canonical gate (includes DSR, PF, Calmar, in_sample_override) rather
-        # than a local Sharpe-only approximation that can diverge from the real gate.
-        # Mirror walkforward_tier3.py: block promotion on implausible Sharpe.
-        gate_ok = wf.gate_passed() and not wf.requires_human_review()
-        if wf.requires_human_review() and wf.gate_passed():
+        # Phase-4 FIX-1: tri-state gate outcome (mirror run_swing). Significance +
+        # WF-only is INCONCLUSIVE → report-only, never auto-retire/rollback.
+        from scripts.walkforward.gates import GateOutcome
+        outcome = wf.gate_outcome()
+        if outcome == GateOutcome.INCONCLUSIVE:
+            logger.warning(
+                "Intraday v%d: WF run is REPORT-ONLY under GATE_MODE='significance' "
+                "(avg_sharpe=%.3f min_sharpe=%.3f) — %s. NOT retiring/rolling back; "
+                "current model status kept. Run CPCV to obtain a promotion decision.",
+                version, avg_sh, min_sh, wf.SIGNIFICANCE_WF_BLOCK_REASON,
+            )
+            return False
+
+        gate_ok = (outcome == GateOutcome.PROMOTE) and not wf.requires_human_review()
+        if wf.requires_human_review() and outcome == GateOutcome.PROMOTE:
             from app.ml.retrain_config import SHARPE_IMPLAUSIBILITY_CEILING
             logger.warning(
                 "AUTO-PROMOTION BLOCKED: intraday v%d avg Sharpe %.3f > "

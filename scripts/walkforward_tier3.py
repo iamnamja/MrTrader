@@ -1450,7 +1450,15 @@ def _cpcv_swing_gate_ok(cpcv_result, args) -> bool:
     if not getattr(cpcv_result, "path_sharpes", None):
         return False
     try:
-        return bool(cpcv_result.gate_passed(dsr_n=args.dsr_n, paper_gate=args.paper_gate))
+        # Phase-4: evaluate at the requested promotion tier (paper|capital). Under
+        # GATE_MODE='significance' this is how the CAPITAL tier becomes reachable;
+        # under mean_sharpe these kwargs are ignored by gate_passed().
+        return bool(cpcv_result.gate_passed(
+            dsr_n=args.dsr_n, paper_gate=args.paper_gate,
+            tier=getattr(args, "gate_tier", "paper"),
+            paper_confirmation=getattr(args, "paper_confirmation", False),
+            regime_waiver_approved=getattr(args, "regime_waiver_approved", False),
+        ))
     except Exception:
         return False
 
@@ -1970,7 +1978,27 @@ def main() -> int:
     parser.add_argument("--paper-gate", action="store_true", default=False,
                         help="P3: use paper-trading readiness gate instead of production gate. "
                              "Criteria: avg_sharpe > 0.50 and min_fold_sharpe > -0.40 (less strict). "
-                             "DSR check still applies. Useful for deploy-to-paper decisions.")
+                             "DSR check still applies. Useful for deploy-to-paper decisions. "
+                             "Ignored under GATE_MODE='significance' (use --gate-tier instead).")
+    # Phase-4 FIX-1: significance-gate promotion tier. The CPCV gate is evaluated
+    # at this tier so the CAPITAL tier is REACHABLE via an explicit promotion run
+    # (default 'paper' — the conservative forward-validate tier). 'capital' requires
+    # the stricter t-stat / n_folds / mean floors and (for event-sparse strategies
+    # with no regime data) an explicit --regime-waiver-approved sign-off.
+    parser.add_argument("--gate-tier", choices=["paper", "capital"], default="paper",
+                        help="Phase-4: promotion tier for the significance gate "
+                             "(GATE_MODE='significance'). 'paper' (default) = forward-"
+                             "validate, no capital; 'capital' = real money, stricter "
+                             "floors. No effect under GATE_MODE='mean_sharpe'.")
+    parser.add_argument("--paper-confirmation", action="store_true", default=False,
+                        help="Phase-4: documented live-paper confirmation for the "
+                             "CAPITAL tier OR-path (CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION). "
+                             "Only meaningful with --gate-tier capital.")
+    parser.add_argument("--regime-waiver-approved", action="store_true", default=False,
+                        help="Phase-4 FIX-2: explicit human sign-off to waive the "
+                             "regime backstop on the CAPITAL tier when "
+                             "worst_regime_sharpe is None due to event-sparsity. "
+                             "PAPER auto-waives (flagged); CAPITAL never does without this.")
     # R5b: realism options
     parser.add_argument("--delisted-haircut", type=float, default=0.0,
                         help="R5b: when a position has no bar data at fold-end (delisted/halt), "
@@ -2343,7 +2371,10 @@ def main() -> int:
             # The per-fold CPCV is the ONLY signal in this branch — its gate result
             # IS the intraday result (mirrors the swing per-fold short-circuit).
             if _cpcv_intra_res is None or not _cpcv_intra_res.gate_passed(
-                    dsr_n=args.dsr_n, paper_gate=args.paper_gate):
+                    dsr_n=args.dsr_n, paper_gate=args.paper_gate,
+                    tier=getattr(args, "gate_tier", "paper"),
+                    paper_confirmation=getattr(args, "paper_confirmation", False),
+                    regime_waiver_approved=getattr(args, "regime_waiver_approved", False)):
                 passed = False
             print(f"  Intraday per-fold CPCV elapsed: {time.time()-t0:.0f}s")
         else:

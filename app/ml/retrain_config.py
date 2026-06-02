@@ -168,9 +168,14 @@ LABEL_ABS_HURDLE_5D: float = 0.0  # 0.0 = disabled (default). 0.003 = 0.3% per 5
 REGIME_SPLIT_VIX_THRESHOLD: float = 0.0
 
 # Gate thresholds matching the manual training gates (docs/ML_EXPERIMENT_LOG.md)
+# LEGACY — used ONLY when GATE_MODE="mean_sharpe" (the reproduction path). Under the
+# default GATE_MODE="significance", mean Sharpe is an economic-materiality FLOOR
+# (PAPER_GATE_MIN_MEAN_SHARPE / CAPITAL_GATE_MIN_MEAN_SHARPE), NOT the primary
+# discriminator. Do NOT delete — these reproduce the historical 0.80 behavior. See
+# the Phase-4 significance-first block below and docs/living/DECISIONS.md.
 SWING_GATE = dict(
-    min_avg_sharpe=0.80,        # avg Sharpe across all folds must exceed this
-    min_fold_sharpe=-0.30,      # no single fold may fall below this
+    min_avg_sharpe=0.80,        # LEGACY (mean_sharpe mode): avg Sharpe across all folds
+    min_fold_sharpe=-0.30,      # LEGACY (mean_sharpe mode): no single fold below this
 )
 
 # ── Intraday model ───────────────────────────────────────────────────────────
@@ -214,9 +219,10 @@ separate set of features. History of this knob:
   - 'polygon': Polygon daily cache + S3 (full history) if available.
 Set to 'yfinance'/'alpaca'/'polygon' to use a network/full-history source instead."""
 
+# LEGACY — used ONLY when GATE_MODE="mean_sharpe". See SWING_GATE note above.
 INTRADAY_GATE = dict(
-    min_avg_sharpe=1.00,        # recalibrated from 1.50 — best honest 365d result is +0.786 (v51 Run B)
-    min_fold_sharpe=-0.30,      # no single fold below this floor
+    min_avg_sharpe=1.00,        # LEGACY (mean_sharpe mode): recalibrated from 1.50 — best honest 365d result +0.786 (v51 Run B)
+    min_fold_sharpe=-0.30,      # LEGACY (mean_sharpe mode): no single fold below this floor
 )
 
 # ── Deflated Sharpe Ratio — selection bias correction ────────────────────────
@@ -346,6 +352,40 @@ correlated; treating them as n_paths independent experiments overstates
 significance by ~sqrt(n_paths/n_folds)). t > 2.0 ≈ 95% one-sided.
 Gate is off by default (require_tstat_gate=False); reported as WARNING when
 below threshold. See HIGH-3."""
+
+# ── Phase-4: significance-first two-tier promotion gate ───────────────────────
+# Replaces mean-Sharpe>=0.80 (swing) / >=1.00 (intraday) as the PRIMARY
+# discriminator with a significance-first multi-criteria gate.
+#
+# WHY: 0.80/1.00 were calibrated against now-struck IN-SAMPLE numbers (intraday
+# +5.14, QualityShort +3.25). A bare mean-Sharpe threshold cannot separate a
+# +0.22 / t=0.17 noise result from a +0.546 / t=2.26 genuine-signal result — both
+# are below 0.80 yet one is significant and one is noise. The fix is to gate on
+# statistical significance (path-Sharpe t-stat, sign-consistency, tail floor)
+# with mean Sharpe relegated to an economic-materiality floor. See
+# docs/living/DECISIONS.md and docs/living/PIPELINE_ARCHITECTURE.md §7.
+#
+# Behind a flag for reversibility + historical re-scoring:
+#   "significance" (default, owner-approved): new two-tier gate below.
+#   "mean_sharpe"  (legacy): faithful reproduction of the 0.80/1.00 mean gate
+#                  with t-stat WARN-only — a true no-op vs pre-Phase-4 main.
+GATE_MODE: str = "significance"   # "significance" (new) | "mean_sharpe" (legacy)
+
+# Two tiers:
+#   PAPER   — forward-validate, deploy to paper, NO real capital.
+#   CAPITAL — real money; PAPER conditions PLUS stricter t-stat / power floors.
+
+# PAPER (forward-validate) tier — deploy to paper, NO real capital
+PAPER_GATE_MIN_TSTAT: float = 2.0          # ~p<0.05 one-sided; == existing CPCV_MIN_TSTAT
+PAPER_GATE_MIN_PCT_POSITIVE: float = 0.75  # sign-consistency floor (existing %pos gate)
+PAPER_GATE_MIN_P5_SHARPE: float = 0.0      # tail floor — STRICTER than legacy MIN_FOLD -0.30
+PAPER_GATE_MIN_MEAN_SHARPE: float = 0.35   # economic-materiality floor (matches pre-reg insider bar)
+
+# CAPITAL tier — real money; PAPER conditions PLUS:
+CAPITAL_GATE_MIN_TSTAT: float = 2.5        # multiple-testing haircut (~10-15 strategy shots)
+CAPITAL_GATE_MIN_N_FOLDS: int = 10         # power floor (N_eff=n_folds; 8 is too few for capital)
+CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.50
+CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR documented live-paper confirmation
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.

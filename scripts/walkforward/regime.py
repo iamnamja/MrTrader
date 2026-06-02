@@ -167,6 +167,7 @@ def compute_regime_sharpes(
     te_start,
     te_end,
     regime_map: Optional[Dict[date, str]] = None,
+    obs_counts: Optional[Dict[str, int]] = None,
 ) -> Dict[str, float]:
     """Compute annualised Sharpe ratio per regime label from a daily equity curve.
 
@@ -175,7 +176,23 @@ def compute_regime_sharpes(
     are consistent across folds. If None, loads a per-test-window map (less stable).
     Returns {} on any error (network failure, insufficient data, etc.) so callers
     can safely ignore regime_sharpes when regime data is unavailable.
+
+    Phase-4 FIX-2 (event-sparsity vs data-bug disambiguation): when an `obs_counts`
+    dict is supplied, it is populated with the RAW per-regime observation count
+    (BEFORE the REGIME_MIN_OBS filter). This lets the caller distinguish the two
+    causes of an empty result:
+      - EVENT-SPARSITY (structural, "not a bug"): obs_counts is non-empty (returns
+        WERE mapped to regime labels) but every bucket fell below REGIME_MIN_OBS,
+        so all were dropped → result {} while obs_counts has entries. This is
+        PEAD's case (event-driven; flat most days → < REGIME_MIN_OBS same-regime
+        trading days per bucket).
+      - DATA-BUG (broken): obs_counts is empty — no regime map, no labelled days,
+        a degenerate curve, or an exception. Genuinely no regime data to gate on.
+    obs_counts is mutated in place (cleared first) so a single shared dict can be
+    reused across calls if desired.
     """
+    if obs_counts is not None:
+        obs_counts.clear()
     try:
         import numpy as np
         from app.ml.retrain_config import REGIME_MIN_OBS as _REGIME_MIN_OBS
@@ -203,6 +220,12 @@ def compute_regime_sharpes(
                 continue
             regime_daily_rets.setdefault(label, []).append(ret)
 
+        # FIX-2: record raw per-regime obs counts BEFORE the REGIME_MIN_OBS filter
+        # so the caller can tell "insufficient obs" (sparsity) from "no data" (bug).
+        if obs_counts is not None:
+            for label, rets in regime_daily_rets.items():
+                obs_counts[label] = len(rets)
+
         result: Dict[str, float] = {}
         for label, rets in regime_daily_rets.items():
             arr = np.array(rets)
@@ -215,4 +238,5 @@ def compute_regime_sharpes(
             result[label] = float(np.mean(arr)) / std * np.sqrt(252) if std > 0 else 0.0
         return result
     except Exception:
+        # DATA-BUG path: leave obs_counts empty (already cleared above).
         return {}
