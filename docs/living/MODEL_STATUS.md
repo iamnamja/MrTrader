@@ -36,6 +36,11 @@ A prior Opus review found the live path silently diverged from the backtest; tha
   `data/pead_tracking.db`) records signals/entered/filled/fill-rate/gross/daily+cum P&L/VIX/
   vix_block_fired and per-overlay suppression counts; weekly rollup emails realized Sharpe vs the
   +0.546 expectation via `notifier.enqueue("pead_weekly", …)`.
+- **Paper observability now FULLY wired (2026-06-02, branch `feat/pead-eod-pnl-weekly-rollup`):**
+  EOD step in `_run_eod_jobs` upserts the PEAD book's real daily P&L (gross/realized/unrealized via
+  `Trade.selector=="pead"` + Alpaca MTM), and a Friday-only rollup (guarded to skip <3 deployed
+  days) emails the weekly Sharpe-vs-0.546 — closing the prior "Sharpe: n/a forever" gap. Requires a
+  uvicorn restart to activate the new EOD code.
 - **Status:** wired + fully tested (`tests/test_pead_live_wiring.py`); **NOT activated**.
   Activation = flip `pm.swing_selector` to `"pead"` (separate deliberate step).
 

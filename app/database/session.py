@@ -45,6 +45,9 @@ def _migrate_columns() -> None:
         # (table, column, definition)
         ("trades", "alpaca_order_id", "VARCHAR(50)"),
         ("trades", "proposal_id",    "VARCHAR(36)"),
+        # Strategy-source attribution (PEAD live-vs-backtest tracking). Threaded from
+        # proposal["selector"] by the Trader; existing rows default to "" (non-PEAD).
+        ("trades", "selector",       "VARCHAR(32)"),
         # Phase R — regime context columns
         ("proposal_log", "regime_score_at_scan",   "REAL"),
         ("proposal_log", "regime_label_at_scan",   "VARCHAR(15)"),
