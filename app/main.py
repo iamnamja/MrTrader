@@ -36,7 +36,14 @@ from app.api.websocket import websocket_endpoint
 # ---------------------------------------------------------------------------
 
 class _DailyFileHandler(logging.Handler):
-    """Rotate log file at midnight, prune files older than 30 days."""
+    """Rotate log file at midnight, prune files older than 30 days.
+
+    Test isolation: when running under pytest (``PYTEST_CURRENT_TEST`` is set by
+    pytest for the duration of every test), the file prefix switches to
+    ``test_mrtrader_`` so the test suite never pollutes the live ops log
+    (``mrtrader_<date>.log``) the running server writes to. Production behavior
+    is unchanged — the env var is never set outside pytest.
+    """
 
     _KEEP_DAYS = 30
 
@@ -48,6 +55,15 @@ class _DailyFileHandler(logging.Handler):
         self._file = None
         self._open_for_today()
 
+    @staticmethod
+    def _prefix() -> str:
+        # Detect pytest so test runs write to a separate log file, never the
+        # live mrtrader_<date>.log used by the running (paper) server.
+        # PYTEST_CURRENT_TEST is set during test execution; "pytest" in sys.modules
+        # covers collection/fixture-setup before the first test starts.
+        under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+        return "test_mrtrader_" if under_pytest else "mrtrader_"
+
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d")
 
@@ -55,10 +71,11 @@ class _DailyFileHandler(logging.Handler):
         if self._file:
             self._file.close()
         self._current_date = self._today()
+        prefix = self._prefix()
         self._file = open(
-            self._log_dir / f"mrtrader_{self._current_date}.log", "a", encoding="utf-8"
+            self._log_dir / f"{prefix}{self._current_date}.log", "a", encoding="utf-8"
         )
-        files = sorted(self._log_dir.glob("mrtrader_*.log"))
+        files = sorted(self._log_dir.glob(f"{prefix}*.log"))
         for old in files[: max(0, len(files) - self._KEEP_DAYS)]:
             try:
                 old.unlink()
