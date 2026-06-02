@@ -107,6 +107,17 @@ def _migrate_columns() -> None:
                 except Exception:
                     conn.rollback()
 
+            # Widen trades.status from VARCHAR(20) → VARCHAR(32) to accommodate the
+            # reconciler's longest state, "RECONCILE_GHOST_PENDING" (24 chars).
+            try:
+                conn.execute(text(
+                    "ALTER TABLE trades ALTER COLUMN status TYPE VARCHAR(32)"
+                ))
+                conn.commit()
+                logger.info("Migration: widened trades.status to VARCHAR(32)")
+            except Exception:
+                conn.rollback()
+
 
 def get_session() -> Session:
     """Get a new database session"""
