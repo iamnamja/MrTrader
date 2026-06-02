@@ -17,8 +17,8 @@ class Trade(Base):
     exit_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=False)
     # PENDING_FILL | ACTIVE | CLOSED | REJECTED | CANCELLED
-    # RECONCILE_GHOST | RECONCILE_SUPERSEDED | FORCE_CLOSED_NO_POSITION
-    status = Column(String(30), default="PENDING")
+    # RECONCILE_GHOST | RECONCILE_GHOST_PENDING | RECONCILE_SUPERSEDED | FORCE_CLOSED_NO_POSITION
+    status = Column(String(32), default="PENDING")
     status_reason = Column(String(255), nullable=True)   # human-readable note on current status
     pnl = Column(Float, nullable=True)
     signal_type = Column(String(20), nullable=True)   # EMA_CROSSOVER | RSI_DIP | ML_RANK | RECONCILED
