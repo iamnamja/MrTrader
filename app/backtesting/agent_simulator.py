@@ -651,24 +651,69 @@ class AgentSimulator:
         # Fold dataframes typically carry the full history (training + test + lookahead),
         # so iloc[-1] could be weeks past the fold's test window. We now restrict to the
         # last close on-or-before end_date.
+        # Tolerance (in fold trading days) for declaring a held name "data-ended
+        # while held" (delisted/halted mid-fold) vs. a normal end-of-fold MTM close.
+        # If the name had >= this many of the fold's trading days AFTER its last bar
+        # on which it produced no bar, it did not trade to the fold boundary and the
+        # full last close would under-penalize the delisting.
+        _DELIST_GAP_TRADING_DAYS = 3
         _force_close_no_bar_count = 0
         for sym, pos in list(portfolio.positions.items()):
             df = symbols_data.get(sym)
             exit_price = None
+            _last_bar_date = None
             if df is not None and len(df) > 0:
                 _prior = self._bars_up_to(df, end_date, exclude_today=False)
                 if _prior is not None and len(_prior) > 0 and "close" in _prior.columns:
                     exit_price = float(_prior["close"].iloc[-1])
+                    _idx = pd.DatetimeIndex(_prior.index)
+                    _last_bar_date = _idx.normalize().date[-1]
+
+            # C-? fix: a held name whose data ENDED mid-fold (last bar materially
+            # before end_date) survived to force-close only because no bars existed
+            # to trigger an exit — not because it traded to the fold boundary. The
+            # full last close under-penalizes a delisting/halt. When a non-zero
+            # delisted_haircut is configured, book the haircut against that last
+            # close. (Default haircut=0.0 → strict no-op: R1K/swing/intraday paths
+            # keep the full last-close behavior.)
+            if (
+                exit_price is not None
+                and _last_bar_date is not None
+                and self.delisted_haircut > 0.0
+                and _last_bar_date < end_date
+            ):
+                # Count the fold's trading days strictly after the name's last bar
+                # and on-or-before end_date. >= tolerance ⇒ it stopped trading while
+                # the market was open ⇒ treat as delisted-while-held.
+                _missing_td = sum(
+                    1 for _d in trading_days if _last_bar_date < _d <= end_date
+                )
+                if _missing_td >= _DELIST_GAP_TRADING_DAYS:
+                    _last_close = exit_price
+                    if getattr(pos, "direction", "long") == "short":
+                        # short covers higher (loss) when the name gaps to ~0
+                        exit_price = _last_close * (1.0 + self.delisted_haircut)
+                    else:
+                        exit_price = _last_close * (1.0 - self.delisted_haircut)
+                    logger.warning(
+                        "FORCE_CLOSE: %s data-ended %s while held to %s (%d fold trading "
+                        "days w/o bar); applying delisted_haircut=%.2f (exit=%.4f vs "
+                        "last_close=%.4f)",
+                        sym, _last_bar_date, end_date, _missing_td,
+                        self.delisted_haircut, exit_price, _last_close,
+                    )
+
             if exit_price is None:
-                # Symbol has no data at fold end (delisted/halt/gap).
+                # Symbol has NO bar on-or-before end_date at all (delisted/halt/gap
+                # with no usable last close). Last-resort fallback.
                 # R5b: by default we exit at entry_price (P&L=0) to record the trade
                 # rather than silently discarding it. If delisted_haircut > 0, model
                 # this as a likely delisting loss: longs lose `haircut` of entry,
-                # shorts gain `haircut` (cover at lower price).
+                # shorts gain `haircut` (cover at higher price).
                 _force_close_no_bar_count += 1
                 if self.delisted_haircut > 0.0:
                     if getattr(pos, "direction", "long") == "short":
-                        exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
+                        exit_price = pos.entry_price * (1.0 + self.delisted_haircut)
                     else:
                         exit_price = pos.entry_price * (1.0 - self.delisted_haircut)
                     logger.warning(

@@ -163,16 +163,19 @@ class SmallMidPEADStrategy:
         from scripts.walkforward.gates import (
             FoldResult, compute_profit_factor, compute_calmar, compute_k_ratio, fold_years,
         )
-        from scripts.build_smallmid_universe import symbols_eligible_in_window
+        from scripts.build_smallmid_universe import symbols_eligible_as_of
 
         _te_start = te_start.date() if hasattr(te_start, "date") else te_start
-        _te_end = te_end.date() if hasattr(te_end, "date") else te_end
 
         # PIT small/mid-cap universe: a name is in the fold universe if it was
-        # ADV-band eligible on any day in the TEST window. Replaces the hardcoded
-        # pit_union("russell1000"). Survivorship-safe (eligibility includes
-        # delisted names up to delisting) and PIT (trailing-20d ADV).
-        pit_members = symbols_eligible_in_window(self.eligibility, _te_start, _te_end)
+        # ADV-band eligible AS-OF te_start (the day the fold opens). Replaces the
+        # hardcoded pit_union("russell1000"). Survivorship-safe (eligibility
+        # includes delisted names up to delisting) and PIT (trailing-20d ADV).
+        # Uses an as-of-te_start snapshot — NOT the union over [te_start, te_end] —
+        # to avoid admitting names that only become liquid later in the fold
+        # (universe-membership look-ahead). Matches the large-cap run_pead_cpcv.py
+        # convention (eligibility as-of te_start only).
+        pit_members = symbols_eligible_as_of(self.eligibility, _te_start)
         _synthetic = {"^VIX", "VIX", "SPY"}
 
         # Per-fold min-history guard (M-1): require >= MIN_HISTORY_BARS bars strictly

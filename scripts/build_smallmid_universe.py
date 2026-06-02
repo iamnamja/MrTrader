@@ -162,6 +162,24 @@ def symbols_eligible_in_window(elig: pd.DataFrame, start: date, end: date) -> Se
     return set(elig.loc[mask, "symbol"].tolist())
 
 
+def symbols_eligible_as_of(elig: pd.DataFrame, as_of: date) -> Set[str]:
+    """
+    Names band-eligible on the latest eligibility day on-or-before `as_of`.
+
+    PIT universe snapshot: fold-membership depends ONLY on data <= `as_of`
+    (the fold open / te_start). Unlike `symbols_eligible_in_window`, this does
+    NOT admit names that only became liquid LATER in the test window — that
+    union-over-window form is universe-membership look-ahead. Matches the
+    original large-cap convention (eligibility as-of te_start only).
+    """
+    d = pd.to_datetime(elig["date"])
+    on_or_before = d <= pd.Timestamp(as_of)
+    if not on_or_before.any():
+        return set()
+    snapshot_day = d[on_or_before].max()
+    return set(elig.loc[d == snapshot_day, "symbol"].tolist())
+
+
 # ── Grouped-daily ingestion (survivorship-safe candidate source) ────────────────
 
 def _business_days(start: date, end: date) -> List[date]:
