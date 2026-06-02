@@ -7816,3 +7816,48 @@ First Alpha v2 de-risk experiment. Question: how much of PEAD's +0.546 survives 
 - **What this does NOT prove:** crisis-block robustness (§1.2 — the 2020-05 start largely excludes COVID; the VIX>30 block's real contribution untested), event-clustered significance (§1.3 — N_eff=8 is almost certainly optimistic for an event strategy; earnings cluster in ~4 quarterly windows, so the table's t-stats are upper bounds), and live fill/adverse-selection quality.
 
 **Decision:** Keep PEAD live in paper. **Adopt working assumption: 15 bps one-way → expected live Sharpe ≈ 0.45** (conservative: between 10/20 bps rungs, haircut for event-day adverse selection + optimistic N_eff). Sequencing unchanged but priority sharpens: **§1.2 leave-one-crisis-out next** (the real go/no-go), then **§1.3 event-clustered significance** with a properly deflated N_eff. Do NOT increase PEAD size beyond paper until §1.2 + §1.3 clear. PEAD is now an additive live diversifier, not a single point of failure — which *lowers* the stakes on (but does not deprioritize) the dollar-neutral ranker.
+
+---
+
+## Alpha v2 Phase-1 §1.2 — PEAD crisis-block robustness: GO (pause trigger NOT fired) — 2026-06-02
+
+The plan's pre-committed PAUSE TRIGGER for live PEAD: "survives a generic regime control AND leave-one-crisis-out → keep live; if it ONLY survives at VIX>30-exactly OR is carried by a single episode → PAUSE." Tool: `scripts/pead_crisis_robustness.py` (load-once, re-simulate; three sub-analyses). Opus deep-dive **caught a CRITICAL bug** — the LOCO sub-analysis reimplemented `run_cpcv`'s path grouping and omitted the BUG-23 overlap guard (27 vs real 21 paths → corrupt LOCO). **Root-cause fix:** `run_cpcv` now exposes the real `path_fold_members`; LOCO consumes it (reconstruction deleted, can't diverge again). Self-validated: LOCO no-removal baseline 0.5484 == run_cpcv's own 0.548286 (tol 1e-3).
+
+### A. Threshold sweep (vary vix_block_all) — VIX=30 is an overfit *scalar*
+| block | mean SR | t-stat | %pos | P5 |
+|---|---|---|---|---|
+| VIX>25 | 0.319 | 1.01 | 67% | -0.782 |
+| VIX>28 | 0.535 | 2.09 | 71% | -0.145 |
+| **VIX>30 (baseline)** | **0.548** | **2.26** | **95%** | **+0.009** |
+| VIX>33 | 0.399 | 1.29 | 71% | -0.716 |
+| VIX>35 | 0.399 | 1.29 | 71% | -0.716 |
+| ∞ (no block) | 0.406 | 1.31 | 71% | -0.716 |
+
+Edge peaks EXACTLY at 30, degrades both sides; %pos 71%→95% and P5 flips positive ONLY at 30. In isolation this is an overfit knob.
+
+### B. Leave-one-crisis-out — no single episode carries the edge
+| removed | mean SR | t-stat | %pos |
+|---|---|---|---|
+| (none) baseline | 0.548 | 2.26 | 95% |
+| covid_tail_2020 (out-of-window) | 0.548 | 2.26 | (no effect) |
+| **bear_2022 (dominant)** | **1.175** | **4.65** | 95% |
+| yen_carry_aug2024 | 0.563 | 2.29 | 95% |
+| tariff_apr2025 | 0.543 | 2.24 | 95% |
+
+Removing any single episode does NOT collapse the edge; removing the 2022 bear *improves* it to 1.175 → **2022 was a net DRAG, not the carrier.** (The broad 2022 window also strips PEAD's NON-spike bear-market trading P&L, which bled — see §4.)
+
+### C. Generic regime control (replace VIX>30 with a regime-GENERAL control)
+| control | mean SR | t-stat | %pos | P5 |
+|---|---|---|---|---|
+| VIX>30 block (baseline) | 0.548 | 2.26 | 95% | +0.009 |
+| vol_target(0.16) | 0.368 | 1.18 | 67% | -0.716 |
+| **trend (SPY<200d)** | **0.661** | **2.93** | 95% | +0.049 |
+
+A GENERIC, untuned SPY<200d trend filter **reproduces and EXCEEDS** the hand-tuned VIX>30 block. The vol-target control underperforms.
+
+**Opus 4.8 verdict — GO (pause trigger NOT fired):**
+- **The number 30 is overfit; the edge and the principle are not.** If the edge only existed because of a tuned VIX cutoff, no generic untuned control could recover it — yet SPY<200d does, *better* (0.661 vs 0.548). Real underlying effect ("de-risk PEAD in downtrends/stress") whose best parameterization happens to be VIX≈30 in-sample.
+- **Both pause-trigger clauses FALSE:** edge does NOT only survive at 30-exactly (generic trend survives/improves); NOT carried by a single episode (the dominant one is a drag). → GO.
+- **PEAD's left tail is DIRECTIONAL, not volatility-level.** vol_target fails (high vol is symmetric — occurs at great recovery bottoms too); trend/direction is the protective axis. The VIX>30 spike-block catches discrete panics but MISSES the bear *grind* (2022, VIX mostly 25-32, was largely unblocked → PEAD bled into the declining tape). A trend filter de-risks the whole downtrend, not just spikes.
+
+**RECOMMENDATION:** Keep PEAD live in paper (GO). **Intent: replace VIX>30 with the SPY<200d trend filter** (more robust, higher Sharpe, addresses the bear-grind exposure) — but GATE the swap behind validation so we don't swap one overfit knob for another: (1) MA-length sensitivity sweep {100..250d} must show a PLATEAU not a spike at 200; (2) the trend-gated edge's own leave-one-crisis-out; (3) ≥1 alt trend-rule form (50/200 cross, 12-1 momentum sign); (4) paper shadow-run vs the VIX>30 incumbent. **Keep VIX>30 live as the validated incumbent until (1)-(4) pass.** **§1.3 addition:** event-clustered significance should additionally stratify on trend regime (SPY above/below 200d) — confirm the t=2.26 isn't driven by a few correlated up-trend clusters and that the edge is significant within the down-trend regime where protection matters.

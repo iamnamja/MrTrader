@@ -81,6 +81,32 @@ class PEADScorer:
         vix_adaptive: float = 20.0,       # VIX level above which to use long_threshold_hv
         require_positive_revision: bool = False,  # earnings-quality gate (default OFF)
         min_analyst_momentum: float = 0.0,        # net up-down threshold (strictly >)
+        # ── Alpha v2 §1.2 — regime-GENERAL risk control (default OFF) ─────────────
+        # When set, REPLACES the hand-tuned VIX>30 block with a regime-general
+        # de-risking control that is NOT fit to specific crisis dates. The harness
+        # turns the discrete VIX block off (vix_block_all=inf) and lets this govern.
+        #   regime_control="vol_target": exposure scalar = min(1, target_vol /
+        #       realized_market_vol), computed PIT from SPY closes <= day.
+        #   regime_control="trend": exposure scalar = 0.0 when SPY < its 200d SMA
+        #       (PIT, closes <= day) else 1.0.
+        # NOTE — what the scalar actually does (NOT continuous gross vol-targeting):
+        # the committed PEAD book is EQUAL-WEIGHT (no pead_conviction_size), so the
+        # scalar acts as
+        #   (a) a vol/trend-gated ENTRY BLOCK: scalar < regime_control_floor (default
+        #       0.50) -> block ALL new entries that day (the generic analogue of the
+        #       discrete VIX>30 block); and
+        #   (b) a coarse conviction-size tilt: the scalar multiplies signal
+        #       confidence, which only feeds conviction sizing. In the equal-weight
+        #       book the per-day gross is fixed and the conviction band is
+        #       narrow/saturating (~[0.75-1.25x]), so above the floor the scalar
+        #       barely moves realized gross — it does NOT smoothly scale total
+        #       exposure down with rising vol.
+        # Default None → committed +0.546 config is byte-identical.
+        regime_control: str = None,
+        regime_control_target_vol: float = 0.16,   # annualized portfolio/market vol target (vol_target)
+        regime_control_vol_lookback: int = 20,     # trading-day lookback for realized vol
+        regime_control_trend_ma: int = 200,        # SPY SMA window (trend)
+        regime_control_floor: float = 0.50,        # scalar below this -> block new entries
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
@@ -92,6 +118,11 @@ class PEADScorer:
         self.max_announce_day_move = max_announce_day_move
         self.long_threshold_hv = long_threshold_hv
         self.vix_adaptive = vix_adaptive
+        self.regime_control = regime_control
+        self.regime_control_target_vol = regime_control_target_vol
+        self.regime_control_vol_lookback = regime_control_vol_lookback
+        self.regime_control_trend_ma = regime_control_trend_ma
+        self.regime_control_floor = regime_control_floor
         # Earnings-quality split: when ON, a long signal requires not just an EPS
         # beat but also POSITIVE analyst-revision momentum as-of the scoring day
         # (beat + analysts revising up = higher-conviction drift). PIT-safe: the
@@ -114,6 +145,54 @@ class PEADScorer:
                     pass
         return None
 
+    def _spy_closes(self, symbols_data: dict):
+        """Return the SPY close Series from symbols_data, or None."""
+        for key in ("SPY", "spy"):
+            df = symbols_data.get(key)
+            if df is not None and not df.empty and "close" in df.columns:
+                return df["close"]
+        return None
+
+    def _regime_exposure_scalar(self, day, symbols_data: dict):
+        """PIT exposure scalar in [0, 1] for the regime-general control (§1.2 c).
+
+        Uses ONLY market data with timestamp <= `day` (no look-ahead). Returns 1.0
+        when regime_control is off or inputs are unavailable (fail-open to the
+        committed behaviour). A future vol spike CANNOT change today's scalar — the
+        SPY series is sliced with .loc[:_ts] before any computation.
+        """
+        if not self.regime_control:
+            return 1.0
+        import pandas as pd
+        import numpy as np
+        _ts = pd.Timestamp(day) if not isinstance(day, pd.Timestamp) else day
+        spy = self._spy_closes(symbols_data)
+        if spy is None:
+            return 1.0
+        try:
+            hist = spy.loc[:_ts]  # PIT: closes up to and including `day`
+        except Exception:
+            return 1.0
+        if self.regime_control == "vol_target":
+            lb = max(int(self.regime_control_vol_lookback), 2)
+            if len(hist) < lb + 1:
+                return 1.0
+            rets = hist.pct_change().dropna().to_numpy(dtype=float)[-lb:]
+            if len(rets) < 2:
+                return 1.0
+            realized = float(np.std(rets, ddof=1)) * (252.0 ** 0.5)
+            if realized <= 1e-9:
+                return 1.0
+            return float(min(1.0, self.regime_control_target_vol / realized))
+        if self.regime_control == "trend":
+            ma = max(int(self.regime_control_trend_ma), 2)
+            if len(hist) < ma:
+                return 1.0
+            sma = float(hist.iloc[-ma:].mean())
+            last = float(hist.iloc[-1])
+            return 0.0 if last < sma else 1.0
+        return 1.0
+
     def __call__(
         self,
         day,
@@ -135,6 +214,20 @@ class PEADScorer:
             logger.debug("PEAD: VIX=%.1f > %.0f — blocking all entries (crisis)", vix, self.vix_block_all)
             return []
 
+        # §1.2 (c): regime-GENERAL control (opt-in; default OFF -> scalar 1.0).
+        # Intended as a REPLACEMENT for the discrete VIX block: the harness sets
+        # vix_block_all=inf so the block above never fires and this generic, non-
+        # crisis-fit control governs de-risking instead. Below the floor -> block
+        # all new entries (a vol/trend-gated entry block); above the floor the scalar
+        # only damps signal confidence (which feeds conviction sizing). In the
+        # equal-weight book this confidence damping is a coarse, saturating tilt — it
+        # does NOT continuously vol-target gross.
+        regime_scalar = self._regime_exposure_scalar(day, symbols_data)
+        if self.regime_control and regime_scalar < self.regime_control_floor:
+            logger.debug("PEAD: regime_control=%s scalar=%.2f < floor %.2f — blocking entries",
+                         self.regime_control, regime_scalar, self.regime_control_floor)
+            return []
+
         short_enabled = self.long_short and (vix is None or vix <= self.vix_block_short)
 
         # Adaptive threshold: use higher threshold in high-vol regimes.
@@ -148,6 +241,10 @@ class PEADScorer:
         vix_mult = 1.0
         if vix is not None and vix > self.vix_conf_ref:
             vix_mult = max(0.3, self.vix_conf_ref / vix)
+        # §1.2 (c): fold the regime-general exposure scalar into the confidence
+        # damping (flows to conviction sizing). At scalar=1.0 (control off or calm
+        # regime) this is a no-op, preserving the committed behaviour.
+        vix_mult *= regime_scalar
 
         results = []
 

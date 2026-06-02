@@ -148,8 +148,9 @@ All Phase-1 items operate on the **existing** PEAD CPCV harness (`run_pead_cpcv.
 | Phase | Workstream | Effort | Depends on | Acceptance gate | Blocking decision |
 |---|---|---|---|---|---|
 | P1 | 1.1 Cost-sensitivity sweep | S | — | net SR ≥0.40 @20bps | ✅ **DONE 2026-06-02 — PASS (+0.402@20bps; anchor +0.548≈+0.546; cost-robust but t<2.0/%pos 57% by 20bps). Working assumption 15bps→SR≈0.45. See ML_EXPERIMENT_LOG.** |
-| P1 | 1.2 Crisis-block robustness | M | — | survives leave-one-crisis-out + generic regime control | Q4 (pause-if-fail) |
-| P1 | 1.3 Event-clustered bootstrap + NW | M–L | — | block-boot p<0.05 & NW t≥2.0 | — |
+| P1 | 1.2 Crisis-block robustness | M | — | survives leave-one-crisis-out + generic regime control | ✅ **DONE 2026-06-02 — GO (pause trigger NOT fired). Survives LOCO (2022 is a drag, removal→1.17) + a generic SPY<200d trend control (0.661 > 0.548 baseline). VIX=30 is an overfit scalar but the edge/principle are robust. PEAD's tail is DIRECTIONAL not vol-level. See ML_EXPERIMENT_LOG.** |
+| P1b | 1.2b Trend-filter swap (replace VIX>30 with SPY<200d) — GATED | M | 1.2 | MA-sensitivity plateau + trend-LOCO + alt-rule + paper shadow-run | 🔲 follow-up: SPY<200d beat the VIX block (0.661 vs 0.548) & addresses the bear-grind; swap ONLY after the 4 validation gates, keep VIX>30 incumbent until then |
+| P1 | 1.3 Event-clustered bootstrap + NW | M–L | — | block-boot p<0.05 & NW t≥2.0 | NEXT. **§1.2 addition:** also stratify on trend regime (SPY ≷ 200d) — confirm t=2.26 isn't driven by a few correlated up-trend clusters + that the edge is significant within the down-trend regime |
 | P1 | 1.4 SUE conversion | M | — | SUE-PEAD ≥ current, cleaner tails | — |
 | P1 | 1.5 Swing purge + holdout policy | M | Q2 | purge ≤30d, no synthetic leak; policy asserted | Q2 |
 | P1 | 1.6 Overlay ablation → RM safety net | M | — | each overlay earns its place; live==backtest | — |

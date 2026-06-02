@@ -188,6 +188,10 @@ class PEADStrategy:
         trades_list = getattr(result, "trades", None) or []
         trade_returns = [t.pnl_pct for t in trades_list if hasattr(t, "pnl_pct")]
         equity_curve = getattr(result, "equity_curve", [])
+        # §1.2 LOCO side-channel: stash this fold's per-day equity curve so the
+        # crisis-robustness harness can recompute masked path Sharpes WITHOUT
+        # re-simulating. Harmless to the default CPCV run (just an extra attribute).
+        self._last_equity_curve = equity_curve
         # n_obs = trading-day return observations for DSR. equity_curve is one
         # (date, equity) point per trading day; diffs give daily returns → len-1.
         # Mirrors swing.py:320-323. Without this DSR falls back to ~path-count.
