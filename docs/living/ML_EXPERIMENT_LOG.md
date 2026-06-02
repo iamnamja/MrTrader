@@ -7789,3 +7789,30 @@ Ran the survivorship-safe small/mid-cap PEAD CPCV (harness PRs #361/#362/#363, O
 - **worst_regime_sharpe / low_deployment_warning "fails"** are non-informative plumbing artifacts present in BOTH runs — carry no small-vs-large signal.
 
 **Conclusion:** The only differentiating signals — mean Sharpe and t-stat — are computed correctly and are genuinely weaker for small/mid (+0.361, t=0.95 ≈ statistically zero, vs +0.546, t=2.26; below the pre-registered ≥+0.70 bar to prefer small/mid). Part of the gap is deliberately harsher realism (20bps vs 5bps cost + haircut mechanism), but even crediting that, t=0.95 is a coin flip — not a near-miss worth a re-run. **Reject small/mid-cap PEAD. R1K large-cap PEAD (+0.546) remains the sole validated edge.** The "event edges are stronger in smaller names" literature hypothesis did NOT hold here once survivorship bias and realistic costs were honestly modeled — which is itself a meaningful (negative) result: the apparent small-cap event premium in the literature may partly be survivorship/illiquidity that our honest harness correctly strips out.
+
+---
+
+## Alpha v2 Phase-1 §1.1 — PEAD cost-sensitivity sweep: COST-ROBUST but statistically fragile — 2026-06-02
+
+First Alpha v2 de-risk experiment. Question: how much of PEAD's +0.546 survives realistic earnings-window transaction costs? Tool: `scripts/pead_cost_sensitivity.py` — loads PEAD data ONCE, re-runs the C(8,2) CPCV at pure one-way cost levels (slippage folded out; cost charged on entry + every exit, round-trip ≈ 2×), plus a self-validating ANCHOR row (the exact committed +0.546 config: 5bps fee + 3bps entry-slip + 5bps stop-slip). Opus deep-dive review verdict CLEAN (byte-identical at default, honest per-side cost both legs, deterministic — ladder run twice byte-identical).
+
+**🎯 ANCHOR self-validation: mean Sharpe +0.548 reproduces the on-record validated +0.546 (tol ±0.05) → the sweep harness faithfully matches the validated run; the ladder is trustworthy.**
+
+| one-way cost (bps) | mean Sharpe | t-stat (N_eff=8) | %pos | P5 | P95 | avg net ret/fold |
+|---|---|---|---|---|---|---|
+| 2 | +0.662 | +2.87 | 95% | +0.055 | +2.284 | +1.66% |
+| 5 | +0.612 | +2.60 | 81% | -0.078 | +2.251 | +1.52% |
+| 10 | +0.536 | +2.22 | 81% | -0.011 | +2.207 | +1.27% |
+| **20** | **+0.402** | +1.88 | 57% | -0.094 | +1.839 | +0.89% |
+| 35 | +0.406 | +1.70 | 57% | -0.080 | +2.075 | +0.91% |
+| 50 | +0.252 | +1.32 | 57% | -0.115 | +1.633 | +0.44% |
+
+**Acceptance (≥0.40 at 20 bps): PASS (+0.402, marginal).** Break-even (mean crosses 0) NOT reached even at 50 bps — costs erode but never invert the edge. (35bps > 20bps is a known deterministic cost→equity→sizing-feedback artifact, not a bug.)
+
+**Opus 4.8 analysis — verdict: cost-robust but statistically fragile.**
+- **Survives realistic costs.** Honest live cost ~10–20 bps one-way → expected live Sharpe **~0.40–0.55, working estimate ~0.50**. The plan's kill-condition ("breaks at ~10 bps → pivot entirely to the ranker") did NOT trigger (+0.536 at 10 bps).
+- **Significance/consistency degrade while mean holds** because the return distribution is right-skewed — losing paths lose a little (P5 −0.08 to −0.12), winning paths win a lot (P95 +1.6 to +2.3). Cost shifts the whole distribution down ~uniformly: the mean (which lives in the tail) barely moves, but the near-zero median flips ~40% of paths negative → %pos 95%→57% and t<2.0 by 20 bps. This is the *characteristic* shape of a true PEAD edge (lumpy, event-clustered, tail-carried) — fragility is characteristic, not disqualifying, but it makes **statistical significance, not cost, the binding constraint** now.
+- **Live paper justified.** Marketable-order fills (cross the spread) imply ~8–15 bps effective one-way → the 10-bps row (+0.536), consistent with the anchor. Keeping PEAD live in paper is justified; the pre-committed pause trigger is §1.2 leave-one-crisis-out, not this cost test (not triggered).
+- **What this does NOT prove:** crisis-block robustness (§1.2 — the 2020-05 start largely excludes COVID; the VIX>30 block's real contribution untested), event-clustered significance (§1.3 — N_eff=8 is almost certainly optimistic for an event strategy; earnings cluster in ~4 quarterly windows, so the table's t-stats are upper bounds), and live fill/adverse-selection quality.
+
+**Decision:** Keep PEAD live in paper. **Adopt working assumption: 15 bps one-way → expected live Sharpe ≈ 0.45** (conservative: between 10/20 bps rungs, haircut for event-day adverse selection + optimistic N_eff). Sequencing unchanged but priority sharpens: **§1.2 leave-one-crisis-out next** (the real go/no-go), then **§1.3 event-clustered significance** with a properly deflated N_eff. Do NOT increase PEAD size beyond paper until §1.2 + §1.3 clear. PEAD is now an additive live diversifier, not a single point of failure — which *lowers* the stakes on (but does not deprioritize) the dollar-neutral ranker.
