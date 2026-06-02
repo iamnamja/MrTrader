@@ -7665,3 +7665,21 @@ Hunted for a second independent edge to diversify beyond PEAD. Results:
 1. **Small/mid-cap PEAD expansion** (P~0.45, the strongest-EV remaining): PEAD works in R1K; the literature + insider result say event edges are strongest in smaller names. Needs yfinance universe extension (S&P 600 / Russell 2000) + a liquidity/cost filter (ADV>$2M, 15-25bps). The one experiment most likely to push PEAD above its R1K ceiling.
 2. **Recalibrate the promotion gate** (the 0.80 mean-Sharpe is a frozen-WF relic; t-stat ≥2.0 + the 3-tier ladder is defensible) and **paper-trade PEAD long-only** (clears the proposed paper bar cleanly).
 3. **Paid-data bets** (need spend): buyback press-releases (FMP upgrade), options-PEAD (IV-crush, highest ceiling).
+
+---
+
+## Pre-small/mid-cap bug-check (Opus 4.8 deep-dive) — 2026-06-01
+
+Before extending PEAD to small/mid-caps, audited the full PEAD/event CPCV harness + data layer. **Harness CPCV/gate math is SOUND (no regressions)** — DSR n_obs, regime aggregation, PF, train-selection look-ahead, fold-skip, sacred-holdout reproducibility all verified correct. The +0.546 R1K number stands.
+
+**BUT blocking data-layer issues for small/mid-cap (would produce a falsely-optimistic number):**
+
+| # | Severity | Issue | Fix needed |
+|---|---|---|---|
+| C-1 | CRITICAL | **Survivorship**: yfinance silently drops delisted tickers; the `≥210 bars` filter excludes them; no small/mid-cap membership parquet; `pit_union("russell1000")` is HARDCODED (run_pead_cpcv.py:132) so small-caps get filtered out entirely | survivorship-safe price source + PIT small/mid-cap universe + parametrize index |
+| C-2 | CRITICAL | **Delisting P&L = 0** by default (`delisted_haircut=0.0`) — blowups booked as break-even | pass delisted_haircut (0.5-1.0); fix short-side sign |
+| H-1 | HIGH | **No ADV/liquidity filter** on the factor_scorer (PEAD) path — assumes infinite liquidity | add PIT min-ADV pre-filter |
+| H-2 | HIGH | **Cost too optimistic** (5bps); `ENTRY/STOP_SLIPPAGE` hardcoded — small-cap spreads are 20-100bps | bump transaction_cost to 15-25bps; parametrize slippage |
+| M-1/2/3 | MED | per-fold short-history (IPO mid-window), fold-skip shift, thin-curve regime=None | per-fold min-history guard; verify ALLOW_NO_REGIME_GATE=False |
+
+**Key reality:** a trustworthy small/mid-cap PEAD number requires (1) survivorship-safe price data incl. delisted names, and (2) a PIT small/mid-cap universe. yfinance is survivorship-biased for small-caps. Verifying whether Polygon S3 flat-files (which include delisted tickers) can serve this is the feasibility gate. Building on yfinance small-cap data would reproduce exactly the inflation this whole effort eliminated.
