@@ -96,6 +96,16 @@ unrealized + cumulative P&L, VIX level, `vix_block_fired`, and per-overlay suppr
 path). A startup migration in `session.py::_migrate_columns` adds the column; pre-existing rows
 default to `""` (non-PEAD). `_compute_pead_eod_stats` filters on `Trade.selector == "pead"`.
 
+**`signal_type` vs `selector` (do not confuse):** `Trade.signal_type` records the *signal
+mechanism* that `generate_signal()` classified — `EMA_CROSSOVER | RSI_DIP | ML_RANK | NONE`. PEAD,
+factor-portfolio, and other ML-driven entries have no EMA/RSI crossover, so `generate_signal`
+returns `NONE` and the Trader records `signal_type="ML_RANK"`. This is correct and intentional: the
+`[ML_RANK]` tag means "ML-ranked signal", **not** "swing-ML selector". Strategy-source attribution
+(PEAD live-vs-backtest, etc.) lives **only** in the dedicated `Trade.selector` column — `signal_type`
+is deliberately *not* overloaded with the selector because `app/analytics/signal_attribution.py`
+buckets closed trades by `signal_type` and depends on the EMA/RSI/ML_RANK taxonomy. So a PEAD
+proposal legitimately carries `selector="pead"` + `signal_type="ML_RANK"` simultaneously.
+
 **Weekly rollup (Friday EOD):** at the END of `_run_eod_jobs`, Friday-only (ET weekday == 4) and
 AFTER the EOD daily-row update above, the PM calls `pead_tracker.weekly_rollup()`. Running it inside
 the same coroutine, after the day's final row is written, gives **guaranteed ordering** (no
@@ -352,3 +362,19 @@ All tunable parameters live in the DB `agent_config` table. Key entries:
 | `risk.max_portfolio_beta` | 1.30 | Portfolio beta cap vs SPY |
 | `risk.max_spread_pct` | 0.0015 | Max bid-ask spread pre-trade |
 | `risk.max_adtv_pct` | 0.01 | Max size vs 20-day avg volume |
+
+---
+
+## Logging & Ops
+
+The running server writes to `logs/mrtrader_<date>.log` via `_DailyFileHandler`
+(`app/main.py`), installed by `_configure_logging()` in the FastAPI lifespan.
+
+**Test-log isolation (2026-06-02):** the pytest suite invokes the lifespan (via
+`TestClient(app)`) and instantiates agents directly, which previously wrote
+hundreds of fake "Orchestrator started" banners and test-only errors into the
+**live** `mrtrader_<date>.log`. `_DailyFileHandler` now detects pytest
+(`PYTEST_CURRENT_TEST` in env, or `pytest` in `sys.modules`) and switches the
+file prefix to `test_mrtrader_<date>.log`. Production behavior is unchanged — the
+env var is never set outside pytest, and the live server keeps writing
+`mrtrader_<date>.log`. Covered by `tests/test_log_isolation.py`.

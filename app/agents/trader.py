@@ -968,6 +968,15 @@ class Trader(BaseAgent):
         is_short = proposal.get("direction") == "SELL_SHORT"
 
         proposal_uuid = proposal.get("proposal_uuid")
+        # signal_type describes the SIGNAL MECHANISM that generate_signal() classified
+        # (EMA_CROSSOVER | RSI_DIP | ML_RANK | NONE), NOT the PM selector. PEAD/factor/etc.
+        # entries are ML-driven with no EMA/RSI crossover, so generate_signal returns
+        # NONE → we record "ML_RANK". This is correct and intentional: the [ML_RANK] tag
+        # means "ML-ranked signal", not "swing-ML-selector". Strategy-source attribution
+        # (PEAD live-vs-backtest, etc.) lives in the dedicated Trade.selector column
+        # (set below from proposal["selector"]) and is what _compute_pead_eod_stats and
+        # the PEAD tracker filter on. Do NOT overload signal_type with the selector — the
+        # signal_attribution buckets and the EMA/RSI/ML_RANK taxonomy depend on it.
         signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
 
         # ── Write PENDING_FILL before touching Alpaca ─────────────────────────
