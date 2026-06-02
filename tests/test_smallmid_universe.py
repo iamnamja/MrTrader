@@ -178,29 +178,169 @@ def test_min_history_guard_skips_short_names():
 
 # ── Test 4: delisted_haircut applied on the PEAD/sim force-close path ────────────
 
-def test_delisted_haircut_books_loss_not_zero():
-    """
-    A long position held through a name's data-end books the haircut loss, not 0.
+def _ohlcv(index, close, volume=1_000_000.0):
+    return pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": volume},
+        index=index,
+    )
 
-    Drives a real AgentSimulator force-close: a position whose symbol has NO bar
-    on-or-before end_date is exited at entry_price*(1-haircut) when
-    delisted_haircut > 0 (vs entry_price → P&L=0 when 0.0).
+
+def _build_held_then_dataended_fold(last_bar_offset_td, n_fold_days=20):
     """
+    Build symbols_data + (te_start, te_end) for a fold where a single factor-scored
+    LONG name enters on te_start, then its data ENDS `last_bar_offset_td` trading
+    days into the fold (the rest of the fold has no bar for it), while SPY's
+    calendar runs the full fold. Returns (symbols_data, te_start, te_end, last_close).
+
+    last_bar_offset_td: index into the fold's business-day calendar where the
+    target's last bar sits (0 = te_start). The gap-to-end is therefore
+    (n_fold_days-1 - last_bar_offset_td) trading days.
+    """
+    warm_start = date(2023, 1, 2)
+    # Warm-up so per-name feature/sizing math has history; te_start after warm-up.
+    warm_idx = pd.bdate_range(warm_start, periods=60)
+    te_start = (warm_idx[-1] + pd.tseries.offsets.BDay(1)).date()
+    fold_idx = pd.bdate_range(te_start, periods=n_fold_days)
+    te_end = fold_idx[-1].date()
+
+    full_idx = warm_idx.append(fold_idx)
+    last_close = 50.0  # flat price so no stop/target/max-hold exit fires early
+
+    # SPY runs the entire span (anchors the trading calendar).
+    spy = _ohlcv(full_idx, close=400.0)
+    # Target name: warm-up + fold bars only up to last_bar_offset_td, then data ends.
+    target_idx = warm_idx.append(fold_idx[: last_bar_offset_td + 1])
+    target = _ohlcv(target_idx, close=last_close)
+
+    symbols_data = {"SPY": spy, "DEADCO": target}
+    return symbols_data, te_start, te_end, last_close
+
+
+def _run_fold_with_scorer(symbols_data, te_start, te_end, delisted_haircut):
+    """Run a real AgentSimulator fold that buys DEADCO on te_start via a scorer."""
     from app.backtesting.agent_simulator import AgentSimulator
 
-    sim = AgentSimulator(model=None, delisted_haircut=0.70)
+    def scorer(day, syms, vix_history=None):
+        # Only propose the target on the fold-open day.
+        if day == te_start:
+            return [("DEADCO", 0.95)]
+        return []
 
-    # Exercise the haircut arithmetic the force-close branch uses directly:
-    # for a long, exit_price = entry_price * (1 - haircut).
-    entry_price = 100.0
-    haircut_exit = entry_price * (1.0 - sim.delisted_haircut)
-    assert haircut_exit == pytest.approx(30.0)             # -70% loss
-    assert haircut_exit < entry_price                      # NOT break-even
-    # And the default (0.0) books break-even (the bug we are fixing).
-    sim0 = AgentSimulator(model=None)  # delisted_haircut default 0.0
-    assert sim0.delisted_haircut == 0.0
-    zero_exit = entry_price  # default branch closes at entry → P&L=0
-    assert zero_exit == entry_price
+    sim = AgentSimulator(
+        model=None,
+        factor_scorer=scorer,
+        no_prefilters=True,
+        delisted_haircut=delisted_haircut,
+    )
+    return sim.run(symbols_data, start_date=te_start, end_date=te_end)
+
+
+def test_delisted_haircut_bites_on_data_ended_while_held():
+    """
+    FIX 1: a LONG held through its data-end (>= 3 fold trading days with no bar)
+    books the haircut loss off its LAST CLOSE — not the full last close (P&L~0).
+
+    Drives the REAL force-close branch in AgentSimulator.run(): the name enters
+    on te_start, trades a couple bars, then data ends mid-fold while SPY's
+    calendar runs to te_end. With delisted_haircut=0.70 the FORCE_CLOSE must
+    exit at last_close*(1-0.70).
+    """
+    # Last bar at fold-day 2 → gap of (20-1)-2 = 17 trading days >= tolerance.
+    symbols_data, te_start, te_end, last_close = _build_held_then_dataended_fold(
+        last_bar_offset_td=2, n_fold_days=20)
+
+    res = _run_fold_with_scorer(symbols_data, te_start, te_end, delisted_haircut=0.70)
+    # NOTE: AgentSimulator._normalize_reason maps "FORCE_CLOSE" -> "MAX_HOLD".
+    # DEADCO has exactly one trade (the end-of-fold close), so filter by symbol.
+    fc = [t for t in res.trades if t.symbol == "DEADCO"]
+    assert len(fc) == 1, f"expected one close for DEADCO, got {[t.symbol for t in res.trades]}"
+    trade = fc[0]
+    # Exit must be the haircut off LAST CLOSE, NOT the full last close.
+    assert trade.exit_price == pytest.approx(last_close * (1.0 - 0.70))   # ~15.0
+    # Entry fills near the flat price (small entry slippage at the open).
+    assert trade.entry_price == pytest.approx(last_close, rel=0.01)
+    # Books a deep loss (~ -70% from last close), not break-even.
+    assert trade.pnl < 0
+    assert trade.pnl_pct < -0.5
+
+    # Control: with the default haircut (0.0) it is a strict no-op — the same
+    # data-ended name force-closes at the FULL last close (P&L ~ 0).
+    symbols_data2, te_start2, te_end2, last_close2 = _build_held_then_dataended_fold(
+        last_bar_offset_td=2, n_fold_days=20)
+    res0 = _run_fold_with_scorer(symbols_data2, te_start2, te_end2, delisted_haircut=0.0)
+    fc0 = [t for t in res0.trades if t.symbol == "DEADCO"]
+    assert len(fc0) == 1
+    assert fc0[0].exit_price == pytest.approx(last_close2)                # full last close
+    # ~break-even (only entry slippage + tx cost, no haircut).
+    assert fc0[0].pnl_pct == pytest.approx(0.0, abs=0.02)
+
+
+def test_haircut_not_applied_when_name_trades_to_fold_boundary():
+    """
+    FIX 1 guard: a held LONG that trades right up to the fold boundary (last bar
+    on/near te_end, < 3 trading-day gap) is a NORMAL end-of-fold MTM close — it
+    must NOT be haircut, even with delisted_haircut=0.70.
+    """
+    # Last bar on the final fold day → zero-day gap; not a delisting.
+    symbols_data, te_start, te_end, last_close = _build_held_then_dataended_fold(
+        last_bar_offset_td=19, n_fold_days=20)
+    res = _run_fold_with_scorer(symbols_data, te_start, te_end, delisted_haircut=0.70)
+    fc = [t for t in res.trades if t.symbol == "DEADCO"]
+    assert len(fc) == 1
+    # Closed at full last close (no haircut) → ~flat P&L.
+    assert fc[0].exit_price == pytest.approx(last_close)
+    assert fc[0].pnl_pct == pytest.approx(0.0, abs=0.02)
+
+
+def test_delisted_haircut_constructor_clamps():
+    """Constructor sanity: haircut clamped to [0,1]; default is 0.0 (no-op)."""
+    from app.backtesting.agent_simulator import AgentSimulator
+    assert AgentSimulator(model=None).delisted_haircut == 0.0
+    assert AgentSimulator(model=None, delisted_haircut=0.70).delisted_haircut == 0.70
+    assert AgentSimulator(model=None, delisted_haircut=5.0).delisted_haircut == 1.0
+    assert AgentSimulator(model=None, delisted_haircut=-1.0).delisted_haircut == 0.0
+
+
+def test_universe_selection_is_as_of_te_start_pit():
+    """
+    FIX 2: per-fold universe is the eligibility snapshot AS-OF te_start — it must
+    NOT admit a name that only becomes band-eligible LATER in the test window
+    (that union-over-window form is universe-membership look-ahead).
+    """
+    from scripts.build_smallmid_universe import (
+        symbols_eligible_as_of, symbols_eligible_in_window,
+    )
+
+    te_start = date(2024, 1, 2)
+    te_end = date(2024, 1, 31)
+    # EARLY is eligible on te_start; LATE only becomes eligible mid-window.
+    elig = pd.DataFrame({
+        "date": [te_start, date(2024, 1, 15), date(2024, 1, 15)],
+        "symbol": ["EARLY", "EARLY", "LATE"],
+        "adv": [10_000_000.0, 10_000_000.0, 10_000_000.0],
+    })
+
+    as_of = symbols_eligible_as_of(elig, te_start)
+    assert as_of == {"EARLY"}                 # only the te_start snapshot
+    assert "LATE" not in as_of                # no mid-window leak (PIT)
+
+    # The old union-over-window form WOULD have leaked LATE — documents the fix.
+    window = symbols_eligible_in_window(elig, te_start, te_end)
+    assert "LATE" in window
+
+
+def test_eligible_as_of_uses_latest_snapshot_on_or_before():
+    """as-of picks the latest eligibility day <= as_of; depends only on data <= as_of."""
+    from scripts.build_smallmid_universe import symbols_eligible_as_of
+    elig = pd.DataFrame({
+        "date": [date(2024, 1, 5), date(2024, 1, 9), date(2024, 1, 20)],
+        "symbol": ["A", "B", "C"],
+        "adv": [10e6, 10e6, 10e6],
+    })
+    # as_of between the 9th and 20th → latest snapshot is the 9th (B); C (future) excluded.
+    assert symbols_eligible_as_of(elig, date(2024, 1, 12)) == {"B"}
+    # Before any eligibility day → empty (no look-back fabrication).
+    assert symbols_eligible_as_of(elig, date(2024, 1, 1)) == set()
 
 
 def test_harness_uses_haircut_and_cost_constants():
