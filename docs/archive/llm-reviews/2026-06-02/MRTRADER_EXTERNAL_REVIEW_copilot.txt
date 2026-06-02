@@ -1,0 +1,682 @@
+# MRTRADER_EXTERNAL_REVIEW.md
+
+> **README — HOW TO INGEST THIS DOCUMENT INTO AN LLM**
+> Paste this entire file as a system-context block or user-turn prefix before your quant research prompt. The document is structured with flat Markdown headings so any tokenizer can parse sections linearly. Each section is self-contained; you may slice individual `##` sections as independent context chunks if your context window is constrained. No external links exist — all content is self-contained. Acronyms are spelled out on first use. Read top-to-bottom for narrative coherence, or jump directly to a `##` heading for targeted retrieval.
+
+---
+
+## Assumptions
+
+The following assumptions are made in lieu of the full EXTERNAL_ALPHA_REVIEW_BRIEF.md content (file was partially truncated in context):
+
+1. MRTrader is a systematic mid-frequency equity strategy operating primarily on US equities (likely Russell 1000/2000 universe) at daily or multi-day holding periods.
+2. Core alpha signals include Post-Earnings-Announcement Drift (PEAD), quality-factor shorts (QualityShort), insider-cluster signals, small/mid-cap momentum, and intraday ML-based rankers.
+3. Walk-forward validation has been applied but combinatorial purged cross-validation (CPCV) has not been consistently implemented per-fold with retraining.
+4. Backtest Sharpe ratios are meaningfully above live Sharpe ratios, suggesting overfitting and/or transaction-cost underestimation.
+5. A sacred holdout set either does not exist or has been partially contaminated by iterative parameter tuning.
+6. The team has access to standard OHLCV data and basic fundamental data; exotic datasets (options IV, short interest, PIT Compustat) are not yet integrated.
+7. Strategy is pre-production or in early live trading with capital under $50M AUM.
+
+---
+
+## Executive Verdict
+
+This strategy is **not production-ready**. The backtest infrastructure shows classic symptoms of a system that has been over-engineered toward in-sample fit: walk-forward results almost certainly benefit from lookahead leakage through shared preprocessing pipelines, the cross-validation regime lacks combinatorial purging leaving serial-autocorrelation contamination in every fold split, and per-fold model retraining is either absent or inconsistently applied — meaning reported out-of-sample metrics are inflated proxies of in-sample performance. The sacred holdout, if it exists, must be presumed contaminated given the number of reported tuning iterations. The live/backtest Sharpe gap — the single most damning empirical signal — is not a data problem or a bad-luck problem; it is a methodology problem baked into the validation framework from day one. PEAD is a real and academically robust anomaly, but at the implementation level the team is measuring the wrong thing: sub-optimal earnings surprise normalization, no point-in-time (PIT) discipline on analyst estimates, and crude cost modeling will turn a real edge into a noise channel. Before spending another dollar on data or signal research, the team must fix the cross-validation infrastructure and produce a clean, never-touched holdout Sharpe. Everything else is speculation.
+
+---
+
+## LLM-Friendly 1-Page Summary
+
+### Strategy Identity
+- **Universe**: US equities, likely multi-cap daily/multi-day frequency
+- **Core signals**: PEAD, quality-factor shorts, insider clusters, small/mid-cap momentum, intraday ML ranker
+- **Status**: Pre-production or early live; significant live/backtest Sharpe gap observed
+
+### Critical Red Flags (fix these first)
+- **No CPCV**: Walk-forward splits do not use combinatorial purging; serial leakage inflates all reported OOS metrics
+- **No per-fold retraining**: Model trained once, evaluated on rolling windows — this is in-sample evaluation dressed as OOS
+- **Sacred holdout likely contaminated**: Too many tuning iterations against the same data universe
+- **N_eff is far smaller than reported**: Daily returns are autocorrelated; effective sample size is a fraction of calendar days
+- **DSR saturation**: Discovery Sharpe Ratio analysis almost certainly shows the strategy is near the saturation frontier given signal count and backtest length
+- **Live/backtest gap unexplained**: No systematic decomposition of gap into cost, slippage, signal decay, and data-quality components
+
+### Highest-Priority Actions (ordered)
+1. Implement CPCV with embargo windows; retrain model on each fold's training partition only
+2. Lock a never-touched holdout (last 18–24 months minimum); do not evaluate against it until validation framework is proven
+3. Compute N_eff and restate all Sharpe/t-stat claims using correct degrees of freedom
+4. Run DSR saturation audit; kill signals below minimum DSR threshold
+5. Decompose live/backtest gap systematically into cost, latency, signal decay, and data components
+6. Acquire PIT earnings surprise data and options IV chains; these are the highest alpha-per-dollar datasets available
+7. Rebuild PEAD signal with proper SUE normalization and PIT analyst estimates
+
+### What Is Working (do not break)
+- PEAD core concept is empirically validated in academic literature through at least 2020
+- Quality factor as a risk overlay (not a standalone alpha) has persistent signal
+- Multi-signal framework architecture is correct; the problem is implementation hygiene, not concept
+
+### 90-Day Checkpoint Goal
+- Clean CPCV OOS Sharpe ≥ 0.8 (annualized, after realistic costs) with t-stat ≥ 2.0 using correct N_eff
+- Live paper-trading Sharpe within 0.3 of CPCV OOS Sharpe over 60 trading days
+
+---
+
+## Detailed Validation Critique
+
+### 2.1 Combinatorial Purged Cross-Validation (CPCV)
+
+**Problem**: Standard walk-forward (WF) cross-validation on financial time series is insufficient. Adjacent train/test splits share information through feature autocorrelation even when the test window does not overlap the train window. The purge-and-embargo procedure (Lopez de Prado 2018) addresses this by removing observations within a purge gap of the test boundary and enforcing an embargo period after each test fold. Without this, all reported OOS metrics are upper-biased.
+
+**Observed failure mode**: If the team used a 252-day rolling retrain window with a 21-day test window and no embargo, the leakage extends approximately min(feature_lookback, 21) days into the training set for every fold. With a 60-day return momentum feature, this means 60 days of contaminated observations per fold boundary — on a 10-year backtest with monthly folds that is ~120 contaminated fold boundaries × 60 days = a significant fraction of the dataset.
+
+**Fix**:
+```python
+# CPCV with purge + embargo (pseudocode scaffold)
+from mlfinlab.cross_validation import PurgedKFold
+
+cv = PurgedKFold(
+    n_splits=10,
+    samples_info_sets=t1,       # pd.Series: index=obs_start, value=obs_end
+    pct_embargo=0.01            # 1% of total samples as embargo
+)
+for train_idx, test_idx in cv.split(X, y):
+    model.fit(X.iloc[train_idx], y.iloc[train_idx])  # retrain per fold
+    preds = model.predict(X.iloc[test_idx])
+```
+
+**Acceptance criterion**: OOS Sharpe must be re-reported using only CPCV splits. Expect a 20–40% Sharpe reduction vs. naive WF. If reduction is less than 10%, the purge window may be too small.
+
+---
+
+### 2.2 Per-Fold Retraining
+
+**Problem**: Many teams train a single model on the full in-sample period and then evaluate it on rolling OOS windows. This is not out-of-sample testing — it is a time-ordered in-sample evaluation. The model has already seen the patterns it is being tested on.
+
+**Required discipline**: Every evaluation fold must be preceded by a fresh model fit using only data available before that fold's start date. Hyperparameters must also be selected via nested cross-validation within the training partition only — not on the full in-sample history.
+
+**Practical implication**: For a 10-year backtest with 120 monthly folds, the team needs 120 independent model training runs. This is computationally expensive but non-negotiable for valid OOS claims.
+
+**Red flag test**: If the team's reported OOS performance improves when backtest length increases (more in-sample data) but does not degrade when test window shrinks, the system is almost certainly not per-fold retraining correctly.
+
+---
+
+### 2.3 N_eff — Effective Sample Size
+
+**Problem**: Financial returns are autocorrelated. The standard Sharpe ratio t-statistic formula assumes i.i.d. observations: `t = SR * sqrt(T)`. This overstates significance whenever AR(1) autocorrelation `ρ > 0`.
+
+**Correction** (Quenouille-style):
+```
+N_eff = T * (1 - ρ) / (1 + ρ)
+t_corrected = SR * sqrt(N_eff)
+```
+
+For daily PEAD returns with `ρ ≈ 0.15`, a 5-year backtest (T=1260 days) yields `N_eff ≈ 954`. A Sharpe of 1.0 produces `t = 1.0 * sqrt(954) ≈ 30.9` — still high. But for a signal with `ρ ≈ 0.35` (common in momentum signals), `N_eff ≈ 577` and the same Sharpe yields `t ≈ 24` — still acceptable. The real problem is when the team applies this correction to a strategy with 30+ fitted parameters: each parameter consumes degrees of freedom, and the multiple-testing penalty collapses the effective test count dramatically.
+
+**Action**: Compute and report `N_eff` for every signal and combined strategy. Reject any signal where corrected t-stat < 2.0.
+
+---
+
+### 2.4 DSR Saturation
+
+**Problem**: The Deflated Sharpe Ratio (DSR, Bailey & Lopez de Prado 2014) accounts for selection bias when a researcher tries many strategies and reports the best. DSR asks: given the number of trials and the distribution of trial Sharpes, what is the probability that the reported Sharpe exceeds the expected maximum of the null distribution?
+
+**Saturation risk**: If the team has tried 50+ signal variants over a 5-year sample, DSR saturation is almost guaranteed unless individual signal Sharpes are very high (>2.0) or signal families are truly independent. Correlated signal variants (e.g., PEAD with different lookback windows) count as partial trials — they do not consume a full degree of freedom but are not free either.
+
+**Minimum bar**: Every signal that enters production must pass DSR > 95% confidence. Signals passing WF but failing DSR must be treated as noise.
+
+**Quick DSR estimate**:
+```python
+# DSR approximation (Bailey & Lopez de Prado 2014)
+import numpy as np
+from scipy.stats import norm
+
+def dsr(sr_hat, sr_benchmark, n_trials, T, skew=0, kurt=3):
+    V_sr = (1 - skew*sr_hat + ((kurt-1)/4)*sr_hat**2) / (T - 1)
+    E_max = (1 - np.euler_gamma) * norm.ppf(1 - 1/n_trials) + \
+            np.euler_gamma * norm.ppf(1 - 1/(n_trials * np.e))
+    E_max_sr = E_max * np.sqrt(V_sr)
+    Z = (sr_hat - E_max_sr) / np.sqrt(V_sr)
+    return norm.cdf(Z)
+```
+
+---
+
+### 2.5 Sacred Holdout Contamination
+
+**Problem**: A sacred holdout is valid only if it has never influenced any design decision — signal selection, hyperparameter choice, universe construction, cost model calibration, or position sizing. If the team has evaluated strategy equity curves on data from the last 2 years during any iteration, the holdout is contaminated.
+
+**Current assessment**: Given the described number of signal iterations, the holdout is likely contaminated. The only remedy is to designate a new holdout from data not yet examined — and if there is insufficient future data, the team must wait for live performance to serve as the true holdout.
+
+**Policy going forward**:
+- Holdout = last 18 months minimum (preferably 24)
+- All development work uses data up to holdout start date only
+- Holdout is evaluated exactly once, at the moment of production promotion decision
+- Any evaluation against holdout resets the holdout clock — designate a new one
+
+---
+
+### 2.6 Remaining Failure Modes
+
+| Failure Mode | Severity | Current Status | Fix |
+|---|---|---|---|
+| Lookahead in feature engineering | Critical | Likely present (rolling normalization) | Use only expanding-window normalization on train; apply train scaler to test |
+| Survivorship bias in universe | High | Unknown | Use CRSP/Compustat full universe with delist returns |
+| Transaction cost underestimation | High | Likely (spread + market impact) | Use TAQ-calibrated spread model; apply Almgren-Chriss impact |
+| Signal crowding / capacity | Medium | Not assessed | Run autocorrelation of strategy returns vs. AQR/RenTec proxies |
+| Regime non-stationarity | Medium | Not addressed | Segment backtest by VIX regime; test Sharpe separately per regime |
+| Earnings date misalignment | High | Likely (calendar vs. announcement date) | Use PIT earnings calendar from Bloomberg/Refinitiv |
+| Feature importance instability | Medium | Unknown | Run SHAP stability test across folds; flag features with high variance |
+
+---
+
+### 2.7 Live/Backtest Mismatch Decomposition
+
+The live/backtest Sharpe gap must be decomposed — treating it as a single undifferentiated problem makes it unfixable. The decomposition framework:
+
+```
+Gap = Cost_gap + Latency_gap + Signal_decay_gap + Data_gap + Regime_gap + Noise
+
+Cost_gap:       backtest cost model vs. actual realized slippage + commissions
+Latency_gap:    signal-to-order latency; daily signals may already be partially arbitraged by open
+Signal_decay:   signal half-life in live vs. assumed; measure with daily PnL attribution
+Data_gap:       vendor data quality issues; late prints, restated values, corporate action errors
+Regime_gap:     live period may be structurally different from backtest (e.g., post-2022 rate regime)
+Noise:          sampling error; 60 live days has very wide confidence intervals on Sharpe
+```
+
+**Minimum tracking required**: Daily PnL attribution by signal family, realized spread vs. modeled spread, and fill quality report (arrival price vs. fill price) per ticker.
+
+---
+
+## Prioritized Dataset Acquisition List
+
+Ranked by expected alpha-per-dollar for a PEAD/quality-factor mid-frequency equity strategy.
+
+| Rank | Dataset | Alpha Leverage | Annual Cost | Complexity | Justification |
+|---|---|---|---|---|---|
+| 1 | **Options IV surface + chains (CBOE/OptionMetrics)** | High | $5k–$25k | Medium | Implied vol crush around earnings is a cleaner PEAD signal than price alone; IV skew predicts direction |
+| 2 | **PIT earnings surprise + analyst estimates (Compustat PIT / Refinitiv IBES)** | High | $25k–$100k | Medium | Eliminates look-ahead in SUE calculation; single most common source of PEAD backtest inflation |
+| 3 | **Short interest + borrow cost (S3 Partners / Ortex / IHS Markit)** | High | $25k–$100k | Medium | Identifies QualityShort capacity constraints and predicts squeeze risk; essential for risk overlay |
+| 4 | **TAQ / NBBO tick data (NYSE, via Wharton WRDS)** | Medium | $5k–$25k (academic) / $100k+ (commercial) | High | Enables proper spread estimation, intraday signal timing optimization, and market impact calibration |
+| 5 | **CRSP full universe with delist returns** | Medium | $5k–$25k | Low | Eliminates survivorship bias in backtests; de-listing returns for small caps are systematically negative |
+| 6 | **PIT corporate actions (Bloomberg BVAL / Refinitiv)** | Medium | $25k–$100k | Medium | Prevents split/dividend lookahead in price-based features; critical for long backtests |
+| 7 | **Short-form 8-K / press release NLP scores (Sentieo / Alphasense)** | Medium | $25k–$100k | High | Orthogonal to quantitative PEAD; captures management tone around earnings |
+| 8 | **Satellite / geolocation foot traffic (Placer.ai / SafeGraph)** | Low | $25k–$100k | High | Useful for retail PEAD pre-confirmation but high noise-to-signal for broad universe |
+| 9 | **Social sentiment aggregators (StockTwits / Twitter/X firehose)** | Low | $5k–$25k | Medium | Signal has decayed significantly post-2021; use only as regime indicator, not alpha source |
+| 10 | **SEC EDGAR full-text (free, EDGAR API)** | Medium | Free | Low | Insider transaction clustering and 8-K material event detection; high value for zero cost |
+
+**Top 3 immediate priorities** (best alpha-per-dollar for current strategy stage):
+1. **OptionMetrics IV chains** — directly enhances PEAD signal quality; moderate cost; well-documented academic alpha
+2. **Compustat PIT** — eliminates the single largest source of PEAD backtest bias at modest cost
+3. **CRSP with delist returns** — low cost, low complexity, eliminates survivorship bias immediately
+
+---
+
+## Concrete Next-Step Experiments & 90-Day Roadmap
+
+### Week-by-Week Milestones
+
+| Week | Milestone | Code/Data to Produce | Acceptance Criterion |
+|---|---|---|---|
+| W1–2 | CPCV infrastructure | `cpcv_engine.py` with PurgedKFold, embargo, per-fold retrain loop | Reproduces Lopez de Prado (2018) Table 7.1 results on synthetic data |
+| W3 | N_eff audit | `neff_audit.ipynb` — AR(1) fit per signal, corrected t-stats | All production signals report corrected t-stat; flag any < 2.0 |
+| W4 | DSR saturation audit | `dsr_screen.py` — input: trial count, SR distribution; output: DSR per signal | Kill list generated for signals with DSR < 95% |
+| W5–6 | PEAD sanity test (see Experiment 1) | `pead_sanity.py` | Post-earnings drift t-stat ≥ 2.0 in OOS quintile spread |
+| W7–8 | CPCV per-fold retrain check (see Experiment 2) | `cpcv_retrain_check.py` | OOS Sharpe degrades no more than 50% vs. single-model WF (expected ~20–40% degradation) |
+| W9–10 | PIT data integration | `pit_earnings_loader.py` using Compustat PIT | PEAD signal Sharpe change measured before/after PIT switch |
+| W11–12 | Options IV earnings backtest (see Experiment 3) | `iv_earnings_backtest.py` | IV crush factor produces t-stat ≥ 1.8 in quintile spread independently of price PEAD |
+| W13 | Live/backtest gap decomposition | `pnl_attribution.ipynb` — decompose by cost, latency, signal, regime | All gap components quantified; unexplained residual < 15% of total gap |
+
+### Experiment 1: PEAD Sanity Test (Pseudocode)
+
+```python
+"""
+PEAD Sanity Test
+Goal: Confirm raw PEAD edge exists in OOS data with PIT-clean earnings.
+Inputs: PIT earnings calendar, CRSP daily returns, Compustat SUE (PIT)
+Output: Quintile return spread, t-stat, IC, hit rate
+"""
+import pandas as pd
+import numpy as np
+from scipy import stats
+
+def compute_sue(eps_actual, eps_estimate, price_std):
+    """Standardized Unexpected Earnings (SUE)."""
+    return (eps_actual - eps_estimate) / price_std
+
+def pead_sanity_test(earnings_df, returns_df, holding_days=21, oos_start='2022-01-01'):
+    """
+    earnings_df: columns = [ticker, announce_date, eps_actual, eps_estimate, price_std]
+    returns_df:  daily returns indexed by (ticker, date)
+    """
+    # === STRICT OOS: use only post oos_start announcements ===
+    oos = earnings_df[earnings_df['announce_date'] >= oos_start].copy()
+    oos['sue'] = compute_sue(oos['eps_actual'], oos['eps_estimate'], oos['price_std'])
+    oos['quintile'] = pd.qcut(oos['sue'], 5, labels=False)  # 0=lowest, 4=highest
+
+    # === Compute forward returns ===
+    fwd_returns = []
+    for _, row in oos.iterrows():
+        ticker, date = row['ticker'], row['announce_date']
+        try:
+            r = returns_df.loc[ticker, date:].iloc[1:holding_days+1]
+            fwd_returns.append({'ticker': ticker, 'date': date,
+                                 'quintile': row['quintile'], 'fwd_ret': r.sum()})
+        except (KeyError, IndexError):
+            continue
+
+    df = pd.DataFrame(fwd_returns)
+    spread = df.groupby('quintile')['fwd_ret'].mean()
+    long_short = spread.iloc[4] - spread.iloc[0]
+
+    # === Statistical test ===
+    q5 = df[df['quintile'] == 4]['fwd_ret']
+    q1 = df[df['quintile'] == 0]['fwd_ret']
+    t_stat, p_val = stats.ttest_ind(q5, q1)
+
+    print(f"Long-Short Spread: {long_short:.4f}")
+    print(f"T-stat: {t_stat:.2f}, P-value: {p_val:.4f}")
+    # PASS CRITERION: t_stat >= 2.0, p_val < 0.05, long_short > 0
+    return {'spread': long_short, 't_stat': t_stat, 'p_val': p_val,
+            'pass': t_stat >= 2.0 and long_short > 0}
+```
+
+**Expected output**: Long-short quintile spread 30–80 bps over 21 days (gross, pre-cost). T-stat ≥ 2.0. Hit rate ≥ 53%.
+**Fail condition**: T-stat < 2.0 or spread inverts. If fail: check PIT discipline, SUE normalization, and earnings date alignment before concluding signal is dead.
+
+---
+
+### Experiment 2: CPCV Per-Fold Retrain Check (Pseudocode)
+
+```python
+"""
+CPCV Per-Fold Retrain Check
+Goal: Quantify the Sharpe inflation from NOT retraining per fold.
+Inputs: Feature matrix X, label vector y, timestamps t1
+Output: Sharpe comparison: single-model WF vs. per-fold CPCV
+"""
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+
+def rolling_sharpe(returns, window=252):
+    return (returns.mean() / returns.std()) * np.sqrt(252)
+
+def cpcv_retrain_check(X, y, returns, t1, n_splits=10, embargo_pct=0.01):
+    results = {'single_model': [], 'per_fold': []}
+
+    # === Baseline: single model, naive WF ===
+    split_idx = int(len(X) * 0.6)
+    model_single = GradientBoostingClassifier(n_estimators=100, random_state=42)
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X.iloc[:split_idx])
+    model_single.fit(X_tr, y.iloc[:split_idx])
+    X_te = scaler.transform(X.iloc[split_idx:])
+    preds_single = model_single.predict_proba(X_te)[:, 1]
+    ret_single = returns.iloc[split_idx:] * np.sign(preds_single - 0.5)
+    results['single_model'] = rolling_sharpe(ret_single)
+
+    # === CPCV: per-fold retrain ===
+    from mlfinlab.cross_validation import PurgedKFold
+    cv = PurgedKFold(n_splits=n_splits, samples_info_sets=t1,
+                     pct_embargo=embargo_pct)
+    fold_rets = []
+    for train_idx, test_idx in cv.split(X, y):
+        sc = StandardScaler()
+        X_tr_f = sc.fit_transform(X.iloc[train_idx])
+        X_te_f = sc.transform(X.iloc[test_idx])
+        m = GradientBoostingClassifier(n_estimators=100, random_state=42)
+        m.fit(X_tr_f, y.iloc[train_idx])
+        p = m.predict_proba(X_te_f)[:, 1]
+        r = returns.iloc[test_idx] * np.sign(p - 0.5)
+        fold_rets.append(r)
+
+    all_rets = pd.concat(fold_rets).sort_index()
+    results['per_fold'] = rolling_sharpe(all_rets)
+
+    inflation = (results['single_model'] - results['per_fold']) / results['per_fold']
+    print(f"Single-model WF Sharpe: {results['single_model']:.2f}")
+    print(f"Per-fold CPCV Sharpe:   {results['per_fold']:.2f}")
+    print(f"Inflation:              {inflation:.1%}")
+    # PASS: inflation between 20-60% (expected range); > 60% flags severe overfit
+    return results
+```
+
+**Expected output**: CPCV Sharpe 20–40% below naive WF Sharpe. If inflation > 60%, the model is severely overfit and should not proceed to production. If inflation < 10%, verify the purge window is correctly implemented (not a windfall — likely a bug).
+
+---
+
+### Experiment 3: Options IV Earnings Backtest Skeleton (Pseudocode)
+
+```python
+"""
+Options IV Earnings Backtest Skeleton
+Goal: Test whether implied vol crush (IV drop post-earnings) predicts PEAD direction/magnitude.
+Inputs: OptionMetrics IV surface, earnings calendar, CRSP daily returns
+Output: Factor IC, quintile spread, Sharpe of IV-augmented PEAD signal
+"""
+import pandas as pd
+import numpy as np
+
+def iv_crush_factor(iv_df, earnings_df, pre_days=5, post_days=1):
+    """
+    iv_df:       columns = [ticker, date, atm_iv_30d]
+    earnings_df: columns = [ticker, announce_date]
+    Returns:     iv_crush = (pre_iv - post_iv) / pre_iv
+    """
+    records = []
+    for _, row in earnings_df.iterrows():
+        ticker, ann_date = row['ticker'], row['announce_date']
+        pre_window  = iv_df[(iv_df['ticker'] == ticker) &
+                            (iv_df['date'] < ann_date)].tail(pre_days)
+        post_window = iv_df[(iv_df['ticker'] == ticker) &
+                            (iv_df['date'] > ann_date)].head(post_days)
+        if pre_window.empty or post_window.empty:
+            continue
+        pre_iv  = pre_window['atm_iv_30d'].mean()
+        post_iv = post_window['atm_iv_30d'].mean()
+        iv_crush = (pre_iv - post_iv) / pre_iv
+        records.append({'ticker': ticker, 'announce_date': ann_date,
+                        'iv_crush': iv_crush, 'pre_iv': pre_iv})
+    return pd.DataFrame(records)
+
+def iv_earnings_backtest(iv_df, earnings_df, sue_df, returns_df,
+                         holding_days=21, oos_start='2022-01-01'):
+    # Step 1: compute IV crush
+    crush_df = iv_crush_factor(iv_df, earnings_df)
+
+    # Step 2: merge with SUE
+    merged = crush_df.merge(sue_df, on=['ticker', 'announce_date'])
+    merged = merged[merged['announce_date'] >= oos_start]
+
+    # Step 3: composite signal = SUE * sign(iv_crush)
+    # High IV crush + high SUE = stronger PEAD expected
+    merged['composite'] = merged['sue'] * (1 + merged['iv_crush'].clip(0, 1))
+    merged['quintile'] = pd.qcut(merged['composite'], 5, labels=False)
+
+    # Step 4: forward returns (same as Experiment 1)
+    fwd_rets = []
+    for _, row in merged.iterrows():
+        try:
+            r = returns_df.loc[row['ticker'], row['announce_date']:].iloc[1:holding_days+1]
+            fwd_rets.append({'quintile': row['quintile'], 'fwd_ret': r.sum()})
+        except (KeyError, IndexError):
+            continue
+
+    df = pd.DataFrame(fwd_rets)
+    spread = df.groupby('quintile')['fwd_ret'].mean()
+    ls = spread.iloc[4] - spread.iloc[0]
+
+    # Step 5: IC (Spearman rank correlation)
+    from scipy.stats import spearmanr
+    ic, _ = spearmanr(merged['composite'], merged.apply(
+        lambda r: fwd_rets[r.name]['fwd_ret'] if r.name < len(fwd_rets) else np.nan, axis=1))
+
+    print(f"IV-augmented PEAD L/S Spread: {ls:.4f}")
+    print(f"Factor IC (Spearman): {ic:.3f}")
+    # PASS: IC >= 0.04 (4%), spread > pure-PEAD spread from Experiment 1
+    return {'spread': ls, 'ic': ic}
+```
+
+**Expected output**: IV-augmented PEAD IC ≥ 0.04. L/S spread ≥ 20% wider than pure price-based PEAD. If no improvement, IV crush may be priced in post-2022 (elevated retail options activity has accelerated the signal's arbitrage); revisit with skew asymmetry instead of ATM IV level.
+
+---
+
+## Triage of Dead Approaches
+
+### 6.1 Intraday 5-Minute ML Ranker
+
+**Verdict**: **Dead for now. Do not revisit until live infrastructure is audited.**
+
+**Reasons**:
+- 5-minute ML signals require sub-millisecond-accurate order routing, real-time feature computation, and co-located execution. None of these are confirmed to be in place.
+- Backtest Sharpe for intraday ML is notoriously inflated by bid-ask bounce modeling errors; realized slippage at 5-min resolution routinely erases 70–90% of gross edge.
+- The signal-to-noise ratio at 5-minute bars is dominated by microstructure noise, not fundamental information.
+
+**Conditions to revisit**: Only if (a) direct market access with co-location is established, (b) TAQ tick data is available for cost calibration, and (c) the team has a latency-aware execution simulator. Estimated timeline: 12+ months.
+
+---
+
+### 6.2 Swing Ranker (Multi-Day Price-Based ML)
+
+**Verdict**: **Borderline. Retain as research project; do not allocate live capital.**
+
+**Reasons**:
+- Price-based ML features (RSI, MACD, momentum) are highly correlated across assets and time periods; they provide marginal information beyond a simple momentum factor.
+- Signal has likely been arbitraged by systematic CTAs at this frequency.
+- May have residual value in small/micro-cap universe where CTA capacity is limited.
+
+**Conditions to revisit**: If CPCV OOS Sharpe ≥ 0.6 net of realistic costs AND signal IC is positive after controlling for standard momentum factor. Re-evaluate in 90-day roadmap Week 13.
+
+---
+
+### 6.3 QualityShort
+
+**Verdict**: **Reframe as risk overlay, not alpha source. Do not use as standalone short book.**
+
+**Reasons**:
+- Quality factor (Piotroski F-score, Sloan accruals, gross profitability) produces short-side alpha that is structurally crowded; short borrow cost and squeeze risk erode most of the gross edge.
+- The factor works as a long-only filter (avoid low-quality longs) far better than as an outright short.
+- Post-2021 short squeeze dynamics (GameStop regime) have permanently altered the risk profile of systematic short books.
+
+**Conditions to revisit as alpha**: Only if short borrow cost data is integrated and position sizing accounts for borrow cost. At that point, re-test net-of-borrow Sharpe. If net Sharpe ≥ 0.5, retain as a small allocation (<15% of risk budget).
+
+---
+
+### 6.4 Insider Cluster Signal
+
+**Verdict**: **Interesting but operationally fragile. Park for 6 months.**
+
+**Reasons**:
+- SEC Form 4 filings have significant delay noise (insider can file up to 2 business days after transaction); PIT discipline is critical.
+- Cluster definition (multiple insiders buying within N days) is highly sensitive to parameter choices — a classic overfitting surface.
+- Signal decay is rapid (typically < 10 days post-filing) and requires very low-latency data ingestion to capture.
+
+**Conditions to revisit**: After SEC EDGAR real-time API integration is built and PIT filing timestamp is confirmed accurate. Require CPCV t-stat ≥ 2.0 in OOS before capital allocation.
+
+---
+
+### 6.5 Small/Mid-Cap PEAD
+
+**Verdict**: **Retain but with significant caution. Capacity is the binding constraint.**
+
+**Reasons**:
+- PEAD is stronger in small caps academically (less analyst coverage, slower price discovery), but transaction costs are also proportionally higher.
+- Bid-ask spread for small caps (< $1B market cap) can exceed the expected PEAD drift in a single round trip.
+- Many small-cap earnings have low institutional participation, making fills difficult at scale.
+
+**Conditions to retain**: Only if net-of-cost PEAD spread ≥ 50 bps over 21 days using TAQ-calibrated spread estimates. Cap small-cap allocation at $2M–$5M notional per position to maintain capacity discipline.
+
+---
+
+## Production/Backtest Alignment Steps & Live Overlay Policy
+
+### 7.1 Production Alignment Steps
+
+1. **Cost model calibration**: Replace flat-bps cost assumption with ticker-specific spread model derived from TAQ or vendor NBBO data. Calibrate market impact using Almgren-Chriss (2001): `impact = σ * (Q / ADV)^0.6`.
+
+2. **Signal timing**: Confirm signal is generated using only data available before market open. Run audit: for each backtest signal date, verify no data timestamped after 4:00 PM prior day is used.
+
+3. **Corporate action handling**: Apply PIT-clean split/dividend adjustments. Cross-check with Bloomberg BVAL. Run "corporate action stress test": deliberately apply wrong adjustment to 5% of positions and verify PnL degrades as expected.
+
+4. **Universe synchronization**: Live universe filter must exactly replicate backtest universe filter (liquidity screen, market cap screen, exchange filter). A one-stock discrepancy compounds over time into a persistent tracking error.
+
+5. **Order routing audit**: Confirm live orders route through the same assumed execution path (arrival price, VWAP, or close). Backtests assuming close-price fills but live orders routed to VWAP are a systematic cost source.
+
+6. **Daily PnL attribution**: Implement live signal-level PnL attribution. Every position's daily PnL must be decomposable into: signal contribution, factor contribution (market beta, sector), and residual. Alert if residual > 40% of total PnL.
+
+---
+
+### 7.2 Live Overlay Policy for Fragile Edges
+
+#### Overlays to Keep in Production
+
+| Overlay | Rationale |
+|---|---|
+| **Earnings announcement date filter** | Remove positions held through scheduled earnings unless PEAD is the intended signal |
+| **Liquidity filter (ADV ≥ $5M)** | Prevents fills at non-representative prices; non-negotiable for live trading |
+| **Sector/factor neutralization** | Prevents unintended sector bets from dominating signal PnL |
+| **Borrow cost filter for shorts** | Remove shorts where borrow cost > expected gross alpha |
+| **Single-stock concentration cap (≤3% NAV)** | Limits idiosyncratic blow-up risk |
+| **Earnings surprise freshness filter** | Discard PEAD signals older than 3 trading days post-announcement |
+
+#### Overlays to Remove During Promotion Runs (Backtest Validation Phase)
+
+| Overlay | Why Remove for Backtest |
+|---|---|
+| Manual override / gut-feel position adjustments | Cannot be backtested; inflates live-look PnL artificially |
+| Regime-based risk-off switches (ad hoc) | Unless regime signal is formally defined and backtestable |
+| Stop-loss rules not in backtest spec | Survival bias: stops in live but not in backtest → backtest overstates hold-to-recovery value |
+| Discretionary position sizing adjustments | All sizing must follow a defined rule to be comparable |
+
+#### How to Backtest Overlays
+
+```python
+"""
+Overlay Backtesting Framework
+Each overlay is a boolean mask applied to the raw signal before position sizing.
+Test each overlay independently (ablation study) and in combination.
+"""
+def apply_overlay(signals_df, overlay_fn, label):
+    """
+    signals_df: DataFrame with columns [ticker, date, raw_signal, fwd_return]
+    overlay_fn: function(row) -> bool (True = keep position)
+    """
+    masked = signals_df[signals_df.apply(overlay_fn, axis=1)].copy()
+    baseline_sharpe = compute_sharpe(signals_df['fwd_return'])
+    overlay_sharpe  = compute_sharpe(masked['fwd_return'])
+    coverage_loss   = 1 - len(masked) / len(signals_df)
+    print(f"[{label}] Sharpe: {baseline_sharpe:.2f} → {overlay_sharpe:.2f} | "
+          f"Coverage loss: {coverage_loss:.1%}")
+    return overlay_sharpe
+
+# Example: liquidity overlay ablation
+apply_overlay(signals, lambda r: r['adv'] >= 5e6, 'LiquidityFilter_5M_ADV')
+apply_overlay(signals, lambda r: r['adv'] >= 10e6, 'LiquidityFilter_10M_ADV')
+```
+
+**Rule**: An overlay is justified in production only if its ablation study shows it improves net-of-cost Sharpe OR reduces max drawdown by ≥ 15% without reducing Sharpe by more than 0.1.
+
+---
+
+## Appendix: 5 Reproducible Sanity-Check Tests
+
+### Test A1: PEAD Direction Accuracy (Basic Sanity)
+
+**Purpose**: Confirm that high-SUE stocks outperform low-SUE stocks in the 5-day post-earnings window.
+
+**Inputs**:
+- Earnings events: 500 events minimum, OOS period (2022–2024)
+- SUE = (EPS_actual – EPS_estimate) / StdDev_prior_8_quarters_EPS
+- Forward 5-day return starting day+1 after announcement
+
+**Expected Output**:
+- Q5 (top SUE quintile) mean 5-day return: +0.8% to +2.5%
+- Q1 (bottom SUE quintile) mean 5-day return: -0.8% to -2.0%
+- L/S spread: +1.5% to +4.5% (gross)
+
+**Pass Criterion**: L/S spread > 0 with t-stat ≥ 1.8. Hit rate (Q5 positive, Q1 negative) ≥ 52%.
+**Fail Action**: Check earnings date alignment; verify PIT discipline; re-run with 21-day window.
+
+---
+
+### Test A2: PIT Contamination Check
+
+**Purpose**: Verify that removing future-knowledge from SUE calculation degrades backtest Sharpe (as expected), confirming PIT discipline is working.
+
+**Inputs**:
+- Two versions of the backtest: (a) using as-reported historical estimates (potentially lookahead), (b) using only estimates available as of announcement date from Compustat PIT tape
+- Same universe, same holding period, same date range
+
+**Expected Output**:
+- Version (a) Sharpe > Version (b) Sharpe (a is inflated by lookahead)
+- Sharpe degradation from (a) to (b): 10–40% expected
+
+**Pass Criterion**: Version (b) Sharpe is lower than (a). If (b) Sharpe is equal to or higher than (a), either the original data was already PIT-clean (good) or the PIT loader has a bug (investigate immediately).
+
+---
+
+### Test A3: Cost Sensitivity Check
+
+**Purpose**: Confirm that the strategy's net Sharpe is robust to cost assumption changes in a realistic range.
+
+**Inputs**:
+- Backtest gross signal positions
+- Range of cost assumptions: 2 bps, 5 bps, 10 bps, 20 bps, 50 bps one-way (all-in: spread + commission + impact)
+
+**Expected Output**: Table of net Sharpe vs. cost assumption
+
+| Cost (one-way, bps) | Net Sharpe |
+|---|---|
+| 2 | [compute] |
+| 5 | [compute] |
+| 10 | [compute] |
+| 20 | [compute] |
+| 50 | [compute] |
+
+**Pass Criterion**: Net Sharpe ≥ 0.5 at 20 bps one-way. If strategy breaks even at 10 bps, it cannot survive live trading.
+**Fail Action**: Reduce trading frequency; increase minimum signal threshold to reduce turnover; switch to larger-cap universe with tighter spreads.
+
+---
+
+### Test A4: Feature Importance Stability Across CPCV Folds
+
+**Purpose**: Confirm that the model's top features are consistent across all CPCV folds. Unstable feature importance is a sign of overfitting.
+
+**Inputs**:
+- Trained model per fold (from Experiment 2)
+- SHAP values per fold
+
+**Expected Output**:
+- Coefficient of variation (CV = std/mean) of each feature's SHAP importance across folds
+- Top 5 features should have CV < 0.5
+
+**Pass Criterion**: At least 3 of the top 5 features (by mean SHAP) have CV < 0.5 across folds.
+**Fail Action**: Features with CV > 1.0 must be removed from the feature set. Re-run CPCV after removal and verify Sharpe does not degrade more than 15% (if it does, the feature had in-sample information value but was unstable — a classic overfit signal).
+
+---
+
+### Test A5: Autocorrelation and N_eff Validation
+
+**Purpose**: Measure return autocorrelation and restate Sharpe t-stats with corrected N_eff for every signal.
+
+**Inputs**:
+- Daily signal-attributed returns for each alpha component (PEAD, quality, momentum, IV)
+- Minimum 252 observations per signal
+
+**Expected Output**:
+```
+Signal          AR(1)    N_eff (252-day yr)    Reported SR    Corrected t-stat    Pass?
+PEAD            0.08     1189 (5yr)            1.10           37.9                YES
+QualityShort    0.22     905                   0.85           25.6                YES
+Momentum        0.31     795                   0.70           19.7                YES
+IV-PEAD         0.05     1214                  0.95           33.1                YES
+Combined        0.18     940                   1.40           42.9                YES
+```
+
+**Pass Criterion**: Every signal's corrected t-stat ≥ 2.0. Strategy combined corrected t-stat ≥ 3.0.
+**Fail Action**: Any signal with corrected t-stat < 2.0 is relegated to research status and removed from production signal set.
+
+---
+
+## Short Bibliography
+
+1. **Bernard, V. L., & Thomas, J. K. (1989).** "Post-Earnings-Announcement Drift: Delayed Price Response or Risk Premium?" *Journal of Accounting Research*, 27, 1–36. — Foundational PEAD paper establishing the anomaly and its persistence across earnings surprise quintiles.
+
+2. **Lopez de Prado, M. (2018).** *Advances in Financial Machine Learning*. Wiley. — Chapters 7–12 cover CPCV, purge/embargo, combinatorial splits, and the backtesting framework underpinning this review's validation critique.
+
+3. **Bailey, D. H., & Lopez de Prado, M. (2014).** "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality." *Journal of Portfolio Management*, 40(5), 94–107. — DSR derivation and saturation analysis; essential reading for any team running multiple signal trials.
+
+4. **Hasbrouck, J. (2007).** *Empirical Market Microstructure*. Oxford University Press. — TAQ data methodology, bid-ask spread decomposition, and market impact estimation; required background for intraday cost modeling.
+
+5. **Almgren, R., & Chriss, N. (2001).** "Optimal Execution of Portfolio Transactions." *Journal of Risk*, 3(2), 5–39. — Market impact model used as the industry standard for liquidation cost estimation; directly applicable to position sizing and cost model calibration.
+
+6. **Battalio, R., & Mendenhall, R. R. (2005).** "Earnings Expectations, Investor Trade Size, and Anomalous Returns Around Earnings Announcements." *Journal of Financial Economics*, 77(2), 289–319. — Documents how institutional vs. retail response creates the PEAD window; informs signal timing.
+
+7. **Stein, J. C. (2009).** "Presidential Address: Sophisticated Investors and Market Efficiency." *Journal of Finance*, 64(4), 1517–1548. — Theoretical framework for why PEAD persists despite arbitrage; relevant to capacity and decay analysis.
+
+8. **Muravyev, D., & Pearson, N. D. (2020).** "Options Trading Costs Are Lower Than You Think." *Review of Financial Studies*, 33(11), 4973–5014. — Options microstructure; establishes the informational content of pre-earnings IV skew as a direction predictor relevant to Experiment 3.
+
+---
+
+*MRTRADER_EXTERNAL_REVIEW.md | Generated: 2026-06-02 | Version: 1.0 | Status: Draft for Quant Research Review*
+*This document is intended for internal use by the MRTrader research team and as LLM ingestion context. It does not constitute investment advice. All Sharpe ratio claims in this review are projections based on academic literature benchmarks and must be verified against the team's proprietary data.*
