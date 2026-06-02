@@ -11,6 +11,8 @@
 ## 🧭 ACTIVE DIRECTION (2026-06-02): Alpha v2 — `docs/living/ALPHA_V2_PLAN.md`
 PEAD long-only is **live in paper**. The next phase is **structural, not signal-hunting** (from a 5-LLM external review + a code-grounded plan): de-risk PEAD honestly, then test whether the "dead" swing ranker was just strangled by a 5-position long-only book by re-running it **dollar-neutral, sector-neutral, high-breadth, residualized**. **Locked decisions:** short-interest data first; carve a post-2024-06-01 historical holdout; dollar-neutral shorting approved in paper; keep live PEAD running (pause only if leave-one-crisis-out fails). **First moves:** PEAD cost-sensitivity sweep → crisis-block robustness (leave-one-crisis-out). See the plan for the full sequenced roadmap.
 
+**PHASE-1 PEAD DE-RISK COMPLETE (2026-06-02):** §1.1 cost ✅ GO · §1.2 crisis ✅ GO · §1.3 significance ❌ FAIL. PEAD is **real-but-underpowered** (event-level bootstrap p=0.19, HAC t=1.04; CPCV t=2.26 was optimistic) — a long-biased up-trend drift harvester (~0.40 SR, 87% P&L up-trends). **Keep paper-trading as a small diversifier; never a capital centerpiece** (CAPITAL-HOLD confirmed). **→ Phase-2 priority is now the dollar-neutral high-breadth ranker** (breadth is the statistical fix PEAD lacks): short-interest data POC → residualized dollar-neutral ranker re-test.
+
 ---
 
 ## ☀️ MORNING SUMMARY (2026-06-01) — read this first
