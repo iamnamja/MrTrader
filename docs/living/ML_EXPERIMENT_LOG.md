@@ -33,6 +33,72 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Small/Mid-Cap PEAD — Survivorship-Safe CPCV Harness — 2026-06-01 — VERDICT: 🔄 Pending (build only)
+
+**Goal:** Test the highest-EV remaining PEAD variant. Large-cap PEAD is the
+committed +0.546 edge; the academic literature says post-earnings-announcement
+drift is STRONGEST in small/mid-caps (slower information diffusion, less analyst
+coverage). Build a survivorship-safe, PIT, liquidity-aware harness to get an
+HONEST small/mid-cap number.
+
+**Build (this entry):** BUILD ONLY — full CPCV not yet run (review pass first).
+
+**Universe (survivorship-safe + PIT + ADV filter in one definition):**
+- Source: **Polygon grouped-daily flat files** (the gold standard). New
+  `PolygonS3.get_grouped_daily(day)` / `PolygonProvider.get_grouped_daily(day)`
+  return the FULL all-tickers panel for a day — every symbol that printed a bar,
+  including names later delisted. Verified live: 2023-03-08 returned 10,822
+  symbols INCLUDING delisted SIVB and FRC. Chosen over a broad-ticker-list + bulk
+  approach because the flat file is itself the complete daily cross-section, so a
+  delisted name is never dropped retroactively.
+- Eligibility: trailing-20d `ADV = mean(close × volume)` over days `<=` the day,
+  band `[$2M, $50M]` (`ADV_MIN`/`ADV_MAX` — small/mid-cap liquid range: excludes
+  illiquid micro-caps and mega-caps). PIT by construction (rolling trailing
+  window). Capped to top-300/day by trailing-ADV rank (`MAX_NAMES_PER_DAY`).
+- Cache: `data/smallmid/{panel,eligibility}.parquet` (gitignored). The grouped-
+  daily walk runs ONCE; the CPCV run loads the cache.
+
+**Harness (`scripts/run_pead_smallmid_cpcv.py`, clone of `run_pead_cpcv.py`):**
+- Universe: PIT small/mid-cap band eligibility (NOT `RUSSELL_1000_TICKERS`);
+  the hardcoded `pit_union("russell1000")` in `run_fold` is replaced.
+- Prices: Polygon grouped-daily (delisted-inclusive), NOT yfinance.
+- `delisted_haircut=0.70` (held-through-delisting books -70%, not P&L=0) [C-2].
+- `transaction_cost_pct=0.0020` (20bps small-cap, vs 5bps large-cap) [H-2].
+- Per-fold min-history guard: skip names with `<60` bars before `te_start` [M-1].
+- Scorer: validated long-only baseline (long_threshold=0.05, vix_block_all=30,
+  max_announce_day_move=1.0 disabled, long_short=False).
+- Inherits unchanged: per-fold `n_obs`+`regime_sharpes`+`profit_factor`, OOS
+  guard `trained_through=date.min`, CPCV C(8,2)/k=8/6yr.
+
+**Validation run (Q1-2023, 62 trading days, --start 2023-01-03 --end 2023-03-31):**
+- ~300 band names/day (cap binds — band has >300/day), 738 distinct symbols.
+- Delisted small/mid-caps retained to their last bar: COWN (Cowen→TD), ONEM
+  (One Medical→Amazon, Feb-2023), UMPQ (Umpqua merger). Survivorship-safe ✅.
+- Mega-caps SIVB/FRC correctly EXCLUDED — their ADV was > the $50M ceiling
+  (they were large-caps, not small/mid-caps). The band is doing its job.
+
+**Honest flags / compromises:**
+- Shares-outstanding / market-cap is NOT available survivorship-safe from the
+  flat files, so the **ADV dollar-volume band is the small/mid-cap SIZE PROXY**.
+  This is a liquidity band, not a strict market-cap band — a known approximation.
+  It does still cleanly separate small/mid-caps from mega-caps (SIVB/FRC excluded).
+- The 300/day cap binds. It is computed by PIT trailing-ADV rank (not current
+  existence), so it does NOT reintroduce survivorship — but it does mean the
+  number reflects the 300 most-liquid in-band names/day, not the full band.
+
+**Tests:** `tests/test_smallmid_universe.py` — 6 pass + 1 skip (network):
+PIT eligibility (future spike can't change past), delisted-name-in-universe-to-
+delisting, ADV band ($1M out/$10M in/$100M out), delisted-haircut-books-loss-not-0,
+min-history guard, harness-constants. Full suite: 2467 passed, 8 skipped, 0 fail.
+
+**Run command (after review):**
+```
+python scripts/build_smallmid_universe.py --years 6     # builds + caches the universe ONCE
+python scripts/run_pead_smallmid_cpcv.py                # runs the C(8,2) CPCV off the cache
+```
+
+---
+
 ## P0 — Insider-Buying-Cluster Edge (candidate 2nd edge) — 2026-06-01 — VERDICT: FAIL / weak
 
 **Goal:** Validate an insider-buying-cluster event strategy as a SECOND independent

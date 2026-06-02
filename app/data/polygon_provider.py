@@ -149,6 +149,18 @@ class PolygonProvider(DataProvider):
         logger.info("Polygon bulk: %d/%d symbols returned", len(result), len(symbols))
         return result
 
+    def get_grouped_daily(self, day: date) -> Optional[pd.DataFrame]:
+        """
+        Survivorship-safe full-market panel for *day* (every ticker that traded).
+
+        Delegates to PolygonS3.get_grouped_daily. Returns None if S3 is not
+        configured or the file is unavailable (holiday / not yet published).
+        """
+        s3 = self._get_s3()
+        if s3 is None:
+            return None
+        return s3.get_grouped_daily(day)
+
     # ── Intraday bars ─────────────────────────────────────────────────────────
 
     def get_intraday_bars(
