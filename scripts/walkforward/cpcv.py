@@ -62,6 +62,19 @@ class CPCVResult:
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
+    # Phase-4 FIX-2: True when worst_regime_sharpe is None DUE TO EVENT-SPARSITY —
+    # i.e. regime returns WERE observed (folds reported regime_obs_counts) but every
+    # bucket fell below REGIME_MIN_OBS, so no usable per-regime Sharpe could be
+    # computed. This is a STRUCTURAL property of event-sparse strategies (PEAD),
+    # NOT a data-bug. When None due to a genuine data-bug (no regime map / no
+    # labelled days / aggregation failure) this stays False → the regime backstop
+    # fails CLOSED on both tiers. Set by run_cpcv at regime-aggregation time.
+    regime_insufficient_obs: bool = False
+    # Phase-4 FIX-2: set True by the gate when the PAPER regime backstop was WAIVED
+    # for event-sparsity (worst_regime_sharpe=None AND regime_insufficient_obs).
+    # Surfaced in gate_detail and read by the promotion runner — a paper PASS under
+    # this waiver REQUIRES human review (it was promoted without real regime data).
+    requires_human_review_flag: bool = False
     # CRITICAL-2: per-path deployment diagnostics (mirror WalkForwardReport).
     path_deployments: List[float] = field(default_factory=list)
     path_deployment_adj_sharpes: List[float] = field(default_factory=list)
@@ -187,7 +200,183 @@ class CPCVResult:
     PAPER_SHARPE_GATE: float = 0.50
     PAPER_MIN_FOLD_SHARPE: float = -0.40
 
-    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> bool:
+    # ── Phase-4: significance-first two-tier gate ─────────────────────────────
+    def _significance_backstops_ok(
+        self, paper_gate: bool = False, tier: str = "paper",
+        regime_waiver_approved: bool = False,
+    ) -> tuple[bool, bool, bool, bool]:
+        """Compute the PF / Calmar / regime backstop flags (shared by both tiers).
+
+        Returns (pf_ok, cal_ok, regime_ok, regime_waived). The PF/Calmar flags
+        mirror the legacy backstop logic exactly. The regime flag is tier-aware
+        for the FIX-2 event-sparsity waiver:
+
+          worst_regime_sharpe is None — TWO causes, distinguished by
+          self.regime_insufficient_obs (set at aggregation time):
+            * EVENT-SPARSITY (regime_insufficient_obs=True): returns were observed
+              but every bucket < REGIME_MIN_OBS (structural; PEAD).
+                - PAPER tier: regime_ok=True (WAIVED) and regime_waived=True so the
+                  caller can set requires_human_review. Narrow, flagged, paper-only
+                  (zero-capital) waiver — NOT a global fail-open.
+                - CAPITAL tier: NOT waived. Fails closed UNLESS an explicit human
+                  sign-off `regime_waiver_approved=True` is passed. Real capital
+                  requires real regime data or documented sign-off.
+            * DATA-BUG (regime_insufficient_obs=False): fail closed on BOTH tiers
+              (unless legacy ALLOW_NO_REGIME_GATE diagnostic bypass).
+        """
+        import logging as _log
+        capital = str(tier).lower() == "capital"
+        n_pf_active = sum(1 for p in self.path_profit_factors if p > 0)
+        n_cal_active = sum(1 for c in self.path_calmars if c != 0)
+        pf_ok = (paper_gate
+                 or n_pf_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                 or self.avg_profit_factor >= MIN_PROFIT_FACTOR)
+        cal_ok = (paper_gate
+                  or n_cal_active < MIN_ACTIVE_FOLDS_FOR_GATE
+                  or self.avg_calmar >= MIN_CALMAR)
+        wrs = self.worst_regime_sharpe
+        regime_waived = False
+        from app.ml.retrain_config import ALLOW_NO_REGIME_GATE
+        if wrs is None:
+            if self.regime_insufficient_obs:
+                # EVENT-SPARSITY waiver (FIX-2).
+                if not capital:
+                    _log.getLogger(__name__).warning(
+                        "CPCVResult: worst_regime_sharpe=None due to EVENT-SPARSITY "
+                        "(every regime bucket < REGIME_MIN_OBS). PAPER regime backstop "
+                        "WAIVED (paper-only, flagged for human review)."
+                    )
+                    regime_ok = True
+                    regime_waived = True
+                elif regime_waiver_approved:
+                    _log.getLogger(__name__).warning(
+                        "CPCVResult: worst_regime_sharpe=None (event-sparsity). CAPITAL "
+                        "regime backstop waived via EXPLICIT human sign-off "
+                        "(regime_waiver_approved=True)."
+                    )
+                    regime_ok = True
+                    regime_waived = True
+                else:
+                    _log.getLogger(__name__).error(
+                        "CPCVResult: worst_regime_sharpe=None (event-sparsity). CAPITAL "
+                        "tier does NOT auto-waive - real capital requires real regime "
+                        "data or explicit regime_waiver_approved=True. FAILING."
+                    )
+                    regime_ok = False
+            elif ALLOW_NO_REGIME_GATE:
+                _log.getLogger(__name__).warning(
+                    "CPCVResult: worst_regime_sharpe=None, gate bypassed "
+                    "(ALLOW_NO_REGIME_GATE=True). Regime gate NOT enforced."
+                )
+                regime_ok = True
+            else:
+                # DATA-BUG: fail closed on both tiers.
+                _log.getLogger(__name__).error(
+                    "CPCVResult: worst_regime_sharpe=None — regime DATA-BUG (no obs "
+                    "recorded). GATE FAILING on both tiers (set ALLOW_NO_REGIME_GATE="
+                    "True to bypass). Ensure fetch_data loaded _global_regime_map."
+                )
+                regime_ok = False
+        else:
+            regime_ok = wrs >= MIN_WORST_REGIME_SHARPE
+        return pf_ok, cal_ok, regime_ok, regime_waived
+
+    def significance_gate_detail(self, tier: str = "paper",
+                                 paper_confirmation: bool = False,
+                                 regime_waiver_approved: bool = False) -> dict:
+        """Per-criterion pass/fail for the significance-first gate at a given tier.
+
+        tier ∈ {"paper", "capital"}. Each value is (observed, ok) so the failed
+        criteria can be listed by the reporter. Mirrors the boolean AND in
+        significance_gate_passed() exactly.
+
+        FIX-2: when the regime backstop is WAIVED for event-sparsity (paper tier,
+        or capital with regime_waiver_approved=True), a `requires_human_review`
+        informational key is added (ok=False so it shows up as a flag) and the
+        result's `requires_human_review_flag` is set. The waiver only fires when
+        worst_regime_sharpe is None AND regime_insufficient_obs is True.
+        """
+        from app.ml.retrain_config import (
+            PAPER_GATE_MIN_TSTAT, PAPER_GATE_MIN_PCT_POSITIVE,
+            PAPER_GATE_MIN_P5_SHARPE, PAPER_GATE_MIN_MEAN_SHARPE,
+            CAPITAL_GATE_MIN_TSTAT, CAPITAL_GATE_MIN_N_FOLDS,
+            CAPITAL_GATE_MIN_MEAN_SHARPE, CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION,
+        )
+        tier = tier.lower()
+        capital = tier == "capital"
+        min_mean = CAPITAL_GATE_MIN_MEAN_SHARPE if capital else PAPER_GATE_MIN_MEAN_SHARPE
+        tstat = self.path_sharpe_tstat
+        pf_ok, cal_ok, regime_ok, regime_waived = self._significance_backstops_ok(
+            paper_gate=False, tier=tier, regime_waiver_approved=regime_waiver_approved)
+        # FIX-2: a waived regime backstop promotes WITH a mandatory human-review flag.
+        if regime_waived:
+            self.requires_human_review_flag = True
+        n_paths = len(self.path_sharpes)
+        enough_paths = n_paths >= MIN_ACTIVE_FOLDS_FOR_GATE
+        detail = {
+            "n_paths": (n_paths, enough_paths),
+            "tstat": (tstat, tstat >= PAPER_GATE_MIN_TSTAT),
+            "pct_positive": (self.pct_positive, self.pct_positive >= PAPER_GATE_MIN_PCT_POSITIVE),
+            "p5_sharpe": (self.p5_sharpe, self.p5_sharpe >= PAPER_GATE_MIN_P5_SHARPE),
+            "mean_sharpe": (self.mean_sharpe, self.mean_sharpe >= min_mean),
+            "avg_profit_factor": (self.avg_profit_factor, pf_ok),
+            "avg_calmar": (self.avg_calmar, cal_ok),
+            "worst_regime_sharpe": (self.worst_regime_sharpe, regime_ok),
+        }
+        if capital:
+            tstat_or_conf = (tstat >= CAPITAL_GATE_MIN_TSTAT) or (
+                CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION and paper_confirmation)
+            detail["n_folds"] = (self.n_folds, self.n_folds >= CAPITAL_GATE_MIN_N_FOLDS)
+            detail["capital_tstat_or_paper_confirmation"] = (tstat, tstat_or_conf)
+        if regime_waived:
+            # Informational (NOT part of the gate boolean AND — ok=False so it is
+            # always listed as a flag in the reporter, never silently passes).
+            detail["requires_human_review"] = (self.regime_insufficient_obs, False)
+        return detail
+
+    def significance_gate_passed(self, tier: str = "paper",
+                                 paper_confirmation: bool = False,
+                                 regime_waiver_approved: bool = False) -> bool:
+        """Significance-first gate (GATE_MODE='significance').
+
+        PAPER passes iff: tstat>=PAPER_MIN_TSTAT AND pct_positive>=PAPER_MIN_PCT_POS
+        AND p5_sharpe>=PAPER_MIN_P5 AND mean_sharpe>=PAPER_MIN_MEAN AND pf_ok AND
+        cal_ok AND regime_ok (PF/Calmar/regime kept as backstops; regime backstop
+        WAIVED on paper for event-sparsity, flagged for human review — see FIX-2).
+        CAPITAL passes iff: PAPER criteria with capital mean floor AND n_folds>=
+        CAPITAL_MIN_N_FOLDS AND (tstat>=CAPITAL_MIN_TSTAT OR paper_confirmation).
+        CAPITAL does NOT auto-waive the regime backstop — pass
+        regime_waiver_approved=True for an explicit human sign-off.
+        """
+        if self.in_sample_override:
+            return False
+        from app.ml.retrain_config import REQUIRE_TRUE_WF_FOR_PROMOTION
+        if REQUIRE_TRUE_WF_FOR_PROMOTION and not self.is_true_walkforward:
+            return False
+        if len(self.path_sharpes) < MIN_ACTIVE_FOLDS_FOR_GATE:
+            return False
+        detail = self.significance_gate_detail(
+            tier=tier, paper_confirmation=paper_confirmation,
+            regime_waiver_approved=regime_waiver_approved)
+        # The human-review flag is informational only — exclude it from the AND so a
+        # waived-but-otherwise-passing result still PASSES paper (with the flag set).
+        return all(ok for k, (_, ok) in detail.items() if k != "requires_human_review")
+
+    def gate_passed(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False,
+                    tier: str = "paper", paper_confirmation: bool = False,
+                    regime_waiver_approved: bool = False) -> bool:
+        # Phase-4: under significance mode, dispatch to the two-tier gate. The
+        # legacy `paper_gate` (relaxed-threshold) kwarg only applies to mean_sharpe
+        # mode; significance mode uses `tier` ("paper"|"capital") instead.
+        from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "significance":
+            # Significance mode flips the t-stat WARN→BLOCK. The legacy `paper_gate`
+            # kwarg is intentionally NOT honored here (it relaxed Sharpe/PF gates,
+            # which contradicts a significance-first promotion). Use `tier` instead.
+            return self.significance_gate_passed(
+                tier=tier, paper_confirmation=paper_confirmation,
+                regime_waiver_approved=regime_waiver_approved)
+        # ── Legacy mean_sharpe mode (faithful pre-Phase-4 reproduction) ──────────
         # In-sample runs (allow_in_sample override) can never promote past gates.
         if self.in_sample_override:
             return False
@@ -259,7 +448,15 @@ class CPCVResult:
             and (tstat_ok or not self.require_tstat_gate)
         )
 
-    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False) -> dict:
+    def gate_detail(self, dsr_n: int = N_TRIALS_TESTED, paper_gate: bool = False,
+                    tier: str = "paper", paper_confirmation: bool = False,
+                    regime_waiver_approved: bool = False) -> dict:
+        # Phase-4: under significance mode, return the tier-aware significance detail.
+        from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "significance":
+            return self.significance_gate_detail(
+                tier=tier, paper_confirmation=paper_confirmation,
+                regime_waiver_approved=regime_waiver_approved)
         _, dsr_p = deflated_sharpe_ratio(
             self.mean_sharpe, dsr_n, self._dsr_n_obs()
         )
@@ -559,6 +756,11 @@ def run_cpcv(
     # regime-by-regime (mean across folds) then take the min over regimes,
     # avoiding the raw-min-over-all-pairs noise bias.
     all_regime_sharpes_by_regime: dict = {}  # regime_name -> [sharpe, ...]
+    # Phase-4 FIX-2: track whether ANY fold observed regime returns at all
+    # (regime_obs_counts non-empty). This distinguishes EVENT-SPARSITY (returns
+    # were mapped to regimes but every bucket was below REGIME_MIN_OBS → dropped)
+    # from a DATA-BUG (no regime map / no labelled days → no obs anywhere).
+    any_regime_obs_seen = False
 
     for combo_idx, test_indices in enumerate(combinations):
         train_indices = [i for i in fold_indices if i not in test_indices]
@@ -666,6 +868,12 @@ def run_cpcv(
                 combo_dep_adj.append(getattr(fold, "deployment_adjusted_sharpe", 0.0) or 0.0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
                     combo_regime_by_name.setdefault(regime, []).append(sh)
+                # FIX-2: did this fold observe ANY regime returns (pre-filter)?
+                # If regime_obs_counts is non-empty the regime map worked and days
+                # were labelled — an empty regime_sharpes then means event-sparsity
+                # (every bucket < REGIME_MIN_OBS), not a data-bug.
+                if getattr(fold, "regime_obs_counts", None):
+                    any_regime_obs_seen = True
             except Exception as exc:
                 logger.warning("CPCV combo %d fold %d failed: %s", combo_idx, ti, exc)
 
@@ -703,11 +911,28 @@ def run_cpcv(
         per_regime_means = [float(np.mean(v)) for v in all_regime_sharpes_by_regime.values()]
         result.worst_regime_sharpe = float(min(per_regime_means))
     else:
-        logger.warning(
-            "CPCV: no regime_sharpes recorded across any fold — "
-            "worst_regime_sharpe is None, regime gate inactive. "
-            "Populate FoldResult.regime_sharpes in your strategy to enable it."
-        )
+        # FIX-2: disambiguate WHY worst_regime_sharpe is None.
+        #   - any_regime_obs_seen=True  → EVENT-SPARSITY: returns were mapped to
+        #     regimes but every bucket was below REGIME_MIN_OBS. Structural for
+        #     event-sparse strategies (PEAD). The PAPER gate WAIVES the regime
+        #     backstop here (flagged for human review); CAPITAL still fails-closed.
+        #   - any_regime_obs_seen=False → DATA-BUG: no regime map / no labelled
+        #     days / aggregation failure. The gate fails CLOSED on BOTH tiers.
+        result.regime_insufficient_obs = bool(any_regime_obs_seen)
+        if any_regime_obs_seen:
+            logger.warning(
+                "CPCV: regime returns were observed but every bucket fell below "
+                "REGIME_MIN_OBS — worst_regime_sharpe is None due to EVENT-SPARSITY "
+                "(structural, e.g. PEAD), NOT a data-bug. PAPER gate will WAIVE the "
+                "regime backstop and FLAG for human review; CAPITAL fails-closed."
+            )
+        else:
+            logger.warning(
+                "CPCV: no regime_sharpes AND no regime observations recorded across "
+                "any fold — worst_regime_sharpe is None due to a DATA-BUG (no regime "
+                "map / no labelled days). Regime gate FAILS CLOSED on both tiers. "
+                "Ensure fetch_data populated _global_regime_map."
+            )
 
     # BUG-2: log completeness — how many fold evaluations were skipped due to
     # having no causal training history. For k=6, paths=2, exactly (k-1)=5 folds

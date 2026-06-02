@@ -27,6 +27,32 @@ from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import Base
 
 
+# ── Phase-4 gate-mode default for the legacy test corpus ──────────────────────
+# The production default is GATE_MODE="significance" (the new two-tier gate). The
+# large pre-Phase-4 gate test corpus, however, asserts the LEGACY mean-Sharpe gate
+# semantics (avg_sharpe>=0.80, t-stat WARN-only, paper_gate relaxed thresholds,
+# WF promotion allowed). Those tests are exactly the "faithful legacy reproduction"
+# proof — so this autouse fixture forces GATE_MODE="mean_sharpe" for every test by
+# default. Tests that want the NEW significance behavior opt in explicitly with the
+# `significance_gate_mode` fixture (see test_significance_gate.py). The code reads
+# GATE_MODE via `from app.ml.retrain_config import GATE_MODE` inside each gate
+# function, so patching the module attribute is sufficient.
+@pytest.fixture(autouse=True)
+def _legacy_gate_mode_default(request):
+    if "significance_gate_mode" in getattr(request, "fixturenames", ()):  # opted in elsewhere
+        yield
+        return
+    with patch("app.ml.retrain_config.GATE_MODE", "mean_sharpe"):
+        yield
+
+
+@pytest.fixture
+def significance_gate_mode():
+    """Opt-in: run the test under the production GATE_MODE='significance'."""
+    with patch("app.ml.retrain_config.GATE_MODE", "significance"):
+        yield
+
+
 # ── Kill switch safety net ────────────────────────────────────────────────────
 # Defense-in-depth: ensure no test can ever persist kill_switch.active=True to
 # the production DB, even if a test forgets to patch the singleton.

@@ -177,8 +177,10 @@ class PEADStrategy:
         # (date, equity) point per trading day; diffs give daily returns → len-1.
         # Mirrors swing.py:320-323. Without this DSR falls back to ~path-count.
         n_obs = max(len(equity_curve) - 1, 0)
+        _regime_obs: dict = {}
         regime_sharpes = _crs(equity_curve, te_start, te_end,
-                              regime_map=getattr(self, "_global_regime_map", None))
+                              regime_map=getattr(self, "_global_regime_map", None),
+                              obs_counts=_regime_obs)
         years = fold_years(te_start, te_end)
         sharpe = float(result.sharpe_ratio)
         total_ret = float(result.total_return_pct)
@@ -205,6 +207,7 @@ class PEADStrategy:
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
             regime_sharpes=regime_sharpes,
+            regime_obs_counts=_regime_obs,
         )
 
 

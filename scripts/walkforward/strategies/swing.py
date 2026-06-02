@@ -327,8 +327,10 @@ class SwingStrategy:
         _daily_rets = [((_eq_vals[i] - _eq_vals[i - 1]) / max(_eq_vals[i - 1], 1e-9))
                        for i in range(1, len(_eq_vals))] if len(_eq_vals) >= 2 else []
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
+        _regime_obs: dict = {}
         regime_sharpes = _crs(equity_curve, te_start, te_end,
-                              regime_map=getattr(self, "_global_regime_map", None))
+                              regime_map=getattr(self, "_global_regime_map", None),
+                              obs_counts=_regime_obs)
         return FoldResult(
             fold=fold_idx,
             train_start=tr_start, train_end=tr_end,
@@ -346,6 +348,7 @@ class SwingStrategy:
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
             regime_sharpes=regime_sharpes,
+            regime_obs_counts=_regime_obs,
             avg_capital_deployed_pct=getattr(result, "avg_capital_deployed_pct", 0.0),
             deployment_adjusted_sharpe=getattr(result, "deployment_adjusted_sharpe", 0.0),
             low_deployment_warning=getattr(result, "low_deployment_warning", False),
