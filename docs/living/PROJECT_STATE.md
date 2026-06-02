@@ -52,6 +52,27 @@ survive honest survivorship + cost modeling. **R1K large-cap PEAD remains the so
 short edges dead, insider weak, buyback no-data, small/mid-cap rejected). The two decisions below are now the
 only remaining moves without new infra/data spend.
 
+### UPDATE (2026-06-02) — Gate recalibrated + PEAD long-only WIRED & ACTIVATED for paper
+Both decisions executed (Opus design → 2 review passes each → merged):
+- **PR #365 — significance-first two-tier promotion gate** (replaces mean-Sharpe≥0.80 relic). PAPER tier
+  (t≥2.0, %pos≥0.75, P5≥0.0, mean≥0.35) + CAPITAL tier (t≥2.5, n_folds≥10, mean≥0.50, explicit sign-off).
+  Event-sparsity regime waiver (paper-only, flagged) lets PEAD's `worst_regime_sharpe=None` pass paper with
+  `requires_human_review`. **Verdicts (real gate): PEAD → PAPER PASS / CAPITAL HOLD; all else FAIL.** Legacy
+  `GATE_MODE=mean_sharpe` is a verified no-op. WF-only runs are INCONCLUSIVE (no longer auto-RETIRE in cron).
+- **PR #366 — PEAD long-only wired into live paper** (the live path existed but ran a wrong config). Fixed:
+  VIX>30 crisis block now fires (daily VIX series injected; **fail-closed** if unavailable), hold=40 (was 5),
+  priced-in filter OFF, scorer pins every validated param. Owner-chosen **risk-managed variant** (keeps
+  regime/NIS/opportunity/macro/RM overlays → expected tracking error vs the clean +0.546, logged for
+  attribution), **marketable entries** (PEAD-scoped, avoids below-ask adverse selection), **full swing budget**.
+  9 `pm.pead_*` config keys (defaults=validated). Observability: `app/live_trading/pead_tracker.py` daily row +
+  weekly Sharpe-vs-0.546 rollup email.
+
+**🟢 ACTIVATED 2026-06-02:** `pm.swing_selector` set `pead_quality_short` → **`pead`** (pure long-only; drops
+the dead QualityShort anti-edge shorts). **⚠️ REQUIRES UVICORN RESTART** to load the new wiring — run
+`.\serve.ps1` (or restart `uvicorn app.main:app`). PEAD begins paper-trading on the next premarket cycle
+(08:00 ET analyze → 09:50 ET send). Watch `data/pead_tracking.db` daily rows + the weekly rollup email.
+**Capital is withheld** (PEAD is CAPITAL-HOLD pending k≥10 re-run OR live-paper confirmation) — this is paper only.
+
 **🔵 DECISIONS NOW YOURS (autonomous experiment ladder exhausted):**
 1. **Paper-trade PEAD long-only** — clears the 0.50 paper gate today (t=2.26, 95% pos, PF 1.54, DSR-pass).
 2. **Is 0.80 the right promotion gate?** For a PF-1.54 / 95%-positive / DSR-pass / Calmar-0.77 real edge,
