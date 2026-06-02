@@ -186,6 +186,12 @@ class AgentSimulator:
         min_confidence: float = MIN_CONFIDENCE,
         top_n: int = TOP_N_STOCKS,
         transaction_cost_pct: float = TX_COST_PCT,
+        # §1.1 cost-sensitivity refactor: slippage lifted from module constants to
+        # constructor kwargs so honest cost tests (e.g. PEAD earnings-window spread
+        # blowout) can sweep them. Defaults equal the prior hardcoded values
+        # (ENTRY_SLIPPAGE_PCT=3bps, STOP_SLIPPAGE_PCT=5bps) → byte-identical at default.
+        entry_slippage_pct: float = ENTRY_SLIPPAGE_PCT,
+        stop_slippage_pct: float = STOP_SLIPPAGE_PCT,
         atr_stop_mult: float = ATR_STOP_MULT,
         atr_target_mult: float = ATR_TARGET_MULT,
         max_vol_pct: Optional[float] = None,
@@ -259,6 +265,9 @@ class AgentSimulator:
         self.min_confidence = min_confidence
         self.top_n = top_n
         self.transaction_cost_pct = transaction_cost_pct
+        # §1.1: per-instance slippage (defaults = prior module constants).
+        self.entry_slippage_pct = entry_slippage_pct
+        self.stop_slippage_pct = stop_slippage_pct
         self.atr_stop_mult = atr_stop_mult
         self.atr_target_mult = atr_target_mult
         self.no_atr_stops = no_atr_stops
@@ -1347,8 +1356,8 @@ class AgentSimulator:
             if _raw_open <= 0:
                 continue
             # MOO fills slip vs printed open; longs pay more, shorts receive less
-            entry_price = (_raw_open * (1 + ENTRY_SLIPPAGE_PCT) if direction == "long"
-                           else _raw_open * (1 - ENTRY_SLIPPAGE_PCT))
+            entry_price = (_raw_open * (1 + self.entry_slippage_pct) if direction == "long"
+                           else _raw_open * (1 - self.entry_slippage_pct))
 
             # Phase 34: No-chase filter — skip large overnight gaps and extended entries
             # Not applied in factor portfolio mode (monthly rebalance enters regardless of daily gap)
@@ -2092,11 +2101,11 @@ class AgentSimulator:
                     # Gap-up through stop: fill at open (worse than stop) + slippage
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = today_open * (1 + STOP_SLIPPAGE_PCT)
+                    fill_price = today_open * (1 + self.stop_slippage_pct)
                 elif today_high >= _orig_stop:
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = _orig_stop * (1 + STOP_SLIPPAGE_PCT)
+                    fill_price = _orig_stop * (1 + self.stop_slippage_pct)
                 elif today_open <= _orig_target:
                     # Gap-down through target: fill at open (better than target)
                     should_exit = True
@@ -2113,11 +2122,11 @@ class AgentSimulator:
                     # Gap-down through stop: fill at open (worse than stop) + slippage
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = today_open * (1 - STOP_SLIPPAGE_PCT)
+                    fill_price = today_open * (1 - self.stop_slippage_pct)
                 elif today_low <= _orig_stop:
                     should_exit = True
                     exit_reason = "stop_hit"
-                    fill_price = _orig_stop * (1 - STOP_SLIPPAGE_PCT)
+                    fill_price = _orig_stop * (1 - self.stop_slippage_pct)
                 elif today_open >= _orig_target:
                     # Gap-up through target: fill at open (better than target)
                     should_exit = True

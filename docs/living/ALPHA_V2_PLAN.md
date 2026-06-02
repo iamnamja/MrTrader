@@ -147,7 +147,7 @@ All Phase-1 items operate on the **existing** PEAD CPCV harness (`run_pead_cpcv.
 
 | Phase | Workstream | Effort | Depends on | Acceptance gate | Blocking decision |
 |---|---|---|---|---|---|
-| P1 | 1.1 Cost-sensitivity sweep | S | — | net SR ≥0.40 @20bps | — |
+| P1 | 1.1 Cost-sensitivity sweep | S | — | net SR ≥0.40 @20bps | ✅ **DONE 2026-06-02 — PASS (+0.402@20bps; anchor +0.548≈+0.546; cost-robust but t<2.0/%pos 57% by 20bps). Working assumption 15bps→SR≈0.45. See ML_EXPERIMENT_LOG.** |
 | P1 | 1.2 Crisis-block robustness | M | — | survives leave-one-crisis-out + generic regime control | Q4 (pause-if-fail) |
 | P1 | 1.3 Event-clustered bootstrap + NW | M–L | — | block-boot p<0.05 & NW t≥2.0 | — |
 | P1 | 1.4 SUE conversion | M | — | SUE-PEAD ≥ current, cleaner tails | — |
