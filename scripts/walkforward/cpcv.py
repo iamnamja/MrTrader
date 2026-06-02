@@ -82,6 +82,16 @@ class CPCVResult:
     # CPCV_MIN_TSTAT. Off by default — the t-stat is reported and warned but does
     # not block. Enable once baseline t-stat data is collected.
     require_tstat_gate: bool = False
+    # Alpha v2 §1.2 instrumentation (PURE-ADDITIVE — does NOT affect any metric or
+    # gate). Per SURVIVING path (i.e. per element of path_sharpes, in the SAME
+    # order), the list of GLOBAL fold ids that path aggregated. The id is the exact
+    # value run_cpcv passes to strategy.run_fold as fold_idx
+    # (combo_idx * len(all_boundaries) + ti + 1), AFTER all skip/purge/overlap
+    # guards. This is
+    # the single source of truth for CPCV path membership; consumers (the PEAD
+    # crisis-robustness LOCO harness) read it instead of reconstructing the grouping.
+    # Default empty — legacy results / callers that don't need it are unaffected.
+    path_fold_members: List[List[int]] = field(default_factory=list)
 
     @property
     def n_combinations(self) -> int:
@@ -777,6 +787,9 @@ def run_cpcv(
         # C8-5: accumulate per-regime within this combo to average before global append,
         # so each combo contributes equally (not proportional to its fold count).
         combo_regime_by_name: dict = {}  # regime -> [sharpe, ...]
+        # §1.2 instrumentation: global fold ids actually run (post-guard) for this
+        # combo, in run order — aligned 1:1 with combo_sharpes appends.
+        combo_fold_ids: List[int] = []
 
         for ti in test_indices:
             tr_start, tr_end, te_start, te_end = all_boundaries[ti]
@@ -851,9 +864,10 @@ def run_cpcv(
                 result.n_skipped += 1
                 continue
 
+            _global_fold_id = combo_idx * len(all_boundaries) + ti + 1
             try:
                 fold = strategy.run_fold(
-                    combo_idx * len(all_boundaries) + ti + 1,
+                    _global_fold_id,
                     n_folds,
                     real_tr_start,
                     real_tr_end,
@@ -861,6 +875,8 @@ def run_cpcv(
                     te_end,
                 )
                 combo_sharpes.append(fold.sharpe)
+                # §1.2: record the id only on success, aligned with combo_sharpes.
+                combo_fold_ids.append(_global_fold_id)
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
@@ -880,6 +896,9 @@ def run_cpcv(
         if combo_sharpes:
             path_sharpe = float(np.mean(combo_sharpes))
             result.path_sharpes.append(path_sharpe)
+            # §1.2 instrumentation: the surviving fold ids that produced this path's
+            # Sharpe, in the SAME order/index as path_sharpes (pure-additive).
+            result.path_fold_members.append(list(combo_fold_ids))
             # I3/I4: include all PFs (don't drop zero-PF folds), cap at MAX_PF_FOR_AVG.
             capped_pfs = [min(p, MAX_PF_FOR_AVG) for p in combo_pfs]
             result.path_profit_factors.append(float(np.mean(capped_pfs)) if capped_pfs else 0.0)
