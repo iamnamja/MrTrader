@@ -774,9 +774,12 @@ class TestNetSectorCapUnit:
         sector_map.update({l: f"SEC{i % 6}" for i, l in enumerate(long_book)})
         new = apply_net_sector_cap(short_tail, long_book=long_book,
                                    sector_map=sector_map, cap=0.30, n_target=30)
-        # ENERGY has 0 longs, so |net| = short_count; admits up to floor(0.30*30)=9
-        # before the cap binds. (When longs ALSO populate ENERGY, more shorts admit.)
-        assert len(new) == 9
+        # The greedy net-cap pass admits ~floor(0.30*30)=9 balanced shorts FIRST, then
+        # the Phase-2 BREADTH pass fills the remainder by rank to n_target — so the
+        # WHOLE concentrated tail (30) is admitted. Dollar-neutrality is now enforced by
+        # per-leg SIZING + the SPY hedge (not by capping the short COUNT), so the breadth
+        # the thesis needs is preserved instead of being starved by the sector cap.
+        assert len(new) == 30
 
     def test_net_sector_cap_lets_short_offset_long_concentration(self):
         """When longs ARE concentrated in the short tail's sector, the net cap admits
