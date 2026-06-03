@@ -691,7 +691,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
     def _fetch_swing_features(self) -> Dict[str, Dict[str, float]]:
         """Fetch bars + engineer features. Uses bulk bar fetch (4 API calls for 750 symbols)
         instead of one call per symbol, then parallelises only the CPU-bound feature engineering."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import (
+            ThreadPoolExecutor, as_completed, TimeoutError as _FuturesTimeout,
+        )
 
         symbols = self._get_universe()
 
@@ -713,20 +715,41 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 return symbol, None
 
         features_by_symbol: Dict[str, Dict[str, float]] = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        # NOTE: not a `with` block on purpose — ThreadPoolExecutor.__exit__ calls
+        # shutdown(wait=True), which would BLOCK on the slow stragglers and defeat
+        # the 120s budget. We shut down with cancel_futures=True in `finally` so a
+        # timeout returns promptly with whatever completed.
+        pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        try:
             futures = {
                 pool.submit(_engineer, sym, bars): sym
                 for sym, bars in bars_by_symbol.items()
                 if not bars.empty
             }
-            for future in as_completed(futures, timeout=120):
-                try:
-                    symbol, feats = future.result(timeout=30)
-                except Exception as e:
-                    self.logger.debug("Feature engineering timed out or failed: %s", e)
-                    continue
-                if feats is not None:
-                    features_by_symbol[symbol] = feats
+            try:
+                for future in as_completed(futures, timeout=120):
+                    try:
+                        symbol, feats = future.result(timeout=30)
+                    except Exception as e:
+                        self.logger.debug("Feature engineering timed out or failed: %s", e)
+                        continue
+                    if feats is not None:
+                        features_by_symbol[symbol] = feats
+            except _FuturesTimeout:
+                # CPU pressure (a concurrent backtest/retrain, or a slow box) blew the
+                # 120s budget before every symbol finished. Degrade GRACEFULLY: keep the
+                # features that DID complete and let the scan proceed on that subset.
+                # Previously the as_completed timeout propagated out of this method and
+                # the caller aborted the entire review/scan — discarding all completed
+                # work and producing zero candidates that cycle.
+                self.logger.warning(
+                    "Feature engineering: %d/%d symbols completed before 120s timeout — "
+                    "proceeding with partial set (scan not aborted)",
+                    len(features_by_symbol), len(futures),
+                )
+        finally:
+            # Cancel not-yet-started tasks; don't wait on in-flight stragglers.
+            pool.shutdown(wait=False, cancel_futures=True)
         return features_by_symbol
 
     def _write_heartbeat(self) -> None:
@@ -2551,7 +2574,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                ~100s at 3 req/s — well within the 5-min timeout).
             """
             from app.ml.intraday_features import compute_intraday_features, MIN_BARS
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import (
+            ThreadPoolExecutor, as_completed, TimeoutError as _FuturesTimeout,
+        )
             from datetime import date as _date
 
             # ── Phase 1: daily batch to rank by volume, keep top 150 ─────────
@@ -2616,21 +2641,34 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             feat_result: Dict[str, Dict[str, float]] = {}
             range_result: Dict[str, Optional[float]] = {}
             n_ok = n_fail = 0
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            # Explicit pool (not `with`) + cancel_futures shutdown so a budget
+            # timeout returns the PARTIAL set instead of discarding all completed
+            # work (which the caller's asyncio.TimeoutError handler would do).
+            pool = ThreadPoolExecutor(max_workers=3)
+            try:
                 futures = {pool.submit(_fetch_one, s): s for s in prefiltered}
-                for future in as_completed(futures, timeout=240):
-                    sym = futures[future]
-                    try:
-                        out = future.result(timeout=30)
-                    except Exception:
-                        n_fail += 1
-                        continue
-                    if out is not None:
-                        feat_result[sym] = out[0]
-                        range_result[sym] = out[1]
-                        n_ok += 1
-                    else:
-                        n_fail += 1
+                try:
+                    for future in as_completed(futures, timeout=240):
+                        sym = futures[future]
+                        try:
+                            out = future.result(timeout=30)
+                        except Exception:
+                            n_fail += 1
+                            continue
+                        if out is not None:
+                            feat_result[sym] = out[0]
+                            range_result[sym] = out[1]
+                            n_ok += 1
+                        else:
+                            n_fail += 1
+                except _FuturesTimeout:
+                    self.logger.warning(
+                        "Intraday feature fetch: %d/%d symbols completed before 240s "
+                        "timeout — proceeding with partial set (scan not aborted)",
+                        n_ok, len(prefiltered),
+                    )
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
 
             self.logger.info(
                 "Intraday feature fetch: %d/%d symbols computed (%d failed/skipped)",

@@ -892,7 +892,15 @@ class FeatureEngineer:
                 _typical = (_highs_20 + _lows_20 + _px) / 3.0
                 _cum_tv = np.cumsum(_typical * _volumes)
                 _cum_v = np.cumsum(_volumes)
-                _vwap_series = np.where(_cum_v > 0, _cum_tv / _cum_v, _px)
+                # Safe divide: compute the ratio only where cumulative volume > 0
+                # (else fall back to price). np.where would eagerly evaluate
+                # _cum_tv/_cum_v for ALL elements first, emitting a div-by-zero
+                # RuntimeWarning and producing inf/nan intermediates on zero-volume bars.
+                _vwap_series = np.divide(
+                    _cum_tv, _cum_v,
+                    out=np.asarray(_px, dtype=float).copy(),
+                    where=_cum_v > 0,
+                )
                 _vwap_dist = float(np.mean(
                     (_px - _vwap_series) / np.where(_vwap_series > 0, _vwap_series, 1)
                 ))
