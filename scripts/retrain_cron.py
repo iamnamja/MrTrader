@@ -195,7 +195,13 @@ def run_intraday(dry_run: bool) -> bool:
 
     trainer = IntradayModelTrainer()
     try:
-        train_kwargs = {k: v for k, v in INTRADAY_RETRAIN.items() if k != "wf_folds"}
+        # wf_folds is consumed by run_intraday_walkforward below; n_workers is a
+        # config-level parallelism knob (intraday parallelism lives in module
+        # constants FETCH_WORKERS/FEATURE_WORKERS) — train_model() accepts neither,
+        # so exclude both from the splat (mirrors the swing path which reads its
+        # keys explicitly). Forwarding n_workers crashed the nightly intraday retrain.
+        _NON_TRAIN_KEYS = {"wf_folds", "n_workers"}
+        train_kwargs = {k: v for k, v in INTRADAY_RETRAIN.items() if k not in _NON_TRAIN_KEYS}
         # C1: retrain_cron runs WF gate immediately below — allowed to auto-promote
         train_kwargs["promote_to_active"] = True
         version = trainer.train_model(**train_kwargs)
