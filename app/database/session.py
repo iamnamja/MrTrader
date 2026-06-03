@@ -15,7 +15,12 @@ engine = create_engine(
     max_overflow=10,
     pool_recycle=3600,
     echo=settings.debug,
-    connect_args={"connect_timeout": 5} if _is_postgres else {},
+    # sqlite (tests/dev) is accessed across threads — FastAPI's threadpool and the
+    # TestClient lifespan portal run on different threads than the one that opened the
+    # pooled connection. Without check_same_thread=False this raises
+    # "SQLite objects created in a thread can only be used in that same thread".
+    # Production (Postgres) keeps the connect timeout and is unaffected.
+    connect_args={"connect_timeout": 5} if _is_postgres else {"check_same_thread": False},
 )
 
 # Create session factory

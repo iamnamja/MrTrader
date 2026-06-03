@@ -71,6 +71,29 @@ function clr(v: number | undefined | null) {
   return v > 0 ? C.green : v < 0 ? C.red : C.text
 }
 
+// ── Selector (PM strategy-source) attribution badge ────────────────────────────
+// Distinguishes PEAD (and other directional selectors) from baseline swing/intraday
+// across proposals, positions and trades. Mirrors Trade.selector / ProposalLog.selector.
+const SELECTOR_META: Record<string, { label: string; color: string }> = {
+  pead: { label: 'PEAD', color: C.accent },
+  quality_short: { label: 'Q-SHORT', color: C.orange },
+  pead_quality_short: { label: 'PEAD+QS', color: C.orange },
+  factor_portfolio: { label: 'FACTOR', color: C.blue },
+  ml_model: { label: 'ML', color: C.muted },
+}
+function SelectorBadge({ selector }: { selector: string | null | undefined }) {
+  const key = (selector || '').trim()
+  if (!key) return null
+  const meta = SELECTOR_META[key] ?? { label: key.toUpperCase(), color: C.muted }
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 9, fontWeight: 700, letterSpacing: '.04em',
+      padding: '1px 6px', borderRadius: 4, background: meta.color + '22',
+      color: meta.color, border: `1px solid ${meta.color}55`, whiteSpace: 'nowrap',
+    }} title={`PM selector: ${key}`}>{meta.label}</span>
+  )
+}
+
 // ── Toast ─────────────────────────────────────────────────────────────────────
 interface ToastMsg { id: number; text: string; type: 'success' | 'error' | 'warning' | 'info' }
 let _toastId = 0
@@ -784,7 +807,7 @@ function OverviewPanel({ summary, health, decisions, macroCtx }: {
                     return (
                       <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                         <td style={{ ...s.td, color: C.accent, fontWeight: 700 }}>{p.symbol}</td>
-                        <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{tradeType ?? '—'}</td>
+                        <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{tradeType ?? '—'} <SelectorBadge selector={p.selector} /></td>
                         <td style={s.td}>{qty}</td>
                         <td style={s.td}>{fmt$(marketValue)}</td>
                         <td style={s.td}>{fmt$(entry)}</td>
@@ -1167,7 +1190,7 @@ function PositionsPanel({ onRefresh }: { onRefresh: () => void }) {
                   return (
                     <tr key={p.symbol}>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
-                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.trade_type ?? '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{p.trade_type ?? '—'} <SelectorBadge selector={p.selector} /></td>
                       <td style={s.td}>{qty}</td>
                       <td style={s.td}>{fmt$(mv)}</td>
                       <td style={s.td}>{fmt$(entry)}</td>
@@ -1293,7 +1316,7 @@ function TradesPanel() {
                   return (
                   <tr key={i} style={{ opacity: rowOpacity }} title={isLegacy ? 'Legacy test trade — quantities unverified against Alpaca' : undefined}>
                     <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{t.symbol}</td>
-                    <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{t.trade_type ?? '—'}</td>
+                    <td style={{ ...s.td, color: typeColor, fontSize: 10, fontWeight: 600 }}>{t.trade_type ?? '—'} <SelectorBadge selector={t.selector} /></td>
                     <td style={s.td}>{t.direction}</td>
                     <td style={{ ...s.td, color: C.blue }}>{isLegacy ? 'legacy' : (t.signal_type ?? '—')}</td>
                     <td style={s.td}>{fmt$(t.entry_price)}</td>
@@ -3400,6 +3423,7 @@ interface SwingProposal {
   id: number
   proposal_uuid: string | null
   strategy: string
+  selector: string | null
   batch_id: string
   scan_label: string
   scan_time: string | null
@@ -3501,6 +3525,7 @@ function PMProposalsTable() {
   const [days, setDays] = useState(1)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [batchFilter, setBatchFilter] = useState<string>('all')
+  const [selectorFilter, setSelectorFilter] = useState<string>('all')
 
   useEffect(() => {
     setLoading(true)
@@ -3510,7 +3535,11 @@ function PMProposalsTable() {
   }, [days])
 
   const batches = Array.from(new Set(proposals.map(p => p.batch_id))).sort().reverse()
-  const filtered = batchFilter === 'all' ? proposals : proposals.filter(p => p.batch_id === batchFilter)
+  const selectors = Array.from(new Set(proposals.map(p => (p.selector || '').trim()).filter(Boolean))).sort()
+  const filtered = proposals.filter(p =>
+    (batchFilter === 'all' || p.batch_id === batchFilter) &&
+    (selectorFilter === 'all' || (p.selector || '').trim() === selectorFilter)
+  )
 
   const riskPct = (entry: number | null, stop: number | null) => {
     if (!entry || !stop || entry <= 0) return null
@@ -3534,6 +3563,11 @@ function PMProposalsTable() {
             </button>
           ))}
         </div>
+        <select value={selectorFilter} onChange={e => setSelectorFilter(e.target.value)}
+          style={{ fontSize: 11, padding: '3px 8px', background: C.surface2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4 }}>
+          <option value="all">All selectors</option>
+          {selectors.map(sel => <option key={sel} value={sel}>{SELECTOR_META[sel]?.label ?? sel.toUpperCase()}</option>)}
+        </select>
         <select value={batchFilter} onChange={e => setBatchFilter(e.target.value)}
           style={{ fontSize: 11, padding: '3px 8px', background: C.surface2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4 }}>
           <option value="all">All batches</option>
@@ -3549,14 +3583,14 @@ function PMProposalsTable() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr>
-              {['Time', 'PM Rank', 'Symbol', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Execution', 'Trade'].map(h => (
+              {['Time', 'PM Rank', 'Symbol', 'Selector', 'Sector', 'ML Score', 'Conf', 'Entry', 'Stop', 'Target', 'Risk%', 'R:R', 'Gates', 'Status', 'RM', 'Execution', 'Trade'].map(h => (
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 2, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
-              <tr><td colSpan={16} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+              <tr><td colSpan={17} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
             )}
             {filtered.map(p => {
               const isExpanded = expandedId === p.id
@@ -3573,6 +3607,7 @@ function PMProposalsTable() {
                     <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(p.scan_time ?? undefined)}</td>
                     <td style={s.td}>{p.rank ?? '—'}</td>
                     <td style={{ ...s.td, fontWeight: 600, color: C.accent }}>{p.symbol}</td>
+                    <td style={s.td}><SelectorBadge selector={p.selector} /></td>
                     <td style={{ ...s.td, color: C.muted }}>{p.sector ?? '—'}</td>
                     <td style={s.td}>{p.ml_score != null ? (p.ml_score * 100).toFixed(1) + '%' : '—'}</td>
                     <td style={s.td}>{p.confidence != null ? (p.confidence * 100).toFixed(1) + '%' : '—'}</td>
@@ -3606,7 +3641,7 @@ function PMProposalsTable() {
                   </tr>
                   {isExpanded && (
                     <tr key={`${p.id}-detail`}>
-                      <td colSpan={16} style={{ background: C.surface2, padding: '8px 16px' }}>
+                      <td colSpan={17} style={{ background: C.surface2, padding: '8px 16px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           <div>
                             <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Scan Context</div>
@@ -3909,8 +3944,182 @@ function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
   )
 }
 
+// ── PEAD Live Tracking Panel ────────────────────────────────────────────────────
+// Surfaces data/pead_tracking.db (the live PEAD selector's scoreboard): the
+// signals→entered→filled funnel, fill rate, gross deployed, daily/cumulative P&L,
+// VIX blocks and per-overlay suppression counts. Only UI view of the live PEAD book.
+interface PeadDaily {
+  trade_date: string
+  n_signals: number | null
+  n_entered: number | null
+  n_filled: number | null
+  fill_rate: number | null
+  gross_deployed: number | null
+  realized_pnl: number | null
+  unrealized_pnl: number | null
+  daily_pnl: number | null
+  cumulative_pnl: number | null
+  vix_level: number | null
+  vix_block_fired: number | null
+  suppressed_opportunity: number | null
+  suppressed_macro: number | null
+  suppressed_rm: number | null
+}
+interface PeadSummary {
+  n_days: number
+  n_signals: number
+  n_entered: number
+  n_filled: number
+  window_fill_rate: number | null
+  cumulative_pnl: number
+  latest_date: string | null
+  latest_vix: number | null
+  vix_blocks: number
+  suppressed_opportunity: number
+  suppressed_macro: number
+  suppressed_rm: number
+  backtest_sharpe: number
+}
+
+function PeadStatCard({ label, value, color, sub }: { label: string; value: string; color?: string; sub?: string }) {
+  return (
+    <div style={s.kpi}>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: C.muted }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color ?? C.text, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{sub}</div>}
+    </div>
+  )
+}
+function FunnelStage({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{ textAlign: 'center', padding: '8px 16px', background: color + '18', border: `1px solid ${color}55`, borderRadius: 6, minWidth: 80 }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
+    </div>
+  )
+}
+function FunnelArrow({ drop }: { drop: number }) {
+  return (
+    <div style={{ textAlign: 'center', color: C.muted, fontSize: 11 }}>
+      <div style={{ fontSize: 16 }}>→</div>
+      {drop > 0 && <div style={{ color: C.red, fontSize: 10 }}>−{drop}</div>}
+    </div>
+  )
+}
+
+function PeadPanel() {
+  const [daily, setDaily] = useState<PeadDaily[]>([])
+  const [summary, setSummary] = useState<PeadSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [days, setDays] = useState(30)
+
+  useEffect(() => {
+    setLoading(true)
+    api.peadTracking(days).then((data: unknown) => {
+      const d = data as { daily: PeadDaily[]; summary: PeadSummary }
+      setDaily(d.daily ?? [])
+      setSummary(d.summary ?? null)
+    }).catch(console.error).finally(() => setLoading(false))
+  }, [days])
+
+  const rows = [...daily].reverse() // newest-first for the table
+  const sup = summary ? (summary.suppressed_opportunity + summary.suppressed_macro + summary.suppressed_rm) : 0
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18 }}>PEAD Live Tracking</h2>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+            Post-earnings drift selector — live vs backtest (expected Sharpe +{(summary?.backtest_sharpe ?? 0.546).toFixed(3)})
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[7, 30, 90].map(d => (
+            <button key={d} onClick={() => setDays(d)}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                background: days === d ? C.accent : C.surface2, color: days === d ? '#000' : C.text }}>
+              {d}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading && <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading PEAD tracking…</div>}
+
+      {!loading && (!summary || summary.n_days === 0) && (
+        <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>
+          No PEAD tracking data in the last {days} days. The PEAD selector writes a daily row at scan time and EOD.
+        </div>
+      )}
+
+      {!loading && summary && summary.n_days > 0 && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+            <PeadStatCard label="Cumulative P&L" value={fmt$(summary.cumulative_pnl)} color={clr(summary.cumulative_pnl)} sub={`over ${summary.n_days} days`} />
+            <PeadStatCard label="Fill Rate" value={summary.window_fill_rate != null ? (summary.window_fill_rate * 100).toFixed(0) + '%' : '—'} sub={`${summary.n_filled}/${summary.n_entered} entered`} />
+            <PeadStatCard label="Signals" value={String(summary.n_signals)} sub="scored over window" />
+            <PeadStatCard label="Entered → Filled" value={`${summary.n_entered} → ${summary.n_filled}`} color={summary.n_filled === 0 && summary.n_signals > 0 ? C.yellow : C.text} sub="post-gate entries" />
+            <PeadStatCard label="Latest VIX" value={summary.latest_vix != null ? summary.latest_vix.toFixed(1) : '—'} color={summary.vix_blocks > 0 ? C.red : C.text} sub={summary.vix_blocks > 0 ? `${summary.vix_blocks} block-day(s)` : 'no blocks'} />
+          </div>
+
+          <div style={{ ...s.card, marginBottom: 16 }}>
+            <div style={s.cardTitle}>Signal → Fill Funnel ({days}d)</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              <FunnelStage label="Signals" value={summary.n_signals} color={C.accent} />
+              <FunnelArrow drop={summary.n_signals - summary.n_entered} />
+              <FunnelStage label="Entered" value={summary.n_entered} color={C.blue} />
+              <FunnelArrow drop={summary.n_entered - summary.n_filled} />
+              <FunnelStage label="Filled" value={summary.n_filled} color={summary.n_filled > 0 ? C.green : C.muted} />
+            </div>
+            <div style={{ fontSize: 11, color: C.muted }}>
+              Suppressions over window:
+              <span style={{ color: sup > 0 ? C.yellow : C.muted, marginLeft: 6 }}>
+                opportunity={summary.suppressed_opportunity} · macro={summary.suppressed_macro} · RM={summary.suppressed_rm} · VIX-block-days={summary.vix_blocks}
+              </span>
+            </div>
+          </div>
+
+          <div style={s.card}>
+            <div style={s.cardTitle}>Daily ({rows.length} rows)</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead><tr>
+                  {['Date', 'Signals', 'Entered', 'Filled', 'Fill%', 'Gross', 'Daily P&L', 'Cum P&L', 'VIX', 'Suppressed (opp/macro/rm)'].map(h =>
+                    <th key={h} style={s.th}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.trade_date} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{r.trade_date}</td>
+                      <td style={s.td}>{r.n_signals ?? '—'}</td>
+                      <td style={s.td}>{r.n_entered ?? '—'}</td>
+                      <td style={s.td}>{r.n_filled ?? '—'}</td>
+                      <td style={s.td}>{r.fill_rate != null ? (r.fill_rate * 100).toFixed(0) + '%' : '—'}</td>
+                      <td style={s.td}>{r.gross_deployed != null ? fmt$(r.gross_deployed) : '—'}</td>
+                      <td style={{ ...s.td, color: clr(r.daily_pnl) }}>{r.daily_pnl != null ? fmt$(r.daily_pnl) : '—'}</td>
+                      <td style={{ ...s.td, color: clr(r.cumulative_pnl) }}>{r.cumulative_pnl != null ? fmt$(r.cumulative_pnl) : '—'}</td>
+                      <td style={s.td}>
+                        {r.vix_level != null ? r.vix_level.toFixed(1) : '—'}
+                        {r.vix_block_fired ? <span style={{ color: C.red, marginLeft: 4, fontSize: 9, fontWeight: 700 }}>BLOCK</span> : null}
+                      </td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>
+                        {(r.suppressed_opportunity ?? 0)}/{(r.suppressed_macro ?? 0)}/{(r.suppressed_rm ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents', 'Macro Intel'] as const
+const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents', 'PEAD', 'Macro Intel'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -4061,6 +4270,7 @@ export default function App() {
         {tab === 'Config' && <ConfigPanel toast={toast} />}
         {tab === 'Monitor' && <MonitorPanel />}
         {tab === 'Agents' && <AgentsPanel liveEvents={agentEvents} />}
+        {tab === 'PEAD' && <PeadPanel />}
         {tab === 'Macro Intel' && <MacroIntelPanel />}
       </div>
 

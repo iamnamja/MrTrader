@@ -263,3 +263,16 @@ HOLD** — the prior "unconditional PASS" framing overstated it.
 **Fixes implemented**: Items 1-4 committed in feat/wf-opus-audit branch.
 
 **Consequences**: Previous WF results (all phases) used the defective embargo formula. Re-running Phase 4 v3 with corrected boundaries is required to get clean results. Embargo fix shrinks test windows by ~85 days each fold — with purge=85 and embargo=85, effective test window is 456-85=371 trading days per fold.
+
+---
+
+## 2026-06-03 — PEAD UI visibility: selector attribution + PEAD tracking panel
+
+**Context**: The dashboard surfaced only "swing" and "intraday" proposals. PEAD — the sole live capital strategy — rode under the "Swing Proposals" tab, indistinguishable from swing-ranker proposals, and its rich daily scoreboard (`data/pead_tracking.db`: signals→entered→filled funnel, fill rate, gross deployed, daily/cum P&L, VIX blocks, per-overlay suppression counts) had **zero UI surface** (weekly email only). With PEAD live and currently 0-filling (price-ran / spread gates), there was no way to see *why* without querying SQLite by hand.
+
+**Decision**:
+1. **Data model** — added `selector` (VARCHAR(32), indexed) to `proposal_log`, mirroring `Trade.selector`. Chosen over deriving PEAD-ness by joining `proposal_uuid → trades.selector` so that **unfilled** PEAD proposals are attributable too (the join only covers proposals that became trades). Migration `scripts/migrations/2026_06_proposal_log_selector.py` is idempotent and backfills historical `dir_{selector}_*` batches (backfilled 271 rows: 150 quality_short, 121 pead).
+2. **API** — `selector` threaded into all 3 PM `ProposalLog` persist sites; exposed on `/proposal-log` (response field + `selector` filter param) and on positions/trades responses. New `/api/dashboard/pead/tracking` wraps `pead_tracker.read_daily` with a window summary (funnel totals, fill rate, suppression counts, cumulative P&L).
+3. **Frontend** — shared `SelectorBadge` across proposals/positions/trades; selector column + filter on the swing proposals table; new top-level **PEAD** tab (KPI row + signal→fill funnel + suppression breakdown + daily table) — the first UI view of the live PEAD book.
+
+**Consequences**: PEAD is now first-class in the dashboard; the funnel/suppression view makes the live 0-fill situation diagnosable at a glance. The live PM/RM/Trader path is unchanged except the additive `selector` write (nullable, default `""`) — a server restart is needed to deploy the routes/UI but **not** for any behavior change. Built in an isolated git worktree to protect the in-flight ranker CPCV run. Not a WF/CPCV pipeline change, so `PIPELINE_ARCHITECTURE.md` is intentionally untouched.

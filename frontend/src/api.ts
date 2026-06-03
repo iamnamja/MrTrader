@@ -79,9 +79,11 @@ export const api = {
     get(`/api/decision-audit/recent?limit=${limit}${strategy ? `&strategy=${strategy}` : ''}`),
   decisionAuditSummary: () => get('/api/decision-audit/summary'),
   gateCalibration: () => get('/api/decision-audit/gate-calibration'),
-  proposalLog: (days = 3, strategy = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=${strategy}`),
-  swingProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=swing`),
+  proposalLog: (days = 3, strategy = '', selector = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=${strategy}&selector=${selector}`),
+  swingProposals: (days = 3, selector = '') => get(`/api/dashboard/proposal-log?days=${days}&strategy=swing&selector=${selector}`),
   intraProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=intraday`),
+  // PEAD live tracking (data/pead_tracking.db — signals→entered→filled funnel, P&L, suppression)
+  peadTracking: (days = 30) => get(`/api/dashboard/pead/tracking?days=${days}`),
   // Regime model (Phase R3/R4)
   regimeCurrent: () => get('/api/dashboard/regime/current'),
   regimeHistory: (days = 30) => get(`/api/dashboard/regime/history?days=${days}`),
