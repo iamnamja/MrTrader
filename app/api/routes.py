@@ -1458,6 +1458,94 @@ async def get_pead_tracking(days: int = 30):
     return {"daily": rows, "summary": summary}
 
 
+@router.get("/pead/detail")
+async def get_pead_detail(days: int = 30, signal_days: int = 5):
+    """PEAD cockpit detail — joins the three persisted PEAD data sources for the tab:
+      - daily/summary:    pead_daily (cumulative-P&L chart + funnel) [reuses /pead/tracking]
+      - live_vs_backtest: realized PEAD Sharpe vs the +0.546 backtest [pead_tracker.weekly_rollup]
+      - positions:        open selector='pead' trades + live drift / unrealized P&L / days-held
+      - signals:          recent selector='pead' proposals + pm->rm->trader lifecycle + reason
+    Read-only. Never mutates the live trading path; tracker reads swallow their own errors.
+    """
+    import json as _json
+    from datetime import timedelta, datetime as _dt
+    from app.live_trading import pead_tracker
+
+    tracking = await get_pead_tracking(days=days)  # {daily, summary}
+
+    # max_hold_days from the latest daily row's `extra` (falls back to 40)
+    max_hold_days = 40
+    if tracking["daily"]:
+        try:
+            max_hold_days = int(_json.loads(tracking["daily"][-1].get("extra") or "{}")
+                                .get("max_hold_days", 40))
+        except Exception:
+            pass
+
+    # live-vs-backtest realized Sharpe (no email — just the payload)
+    try:
+        live_vs_backtest = pead_tracker.weekly_rollup(send=False)
+    except Exception:
+        live_vs_backtest = {}
+
+    positions: list = []
+    signals: list = []
+    db = get_session()
+    try:
+        alpaca_pos: dict = {}
+        try:
+            _ps = await asyncio.wait_for(asyncio.to_thread(_alpaca().get_positions), timeout=5.0)
+            alpaca_pos = {p["symbol"]: p for p in (_ps or [])}
+        except Exception:
+            pass
+
+        # NOTE: unlike /trades (which hides PENDING_FILL crash-recovery bookmarks), the
+        # live book intentionally INCLUDES PENDING_FILL to show orders in flight; the UI
+        # distinguishes it (yellow vs green). Worst case is a stale ghost row, not wrong P&L.
+        open_trades = db.query(Trade).filter(
+            Trade.selector == "pead",
+            Trade.status.in_(("ACTIVE", "PENDING_FILL")),
+        ).order_by(desc(Trade.created_at)).limit(100).all()
+        for t in open_trades:
+            ap = alpaca_pos.get(t.symbol)
+            cur = float(ap["current_price"]) if ap and ap.get("current_price") else None
+            upl = float(ap["unrealized_pl"]) if ap and ap.get("unrealized_pl") is not None else None
+            drift = (cur / t.entry_price - 1.0) if (cur and t.entry_price) else None
+            held_days = (_dt.utcnow() - t.created_at).days if t.created_at else None
+            positions.append({
+                "symbol": t.symbol, "status": t.status, "direction": t.direction,
+                "entry_price": t.entry_price, "current_price": cur, "quantity": t.quantity,
+                "drift_pct": (round(drift * 100, 2) if drift is not None else None),
+                "unrealized_pl": upl, "days_held": held_days, "max_hold_days": max_hold_days,
+                "stop_price": t.stop_price, "target_price": t.target_price,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            })
+
+        cutoff = _dt.utcnow() - timedelta(days=max(1, int(signal_days)))
+        rows = db.query(ProposalLog).filter(
+            ProposalLog.selector == "pead",
+            ProposalLog.proposed_at >= cutoff,
+        ).order_by(desc(ProposalLog.proposed_at)).limit(200).all()
+        for r in rows:
+            signals.append({
+                "symbol": r.symbol, "direction": r.direction,
+                "ml_score": r.ml_score, "confidence": r.confidence, "entry_price": r.entry_price,
+                "pm_status": r.pm_status, "rm_status": r.rm_status, "rm_reason": r.rm_reason,
+                "trader_status": r.trader_status, "trader_reason": r.trader_reason,
+                "proposed_at": r.proposed_at.isoformat() if r.proposed_at else None,
+            })
+    except Exception as exc:
+        logger.error("PEAD detail error: %s", exc)
+    finally:
+        db.close()
+
+    return {
+        "daily": tracking["daily"], "summary": tracking["summary"],
+        "live_vs_backtest": live_vs_backtest,
+        "positions": positions, "signals": signals,
+    }
+
+
 # ─── WF-6 Reconciliation ─────────────────────────────────────────────────────
 
 @router.post("/reconciliation/run")
