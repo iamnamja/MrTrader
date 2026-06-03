@@ -1535,6 +1535,26 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
         rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
         rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
+        # RANKER v2 Spike A — dollar-neutral L/S short leg through the per-fold CPCV
+        # path. Defaults (enable_shorts=False + AgentSimulator-matching grosses) keep
+        # the long-only swing path byte-identical.
+        enable_shorts=getattr(args, "enable_shorts", False),
+        long_gross=getattr(args, "long_gross", 0.95),
+        short_gross=getattr(args, "short_gross", 0.55),
+        short_target_n=getattr(args, "short_target_n", 30),
+        short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),
+        short_add_threshold=getattr(args, "short_add_threshold", 15),
+        short_drop_threshold=getattr(args, "short_drop_threshold", 30),
+        # RANKER v2 §3.1 re-architecture — NET-sector cap (Failure B fix) + SPY
+        # beta-hedge overlay + realized net-exposure capture. Defaults OFF →
+        # long-only / existing L-S CPCV runs byte-identical.
+        net_sector_cap=getattr(args, "net_sector_cap", False),
+        spy_beta_hedge=getattr(args, "spy_beta_hedge", False),
+        spy_beta_lookback=getattr(args, "spy_beta_lookback", 60),
+        spy_hedge_max_gross=getattr(args, "spy_hedge_max_gross", 0.30),
+        capture_net_exposure=(True if getattr(args, "capture_net_exposure", False)
+                              else None),
+        net_beta_lookback=getattr(args, "net_beta_lookback", 60),
         factor_scorer=_factor_scorer,
         no_atr_stops=getattr(args, "no_atr_stops", False),
     )
@@ -1592,7 +1612,51 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         allow_sacred_holdout=args.allow_sacred_holdout,
     )
     cpcv_result.print()
+    _dump_cpcv_result_json(cpcv_result, "swing")
     return cpcv_result
+
+
+def _dump_cpcv_result_json(cpcv_result, model_type: str) -> None:
+    """Persist a CPCV result summary (metrics + realized net-exposure) to a
+    timestamped JSON under logs/, so arms are comparable and auditable after the
+    run. Never raises (diagnostic side-effect only)."""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+        r = cpcv_result
+        detail = r.gate_detail()
+        _fl = lambda xs: [float(x) for x in (xs or [])]
+        payload = {
+            "model_type": getattr(r, "model_type", model_type),
+            "n_folds": r.n_folds, "n_paths": r.n_paths,
+            "n_combinations": r.n_combinations, "n_skipped": r.n_skipped,
+            "mean_sharpe": r.mean_sharpe, "std_sharpe": r.std_sharpe,
+            "p5_sharpe": r.p5_sharpe, "p95_sharpe": r.p95_sharpe,
+            "pct_positive": r.pct_positive, "path_sharpe_tstat": r.path_sharpe_tstat,
+            "avg_deployment_pct": r.avg_deployment_pct,
+            "avg_deployment_adjusted_sharpe": r.avg_deployment_adjusted_sharpe,
+            "avg_profit_factor": r.avg_profit_factor, "avg_calmar": r.avg_calmar,
+            "gate_passed": r.gate_passed(),
+            "gate_failed": [k for k, (v, ok) in detail.items() if not ok],
+            # Realized net-exposure (L/S arm) — the §3.1 validity signals.
+            "net_exposure_captured": r.net_exposure_captured,
+            "mean_net_beta": r.mean_net_beta, "p95_abs_net_beta": r.p95_abs_net_beta,
+            "max_abs_net_beta": r.max_abs_net_beta, "net_beta_clean": r.net_beta_clean,
+            "mean_net_dollar": r.mean_net_dollar, "max_abs_net_dollar": r.max_abs_net_dollar,
+            "max_abs_net_sector": r.max_abs_net_sector, "mean_gross": r.mean_gross,
+            "path_sharpes": _fl(r.path_sharpes),
+            "path_mean_net_betas": _fl(r.path_mean_net_betas),
+            "path_mean_net_dollars": _fl(r.path_mean_net_dollars),
+            "path_mean_grosses": _fl(r.path_mean_grosses),
+        }
+        out_dir = _Path("logs"); out_dir.mkdir(exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out = out_dir / f"cpcv_{payload['model_type']}_{ts}.json"
+        out.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"  CPCV result JSON written: {out}")
+    except Exception as _e:
+        print(f"  (CPCV result JSON dump skipped: {_e})")
 
 
 def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed):
@@ -1819,10 +1883,25 @@ def main() -> int:
                         help="Hysteresis: add short if rank-from-bottom <= this (default: 15)")
     parser.add_argument("--short-drop-threshold", type=int, default=30,
                         help="Hysteresis: drop short if rank-from-bottom > this (default: 30)")
+    parser.add_argument("--net-sector-cap", action="store_true", default=False,
+                        help="RANKER v2 §3.1 (Failure B fix): cap NET sector exposure "
+                             "(long minus short per sector) instead of short COUNT per sector. "
+                             "Lets the sector-concentrated R1K short tail fill where the longs "
+                             "do not, so the short leg reaches its gross target. Requires "
+                             "--enable-shorts.")
+    parser.add_argument("--capture-net-exposure", action="store_true", default=False,
+                        help="RANKER v2 §3.1: capture realized net beta / net dollar / net "
+                             "sector per EOD (PURE-ADDITIVE diagnostic). Auto-on with "
+                             "--enable-shorts; this flag forces it on explicitly.")
+    parser.add_argument("--net-beta-lookback", type=int, default=60,
+                        help="RANKER v2 §3.1: trailing days for PIT net-beta capture (default 60)")
     parser.add_argument("--spy-beta-hedge", action="store_true", default=False,
-                        help="Phase 2b: replace individual short book with SPY short sized to "
-                             "rolling 60d realized beta of the long book. No stock-specific alpha "
-                             "claim; pure market-exposure hedge. Requires --enable-shorts.")
+                        help="SPY beta hedge. Long-only: replace short book with a SPY short "
+                             "sized to the long book's rolling 60d beta (Option A). With "
+                             "--enable-shorts (RANKER v2 §3.1): OVERLAY a SPY short sized to the "
+                             "RESIDUAL net beta of the whole book (longs minus single-name shorts) "
+                             "to drive realized net beta -> 0. Requires --enable-shorts for the "
+                             "overlay behavior.")
     parser.add_argument("--spy-beta-lookback", type=int, default=60,
                         help="Rolling days for beta computation (default: 60)")
     parser.add_argument("--spy-hedge-max-gross", type=float, default=0.30,
