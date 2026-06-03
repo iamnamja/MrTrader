@@ -333,6 +333,10 @@ def test_build_train_matrix_no_leak():
 
 # ── 8b. THE regression lock: matrix must be NON-EMPTY end-to-end ──────────────
 
+# Runs the REAL ModelTrainer on ~3y x 5-symbol synthetic data (no mocks) — a heavy
+# integration build that lands near the global 120s budget and tips over under xdist
+# CI load. Give it explicit headroom (it's legitimately slow, not a hang).
+@pytest.mark.timeout(300)
 def test_build_train_matrix_is_non_empty():
     """Regression lock for the per-fold empty-matrix bug.
 
