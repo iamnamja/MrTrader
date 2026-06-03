@@ -2574,9 +2574,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                ~100s at 3 req/s — well within the 5-min timeout).
             """
             from app.ml.intraday_features import compute_intraday_features, MIN_BARS
-            from concurrent.futures import (
-            ThreadPoolExecutor, as_completed, TimeoutError as _FuturesTimeout,
-        )
+            from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _FuturesTimeout  # noqa: E501
             from datetime import date as _date
 
             # ── Phase 1: daily batch to rank by volume, keep top 150 ─────────
