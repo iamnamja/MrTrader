@@ -128,3 +128,62 @@ def test_net_sector_cap_respects_n_target_ceiling():
     smap = {s: "ENERGY" for s in shorts}
     out = apply_net_sector_cap(shorts, [], smap, cap=0.30, n_target=20)
     assert len(out) == 20  # never exceeds n_target
+
+
+# ── C. _pm_score full-ranking when enable_shorts (the real root cause) ───────────
+# The L/S arm needs the FULL cross-section (top→long, bottom→short). The long-only
+# proposal_pool_size cap + min_confidence floor surfaced only ~50 long-attractive
+# names → no bottom to short → long book absorbed them all → empty short / net-long.
+
+def _bars(n=250):
+    import numpy as np
+    import pandas as pd
+    idx = pd.date_range("2022-01-01", periods=n, freq="B")
+    close = 100.0 + np.cumsum(np.random.default_rng(7).normal(0, 0.5, n))
+    return pd.DataFrame({"open": close * 0.999, "high": close * 1.005,
+                         "low": close * 0.995, "close": close,
+                         "volume": np.full(n, 1_000_000.0)}, index=idx)
+
+
+def _scoring_model(probas):
+    import numpy as np
+    m = MagicMock()
+    m.is_trained = True
+    m.feature_names = ["close", "volume"]
+    m._ts_norm_state = None
+    m._highvix_sibling = None
+    m._regime_split_threshold = None
+    arr = np.array(probas, dtype=float)
+    m.predict.side_effect = lambda X, *a, **k: (np.ones(len(X), dtype=int), arr[:len(X)])
+    m.predict_with_vix.side_effect = lambda X, *a, **k: (np.ones(len(X), dtype=int), arr[:len(X)])
+    return m
+
+
+def test_pm_score_full_ranking_when_enable_shorts():
+    from app.backtesting.agent_simulator import AgentSimulator
+    probas = [0.70, 0.60, 0.50, 0.30, 0.10]  # 5 names; only 3 clear a 0.40 floor
+    syms = [f"S{i}" for i in range(5)]
+    data = {s: _bars() for s in syms}
+    day = data[syms[0]].index[-1].date()
+
+    # Long-only: capped by proposal_pool_size (and floored by min_confidence)
+    sim_long = AgentSimulator(model=_scoring_model(probas), enable_shorts=False,
+                              rebalance_mode=True, min_confidence=0.40,
+                              proposal_pool_size=2, max_vol_pct=None)
+    out_long = sim_long._pm_score(day, data)
+    assert len(out_long) <= 2  # long-only proposal pool
+
+    # L/S rebalance: FULL ranking — all 5 names, including the bottom (for shorting)
+    sim_ls = AgentSimulator(model=_scoring_model(probas), enable_shorts=True,
+                            rebalance_mode=True, min_confidence=0.40,
+                            proposal_pool_size=2, max_vol_pct=None)
+    out_ls = sim_ls._pm_score(day, data)
+    assert len(out_ls) == 5
+    assert syms[4] in {s for s, _ in out_ls}  # lowest-ranked present for the short leg
+
+    # Gate: enable_shorts WITHOUT rebalance_mode (signal mode) must NOT bypass the
+    # floor/cap (signal mode has no own min_confidence floor). Stays capped.
+    sim_signal = AgentSimulator(model=_scoring_model(probas), enable_shorts=True,
+                                rebalance_mode=False, min_confidence=0.40,
+                                proposal_pool_size=2, max_vol_pct=None)
+    assert len(sim_signal._pm_score(day, data)) <= 2

@@ -901,17 +901,26 @@ class AgentSimulator:
         order = np.argsort(probas)[::-1]
         sym_arr = np.array(sym_list)
         proposals = []
+        # RANKER v2 §3.1: the L/S arm needs the FULL cross-sectional ranking (top names
+        # → longs, BOTTOM names → shorts). The proposal_pool_size cap + min_confidence
+        # floor are LONG-ONLY artifacts (a long book only wants high-confidence names);
+        # applying them to the L/S arm surfaced only ~50 long-attractive names, so the
+        # short leg had no genuine bottom to short and the long book absorbed them all
+        # (net-long, empty short). Return the full ranking when enable_shorts.
+        # gate on rebalance_mode too: signal mode has no own min_confidence floor,
+        # so only bypass the floor/cap for the L/S rebalance arm.
+        _full_ranking = self.enable_shorts and self.rebalance_mode
         for idx in order:
             sym = sym_arr[idx]
             prob = float(probas[idx])
-            if prob < self.min_confidence:
+            if not _full_ranking and prob < self.min_confidence:
                 break
             if self.max_vol_pct is not None:
                 vol_pct = features_by_symbol[sym].get("vol_percentile_52w", 0.0)
                 if vol_pct > self.max_vol_pct / 100.0:
                     continue
             proposals.append((sym, prob))
-            if len(proposals) >= self.proposal_pool_size:
+            if not _full_ranking and len(proposals) >= self.proposal_pool_size:
                 break
         return proposals
 
@@ -977,15 +986,21 @@ class AgentSimulator:
         vol_arr = np.array(vol_pcts)
         order = np.argsort(probas)[::-1]
         proposals = []
+        # RANKER v2 §3.1: L/S needs the FULL cross-section (see _pm_score). Bypass the
+        # long-only proposal_pool_size cap + min_confidence floor when enable_shorts so
+        # the short leg gets a genuine universe bottom distinct from the longs.
+        # gate on rebalance_mode too: signal mode has no own min_confidence floor,
+        # so only bypass the floor/cap for the L/S rebalance arm.
+        _full_ranking = self.enable_shorts and self.rebalance_mode
         for idx in order:
             sym = sym_list[idx]
             prob = float(probas[idx])
-            if prob < self.min_confidence:
+            if not _full_ranking and prob < self.min_confidence:
                 break  # sorted desc — remaining will be lower
             if self.max_vol_pct is not None and vol_arr[idx] > self.max_vol_pct / 100.0:
                 continue
             proposals.append((sym, prob))
-            if len(proposals) >= self.proposal_pool_size:
+            if not _full_ranking and len(proposals) >= self.proposal_pool_size:
                 break
 
         logger.debug(
