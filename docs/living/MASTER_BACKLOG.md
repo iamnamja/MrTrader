@@ -1,8 +1,40 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-05-29
+**Last updated:** 2026-06-03
 **Capital:** $100k (paper)
-**Status:** ⛔ **LX CAMPAIGN CLOSED** — 9 experiments (LX1 baseline, LX6a/b, LX7, LX8, LX8b, LX9-B1, LX9-A) all failed to fix F2 (Aug 2024 VIX spike). Crash-date sector audit confirmed F2 losses are structural to this universe/cadence, not addressable through feature engineering. **New focus: Intraday model (avg WF Sharpe +7.08, all folds passing)**. Swing LX1 kept as candidate for paper-trade monitoring only. C1/C2/C3 corruption bugs fixed (PR #306 merged).
+**Status:** 🎯 **ALPHA-v3 — EVENT-EDGE FAMILY** (active). Cross-sectional ML ranking is **closed** (3 honest CPCV nulls: swing noise, intraday cost-drag, dollar-neutral ranker beta-only — see DECISIONS.md 2026-06-03). **PEAD is the sole validated edge** (+0.546 CPCV, real-but-underpowered, live in paper). Two parallel tracks: **(A)** build a 2nd event-driven edge; **(B)** productionize + aggressively ramp PEAD in paper to self-certify. See the **Alpha-v3 Plan** section directly below; older sections (LX campaign, 2026-05-18 L/S pivot) are **superseded — archive-only**.
+
+---
+
+## 🎯 ALPHA-v3 PLAN — Event-Edge Family (2026-06-03)
+
+**Thesis:** every attempt to extract alpha from *cross-sectional ML ranking* on price/fundamental features came back **noise or beta**. The one thing that worked — **PEAD** — is **event-driven, rules-based, economically grounded**. That's where alpha lives in this stack. So: stop ranking, hunt **discrete-event → measurable-drift** edges, each run through the same honest CPCV + event-bootstrap harness.
+
+**Rigor (non-negotiable, identical to PEAD):** leak-free per-fold CPCV · event-clustered bootstrap significance (not just path-t) · F2-immunity · economic grounding **pre-registered before** the run · **capital only via the live-paper route**, never via k-inflation (multiple-testing trap). A null is a publishable result, not something to patch around.
+
+### Track A — Build edge #2 (the research engine)
+| Phase | Item | Effort | Status |
+|---|---|---|---|
+| **A0** | Generalize `run_pead_cpcv.py`'s `PEADStrategy` → reusable **EventEdgeStrategy** (parameterize event source → entry/exit → drift window over AgentSimulator + CPCV gate + event-bootstrap). One refactor; every future edge becomes a thin adapter. | ~1d | **NEXT** |
+| **A1** | **Analyst up/downgrade drift** — event table from `get_analyst_grades_fmp` (data **already wired**, fmp_provider.py:137), enter-at-open post-event, tune drift window (5/10/20d), quality filters → honest CPCV + bootstrap → verdict. | ~2–3d + compute | After A0 |
+| **A2** | **Short-interest / squeeze** — *data acquisition* (FINRA Consolidated Short Interest, **free**, bi-monthly, point-in-time w/ ~8-biz-day publication lag; days-to-cover from SI÷ADV) ~1.5–2d, then squeeze event table → CPCV → verdict. yfinance shortPercent = latest-snapshot-only **trap** (lookahead). | ~3–4d total + compute | After A1 |
+| **A3** | If ≥2 edges survive: **combined-book** portfolio construction (PEAD + edge#2) → test portfolio IR > either alone (the diversification prize; self-certifies faster). | TBD | Conditional |
+
+### Track B — Productionize & aggressively ramp PEAD in paper (the self-certification clock)
+| Phase | Item | Effort | Status |
+|---|---|---|---|
+| **B1** | Fix half-wired realized-Sharpe pipeline: EOD `record_daily` upsert in `_run_eod_jobs` writing PEAD book realized/unrealized P&L + fills (maps `selector="pead"` → Trade rows). Without this, weekly_rollup returns "n/a" forever. **This is the clock.** | ~M | At restart |
+| **B2** | Friday 16:30 ET cron + "skip if <3 trading days / n/a" guard. No-op without B1. | ~S | At restart (w/ B1) |
+| **B4** | **Aggressive paper-allocation ramp** + capacity instrumentation (fill quality, slippage, ADV participation) — paper has no capital risk, so ramp hard to surface true capacity. Real-money graduation gate **unchanged** (multi-year live Sharpe + CAPITAL gate). | ~S–M | At restart |
+| **B3** | Announce-day-move / earnings-surprise capture per PEAD signal (cockpit's defining column; live-path write + migration). | ~S–M | Opportunistic |
+| **B5** | Replace VIX>30 block with SPY<200d trend filter (crisis robustness / capacity). | ~M | Opportunistic |
+
+### Closed / retired (green-lit 2026-06-03)
+- ❌ Cross-sectional ML ranking line — **closed** (DECISIONS.md 2026-06-03).
+- ❌ Spike B (residualized ranker features) — **shelved permanently** (nothing to unmask: neutralized book rewarded zero IC).
+- ♻️ §3.3 short-interest-as-ranker-feature — **re-scoped** into A2 as its own event edge.
+- ✅ Insider-buying cluster — already tested → FAIL/weak (ML log); not repeated.
+- ⏸ Index reconstitution — dropped (≈annual → too few events to power).
 
 ---
 
