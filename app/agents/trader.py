@@ -831,6 +831,7 @@ class Trader(BaseAgent):
                 trade_type=trade_type,
                 quote=quote,
                 intraday_bars=intraday_bars_5m,
+                selector=(proposal.get("selector") or ""),
             )
             if not eq.approved:
                 self.logger.info(
@@ -867,7 +868,7 @@ class Trader(BaseAgent):
                         from app.database.models import ProposalLog
                         _reason_map = {
                             "price_run": f"Price ran {eq.price_run_pct*100:.1f}% from signal",
-                            "spread": f"Spread {eq.spread_pct*100:.1f}% > max 0.5%",
+                            "spread": f"Spread {eq.spread_pct*100:.1f}% too wide",
                             "adverse_move": f"Adverse move {eq.price_run_pct*100:.1f}% from signal",
                         }
                         trader_reason = next(
