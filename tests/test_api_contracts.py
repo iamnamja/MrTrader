@@ -183,6 +183,7 @@ class TestTradesEndpoint:
         trade.status = "CLOSED"
         trade.signal_type = "EMA_CROSSOVER"
         trade.trade_type = "swing"
+        trade.selector = "pead"
         trade.stop_price = 145.0
         trade.target_price = 160.0
         trade.created_at = datetime.utcnow()
@@ -201,6 +202,7 @@ class TestTradesEndpoint:
         rows = r.json()
         assert len(rows) == 1
         assert rows[0]["signal_type"] == "EMA_CROSSOVER"
+        assert rows[0]["selector"] == "pead"
         assert rows[0]["stop_price"] == 145.0
 
 
