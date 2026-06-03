@@ -944,6 +944,7 @@ class TestRealisticUniverseNeutrality:
             f"only {len(removed)}/80 short-tail names are sub-50M ADV — the 50M floor "
             "is not biting, so the fixture cannot reproduce Failure B (short underfill).")
 
+    @pytest.mark.timeout(300)  # realistic 240-name x 260-day sim; >120s under CI xdist
     def test_old_path_reproduces_failure_b(self, fixture):
         bars, sector_map = fixture
         # OLD path: per-side short-sector cap, pre-FIX-1b short sizing (divide by
@@ -979,6 +980,7 @@ class TestRealisticUniverseNeutrality:
             f"OLD path unexpectedly clean by the production lens "
             f"(mean_nb={m:.3f}, p95={p95:.3f}) — fixture not exercising the failure.")
 
+    @pytest.mark.timeout(300)  # realistic 240-name x 260-day sim; >120s under CI xdist
     def test_current_path_resolves_failure_b_by_production_metric(self, fixture):
         bars, sector_map = fixture
         # CURRENT path: NET-sector cap + FIX-1b realized-count rescale + SPY hedge.
@@ -1009,6 +1011,7 @@ class TestRealisticUniverseNeutrality:
 
 
 class TestSpyBetaHedgeOverlay:
+    @pytest.mark.timeout(300)  # builds fixture + TWO realistic sims; >120s under CI xdist
     def test_overlay_reduces_residual_net_beta_vs_no_hedge(self):
         """With single-name shorts of systematically lower beta than longs, the
         dollar-neutral book carries large residual net beta; the SPY overlay drives
