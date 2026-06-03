@@ -19,6 +19,7 @@ class PositionResponse(BaseModel):
     target_price: Optional[float] = None
     signal_type: Optional[str] = None
     trade_type: Optional[str] = None       # "swing" | "intraday"
+    selector: Optional[str] = None         # "pead" | "quality_short" | "" — PM selector source
     bars_held: Optional[int] = None
     entry_date: Optional[str] = None       # YYYY-MM-DD
     trade_id: Optional[int] = None
@@ -39,6 +40,7 @@ class TradeResponse(BaseModel):
     status: str
     signal_type: Optional[str] = None
     trade_type: Optional[str] = None
+    selector: Optional[str] = None         # "pead" | "quality_short" | "" — PM selector source
     stop_price: Optional[float] = None
     target_price: Optional[float] = None
     created_at: datetime

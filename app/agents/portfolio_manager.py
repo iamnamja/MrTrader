@@ -1520,6 +1520,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     _regime = self._current_regime_ctx or {}
                     _pl_row = _PLdp(
                         strategy="swing",
+                        selector=selector or "",
                         batch_id=f"dir_{selector}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
                         scan_time=datetime.utcnow(),
                         symbol=sym,
@@ -2743,6 +2744,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     _regime = self._current_regime_ctx or {}
                     _row = ProposalLog(
                         strategy="intraday",
+                        selector="",  # intraday scan is not a directional selector
                         batch_id=_intraday_batch_id,
                         scan_time=_scan_time_utc,
                         scan_window=win_str,
@@ -3855,6 +3857,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     _pl_row = ProposalLog(
                         proposal_uuid=proposal["proposal_uuid"],
                         strategy="swing",
+                        selector=proposal.get("selector") or "",
                         scan_time=datetime.utcnow(),
                         symbol=symbol,
                         ml_score=round(float(confidence), 4),

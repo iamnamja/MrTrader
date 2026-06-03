@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-02 (PEAD live in paper; Alpha v2 plan locked)
+**Last updated:** 2026-06-03 (PEAD UI visibility shipped — selector attribution + PEAD tracking tab; ranker Spike-A CPCV running)
 
 ---
 

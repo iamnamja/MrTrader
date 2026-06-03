@@ -550,6 +550,10 @@ class ProposalLog(Base):
     # PM-generated UUID; may be null for gate-blocked rows
     proposal_uuid = Column(String(36), nullable=True, index=True)
     strategy = Column(String(10), nullable=False, index=True)       # 'swing' | 'intraday'
+    # PM selector-source attribution — mirrors Trade.selector so PEAD (and other
+    # directional selectors) are distinguishable from baseline swing/intraday in the
+    # proposal log. 'pead' | 'quality_short' | 'ml_model' | 'factor_portfolio' | ''.
+    selector = Column(String(32), nullable=True, default="", index=True)
     batch_id = Column(String(50), nullable=True, index=True)        # groups all rows from one scan
 
     # ── Trigger context ───────────────────────────────────────────────────────

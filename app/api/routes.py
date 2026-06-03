@@ -317,6 +317,7 @@ async def get_open_positions():
                 target_price=target,
                 signal_type=t.signal_type if t else None,
                 trade_type=getattr(t, "trade_type", None) if t else None,
+                selector=getattr(t, "selector", None) if t else None,
                 bars_held=t.bars_held if t else None,
                 entry_date=t.created_at.isoformat() if t and t.created_at else None,
                 trade_id=t.id if t else None,
@@ -380,6 +381,7 @@ async def get_trade_history(limit: int = 100, status: str = ""):
                 status=t.status,
                 signal_type=getattr(t, 'signal_type', None),
                 trade_type=getattr(t, 'trade_type', None),
+                selector=getattr(t, 'selector', None),
                 stop_price=getattr(t, 'stop_price', None),
                 target_price=getattr(t, 'target_price', None),
                 created_at=t.created_at,
@@ -1333,8 +1335,12 @@ async def get_regime_analytics(days: int = 30):
 
 
 @router.get("/proposal-log")
-async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
-    """Unified proposal log — swing and intraday proposals with full PM→RM→Trader audit trail."""
+async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = "", selector: str = ""):
+    """Unified proposal log — swing and intraday proposals with full PM→RM→Trader audit trail.
+
+    Optional ``selector`` filters to a PM selector-source (e.g. 'pead', 'quality_short',
+    'ml_model', 'factor_portfolio') so PEAD proposals can be isolated from baseline swing.
+    """
     db = get_session()
     try:
         from datetime import timedelta
@@ -1342,12 +1348,15 @@ async def get_proposal_log(days: int = 3, limit: int = 500, strategy: str = ""):
         q = db.query(ProposalLog).filter(ProposalLog.proposed_at >= cutoff)
         if strategy in ("swing", "intraday"):
             q = q.filter(ProposalLog.strategy == strategy)
+        if selector:
+            q = q.filter(ProposalLog.selector == selector)
         rows = q.order_by(desc(ProposalLog.proposed_at)).limit(min(limit, 1000)).all()
         return [
             {
                 "id": r.id,
                 "proposal_uuid": r.proposal_uuid,
                 "strategy": r.strategy,
+                "selector": r.selector or "",
                 "batch_id": r.batch_id,
                 "scan_time": r.scan_time.isoformat() if r.scan_time else None,
                 "scan_window": r.scan_window,
@@ -1405,6 +1414,48 @@ async def get_swing_proposals(days: int = 3, limit: int = 200):
 async def get_intra_proposals(days: int = 3, limit: int = 200):
     """Intraday proposals — reads from unified proposal_log. Kept for backward compatibility."""
     return await get_proposal_log(days=days, limit=limit, strategy="intraday")
+
+
+@router.get("/pead/tracking")
+async def get_pead_tracking(days: int = 30):
+    """PEAD live-vs-backtest tracking — daily rows from the PEAD tracker (signals→
+    entered→filled funnel, fill rate, gross deployed, daily/cumulative P&L, VIX,
+    vix_block, per-overlay suppression counts) plus a window-level summary.
+
+    Surfaces data/pead_tracking.db (pead_daily) — the only UI view of the live PEAD
+    selector's scoreboard. read_daily() never raises (returns [] on error).
+    """
+    from datetime import date as _date, timedelta
+    from app.live_trading import pead_tracker
+
+    since = _date.today() - timedelta(days=max(0, int(days)))
+    rows = pead_tracker.read_daily(since=since)  # ascending by trade_date, list[dict]
+
+    def _num(r, k, default=0):
+        v = r.get(k)
+        return default if v is None else v
+
+    n_signals = sum(_num(r, "n_signals") for r in rows)
+    n_entered = sum(_num(r, "n_entered") for r in rows)
+    n_filled = sum(_num(r, "n_filled") for r in rows)
+    latest = rows[-1] if rows else None
+
+    summary = {
+        "n_days": len(rows),
+        "n_signals": n_signals,
+        "n_entered": n_entered,
+        "n_filled": n_filled,
+        "window_fill_rate": round(n_filled / n_entered, 4) if n_entered else None,
+        "cumulative_pnl": round(float(_num(latest, "cumulative_pnl", 0.0)), 2) if latest else 0.0,
+        "latest_date": latest.get("trade_date") if latest else None,
+        "latest_vix": latest.get("vix_level") if latest else None,
+        "vix_blocks": sum(_num(r, "vix_block_fired") for r in rows),
+        "suppressed_opportunity": sum(_num(r, "suppressed_opportunity") for r in rows),
+        "suppressed_macro": sum(_num(r, "suppressed_macro") for r in rows),
+        "suppressed_rm": sum(_num(r, "suppressed_rm") for r in rows),
+        "backtest_sharpe": pead_tracker.BACKTEST_SHARPE,
+    }
+    return {"daily": rows, "summary": summary}
 
 
 # ─── WF-6 Reconciliation ─────────────────────────────────────────────────────

@@ -53,6 +53,7 @@ export interface Position {
   target_price?: number
   signal_type?: string
   trade_type?: string
+  selector?: string
   bars_held?: number
   entry_date?: string
   trade_id?: number
@@ -65,6 +66,7 @@ export interface Trade {
   direction: string
   signal_type?: string
   trade_type?: string
+  selector?: string
   entry_price?: number
   exit_price?: number
   current_price?: number
