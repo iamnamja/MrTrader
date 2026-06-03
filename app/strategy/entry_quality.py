@@ -36,6 +36,19 @@ SWING_MAX_PRICE_RUN_PCT = 0.015       # enter up to 1.5% above signal price
 SWING_MAX_ADVERSE_MOVE_PCT = 0.015    # enter up to 1.5% below signal price
 SWING_MAX_SPREAD_PCT = 0.005          # skip if spread > 0.5%
 
+# ── Thresholds — PEAD (post-earnings drift; WIDE) ─────────────────────────────
+# PEAD names gap on earnings (2-8% opening moves are normal), and the validated
+# CPCV backtest (+0.546) enters at the post-earnings OPEN with NO price-run/spread
+# rejection — its only entry filter is the SCORER's max_announce_day_move (skip
+# report-day gaps > 8%; drift is strongest for moderate reactions). The generic
+# SWING gate (1.5% run / 0.5% spread) is an UNMODELED live constraint that rejects
+# exactly the high-drift winners PEAD targets — an adverse-selection trap. These
+# wide bounds restore live↔backtest fidelity (enter the gap), keeping only a sanity
+# ceiling against bad ticks / genuinely illiquid names.
+PEAD_MAX_PRICE_RUN_PCT = 0.10         # admit normal post-earnings gaps; block egregious chases
+PEAD_MAX_ADVERSE_MOVE_PCT = 0.10
+PEAD_MAX_SPREAD_PCT = 0.010           # wider liquidity sanity cap (1.0%)
+
 # ── Shared thresholds ─────────────────────────────────────────────────────────
 MIN_VOLUME_RATIO = 0.30         # skip if current bar volume < 30% of 20-bar avg
 INTRADAY_BARS_NEEDED = 12       # min 5-min bars to assess intraday momentum (1 hour)
@@ -64,6 +77,7 @@ def check_entry_quality(
     trade_type: str,
     quote: Optional[dict] = None,
     intraday_bars: Optional[pd.DataFrame] = None,
+    selector: str = "",
 ) -> EntryQualityResult:
     """
     Evaluate whether current market conditions support entering a trade.
@@ -75,6 +89,10 @@ def check_entry_quality(
         trade_type:    "swing" or "intraday"
         quote:         dict with "bid" and "ask" keys (optional)
         intraday_bars: DataFrame of 5-min OHLCV bars for today (optional)
+        selector:      PM selector source (e.g. "pead"). PEAD uses WIDE bounds so live
+                       entries match the validated backtest (which enters at the
+                       post-earnings open with no price-run gate); takes precedence
+                       over trade_type.
 
     Returns:
         EntryQualityResult — .approved=True if all checks pass
@@ -83,9 +101,16 @@ def check_entry_quality(
         return EntryQualityResult(approved=False, reason="invalid_prices")
 
     is_intraday = trade_type == "intraday"
-    max_run = INTRADAY_MAX_PRICE_RUN_PCT if is_intraday else SWING_MAX_PRICE_RUN_PCT
-    max_adverse = INTRADAY_MAX_ADVERSE_MOVE_PCT if is_intraday else SWING_MAX_ADVERSE_MOVE_PCT
-    max_spread = INTRADAY_MAX_SPREAD_PCT if is_intraday else SWING_MAX_SPREAD_PCT
+    is_pead = selector == "pead"
+    if is_pead:
+        max_run, max_adverse, max_spread = (
+            PEAD_MAX_PRICE_RUN_PCT, PEAD_MAX_ADVERSE_MOVE_PCT, PEAD_MAX_SPREAD_PCT)
+    elif is_intraday:
+        max_run, max_adverse, max_spread = (
+            INTRADAY_MAX_PRICE_RUN_PCT, INTRADAY_MAX_ADVERSE_MOVE_PCT, INTRADAY_MAX_SPREAD_PCT)
+    else:
+        max_run, max_adverse, max_spread = (
+            SWING_MAX_PRICE_RUN_PCT, SWING_MAX_ADVERSE_MOVE_PCT, SWING_MAX_SPREAD_PCT)
 
     # ── Check 1: price run ────────────────────────────────────────────────────
     price_run_pct = (current_price - signal_price) / signal_price
@@ -139,7 +164,9 @@ def check_entry_quality(
 
         # For intraday trades: require momentum to not be sharply negative
         # For swing trades: more forgiving — we're entering for multi-day hold
-        momentum_threshold = -0.008 if trade_type == "intraday" else -0.015
+        # PEAD holds for days/weeks — intraday slope is noise; don't reject on it
+        # (same adverse-selection logic as the wide price-run bound above).
+        momentum_threshold = -0.05 if is_pead else (-0.008 if is_intraday else -0.015)
         if momentum_slope < momentum_threshold:
             logger.info(
                 "%s entry rejected: intraday momentum slope %.2f%% too negative for %s",
