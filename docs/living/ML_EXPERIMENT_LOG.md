@@ -33,6 +33,24 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## A2-data — Short Interest & Short Volume acquisition — 2026-06-03 — STATUS: ✅ DONE (data infra)
+
+**Goal**: acquire point-in-time short-interest + short-volume data for the Alpha-v3 Track-A2 squeeze edge.
+
+**Source decision** (empirically probed with our existing keys): **Polygon** `/stocks/v1/short-interest` + `/stocks/v1/short-volume` — FINRA-originated, on our plan, no new credentials. FMP short interest is **not on our plan** (`stable/short-interest` 404, v4 legacy-blocked); Finnhub 403; FINRA's own short-*interest* API needs OAuth (FINRA CDN exposes only daily short-*volume* free).
+
+**Backfilled** (survivorship-safe, PIT R1K union incl. delisted):
+- **Short interest**: 140,286 rows · 741 tickers · 2017-12-29 → 2026-05-15 (bi-monthly; `short_interest`, `avg_daily_volume`, `days_to_cover`).
+- **Short volume**: 403,103 rows · 720 tickers · 2024-02-06 → 2026-06-02 (daily Reg SHO; `short_volume_ratio`).
+
+**PIT contract (the leak-killer)**: short interest is settlement-dated but only disseminated by FINRA ~8 bdays later. We stamp a **conservative** `knowable_date = settlement + 10 bdays` (+2 buffer absorbs holidays) and every accessor filters `knowable_date <= as_of`. **Validated on the GME squeeze**: as-of 2021-01-27 the accessor returns the 2020-12-31 settlement, NOT the undisseminated 2021-01-15 reading — using the latter would have been the classic backtest leak.
+
+**Deliverables**: `app/data/short_interest_provider.py` (fetch + knowable-stamp + PIT accessors `get_short_interest_at` / `get_short_volume_features_at`), `scripts/backfill_short_interest.py`, `tests/test_short_interest_provider.py` (14 unit), `docs/reference/SHORT_INTEREST_DATA.md`. Data is gitignored (`*.parquet`); regenerate via `python scripts/backfill_short_interest.py`.
+
+**Next**: A0 (generalize the PEAD CPCV harness) → then A2 squeeze event table → CPCV verdict.
+
+---
+
 ## §3.1 RANKER v2 — Dollar-Neutral High-Breadth Re-Test — 2026-06-03 — VERDICT: ❌ DEAD (no cross-sectional alpha)
 
 **Hypothesis**: the "dead" swing ranker (+0.22, t=0.17) was strangled by a 5-position long-only book; re-running it **dollar-neutral, sector-neutral, high-breadth** would surface alpha (Fundamental Law: IR ≈ IC·√breadth).
