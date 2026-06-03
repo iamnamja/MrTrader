@@ -84,6 +84,8 @@ export const api = {
   intraProposals: (days = 3) => get(`/api/dashboard/proposal-log?days=${days}&strategy=intraday`),
   // PEAD live tracking (data/pead_tracking.db — signals→entered→filled funnel, P&L, suppression)
   peadTracking: (days = 30) => get(`/api/dashboard/pead/tracking?days=${days}`),
+  // PEAD cockpit detail: daily + summary + live-vs-backtest + open positions + signal log
+  peadDetail: (days = 30, signalDays = 5) => get(`/api/dashboard/pead/detail?days=${days}&signal_days=${signalDays}`),
   // Regime model (Phase R3/R4)
   regimeCurrent: () => get('/api/dashboard/regime/current'),
   regimeHistory: (days = 30) => get(`/api/dashboard/regime/history?days=${days}`),

@@ -4007,23 +4007,48 @@ function FunnelArrow({ drop }: { drop: number }) {
   )
 }
 
+interface PeadPosition {
+  symbol: string; status: string; direction: string
+  entry_price: number | null; current_price: number | null; quantity: number | null
+  drift_pct: number | null; unrealized_pl: number | null
+  days_held: number | null; max_hold_days: number | null
+  stop_price: number | null; target_price: number | null
+}
+interface PeadSignal {
+  symbol: string; direction: string
+  ml_score: number | null; confidence: number | null; entry_price: number | null
+  pm_status: string; rm_status: string | null; rm_reason: string | null
+  trader_status: string | null; trader_reason: string | null
+  proposed_at: string | null
+}
+
 function PeadPanel() {
   const [daily, setDaily] = useState<PeadDaily[]>([])
   const [summary, setSummary] = useState<PeadSummary | null>(null)
+  const [positions, setPositions] = useState<PeadPosition[]>([])
+  const [signals, setSignals] = useState<PeadSignal[]>([])
+  const [lvb, setLvb] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [days, setDays] = useState(30)
 
   useEffect(() => {
     setLoading(true)
-    api.peadTracking(days).then((data: unknown) => {
-      const d = data as { daily: PeadDaily[]; summary: PeadSummary }
+    api.peadDetail(days).then((data: unknown) => {
+      const d = data as {
+        daily: PeadDaily[]; summary: PeadSummary; positions: PeadPosition[]
+        signals: PeadSignal[]; live_vs_backtest: Record<string, unknown>
+      }
       setDaily(d.daily ?? [])
       setSummary(d.summary ?? null)
+      setPositions(d.positions ?? [])
+      setSignals(d.signals ?? [])
+      setLvb(d.live_vs_backtest ?? null)
     }).catch(console.error).finally(() => setLoading(false))
   }, [days])
 
   const rows = [...daily].reverse() // newest-first for the table
   const sup = summary ? (summary.suppressed_opportunity + summary.suppressed_macro + summary.suppressed_rm) : 0
+  const hasAny = (summary != null && summary.n_days > 0) || positions.length > 0 || signals.length > 0
 
   return (
     <div>
@@ -4031,7 +4056,8 @@ function PeadPanel() {
         <div>
           <h2 style={{ margin: 0, fontSize: 18 }}>PEAD Live Tracking</h2>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-            Post-earnings drift selector — live vs backtest (expected Sharpe +{(summary?.backtest_sharpe ?? 0.546).toFixed(3)})
+            Post-earnings drift — realized Sharpe <span style={{ color: C.text }}>{String(lvb?.realized_sharpe ?? '—')}</span> vs backtest <span style={{ color: C.text }}>{String(lvb?.backtest_sharpe ?? '+0.546')}</span>
+            {lvb?.skipped ? <span style={{ color: C.muted }}> ({String(lvb.skipped)})</span> : null}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
@@ -4047,9 +4073,10 @@ function PeadPanel() {
 
       {loading && <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading PEAD tracking…</div>}
 
-      {!loading && (!summary || summary.n_days === 0) && (
+      {!loading && !hasAny && (
         <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>
-          No PEAD tracking data in the last {days} days. The PEAD selector writes a daily row at scan time and EOD.
+          No PEAD activity in the last {days} days. The selector writes a daily row at scan time/EOD;
+          open positions and the signal log appear here once PEAD scans run.
         </div>
       )}
 
@@ -4113,6 +4140,59 @@ function PeadPanel() {
             </div>
           </div>
         </>
+      )}
+
+      {!loading && positions.length > 0 && (
+        <div style={{ ...s.card, marginTop: 16 }}>
+          <div style={s.cardTitle}>Live PEAD Book ({positions.length})</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr>{['Symbol', 'Status', 'Dir', 'Entry', 'Current', 'Drift', 'Unreal P&L', 'Days', 'Stop', 'Target'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {positions.map(p => (
+                  <tr key={p.symbol} style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{p.symbol}</td>
+                    <td style={{ ...s.td, fontSize: 10, color: p.status === 'ACTIVE' ? C.green : C.yellow }}>{p.status}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{p.direction}</td>
+                    <td style={s.td}>{p.entry_price != null ? fmt$(p.entry_price) : '—'}</td>
+                    <td style={s.td}>{p.current_price != null ? fmt$(p.current_price) : '—'}</td>
+                    <td style={{ ...s.td, color: clr(p.drift_pct) }}>{p.drift_pct != null ? fmtPct(p.drift_pct) : '—'}</td>
+                    <td style={{ ...s.td, color: clr(p.unrealized_pl) }}>{p.unrealized_pl != null ? fmt$(p.unrealized_pl) : '—'}</td>
+                    <td style={s.td}>{p.days_held != null ? `${p.days_held}/${p.max_hold_days ?? '—'}` : '—'}</td>
+                    <td style={{ ...s.td, color: C.red }}>{p.stop_price != null ? fmt$(p.stop_price) : '—'}</td>
+                    <td style={{ ...s.td, color: C.green }}>{p.target_price != null ? fmt$(p.target_price) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!loading && signals.length > 0 && (
+        <div style={{ ...s.card, marginTop: 16 }}>
+          <div style={s.cardTitle}>Signal Log ({signals.length}) — pm → rm → trader, with the exact block/fill reason</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>{['Time', 'Symbol', 'Dir', 'Score', 'Signal $', 'PM', 'RM', 'Trader', 'Outcome'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {signals.map((sg, i) => (
+                  <tr key={`${sg.symbol}-${i}`} style={{ borderBottom: `1px solid rgba(255,255,255,.05)` }}>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>{fmtTs(sg.proposed_at ?? undefined)}</td>
+                    <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{sg.symbol}</td>
+                    <td style={{ ...s.td, color: C.muted }}>{sg.direction}</td>
+                    <td style={s.td}>{sg.ml_score != null ? (sg.ml_score * 100).toFixed(1) + '%' : '—'}</td>
+                    <td style={s.td}>{sg.entry_price != null ? fmt$(sg.entry_price) : '—'}</td>
+                    <td style={s.td}>{sg.pm_status}</td>
+                    <td style={{ ...s.td, color: sg.rm_status === 'APPROVED' ? C.green : sg.rm_status === 'REJECTED' ? C.red : C.muted }}>{sg.rm_status ?? '—'}</td>
+                    <td style={{ ...s.td, color: sg.trader_status === 'FILLED' ? C.green : (sg.trader_status && sg.trader_status !== 'QUEUED') ? C.red : C.yellow }}>{sg.trader_status ?? '—'}</td>
+                    <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{sg.trader_reason || sg.rm_reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   )
