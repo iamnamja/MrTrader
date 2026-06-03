@@ -24,7 +24,6 @@ max_hold_bars, set via EventEdgeStrategy.max_hold_bars_override).
 """
 
 import logging
-from datetime import date as _date
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
