@@ -233,6 +233,10 @@ class FoldResult:
     mean_net_dollar: float = 0.0
     max_abs_net_dollar: float = 0.0
     max_abs_net_sector: float = 0.0
+    # Realized gross NAV (long_gross + short_gross). Surfaces whether the L/S book
+    # actually reached its target gross (e.g. 0.80) or under-funded — the missing
+    # signal that made the §3.1 treatment arm unverifiable.
+    mean_gross: float = 0.0
     net_exposure_captured: bool = False
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated by the walk-forward engine when --compute-fold-ic is passed.

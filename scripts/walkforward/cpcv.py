@@ -108,6 +108,9 @@ class CPCVResult:
     path_mean_net_dollars: List[float] = field(default_factory=list)
     path_max_abs_net_dollars: List[float] = field(default_factory=list)
     path_max_abs_net_sectors: List[float] = field(default_factory=list)
+    # Realized gross NAV per path (mean over the combo's captured folds). Reveals
+    # whether the L/S book reached its target gross or under-funded.
+    path_mean_grosses: List[float] = field(default_factory=list)
     # True when at least one surviving fold actually captured net exposure.
     net_exposure_captured: bool = False
 
@@ -257,6 +260,12 @@ class CPCVResult:
     @property
     def max_abs_net_sector(self) -> float:
         return float(max(self.path_max_abs_net_sectors)) if self.path_max_abs_net_sectors else 0.0
+
+    @property
+    def mean_gross(self) -> float:
+        """Mean realized gross NAV across paths (long_gross + short_gross). Compare to
+        the target (e.g. 0.80) to detect an under-funded book."""
+        return float(np.mean(self.path_mean_grosses)) if self.path_mean_grosses else 0.0
 
     @property
     def net_beta_clean(self) -> bool:
@@ -629,6 +638,19 @@ class CPCVResult:
                 print(f"  *** LOW DEPLOYMENT ({self.avg_deployment_pct:.1%} < "
                       f"{MIN_DEPLOYMENT_PCT_WARN:.0%}) — raw Sharpe not comparable to "
                       f"fully-invested benchmarks ***")
+        # RANKER v2 §3.1 — realized net-exposure panel (L/S arm only). Surfaces
+        # whether the book was actually dollar-/beta-neutral AND funded to target
+        # gross. ASCII-only (Windows console). Diagnostic — not a gate.
+        if self.net_exposure_captured:
+            from app.backtesting.net_exposure import NET_BETA_ALPHA_THRESHOLD as _NBT
+            _clean = "OK" if self.net_beta_clean else "FAIL"
+            print(f"  Realized net beta:   mean {self.mean_net_beta:+.3f}  "
+                  f"p95|b| {self.p95_abs_net_beta:.3f}  (clean lens <= {_NBT})  {_clean}")
+            print(f"  Realized net dollar: mean {self.mean_net_dollar:+.3f}  "
+                  f"max|nd| {self.max_abs_net_dollar:.3f}")
+            print(f"  Realized net sector: max|ns| {self.max_abs_net_sector:.3f}")
+            print(f"  Realized gross NAV:  mean {self.mean_gross:.3f}  "
+                  f"(target = long_gross + short_gross from the run command)")
         if self.avg_profit_factor > 0:
             print(f"  Avg PF:       {self.avg_profit_factor:.3f}  "
                   f"(gate: > {MIN_PROFIT_FACTOR})  "
@@ -868,6 +890,7 @@ def run_cpcv(
         combo_net_dollars: List[float] = []
         combo_max_abs_dollars: List[float] = []
         combo_max_abs_sectors: List[float] = []
+        combo_grosses: List[float] = []
         combo_ne_captured = False
         # C8-5: accumulate per-regime within this combo to average before global append,
         # so each combo contributes equally (not proportional to its fold count).
@@ -978,6 +1001,7 @@ def run_cpcv(
                     combo_net_dollars.append(getattr(fold, "mean_net_dollar", 0.0) or 0.0)
                     combo_max_abs_dollars.append(getattr(fold, "max_abs_net_dollar", 0.0) or 0.0)
                     combo_max_abs_sectors.append(getattr(fold, "max_abs_net_sector", 0.0) or 0.0)
+                    combo_grosses.append(getattr(fold, "mean_gross", 0.0) or 0.0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
                     combo_regime_by_name.setdefault(regime, []).append(sh)
                 # FIX-2: did this fold observe ANY regime returns (pre-filter)?
@@ -1030,6 +1054,8 @@ def run_cpcv(
                     float(max(combo_max_abs_dollars)) if combo_max_abs_dollars else 0.0)
                 result.path_max_abs_net_sectors.append(
                     float(max(combo_max_abs_sectors)) if combo_max_abs_sectors else 0.0)
+                result.path_mean_grosses.append(
+                    float(np.mean(combo_grosses)) if combo_grosses else 0.0)
             # C8-5: append per-combo regime mean (not per-fold raw value) so each
             # combo contributes equally to worst_regime_sharpe regardless of fold count.
             for regime, vals in combo_regime_by_name.items():

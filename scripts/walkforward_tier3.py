@@ -1612,7 +1612,51 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         allow_sacred_holdout=args.allow_sacred_holdout,
     )
     cpcv_result.print()
+    _dump_cpcv_result_json(cpcv_result, "swing")
     return cpcv_result
+
+
+def _dump_cpcv_result_json(cpcv_result, model_type: str) -> None:
+    """Persist a CPCV result summary (metrics + realized net-exposure) to a
+    timestamped JSON under logs/, so arms are comparable and auditable after the
+    run. Never raises (diagnostic side-effect only)."""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+        r = cpcv_result
+        detail = r.gate_detail()
+        _fl = lambda xs: [float(x) for x in (xs or [])]
+        payload = {
+            "model_type": getattr(r, "model_type", model_type),
+            "n_folds": r.n_folds, "n_paths": r.n_paths,
+            "n_combinations": r.n_combinations, "n_skipped": r.n_skipped,
+            "mean_sharpe": r.mean_sharpe, "std_sharpe": r.std_sharpe,
+            "p5_sharpe": r.p5_sharpe, "p95_sharpe": r.p95_sharpe,
+            "pct_positive": r.pct_positive, "path_sharpe_tstat": r.path_sharpe_tstat,
+            "avg_deployment_pct": r.avg_deployment_pct,
+            "avg_deployment_adjusted_sharpe": r.avg_deployment_adjusted_sharpe,
+            "avg_profit_factor": r.avg_profit_factor, "avg_calmar": r.avg_calmar,
+            "gate_passed": r.gate_passed(),
+            "gate_failed": [k for k, (v, ok) in detail.items() if not ok],
+            # Realized net-exposure (L/S arm) — the §3.1 validity signals.
+            "net_exposure_captured": r.net_exposure_captured,
+            "mean_net_beta": r.mean_net_beta, "p95_abs_net_beta": r.p95_abs_net_beta,
+            "max_abs_net_beta": r.max_abs_net_beta, "net_beta_clean": r.net_beta_clean,
+            "mean_net_dollar": r.mean_net_dollar, "max_abs_net_dollar": r.max_abs_net_dollar,
+            "max_abs_net_sector": r.max_abs_net_sector, "mean_gross": r.mean_gross,
+            "path_sharpes": _fl(r.path_sharpes),
+            "path_mean_net_betas": _fl(r.path_mean_net_betas),
+            "path_mean_net_dollars": _fl(r.path_mean_net_dollars),
+            "path_mean_grosses": _fl(r.path_mean_grosses),
+        }
+        out_dir = _Path("logs"); out_dir.mkdir(exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out = out_dir / f"cpcv_{payload['model_type']}_{ts}.json"
+        out.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"  CPCV result JSON written: {out}")
+    except Exception as _e:
+        print(f"  (CPCV result JSON dump skipped: {_e})")
 
 
 def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earnings_cal, passed):

@@ -437,5 +437,6 @@ class SwingStrategy:
             mean_net_dollar=getattr(result, "mean_net_dollar", 0.0),
             max_abs_net_dollar=getattr(result, "max_abs_net_dollar", 0.0),
             max_abs_net_sector=getattr(result, "max_abs_net_sector", 0.0),
+            mean_gross=getattr(result, "mean_gross", 0.0),
             net_exposure_captured=getattr(result, "net_exposure_captured", False),
         )
