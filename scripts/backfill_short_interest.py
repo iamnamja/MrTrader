@@ -22,10 +22,13 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
+from pathlib import Path
 
-import pandas as pd
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 
-from app.data import short_interest_provider as sip
+import pandas as pd  # noqa: E402
+
+from app.data import short_interest_provider as sip  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backfill_short_interest")
