@@ -20,7 +20,7 @@ Source: Polygon ``/stocks/v1/short-interest`` and ``/stocks/v1/short-volume``
 
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
