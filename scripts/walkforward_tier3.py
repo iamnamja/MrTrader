@@ -1535,6 +1535,26 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
         rebalance_dispersion_gate=getattr(args, "rebalance_dispersion_gate", False),
         rebalance_dispersion_k=getattr(args, "rebalance_dispersion_k", 5),
         rebalance_dispersion_L=getattr(args, "rebalance_dispersion_L", 126),
+        # RANKER v2 Spike A — dollar-neutral L/S short leg through the per-fold CPCV
+        # path. Defaults (enable_shorts=False + AgentSimulator-matching grosses) keep
+        # the long-only swing path byte-identical.
+        enable_shorts=getattr(args, "enable_shorts", False),
+        long_gross=getattr(args, "long_gross", 0.95),
+        short_gross=getattr(args, "short_gross", 0.55),
+        short_target_n=getattr(args, "short_target_n", 30),
+        short_min_adv=getattr(args, "short_min_adv", 50_000_000.0),
+        short_add_threshold=getattr(args, "short_add_threshold", 15),
+        short_drop_threshold=getattr(args, "short_drop_threshold", 30),
+        # RANKER v2 §3.1 re-architecture — NET-sector cap (Failure B fix) + SPY
+        # beta-hedge overlay + realized net-exposure capture. Defaults OFF →
+        # long-only / existing L-S CPCV runs byte-identical.
+        net_sector_cap=getattr(args, "net_sector_cap", False),
+        spy_beta_hedge=getattr(args, "spy_beta_hedge", False),
+        spy_beta_lookback=getattr(args, "spy_beta_lookback", 60),
+        spy_hedge_max_gross=getattr(args, "spy_hedge_max_gross", 0.30),
+        capture_net_exposure=(True if getattr(args, "capture_net_exposure", False)
+                              else None),
+        net_beta_lookback=getattr(args, "net_beta_lookback", 60),
         factor_scorer=_factor_scorer,
         no_atr_stops=getattr(args, "no_atr_stops", False),
     )
@@ -1819,10 +1839,25 @@ def main() -> int:
                         help="Hysteresis: add short if rank-from-bottom <= this (default: 15)")
     parser.add_argument("--short-drop-threshold", type=int, default=30,
                         help="Hysteresis: drop short if rank-from-bottom > this (default: 30)")
+    parser.add_argument("--net-sector-cap", action="store_true", default=False,
+                        help="RANKER v2 §3.1 (Failure B fix): cap NET sector exposure "
+                             "(long minus short per sector) instead of short COUNT per sector. "
+                             "Lets the sector-concentrated R1K short tail fill where the longs "
+                             "do not, so the short leg reaches its gross target. Requires "
+                             "--enable-shorts.")
+    parser.add_argument("--capture-net-exposure", action="store_true", default=False,
+                        help="RANKER v2 §3.1: capture realized net beta / net dollar / net "
+                             "sector per EOD (PURE-ADDITIVE diagnostic). Auto-on with "
+                             "--enable-shorts; this flag forces it on explicitly.")
+    parser.add_argument("--net-beta-lookback", type=int, default=60,
+                        help="RANKER v2 §3.1: trailing days for PIT net-beta capture (default 60)")
     parser.add_argument("--spy-beta-hedge", action="store_true", default=False,
-                        help="Phase 2b: replace individual short book with SPY short sized to "
-                             "rolling 60d realized beta of the long book. No stock-specific alpha "
-                             "claim; pure market-exposure hedge. Requires --enable-shorts.")
+                        help="SPY beta hedge. Long-only: replace short book with a SPY short "
+                             "sized to the long book's rolling 60d beta (Option A). With "
+                             "--enable-shorts (RANKER v2 §3.1): OVERLAY a SPY short sized to the "
+                             "RESIDUAL net beta of the whole book (longs minus single-name shorts) "
+                             "to drive realized net beta -> 0. Requires --enable-shorts for the "
+                             "overlay behavior.")
     parser.add_argument("--spy-beta-lookback", type=int, default=60,
                         help="Rolling days for beta computation (default: 60)")
     parser.add_argument("--spy-hedge-max-gross", type=float, default=0.30,

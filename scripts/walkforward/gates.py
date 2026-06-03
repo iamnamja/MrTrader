@@ -223,6 +223,17 @@ class FoldResult:
     avg_capital_deployed_pct: float = 0.0
     deployment_adjusted_sharpe: float = 0.0
     low_deployment_warning: bool = False
+    # RANKER v2 §3.1 (Spike A) — realized net-exposure diagnostics (PURE-ADDITIVE;
+    # default zero so all existing fold results are unchanged). Forwarded from
+    # SimResult by SwingStrategy.run_fold; aggregated by run_cpcv onto CPCVResult.
+    mean_net_beta: float = 0.0
+    last_net_beta: float = 0.0
+    max_abs_net_beta: float = 0.0  # raw daily max — DIAGNOSTIC ONLY (BLOCKER 1)
+    p95_abs_net_beta: float = 0.0  # warmup-trimmed steady-state p95 — ACCEPTANCE lens
+    mean_net_dollar: float = 0.0
+    max_abs_net_dollar: float = 0.0
+    max_abs_net_sector: float = 0.0
+    net_exposure_captured: bool = False
     # Phase A diagnostics: per-feature mean IC over the test window (optional).
     # Populated by the walk-forward engine when --compute-fold-ic is passed.
     # Not a gate — used to monitor feature decay between train and test.

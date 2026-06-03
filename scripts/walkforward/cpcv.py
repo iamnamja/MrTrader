@@ -93,6 +93,24 @@ class CPCVResult:
     # Default empty — legacy results / callers that don't need it are unaffected.
     path_fold_members: List[List[int]] = field(default_factory=list)
 
+    # ── RANKER v2 §3.1 (Spike A) realized net-exposure (PURE-ADDITIVE) ──────────
+    # Per-path mean of the surviving folds' realized net beta / net dollar / net
+    # sector (same discipline as path_fold_members: new optional fields, default
+    # empty, ZERO effect on any metric/gate). Aggregated to scalars by the
+    # net_beta / net_dollar / max_abs_* properties below. Only populated when the
+    # underlying SwingStrategy ran with capture_net_exposure=True (the L/S arm);
+    # long-only runs leave these empty so existing CPCV results are unchanged.
+    path_mean_net_betas: List[float] = field(default_factory=list)
+    path_max_abs_net_betas: List[float] = field(default_factory=list)
+    # BLOCKER 1: warmup-trimmed steady-state p95 |net beta| per path — the PERSISTENT
+    # exposure lens that drives net_beta_clean (max_abs_net_beta is diagnostic only).
+    path_p95_abs_net_betas: List[float] = field(default_factory=list)
+    path_mean_net_dollars: List[float] = field(default_factory=list)
+    path_max_abs_net_dollars: List[float] = field(default_factory=list)
+    path_max_abs_net_sectors: List[float] = field(default_factory=list)
+    # True when at least one surviving fold actually captured net exposure.
+    net_exposure_captured: bool = False
+
     @property
     def n_combinations(self) -> int:
         return len(self.path_sharpes)
@@ -205,6 +223,65 @@ class CPCVResult:
     def low_deployment(self) -> bool:
         from app.ml.retrain_config import MIN_DEPLOYMENT_PCT_WARN
         return self.avg_deployment_pct < MIN_DEPLOYMENT_PCT_WARN
+
+    # ── RANKER v2 §3.1 realized net-exposure aggregation (diagnostic only) ──────
+    @property
+    def mean_net_beta(self) -> float:
+        """Mean signed book net beta across paths (≈0 ⇒ clean dollar-neutral)."""
+        return float(np.mean(self.path_mean_net_betas)) if self.path_mean_net_betas else 0.0
+
+    @property
+    def max_abs_net_beta(self) -> float:
+        """Worst-case RAW daily |net beta| across all paths. DIAGNOSTIC ONLY
+        (BLOCKER 1): the SPY hedge re-sizes on the 5-day rebalance cadence while net
+        beta is captured daily, so this spikes between rebalances even on a book that
+        is beta-neutral on average. NOT part of the clean/accept decision — see
+        p95_abs_net_beta / net_beta_clean."""
+        return float(max(self.path_max_abs_net_betas)) if self.path_max_abs_net_betas else 0.0
+
+    @property
+    def p95_abs_net_beta(self) -> float:
+        """Worst-case PERSISTENT |net beta| across paths (warmup-trimmed steady-state
+        p95). Together with mean_net_beta this is the alpha-vs-beta acceptance lens
+        used by net_beta_clean — robust to transient inter-rebalance / warmup spikes."""
+        return float(max(self.path_p95_abs_net_betas)) if self.path_p95_abs_net_betas else 0.0
+
+    @property
+    def mean_net_dollar(self) -> float:
+        return float(np.mean(self.path_mean_net_dollars)) if self.path_mean_net_dollars else 0.0
+
+    @property
+    def max_abs_net_dollar(self) -> float:
+        return float(max(self.path_max_abs_net_dollars)) if self.path_max_abs_net_dollars else 0.0
+
+    @property
+    def max_abs_net_sector(self) -> float:
+        return float(max(self.path_max_abs_net_sectors)) if self.path_max_abs_net_sectors else 0.0
+
+    @property
+    def net_beta_clean(self) -> bool:
+        """True when realized PERSISTENT net beta is within the locked
+        NET_BETA_ALPHA_THRESHOLD (0.15): |mean net beta| AND warmup-trimmed
+        steady-state p95 |net beta| ≤ 0.15.
+
+        BLOCKER 1 — alpha-vs-beta LENS: the SPY beta-hedge overlay re-sizes only on
+        the 5-day rebalance cadence while net beta is captured daily, so the raw
+        daily max (max_abs_net_beta) spikes to ~0.35 between rebalances / during
+        warmup even on a book that is beta-neutral ON AVERAGE (mean ≈ −0.07). Those
+        transients are NOT persistent market exposure and do not make the realized
+        Sharpe beta-driven. Grading on the raw max would FALSELY FAIL a genuinely
+        neutral book (and mis-fire the §9-Q4 "re-run beta-neutral" rule). So the
+        clean/accept decision keys on mean + steady-state p95 — the persistent lens.
+        max_abs_net_beta is retained as a DIAGNOSTIC only.
+
+        Production (this property) and the regression test use the IDENTICAL
+        statistic + warmup window via net_exposure.steady_state_net_beta(), so they
+        can never diverge. When capture did not run, returns True (no signal)."""
+        if not self.net_exposure_captured:
+            return True
+        from app.backtesting.net_exposure import NET_BETA_ALPHA_THRESHOLD
+        return (abs(self.mean_net_beta) <= NET_BETA_ALPHA_THRESHOLD
+                and self.p95_abs_net_beta <= NET_BETA_ALPHA_THRESHOLD)
 
     # Paper-trade gate thresholds — mirror WalkForwardReport's relaxed values
     PAPER_SHARPE_GATE: float = 0.50
@@ -784,6 +861,14 @@ def run_cpcv(
         combo_n_obs: List[int] = []
         combo_deps: List[float] = []
         combo_dep_adj: List[float] = []
+        # RANKER v2 §3.1 — per-fold realized net-exposure within this combo.
+        combo_net_betas: List[float] = []
+        combo_max_abs_betas: List[float] = []
+        combo_p95_abs_betas: List[float] = []
+        combo_net_dollars: List[float] = []
+        combo_max_abs_dollars: List[float] = []
+        combo_max_abs_sectors: List[float] = []
+        combo_ne_captured = False
         # C8-5: accumulate per-regime within this combo to average before global append,
         # so each combo contributes equally (not proportional to its fold count).
         combo_regime_by_name: dict = {}  # regime -> [sharpe, ...]
@@ -882,6 +967,17 @@ def run_cpcv(
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
                 combo_deps.append(getattr(fold, "avg_capital_deployed_pct", 0.0) or 0.0)
                 combo_dep_adj.append(getattr(fold, "deployment_adjusted_sharpe", 0.0) or 0.0)
+                # RANKER v2 §3.1 — accumulate realized net-exposure from folds that
+                # actually captured it (the L/S arm). Pure-additive; never affects
+                # the Sharpe/PF/Calmar accumulation above.
+                if getattr(fold, "net_exposure_captured", False):
+                    combo_ne_captured = True
+                    combo_net_betas.append(getattr(fold, "mean_net_beta", 0.0) or 0.0)
+                    combo_max_abs_betas.append(getattr(fold, "max_abs_net_beta", 0.0) or 0.0)
+                    combo_p95_abs_betas.append(getattr(fold, "p95_abs_net_beta", 0.0) or 0.0)
+                    combo_net_dollars.append(getattr(fold, "mean_net_dollar", 0.0) or 0.0)
+                    combo_max_abs_dollars.append(getattr(fold, "max_abs_net_dollar", 0.0) or 0.0)
+                    combo_max_abs_sectors.append(getattr(fold, "max_abs_net_sector", 0.0) or 0.0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
                     combo_regime_by_name.setdefault(regime, []).append(sh)
                 # FIX-2: did this fold observe ANY regime returns (pre-filter)?
@@ -914,6 +1010,26 @@ def run_cpcv(
             result.path_deployments.append(float(np.mean(combo_deps)) if combo_deps else 0.0)
             result.path_deployment_adj_sharpes.append(
                 float(np.mean(combo_dep_adj)) if combo_dep_adj else 0.0)
+            # RANKER v2 §3.1 — per-path realized net-exposure (mean of captured
+            # folds; max for the worst-case fields). Only appended when at least
+            # one fold in the combo captured it, so long-only paths leave the
+            # lists empty and the aggregation properties stay 0.0 / clean.
+            if combo_ne_captured:
+                result.net_exposure_captured = True
+                result.path_mean_net_betas.append(
+                    float(np.mean(combo_net_betas)) if combo_net_betas else 0.0)
+                result.path_max_abs_net_betas.append(
+                    float(max(combo_max_abs_betas)) if combo_max_abs_betas else 0.0)
+                # BLOCKER 1: worst-case persistent (steady-state p95) |net beta| across
+                # the combo's captured folds — the lens net_beta_clean keys on.
+                result.path_p95_abs_net_betas.append(
+                    float(max(combo_p95_abs_betas)) if combo_p95_abs_betas else 0.0)
+                result.path_mean_net_dollars.append(
+                    float(np.mean(combo_net_dollars)) if combo_net_dollars else 0.0)
+                result.path_max_abs_net_dollars.append(
+                    float(max(combo_max_abs_dollars)) if combo_max_abs_dollars else 0.0)
+                result.path_max_abs_net_sectors.append(
+                    float(max(combo_max_abs_sectors)) if combo_max_abs_sectors else 0.0)
             # C8-5: append per-combo regime mean (not per-fold raw value) so each
             # combo contributes equally to worst_regime_sharpe regardless of fold count.
             for regime, vals in combo_regime_by_name.items():

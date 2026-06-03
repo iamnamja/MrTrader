@@ -68,8 +68,29 @@ class SwingStrategy:
         rebalance_dispersion_gate: bool = False,
         rebalance_dispersion_k: int = 5,
         rebalance_dispersion_L: int = 126,
+        # RANKER v2 Spike A — dollar-neutral L/S short leg. Defaults equal the
+        # AgentSimulator constructor defaults so the long-only path is byte-identical
+        # when enable_shorts=False (the swing default). NOT forwarded before Spike A.
+        enable_shorts: bool = False,
+        long_gross: float = 0.95,
+        short_gross: float = 0.55,
+        short_target_n: int = 30,
+        short_min_adv: float = 50_000_000.0,
+        short_add_threshold: int = 15,
+        short_drop_threshold: int = 30,
+        # RANKER v2 §3.1 re-architecture: NET-sector cap (Failure B fix) + SPY
+        # beta-hedge overlay. Defaults OFF → long-only/existing L-S paths byte-identical.
+        net_sector_cap: bool = False,
+        spy_beta_hedge: bool = False,
+        spy_beta_lookback: int = 60,
+        spy_hedge_max_gross: float = 0.30,
         factor_scorer: Optional[Callable[..., Any]] = None,
         no_atr_stops: bool = False,
+        # RANKER v2 §3.1 — realized net-exposure capture (PURE-ADDITIVE). Defaults
+        # to enable_shorts so the dollar-neutral arm captures it automatically and
+        # the long-only default path keeps it OFF (byte-identical).
+        capture_net_exposure: Optional[bool] = None,
+        net_beta_lookback: int = 60,
     ):
         self.model = model
         self.version = version
@@ -113,8 +134,30 @@ class SwingStrategy:
         self.rebalance_dispersion_gate = rebalance_dispersion_gate
         self.rebalance_dispersion_k = rebalance_dispersion_k
         self.rebalance_dispersion_L = rebalance_dispersion_L
+        # RANKER v2 Spike A — dollar-neutral L/S short-leg kwargs (forwarded to
+        # AgentSimulator in run_fold). enable_shorts=False keeps the long-only
+        # path byte-identical.
+        self.enable_shorts = enable_shorts
+        self.long_gross = long_gross
+        self.short_gross = short_gross
+        self.short_target_n = short_target_n
+        self.short_min_adv = short_min_adv
+        self.short_add_threshold = short_add_threshold
+        self.short_drop_threshold = short_drop_threshold
+        self.net_sector_cap = net_sector_cap
+        self.spy_beta_hedge = spy_beta_hedge
+        self.spy_beta_lookback = spy_beta_lookback
+        self.spy_hedge_max_gross = spy_hedge_max_gross
         self.factor_scorer = factor_scorer
         self.no_atr_stops = no_atr_stops
+        # RANKER v2 §3.1 — net-exposure capture. None → follow enable_shorts (on for
+        # the dollar-neutral arm, off for long-only). Explicit bool overrides.
+        self.capture_net_exposure = (
+            bool(enable_shorts) if capture_net_exposure is None else bool(capture_net_exposure)
+        )
+        self.net_beta_lookback = int(net_beta_lookback)
+        # Symbol -> sector for net-sector exposure (populated in fetch_data).
+        self.sector_map: Dict[str, str] = {}
         self.symbols_data: Dict[str, pd.DataFrame] = {}
         self.spy_prices: Optional[pd.Series] = None
         # OOS-guard escape hatch: set True to allow test folds inside training period.
@@ -177,6 +220,19 @@ class SwingStrategy:
             self._global_regime_map = _lrm(start.date(), end.date())
         except Exception:
             self._global_regime_map = {}
+
+        # RANKER v2 §3.1 — symbol→sector map for net-sector exposure capture and the
+        # rebalance sector cap. Static membership (non-leaking attribute).
+        try:
+            from app.data.sector_map import get_sector_map as _gsm
+            self.sector_map = _gsm([s for s in self.symbols_data
+                                    if s not in ("SPY", "^VIX", "VIX")]) or {}
+        except Exception:
+            try:
+                from app.utils.constants import SECTOR_MAP as _SM
+                self.sector_map = dict(_SM)
+            except Exception:
+                self.sector_map = {}
 
         logger.info("Swing data loaded: %d symbols in %.1fs", len(self.symbols_data), time.time() - t0)
 
@@ -300,6 +356,26 @@ class SwingStrategy:
             rebalance_spy_vol_damper_scale=self.rebalance_spy_vol_damper_scale,
             rebalance_hard_exit_bear=self.rebalance_hard_exit_bear,
             rebalance_flat_stop_pct=self.rebalance_flat_stop_pct,
+            # RANKER v2 Spike A — dollar-neutral L/S. When enable_shorts=False
+            # (default) these are inert and the long-only path is byte-identical;
+            # the values below equal AgentSimulator's own defaults.
+            enable_shorts=self.enable_shorts,
+            long_gross=self.long_gross,
+            short_gross=self.short_gross,
+            short_target_n=self.short_target_n,
+            short_min_adv=self.short_min_adv,
+            short_add_threshold=self.short_add_threshold,
+            short_drop_threshold=self.short_drop_threshold,
+            # RANKER v2 §3.1 re-architecture — NET-sector cap + SPY beta-hedge overlay.
+            net_sector_cap=self.net_sector_cap,
+            spy_beta_hedge=self.spy_beta_hedge,
+            spy_beta_lookback=self.spy_beta_lookback,
+            spy_hedge_max_gross=self.spy_hedge_max_gross,
+            # RANKER v2 §3.1 — capture realized net beta/dollar/sector for the L/S
+            # book (PURE-ADDITIVE diagnostic; only meaningful when shorts are on).
+            # Long-only default leaves capture OFF → byte-identical path.
+            capture_net_exposure=self.capture_net_exposure,
+            net_beta_lookback=self.net_beta_lookback,
         )
         import uuid as _uuid
         sim._wf_run_id = f"wf-fold{fold_idx}-{_uuid.uuid4().hex[:8]}"
@@ -308,6 +384,7 @@ class SwingStrategy:
             start_date=te_start,
             end_date=te_end,
             spy_prices=self.spy_prices,
+            sector_map=self.sector_map or None,
         )
         stop_exits = result.exit_breakdown.get("STOP", 0)
         stop_rate = stop_exits / max(result.total_trades, 1)
@@ -352,4 +429,13 @@ class SwingStrategy:
             avg_capital_deployed_pct=getattr(result, "avg_capital_deployed_pct", 0.0),
             deployment_adjusted_sharpe=getattr(result, "deployment_adjusted_sharpe", 0.0),
             low_deployment_warning=getattr(result, "low_deployment_warning", False),
+            # RANKER v2 §3.1 — realized net-exposure (PURE-ADDITIVE).
+            mean_net_beta=getattr(result, "mean_net_beta", 0.0),
+            last_net_beta=getattr(result, "last_net_beta", 0.0),
+            max_abs_net_beta=getattr(result, "max_abs_net_beta", 0.0),
+            p95_abs_net_beta=getattr(result, "p95_abs_net_beta", 0.0),
+            mean_net_dollar=getattr(result, "mean_net_dollar", 0.0),
+            max_abs_net_dollar=getattr(result, "max_abs_net_dollar", 0.0),
+            max_abs_net_sector=getattr(result, "max_abs_net_sector", 0.0),
+            net_exposure_captured=getattr(result, "net_exposure_captured", False),
         )

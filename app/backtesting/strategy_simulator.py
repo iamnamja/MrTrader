@@ -85,6 +85,42 @@ class SimResult:
     low_deployment_warning: bool = False
     """True when avg_capital_deployed_pct < MIN_DEPLOYMENT_PCT_WARN."""
 
+    # RANKER v2 §3.1 (Spike A) — realized net-exposure diagnostics (PURE-ADDITIVE,
+    # populated only when AgentSimulator.capture_net_exposure=True; default zero so
+    # every existing long-only result is byte-identical). See net_exposure.py.
+    mean_net_beta: float = 0.0
+    """Mean signed book net beta over the fold (Σ w_long·β_long − Σ w_short·β_short).
+    |mean_net_beta| > 0.15 ⇒ NOT clean dollar-neutral alpha (locked rule)."""
+    last_net_beta: float = 0.0
+    """Signed book net beta on the final EOD of the fold."""
+    max_abs_net_beta: float = 0.0
+    """Max |net beta| across the fold's EOD snapshots — the worst-case beta tilt.
+    DIAGNOSTIC ONLY: this is the RAW daily max (incl. warmup) and spikes between the
+    5-day-cadence SPY hedge re-sizes; it is NOT part of the clean/accept decision."""
+    p95_abs_net_beta: float = 0.0
+    """PERSISTENT net-beta lens (BLOCKER 1): warmup-trimmed steady-state p95 of
+    |net beta|. Together with mean_net_beta this is the alpha-vs-beta acceptance
+    statistic — robust to transient inter-rebalance / warmup spikes. Production
+    (CPCVResult.net_beta_clean) and the regression test grade on this SAME statistic
+    via the shared net_exposure.steady_state_net_beta() helper."""
+    mean_net_dollar: float = 0.0
+    """Mean signed (long_notional − short_notional)/equity. ~0 for dollar-neutral."""
+    max_abs_net_dollar: float = 0.0
+    """Max |net dollar| across the fold — dollar-neutrality drift."""
+    max_abs_net_sector: float = 0.0
+    """Max across sectors and EOD snapshots of |signed per-sector net|/equity."""
+    net_exposure_captured: bool = False
+    """True when net-exposure capture ran and produced at least one EOD snapshot."""
+    mean_gross: float = 0.0
+    """Mean realized book gross (long+short notional)/equity. ~long_gross+short_gross
+    for the dollar-neutral book once both legs hit their per-side gross targets."""
+    last_gross: float = 0.0
+    """Realized book gross on the final EOD of the fold."""
+    net_exposure_by_date: Optional[dict] = None
+    """Per-EOD live-book net-exposure snapshots (sym→{net_beta,net_dollar,gross,...}),
+    populated only when capture_net_exposure=True. Lets a point-in-time neutrality
+    test inspect the LIVE book (not trade flow). None when capture is off."""
+
     def print_report(self) -> None:
         """Pretty-print the simulation report."""
         W = "\033[32m"

@@ -208,8 +208,78 @@ def apply_sector_cap_shorts(
     cap: float = 0.30,
     n_target: int = 30,
 ) -> List[str]:
-    """apply_sector_cap for the short book: walk worst-first (same greedy logic)."""
+    """apply_sector_cap for the short book: walk worst-first (same greedy logic).
+
+    NOTE (RANKER v2 §3.1, Failure B): this PER-SIDE cap bounds the short *count*
+    per sector at floor(cap * n_target) regardless of how the long book is
+    distributed. On R1K the bottom-of-momentum short tail is sector-concentrated
+    (+ illiquid), so this cap structurally starves the short leg (realized short
+    gross ~0.13 vs 0.40). Use `apply_net_sector_cap` instead to control NET sector
+    exposure (long − short) — it lets the short tail concentrate where the longs
+    do NOT, which is exactly the momentum-ranker case. This per-side helper is kept
+    as the default so existing rebalance/L-S runs are byte-identical.
+    """
     return apply_sector_cap(worst_first_symbols, sector_map, cap=cap, n_target=n_target)
+
+
+def apply_net_sector_cap(
+    worst_first_symbols: Sequence[str],
+    long_book: Sequence[str],
+    sector_map: Mapping[str, str],
+    cap: float = 0.30,
+    n_target: int = 30,
+) -> List[str]:
+    """Admit shorts greedily (worst-first) subject to a NET-sector-exposure cap.
+
+    Replaces the per-side short-gross sector cap (RANKER v2 §3.1, Failure B). The
+    short tail is allowed to CONCENTRATE in a sector — what is bounded is the book's
+    NET exposure per sector, measured (as a fraction of `n_target`) by
+
+        net_share[s] = (long_count_in_s - short_count_in_s) / n_target
+
+    A short is admitted only if, after admission, |net_share[sector]| <= cap. Because
+    the long book occupies its own sectors (winners) and the short tail occupies the
+    losers' sectors, the net per-sector exposure is naturally bounded even when the
+    raw short tail is concentrated — so shorts that the old per-side cap would have
+    refused (purely because too many land in one sector) are now admitted, letting
+    the short leg reach its gross target. Residual net beta the single-name shorts
+    cannot neutralize is handled by the SPY beta-hedge overlay.
+
+    Deterministic and order-stable: walks `worst_first_symbols` in rank order and
+    accepts up to `n_target`. `long_book` is the already-selected long target set
+    (its sector counts seed the net tally). Unknown sectors bucket as 'UNKNOWN'.
+    """
+    n_target = max(1, int(n_target))
+    # Long sector counts seed the net tally (longs push net POSITIVE per sector).
+    long_count: Dict[str, int] = {}
+    for sym in long_book:
+        sec = sector_map.get(sym, "UNKNOWN")
+        long_count[sec] = long_count.get(sec, 0) + 1
+
+    short_count: Dict[str, int] = {}
+    accepted: List[str] = []
+    # |net_share| <= cap  ⇔  |long_count - short_count| <= cap * n_target.
+    max_net = max(1, int(np.floor(cap * n_target)))
+
+    long_set = set(long_book)
+    for sym in worst_first_symbols:
+        if len(accepted) >= n_target:
+            break
+        if sym in long_set:
+            continue  # never short a name we are long (avoid intra-book wash)
+        sec = sector_map.get(sym, "UNKNOWN")
+        cur_short = short_count.get(sec, 0)
+        cur_net = long_count.get(sec, 0) - cur_short
+        new_net = cur_net - 1  # one more short in this sector
+        # Admit if the result is within the cap band OR the short moves the sector
+        # net TOWARD neutral (so a long-over-concentrated sector can be offset by its
+        # shorts even when it starts outside the band — the key difference from the
+        # per-side cap, which would just refuse the concentrated tail outright).
+        if abs(new_net) <= max_net or abs(new_net) < abs(cur_net):
+            accepted.append(sym)
+            short_count[sec] = cur_short + 1
+
+    return accepted
 
 
 def compute_target_portfolio_shorts(

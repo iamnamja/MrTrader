@@ -247,6 +247,20 @@ class AgentSimulator:
         short_add_threshold: int = 15,      # hysteresis: add short when rank-from-bottom ≤ this
         short_drop_threshold: int = 30,     # hysteresis: drop short when rank-from-bottom > this
         short_min_adv: float = 50_000_000.0,    # tighter ADV for shorts (need to borrow)
+        # RANKER v2 §3.1 (Failure B fix): when True, the short book is capped on NET
+        # sector exposure (long − short per sector) via apply_net_sector_cap instead
+        # of the per-side short-gross sector cap (apply_sector_cap_shorts). The
+        # per-side cap structurally starved the sector-concentrated R1K short tail
+        # (realized short gross ~0.13 vs 0.40). OFF by default → byte-identical.
+        net_sector_cap: bool = False,
+        # RANKER v2 §3.1 FIX-1b: short per-name budget = short_budget / REALIZED short
+        # target-book count (vs / short_target_n). short_min_adv + sector cap shrink
+        # the eligible short set below short_target_n; dividing by short_target_n
+        # underfilled the short leg (~0.17 vs 0.40 gross → ~27% net long = Failure B).
+        # True (default) = FIX-1b realized-count rescale. False = pre-FIX-1b behavior
+        # (divides by short_target_n) — used ONLY by the regression test to demonstrate
+        # the Failure-B underfill. Default True keeps the production path unchanged.
+        short_realized_rescale: bool = True,
         short_regime_fn=None,               # callable(day)->float; asymmetric regime multiplier
         long_regime_fn=None,                # explicit long-side regime fn (overrides rebalance_regime_fn when set)
         # Phase v222 — payoff-shape + hedge improvements
@@ -258,6 +272,14 @@ class AgentSimulator:
         # entry_price * (1 + haircut) for shorts) to model delisting losses. Default 0.0
         # preserves prior behavior (close at entry → P&L=0) so this is opt-in.
         delisted_haircut: float = 0.0,
+        # RANKER v2 §3.1 (Spike A) — realized net-beta / net-dollar / net-sector
+        # capture. PURE-ADDITIVE diagnostic: when True the sim records, per EOD,
+        # the live book's signed net beta (PIT 60d OLS), net dollar, and net
+        # sector exposure (net_exposure.py). OFF by default → ZERO extra work and
+        # ZERO behavior change on the long-only path (byte-identical). Never
+        # mutates positions/cash/P&L. See net_exposure.py for the WHY.
+        capture_net_exposure: bool = False,
+        net_beta_lookback: int = 60,
     ):
         self.model = model
         self.starting_capital = starting_capital
@@ -338,12 +360,17 @@ class AgentSimulator:
         self.short_add_threshold = short_add_threshold
         self.short_drop_threshold = short_drop_threshold
         self.short_min_adv = short_min_adv
+        self.net_sector_cap = net_sector_cap
+        self.short_realized_rescale = short_realized_rescale
         self.short_regime_fn = short_regime_fn
         self.long_regime_fn = long_regime_fn
         self.rebalance_atr_stops = rebalance_atr_stops
         self.spy_hedge_vix_lo = spy_hedge_vix_lo
         self.spy_hedge_vix_hi = spy_hedge_vix_hi
         self.delisted_haircut = max(0.0, min(1.0, float(delisted_haircut)))
+        # RANKER v2 §3.1 — net-exposure capture (pure-additive diagnostic).
+        self.capture_net_exposure = bool(capture_net_exposure)
+        self.net_beta_lookback = int(net_beta_lookback)
         self._rebalance_bar_idx = 0  # counts simulation bars for cadence
 
         # Lazy-load FeatureEngineer (imports may be heavy)
@@ -420,6 +447,11 @@ class AgentSimulator:
         accepted_trades: List[Trade] = []
         equity_by_date: Dict[date, float] = {}
         deployment_by_date: Dict[date, float] = {}
+        # RANKER v2 §3.1 — per-EOD realized net beta / net dollar / net sector
+        # (only populated when capture_net_exposure=True; empty otherwise so the
+        # long-only path is byte-identical).
+        net_exposure_by_date: Dict[date, dict] = {}
+        _net_beta_cache: dict = {}
         tx_costs_total = 0.0
 
         # Phase 35: Build SPY close series and VIX series for regime gate
@@ -650,6 +682,29 @@ class AgentSimulator:
                 if getattr(_p, "direction", "long") != "long"
             )
             deployment_by_date[day] = (_long_notional + _short_notional) / max(_eq_today, 1e-9)
+            # RANKER v2 §3.1 — capture realized net beta / net dollar / net sector
+            # for the live book at EOD. PIT betas (strictly-prior bars only) via
+            # net_exposure.compute_book_net_exposure. Pure diagnostic; read-only
+            # over positions; gated OFF by default (zero long-only-path impact).
+            if self.capture_net_exposure and portfolio.positions:
+                from app.backtesting.net_exposure import compute_book_net_exposure
+                _spy_ne = symbols_data.get("SPY")
+                if _spy_ne is None:
+                    _spy_ne = symbols_data.get("spy")
+                _ne = compute_book_net_exposure(
+                    positions=portfolio.positions,
+                    closes_by_sym=_today_closes_eod,
+                    equity=_eq_today,
+                    symbols_data=symbols_data,
+                    spy_df=_spy_ne,
+                    as_of=day,
+                    sector_map=sector_map,
+                    beta_lookback=self.net_beta_lookback,
+                    beta_cache=_net_beta_cache,
+                    hedge_keys={"__SPY_HEDGE__"},
+                )
+                if _ne is not None:
+                    net_exposure_by_date[day] = _ne
             if equity_by_date[day] > portfolio.peak_equity:
                 portfolio.peak_equity = equity_by_date[day]
             portfolio.daily_pnl = 0.0  # reset for next day
@@ -750,6 +805,7 @@ class AgentSimulator:
             accepted_trades, equity_by_date, tx_costs_total,
             start_date, end_date, spy_prices,
             deployment_by_date=deployment_by_date,
+            net_exposure_by_date=net_exposure_by_date,
         )
 
     # ─── PM: score all symbols ─────────────────────────────────────────────────
@@ -1620,6 +1676,7 @@ class AgentSimulator:
           - Short collateral tracked to prevent double-counting
         """
         from app.strategy.portfolio_construction import (
+            apply_net_sector_cap,
             apply_sector_cap,
             apply_sector_cap_shorts,
             compute_equal_weights,
@@ -1667,11 +1724,25 @@ class AgentSimulator:
             if _pre_long_mult >= 0.95:  # BULL regime
                 _eff_short_n = self.short_bull_n
 
-        short_capped = apply_sector_cap_shorts(
-            short_ranked_eligible, sector_map,
-            cap=self.rebalance_sector_cap,
-            n_target=_eff_short_n,
-        ) if self.enable_shorts else []
+        if self.enable_shorts:
+            if self.net_sector_cap:
+                # RANKER v2 §3.1 (Failure B fix): cap NET sector exposure (long −
+                # short) rather than short COUNT per sector. Lets the concentrated
+                # short tail fill where the longs are not, so the short leg reaches
+                # its gross target. The long target book (`capped`) seeds the net
+                # tally. Residual net beta is mopped up by the SPY beta-hedge overlay.
+                short_capped = apply_net_sector_cap(
+                    short_ranked_eligible, long_book=capped, sector_map=sector_map,
+                    cap=self.rebalance_sector_cap, n_target=_eff_short_n,
+                )
+            else:
+                short_capped = apply_sector_cap_shorts(
+                    short_ranked_eligible, sector_map,
+                    cap=self.rebalance_sector_cap,
+                    n_target=_eff_short_n,
+                )
+        else:
+            short_capped = []
 
         # 4. Hysteresis target — separate current holdings for each book
         current_longs = [s for s, p in portfolio.positions.items()
@@ -1761,6 +1832,13 @@ class AgentSimulator:
         # 7. Open long adds
         equity = portfolio.equity_decision
         if self.enable_shorts:
+            # FIX 1a (Spike A): split_gross_budgets already folds long_regime_mult
+            # into long_budget, so the long leg must be sized to long_budget (=
+            # long_gross × NAV × regime_mult), NOT to full NAV. The old code passed
+            # total_equity=equity, gross_exposure_multiplier=long_mult — that sized
+            # the long book to FULL equity × regime_mult and left long_budget as dead
+            # code, running the "dollar-neutral" book ~76% net long. We now use
+            # long_budget as the equity base with gross_exposure_multiplier=1.0.
             long_budget, short_budget = split_gross_budgets(
                 equity,
                 net_target=self.long_gross - self.short_gross,
@@ -1768,20 +1846,41 @@ class AgentSimulator:
                 long_regime_mult=long_mult,
                 short_regime_mult=short_mult,
             )
+            # FIX 1b (Spike A): the per-name budget must be long_budget / (size of the
+            # REALIZED target book), NOT / rebalance_target_n and NOT / len(to_add).
+            # We weight across the FULL realized target book (held + qualifying adds)
+            # against total_equity=long_budget, then open only the NEW adds at their
+            # per-name weight. Held names already carry their share from when they were
+            # added at this same per-name budget, so the live book gross tracks
+            # long_gross × NAV (rather than stacking each new batch onto the existing
+            # book and ballooning gross). ADV/sector filters that shrink the book below
+            # rebalance_target_n are absorbed because the divisor is the realized count.
+            _long_target = [s for s in delta.target
+                            if self._rebalance_entry_price(symbols_data.get(s), day) is not None]
+            _long_weight_syms = _long_target if _long_target else [
+                s for s in delta.to_add
+                if self._rebalance_entry_price(symbols_data.get(s), day) is not None]
+            _long_equity_base = long_budget
+            _long_mult = 1.0
         else:
             short_budget = 0.0
+            # Long-only REBALANCE path: UNCHANGED — size to full NAV × long_mult
+            # (existing momentum behavior; long_gross≈0.95≈full NAV historically).
+            _long_weight_syms = list(delta.to_add)
+            _long_equity_base = equity
+            _long_mult = long_mult
 
         if self.rebalance_inv_vol:
             long_weights = compute_inverse_vol_weights(
-                delta.to_add, symbols_data, as_of=day,
-                total_equity=equity,
-                gross_exposure_multiplier=long_mult,
+                _long_weight_syms, symbols_data, as_of=day,
+                total_equity=_long_equity_base,
+                gross_exposure_multiplier=_long_mult,
                 vol_lookback_days=self.rebalance_inv_vol_lookback,
                 min_weight_mult=self.rebalance_inv_vol_min_mult,
                 max_weight_mult=self.rebalance_inv_vol_max_mult,
             )
         else:
-            long_weights = compute_equal_weights(delta.to_add, equity, long_mult)
+            long_weights = compute_equal_weights(_long_weight_syms, _long_equity_base, _long_mult)
 
         rank_of = {s: i + 1 for i, s in enumerate(ranked_eligible)}
         short_rank_of = {s: i + 1 for i, s in enumerate(short_ranked_eligible)}
@@ -1867,8 +1966,23 @@ class AgentSimulator:
 
         # 8. Open short adds (only when enable_shorts=True)
         if self.enable_shorts and short_delta is not None:
-            short_n = max(1, len(short_delta.to_add)) if short_delta.to_add else 1
-            short_per_pos = short_budget / short_n if short_delta.to_add else 0.0
+            # FIX 1b (Spike A): the short per-name budget = short_budget / (size of the
+            # REALIZED short target book), NOT / short_target_n. short_min_adv (50M) +
+            # sector_cap shrink the eligible short set below short_n; dividing by
+            # short_n underfilled the short leg (~0.17 vs 0.40 target). Dividing by the
+            # realized target-book count makes the achieved short gross hit
+            # short_gross × NAV. We do NOT relax short_min_adv — liquid shorts are
+            # preserved; the gross target is hit via per-name rescaling. Symmetric with
+            # the long-leg realized-count rescale (divide by the realized target book,
+            # not just the new adds, so each rebalance targets short_budget total).
+            _short_target = [s for s in (short_delta.target or [])
+                             if self._rebalance_entry_price(symbols_data.get(s), day) is not None]
+            short_realized_n = max(1, len(_short_target))
+            # FIX-1b: divide by the REALIZED target-book count (default). The
+            # short_realized_rescale=False branch reproduces the pre-FIX-1b underfill
+            # (divide by short_target_n) — used only by the Failure-B regression test.
+            _short_divisor = short_realized_n if self.short_realized_rescale else max(1, _eff_short_n)
+            short_per_pos = short_budget / _short_divisor if (short_delta.to_add and _short_target) else 0.0
 
             for sym in short_delta.to_add:
                 if sym in portfolio.positions:
@@ -1925,7 +2039,14 @@ class AgentSimulator:
                     rebalance_date=day,
                 ))
 
-        # 9. SPY beta hedge (Option A — replaces individual short book when spy_beta_hedge=True)
+        # 9. SPY beta hedge.
+        #   * Long-only (enable_shorts=False): Option A — SPY short sized to the long
+        #     book's rolling beta (existing behavior, byte-identical).
+        #   * L/S (enable_shorts=True): RANKER v2 §3.1 overlay — single-name shorts are
+        #     KEPT; the SPY short neutralizes the RESIDUAL NET BETA of the whole book
+        #     (longs − single-name shorts, notional-weighted) so realized net beta → 0
+        #     even when the single-name shorts cannot fully neutralize. Driven by the
+        #     same --spy-beta-hedge flag; opt-in.
         if self.spy_beta_hedge:
             import numpy as _np
 
@@ -1940,7 +2061,7 @@ class AgentSimulator:
                 closed_trades.extend(hedge_trades)
                 tx_costs += hedge_cost
 
-            # Compute rolling realized beta of the current long book vs SPY
+            # Compute rolling realized beta of the current book vs SPY
             spy_df = symbols_data.get("SPY")
             if spy_df is not None and not spy_df.empty:
                 _as_of_ts = pd.Timestamp(day)
@@ -1949,28 +2070,74 @@ class AgentSimulator:
 
                 long_syms = [s for s, p in portfolio.positions.items()
                              if getattr(p, "direction", "long") == "long" and s != _SPY_HEDGE_KEY]
+                # L/S overlay (enable_shorts): the net-beta loop below walks ALL
+                # single-name positions (longs − shorts) so the hedge targets the
+                # RESIDUAL net beta, not the gross long-book beta.
+
+                def _name_beta(_sym):
+                    sdf = symbols_data.get(_sym)
+                    if sdf is None:
+                        return None
+                    sc = "close" if "close" in sdf.columns else "Close"
+                    if sc not in sdf.columns:
+                        return None
+                    sh = sdf[sdf.index < _as_of_ts][sc].dropna().pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                    if len(sh) < max(20, self.spy_beta_lookback // 2):
+                        return None
+                    _al = pd.concat([spy_rets, sh], axis=1).dropna()
+                    if len(_al) < 20:
+                        return None
+                    _cov = _np.cov(_al.iloc[:, 1], _al.iloc[:, 0])
+                    return float(_cov[0, 1] / _cov[1, 1]) if _cov[1, 1] > 0 else None
 
                 beta = 1.0  # default if insufficient history
+                # `beta` here is the DOLLAR-WEIGHTED NET book beta as a fraction of
+                # equity (for L/S) or the equal-weighted long-book beta (long-only,
+                # unchanged). The hedge gross below = equity × beta neutralizes it.
                 if len(spy_hist) >= self.spy_beta_lookback + 5 and long_syms:
                     spy_rets = spy_hist.pct_change().dropna().iloc[-self.spy_beta_lookback:]
-                    book_rets_list = []
-                    for sym in long_syms:
-                        sdf = symbols_data.get(sym)
-                        if sdf is None:
-                            continue
-                        sc = "close" if "close" in sdf.columns else "Close"
-                        if sc not in sdf.columns:
-                            continue
-                        sh = sdf[sdf.index < _as_of_ts][sc].dropna().pct_change().dropna().iloc[-self.spy_beta_lookback:]
-                        if len(sh) >= self.spy_beta_lookback // 2:
-                            book_rets_list.append(sh)
-                    if book_rets_list:
-                        book_rets = pd.concat(book_rets_list, axis=1).mean(axis=1)
-                        aligned = pd.concat([spy_rets, book_rets], axis=1).dropna()
-                        if len(aligned) >= 20:
-                            cov = _np.cov(aligned.iloc[:, 1], aligned.iloc[:, 0])
-                            beta = float(cov[0, 1] / cov[1, 1]) if cov[1, 1] > 0 else 1.0
-                            beta = min(self.spy_beta_cap, max(0.0, beta))
+                    if self.enable_shorts:
+                        # Notional-weighted NET beta = Σ w_long·β_long − Σ w_short·β_short,
+                        # with w = notional/equity. Names with insufficient history
+                        # contribute 0 (conservative — matches net_exposure.py).
+                        _net_beta = 0.0
+                        _have_any = False
+                        for _sym, _pos in portfolio.positions.items():
+                            if _sym == _SPY_HEDGE_KEY:
+                                continue
+                            _b = _name_beta(_sym)
+                            if _b is None:
+                                continue
+                            _notional = abs(float(_pos.entry_price) * float(_pos.quantity))
+                            _w = _notional / equity if equity > 0 else 0.0
+                            _signed = _w * _b if getattr(_pos, "direction", "long") == "long" else -_w * _b
+                            _net_beta += _signed
+                            _have_any = True
+                        if _have_any:
+                            # Clamp magnitude to the cap; the SPY short can only REDUCE
+                            # a positive residual net beta (we never go net-long SPY).
+                            beta = max(0.0, min(self.spy_beta_cap, _net_beta))
+                        else:
+                            beta = 0.0
+                    else:
+                        book_rets_list = []
+                        for sym in long_syms:
+                            sdf = symbols_data.get(sym)
+                            if sdf is None:
+                                continue
+                            sc = "close" if "close" in sdf.columns else "Close"
+                            if sc not in sdf.columns:
+                                continue
+                            sh = sdf[sdf.index < _as_of_ts][sc].dropna().pct_change().dropna().iloc[-self.spy_beta_lookback:]
+                            if len(sh) >= self.spy_beta_lookback // 2:
+                                book_rets_list.append(sh)
+                        if book_rets_list:
+                            book_rets = pd.concat(book_rets_list, axis=1).mean(axis=1)
+                            aligned = pd.concat([spy_rets, book_rets], axis=1).dropna()
+                            if len(aligned) >= 20:
+                                cov = _np.cov(aligned.iloc[:, 1], aligned.iloc[:, 0])
+                                beta = float(cov[0, 1] / cov[1, 1]) if cov[1, 1] > 0 else 1.0
+                                beta = min(self.spy_beta_cap, max(0.0, beta))
 
                 # Size the hedge: equity × beta × short_mult, capped at spy_hedge_max_gross
                 _short_mult = self.short_regime_fn(day) if self.short_regime_fn else 1.0
@@ -2242,6 +2409,7 @@ class AgentSimulator:
         end_date: date,
         spy_prices: Optional[pd.Series],
         deployment_by_date: Optional[Dict[date, float]] = None,
+        net_exposure_by_date: Optional[Dict[date, dict]] = None,
     ) -> SimResult:
         # Rebuild equity from trades since portfolio.cash tracking can drift
         # (simpler: use equity_by_date as-is)
@@ -2317,6 +2485,11 @@ class AgentSimulator:
         _dep_by_date = deployment_by_date or {}
         avg_dep, dep_adj_sharpe, low_dep_warn = compute_deployment_metrics(equity_curve, _dep_by_date)
 
+        # RANKER v2 §3.1 — net-exposure summary (PURE-ADDITIVE; empty unless
+        # capture_net_exposure was enabled).
+        from app.backtesting.net_exposure import summarize_net_exposure
+        _ne_summary = summarize_net_exposure(net_exposure_by_date or {})
+
         return SimResult(
             model_type="swing_agent",
             starting_capital=self.starting_capital,
@@ -2343,6 +2516,18 @@ class AgentSimulator:
             avg_capital_deployed_pct=round(avg_dep, 4),
             deployment_adjusted_sharpe=round(dep_adj_sharpe, 3),
             low_deployment_warning=low_dep_warn,
+            mean_net_beta=round(_ne_summary["mean_net_beta"], 6),
+            last_net_beta=round(_ne_summary["last_net_beta"], 6),
+            max_abs_net_beta=round(_ne_summary["max_abs_net_beta"], 6),
+            p95_abs_net_beta=round(_ne_summary["p95_abs_net_beta"], 6),
+            mean_net_dollar=round(_ne_summary["mean_net_dollar"], 6),
+            max_abs_net_dollar=round(_ne_summary["max_abs_net_dollar"], 6),
+            max_abs_net_sector=round(_ne_summary["max_abs_net_sector"], 6),
+            mean_gross=round(_ne_summary["mean_gross"], 6),
+            last_gross=round(_ne_summary["last_gross"], 6),
+            net_exposure_captured=bool(net_exposure_by_date),
+            net_exposure_by_date=(dict(net_exposure_by_date)
+                                  if net_exposure_by_date else None),
         )
 
     def _empty_result(self) -> SimResult:
@@ -2388,6 +2573,27 @@ class AgentSimulator:
                 name=row.name,
             )
         return row
+
+    def _rebalance_entry_price(self, df: Optional[pd.DataFrame], day: date) -> Optional[float]:
+        """Same-day rebalance fill price (open preferred, else close), or None.
+
+        Used by the FIX-1b realized-count rescaling to pre-identify which `to_add`
+        names will actually open a position. Mirrors the inline entry-price logic in
+        the long/short add loops so the eligibility check and the fill agree exactly.
+        """
+        if df is None:
+            return None
+        today_bar = self._bars_on(df, day)
+        if today_bar is None:
+            return None
+        open_col = "open" if "open" in today_bar.index else "Open"
+        close_col = "close" if "close" in today_bar.index else "Close"
+        if open_col not in today_bar.index and close_col not in today_bar.index:
+            return None
+        entry_price = float(today_bar[open_col if open_col in today_bar.index else close_col])
+        if entry_price <= 0:
+            return None
+        return entry_price
 
     @staticmethod
     def _scalar(val) -> float:
