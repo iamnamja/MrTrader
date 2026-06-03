@@ -33,6 +33,26 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## §3.1 RANKER v2 — Dollar-Neutral High-Breadth Re-Test — 2026-06-03 — VERDICT: ❌ DEAD (no cross-sectional alpha)
+
+**Hypothesis**: the "dead" swing ranker (+0.22, t=0.17) was strangled by a 5-position long-only book; re-running it **dollar-neutral, sector-neutral, high-breadth** would surface alpha (Fundamental Law: IR ≈ IC·√breadth).
+
+**The run was nearly mis-read — fixed across 3 validity phases (the story matters):**
+- **First run looked +1.38** (k=4 fast) then the comparison flipped — but the book was **never actually dollar-neutral**. Observability (Phase 1) revealed realized **net dollar +0.35 / gross 0.35** (target 0.80): the SPY hedge masked a **net-long** book as beta-clean.
+- **Root causes**: (a) the rebalance sized only NEW adds — **held positions kept stale entry-time sizing** → legs drifted off budget (Phase 2 fix: full-book resize each rebalance); (b) `_pm_score`/`_pm_score_cached` returned only the **long-only proposal pool** (~50 names; `proposal_pool_size` cap + `min_confidence` floor) → the 60-long book absorbed the whole ranked set, the short leg had no genuine cross-sectional bottom → empty short (Phase 2.2 fix: full cross-section when `enable_shorts AND rebalance_mode`); (c) the per-sector cap starved short COUNT → breadth pass fills to n_target (neutrality now via sizing + SPY hedge).
+- **Corrected book verified**: realized **net dollar −0.01, net beta −0.04, gross 0.73, ~60 shorts** — a genuinely dollar-neutral, target-gross L/S book at last.
+
+**Decisive result** (corrected book, full config `--years 5 --cpcv-k 8 --cpcv-paths 2 --per-fold-retrain`, N_eff=8, 21 paths, swing v224, 10 bps cost):
+- **Mean Sharpe +0.136 · path-t +0.18 · %pos 66.7% · P5 −3.46 · deployment-adj +0.119 · DSR p 0.03** → **NO cross-sectional alpha.**
+- The long-only +0.22/+1.06 was **confirmed market beta** (neutralizing collapses Sharpe to noise).
+- Caveat: 52% fold-skip (BUG-23 rolling-overlap guard) remains; but t=0.18 is unambiguously null, not borderline — purged-CV (more power) cannot rescue a flat-zero signal, so it was not pursued.
+
+**Verdict**: ❌ **The dollar-neutral high-breadth ranker is dead.** Third honest CPCV null from cross-sectional ML ranking (swing noise · intraday cost-drag · ranker beta-only). Cross-sectional-ML-ranking line **closed**; §3.3 short-interest-as-feature + Spike-B residualization **shelved** (gated on ranker life). PEAD remains the sole validated edge. See `DECISIONS.md` 2026-06-03 (ranker kill) + `RANKER_V2_DESIGN.md`. Validity-fix infra (observability / neutral-at-gross engine / full-ranking / net-exposure capture) retained as reusable tooling. Result JSON: `logs/cpcv_swing_20260603_163743.json`.
+
+**Bonus (live, this session)**: PEAD-aware entry gate (post-earnings gappers were hitting the swing 1.5%/0.5% entry thresholds → 0 live fills; widened for `selector='pead'` to match the backtest's enter-at-open → PEAD now fills) + PEAD cockpit v2 (live book + per-signal log + live-vs-backtest Sharpe).
+
+---
+
 ## Small/Mid-Cap PEAD — Survivorship-Safe CPCV Harness — 2026-06-01 — VERDICT: 🔄 Pending (build only)
 
 **Goal:** Test the highest-EV remaining PEAD variant. Large-cap PEAD is the
