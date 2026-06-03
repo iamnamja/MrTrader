@@ -279,6 +279,22 @@ def apply_net_sector_cap(
             accepted.append(sym)
             short_count[sec] = cur_short + 1
 
+    # Phase 2 (§3.1) breadth pass: the net-sector cap above can leave the short book
+    # far below n_target when the loser tail concentrates in a few sectors — starving
+    # the COUNT, which both under-funds the leg and kills the breadth the thesis needs
+    # (IR ~ IC·sqrt(breadth)). Dollar-neutrality is now enforced by per-leg SIZING (the
+    # rebalance resize pass), and residual beta by the SPY hedge, so it is safe to fill
+    # the remainder by rank — relaxing the net-sector bound — until n_target is reached.
+    if len(accepted) < n_target:
+        accepted_set = set(accepted)
+        for sym in worst_first_symbols:
+            if len(accepted) >= n_target:
+                break
+            if sym in long_set or sym in accepted_set:
+                continue
+            accepted.append(sym)
+            accepted_set.add(sym)
+
     return accepted
 
 

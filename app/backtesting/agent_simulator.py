@@ -1658,6 +1658,50 @@ class AgentSimulator:
         )
         return [trade], cost
 
+    def _rebalance_resize_position(self, pos, target_dollars: float, price, portfolio) -> float:
+        """Resize a HELD rebalance position toward its current per-name dollar target.
+
+        RANKER v2 §3.1 Phase 2: each rebalance, held AND new names are sized to the
+        SAME per-leg budget, so each leg holds its gross target (long_gross /
+        short_gross) instead of drifting — the realized book stays dollar-neutral at
+        target gross. Previously only NEW adds were sized; held names kept stale
+        entry-time sizing, so the book ran net-long / under-gross.
+
+        MTM-neutral except the transaction cost on the traded share delta (adds blend
+        the entry price; covers/sells release at the current basis). Never resizes to
+        zero — to_drop handles exits. Returns the transaction cost incurred.
+        """
+        if price is None or price <= 0 or target_dollars <= 0:
+            return 0.0
+        target_qty = int(target_dollars / price)
+        if target_qty < 1:
+            return 0.0  # don't flatten via resize; exits go through to_drop
+        delta = target_qty - pos.quantity
+        if delta == 0:
+            return 0.0
+        notional = price * abs(delta)
+        cost = notional * self.transaction_cost_pct
+        is_short = getattr(pos, "direction", "long") == "short"
+        if is_short:
+            if delta > 0:  # add to the short: receive proceeds, reserve collateral
+                portfolio.cash += notional - cost
+                portfolio.short_collateral += notional
+                pos.entry_price = (pos.entry_price * pos.quantity + price * delta) / target_qty
+            else:          # partial cover: pay to buy back, release collateral at basis
+                portfolio.cash -= notional + cost
+                portfolio.short_collateral = max(
+                    0.0, portfolio.short_collateral - pos.entry_price * abs(delta))
+        else:
+            if delta > 0:  # buy more (respect effective cash to avoid double-spend)
+                if self._effective_cash(portfolio) < notional + cost:
+                    return 0.0
+                portfolio.cash -= notional + cost
+                pos.entry_price = (pos.entry_price * pos.quantity + price * delta) / target_qty
+            else:          # partial sell
+                portfolio.cash += notional - cost
+        pos.quantity = target_qty
+        return cost
+
     def _process_rebalance(
         self,
         day: date,
@@ -1964,6 +2008,19 @@ class AgentSimulator:
                 rebalance_date=day,
             ))
 
+        # Phase 2 (§3.1): resize HELD longs to the current per-name target weight so
+        # the long leg holds long_gross each rebalance. New adds opened just above are
+        # already at target (no-op); this corrects held names whose budget has drifted.
+        # L/S arm only — the long-only momentum path is intentionally unchanged.
+        if self.enable_shorts:
+            for _sym in _long_target:
+                _pos = portfolio.positions.get(_sym)
+                if _pos is None or getattr(_pos, "direction", "long") != "long":
+                    continue
+                _px = self._rebalance_entry_price(symbols_data.get(_sym), day)
+                tx_costs += self._rebalance_resize_position(
+                    _pos, long_weights.get(_sym, 0.0), _px, portfolio)
+
         # 8. Open short adds (only when enable_shorts=True)
         if self.enable_shorts and short_delta is not None:
             # FIX 1b (Spike A): the short per-name budget = short_budget / (size of the
@@ -1982,7 +2039,10 @@ class AgentSimulator:
             # short_realized_rescale=False branch reproduces the pre-FIX-1b underfill
             # (divide by short_target_n) — used only by the Failure-B regression test.
             _short_divisor = short_realized_n if self.short_realized_rescale else max(1, _eff_short_n)
-            short_per_pos = short_budget / _short_divisor if (short_delta.to_add and _short_target) else 0.0
+            # Phase 2: size per-name against the FULL realized target book regardless of
+            # whether there are new adds this rebalance, so the resize pass below can
+            # hold short_gross even when short_delta.to_add is empty (all names held).
+            short_per_pos = (short_budget / _short_divisor) if _short_target else 0.0
 
             for sym in short_delta.to_add:
                 if sym in portfolio.positions:
@@ -2038,6 +2098,17 @@ class AgentSimulator:
                     gross_exposure_mult=short_mult,
                     rebalance_date=day,
                 ))
+
+            # Phase 2 (§3.1): resize HELD shorts to the current per-name budget so the
+            # short leg holds short_gross each rebalance (held shorts were never
+            # re-sized — the core cause of the under-funded, net-long book).
+            for _sym in _short_target:
+                _pos = portfolio.positions.get(_sym)
+                if _pos is None or getattr(_pos, "direction", "long") != "short":
+                    continue
+                _px = self._rebalance_entry_price(symbols_data.get(_sym), day)
+                tx_costs += self._rebalance_resize_position(
+                    _pos, short_per_pos, _px, portfolio)
 
         # 9. SPY beta hedge.
         #   * Long-only (enable_shorts=False): Option A — SPY short sized to the long
