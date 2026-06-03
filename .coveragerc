@@ -1,4 +1,10 @@
 [run]
+# CI runs `pytest --cov -n 4` (xdist). Without parallel mode the 4 workers race on
+# the single .coverage sqlite during instrumented import → "database is locked" at
+# collection. parallel=true gives each worker a unique data file; pytest-cov combines
+# them for the report. concurrency=multiprocessing covers any subprocess coverage.
+parallel = true
+concurrency = multiprocessing
 omit =
     app/backtest/*
     app/integrations/*

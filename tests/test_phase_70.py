@@ -43,7 +43,7 @@ class TestPhase70Stale:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value=None):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         pm.send_message.assert_called_once()
         call_kwargs = pm.send_message.call_args[0]
@@ -59,7 +59,7 @@ class TestPhase70Stale:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value=None):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         assert "TSLA" not in pm._pending_approvals
 
@@ -78,7 +78,7 @@ class TestPhase70Stale:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value="0.45"):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         # Should NOT have sent a WITHDRAW (score 0.6 > 0.45 * 0.85 = 0.38)
         for call in pm.send_message.call_args_list:
@@ -102,7 +102,7 @@ class TestPhase70Rescore:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value="0.45"):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         pm.send_message.assert_called_once()
         msg = pm.send_message.call_args[0][1]
@@ -123,7 +123,7 @@ class TestPhase70Rescore:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value="0.45"):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         pm.send_message.assert_not_called()
         assert "AMD" in pm._pending_approvals
@@ -137,13 +137,13 @@ class TestPhase70Rescore:
 
         with patch("app.database.session.get_session"), \
              patch("app.database.agent_config.get_agent_config", return_value=None):
-            asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+            asyncio.run(pm._rescore_pending_approvals())
 
         pm.send_message.assert_not_called()
 
     def test_no_pending_returns_immediately(self):
         pm = _make_pm_stub({})
-        asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+        asyncio.run(pm._rescore_pending_approvals())
         pm.send_message.assert_not_called()
         pm.model.is_trained  # model should not even be checked past early return
 
@@ -151,7 +151,7 @@ class TestPhase70Rescore:
         import time
         now = time.monotonic()
         pm = _make_pm_stub({"GOOG": now - 5 * 60}, model_trained=False)
-        asyncio.get_event_loop().run_until_complete(pm._rescore_pending_approvals())
+        asyncio.run(pm._rescore_pending_approvals())
         pm.send_message.assert_not_called()
 
 
