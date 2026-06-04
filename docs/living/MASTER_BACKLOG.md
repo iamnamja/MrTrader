@@ -28,7 +28,7 @@
 | ~~**B2**~~ | ✅ **DONE**: Friday `weekly_rollup` in `_run_eod_jobs` (weekday==4) + vacuous-email guard (min_days=3). | done | ✅ |
 | ~~**B4**~~ | ✅ **DONE 2026-06-04** (deploys at restart): **aggressive paper ramp** — config-driven `pm.pead_size_mult` (3.0) + `pm.pead_max_position_pct` (0.10), live-tunable, PEAD-specific (`apply_pead_size_ramp`). RM made PEAD-aware (`validate_position_size` override) so the 10% cap isn't clipped to the global 5%; aggregate still bounded by the 80% gross cap. **ADV-participation** instrumentation logged + on proposals (slippage already per-fill). 19 tests. PAPER ONLY. | done | ✅ |
 | **B3** | Announce-day-move / earnings-surprise capture per PEAD signal (cockpit's defining column; live-path write + migration). | ~S–M | Opportunistic |
-| **B5** | Replace VIX>30 block with SPY<200d trend filter (crisis robustness / capacity). | ~M | Opportunistic |
+| ~~**B5**~~ | ✅ **DONE 2026-06-04** (deploys at restart): SPY<200d trend filter replaces the VIX>30 block — **validated +0.661 vs +0.546** (every metric better) on the same window. Config-reversible (`pm.pead_regime_control="trend"`, `pm.pead_trend_ma=200`); fail-CLOSED to VIX if SPY unavailable. 19 tests. | done | ✅ |
 
 ### Closed / retired (green-lit 2026-06-03)
 - ❌ Cross-sectional ML ranking line — **closed** (DECISIONS.md 2026-06-03).

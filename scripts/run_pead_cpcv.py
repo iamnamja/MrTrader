@@ -111,17 +111,30 @@ def build_pead_scorer():
     # drift, fewer trades. PIT-safe (analyst feature windowed to <= scoring day).
     # Default OFF → committed long-only +0.546 config is unchanged.
     _quality_gate = os.environ.get("PEAD_QUALITY_GATE") == "1"
+    # B5: regime-general trend control as a REPLACEMENT for the discrete VIX>30 block.
+    # PEAD_REGIME_CONTROL=trend (or vol_target) turns the VIX block off (inf) and lets
+    # the regime control govern de-risking instead — the validation harness for B5.
+    # Default unset → committed +0.546 VIX-block config is byte-identical.
+    _regime = os.environ.get("PEAD_REGIME_CONTROL") or None
+    _vix_block = float("inf") if _regime else 30.0
     scorer = PEADScorer(
         long_threshold=0.05,
         short_threshold=-0.05,
         long_short=_ls,
-        vix_block_all=30.0,
+        vix_block_all=_vix_block,
         vix_block_short=(20.0 if _ls else 100.0),  # squeeze guard when short leg active
         vix_conf_ref=100.0,
         max_announce_day_move=1.0,  # disabled — large gaps retain drift signal
         require_positive_revision=_quality_gate,
         min_analyst_momentum=0.0,
+        regime_control=_regime,
+        regime_control_trend_ma=int(os.environ.get("PEAD_TREND_MA", "200")),
+        regime_control_floor=float(os.environ.get("PEAD_REGIME_FLOOR", "0.5")),
     )
+    if _regime:
+        logger.info("PEAD_REGIME_CONTROL=%s (VIX block OFF, trend_ma=%s, floor=%s) - B5 validation",
+                    _regime, os.environ.get("PEAD_TREND_MA", "200"),
+                    os.environ.get("PEAD_REGIME_FLOOR", "0.5"))
     if _quality_gate:
         logger.info("PEAD_QUALITY_GATE=1 - long signals require positive analyst revision")
     if os.environ.get("PEAD_CONVICTION_SIZE") == "1":
@@ -169,6 +182,10 @@ def main() -> int:
         "PEAD CPCV %s - mean_sharpe=%.3f  p5=%.3f  p95=%.3f",
         verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe,
     )
+
+    if os.environ.get("PEAD_NO_EMAIL") == "1":
+        logger.info("PEAD_NO_EMAIL=1 - skipping email (validation run)")
+        return 0 if gate_ok else 2
 
     try:
         from app.notifications.notifier import _smtp_send
