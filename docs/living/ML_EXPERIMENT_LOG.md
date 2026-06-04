@@ -33,6 +33,18 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## A2 — Dollar-Neutral Short-Interest Factor — 2026-06-03 — VERDICT: ❌ NOT VALIDATED (anomaly reversed in the modern era)
+
+**Hypothesis** (Boehmer/Asquith/Desai short-interest anomaly): heavily-shorted, high-days-to-cover names systematically UNDERPERFORM (informed shorts). Built `ShortInterestFactorScorer` — **dollar-neutral by construction** (long lowest-DTC / short highest-DTC decile), beta-isolated from day one (the A1 lesson) so the CPCV result *is* the honest test. Ran on the merged short-interest data (A2-data) via the A0 `EventEdgeStrategy` harness (k=8, 21 paths, 6yr, R1K, hold 20 bars, min-DTC-to-short 2.0).
+
+**Result**: **mean Sharpe −1.213 · path-t −3.53 · PF 0.66 · P5 −2.315 · P95 +0.253** → **significantly NEGATIVE**. The book lost money reliably (not noise — t=−3.53 wrong-sign). The documented SI anomaly has **reversed in 2020–2026**: high-days-to-cover names *outperformed* (meme/retail-era short squeezes), so long-low/short-high is systematically wrong. (52% fold-skip biases toward recent regimes — exactly the meme era — likely amplifying the reversal, but the sign is unambiguous.) Validated end-to-end by the smoke (−2.23 on a 30-name meme-era subset) before the full run.
+
+**Verdict**: ❌ the dollar-neutral short-interest anomaly is **not a validated edge** (dead/reversed in the modern sample). Joins the closed list. **Note for the record**: the *significant negative* means high-DTC names rose — i.e. the **squeeze direction carried signal** — but flipping a losing backtest into "long the squeeze" is post-hoc overfitting, NOT a validated edge; a squeeze-long edge would need its own pre-registered, OOS event design (a candidate for the engine later, not claimed here). Logs: `logs/p0_si_factor_cpcv.log`, `logs/smoke_si_factor.log`.
+
+**Track-A sweep complete** (analyst-drift + short-interest, the two top candidates by data-availability×grounding): both null. Cross-sectional ML ranker, A1, A2 all dead; **PEAD remains the sole validated edge.** Strategic implication → operationalize/scale PEAD (Track B) + keep the reusable event-edge engine (A0 harness + beta-isolation discipline + the FINRA/SI + analyst-grades data) for future candidates as new data/ideas arrive.
+
+---
+
 ## A1 — Analyst Up/Downgrade Drift — 2026-06-03 — VERDICT: ❌ NOT VALIDATED (CPCV significance was a fold-skip artifact)
 
 **Hypothesis**: post-analyst-revision drift (PEAD's documented cousin) — the market under-reacts to upgrades/downgrades, so prices drift in the rating-change direction for weeks. Built `AnalystRevisionScorer` (event = recent upgrade/downgrade from FMP `/stable/grades`, net-momentum confirmation, enter-on-drift recency gate) on the A0 `EventEdgeStrategy` harness.

@@ -264,3 +264,22 @@ def get_short_volume_features_at(symbol: str, as_of: date, lookback_days: int = 
         n_obs=int(ratios.size),
     )
     return out
+
+
+def latest_known_si(as_of: date, store: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Cross-section of the latest short-interest record knowable on/before *as_of*,
+    one row per ticker. Efficient (one filter + groupby) for factor-ranking scorers
+    that need the whole universe each scoring day, rather than per-symbol calls.
+
+    PIT-safe: filters knowable_date <= as_of, then takes each ticker's latest
+    settlement. Columns are _SI_COLS (ticker, settlement_date, knowable_date,
+    short_interest, avg_daily_volume, days_to_cover).
+    """
+    df = store if store is not None else load_short_interest()
+    if df is None or df.empty:
+        return _empty(_SI_COLS)
+    sub = df[df["knowable_date"] <= pd.Timestamp(as_of)]
+    if sub.empty:
+        return _empty(_SI_COLS)
+    idx = sub.groupby("ticker")["settlement_date"].idxmax()
+    return sub.loc[idx].reset_index(drop=True)
