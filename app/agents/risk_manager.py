@@ -469,7 +469,24 @@ class RiskManager(BaseAgent):
             return False, reasoning
 
         # ── Rule 2: Position Size ─────────────────────────────────────────────
-        ok, msg = validate_position_size(trade_cost, account_value, self.limits)
+        # B4: PEAD positions use the (higher) pm.pead_max_position_pct ceiling so the
+        # aggressive paper-ramp isn't silently clipped to the global 5%. Other
+        # selectors keep the global limit. Falls back to the global on any error.
+        _pos_override = None
+        if proposal.get("selector") == "pead":
+            try:
+                from app.database.session import get_session as _gs_rm
+                from app.database.agent_config import get_agent_config as _gac_rm
+                _db_rm = _gs_rm()
+                try:
+                    _pos_override = float(_gac_rm(_db_rm, "pm.pead_max_position_pct"))
+                finally:
+                    _db_rm.close()
+            except Exception:
+                _pos_override = None
+        ok, msg = validate_position_size(
+            trade_cost, account_value, self.limits, max_pct_override=_pos_override
+        )
         reasoning["checks"].append({"rule": "position_size", "ok": ok, "msg": msg})
         if not ok:
             reasoning["failed_rule"] = "position_size"

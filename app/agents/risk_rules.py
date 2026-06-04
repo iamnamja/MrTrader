@@ -106,6 +106,7 @@ def validate_position_size(
     proposed_cost: float,
     account_value: float,
     limits: RiskLimits = None,
+    max_pct_override: float = None,
 ) -> Tuple[bool, str]:
     """
     Ensure a single position stays within MAX_POSITION_SIZE_PCT of account value.
@@ -113,6 +114,9 @@ def validate_position_size(
     Note: we check only the proposed trade cost against account value so that
     partial positions (e.g. adding to an existing one) are evaluated correctly
     by the caller after combining old + new exposure.
+
+    max_pct_override: per-trade ceiling override (e.g. the B4 PEAD ramp's
+    pm.pead_max_position_pct = 10%, which intentionally exceeds the global 5%).
     """
     if limits is None:
         limits = RiskLimits()
@@ -121,7 +125,8 @@ def validate_position_size(
         return False, "Account value is zero or negative"
 
     position_pct = proposed_cost / account_value
-    max_pct = limits.MAX_POSITION_SIZE_PCT
+    max_pct = (float(max_pct_override) if max_pct_override is not None
+               else limits.MAX_POSITION_SIZE_PCT)
 
     if position_pct > max_pct:
         return (

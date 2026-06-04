@@ -172,8 +172,9 @@ class TestFixB_MaxHold40:
         """_build_directional_proposals is called with max_hold_days=40 by default."""
         captured = {}
 
-        async def _fake_build(scored, selector="pead", max_hold_days=0):
+        async def _fake_build(scored, selector="pead", max_hold_days=0, **kwargs):
             captured["max_hold_days"] = max_hold_days
+            captured["size_mult"] = kwargs.get("size_mult")
             captured["selector"] = selector
             return [{"symbol": "AAPL", "max_hold_days": max_hold_days}]
 

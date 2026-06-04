@@ -82,6 +82,23 @@ def _confidence_scalar(prob: float) -> float:
     return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
+def apply_pead_size_ramp(quantity: int, price: float, account_value: float,
+                         size_mult: float, max_position_pct) -> int:
+    """B4 aggressive paper-ramp sizing (pure/deterministic for testing).
+
+    Scale the per-name PEAD quantity by ``size_mult``, then cap it at
+    ``max_position_pct`` of account value. ``size_mult==1.0`` and
+    ``max_position_pct`` falsy → no-op (pre-ramp behaviour). Never returns < 1.
+    """
+    q = int(quantity)
+    if size_mult and size_mult != 1.0:
+        q = max(1, int(q * size_mult))
+    if max_position_pct and price > 0:
+        cap_qty = max(1, int(account_value * float(max_position_pct) / price))
+        q = min(q, cap_qty)
+    return max(1, q)
+
+
 class PortfolioManager(RebalanceMixin, BaseAgent):
     """
     Runs on a 60-second heartbeat.
@@ -1452,6 +1469,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         scored: list,
         selector: str = "pead",
         max_hold_days: int = 0,
+        size_mult: float = 1.0,
+        max_position_pct: float | None = None,
+        adv_dollar: dict | None = None,
     ) -> list:
         """Build trade proposals supporting both long (BUY) and short (SELL_SHORT) directions.
 
@@ -1501,8 +1521,30 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             if _regime_mult != 1.0:
                 quantity = max(1, int(quantity * _regime_mult))
 
+            # B4 aggressive paper-ramp (config-driven, PEAD-specific): scale the
+            # per-name size to stress capacity, then re-cap to the per-name ceiling.
+            # size_mult=1.0 / max_position_pct=None → pre-ramp behaviour (no-op).
+            quantity = apply_pead_size_ramp(
+                quantity, price, account_value, size_mult, max_position_pct
+            )
+
             if quantity <= 0:
                 continue
+
+            # B4 capacity instrumentation: ADV participation (order notional / avg
+            # daily $ volume). Surfaces "are we too big" as we ramp; logged + attached
+            # to the proposal (slippage_bps is already captured per fill by the trader).
+            _adv_part = None
+            if adv_dollar:
+                _advd = adv_dollar.get(sym)
+                if _advd and _advd > 0:
+                    _adv_part = round((quantity * price) / _advd, 5)
+                    if _adv_part >= 0.05:
+                        self.logger.warning(
+                            "B4 capacity: PEAD %s %d sh (notional $%.0f) = %.1f%% of ADV "
+                            "($%.0f) — capacity pressure", sym, quantity, quantity * price,
+                            _adv_part * 100, _advd,
+                        )
 
             # ATR-based stops matching WF simulator (ATR_STOP_MULT=0.5, ATR_TARGET_MULT=1.5).
             _feats_dir = (self._last_swing_features or {}).get(sym, {})
@@ -1533,6 +1575,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             }
             if max_hold_days > 0:
                 proposal["max_hold_days"] = max_hold_days
+            if _adv_part is not None:
+                proposal["adv_participation_pct"] = _adv_part
 
             # Persist to ProposalLog so the SENT update in send_swing_proposals finds the row
             try:
@@ -1656,6 +1700,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             "vix_conf_ref": 100.0,
             "max_announce_day_move": 1.0,
             "require_positive_revision": False,
+            "size_mult": 3.0,           # B4 aggressive paper-ramp default (3x)
+            "max_position_pct": 0.10,   # B4 per-name ceiling (10% NAV)
         }
         try:
             _db_pead = _gs_pead()
@@ -1672,6 +1718,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 _cfg["require_positive_revision"] = (
                     str(_gac_pead(_db_pead, "pm.pead_require_positive_revision") or "false").lower() == "true"
                 )
+                _cfg["size_mult"] = float(_gac_pead(_db_pead, "pm.pead_size_mult"))
+                _cfg["max_position_pct"] = float(_gac_pead(_db_pead, "pm.pead_max_position_pct"))
             finally:
                 _db_pead.close()
         except Exception as _cexc:
@@ -1775,9 +1823,24 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             })
             return
 
+        # B4 capacity instrumentation: avg daily $ volume (last 20 bars) per symbol,
+        # for ADV-participation logging at sizing time.
+        adv_dollar: dict = {}
+        for _s, _df in symbols_data.items():
+            try:
+                _recent = _df.tail(20)
+                _advd = float((_recent["volume"] * _recent["close"]).mean())
+                if _advd > 0:
+                    adv_dollar[_s] = _advd
+            except Exception:
+                pass
+
         # FIX B: max_hold_days=40 (validated run) annotated on every proposal.
+        # B4: config-driven aggressive paper-ramp (size_mult / per-name cap).
         self._swing_proposals = await self._build_directional_proposals(
             scored, selector="pead", max_hold_days=_cfg["max_hold_days"],
+            size_mult=_cfg["size_mult"], max_position_pct=_cfg["max_position_pct"],
+            adv_dollar=adv_dollar,
         )
         await self.log_decision("SWING_PREMARKET_ANALYSIS", reasoning={
             "selector": "pead",
