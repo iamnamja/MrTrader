@@ -24,9 +24,9 @@
 ### Track B — Productionize & aggressively ramp PEAD in paper (the self-certification clock)
 | Phase | Item | Effort | Status |
 |---|---|---|---|
-| **B1** | Fix half-wired realized-Sharpe pipeline: EOD `record_daily` upsert in `_run_eod_jobs` writing PEAD book realized/unrealized P&L + fills (maps `selector="pead"` → Trade rows). Without this, weekly_rollup returns "n/a" forever. **This is the clock.** | ~M | At restart |
-| **B2** | Friday 16:30 ET cron + "skip if <3 trading days / n/a" guard. No-op without B1. | ~S | At restart (w/ B1) |
-| **B4** | **Aggressive paper-allocation ramp** + capacity instrumentation (fill quality, slippage, ADV participation) — paper has no capital risk, so ramp hard to surface true capacity. Real-money graduation gate **unchanged** (multi-year live Sharpe + CAPITAL gate). | ~S–M | At restart |
+| ~~**B1**~~ | ✅ **DONE** (already built/scheduled): EOD `record_daily` upsert in `_run_eod_jobs` writes PEAD realized/unrealized P&L + fills (`selector="pead"`); `_realized_sharpe` + `weekly_rollup`. The self-certification clock runs at 16:30 ET. 12 tests. | done | ✅ |
+| ~~**B2**~~ | ✅ **DONE**: Friday `weekly_rollup` in `_run_eod_jobs` (weekday==4) + vacuous-email guard (min_days=3). | done | ✅ |
+| ~~**B4**~~ | ✅ **DONE 2026-06-04** (deploys at restart): **aggressive paper ramp** — config-driven `pm.pead_size_mult` (3.0) + `pm.pead_max_position_pct` (0.10), live-tunable, PEAD-specific (`apply_pead_size_ramp`). RM made PEAD-aware (`validate_position_size` override) so the 10% cap isn't clipped to the global 5%; aggregate still bounded by the 80% gross cap. **ADV-participation** instrumentation logged + on proposals (slippage already per-fill). 19 tests. PAPER ONLY. | done | ✅ |
 | **B3** | Announce-day-move / earnings-surprise capture per PEAD signal (cockpit's defining column; live-path write + migration). | ~S–M | Opportunistic |
 | **B5** | Replace VIX>30 block with SPY<200d trend filter (crisis robustness / capacity). | ~M | Opportunistic |
 
