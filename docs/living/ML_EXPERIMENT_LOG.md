@@ -33,6 +33,26 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## B5 — PEAD SPY-trend filter vs VIX>30 block — 2026-06-04 — VERDICT: ✅ TREND WINS (deployed)
+
+**Hypothesis**: PEAD is an up-trend drift harvester (~87% of P&L in up-trends), so replacing the crude VIX>30 crisis block with an **SPY < 200d-SMA trend filter** (block entries in downtrends) should improve risk-adjusted return + crisis robustness — especially relevant now the book is ramped 3x (B4). Mechanism already existed in `PEADScorer` (`regime_control="trend"`, PIT-safe `.loc[:_ts]`); B5 = validate + wire to live.
+
+**Same-window head-to-head CPCV** (k=8, 21 paths, 6yr, R1K, long-only; baseline reproduced the committed +0.546 → harness/window validated):
+
+| Metric | VIX>30 block (baseline) | **SPY<200d trend filter** |
+|---|---|---|
+| Mean Sharpe | +0.548 | **+0.661** (+21%) |
+| Path t-stat | +2.26 | **+2.93** |
+| P5 (worst tail) | +0.009 | **+0.049** |
+| Avg PF | 1.539 | **1.989** |
+| P95 | 2.227 | 2.227 |
+
+**Trend filter improves every metric, nothing worse** — strict win on the same (52%-fold-skip-biased) sample, so the *relative* conclusion is robust even though both still fail the 0.80 gate on worst-regime (PEAD stays real-but-underpowered). Economically grounded: blocking downtrends concentrates PEAD where it works; the VIX block misses slow downtrends.
+
+**Verdict**: ✅ deploy the trend filter. **Wired to live** (config-reversible): `pm.pead_regime_control="trend"`, `pm.pead_trend_ma=200`, `pm.pead_regime_floor=0.5`. The live PM fetches a ≥200-bar SPY series, injects it, turns the VIX block off, and lets trend govern — **fail-CLOSED to the VIX>30 block if SPY data is unavailable/short** (never trades a downtrend blind). PIT-safe. 19 tests (scorer gate, fail-open/fail-closed, PIT, wiring, config). Deploys at restart. Note: while in a downtrend (SPY<200d) PEAD will correctly stand down (no new entries). Logs: `logs/p0_pead_baseline_b5.log`, `logs/p0_pead_trend_b5.log`.
+
+---
+
 ## A2 — Dollar-Neutral Short-Interest Factor — 2026-06-03 — VERDICT: ❌ NOT VALIDATED (anomaly reversed in the modern era)
 
 **Hypothesis** (Boehmer/Asquith/Desai short-interest anomaly): heavily-shorted, high-days-to-cover names systematically UNDERPERFORM (informed shorts). Built `ShortInterestFactorScorer` — **dollar-neutral by construction** (long lowest-DTC / short highest-DTC decile), beta-isolated from day one (the A1 lesson) so the CPCV result *is* the honest test. Ran on the merged short-interest data (A2-data) via the A0 `EventEdgeStrategy` harness (k=8, 21 paths, 6yr, R1K, hold 20 bars, min-DTC-to-short 2.0).

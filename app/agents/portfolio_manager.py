@@ -1702,6 +1702,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             "require_positive_revision": False,
             "size_mult": 3.0,           # B4 aggressive paper-ramp default (3x)
             "max_position_pct": 0.10,   # B4 per-name ceiling (10% NAV)
+            "regime_control": "trend",  # B5 trend filter (replaces VIX block when set)
+            "trend_ma": 200,            # B5 SPY SMA window
+            "regime_floor": 0.5,        # B5 regime-scalar floor
         }
         try:
             _db_pead = _gs_pead()
@@ -1720,6 +1723,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 )
                 _cfg["size_mult"] = float(_gac_pead(_db_pead, "pm.pead_size_mult"))
                 _cfg["max_position_pct"] = float(_gac_pead(_db_pead, "pm.pead_max_position_pct"))
+                _cfg["regime_control"] = (_gac_pead(_db_pead, "pm.pead_regime_control") or "").strip()
+                _cfg["trend_ma"] = int(_gac_pead(_db_pead, "pm.pead_trend_ma"))
+                _cfg["regime_floor"] = float(_gac_pead(_db_pead, "pm.pead_regime_floor"))
             finally:
                 _db_pead.close()
         except Exception as _cexc:
@@ -1774,31 +1780,69 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 _inject_level, "ON" if _inject_level > 30.0 else "OFF",
             )
 
+        # ── B5: SPY trend filter (replaces VIX block when enabled) ──────────────────
+        # Validated +0.661 vs +0.546 VIX-block. Needs a SPY daily series >= trend_ma
+        # bars (the scorer fails OPEN otherwise). FAIL-CLOSED: only switch the VIX
+        # block off and enable the trend control when SPY is genuinely available with
+        # enough history — else keep the proven VIX>30 block.
+        _regime = _cfg.get("regime_control") or None
+        _scorer_regime = None
+        _scorer_vix_block = _cfg["vix_block_all"]
+        if _regime:
+            _spy_series = await asyncio.to_thread(self._fetch_spy_series, int(_cfg["trend_ma"]) + 30)
+            if _spy_series is not None and len(_spy_series) >= int(_cfg["trend_ma"]):
+                symbols_data["SPY"] = _spy_series
+                _scorer_regime = _regime
+                _scorer_vix_block = float("inf")  # trend control governs; VIX block off
+                self.logger.info(
+                    "PEAD B5: trend filter ON (regime=%s, SPY %d bars, ma=%d, floor=%.2f) - VIX block OFF",
+                    _regime, len(_spy_series), int(_cfg["trend_ma"]), _cfg["regime_floor"],
+                )
+            else:
+                self.logger.warning(
+                    "PEAD B5: SPY history unavailable/short (%s bars) — FAIL-CLOSED to VIX>30 block",
+                    (len(_spy_series) if _spy_series is not None else 0),
+                )
+
         # ── FIX C: construct the scorer pinning EVERY validated parameter ───────────
         scorer = PEADScorer(
             long_threshold=_cfg["long_threshold"],
             short_threshold=_cfg["short_threshold"],
             max_days_after=_cfg["max_days_after"],
             long_short=_shorts_enabled,
-            vix_block_all=_cfg["vix_block_all"],
+            vix_block_all=_scorer_vix_block,
             vix_block_short=_cfg["vix_block_short"],
             vix_conf_ref=_cfg["vix_conf_ref"],
             max_announce_day_move=_cfg["max_announce_day_move"],
             require_positive_revision=_cfg["require_positive_revision"],
             min_analyst_momentum=0.0,
+            regime_control=_scorer_regime,
+            regime_control_trend_ma=int(_cfg["trend_ma"]),
+            regime_control_floor=float(_cfg["regime_floor"]),
         )
         scored = scorer(day=_pd.Timestamp(_date.today()), symbols_data=symbols_data)
         # If shorts disabled, filter to longs only
         if not _shorts_enabled:
             scored = [(s, c, d) for s, c, d in scored if d == "long"]
 
-        # vix_block fired if VIX is known to be above the crisis threshold (scorer returned [])
-        _vix_block_fired = bool(
-            _vix_level is not None and _vix_level > _cfg["vix_block_all"]
-        )
+        # Regime block fired: under B5 trend mode = SPY below its N-day SMA; otherwise
+        # the legacy VIX>threshold block. Uses the ACTIVE mechanism (_scorer_vix_block),
+        # so VIX is correctly reported as not-firing when the trend filter governs.
+        if _scorer_regime == "trend" and "SPY" in symbols_data:
+            try:
+                _spy_c = symbols_data["SPY"]["close"]
+                _ma = float(_spy_c.iloc[-int(_cfg["trend_ma"]):].mean())
+                _vix_block_fired = bool(float(_spy_c.iloc[-1]) < _ma)
+            except Exception:
+                _vix_block_fired = False
+        else:
+            _vix_block_fired = bool(
+                _vix_level is not None and _vix_level > _scorer_vix_block
+            )
 
-        self.logger.info("PEAD: %d signals generated (vix=%.1f block_all=%.0f fired=%s)",
-                         len(scored), (_vix_level or -1.0), _cfg["vix_block_all"], _vix_block_fired)
+        self.logger.info("PEAD: %d signals generated (regime=%s vix=%.1f block_fired=%s)",
+                         len(scored), (_scorer_regime or "vix"), (_vix_level or -1.0),
+                         _vix_block_fired)
 
         # ── Observability: record the daily PEAD tracking row (signals stage) ───────
         try:
@@ -2192,6 +2236,39 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             return vix[["close"]].dropna()
         except Exception as exc:
             self.logger.warning("PEAD: VIX series fetch failed (%s) — crisis block will not fire", exc)
+            return None
+
+    def _fetch_spy_series(self, min_bars: int = 230):
+        """Fetch a daily SPY close SERIES for the B5 trend filter (SPY < 200d SMA).
+
+        PEADScorer._spy_closes reads symbols_data["SPY"] expecting a DataFrame with a
+        lowercase 'close' column + DatetimeIndex. The 200d trend control needs >=200
+        bars or it fails open (no block); we pad to min_bars. Returns df or None
+        (caller fails CLOSED to the VIX block when None / too short).
+        """
+        try:
+            import yfinance as yf
+            import pandas as pd
+            from datetime import date as _date, timedelta as _td
+            _end = _date.today() + _td(days=1)
+            _start = _end - _td(days=int(min_bars * 1.8) + 30)
+            spy = yf.download(
+                "SPY", start=_start.isoformat(), end=_end.isoformat(),
+                progress=False, auto_adjust=True,
+            )
+            if spy is None or len(spy) == 0:
+                self.logger.warning("PEAD B5: SPY series fetch returned empty — trend filter unavailable")
+                return None
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy.columns = spy.columns.get_level_values(0)
+            spy.columns = [str(c).lower() for c in spy.columns]
+            if "close" not in spy.columns:
+                self.logger.warning("PEAD B5: SPY series missing 'close' column — trend filter unavailable")
+                return None
+            spy.index = pd.to_datetime(spy.index)
+            return spy[["close"]].dropna()
+        except Exception as exc:
+            self.logger.warning("PEAD B5: SPY series fetch failed (%s) — trend filter unavailable", exc)
             return None
 
     def _compute_opportunity_score(self) -> tuple:

@@ -45,6 +45,9 @@ def _make_pm(bars, vix, build_fn=None):
     pm._swing_proposals = []
     pm._get_universe = MagicMock(return_value=list(bars.keys()))
     pm._fetch_vix_series = MagicMock(return_value=vix)
+    # B5: default to None so the trend filter fails CLOSED to the VIX block in tests
+    # (deterministic, no network). Trend-mode tests override this with a SPY series.
+    pm._fetch_spy_series = MagicMock(return_value=None)
     async def _log(*a, **k):
         return None
     pm.log_decision = _log
@@ -401,3 +404,52 @@ class TestPeadTracker:
         with patch("app.notifications.notifier.enqueue", _fake_enqueue):
             pt.weekly_rollup(date(2026, 5, 28), send=True)
         assert called["event_type"] == "pead_weekly"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# B5 — SPY trend filter wiring (regime_control replaces the VIX block when SPY ok)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _spy_series_b5(n=260):
+    idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=n, freq="B")
+    return pd.DataFrame({"close": np.linspace(100, 200, n)}, index=idx)  # uptrend
+
+
+class TestB5TrendWiring:
+    def _capture(self, pm):
+        captured = {}
+
+        class _FakeScorer:
+            def __init__(self, **kw):
+                captured["init"] = kw
+
+            def __call__(self, day, symbols_data, **kw):
+                captured["spy_in_data"] = "SPY" in symbols_data
+                return []
+
+        _run_pead(pm, _FakeScorer)
+        return captured
+
+    def test_trend_mode_when_spy_available(self):
+        pm = _make_pm(bars={"AAPL": _stock_df()}, vix=_vix_series(18.0))
+        pm._fetch_spy_series = MagicMock(return_value=_spy_series_b5())  # SPY ok
+        cap = self._capture(pm)
+        init = cap["init"]
+        assert init["regime_control"] == "trend"
+        assert init["vix_block_all"] == float("inf")   # VIX block OFF under trend
+        assert init["regime_control_trend_ma"] == 200
+        assert cap["spy_in_data"] is True              # SPY injected for the filter
+
+    def test_fail_closed_to_vix_when_spy_unavailable(self):
+        pm = _make_pm(bars={"AAPL": _stock_df()}, vix=_vix_series(18.0))
+        pm._fetch_spy_series = MagicMock(return_value=None)   # SPY missing
+        init = self._capture(pm)["init"]
+        assert init["regime_control"] is None
+        assert init["vix_block_all"] == 30.0           # fall back to the proven VIX block
+
+    def test_fail_closed_when_spy_history_too_short(self):
+        pm = _make_pm(bars={"AAPL": _stock_df()}, vix=_vix_series(18.0))
+        pm._fetch_spy_series = MagicMock(return_value=_spy_series_b5(n=120))  # < 200 bars
+        init = self._capture(pm)["init"]
+        assert init["regime_control"] is None
+        assert init["vix_block_all"] == 30.0
