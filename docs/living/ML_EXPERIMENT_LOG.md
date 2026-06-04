@@ -33,6 +33,24 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## A1 — Analyst Up/Downgrade Drift — 2026-06-03 — VERDICT: ❌ NOT VALIDATED (CPCV significance was a fold-skip artifact)
+
+**Hypothesis**: post-analyst-revision drift (PEAD's documented cousin) — the market under-reacts to upgrades/downgrades, so prices drift in the rating-change direction for weeks. Built `AnalystRevisionScorer` (event = recent upgrade/downgrade from FMP `/stable/grades`, net-momentum confirmation, enter-on-drift recency gate) on the A0 `EventEdgeStrategy` harness.
+
+**The headline looked like the best result of the whole campaign — and it was a false positive.** This is the rigorous-loop payoff: three measurements, two of them independent of the CPCV fold sampling, settled it.
+
+| Test | Mean Sharpe | Significance | Read |
+|---|---|---|---|
+| CPCV long-only (k=8, 21 paths, N_eff=8) | **+0.894** | **path-t +2.85** (>2 ✅), PF 2.12, Calmar 1.88 | looked alive — beat the 0.80 gate AND significant |
+| CPCV dollar-neutral L/S (long upgrades / short downgrades) | +0.342 | path-t **+1.24** (not sig.), PF 1.24 | neutralizing collapsed it ~62% + killed significance |
+| **Full-window CAPM regression** (1526 days, no fold-skip) | raw +0.461 | **alpha t = +0.20**, β 0.052, **residual Sharpe ~0.000**, ann α +0.20% | **no significant alpha** beyond noise |
+
+**Root cause of the false positive**: the CPCV run skipped **52% of fold evaluations** (BUG-23 rolling-window overlap) — the warning literally says *"distribution is biased toward later regimes."* The sampled folds were disproportionately recent (bull) → inflated the mean to +0.894 and produced a spurious path-t of 2.85. On the **full window with no skip**, the CAPM alpha is statistically **zero** (t=0.20) and beta is *low* (0.052) — so it isn't even "beta," it's **noise the regime-biased fold sampling dressed up as significance**. The neutralized L/S (t=1.24) independently confirmed no cross-sectional alpha. It also failed the gate's p5 (−0.335) and worst-regime floors.
+
+**Verdict**: ❌ analyst up/downgrade drift is **not a validated edge** (long-side noise, no neutral alpha). Joins the closed list. **PEAD remains the sole validated edge.** Tail-fix / event-bootstrap steps were rendered moot (nothing to validate). **Methodological note**: when DSR saturates or fold-skip is high, a single-pass full-window CAPM regression is a cheap, decisive cross-check against CPCV regime-sampling artifacts — reusable tool added at `scripts/analyst_beta_check.py`. Logs: `logs/p0_analyst_drift_cpcv.log` (long-only), `logs/p0_analyst_drift_ls.log` (L/S), `logs/analyst_beta_check.log` (CAPM).
+
+---
+
 ## A2-data — Short Interest & Short Volume acquisition — 2026-06-03 — STATUS: ✅ DONE (data infra)
 
 **Goal**: acquire point-in-time short-interest + short-volume data for the Alpha-v3 Track-A2 squeeze edge.
