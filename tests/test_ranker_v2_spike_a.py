@@ -650,6 +650,12 @@ def _big_scorer(day, symbols_data, vix_history=None):
     return list(zip(syms, scores.tolist()))
 
 
+# NOTE: n_days stays 240 here. test_dollar_neutral_book_is_point_in_time_neutral
+# asserts the ALL-DAYS mean_net_dollar (< 0.10), which is sensitive to the long-only
+# ramp fraction — a shorter window inflates it past the bar. The CI floor is the
+# realistic-fixture tests (240 names), which are shrunk via _realistic_r1k_fixture;
+# these 130-name point-in-time books are not the bottleneck, so they keep the
+# original window.
 def _run_dn_book(n_symbols=130, n_days=240, long_gross=0.40, short_gross=0.40,
                  target_n=60, short_n=60, sector_cap=1.0, short_min_adv=0.0,
                  inv_vol=True, net_sector_cap=False, spy_beta_hedge=False,
@@ -708,12 +714,12 @@ class TestPointInTimeNeutrality:
         assert first["net_dollar"] < 0.60, "long leg looks sized to full NAV (Bug 1)"
 
     def test_short_reaches_target_gross_via_realized_count(self):
-        bars = _big_bars_map(n_symbols=130, n_days=240)
+        bars = _big_bars_map(n_symbols=130, n_days=150)
         for i, s in enumerate(sorted(k for k in bars if k != "SPY")):
             if i % 2 == 1:
                 bars[s] = bars[s].assign(volume=(bars[s]["volume"] * 0.001).astype(int))
         start = date(2023, 1, 3)
-        end = start + timedelta(days=270)
+        end = start + timedelta(days=170)
         sim = AgentSimulator(
             model=None, starting_capital=1_000_000.0,
             rebalance_mode=True, rebalance_days=5,
@@ -800,7 +806,13 @@ class TestNetSectorCapUnit:
 
 
 # A realistic R1K-pathology fixture: a sector-concentrated, partly-illiquid short tail.
-def _realistic_r1k_fixture(n_days=260, seed0=100):
+def _realistic_r1k_fixture(n_days=150, seed0=100):
+    # n_days=150 (was 260): every assertion below is a STEADY-STATE mean/median/p95
+    # over the post-warmup (NET_BETA_WARMUP_TWO_SIDED=20) two-sided window, which is
+    # invariant to window length — 150 business days still leaves ~120 steady-state
+    # days, far above the trim. Halving the window ~halves this dead-ranker fixture's
+    # build + sim cost (it was the CI critical-path floor) without touching the
+    # load-bearing name/sector/beta/liquidity structure.
     """Mimic R1K's short-leg pathology — exercises BOTH Failure-B drivers.
 
     - 240 names total + SPY. Longs (top of rank) spread across 8 sectors.
