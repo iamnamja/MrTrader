@@ -28,9 +28,10 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Dedicated SQLite file — independent of Postgres main DB so it always works
+# Dedicated SQLite file — independent of Postgres main DB so it always works.
+# Env-overridable so pytest-xdist workers each use an isolated file (no lock).
 _ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = _ROOT / "data" / "notifications.db"
+DB_PATH = Path(os.environ.get("MRTRADER_NOTIFICATIONS_DB", str(_ROOT / "data" / "notifications.db")))
 
 RECIPIENT = "kimminjae@gmail.com"
 
