@@ -17,19 +17,39 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY
 
 # pytest-xdist: give each worker its OWN SQLite files so the ~4 workers within a
 # shard can't contend on a shared file ("database is locked" — the recurring CI
-# flake). Set at conftest import — BEFORE any test module (hence app.ml.feature_store
-# / live_trading.pead_tracker / notifications.notifier) is imported, so the
-# env-overridable path constants pick these up. Keyed on the worker id; setdefault
-# so an explicitly-set env still wins. Also keeps tests off the real (multi-GB)
-# feature_store.db. Cleaned implicitly (OS temp dir).
+# flake). The env-overridable path constants in app.ml.feature_store /
+# live_trading.pead_tracker / notifications.notifier read these. Also keeps tests
+# off the real (multi-GB) feature_store.db. Cleaned implicitly (OS temp dir).
+#
+# Worker id: PYTEST_XDIST_WORKER is NOT yet set when conftest is *imported*, so a
+# module-level read returns the same fallback for every worker (no isolation). The
+# reliable source is xdist's `config.workerinput["workerid"]`, available in
+# `pytest_configure` — which runs per-worker BEFORE collection (i.e. before the app
+# path-constants are imported). So we set a shared safe default at import (covers
+# any pre-configure import + non-xdist) and FORCE the per-worker path in
+# pytest_configure.
 import tempfile as _tempfile
 from pathlib import Path as _Path
-_worker = _os.environ.get("PYTEST_XDIST_WORKER", "gw_main")
-_db_dir = _Path(_tempfile.gettempdir()) / "mrtrader_test_sqlite" / _worker
-_db_dir.mkdir(parents=True, exist_ok=True)
-_os.environ.setdefault("MRTRADER_FEATURE_STORE_DB", str(_db_dir / "feature_store.db"))
-_os.environ.setdefault("MRTRADER_PEAD_TRACKING_DB", str(_db_dir / "pead_tracking.db"))
-_os.environ.setdefault("MRTRADER_NOTIFICATIONS_DB", str(_db_dir / "notifications.db"))
+
+
+def _set_test_db_env(worker: str = "gw_main", *, force: bool = False) -> None:
+    db_dir = _Path(_tempfile.gettempdir()) / "mrtrader_test_sqlite" / worker
+    db_dir.mkdir(parents=True, exist_ok=True)
+    setter = _os.environ.__setitem__ if force else _os.environ.setdefault
+    setter("MRTRADER_FEATURE_STORE_DB", str(db_dir / "feature_store.db"))
+    setter("MRTRADER_PEAD_TRACKING_DB", str(db_dir / "pead_tracking.db"))
+    setter("MRTRADER_NOTIFICATIONS_DB", str(db_dir / "notifications.db"))
+
+
+_set_test_db_env()  # import-time safety default (shared 'gw_main'); overridden below
+
+
+def pytest_configure(config):
+    # Per-worker isolation: workerinput is set by xdist in each worker before
+    # collection; force per-worker paths so no two workers share a SQLite file.
+    worker = getattr(config, "workerinput", {}).get("workerid", "gw_main")
+    _set_test_db_env(worker, force=True)
+
 
 from datetime import datetime
 from typing import Generator
