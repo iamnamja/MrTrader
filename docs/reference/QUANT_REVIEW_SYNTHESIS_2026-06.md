@@ -222,6 +222,8 @@ strategies only via an a-priori, lookback-safe gate scored across all folds; sol
   Regime-switching must *earn* its complexity.
 - *Exit:* promotion decisions are made on incremental book contribution, not standalone Sharpe.
 
+**✅ DONE 2026-06-06:** Built `app/strategy/sleeve_allocator.py` (general N-sleeve: equal/vol/regime, inverse-vol risk parity, regime hysteresis + EWMA blend, PIT) + `scripts/run_book_allocator.py`. Independent deep-dive CLEAN. On the PEAD+trend overlap (2020-26): **equal-capital +1.082 / maxDD −5.1% / 0× > static vol-weight +0.715 > regime-tilt +0.593 / −6.4% / 2.6×.** → **The regime tilt FAILS its margin (regime layer OFF); inverse-vol is fooled by PEAD's sparse-low vol (loses to equal-capital). SHIP a simple fixed-weight book; vol+regime kept as OFF scaffold; revisit with more sleeves / longer overlap.** ("Complexity must earn it.") **Remaining sub-step (owner-gated): live multi-sleeve wiring** — trend sleeve live at a fixed weight (places live ETF orders → needs go-ahead). Detail: ML_EXPERIMENT_LOG "Phase 3".
+
 ### Phase 4 — Higher-ceiling bets *(Month 2–3; gated on Phase 0–3)*
 - **4a — PEAD 2.0 (genuine expectation shock):** SUE + revenue confirm + forward
   estimate revisions + guidance + analyst-prior inconsistency + crowding (reuse the
