@@ -24,6 +24,7 @@ Schema:
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -31,7 +32,9 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = "app/ml/models/feature_store.db"
+# Env-overridable so pytest-xdist workers can each point at an isolated file
+# (no cross-worker "database is locked"). Default = the real feature store.
+_DEFAULT_DB = os.environ.get("MRTRADER_FEATURE_STORE_DB", "app/ml/models/feature_store.db")
 
 # Bump this whenever engineer_features() gains or loses columns.
 # Mismatch → cache auto-cleared on startup.

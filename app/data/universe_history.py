@@ -119,7 +119,10 @@ def historical_trade_symbols(start: date, end: date, trade_type: Optional[str] =
     try:
         import sqlite3
         from app.ml.feature_store import _DEFAULT_DB  # type: ignore[attr-defined]
-        conn = sqlite3.connect(str(_DEFAULT_DB))
+        # timeout=30 (busy-wait) so concurrent xdist workers don't trip
+        # "database is locked" on this read of the shared feature-store file
+        # (FeatureStore._conn already uses WAL + timeout=30; match it here).
+        conn = sqlite3.connect(str(_DEFAULT_DB), timeout=30)
         try:
             rows = conn.execute(
                 "SELECT DISTINCT symbol FROM features WHERE as_of_date BETWEEN ? AND ?",

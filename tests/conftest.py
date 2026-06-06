@@ -15,6 +15,22 @@ import os as _os
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY_MAX_CPU_COUNT"):
     _os.environ.setdefault(_var, "2")
 
+# pytest-xdist: give each worker its OWN SQLite files so the ~4 workers within a
+# shard can't contend on a shared file ("database is locked" — the recurring CI
+# flake). Set at conftest import — BEFORE any test module (hence app.ml.feature_store
+# / live_trading.pead_tracker / notifications.notifier) is imported, so the
+# env-overridable path constants pick these up. Keyed on the worker id; setdefault
+# so an explicitly-set env still wins. Also keeps tests off the real (multi-GB)
+# feature_store.db. Cleaned implicitly (OS temp dir).
+import tempfile as _tempfile
+from pathlib import Path as _Path
+_worker = _os.environ.get("PYTEST_XDIST_WORKER", "gw_main")
+_db_dir = _Path(_tempfile.gettempdir()) / "mrtrader_test_sqlite" / _worker
+_db_dir.mkdir(parents=True, exist_ok=True)
+_os.environ.setdefault("MRTRADER_FEATURE_STORE_DB", str(_db_dir / "feature_store.db"))
+_os.environ.setdefault("MRTRADER_PEAD_TRACKING_DB", str(_db_dir / "pead_tracking.db"))
+_os.environ.setdefault("MRTRADER_NOTIFICATIONS_DB", str(_db_dir / "notifications.db"))
+
 from datetime import datetime
 from typing import Generator
 from unittest.mock import MagicMock, patch

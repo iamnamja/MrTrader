@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from datetime import date as _date, timedelta
@@ -31,7 +32,8 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = _ROOT / "data" / "pead_tracking.db"
+# Env-overridable so pytest-xdist workers each use an isolated file (no lock).
+DB_PATH = Path(os.environ.get("MRTRADER_PEAD_TRACKING_DB", str(_ROOT / "data" / "pead_tracking.db")))
 
 BACKTEST_SHARPE = 0.546  # validated CPCV long-only expectation
 
