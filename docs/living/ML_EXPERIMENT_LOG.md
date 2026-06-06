@@ -33,6 +33,28 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 3 (Alpha-v4) — Regime-aware sleeve allocator — 2026-06-06 — VERDICT: ✅ scaffold built; SHIP SIMPLE FIXED-WEIGHT (vol-tilt + regime-tilt do NOT earn complexity yet)
+
+**Context**: With two validated sleeves (PEAD weak-beta satellite + TSMOM trend), build the multi-sleeve book allocator (the architectural unlock) and answer the disciplined question: does a regime tilt — or even inverse-vol risk-parity — beat simple fixed weights, net of turnover? Built `app/strategy/sleeve_allocator.py` (general N-sleeve: equal-capital / static vol-weight / regime-tilted; inverse-vol risk parity; regime **hysteresis** (persistence) + continuous **EWMA blend**; PIT) + `scripts/run_book_allocator.py`.
+
+**Deep-dive (independent review)**: CLEAN — confirmed no look-ahead anywhere (inverse-vol, regime hysteresis loop, EWMA tilt blend all strictly causal; `combine()` reuses the validated TSMOM `held.shift(1)*rets` + `cost.shift(1)` convention). No bugs. (Also fixed a cp1252 console crash from a `Δ` glyph in a print string — ASCII-only runtime strings.)
+
+**Validation — PEAD+trend overlap (2020-05 → 2026-06, 1526d), a-priori tilt {BULL: pead×1.3/trend×0.8, BEAR: pead×0.5/trend×1.3}:**
+
+| book | Sharpe | CAGR | vol | maxDD | Calmar | turnover |
+|---|---|---|---|---|---|---|
+| **equal-capital** | **+1.082** | +6.4% | 5.9% | −5.1% | 1.25 | 0.0× |
+| static vol-weight | +0.715 | +3.1% | 4.4% | −5.1% | 0.61 | 1.4× |
+| regime-tilted | +0.593 | +2.6% | 4.5% | −6.4% | 0.40 | 2.6× |
+
+**Findings:** (1) **The regime tilt FAILS its margin** — worse Sharpe (0.715→0.593), *deeper* drawdown (−5.1%→−6.4%), 2× turnover → regime layer **OFF**. (2) **Inverse-vol is fooled by PEAD's sparse-low vol** — PEAD's low vol = sparse event exposure, not safety, so risk-parity over-weights the *weak* sleeve and loses to naive equal-capital (1.082 → 0.715). → **SHIP a simple equal-capital / fixed-weight book; keep the vol-tilt AND regime-tilt as OFF scaffold; revisit when more sleeves / longer overlapping history exist (complexity must earn it).** Exactly the §3/§4b "regime layer must earn its complexity" discipline.
+
+**Caveats (honest):** thin overlap (2020-26 = COVID + 2022 + bull); equal-capital's +1.08 is flattered by the favorable sample (50% PEAD-beta + 50% strong-2020-22 trend) — the *relative* rankings (tilt < vol < equal) are the robust signal, not the absolute level. A "vol-match each sleeve to a common deployed-vol target then equal-risk" refinement would de-bias inverse-vol for sparse sleeves (deferred).
+
+**NEXT:** the analytical core of Phase 3 is done (allocator built + validated + weighting decided). The remaining sub-step is **live multi-sleeve wiring** — get the trend sleeve trading at a simple fixed weight alongside PEAD (it's the strongest sleeve and isn't live yet). That places live ETF orders in the paper book → **owner-gated** (deliberate live-system change), tracked as the next implementation. Tools: `app/strategy/sleeve_allocator.py`, `scripts/run_book_allocator.py`.
+
+---
+
 ## Phase 2 (Alpha-v4) — TSMOM trend sleeve — 2026-06-06 — VERDICT: ✅ KEEP (validated as a book addition; the crisis diversifier)
 
 **Context**: Phase 1 established PEAD is a weak, market-beta-driven satellite, so the book needs a genuinely uncorrelated, crisis-positive sleeve (5/5 reviewers' #1 pick). Built a vectorized, PIT-safe time-series-momentum (Moskowitz-Ooi-Pedersen) sleeve on a 10-ETF multi-asset basket: `app/strategy/tsmom.py` (lookback-ensemble 21/63/126/252d, long-flat, inverse-vol target, weekly rebalance, 2bps ETF cost) + `scripts/run_tsmom.py`. Universe: SPY/QQQ/IWM/EFA/EEM/TLT/IEF/GLD/DBC/UUP.
