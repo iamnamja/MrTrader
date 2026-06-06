@@ -17,7 +17,9 @@ Five independent world-class-quant LLM reviews (ChatGPT, Gemini, Grok, DeepSeek,
 
 **Phases (EV/effort):** **P0** validation integrity (`is_trained` guard → full-coverage CPCV for rules-based; sequential-WF baseline; fold-coverage report; gate recalibration; freeze dead XS-ML) → **P1** PEAD reckoning (neutralization + FF5 attribution + gapper slippage; decision gate) → **P2** Trend/TSMOM ETF sleeve (crisis-diversifier, book-level eval) → **P3** regime-aware allocator (the unlock; must beat static weights net of turnover) → **P4** gated high-ceiling bets (PEAD 2.0 · options-VRP spike · squeeze-conditioning). **Regime policy:** "attribute, don't amputate" — switch *allocation* across full-history sleeves, never train a model per regime (§4b).
 
-**NEXT:** Phase 0, starting with the `is_trained` guard fix ([cpcv.py:961-973](../../scripts/walkforward/cpcv.py#L961-L973)) → unbiased full-coverage PEAD CPCV number.
+**PHASE 0.1 + PHASE 1 DONE (2026-06-06):** `is_trained` guard fix shipped (#394) → PEAD CPCV now full-coverage (skips 50%→8). On the honest harness PEAD is **NOT a standalone edge**: unbiased CPCV mean +0.578 but t=1.81 (<2)/p5=−0.796 (worse tail revealed); **CAPM beta-isolation is decisive — α=−1.29%/yr, HAC α t=−0.95, β=0.14; the beta-removed (market-hedged) Sharpe is −0.37** (hedge out SPY and it loses money). The positive Sharpe is small β riding the 2020–26 bull. Gapper-slippage collapses the edge by 50bps. → **PEAD = weak market-beta-driven risk-on satellite, kept at telemetry size (1.0×/5%, live), never a centerpiece.** Retires "PEAD is the sole edge." PEAD 2.0 dropped (was gated on neutralized PEAD showing life). See ML_EXPERIMENT_LOG Phase 1. Tool: `scripts/pead_phase1_attribution.py`.
+
+**NEXT → Phase 2: Trend/TSMOM ETF sleeve** — the crisis-positive, uncorrelated sleeve the book now needs (a long-biased earnings satellite isn't alpha alone). Validate as a *book addition* (drawdown reduction + marginal book-SR), not standalone. (Phase 0 remainder — sequential-WF baseline, fold-coverage report, gate recalibration, freeze dead XS-ML — runs alongside as harness hygiene.)
 
 ---
 

@@ -178,10 +178,15 @@ strategies only via an a-priori, lookback-safe gate scored across all folds; sol
   promotion; keep as a non-production benchmark diagnostic).
 - *Exit:* every backtest carries an honest coverage map; PEAD has an unbiased CPCV #.
 
-### Phase 1 — PEAD honest reckoning *(Week 1–2; cheap, decisive)*
-- Dial back the live ramp to telemetry size (§4.1).
+### Phase 1 — PEAD honest reckoning *(Week 1–2)* — ✅ DONE 2026-06-06: NOT A STANDALONE EDGE
+- Dial back the live ramp to telemetry size (§4.1). ✅ (1.0×/5%, live)
 - Run the neutralization + factor + gapper-slippage + entry-timing tests (§4.2–4.5).
-- *Exit (decision gate):* PEAD = small real diversifier **or** benchmark-only.
+- **RESULT (decision gate):** PEAD is **market-beta-driven, NOT standalone alpha.**
+  - Unbiased full-coverage CPCV (guard fix live): mean **+0.578**, t **1.81** (<2), p5 **−0.796** → real-but-underpowered confirmed.
+  - **CAPM beta-isolation (decisive):** α **−1.29%/yr**, HAC α t **−0.95**, β **0.14**, **beta-removed Sharpe −0.37** (hedge out SPY → it loses money). Positive Sharpe = small β riding the bull sample.
+  - Gapper-slippage: edge survives 30bps, collapses (−0.19) at 50bps.
+  - → **Keep PEAD at telemetry size as a benchmark/risk-on satellite, never a centerpiece.** Retires "PEAD = sole edge." **Phase 4a (PEAD 2.0) dropped** (was gated on neutralized PEAD showing life — it didn't). Tool: `scripts/pead_phase1_attribution.py`. Detail: ML_EXPERIMENT_LOG "Phase 1 (Alpha-v4)".
+  - **Pivot: Phase 2 (Trend/TSMOM) is now the priority sleeve.**
 
 ### Phase 2 — First uncorrelated sleeve: ETF trend / TSMOM *(Week 2–6; highest-consensus new alpha)*
 - Build TSMOM on liquid ETFs (SPY/QQQ/IWM/TLT/IEF/GLD/DBC + sectors): 1/3/6/12-mo

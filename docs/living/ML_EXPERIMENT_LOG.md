@@ -33,6 +33,28 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 1 (Alpha-v4) — PEAD honest reckoning — 2026-06-06 — VERDICT: ❌ NOT A STANDALONE EDGE (market-beta-driven)
+
+**Context**: After the `is_trained` fold-skip fix (Phase 0.1 / KL-11) gave PEAD *full-coverage* CPCV, the Alpha-v4 plan's decision gate: is PEAD genuine drift alpha, or conditional market beta? Two kill-tests on the **committed** long-only config (`scripts/pead_phase1_attribution.py` + `scripts/run_pead_cpcv.py`, R1K, 666 names × 1528d, 6y).
+
+**1.0 — Unbiased full-coverage CPCV** (`run_pead_cpcv.py`, guard bypass now LIVE — confirmed in log): mean Sharpe **+0.578** (≈ the old biased +0.546 → coverage bias was *not* inflating the mean), skips **50% → 8** (fold-0 only), **27 paths**. But **path t-stat +1.81** (N_eff=8, < 2.0 gate), **p5 = −0.796** (full coverage exposed a worse left tail the bias had hidden). Gate FAILS (tstat, pct_positive, p5, worst-regime). → real-but-underpowered, *confirmed* on honest coverage; the unbiased view is slightly worse (tail + significance).
+
+**1.3 — CAPM beta isolation (decisive, the A1-style kill-test)** — full-window single pass, `r_book = α + β·r_spy`, Newey-West HAC (lag 5):
+
+| entry slip | trades | raw SR | β | α (ann) | α t(OLS) | **α t(HAC)** | β-removed SR | R²(SPY) |
+|---|---|---|---|---|---|---|---|---|
+| **3 bps (committed)** | 216 | +0.309 | +0.14 | **−1.29%** | −0.90 | **−0.95** | **−0.367** | 0.330 |
+| 30 bps | 223 | +0.332 | +0.14 | −1.07% | −0.75 | −0.82 | −0.307 | 0.307 |
+| 50 bps | 55 | −0.193 | +0.06 | −1.61% | −1.61 | −1.73 | −0.655 | 0.150 |
+
+→ **No significant alpha beyond market beta** — the CAPM alpha is *negative* (−1.29%/yr) and insignificant (HAC t −0.95), and once SPY is hedged out the **beta-removed Sharpe is −0.37** (the market-hedged book *loses* money). The positive raw Sharpe is the small β riding the bull-heavy 2020–2026 sample. PEAD joins analyst-drift (A1, α t=0.20) in the "looked positive, was beta" bucket.
+
+**1.4 — Gapper-slippage stress**: raw SR +0.31 (3bps) → +0.33 (30bps) → **−0.19 (50bps)**; at 50 bps fills become unfillable (trades 216→55). Execution-fragile on the post-earnings gappers it trades.
+
+**DECISION GATE → PEAD is NOT a validated standalone edge.** Consistent with all 5 LLM reviewers + the prior event-bootstrap (p≈0.19) / HAC (t≈1.04) work. At most a weak, market-beta-driven, regime-conditional risk-on satellite. **Action:** keep at telemetry size (already dialed to `pm.pead_size_mult`=1.0 / `pm.pead_max_position_pct`=0.05, live); treat as benchmark/risk-on satellite, never a capital centerpiece. **Retires** the "PEAD is the sole edge → ramp it" thesis. **PEAD 2.0 (Phase 4a) drops** (it was gated on neutralized PEAD showing life — it didn't). **Pivot: Phase 2 (Trend/TSMOM) is now the priority** — we need a genuinely uncorrelated, crisis-positive sleeve. Tools: `scripts/pead_phase1_attribution.py` (reusable CAPM/HAC beta-isolation + slippage sweep).
+
+---
+
 ## B5 — PEAD SPY-trend filter vs VIX>30 block — 2026-06-04 — VERDICT: ✅ TREND WINS (deployed)
 
 **Hypothesis**: PEAD is an up-trend drift harvester (~87% of P&L in up-trends), so replacing the crude VIX>30 crisis block with an **SPY < 200d-SMA trend filter** (block entries in downtrends) should improve risk-adjusted return + crisis robustness — especially relevant now the book is ramped 3x (B4). Mechanism already existed in `PEADScorer` (`regime_control="trend"`, PIT-safe `.loc[:_ts]`); B5 = validate + wire to live.
