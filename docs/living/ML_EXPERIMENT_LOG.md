@@ -33,6 +33,24 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 2 (Alpha-v4) — TSMOM trend sleeve — 2026-06-06 — VERDICT: ✅ KEEP (validated as a book addition; the crisis diversifier)
+
+**Context**: Phase 1 established PEAD is a weak, market-beta-driven satellite, so the book needs a genuinely uncorrelated, crisis-positive sleeve (5/5 reviewers' #1 pick). Built a vectorized, PIT-safe time-series-momentum (Moskowitz-Ooi-Pedersen) sleeve on a 10-ETF multi-asset basket: `app/strategy/tsmom.py` (lookback-ensemble 21/63/126/252d, long-flat, inverse-vol target, weekly rebalance, 2bps ETF cost) + `scripts/run_tsmom.py`. Universe: SPY/QQQ/IWM/EFA/EEM/TLT/IEF/GLD/DBC/UUP.
+
+**Deep-dive (independent review)**: confirmed NO look-ahead in the core (`held.shift(1)*rets` + ffill rebalance grid are PIT-correct); found + fixed ONE real bug — cost-timing off-by-one (cost was charged a day before the new weight earned; row-0 initial entry orphaned by dropna). Fix: `cost.shift(1)`. Locked by a regression test. 10 tests green (PIT/no-look-ahead, vol-target, long-flat, crisis rotation, gross cap, cost-timing).
+
+**Standalone (2007-06 → 2026-06, 4886d):** Sharpe **+0.714**, CAGR +6.4%, vol 9.3%, maxDD **−13.9%**, Calmar 0.46, avg gross 0.87, turnover 14×/yr. (Honest 19-yr number incl. the 2011-19 trend drought — better than typical long-run managed-futures ~0.5.)
+
+**Per-regime / crisis (the honest nuance):** BULL Sharpe +4.11 / NEUTRAL +0.42 / **BEAR −0.77**. Crisis windows: 2008 GFC **trend +7.0%** vs SPY −36.9%; 2011 +1.0% vs −4.4%; 2022 +0.9% vs −17.7%; **but** 2018Q4 −6.3% vs −13.5% and 2020 COVID −6.2% vs −33.4%. → trend is crisis-positive in **slow/sustained bears** (time to rotate to bonds/gold) and **whipsawed in fast V-shaped shocks** (COVID/2018Q4). The BEAR-label Sharpe is whipsaw-dominated. *This regime nuance is a key input to the Phase-3 allocator (trend is not universally defensive).*
+
+**EXIT GATE — vs PEAD (2020-26 overlap, vol-matched 10%):** correlation(trend, PEAD) = **+0.247** (low → diversifying). PEAD-only Sharpe +0.309 / maxDD −13.7%; Trend-only +1.144 / −9.6%; **COMBINED 50/50 +0.920 / −8.3%.** → **KEEP**: PEAD+trend beats PEAD-alone on BOTH Sharpe (0.31→0.92) and drawdown (−13.7%→−8.3%). Trend is the stronger sleeve; PEAD the weak satellite. Validates the portfolio-of-premia pivot.
+
+**Caveats (honest):** combined-book uses ex-post vol scaling (descriptive) on the 2020-26 overlap (trend's long-run honest standalone is +0.714); 2bps cost is slightly optimistic for less-liquid names (turnover-mitigated); long-flat only (no ETF shorting yet → captures "long bonds" crisis alpha, not "short equities").
+
+**NEXT:** Phase 3 — regime-aware allocator over {PEAD, trend} (the live multi-sleeve book). Live wiring of the trend sleeve happens there (it's the natural home for multi-sleeve combination), not as a bolt-on PM selector. Tools retained: `app/strategy/tsmom.py` (reusable sleeve), `scripts/run_tsmom.py` (validation harness).
+
+---
+
 ## Phase 1 (Alpha-v4) — PEAD honest reckoning — 2026-06-06 — VERDICT: ❌ NOT A STANDALONE EDGE (market-beta-driven)
 
 **Context**: After the `is_trained` fold-skip fix (Phase 0.1 / KL-11) gave PEAD *full-coverage* CPCV, the Alpha-v4 plan's decision gate: is PEAD genuine drift alpha, or conditional market beta? Two kill-tests on the **committed** long-only config (`scripts/pead_phase1_attribution.py` + `scripts/run_pead_cpcv.py`, R1K, 666 names × 1528d, 6y).

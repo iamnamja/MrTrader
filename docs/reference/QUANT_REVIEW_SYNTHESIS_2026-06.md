@@ -188,12 +188,11 @@ strategies only via an a-priori, lookback-safe gate scored across all folds; sol
   - → **Keep PEAD at telemetry size as a benchmark/risk-on satellite, never a centerpiece.** Retires "PEAD = sole edge." **Phase 4a (PEAD 2.0) dropped** (was gated on neutralized PEAD showing life — it didn't). Tool: `scripts/pead_phase1_attribution.py`. Detail: ML_EXPERIMENT_LOG "Phase 1 (Alpha-v4)".
   - **Pivot: Phase 2 (Trend/TSMOM) is now the priority sleeve.**
 
-### Phase 2 — First uncorrelated sleeve: ETF trend / TSMOM *(Week 2–6; highest-consensus new alpha)*
-- Build TSMOM on liquid ETFs (SPY/QQQ/IWM/TLT/IEF/GLD/DBC + sectors): 1/3/6/12-mo
-  lookback ensemble, vol-targeted, weekly rebalance. **No futures roll yet** (ETFs first).
-- Validate **as a book addition** alongside PEAD (drawdown reduction + marginal book-SR),
-  not standalone. This is the crisis-diversifier that fixes PEAD's long-bias.
-- *Exit:* keep if it reduces combined drawdown / left-tail beta after costs, even at modest standalone SR.
+### Phase 2 — First uncorrelated sleeve: ETF trend / TSMOM — ✅ DONE 2026-06-06: KEEP
+- Built `app/strategy/tsmom.py` (vectorized, PIT-safe; 10-ETF multi-asset SPY/QQQ/IWM/EFA/EEM/TLT/IEF/GLD/DBC/UUP; lookback ensemble 21/63/126/252d; long-flat; inverse-vol target; weekly rebalance; 2bps cost) + `scripts/run_tsmom.py`. Independent deep-dive: no look-ahead; fixed a cost-timing off-by-one (`cost.shift(1)`). 10 tests.
+- **RESULT:** standalone **Sharpe +0.714** (2007-26, all crises), crisis-positive in *slow* bears (2008 +7% vs SPY −37%; 2011/2022 +) but whipsawed in *fast* V-shocks (COVID −6%, 2018Q4 −6%); **corr to PEAD +0.25**.
+- **EXIT GATE PASSES** — combined PEAD+trend (vol-matched 50/50) beats PEAD-alone on **both** Sharpe (0.31→0.92) and drawdown (−13.7%→−8.3%). Trend is the stronger sleeve; PEAD the weak satellite. Detail: ML_EXPERIMENT_LOG "Phase 2".
+- **Note for Phase 3:** trend's regime profile (slow-bear-positive, fast-shock-negative) is a key allocator input — trend is NOT universally defensive.
 
 ### Phase 3 — Regime-aware portfolio allocator + book-level validation *(Week 4–8; architectural unlock)*
 - Add a sleeve allocator above the PM: vol-weight sleeves by marginal contribution to
