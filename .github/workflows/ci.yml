@@ -61,10 +61,20 @@ jobs:
             --exclude app/database/migrations/ \
             || true
 
-  # ── Unit + contract tests ────────────────────────────────────────────────────
-  test:
-    name: Unit & Contract Tests
+  # ── Unit + contract tests (sharded by recorded durations) ────────────────────
+  # The suite is split into N balanced groups by .test_durations (pytest-split) and
+  # run as parallel matrix jobs, so a few very slow integration modules (e.g. the
+  # ranker_v2 CPCV tests) land on different runners instead of serializing on one
+  # xdist worker. The full suite still runs on every PR — it is just parallelized.
+  # Regenerate balance after adding slow tests: `pytest --store-durations` → commit
+  # the updated .test_durations.
+  test-shard:
+    name: Test shard ${{ matrix.group }}/4
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     services:
       redis:
         image: redis:7-alpine
@@ -94,30 +104,90 @@ jobs:
           python -m venv ~/.venv
           ~/.venv/bin/pip install -r requirements.txt
 
-      - name: Run unit + integration + contract tests
+      - name: Run shard ${{ matrix.group }}/4 (balanced by .test_durations)
         env:
           ALPACA_API_KEY: ${{ env.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ env.ALPACA_SECRET_KEY }}
           DATABASE_URL: ${{ env.DATABASE_URL }}
           REDIS_URL: redis://localhost:6379
           PATH: ~/.venv/bin:$PATH
+          # Unique per-shard coverage data file → combined in the `coverage` job.
+          COVERAGE_FILE: .coverage.${{ matrix.group }}
         run: |
           pytest tests/ \
             --ignore=tests/test_strategy_regression.py \
+            --splits 4 --group ${{ matrix.group }} \
+            --splitting-algorithm least_duration \
+            --durations-path=.test_durations \
             --tb=short -q \
-            --durations=20 \
+            --durations=15 \
             --override-ini="addopts=-n auto --dist=loadscope --timeout=120" \
             --cov=app \
-            --cov-report=xml \
-            --cov-fail-under=56 \
-            --cov-config=pytest.ini
+            --cov-report= \
+            --cov-config=pytest.ini \
+            --cov-fail-under=0   # per-shard coverage is partial; the gate is enforced in the `coverage` job
 
-      - name: Upload coverage report
+      - name: Upload shard coverage data
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-data-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          include-hidden-files: true
+          retention-days: 1
+
+  # ── Coverage gate (combine all shards, enforce threshold) ─────────────────────
+  coverage:
+    name: Coverage Gate
+    needs: test-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install coverage
+        run: pip install "coverage[toml]==7.*"
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+
+      - name: Combine + enforce 56% gate
+        run: |
+          ls -la .coverage.* || true
+          coverage combine .coverage.1 .coverage.2 .coverage.3 .coverage.4
+          coverage report --fail-under=56
+          coverage xml
+
+      - name: Upload combined coverage report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-report
           path: coverage.xml
+
+  # ── Test aggregator (the branch-protection-required "Unit & Contract Tests"
+  #    check; green iff ALL shards pass). Keeps the required check name stable so
+  #    the matrix sharding does not require editing branch protection. ───────────
+  test:
+    name: Unit & Contract Tests
+    needs: test-shard
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: All test shards must pass
+        run: |
+          if [[ "${{ needs.test-shard.result }}" != "success" ]]; then
+            echo "One or more test shards failed: ${{ needs.test-shard.result }}"
+            exit 1
+          fi
+          echo "All test shards passed."
 
   # ── Strategy regression (main only, needs yfinance network access) ───────────
   backtest-regression:
@@ -150,15 +220,16 @@ jobs:
   # ── CI gate ──────────────────────────────────────────────────────────────────
   ci-success:
     name: CI Pass Gate
-    needs: [lint, test]
+    needs: [lint, test, coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: All required jobs must pass
         run: |
           if [[ "${{ needs.lint.result }}" != "success" || \
-                "${{ needs.test.result }}" != "success" ]]; then
-            echo "CI failed: lint=${{ needs.lint.result }} test=${{ needs.test.result }}"
+                "${{ needs.test.result }}" != "success" || \
+                "${{ needs.coverage.result }}" != "success" ]]; then
+            echo "CI failed: lint=${{ needs.lint.result }} test=${{ needs.test.result }} coverage=${{ needs.coverage.result }}"
             exit 1
           fi
           echo "CI passed."
