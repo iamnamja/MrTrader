@@ -59,6 +59,12 @@ class CPCVResult:
     # BUG-2: track skipped folds (fold 0 can't be tested — no prior training data).
     # n_skipped > 0 is normal for CPCV; a large fraction indicates a design problem.
     n_skipped: int = 0
+    # Alpha-v4 P0.1: fold evaluations where the BUG-23 overlap guard WOULD have
+    # skipped (rolling/expanding train window spans a prior test fold) but was
+    # bypassed because the strategy is rules-based (no model is fit → no leakage).
+    # These folds RAN (they are full-coverage recoveries, not skips). For a trained
+    # strategy this stays 0 (the guard still skips). Reported for transparency.
+    n_overlap_bypassed: int = 0
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
@@ -856,6 +862,30 @@ def run_cpcv(
         is_true_walkforward=_per_fold,
     )
 
+    # Alpha-v4 P0.1: decide whether the BUG-23 overlap guard applies.
+    # The guard skips a fold when a contiguous (rolling/expanding) TRAINING window
+    # would span a prior test fold — necessary to stop a *trained* model learning
+    # data tested elsewhere in the combo. A rules-based scorer (EventEdgeStrategy:
+    # model.trained_through == date.min, nothing fit) uses the train window ONLY for
+    # PIT universe construction in run_fold, never for training, so the overlap
+    # cannot leak. For such strategies the guard was discarding ~half of all fold
+    # evaluations and biasing the surviving path distribution toward later (bull)
+    # regimes. Detect rules-based and bypass the guard → full, unbiased coverage.
+    # Resolution order: explicit strategy.is_trained flag, else derive from the
+    # model cutoff (date.min ⇒ rules-based). Default = treat as trained (guard ON).
+    from datetime import date as _date_cls
+    _declared_trained = getattr(strategy, "is_trained", None)
+    if _declared_trained is None:
+        _model_cutoff = getattr(getattr(strategy, "model", None), "trained_through", None)
+        _rules_based = (_model_cutoff == _date_cls.min)
+    else:
+        _rules_based = (_declared_trained is False)
+    if _rules_based:
+        logger.info(
+            "CPCV: rules-based strategy (no model fit) — BUG-23 overlap guard "
+            "BYPASSED for full fold coverage (Alpha-v4 P0.1)."
+        )
+
     # Generate C(k, paths) combinations
     fold_indices = list(range(len(all_boundaries)))
     combinations = list(itertools.combinations(fold_indices, n_paths))
@@ -964,13 +994,23 @@ def run_cpcv(
                 for j in prior_test_folds
             )
             if overlap:
+                if not _rules_based:
+                    logger.debug(
+                        "CPCV overlap guard: combo %d ti=%d rolling window [%s, %s] "
+                        "overlaps prior test fold (including %d-day post-test embargo) — skipping",
+                        combo_idx, ti, real_tr_start, real_tr_end, _embargo,
+                    )
+                    result.n_skipped += 1
+                    continue
+                # Alpha-v4 P0.1: rules-based scorer — the train window is used only
+                # for PIT universe construction (run_fold), never to fit a model, so
+                # the overlap cannot leak. Run the fold (full coverage) and record
+                # the bypass for transparency instead of skipping.
+                result.n_overlap_bypassed += 1
                 logger.debug(
-                    "CPCV overlap guard: combo %d ti=%d rolling window [%s, %s] "
-                    "overlaps prior test fold (including %d-day post-test embargo) — skipping",
-                    combo_idx, ti, real_tr_start, real_tr_end, _embargo,
+                    "CPCV overlap guard BYPASSED (rules-based): combo %d ti=%d — fold runs.",
+                    combo_idx, ti,
                 )
-                result.n_skipped += 1
-                continue
 
             _global_fold_id = combo_idx * len(all_boundaries) + ti + 1
             try:
@@ -1101,6 +1141,14 @@ def run_cpcv(
     # not indicate a bug, but a large skip fraction beyond that is worth investigating.
     total_fold_evals = len(combinations) * n_paths
     expected_skips = len(combinations) - len(result.path_sharpes)
+    # Alpha-v4 P0.1: report overlap-guard bypasses (rules-based full-coverage
+    # recoveries — these folds RAN, they are not skips).
+    if result.n_overlap_bypassed > 0:
+        logger.info(
+            "CPCV: %d/%d fold evaluations ran via overlap-guard bypass (rules-based, "
+            "no model fit) — full-coverage recovery (Alpha-v4 P0.1).",
+            result.n_overlap_bypassed, total_fold_evals,
+        )
     if result.n_skipped > 0:
         skip_pct = result.n_skipped / max(total_fold_evals, 1) * 100
         if skip_pct > 20:
