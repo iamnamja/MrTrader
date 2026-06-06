@@ -1,12 +1,39 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-06-03
+**Last updated:** 2026-06-06
 **Capital:** $100k (paper)
-**Status:** 🎯 **ALPHA-v3 — EVENT-EDGE FAMILY** (active). Cross-sectional ML ranking is **closed** (3 honest CPCV nulls: swing noise, intraday cost-drag, dollar-neutral ranker beta-only — see DECISIONS.md 2026-06-03). **PEAD is the sole validated edge** (+0.546 CPCV, real-but-underpowered, live in paper). Two parallel tracks: **(A)** build a 2nd event-driven edge; **(B)** productionize + aggressively ramp PEAD in paper to self-certify. See the **Alpha-v3 Plan** section directly below; older sections (LX campaign, 2026-05-18 L/S pivot) are **superseded — archive-only**.
+**Status:** 🎯 **ALPHA-v4 — PORTFOLIO OF UNCORRELATED PREMIA** (active, 2026-06-06). After a 5-LLM deep-dive quant review (ChatGPT, Gemini, Grok, DeepSeek, Claude), the direction shifts from *hunting one hero edge* to *assembling a small book of uncorrelated sleeves + a regime-aware allocator*, on an **honest validation harness**. Full synthesis + detailed phased plan: **`docs/reference/QUANT_REVIEW_SYNTHESIS_2026-06.md`** (SSOT for this direction). Alpha-v3 (event-edge family) is **complete — PEAD remains the sole validated edge**; its sweep is archived below.
 
 ---
 
-## 🎯 ALPHA-v3 PLAN — Event-Edge Family (2026-06-03)
+## 🎯 ALPHA-v4 PLAN — Portfolio of Uncorrelated Premia (2026-06-06)
+
+**SSOT:** `docs/reference/QUANT_REVIEW_SYNTHESIS_2026-06.md` (consensus tally, regime policy §4b, full per-phase implementation detail). This table is the index; the synthesis doc is the spec.
+
+**Thesis (5/5 reviewer consensus):** the architecture is good — *re-aim, don't rebuild*. The wall is the **opportunity set + a biased ruler**, not the technique. Stop validating sleeves in isolation; build **4 uncorrelated ~0.4-SR sleeves → book SR ≈ 0.8**. PEAD is *not* proven alpha (p≈0.19, 87% P&L in up-trends = conditional beta) — keep it small, pair it with a crisis-positive sleeve.
+
+**Locked decisions (2026-06-06):** (1) **PEAD dialed back to telemetry** — `pm.pead_size_mult` 3.0→**1.0**, `pm.pead_max_position_pct` 0.10→**0.05** (live, restart-free, done). (2) **Gates: lower bar (~0.45) + reweight to robustness** (residual-alpha-t + fold-consistency primary; keep worst-regime survivability floor). (3) **Targeted re-architecture** (keep execution core; rework research harness; add sleeve + regime-allocator layer). (4) **Free-data only** until a feasibility spike justifies a paid purchase.
+
+| Phase | Item | Effort | Status |
+|---|---|---|---|
+| **P0** | **Validation integrity** (blocks all): `is_trained` guard fix → full-coverage CPCV for rules-based scorers; purged sequential-WF baseline for trained models; fold-coverage report (year×regime×VIX×trend) gated before perf; **gate recalibration** (avg-Sharpe→~0.45 + residual-alpha-t + fold-consistency + survivability floor); **freeze dead XS-ML** retrain. | ~1wk | **NEXT** |
+| **P1** | **PEAD honest reckoning**: ✅ dial-back live (done) · neutralization kill-test (long surprise / short sector ETF) · FF5 factor attribution (residual-α t) · gapper-slippage stress (30–50bps) · entry-timing sensitivity. Decision gate: small real sleeve **or** benchmark-only. | ~1–2wk | After P0 |
+| **P2** | **Trend / TSMOM sleeve** (the crisis-diversifier; can overlap P1): `app/ml/tsmom_scorer.py` (lookback ensemble, inverse-vol, weekly rebalance) on a liquid **ETF** universe, through `AgentSimulator`. Validate as a **book addition** (drawdown reduction + marginal book-SR), not standalone. | ~3–4wk | After P0 |
+| **P3** | **Regime-aware allocator + book-level validation** (the unlock): `app/agents/sleeve_allocator.py` above PM — vol-weight by marginal book risk + **continuous** regime tilt (coarse-3 PIT map + regime_model_v5, hysteresis/persistence). Per-sleeve RM budgets. **Must beat static-equal-weight OOS net of turnover or be dropped.** | ~4wk | After P2 |
+| **P4a** | **PEAD 2.0** (gated on P1 neutralized-PEAD surviving): genuine-shock scorer — SUE + revenue confirm + fwd estimate revisions + guidance + analyst-prior inconsistency, on `EventEdgeStrategy`. | TBD | Conditional |
+| **P4b** | **Options-VRP feasibility spike** (NOT a full strategy): contract-level P&L prototype w/ conservative bid/ask; **decision gate before** any options sim. Free-data-only until the spike says go. | TBD | Conditional |
+| **P4c** | **Squeeze-conditioning**: SI days-to-cover as a PEAD-*long* conditioner (uses already-acquired SI data). | ~S | Opportunistic |
+| **P5** | Optional/later: futures-roll trend upgrade · merger arb · CJL **forward-estimate-revision** residualized retest (≠ killed A1 ratings) · crypto basis. | TBD | Backlog |
+
+**Cross-cutting (introduced P0/P1):** strategy contracts (frozen spec + code hash) · research ledger (hypothesis registry, incl. nulls) · capital ladder (backtest→shadow→paper→micro-live→pilot→production).
+
+**Explicit STOP list (5/5):** large-cap daily XS-ML · intraday 5-min ML · LLM stock-picking · expensive alt-data · single-name shorting without borrow data · "improving" a backtest by trying filters (the B5 trap).
+
+---
+
+## ✅ ALPHA-v3 PLAN — Event-Edge Family (2026-06-03) — COMPLETE (superseded by Alpha-v4)
+
+> **Outcome:** Track A swept (A1 analyst-drift ❌, A2 short-interest ❌ — both NULL); Track B shipped (B1/B2 clock, B4 ramp, B5 trend filter). Net result: **PEAD remained the sole validated edge.** The 5-LLM review (2026-06-06) then redirected to Alpha-v4 (portfolio of premia) and dialed the B4 ramp back to telemetry. Retained below for archaeology.
 
 **Thesis:** every attempt to extract alpha from *cross-sectional ML ranking* on price/fundamental features came back **noise or beta**. The one thing that worked — **PEAD** — is **event-driven, rules-based, economically grounded**. That's where alpha lives in this stack. So: stop ranking, hunt **discrete-event → measurable-drift** edges, each run through the same honest CPCV + event-bootstrap harness.
 

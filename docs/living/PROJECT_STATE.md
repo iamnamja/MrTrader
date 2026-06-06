@@ -4,11 +4,24 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-03 (PEAD UI visibility shipped — selector attribution + PEAD tracking tab; ranker Spike-A CPCV running)
+**Last updated:** 2026-06-06 (5-LLM quant review digested → Alpha-v4 plan locked; PEAD dialed back to telemetry)
 
 ---
 
-## 🧭 ACTIVE DIRECTION (2026-06-02): Alpha v2 — `docs/living/ALPHA_V2_PLAN.md`
+## 🧭 ACTIVE DIRECTION (2026-06-06): Alpha-v4 — Portfolio of Uncorrelated Premia
+**SSOT:** `docs/reference/QUANT_REVIEW_SYNTHESIS_2026-06.md` · **Index:** `MASTER_BACKLOG.md` (Alpha-v4 table).
+
+Five independent world-class-quant LLM reviews (ChatGPT, Gemini, Grok, DeepSeek, Claude) converged: **the architecture is good — re-aim, don't rebuild.** The wall is the *opportunity set + a biased ruler*, not technique. Stop hunting one hero edge; assemble **~4 uncorrelated sleeves → book SR ≈ 0.8**, on an honest harness. PEAD is **not** proven alpha (p≈0.19, 87% P&L in up-trends = conditional beta) — keep small, pair with a crisis-positive sleeve.
+
+**Locked (2026-06-06):** ① **PEAD → telemetry** (`pm.pead_size_mult` 3.0→**1.0**, `pm.pead_max_position_pct` 0.10→**0.05**, applied live restart-free — reverses B4). ② **Gates** → lower bar (~0.45) + reweight to robustness (residual-α-t + fold-consistency primary; keep survivability floor). ③ **Targeted re-arch** (keep execution; rework research harness; add sleeve+regime-allocator). ④ **Free-data only** until a spike justifies a paid purchase.
+
+**Phases (EV/effort):** **P0** validation integrity (`is_trained` guard → full-coverage CPCV for rules-based; sequential-WF baseline; fold-coverage report; gate recalibration; freeze dead XS-ML) → **P1** PEAD reckoning (neutralization + FF5 attribution + gapper slippage; decision gate) → **P2** Trend/TSMOM ETF sleeve (crisis-diversifier, book-level eval) → **P3** regime-aware allocator (the unlock; must beat static weights net of turnover) → **P4** gated high-ceiling bets (PEAD 2.0 · options-VRP spike · squeeze-conditioning). **Regime policy:** "attribute, don't amputate" — switch *allocation* across full-history sleeves, never train a model per regime (§4b).
+
+**NEXT:** Phase 0, starting with the `is_trained` guard fix ([cpcv.py:961-973](../../scripts/walkforward/cpcv.py#L961-L973)) → unbiased full-coverage PEAD CPCV number.
+
+---
+
+## 🗄️ PRIOR DIRECTION (2026-06-02, superseded): Alpha v2 — `docs/living/ALPHA_V2_PLAN.md`
 PEAD long-only is **live in paper**. The next phase is **structural, not signal-hunting** (from a 5-LLM external review + a code-grounded plan): de-risk PEAD honestly, then test whether the "dead" swing ranker was just strangled by a 5-position long-only book by re-running it **dollar-neutral, sector-neutral, high-breadth, residualized**. **Locked decisions:** short-interest data first; carve a post-2024-06-01 historical holdout; dollar-neutral shorting approved in paper; keep live PEAD running (pause only if leave-one-crisis-out fails). **First moves:** PEAD cost-sensitivity sweep → crisis-block robustness (leave-one-crisis-out). See the plan for the full sequenced roadmap.
 
 **PHASE-1 PEAD DE-RISK COMPLETE (2026-06-02):** §1.1 cost ✅ GO · §1.2 crisis ✅ GO · §1.3 significance ❌ FAIL. PEAD is **real-but-underpowered** (event-level bootstrap p=0.19, HAC t=1.04; CPCV t=2.26 was optimistic) — a long-biased up-trend drift harvester (~0.40 SR, 87% P&L up-trends). **Keep paper-trading as a small diversifier; never a capital centerpiece** (CAPITAL-HOLD confirmed).

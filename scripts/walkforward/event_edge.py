@@ -50,6 +50,13 @@ class EventEdgeStrategy:
     pit_trade_type = "swing"
     # Download ^VIX (scorers may regime-gate on it).
     download_vix = True
+    # Alpha-v4 P0.1: rules-based — NO model is ever fit (see __init__:
+    # model.trained_through == date.min). run_fold uses the train window ONLY for
+    # PIT universe construction, never for training, so a training window that
+    # spans a prior test fold cannot leak. run_cpcv reads this flag to bypass the
+    # BUG-23 overlap guard (which exists only to protect a *trained* window),
+    # restoring full, unbiased CPCV fold coverage for event/rules strategies.
+    is_trained = False
 
     def __init__(self, scorer, symbols, *, model_type: str | None = None,
                  transaction_cost_pct: float = 0.0005,
