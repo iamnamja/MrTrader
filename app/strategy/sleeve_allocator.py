@@ -28,7 +28,7 @@ Regime labels must themselves be PIT (the coarse3 map is — expanding-quantile 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 import numpy as np
