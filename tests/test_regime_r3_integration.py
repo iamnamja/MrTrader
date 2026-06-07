@@ -84,12 +84,45 @@ class TestStartupRegimeCatchup:
 
         mock_score.assert_not_called()
 
-    def test_skips_catchup_after_1130(self):
+    def test_runs_catchup_midday_when_no_row(self):
+        # Mid-day restart (no row yet) must catch up — previously skipped after 11:30.
+        pi = self._make_pi()
+        from zoneinfo import ZoneInfo
+        ET = ZoneInfo("America/New_York")
+        mock_now = datetime(2026, 5, 6, 13, 30, tzinfo=ET)  # Wed 13:30 ET
+
+        with (
+            patch.object(pi, "_run_regime_scoring") as mock_score,
+            patch("app.agents.premarket.datetime") as mock_dt,
+            patch("app.database.session.get_session", return_value=self._make_mock_session(None)),
+        ):
+            mock_dt.now.return_value = mock_now
+            pi._startup_regime_catchup()
+
+        mock_score.assert_called_once_with("startup_catchup")
+
+    def test_skips_catchup_after_close(self):
         from app.agents.premarket import PremarketIntelligence
         from zoneinfo import ZoneInfo
         ET = ZoneInfo("America/New_York")
         pi = PremarketIntelligence()
-        mock_now = datetime(2026, 5, 6, 12, 0, tzinfo=ET)
+        mock_now = datetime(2026, 5, 6, 16, 30, tzinfo=ET)  # past 16:00 close
+
+        with (
+            patch.object(pi, "_run_regime_scoring") as mock_score,
+            patch("app.agents.premarket.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = mock_now
+            pi._startup_regime_catchup()
+
+        mock_score.assert_not_called()
+
+    def test_skips_catchup_on_weekend(self):
+        from app.agents.premarket import PremarketIntelligence
+        from zoneinfo import ZoneInfo
+        ET = ZoneInfo("America/New_York")
+        pi = PremarketIntelligence()
+        mock_now = datetime(2026, 5, 9, 10, 0, tzinfo=ET)  # Saturday
 
         with (
             patch.object(pi, "_run_regime_scoring") as mock_score,

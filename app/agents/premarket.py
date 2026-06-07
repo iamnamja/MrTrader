@@ -582,14 +582,23 @@ class PremarketIntelligence:
 
     def _startup_regime_catchup(self) -> None:
         """
-        Called on startup. If premarket regime scoring was missed (server was down at 7am
-        and it's now before 11:30 ET), run a catchup score with trigger='startup_catchup'.
-        Also re-schedules any post-event re-evals that are still in the future.
+        Called on startup. If today's premarket regime scoring was missed (e.g. the
+        server was restarted after the 09:00 ET window), run a catch-up score with
+        trigger='startup_catchup' so the regime score isn't stale all day — a stale
+        score forces a 20% uncertainty haircut on every decision until tomorrow.
+
+        Runs on a trading weekday up to the market close (16:00 ET); skips on weekends
+        and after the close (no live session left to score), and skips if today already
+        has a premarket/startup_catchup row. (Previously capped at 11:30 ET, which left
+        a mid-day restart stale for the rest of the session.)
         """
         try:
             now_et = datetime.now(ET)
-            if now_et.hour > 11 or (now_et.hour == 11 and now_et.minute >= 30):
-                logger.info("Regime startup catchup skipped — past 11:30 ET")
+            if now_et.weekday() >= 5:
+                logger.info("Regime startup catchup skipped — weekend (no session)")
+                return
+            if now_et.hour >= 16:
+                logger.info("Regime startup catchup skipped — past market close (16:00 ET)")
                 return
 
             # Check if we already have a premarket row for today
