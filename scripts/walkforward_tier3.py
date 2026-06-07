@@ -1653,6 +1653,13 @@ def _dump_cpcv_result_json(cpcv_result, model_type: str) -> None:
             "coverage_ok": getattr(r, "coverage_ok", True),
             "coverage_warnings": getattr(r, "coverage_warnings", []),
             "path_fold_members": getattr(r, "path_fold_members", []),
+            # Alpha-v4 P0: residual-alpha (CAPM/HAC) diagnostic (not gating).
+            "residual_alpha_t_hac": getattr(r, "residual_alpha_t_hac", None),
+            "residual_alpha_t_ols": getattr(r, "residual_alpha_t_ols", None),
+            "residual_alpha_ann": getattr(r, "residual_alpha_ann", None),
+            "residual_beta": getattr(r, "residual_beta", None),
+            "residual_sharpe": getattr(r, "residual_sharpe", None),
+            "residual_n": getattr(r, "residual_n", 0),
             "mean_sharpe": r.mean_sharpe, "std_sharpe": r.std_sharpe,
             "p5_sharpe": r.p5_sharpe, "p95_sharpe": r.p95_sharpe,
             "pct_positive": r.pct_positive, "path_sharpe_tstat": r.path_sharpe_tstat,

@@ -80,54 +80,10 @@ def _load_or_fetch_bars():
     return strat.symbols_data, strat.spy_prices, strat.all_days_sorted
 
 
-def _capm(r_book: pd.Series, r_spy: pd.Series, hac_lag: int = 5) -> dict:
-    """OLS r_book = alpha + beta*r_spy with OLS and Newey-West HAC alpha t-stats."""
-    r_spy = r_spy.reindex(r_book.index).dropna()
-    r_book = r_book.reindex(r_spy.index).dropna()
-    r_spy = r_spy.reindex(r_book.index)
-    x = r_spy.to_numpy()
-    y = r_book.to_numpy()
-    n = len(y)
-    X = np.column_stack([np.ones_like(x), x])
-    coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-    alpha_d, beta = float(coef[0]), float(coef[1])
-    resid = y - X @ coef
-    dof = n - 2
-    s2 = float(resid @ resid) / dof
-    XtX_inv = np.linalg.inv(X.T @ X)
-    se_alpha_ols = float(np.sqrt(s2 * XtX_inv[0, 0]))
-    t_alpha_ols = alpha_d / se_alpha_ols if se_alpha_ols > 0 else 0.0
-
-    # Newey-West HAC sandwich on the full [1, x] design (robust to the
-    # autocorrelation/heteroskedasticity of overlapping multi-week holds).
-    bread = XtX_inv
-    S = np.zeros((2, 2))
-    u = resid
-    Xr = X * u[:, None]  # n x 2 score contributions
-    S += Xr.T @ Xr
-    for L in range(1, hac_lag + 1):
-        w = 1.0 - L / (hac_lag + 1.0)  # Bartlett kernel
-        G = Xr[L:].T @ Xr[:-L]
-        S += w * (G + G.T)
-    cov_hac = bread @ S @ bread
-    se_alpha_hac = float(np.sqrt(max(cov_hac[0, 0], 0.0)))
-    t_alpha_hac = alpha_d / se_alpha_hac if se_alpha_hac > 0 else 0.0
-
-    ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = 1.0 - float(resid @ resid) / ss_tot if ss_tot > 0 else 0.0
-    raw_sharpe = float(y.mean() / y.std() * np.sqrt(ANN)) if y.std() > 0 else 0.0
-    # Beta-REMOVED (market-hedged) return stream = y - beta*x; its mean is alpha,
-    # so its Sharpe is the honest "what survives after hedging out SPY" number.
-    # (The raw OLS residual y-alpha-beta*x is mean-zero by construction → Sharpe~0,
-    # which is uninformative; that's NOT what we want here.)
-    hedged = y - beta * x
-    resid_sharpe = float(hedged.mean() / hedged.std() * np.sqrt(ANN)) if hedged.std() > 0 else 0.0
-    return {
-        "n": n, "raw_sharpe": raw_sharpe, "beta": beta,
-        "alpha_ann": alpha_d * ANN, "alpha_bps_d": alpha_d * 1e4,
-        "t_alpha_ols": t_alpha_ols, "t_alpha_hac": t_alpha_hac,
-        "resid_sharpe": resid_sharpe, "r2": r2,
-    }
+# Alpha-v4 P0: the CAPM/HAC alpha attribution is now the canonical implementation in
+# scripts/walkforward/attribution.py (shared with the CPCV gate pipeline). Re-export
+# it here so this script's behaviour is byte-identical and there is one definition.
+from scripts.walkforward.attribution import capm_alpha as _capm  # noqa: E402,F401
 
 
 def _run_pass(symbols_data, spy_prices, all_days, entry_slippage_pct):

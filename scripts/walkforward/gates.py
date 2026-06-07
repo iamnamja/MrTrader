@@ -219,6 +219,11 @@ class FoldResult:
     macro_gate_days: int = 0
     # Number of return observations (trading days) for DSR (0 = unknown).
     n_obs: int = 0
+    # Alpha-v4 P0: this fold's OOS daily returns as (date, ret) tuples — concatenated
+    # across folds by run_cpcv to compute the market-residualized alpha t-stat
+    # (CAPM/HAC) diagnostic. PURE-ADDITIVE; default empty so existing results are
+    # unchanged and it never affects any metric or gate.
+    daily_returns_dated: list = field(default_factory=list)
     # CRITICAL-2: capital deployment tracking (diagnostic — not a gate).
     avg_capital_deployed_pct: float = 0.0
     deployment_adjusted_sharpe: float = 0.0

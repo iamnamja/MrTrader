@@ -72,6 +72,17 @@ class CPCVResult:
     coverage: Optional[dict] = None
     coverage_ok: bool = True
     coverage_warnings: List[str] = field(default_factory=list)
+    # Alpha-v4 P0: market-residualized alpha (CAPM/HAC) on the concatenated OOS book
+    # returns vs SPY. DIAGNOSTIC ONLY — reported in print()/JSON and logged, but
+    # NEVER part of the gate pass/fail this PR (residual-alpha-t graduates to a
+    # primary gate criterion in a later PR, once validated). None when SPY/returns
+    # are unavailable or < 30 aligned obs. residual_sharpe is the beta-hedged Sharpe.
+    residual_alpha_t_hac: Optional[float] = None
+    residual_alpha_t_ols: Optional[float] = None
+    residual_alpha_ann: Optional[float] = None
+    residual_beta: Optional[float] = None
+    residual_sharpe: Optional[float] = None
+    residual_n: int = 0
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
@@ -643,6 +654,14 @@ class CPCVResult:
               f"C(k,p) paths reuse k folds and are correlated.")
         _, dsr_p = deflated_sharpe_ratio(self.mean_sharpe, N_TRIALS_TESTED, self._dsr_n_obs())
         print(f"  DSR p:        {dsr_p:.3f}  (gate: > 0.95)  {'OK' if dsr_p > 0.95 else 'FAIL'}")
+        # Alpha-v4 P0: residual-alpha (CAPM/HAC) DIAGNOSTIC — does the edge survive
+        # hedging out SPY? Reported only this PR (NOT gating). t<1 = mostly beta.
+        if self.residual_alpha_t_hac is not None:
+            _ra_flag = ("real-alpha" if self.residual_alpha_t_hac >= 2.0
+                        else "weak" if self.residual_alpha_t_hac >= 1.0 else "BETA-DRIVEN")
+            print(f"  Residual-α t (HAC): {self.residual_alpha_t_hac:+.2f}  "
+                  f"β={self.residual_beta:+.2f}  hedged-Sharpe={self.residual_sharpe:+.3f}  "
+                  f"(n={self.residual_n}; diagnostic, not gating) [{_ra_flag}]")
         from app.ml.retrain_config import (
             DSR_SATURATION_P, SHARPE_IMPLAUSIBILITY_CEILING, MIN_DEPLOYMENT_PCT_WARN,
         )
@@ -920,6 +939,9 @@ def run_cpcv(
     # Alpha-v4 P0: distinct test windows actually EVALUATED (deduped by fold index,
     # so a fold tested in many combos counts once) → fold-coverage report below.
     evaluated_test_windows: dict = {}  # ti -> (te_start, te_end)
+    # Alpha-v4 P0: dated OOS daily returns per unique evaluated fold → concatenated
+    # for the residual-alpha (CAPM/HAC) diagnostic after the loop.
+    evaluated_fold_returns: dict = {}  # ti -> [(date, ret), ...]
 
     for combo_idx, test_indices in enumerate(combinations):
         train_indices = [i for i in fold_indices if i not in test_indices]
@@ -1049,6 +1071,11 @@ def run_cpcv(
                 combo_sharpes.append(fold.sharpe)
                 # §1.2: record the id only on success, aligned with combo_sharpes.
                 combo_fold_ids.append(_global_fold_id)
+                # Alpha-v4 P0: capture this fold's dated OOS returns once per unique
+                # test fold (windows are disjoint) → concatenated for the residual-
+                # alpha diagnostic after the loop. PURE-ADDITIVE.
+                if ti not in evaluated_fold_returns:
+                    evaluated_fold_returns[ti] = getattr(fold, "daily_returns_dated", []) or []
                 combo_pfs.append(fold.profit_factor)
                 combo_cals.append(fold.calmar_ratio)
                 combo_n_obs.append(getattr(fold, "n_obs", 0) or 0)
@@ -1204,5 +1231,45 @@ def run_cpcv(
                            "; ".join(_cov.warnings))
     except Exception:
         logger.debug("CPCV fold-coverage build failed (non-fatal)", exc_info=True)
+
+    # Alpha-v4 P0: residual-alpha (CAPM/HAC) DIAGNOSTIC on the concatenated OOS book
+    # returns vs SPY — does the edge survive hedging out the market? Reported + logged
+    # only; NOT part of the gate pass/fail this PR.
+    try:
+        import pandas as _pd
+        from scripts.walkforward.attribution import capm_alpha as _capm_alpha
+        _ret_pairs = []
+        for _ti, _pairs in evaluated_fold_returns.items():
+            _ret_pairs.extend(_pairs or [])
+        _spy = getattr(strategy, "spy_prices", None)
+        if _ret_pairs and _spy is not None and len(_spy) > 1:
+            _rb = _pd.Series(
+                {_pd.Timestamp(d): float(r) for d, r in _ret_pairs}
+            ).sort_index()
+            _rb = _rb[~_rb.index.duplicated(keep="first")]
+            _spy_s = _spy.copy()
+            _spy_s.index = _pd.to_datetime(_spy_s.index)
+            _rspy = _spy_s.pct_change().dropna()
+            _m = _capm_alpha(_rb, _rspy)
+            if _m.get("n", 0) >= 30:
+                result.residual_alpha_t_hac = _m["t_alpha_hac"]
+                result.residual_alpha_t_ols = _m["t_alpha_ols"]
+                result.residual_alpha_ann = _m["alpha_ann"]
+                result.residual_beta = _m["beta"]
+                result.residual_sharpe = _m["resid_sharpe"]
+                result.residual_n = _m["n"]
+                logger.info(
+                    "CPCV residual-alpha (CAPM/HAC, diagnostic): t_HAC=%.2f beta=%.2f "
+                    "alphaAnn=%+.2f%% residSharpe=%+.3f (n=%d)",
+                    _m["t_alpha_hac"], _m["beta"], _m["alpha_ann"] * 100,
+                    _m["resid_sharpe"], _m["n"],
+                )
+                if _m["t_alpha_hac"] < 1.0:
+                    logger.warning(
+                        "CPCV residual-alpha t_HAC=%.2f < 1.0 — the Sharpe is largely "
+                        "market beta (diagnostic; not gating).", _m["t_alpha_hac"],
+                    )
+    except Exception:
+        logger.debug("CPCV residual-alpha diagnostic failed (non-fatal)", exc_info=True)
 
     return result
