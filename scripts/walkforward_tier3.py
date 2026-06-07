@@ -1613,6 +1613,22 @@ def _run_cpcv_swing(args, symbols, swing_ver, meta_model, earnings_cal, passed):
     )
     cpcv_result.print()
     _dump_cpcv_result_json(cpcv_result, "swing")
+    # Alpha-v4 P0: optional purged sequential-WF baseline for trained models —
+    # the honest, full-coverage complement to CPCV (sanity only, not a gate).
+    if getattr(args, "sequential_baseline", False):
+        try:
+            from scripts.walkforward.sequential_baseline import (
+                run_sequential_baseline, print_baseline_vs_cpcv,
+            )
+            wf = run_sequential_baseline(
+                strategy, n_folds=args.cpcv_k, total_years=args.years,
+                purge_days=args.swing_purge_days, embargo_days=args.swing_embargo_days,
+                train_years=args.swing_train_years,
+                allow_sacred_holdout=args.allow_sacred_holdout,
+            )
+            print_baseline_vs_cpcv(wf, cpcv_result)
+        except Exception as _e:
+            _warn(f"sequential-WF baseline skipped: {_e}")
     return cpcv_result
 
 
@@ -1745,6 +1761,20 @@ def _run_cpcv_intraday(args, symbols, intraday_ver, intraday_meta_model, earning
         allow_sacred_holdout=args.allow_sacred_holdout,
     )
     cpcv_result.print()
+    # Alpha-v4 P0: optional purged sequential-WF baseline (sanity only, not a gate).
+    if getattr(args, "sequential_baseline", False):
+        try:
+            from scripts.walkforward.sequential_baseline import (
+                run_sequential_baseline, print_baseline_vs_cpcv,
+            )
+            wf = run_sequential_baseline(
+                strategy, n_folds=args.cpcv_k, total_days=args.days,
+                purge_days=args.intraday_purge_days, embargo_days=args.intraday_embargo_days,
+                allow_sacred_holdout=args.allow_sacred_holdout,
+            )
+            print_baseline_vs_cpcv(wf, cpcv_result)
+        except Exception as _e:
+            _warn(f"sequential-WF baseline skipped: {_e}")
     return cpcv_result
 
 
@@ -2032,6 +2062,12 @@ def main() -> int:
     parser.add_argument("--cpcv-paths", type=int, default=2,
                         help="WF-3: number of test paths per combination (default: 2). "
                              "Larger = more combinations, slower but higher statistical power.")
+    parser.add_argument("--sequential-baseline", action="store_true", default=False,
+                        help="Alpha-v4 P0: also run a purged SEQUENTIAL walk-forward "
+                             "(full-coverage, zero holes) alongside CPCV and print a "
+                             "comparison. The honest baseline for TRAINED models; "
+                             "sanity only (not a gate). Doubles runtime (per-fold "
+                             "retrain runs twice), so off by default.")
     # P1: BenignGate — block test-fold entries on adverse-regime days
     parser.add_argument("--benign-gate", action="store_true", default=False,
                         help="P1: block new entries on days where PIT composite regime score < "
