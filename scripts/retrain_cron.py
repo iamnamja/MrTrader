@@ -77,9 +77,16 @@ def _restore_previous(strategy: str, prev_version, new_version):
 
 def run_swing(dry_run: bool) -> bool:
     """Train swing model + walk-forward gate. Returns True if promoted."""
-    from app.ml.retrain_config import SWING_RETRAIN, SWING_GATE
+    from app.ml.retrain_config import SWING_RETRAIN, SWING_GATE, SWING_ENABLED
     from app.ml.training import ModelTrainer
     from app.database.session import get_session
+
+    # Alpha-v4 P0: the dead large-cap daily XS ranker is frozen as a benchmark.
+    # Return True (not a gate failure) so the champion is retained and the
+    # orchestrator doesn't log a spurious exit-code-2.
+    if not SWING_ENABLED:
+        logger.info("Swing retrain FROZEN (SWING_ENABLED=False) — skipping, champion retained")
+        return True
 
     if dry_run:
         logger.info("DRY RUN — skipping swing training")
@@ -176,9 +183,16 @@ def run_swing(dry_run: bool) -> bool:
 
 def run_intraday(dry_run: bool) -> bool:
     """Train intraday model + walk-forward gate. Returns True if promoted."""
-    from app.ml.retrain_config import INTRADAY_RETRAIN, INTRADAY_GATE
+    from app.ml.retrain_config import INTRADAY_RETRAIN, INTRADAY_GATE, INTRADAY_ENABLED
     from app.ml.intraday_training import IntradayModelTrainer
     from app.database.session import get_session
+
+    # Alpha-v4 P0: the dead intraday 5-min XS-ML is frozen (INTRADAY_ENABLED now
+    # gates retrain too, not just live scanning). Return True so the champion is
+    # retained and no spurious gate-failure is logged.
+    if not INTRADAY_ENABLED:
+        logger.info("Intraday retrain FROZEN (INTRADAY_ENABLED=False) — skipping, champion retained")
+        return True
 
     if dry_run:
         logger.info("DRY RUN — skipping intraday training")

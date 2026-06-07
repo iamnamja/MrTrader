@@ -155,6 +155,29 @@ class AgentOrchestrator:
 
     async def _trigger_retraining(self) -> None:
         """Spawn retrain_cron.py as a subprocess so training workers are isolated from uvicorn."""
+        # Global retrain guard (Alpha-v4 P0): honor RETRAIN_WEEKDAY here, not just in the
+        # dormant PM path. -1 disables all scheduled retrains; otherwise only the configured
+        # weekday fires. This is the root-cause fix for the daily-trigger ignoring the flag —
+        # without it any model in retrain_cron defaults to nightly-on. Per-model freezes
+        # (SWING_ENABLED / INTRADAY_ENABLED) are the finer-grained control inside retrain_cron.
+        try:
+            from app.ml.retrain_config import RETRAIN_WEEKDAY
+            from datetime import datetime as _dt
+            try:
+                from zoneinfo import ZoneInfo
+                _wd = _dt.now(ZoneInfo("America/New_York")).weekday()
+            except Exception:
+                _wd = _dt.now().weekday()
+            if RETRAIN_WEEKDAY < 0:
+                logger.info("Orchestrator: scheduled retrain disabled (RETRAIN_WEEKDAY=-1) — skipping")
+                return
+            if _wd != RETRAIN_WEEKDAY:
+                logger.debug("Orchestrator: not the retrain weekday (%d != %d) — skipping",
+                             _wd, RETRAIN_WEEKDAY)
+                return
+        except Exception as exc:
+            logger.warning("Orchestrator: retrain-weekday guard failed (proceeding): %s", exc)
+
         # Guard: skip retrain if a CPCV or walk-forward job is actively writing logs.
         # Running two XGBoost training jobs concurrently on this machine causes OOM.
         logs_dir = Path(__file__).resolve().parent.parent / "logs"

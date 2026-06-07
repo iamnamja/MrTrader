@@ -69,6 +69,13 @@ def test_max_workers_positive():
     assert MAX_FOLD_WORKERS >= 1
 
 
+def test_dead_xsml_retrain_frozen():
+    """Alpha-v4 P0: both dead XS-ML models are frozen (no nightly retrain)."""
+    from app.ml.retrain_config import SWING_ENABLED, INTRADAY_ENABLED
+    assert SWING_ENABLED is False, "swing XS ranker is dead — keep retrain frozen"
+    assert INTRADAY_ENABLED is False, "intraday 5-min XS-ML is dead — keep retrain frozen"
+
+
 def test_cost_from_turnover():
     """cost_from_turnover helper in cost_models.py matches expected formula."""
     from scripts.walkforward.cost_models import cost_from_turnover

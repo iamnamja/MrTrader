@@ -14,6 +14,8 @@ Tracks model improvement iterations for active and recent phases.
 > **2026-05-05 Meta-update:** Multi-LLM review revealed the walk-forward gate numbers to date are NOT reliable baselines because: (1) no transaction costs, (2) no PM opportunity score simulated, (3) no purge/embargo between folds, (4) NIS features encode time (NaN = pre-2025 regime). Phases 1–2 of MASTER_BACKLOG fix this. Re-run all champions after Phase 1+2 complete to get honest numbers. See `docs/archive/phase-specs/llm_review_synthesis.md`.
 >
 > **2026-05-10 WF-A2/A3 Fix:** Two additional walk-forward errors corrected: (5) swing universe was SP_100 (~81 symbols, silent no-op via dead `sp100` parquet) while training used Russell 1000 (~750) — mismatch inflated Sharpe by over-filtering folds; (6) survivorship bias — only current index members downloaded, delisted names absent from all folds. Fixed: swing now uses `RUSSELL_1000_TICKERS` as download seed + `pit_union("russell1000", fold_start, fold_end, extra_symbols=db_hist)` per fold. Honest Sharpe likely drops. Re-run champions after WF-A1+A2+A3.
+>
+> **2026-06-07 Alpha-v4 P0 — dead XS-ML retrain FROZEN:** swing XS-ranker (per-fold CPCV +0.22, t=0.17) and intraday 5-min ML (-2.80, t=-6.85) are dead but were still retraining nightly (`orchestrator._trigger_retraining` ignored `RETRAIN_WEEKDAY=-1`/`INTRADAY_ENABLED=False`). Now frozen via `SWING_ENABLED=False` + `INTRADAY_ENABLED` (both honored in `retrain_cron`) + orchestrator honoring `RETRAIN_WEEKDAY`. `regime_model_v5` stays active; PEAD/TSMOM are rules-based. Reversible. See PIPELINE_ARCHITECTURE changelog.
 
 ---
 
