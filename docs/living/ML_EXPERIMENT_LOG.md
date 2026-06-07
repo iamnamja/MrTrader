@@ -75,6 +75,24 @@ Tracks model improvement iterations for active and recent phases.
 
 **NEXT:** Phase 3 — regime-aware allocator over {PEAD, trend} (the live multi-sleeve book). Live wiring of the trend sleeve happens there (it's the natural home for multi-sleeve combination), not as a bolt-on PM selector. Tools retained: `app/strategy/tsmom.py` (reusable sleeve), `scripts/run_tsmom.py` (validation harness).
 
+### Phase 2 addendum (2026-06-07) — trend BETA-ISOLATION validation (the test PEAD failed)
+
+Ran the same CAPM + Newey-West HAC beta-isolation on the trend sleeve that killed PEAD's standalone-edge claim (`scripts/trend_residual_alpha.py`, reuses the shared `scripts/walkforward/attribution.capm_alpha` lifted in P0 #406). SPY proxy taken from the sleeve's own price DataFrame.
+
+**Result — DIVERSIFIER CONFIRMED (decisively passes where PEAD failed):**
+- SPY beta **+0.16**, corr 0.34, R² 0.12 → genuinely low market exposure.
+- Annualized alpha **+4.67%**, **alpha t(HAC)=+2.46** (PEAD: −0.95).
+- **Beta-hedged Sharpe +0.533** (PEAD: −0.37 — lost money hedged). The trend Sharpe is real content, NOT market beta.
+- 15/20 positive years; crisis-positive in slow bears (GFC +7% vs SPY −37%).
+
+**Robustness stress (skeptical-quant pass):**
+- **Autocorrelation — robust.** alpha t(HAC) rises/stabilizes across HAC lags 1→63d (2.34 → **2.65**); the significance is NOT a short-lag artifact.
+- **Cost-sensitive (the real caveat).** Degrades ~linearly: 2bps t=2.65 / hedgedSR +0.53 → 5bps t=2.40 → **10bps t=1.99** → 15bps t=1.59. The +0.71 assumes cheap fills; thin names (DBC/UUP/EEM/EFA) need a per-instrument cost audit before sizing up.
+- **Era-dependent but not one-era.** 2007-16 rawSR +0.49 / t=1.52 (insignificant alone); 2017-26 +0.95 / t=2.09. Both halves positive-hedged; recent decade carries full-sample significance (2011-16 = the managed-futures drought). Expect multi-year flat stretches.
+- **Fast-crash blind spot:** whipsawed COVID −6.2% / Q4-18 −6.3% → hedges *grinding* bears, not V-shaped crashes; NOT a tail-hedge substitute.
+
+**Verdict:** keep trend as the book's primary diversifier at its fixed weight (the live 40% is justified). Before raising the weight: (1) per-instrument spread-based cost audit, (2) account for the fast-crash gap in book risk. No DSR/multiple-testing deflation applied (single standard-MOP spec).
+
 ---
 
 ## Phase 1 (Alpha-v4) — PEAD honest reckoning — 2026-06-06 — VERDICT: ❌ NOT A STANDALONE EDGE (market-beta-driven)
