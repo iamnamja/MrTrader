@@ -65,6 +65,13 @@ class CPCVResult:
     # These folds RAN (they are full-coverage recoveries, not skips). For a trained
     # strategy this stays 0 (the guard still skips). Reported for transparency.
     n_overlap_bypassed: int = 0
+    # Alpha-v4 P0: fold-coverage report (year × regime over the EVALUATED test
+    # windows). coverage is the CoverageReport.to_dict(); coverage_ok is a SOFT gate
+    # (False = thin coverage, e.g. no BEAR fold / too few years) surfaced before perf
+    # for human review — it does NOT block the significance gate. See coverage.py.
+    coverage: Optional[dict] = None
+    coverage_ok: bool = True
+    coverage_warnings: List[str] = field(default_factory=list)
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
@@ -606,6 +613,15 @@ class CPCVResult:
         from scripts.walkforward.reports import _ok, _err, _header
         _header(f"CPCV Report - {self.model_type.upper()} "
                 f"C({self.n_folds},{self.n_paths})={self.n_combinations} paths")
+        # Alpha-v4 P0: surface fold coverage BEFORE performance — a bull-skewed fold
+        # set must not masquerade as a clean result. to_dict() keys match the
+        # CoverageReport fields, so it reconstructs directly for rendering.
+        if self.coverage:
+            try:
+                from scripts.walkforward.coverage import CoverageReport
+                print(CoverageReport(**self.coverage).render())
+            except Exception:
+                logger.debug("coverage render failed (non-fatal)", exc_info=True)
         if self.in_sample_override:
             print("  *** IN-SAMPLE RUN (--allow-in-sample): results cannot promote past gates ***")
         print(f"  Mean Sharpe:  {self.mean_sharpe:+.3f}  (gate: > {SHARPE_GATE})  "
@@ -901,6 +917,10 @@ def run_cpcv(
     # from a DATA-BUG (no regime map / no labelled days → no obs anywhere).
     any_regime_obs_seen = False
 
+    # Alpha-v4 P0: distinct test windows actually EVALUATED (deduped by fold index,
+    # so a fold tested in many combos counts once) → fold-coverage report below.
+    evaluated_test_windows: dict = {}  # ti -> (te_start, te_end)
+
     for combo_idx, test_indices in enumerate(combinations):
         train_indices = [i for i in fold_indices if i not in test_indices]
         if not train_indices:
@@ -1011,6 +1031,10 @@ def run_cpcv(
                     "CPCV overlap guard BYPASSED (rules-based): combo %d ti=%d — fold runs.",
                     combo_idx, ti,
                 )
+
+            # Alpha-v4 P0: record this evaluated test window (deduped by ti) for the
+            # fold-coverage report. Reached only after all skip/purge/overlap guards.
+            evaluated_test_windows.setdefault(ti, (te_start, te_end))
 
             _global_fold_id = combo_idx * len(all_boundaries) + ti + 1
             try:
@@ -1161,5 +1185,24 @@ def run_cpcv(
         else:
             logger.info("CPCV: %d fold evaluations skipped (fold 0 no-prior-train; expected).",
                         result.n_skipped)
+
+    # Alpha-v4 P0: fold-coverage report (year × regime over evaluated test windows),
+    # surfaced BEFORE performance. Soft gate — flags thin coverage for human review,
+    # does not block the significance gate. Reuses the strategy's pre-built regime map.
+    try:
+        from scripts.walkforward.coverage import build_fold_coverage
+        _regime_map = getattr(strategy, "_global_regime_map", None)
+        _cov = build_fold_coverage(list(evaluated_test_windows.values()), _regime_map)
+        result.coverage = _cov.to_dict()
+        result.coverage_ok = _cov.coverage_ok
+        result.coverage_warnings = _cov.warnings
+        if _cov.coverage_ok:
+            logger.info("CPCV fold-coverage OK: %d fold(s), %d year(s), %d regime(s)",
+                        _cov.n_folds_evaluated, _cov.n_distinct_years, _cov.n_distinct_regimes)
+        else:
+            logger.warning("CPCV fold-coverage LOW (review before trusting perf): %s",
+                           "; ".join(_cov.warnings))
+    except Exception:
+        logger.debug("CPCV fold-coverage build failed (non-fatal)", exc_info=True)
 
     return result
