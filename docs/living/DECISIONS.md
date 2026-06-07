@@ -4,6 +4,38 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-07 — Alpha-v4 P0 gate recalibration: robustness over Sharpe level; residual-alpha-t diagnostic-first
+
+**Context**: On N_eff≈8 a high Sharpe *level* selects for overfitting (5-LLM review:
+"lower the SR≥0.80 gate — real edges live at 0.4–0.7; weight fold-consistency +
+neutralized-t over level"). The significance gate already made t-stat / %pos / P5 /
+worst-regime the primary criteria, but the headline bar and the missing
+market-residualized check needed to land.
+
+**Decision**:
+- **Retire the legacy SR≥0.80 promotion bar.** `GATE_MODE='significance'` stays the
+  default (the legacy `mean_sharpe`/0.80 path is kept only for reproducibility).
+  Lower `CAPITAL_GATE_MIN_MEAN_SHARPE` 0.50→**0.45**; keep PAPER 0.35, min-fold/P5
+  floors, DSR/PF/Calmar, and the worst-regime survivability floor. The Sharpe floor
+  is now a materiality *backstop*, not the discriminator.
+- **Add residual-alpha-t (CAPM/HAC) as a DIAGNOSTIC, not a gate — yet.** Per owner
+  decision, it enters *diagnostic-first*: computed on the concatenated OOS book
+  returns vs SPY, reported in `print()`/JSON + a `t<1` WARN log, and **explicitly
+  excluded from gate pass/fail** until validated (it reproduces the known PEAD
+  beta-driven verdict and a genuine-alpha case in tests). It graduates to a primary
+  blocking criterion in a later PR — mirroring how the significance gate itself was
+  rolled out behind a faithful-reproduction proof.
+
+**Rationale**: a blocking gate on a brand-new metric over ~8 effective folds could
+mis-promote/mis-retire before it's trusted; diagnostic-first de-risks that while
+still surfacing the single most important robustness signal (does the edge survive
+hedging out the market?). **Consequences**: every CPCV run now prints residual-α-t +
+β + hedged-Sharpe; gate verdicts are unchanged this PR (proven by test). Canonical
+estimator is `scripts/walkforward/attribution.capm_alpha` (shared with the PEAD
+attribution script). See PIPELINE_ARCHITECTURE Gate Inventory + changelog.
+
+---
+
 ## 2026-06-06 — Live TSMOM trend sleeve: standalone weekly rebalancer (Alpha-v4 live wiring)
 
 **Context**: Alpha-v4 Phases 0–3 are complete. The TSMOM trend sleeve
