@@ -70,7 +70,16 @@ def main() -> int:
                         help="Use XGBRanker (rank:pairwise) instead of XGBClassifier")
     parser.add_argument("--top-n-liquidity", type=int, default=None,
                         help="Filter universe to top-N symbols by 20-day median dollar volume")
+    parser.add_argument("--force", action="store_true",
+                        help="Train even though INTRADAY_ENABLED=False (manual diagnostic)")
     args = parser.parse_args()
+
+    # Alpha-v4 P0: intraday 5-min XS-ML is frozen (dead). Manual diagnostic runs
+    # may override with --force; the nightly path (retrain_cron) cannot.
+    from app.ml.retrain_config import INTRADAY_ENABLED
+    if not INTRADAY_ENABLED and not args.force:
+        logger.info("Intraday retrain FROZEN (INTRADAY_ENABLED=False) — pass --force to override")
+        return 0
 
     if args.dry_run:
         logger.info("DRY RUN — skipping training")

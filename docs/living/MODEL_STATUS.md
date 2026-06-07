@@ -45,6 +45,20 @@ value. Fires from the orchestrator daily at 09:45 ET, runs only on
 > rebaselined, not just DB values). PEAD is the weak market-beta satellite; trend is the
 > primary sleeve.
 
+---
+
+## 🧊 FROZEN — dead XS-ML retrain (Alpha-v4 P0, 2026-06-07)
+
+The **swing XS-ranker** (`swing_vNNN`, per-fold CPCV +0.22 / t=0.17 — noise) and the
+**intraday 5-min ML** (`intraday_meta_vNNN`, -2.80 / t=-6.85 — cost-drag) are DEAD on the
+honest harness and are now **frozen as non-production benchmarks** — no more nightly retrain.
+They were still retraining every night because `orchestrator._trigger_retraining` ignored
+`RETRAIN_WEEKDAY=-1` / `INTRADAY_ENABLED=False`; that is now fixed. Controls:
+`SWING_ENABLED=False`, `INTRADAY_ENABLED=False` (both honored by `retrain_cron`), and the
+orchestrator now honors `RETRAIN_WEEKDAY`. **`regime_model_v5` stays ACTIVE** (separate
+`regime_training.py` path); PEAD + TSMOM are rules-based (never retrained). Re-enable: flip
+the bool in `app/ml/retrain_config.py`.
+
 
 The live PEAD selector path (`pm.swing_selector="pead"` → `_analyze_swing_pead`) has been
 **re-wired to faithfully run the validated +0.546 CPCV config** (branch `feat/pead-live-wiring`).

@@ -76,6 +76,14 @@ MAX_FOLD_WORKERS: int = 1 if _sys.platform == "win32" else 4
 # current 69-feature arch is counterproductive; re-enable after v200 ships).
 RETRAIN_WEEKDAY: int = -1  # disabled — Phase C in progress (was: 2 = Wednesday)
 
+# ── Per-model retrain freeze (Alpha-v4 P0, 2026-06-07) ───────────────────────
+# The large-cap daily cross-sectional swing ranker is DEAD on the honest harness
+# (per-fold CPCV +0.22, t=0.17 — noise; MODEL_STATUS.md). Stop wasting nightly
+# compute on it and stop promoting noise. Frozen as a non-production benchmark.
+# Set True to resume the nightly swing retrain. (5/5-LLM review: "freeze the dead
+# large-cap daily XS-ML.")  Honored by scripts/retrain_cron.run_swing.
+SWING_ENABLED: bool = False
+
 # ── Phase C validated feature keep-list (from A1 IC diagnostic 2026-05-13) ──
 # Only these 14 features showed positive, stable IC (IR >= 0.40 at h5).
 # All other features (technical noise, WQ alphas, short-momentum) are dropped.
@@ -183,6 +191,10 @@ SWING_GATE = dict(
 # daily bar level. 15bps round-trip cost wipes any marginal edge. Mothballed
 # until a dedicated intraday-IC diagnostic (5-min bar level) confirms signal.
 # Re-enable by setting INTRADAY_ENABLED = True.
+# Alpha-v4 P0 (2026-06-07): this flag now ALSO freezes the nightly intraday
+# RETRAIN (honored by scripts/retrain_cron.run_intraday + retrain_intraday.main),
+# not just live intraday scanning. Intraday 5-min XS-ML is DEAD (per-fold CPCV
+# -2.80, t=-6.85; MODEL_STATUS.md). Set True to resume scanning AND retraining.
 INTRADAY_ENABLED: bool = False
 
 INTRADAY_RETRAIN: dict = dict(

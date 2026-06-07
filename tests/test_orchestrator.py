@@ -247,6 +247,20 @@ class TestRetrainingSubprocess:
     def setup_method(self):
         self.orch = AgentOrchestrator()
 
+    @pytest.fixture(autouse=True)
+    def _enable_retrain_today(self):
+        # Alpha-v4 P0 added a RETRAIN_WEEKDAY guard to _trigger_retraining (default
+        # -1 = disabled). These tests exercise the SUBPROCESS path, so make the guard
+        # pass by setting the configured weekday to today.
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            wd = datetime.now(ZoneInfo("America/New_York")).weekday()
+        except Exception:
+            wd = datetime.now().weekday()
+        with patch("app.ml.retrain_config.RETRAIN_WEEKDAY", wd):
+            yield
+
     @pytest.mark.asyncio
     async def test_retraining_spawns_subprocess_on_success(self):
         mock_proc = AsyncMock()
