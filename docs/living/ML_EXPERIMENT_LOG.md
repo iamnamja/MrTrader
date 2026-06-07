@@ -87,11 +87,11 @@ Ran the same CAPM + Newey-West HAC beta-isolation on the trend sleeve that kille
 
 **Robustness stress (skeptical-quant pass):**
 - **Autocorrelation — robust.** alpha t(HAC) rises/stabilizes across HAC lags 1→63d (2.34 → **2.65**); the significance is NOT a short-lag artifact.
-- **Cost-sensitive (the real caveat).** Degrades ~linearly: 2bps t=2.65 / hedgedSR +0.53 → 5bps t=2.40 → **10bps t=1.99** → 15bps t=1.59. The +0.71 assumes cheap fills; thin names (DBC/UUP/EEM/EFA) need a per-instrument cost audit before sizing up.
+- **Cost — flagged, then RESOLVED by a per-instrument audit.** Flat-cost sweep degrades ~linearly (2bps t=2.65 → 10bps t=1.99 → 15bps t=1.59), so a flat 10bps would threaten significance. BUT the per-instrument audit (`scripts/trend_cost_audit.py`, self-checked to reproduce flat-2bps to 1e-19) shows **turnover is spread EVENLY across the basket (each name ~9–11%)** — the thin names (DBC/UUP/EEM/EFA) do NOT dominate trading — so a realistic name-specific vector (majors ~1bp, thin ETFs ~4bp) blends to **~2.0bps → rawSR +0.714, t_HAC 2.65, hedgedSR +0.532, IDENTICAL to flat-2bps**. Even a 2×-pessimistic vector (~4bps blended) holds: rawSR +0.683, **t_HAC 2.49**, hedgedSR +0.500. The flat-10bps scare only bites if *every* name costs 10bps (unrealistic). → cost concern de-risked at retail/paper size (large-AUM impact still untested).
 - **Era-dependent but not one-era.** 2007-16 rawSR +0.49 / t=1.52 (insignificant alone); 2017-26 +0.95 / t=2.09. Both halves positive-hedged; recent decade carries full-sample significance (2011-16 = the managed-futures drought). Expect multi-year flat stretches.
 - **Fast-crash blind spot:** whipsawed COVID −6.2% / Q4-18 −6.3% → hedges *grinding* bears, not V-shaped crashes; NOT a tail-hedge substitute.
 
-**Verdict:** keep trend as the book's primary diversifier at its fixed weight (the live 40% is justified). Before raising the weight: (1) per-instrument spread-based cost audit, (2) account for the fast-crash gap in book risk. No DSR/multiple-testing deflation applied (single standard-MOP spec).
+**Verdict:** keep trend as the book's primary diversifier at its fixed weight (the live 40% is justified) — and the per-instrument cost audit (done, above) clears the path to raising it at retail/paper size. Remaining before a *material* weight increase: (1) large-AUM impact/capacity check on the thin names, (2) account for the fast-crash gap in book risk (trend ≠ tail hedge). No DSR/multiple-testing deflation applied (single standard-MOP spec). Tools: `scripts/trend_residual_alpha.py` (beta-isolation), `scripts/trend_cost_audit.py` (per-instrument cost).
 
 ---
 
