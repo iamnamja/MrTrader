@@ -1864,6 +1864,12 @@ class Trader(BaseAgent):
     async def _check_exit(self, symbol: str, alpaca):
         """Fetch current price, run check_exit(), close position if triggered."""
         pos = self.active_positions[symbol]
+        # Trend (TSMOM) sleeve positions are managed EXCLUSIVELY by the weekly
+        # rebalancer (app/live_trading/trend_sleeve.py) — never stop/target/trail
+        # exit them here, or the synthetic stops the reconciler attaches would
+        # liquidate the sleeve mid-week and fight the rebalancer.
+        if pos.get("trade_type") == "trend" or pos.get("selector") == "trend":
+            return
         # Prefer live NBBO mid-quote over last minute bar — IEX minute bars can be
         # 10-30 min stale for low-volume names, causing stops/targets to miss.
         quote = alpaca.get_quote(symbol)

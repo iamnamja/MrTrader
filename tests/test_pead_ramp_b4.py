@@ -41,11 +41,15 @@ def test_zero_price_skips_cap():
                                 size_mult=3.0, max_position_pct=0.10) == 30
 
 
-# ── config registration (aggressive defaults, live-tunable) ───────────────────
+# ── config registration (telemetry defaults, live-tunable) ────────────────────
+# Alpha-v4 rebaseline (2026-06-06): PEAD dialed from the B4 aggressive paper-ramp
+# (3.0 / 0.10) down to TELEMETRY size (1.0 / 0.05) when the trend sleeve went live,
+# so the two sleeves share the 80% gross cap at an equal-capital 50/50 split. The
+# ramp math (apply_pead_size_ramp) is unchanged — only the live defaults moved.
 
-def test_config_keys_registered_with_aggressive_defaults():
-    assert _DEFAULTS["pm.pead_size_mult"] == 3.0
-    assert _DEFAULTS["pm.pead_max_position_pct"] == 0.10
+def test_config_keys_registered_with_telemetry_defaults():
+    assert _DEFAULTS["pm.pead_size_mult"] == 1.0
+    assert _DEFAULTS["pm.pead_max_position_pct"] == 0.05
 
 
 def test_config_keys_have_sane_bounds():

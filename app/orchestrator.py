@@ -111,6 +111,15 @@ class AgentOrchestrator:
             job_id="daily_session_summary"
         )
 
+        # Weekly trend-sleeve rebalance — registered DAILY (09:45 ET, Mon–Fri) with
+        # an in-function weekday guard so pm.trend_rebalance_weekday stays live-tunable
+        # (no redeploy to change the rebalance day). 09:45 is after the 09:30 selection
+        # nudge and after the open settles so daily bars/quotes are stable.
+        scheduler.schedule_daily_at_time(
+            self._trigger_trend_rebalance, hour=9, minute=45,
+            job_id="trend_rebalance_trigger"
+        )
+
     # ─── Agent runner ─────────────────────────────────────────────────────────
 
     async def _run_agent(self, name: str, agent) -> None:
@@ -187,6 +196,63 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Retraining trigger failed: %s", exc)
             await self._log_error("model_trainer", str(exc))
+
+    async def _trigger_trend_rebalance(self) -> None:
+        """Weekly TSMOM trend-sleeve rebalance (Alpha-v4 live wiring).
+
+        Fires daily (cron Mon–Fri); runs only on pm.trend_rebalance_weekday AND only
+        when the market is genuinely open (fail-closed on holidays — the cron has no
+        holiday calendar). The executor itself is dormant unless pm.trend_enabled=true
+        and honours pm.trend_shadow. Blocking Alpaca work runs off the event loop.
+        """
+        from datetime import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except Exception:
+            _et = None
+
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            db = get_session()
+            try:
+                target_weekday = int(get_agent_config(db, "pm.trend_rebalance_weekday"))
+            finally:
+                db.close()
+        except Exception:
+            target_weekday = 0  # Monday default
+
+        today = _dt.now(_et).date() if _et else _dt.now().date()
+        if today.weekday() != target_weekday:
+            logger.debug("trend rebalance: not the configured weekday (%d != %d) — skip",
+                         today.weekday(), target_weekday)
+            return
+
+        # Market-open guard (fail-closed: unknown/closed -> do not trade; covers holidays)
+        try:
+            from app.integrations import get_alpaca_client
+            clock = get_alpaca_client().get_clock()
+        except Exception as exc:
+            logger.warning("trend rebalance: clock check failed — skipping (fail-closed): %s", exc)
+            return
+        if not clock or not clock.get("is_open"):
+            logger.info("trend rebalance: market not open today — skip (holiday/closed)")
+            return
+
+        logger.info("Orchestrator: triggering weekly trend rebalance")
+        try:
+            from app.live_trading import trend_sleeve, trend_tracker
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, trend_sleeve.run_trend_rebalance)
+            logger.info("Trend rebalance done: status=%s mode=%s approved=%d blocked=%d",
+                        summary.get("status"), summary.get("mode"),
+                        len(summary.get("approved", [])), len(summary.get("blocked", [])))
+            # Fold the weekly rollup into the rebalance day.
+            await loop.run_in_executor(None, trend_tracker.weekly_rollup)
+        except Exception as exc:
+            logger.error("Trend rebalance trigger failed: %s", exc)
+            await self._log_error("trend_sleeve", str(exc))
 
     async def _trigger_daily_summary(self) -> None:
         """Run post-market health check and store the daily session summary."""

@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-06 (5-LLM quant review digested → Alpha-v4 plan locked; PEAD dialed back to telemetry)
+**Last updated:** 2026-06-06 (Alpha-v4 Phases 0-3 done → trend sleeve LIVE-WIRED shadow-first alongside PEAD; PEAD dialed to telemetry)
 
 ---
 
@@ -25,7 +25,9 @@ Five independent world-class-quant LLM reviews (ChatGPT, Gemini, Grok, DeepSeek,
 
 **ALPHA-v4 ARC (Phases 0-3) COMPLETE.** Net: PEAD = weak beta satellite (kept at telemetry size); TSMOM trend = the strongest sleeve (Sharpe +0.71 19y, diversifying); the book = the two at simple fixed weights (smart weighting doesn't yet earn its complexity on a 2-sleeve / thin overlap).
 
-**NEXT (owner-gated): live multi-sleeve wiring** — get the trend sleeve trading at a simple fixed weight alongside PEAD (it's the strongest sleeve and isn't live yet). This places live ETF orders in the paper book → a deliberate live-system change needing owner go-ahead. Then **Phase 4** (options-VRP feasibility spike / squeeze-conditioning; PEAD 2.0 dropped after Phase 1). Phase 0 remainder (sequential-WF baseline, fold-coverage report, gate recalibration, freeze dead XS-ML) remains as harness hygiene. **CI `database is locked` flake — FIXED (2026-06-06):** per-worker SQLite isolation — feature_store / pead_tracker / notifier DB paths are now env-overridable and conftest points each xdist worker at its own temp dir (set before collection); the bare `universe_history` connect hardened (timeout=30). Validated under -n 8 (2767 passed, 0 locks).
+**✅ LIVE MULTI-SLEEVE WIRING SHIPPED (2026-06-06, shadow-first):** the trend sleeve now trades live as a **standalone weekly ETF rebalancer** (`app/live_trading/trend_sleeve.py`) alongside PEAD — NOT a `swing_selector` value. Direct Alpaca placement with a lightweight risk gate (kill-switch / gross cap trend+PEAD≤80% / fat-finger), fired by the orchestrator daily 09:45 ET → runs only on `pm.trend_rebalance_weekday` (Mon) when the market is open (fail-closed `get_clock`, covers holidays). **Equal-capital 50/50** (`pm.trend_allocation_pct=0.40`); PEAD dialed to telemetry (schema defaults rebaselined 1.0/0.05). Positions tagged `selector="trend"` and excluded from the Trader's stop/target loop (rebalancer-managed). Tracking via `trend_tracker.py` (+0.71 ref, weekly rollup). **Deploys DORMANT + SHADOW** (`pm.trend_enabled=false`, `pm.trend_shadow=true`). **To activate: restart uvicorn, then `python -m scripts.set_trend_config`** (set `pm.trend_enabled=true` for shadow; add `--arm` for real orders). 32 new tests pass; flake8 clean. **REMAINING (owner-gated):** verify a shadow run on the live data tier (≥253 daily bars per ETF), then arm.
+
+**PRIOR NEXT (now done):** ~~live multi-sleeve wiring — get the trend sleeve trading at a simple fixed weight alongside PEAD~~. This places live ETF orders in the paper book → a deliberate live-system change needing owner go-ahead. Then **Phase 4** (options-VRP feasibility spike / squeeze-conditioning; PEAD 2.0 dropped after Phase 1). Phase 0 remainder (sequential-WF baseline, fold-coverage report, gate recalibration, freeze dead XS-ML) remains as harness hygiene. **CI `database is locked` flake — FIXED (2026-06-06):** per-worker SQLite isolation — feature_store / pead_tracker / notifier DB paths are now env-overridable and conftest points each xdist worker at its own temp dir (set before collection); the bare `universe_history` connect hardened (timeout=30). Validated under -n 8 (2767 passed, 0 locks).
 
 ---
 

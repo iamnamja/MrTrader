@@ -463,6 +463,26 @@ class AlpacaClient:
             logger.error(f"Error fetching latest price for {symbol}: {e}")
             return None
 
+    def get_clock(self) -> Optional[Dict[str, Any]]:
+        """Return the market clock: {is_open, next_open, next_close, timestamp}.
+
+        Used by the trend sleeve's weekly rebalance to fail-closed on market
+        holidays (a weekday cron still fires on holiday Mondays). Returns None on
+        error so callers can treat "unknown" as closed (do-not-trade).
+        """
+        try:
+            _rate_limiter.acquire()
+            clock = self.trading_client.get_clock()
+            return {
+                "is_open": bool(clock.is_open),
+                "next_open": clock.next_open.isoformat() if clock.next_open else None,
+                "next_close": clock.next_close.isoformat() if clock.next_close else None,
+                "timestamp": clock.timestamp.isoformat() if clock.timestamp else None,
+            }
+        except Exception as e:
+            logger.warning(f"get_clock failed: {e}")
+            return None
+
     def health_check(self) -> bool:
         """Check if Alpaca API is accessible"""
         try:
