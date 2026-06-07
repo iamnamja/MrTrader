@@ -349,6 +349,12 @@ class IntradayStrategy:
         _eq_vals = [v for _, v in equity_curve]
         _daily_rets = [((_eq_vals[i] - _eq_vals[i - 1]) / max(_eq_vals[i - 1], 1e-9))
                        for i in range(1, len(_eq_vals))] if len(_eq_vals) >= 2 else []
+        # Alpha-v4 P0: dated OOS daily returns for the residual-alpha diagnostic.
+        _daily_rets_dated = [
+            (equity_curve[i][0],
+             (_eq_vals[i] - _eq_vals[i - 1]) / max(_eq_vals[i - 1], 1e-9))
+            for i in range(1, len(_eq_vals))
+        ] if len(_eq_vals) >= 2 else []
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
         regime_sharpes = _crs(equity_curve, te_start, te_end,
                               regime_map=getattr(self, "_global_regime_map", None))
@@ -368,6 +374,7 @@ class IntradayStrategy:
                                         daily_returns=_daily_rets),
             k_ratio=compute_k_ratio(equity_curve),
             n_obs=n_obs,
+            daily_returns_dated=_daily_rets_dated,
             regime_sharpes=regime_sharpes,
             avg_capital_deployed_pct=getattr(result, "avg_capital_deployed_pct", 0.0),
             deployment_adjusted_sharpe=getattr(result, "deployment_adjusted_sharpe", 0.0),

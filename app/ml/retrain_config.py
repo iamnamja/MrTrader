@@ -396,7 +396,13 @@ PAPER_GATE_MIN_MEAN_SHARPE: float = 0.35   # economic-materiality floor (matches
 # CAPITAL tier — real money; PAPER conditions PLUS:
 CAPITAL_GATE_MIN_TSTAT: float = 2.5        # multiple-testing haircut (~10-15 strategy shots)
 CAPITAL_GATE_MIN_N_FOLDS: int = 10         # power floor (N_eff=n_folds; 8 is too few for capital)
-CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.50
+# Alpha-v4 P0 recalibration (2026-06-07): 0.50 → 0.45. The legacy SR≥0.80 promotion
+# bar is RETIRED (GATE_MODE='significance' is the default; 'mean_sharpe'/0.80 is kept
+# only for legacy reproducibility). On N_eff≈8 a high Sharpe LEVEL selects for
+# overfitting — real edges live at ~0.4–0.7 — so robustness (t-stat + fold-consistency
+# + worst-regime survivability floor, and the residual-alpha-t DIAGNOSTIC) is primary
+# and the Sharpe floor is the economic-materiality backstop, not the discriminator.
+CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.45
 CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR documented live-paper confirmation
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
