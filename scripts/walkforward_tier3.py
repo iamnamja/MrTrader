@@ -1631,6 +1631,12 @@ def _dump_cpcv_result_json(cpcv_result, model_type: str) -> None:
             "model_type": getattr(r, "model_type", model_type),
             "n_folds": r.n_folds, "n_paths": r.n_paths,
             "n_combinations": r.n_combinations, "n_skipped": r.n_skipped,
+            # Alpha-v4 P0: completeness + fold-coverage instrumentation.
+            "n_overlap_bypassed": getattr(r, "n_overlap_bypassed", 0),
+            "coverage": getattr(r, "coverage", None),
+            "coverage_ok": getattr(r, "coverage_ok", True),
+            "coverage_warnings": getattr(r, "coverage_warnings", []),
+            "path_fold_members": getattr(r, "path_fold_members", []),
             "mean_sharpe": r.mean_sharpe, "std_sharpe": r.std_sharpe,
             "p5_sharpe": r.p5_sharpe, "p95_sharpe": r.p95_sharpe,
             "pct_positive": r.pct_positive, "path_sharpe_tstat": r.path_sharpe_tstat,
