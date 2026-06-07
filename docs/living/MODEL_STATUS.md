@@ -4,11 +4,47 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-02
+**Last updated:** 2026-06-06
+
+---
+
+## TSMOM trend sleeve — WIRED for paper (DORMANT + SHADOW) — 2026-06-06
+
+The validated trend sleeve (`app/strategy/tsmom.py`, standalone Sharpe **+0.71**, 19y,
+crisis-diversifier) is now wired to trade live as a **standalone weekly ETF rebalancer**
+(`app/live_trading/trend_sleeve.py`), running *alongside* PEAD — NOT a `swing_selector`
+value. Fires from the orchestrator daily at 09:45 ET, runs only on
+`pm.trend_rebalance_weekday` (default Mon) when the market is open (fail-closed via
+`AlpacaClient.get_clock`).
+
+- **Deploys DORMANT + SHADOW**: `pm.trend_enabled=false`, `pm.trend_shadow=true`. Shadow
+  logs would-be orders to `decision_audit` (`strategy="trend"`, `block_reason="shadow"`)
+  without sending. Arm via `python -m scripts.set_trend_config` (set `trend_enabled=true`
+  for shadow; add `--arm` + `trend_enabled=true` to send real orders).
+- **Equal-capital 50/50** with PEAD: `pm.trend_allocation_pct=0.40` (40% trend / 40% PEAD
+  under the 80% gross cap). Per-ETF cap `pm.trend_max_position_pct=0.25`. Universe =
+  SPY,QQQ,IWM,EFA,EEM,TLT,IEF,GLD,DBC,UUP.
+- **Risk gate** (direct placement, bypasses PM→RM): kill-switch, gross cap (trend+PEAD ≤
+  80%), fat-finger, per-name cap; fail-closed on data/NAV/clock failure. Whole shares only.
+- **Positions tagged `selector="trend"`/`trade_type="trend"`** and excluded from the
+  Trader's stop/target exit loop (rebalancer-managed only).
+- **Observability**: `app/live_trading/trend_tracker.py` — daily gross/turnover/P&L rows +
+  weekly realized-Sharpe-vs-+0.71 rollup email (`notifier.enqueue("trend_weekly")`).
+- **Expected tracking error** vs the +0.71 backtest (Alpaca vs yfinance price adjustment;
+  wall-clock Monday vs modular 5-day rebalance) — surfaced by the tracker, not swallowed.
+
+**⚠️ Requires uvicorn restart** to load the new scheduler job + executor. Then run
+`scripts/set_trend_config.py` to set the live config (no further restart).
 
 ---
 
 ## PEAD long-only — WIRED for paper (NOT yet activated) — 2026-06-02
+
+> **2026-06-06 update:** PEAD dialed to **telemetry size** alongside the trend sleeve —
+> `pm.pead_size_mult` 3.0→1.0, `pm.pead_max_position_pct` 0.10→0.05 (schema defaults now
+> rebaselined, not just DB values). PEAD is the weak market-beta satellite; trend is the
+> primary sleeve.
+
 
 The live PEAD selector path (`pm.swing_selector="pead"` → `_analyze_swing_pead`) has been
 **re-wired to faithfully run the validated +0.546 CPCV config** (branch `feat/pead-live-wiring`).

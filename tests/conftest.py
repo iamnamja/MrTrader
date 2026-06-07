@@ -38,6 +38,7 @@ def _set_test_db_env(worker: str = "gw_main", *, force: bool = False) -> None:
     setter = _os.environ.__setitem__ if force else _os.environ.setdefault
     setter("MRTRADER_FEATURE_STORE_DB", str(db_dir / "feature_store.db"))
     setter("MRTRADER_PEAD_TRACKING_DB", str(db_dir / "pead_tracking.db"))
+    setter("MRTRADER_TREND_TRACKING_DB", str(db_dir / "trend_tracking.db"))
     setter("MRTRADER_NOTIFICATIONS_DB", str(db_dir / "notifications.db"))
 
 

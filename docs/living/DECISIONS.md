@@ -4,6 +4,51 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-06 — Live TSMOM trend sleeve: standalone weekly rebalancer (Alpha-v4 live wiring)
+
+**Context**: Alpha-v4 Phases 0–3 are complete. The TSMOM trend sleeve
+(`app/strategy/tsmom.py`, validated standalone Sharpe +0.71, the book's crisis
+diversifier) was the strongest sleeve but not live. The task: trade it live in the
+paper account alongside PEAD at a simple fixed weight.
+
+**Decisions**:
+- **Standalone weekly executor, NOT a `pm.swing_selector` value.** The selector is
+  mutual-exclusion (one daily stock scan producing entry signals); the trend sleeve
+  is a weekly rebalance-to-target on a fixed 10-ETF basket that must run *alongside*
+  PEAD. It lives in `app/live_trading/trend_sleeve.py`, fired by a daily orchestrator
+  job (09:45 ET) with an in-function weekday guard (`pm.trend_rebalance_weekday`,
+  live-tunable) + a fail-closed market-open check (`AlpacaClient.get_clock` — the
+  weekday cron has no holiday calendar).
+- **Direct Alpaca placement with a lightweight risk gate** (kill-switch, gross cap
+  `trend+PEAD ≤ 80%`, fat-finger, per-name cap), NOT the PM→RM→Trader proposal queue
+  (those rules are entry-signal-shaped and map poorly onto rebalance trims/sells).
+- **Equal-capital 50/50**: `pm.trend_allocation_pct` default 0.70→**0.40** (trend 40%
+  / PEAD 40% under the 80% gross cap — matches the Phase-3-validated equal-capital
+  book, which beat vol-weight and regime-tilt).
+- **PEAD dialed to telemetry** in the schema defaults too: `pm.pead_size_mult` 3.0→1.0,
+  `pm.pead_max_position_pct` 0.10→0.05 (the DB values were already dialed; rebaselining
+  the defaults prevents a DB reset from silently re-ramping PEAD). `test_pead_ramp_b4`
+  expectations updated to match.
+- **Shadow-first, dormant-by-default**: `pm.trend_enabled` default `false`,
+  `pm.trend_shadow` default `true` (logs would-be orders to `decision_audit` with
+  `block_reason="shadow"`, sends nothing). Owner arms via `scripts/set_trend_config.py`.
+- **Trend positions tagged `selector="trend"`/`trade_type="trend"` and excluded from the
+  Trader's per-tick stop/target exit loop** (`_check_exit` guard) — the weekly
+  rebalancer is their sole manager; otherwise the synthetic stops the reconciler
+  attaches would liquidate the sleeve mid-week.
+- **Fail-closed everywhere**: kill-switch, data-fetch failure, missing core symbol
+  (SPY), or NAV-fetch failure → no orders. Whole shares only (Alpaca wrapper is int-only).
+
+**Consequences**: trend coexists with PEAD as a peer sleeve; live-vs-backtest
+divergence (Alpaca vs yfinance adjustment, wall-clock vs modular rebalance) is tracked
+by `app/live_trading/trend_tracker.py` (+0.71 reference, weekly rollup email). Known
+limits / backlog: the gross-cap formula now lives in 3 places (trend imports the
+canonical `risk_manager.GROSS_EXPOSURE_CAP`); fixed 40/40 forgoes the validated
+vol-weighting + BEAR regime tilt in `sleeve_allocator.py` (deliberate "ship simple
+first" — revisit when more sleeves / longer overlap earn it).
+
+---
+
 ## 2026-06-02 — Significance-first two-tier promotion gate (replaces mean-Sharpe≥0.80)
 
 **Context**: The promotion gate's primary discriminator was `mean_sharpe ≥ 0.80`
