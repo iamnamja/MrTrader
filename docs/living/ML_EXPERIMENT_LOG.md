@@ -61,6 +61,31 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 4b (Alpha-v4) — Cross-asset carry (3rd-premium candidate) — 2026-06-08 — VERDICT: ❌ DEAD-ON-ARRIVAL (quick screen, not pursued)
+
+**Context**: After reversal failed, carry was the next free-data 3rd-sleeve candidate. A
+data-feasibility audit found the only UNIFORM free carry signal across the mixed ETF basket
+is the **income/distribution yield** (the repo uses `auto_adjust=True` everywhere, hiding it;
+needs a ~15-line dividend fetch). The "proper" carry legs — curve roll-down, commodity
+term-structure, FX rate-differential — need futures/yield data we don't have free (the FRED
+client returns latest-scalar only, no PIT series; no cached yields parquet).
+
+**Quick screen (NOT a full CPCV — a fast go/no-go before investing in a module):** built a
+dollar-neutral cross-sectional income-carry book on the 10-ETF basket (long high trailing-12m
+distribution yield / short low, monthly, PIT, **pre-cost**): **Sharpe −0.222**, ann −1.4%,
+SPY β +0.045, **alpha t(HAC) −1.42**, corr-to-TLT +0.19. Trailing yields: TLT 3.0% / EFA 3.0%
+/ EEM 2.1% high vs GLD 0.0% / QQQ 0.7% / DBC 1.0% low.
+
+**Verdict — DEAD-ON-ARRIVAL, not pursued.** The income-yield ranking LOSES money *before*
+costs — high-yield ETFs did not outperform low-yielders over 2007-26 (the low-yield GLD/QQQ
+led). It's a thin, slightly-negative, near-static beta-ish tilt, not a tradeable carry premium.
+Free-data ETF carry is reducible to this income proxy, so there's no module to build. **NOT
+filter-hunted** (B5 trap). No code committed (dead signal, no reusable harness). 3rd-sleeve
+slot remains OPEN. Two cheap eliminations now (reversal cost-dead, carry pre-cost-negative) —
+consistent with the 5-LLM review's "the wall is the opportunity set" on free data.
+
+---
+
 ## Phase 4 (Alpha-v4) — Short-term reversal sleeve (3rd-premium candidate) — 2026-06-08 — VERDICT: ❌ KILL (cost-dead)
 
 **Context**: With PEAD (weak beta satellite) + TSMOM trend (the diversifier) live and the
