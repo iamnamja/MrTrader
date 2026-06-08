@@ -4,6 +4,50 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-08 — Alpha-v4 P3: live regime-aware sleeve allocator (gate-controlled, default-equal, kill-switchable)
+
+**Context**: The live book ran two independent sleeves at static budgets (trend
+`pm.trend_allocation_pct=0.40`, PEAD telemetry `pm.pead_size_mult=1.0`). The allocator
+(`app/strategy/sleeve_allocator.py`) existed only as a backtest library. The Phase-3
+book-level gate (`scripts/run_book_allocator.py`, margin >0.10 Sharpe AND no-worse-DD)
+found on the 2-sleeve overlap: **equal +1.082 > vol +0.715 > regime +0.593** — regime is
+worst. So vol/regime are not justified on the current book.
+
+**Decision**: Wire the allocator into the LIVE book as a kill-switchable layer
+(`app/live_trading/sleeve_allocator_live.py`) that **ships DISABLED** (`pm.allocator_enabled=false`)
+→ byte-identical to today. When enabled it recomputes weekly (before the trend rebalance),
+persists effective weights to `agent_config`, and both sleeve readers
+(`effective_trend_allocation` / `effective_pead_size_mult`) consult them with a
+**fixed-weight fallback** on disabled / stale / warmup / any error. Default scheme `equal`;
+`vol`/`regime` are live-capable but stay OFF until `run_book_allocator.py --emit-config`
+selects them (expected after a 3rd sleeve).
+
+- **Live regime label** = the persisted, staleness-aware live score
+  (`get_regime_context`) mapped **RISK_ON→BULL, RISK_CAUTION→NEUTRAL, RISK_OFF→BEAR,
+  unknown→NEUTRAL** (the safe no-tilt key).
+- **PEAD regime double-tilt avoided (from the Opus pre-merge review):** PM already applies
+  a per-name `_regime_sizing_multiplier` to PEAD, so under `scheme=regime` the allocator
+  does **not** also scale PEAD's `size_mult` (would compound the same regime bet) —
+  PEAD's own per-name mult is its sole regime tilt; the allocator's regime tilt flows only
+  to the TREND budget. `equal`/`vol` map PEAD normally (no regime component).
+- **Gross-cap safety:** effective trend allocation is clamped to ≤0.80, and the trend
+  sleeve's existing `apply_risk_gate` independently caps total (trend+PEAD) gross ≤80% on
+  actual positions regardless of allocator output.
+
+**Quality loop**: adversarial Opus 4.8 review found 1 Critical (the double-tilt, now
+guarded) + doc/robustness items (now fixed); a second Opus pass verified all resolved with
+no regression (SHIP).
+
+**Known limitations (must clear before enabling `vol`/`regime`):** (1) the LIVE regime
+path uses a one-shot tilt (no hysteresis/EWMA blend — those need a label series), so it
+differs from the validated backtest `apply_regime_tilt` and must be re-validated before
+activation; (2) the trend sleeve writes its tracker weekly, so the live per-sleeve vol
+estimate is coarse until ~`pm.allocator_min_deployed_days` of history accrue (the warmup
+guard keeps it in static fallback until then). **Consequences**: zero behavior change today;
+infra + re-runnable gate ready to activate when the 3rd sleeve makes vol/regime earn it.
+
+---
+
 ## 2026-06-07 — Alpha-v4 P0 gate recalibration: robustness over Sharpe level; residual-alpha-t diagnostic-first
 
 **Context**: On N_eff≈8 a high Sharpe *level* selects for overfitting (5-LLM review:

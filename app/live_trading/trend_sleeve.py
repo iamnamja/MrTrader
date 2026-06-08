@@ -354,7 +354,11 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             return summary
 
         summary["mode"] = "shadow" if shadow else "live"
-        alloc = float(get_agent_config(db, "pm.trend_allocation_pct"))
+        # Alpha-v4 P3: effective allocation = allocator weight x budget when the live
+        # allocator is enabled+fresh, else the static pm.trend_allocation_pct (today's
+        # behavior). Fail-closed to the static value on any error.
+        from app.live_trading.sleeve_allocator_live import effective_trend_allocation
+        alloc = effective_trend_allocation(db)
         max_pos = float(get_agent_config(db, "pm.trend_max_position_pct"))
         universe = [s.strip().upper()
                     for s in str(get_agent_config(db, "pm.trend_universe")).split(",")

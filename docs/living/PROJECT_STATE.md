@@ -4,7 +4,20 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-06 (Alpha-v4 Phases 0-3 done → trend sleeve LIVE-WIRED shadow-first alongside PEAD; PEAD dialed to telemetry)
+**Last updated:** 2026-06-08 (Alpha-v4 P3: regime-aware sleeve allocator LIVE-WIRED, gate-controlled, shipped DISABLED = today's fixed weights)
+
+## 🧭 P3 (2026-06-08): Live regime-aware sleeve allocator — wired, shipped DISABLED
+`app/live_trading/sleeve_allocator_live.py` turns the backtest allocator into a live,
+kill-switchable book layer. **Ships `pm.allocator_enabled=false` → byte-identical to
+today's static budgets** (trend 0.40 / PEAD telemetry). When enabled it recomputes weekly
+(before the trend rebalance), persists effective sleeve weights to agent_config, and both
+sleeves read them with a fixed-weight fallback (disabled/stale/warmup/error → static).
+Default scheme `equal` (the validated winner); `vol`/`regime` are live-capable but OFF
+until `scripts/run_book_allocator.py --emit-config` selects them (expected after the 3rd
+sleeve). PEAD regime double-tilt guarded (Opus review). To enable later:
+`python -m scripts.set_allocator_config --enable`. **NEXT: the 3rd uncorrelated sleeve**,
+then re-run the gate to (likely) activate vol/regime.
+
 
 ---
 

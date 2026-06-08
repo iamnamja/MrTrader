@@ -267,6 +267,17 @@ class AgentOrchestrator:
         try:
             from app.live_trading import trend_sleeve, trend_tracker
             loop = asyncio.get_event_loop()
+            # Alpha-v4 P3: recompute the regime-aware sleeve weights BEFORE the trend
+            # rebalance, so the rebalance in this same tick reads the fresh effective
+            # allocation. run_allocator is a no-op (returns 'disabled') unless
+            # pm.allocator_enabled=true, so this is inert until the owner flips it on.
+            try:
+                from app.live_trading import sleeve_allocator_live
+                _alloc = await loop.run_in_executor(None, sleeve_allocator_live.run_allocator)
+                logger.info("Allocator recompute: status=%s scheme=%s source=%s",
+                            _alloc.get("status"), _alloc.get("scheme"), _alloc.get("source"))
+            except Exception as _aexc:
+                logger.error("Allocator recompute failed (continuing with static weights): %s", _aexc)
             summary = await loop.run_in_executor(None, trend_sleeve.run_trend_rebalance)
             logger.info("Trend rebalance done: status=%s mode=%s approved=%d blocked=%d",
                         summary.get("status"), summary.get("mode"),
