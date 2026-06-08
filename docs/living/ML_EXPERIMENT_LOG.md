@@ -75,6 +75,24 @@ Tracks model improvement iterations for active and recent phases.
 
 **NEXT:** Phase 3 — regime-aware allocator over {PEAD, trend} (the live multi-sleeve book). Live wiring of the trend sleeve happens there (it's the natural home for multi-sleeve combination), not as a bolt-on PM selector. Tools retained: `app/strategy/tsmom.py` (reusable sleeve), `scripts/run_tsmom.py` (validation harness).
 
+### Phase 2 addendum (2026-06-07) — trend BETA-ISOLATION validation (the test PEAD failed)
+
+Ran the same CAPM + Newey-West HAC beta-isolation on the trend sleeve that killed PEAD's standalone-edge claim (`scripts/trend_residual_alpha.py`, reuses the shared `scripts/walkforward/attribution.capm_alpha` lifted in P0 #406). SPY proxy taken from the sleeve's own price DataFrame.
+
+**Result — DIVERSIFIER CONFIRMED (decisively passes where PEAD failed):**
+- SPY beta **+0.16**, corr 0.34, R² 0.12 → genuinely low market exposure.
+- Annualized alpha **+4.67%**, **alpha t(HAC)=+2.46** (PEAD: −0.95).
+- **Beta-hedged Sharpe +0.533** (PEAD: −0.37 — lost money hedged). The trend Sharpe is real content, NOT market beta.
+- 15/20 positive years; crisis-positive in slow bears (GFC +7% vs SPY −37%).
+
+**Robustness stress (skeptical-quant pass):**
+- **Autocorrelation — robust.** alpha t(HAC) rises/stabilizes across HAC lags 1→63d (2.34 → **2.65**); the significance is NOT a short-lag artifact.
+- **Cost — flagged, then RESOLVED by a per-instrument audit.** Flat-cost sweep degrades ~linearly (2bps t=2.65 → 10bps t=1.99 → 15bps t=1.59), so a flat 10bps would threaten significance. BUT the per-instrument audit (`scripts/trend_cost_audit.py`, self-checked to reproduce flat-2bps to 1e-19) shows **turnover is spread EVENLY across the basket (each name ~9–11%)** — the thin names (DBC/UUP/EEM/EFA) do NOT dominate trading — so a realistic name-specific vector (majors ~1bp, thin ETFs ~4bp) blends to **~2.0bps → rawSR +0.714, t_HAC 2.65, hedgedSR +0.532, IDENTICAL to flat-2bps**. Even a 2×-pessimistic vector (~4bps blended) holds: rawSR +0.683, **t_HAC 2.49**, hedgedSR +0.500. The flat-10bps scare only bites if *every* name costs 10bps (unrealistic). → cost concern de-risked at retail/paper size (large-AUM impact still untested).
+- **Era-dependent but not one-era.** 2007-16 rawSR +0.49 / t=1.52 (insignificant alone); 2017-26 +0.95 / t=2.09. Both halves positive-hedged; recent decade carries full-sample significance (2011-16 = the managed-futures drought). Expect multi-year flat stretches.
+- **Fast-crash blind spot:** whipsawed COVID −6.2% / Q4-18 −6.3% → hedges *grinding* bears, not V-shaped crashes; NOT a tail-hedge substitute.
+
+**Verdict:** keep trend as the book's primary diversifier at its fixed weight (the live 40% is justified) — and the per-instrument cost audit (done, above) clears the path to raising it at retail/paper size. Remaining before a *material* weight increase: (1) large-AUM impact/capacity check on the thin names, (2) account for the fast-crash gap in book risk (trend ≠ tail hedge). No DSR/multiple-testing deflation applied (single standard-MOP spec). Tools: `scripts/trend_residual_alpha.py` (beta-isolation), `scripts/trend_cost_audit.py` (per-instrument cost).
+
 ---
 
 ## Phase 1 (Alpha-v4) — PEAD honest reckoning — 2026-06-06 — VERDICT: ❌ NOT A STANDALONE EDGE (market-beta-driven)
