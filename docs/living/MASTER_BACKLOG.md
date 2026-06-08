@@ -23,6 +23,7 @@
 | **P4a** | **PEAD 2.0** (gated on P1 neutralized-PEAD surviving): genuine-shock scorer — SUE + revenue confirm + fwd estimate revisions + guidance + analyst-prior inconsistency, on `EventEdgeStrategy`. | TBD | Conditional |
 | **P4b** | **Options-VRP feasibility spike** (NOT a full strategy): contract-level P&L prototype w/ conservative bid/ask; **decision gate before** any options sim. Free-data-only until the spike says go. | TBD | Conditional |
 | **P4c** | **Squeeze-conditioning**: SI days-to-cover as a PEAD-*long* conditioner (uses already-acquired SI data). | ~S | Opportunistic |
+| ~~**P4-rev**~~ | ❌ **Short-term reversal sleeve — NOT VALIDATED (2026-06-08), cost-dead.** Dollar-neutral cross-sectional 5d reversal (long losers/short winners, top-500 liquid, PIT membership): gross **+0.40/t=1.28 @2bps** but **-0.90 @10bps** (~159x turnover → ~16%/yr cost drag); genuinely uncorrelated (β~0.1, corr +0.13/+0.03 to PEAD/trend) but a money-loser that drags the book (+1.145→+0.138). Opus-verified real (not a bug); NOT filter-hunted (B5 trap). Harness retained (`app/strategy/reversal.py`, `scripts/run_reversal.py`, 7 tests). **3rd-sleeve slot still OPEN.** | done | ❌ |
 | **P5** | Optional/later: futures-roll trend upgrade · merger arb · CJL **forward-estimate-revision** residualized retest (≠ killed A1 ratings) · crypto basis. | TBD | Backlog |
 
 **Cross-cutting (introduced P0/P1):** strategy contracts (frozen spec + code hash) · research ledger (hypothesis registry, incl. nulls) · capital ladder (backtest→shadow→paper→micro-live→pilot→production).

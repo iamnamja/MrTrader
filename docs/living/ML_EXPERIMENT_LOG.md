@@ -61,6 +61,41 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 4 (Alpha-v4) — Short-term reversal sleeve (3rd-premium candidate) — 2026-06-08 — VERDICT: ❌ KILL (cost-dead)
+
+**Context**: With PEAD (weak beta satellite) + TSMOM trend (the diversifier) live and the
+regime-aware allocator wired (P3), the book needs a 3rd genuinely-uncorrelated premium to
+push toward book-SR~0.8 and give the allocator a reason to activate vol/regime. Owner chose
+short-term cross-sectional reversal — the natural complement to TREND (momentum). Built a
+vectorized, PIT-safe, **dollar-neutral** cross-sectional reversal sleeve (`app/strategy/reversal.py`:
+5-day lookback, 1-day skip for the bid-ask bounce, long losers / short winners, top-500
+liquid names, winsorized-z dollar-neutral weights, same `held.shift(1)*rets - cost.shift(1)`
+PIT convention as TSMOM) + validation (`scripts/run_reversal.py`) on the cached R1K
+universe with **PIT index-membership** (survivorship-safe).
+
+**Result — the signal is real but UNTRADEABLE (dies on cost):**
+- Gross Sharpe **+0.403 (t=1.28)** at 2bps — a *weak* genuine reversal signal (t<2 even gross).
+- At a realistic **10bps one-way → -0.904 Sharpe (t=-4.67)**; crossover at ~3-4bps.
+  Turnover **~159x/yr** (daily dollar-neutral book) → **~16%/yr cost drag** vs ~4%/yr gross
+  return. Cutting rebalance to weekly only lifts it to -0.18 (still negative).
+- **Diversification IS real** (β +0.10 ~0, corr +0.13 to PEAD / +0.03 to trend) — the sleeve
+  *concept* is right — but a negative-Sharpe sleeve **drags the book**: equal-capital
+  {pead,trend} +1.145 → {pead,trend,reversal} +0.138. 4/20 positive years; only works in the
+  2008 dislocation (+24.5%).
+
+**Verdict — KILL / benchmark-only.** Short-term reversal in the liquid universe is the most
+arbitraged anomaly and is cost-dead — consistent with the literature and joins the killed
+intraday/swing-XS-ML/A1/A2 nulls. **Opus 4.8 adversarial review verified the KILL is REAL,
+not a bug** (sign correct = genuine reversal; cost single-charged with exact linear scaling;
+no look-ahead — last-day shock changes zero earlier weights; dollar-neutral row-sums ~0,
+gross 1.0; liquidity/membership masking correct). **NOT filter-hunted to rescue it** (the B5
+trap is on the explicit STOP list). Harness retained (`reversal.py` + `run_reversal.py`,
+7 tests) as a reusable, validated null. **3rd-sleeve slot remains OPEN** — next candidates:
+options-VRP feasibility spike (needs paid IV data), cross-asset carry (free data), or
+squeeze-conditioning (existing SI data, but a PEAD conditioner not a standalone sleeve).
+
+---
+
 ## Phase 2 (Alpha-v4) — TSMOM trend sleeve — 2026-06-06 — VERDICT: ✅ KEEP (validated as a book addition; the crisis diversifier)
 
 **Context**: Phase 1 established PEAD is a weak, market-beta-driven satellite, so the book needs a genuinely uncorrelated, crisis-positive sleeve (5/5 reviewers' #1 pick). Built a vectorized, PIT-safe time-series-momentum (Moskowitz-Ooi-Pedersen) sleeve on a 10-ETF multi-asset basket: `app/strategy/tsmom.py` (lookback-ensemble 21/63/126/252d, long-flat, inverse-vol target, weekly rebalance, 2bps ETF cost) + `scripts/run_tsmom.py`. Universe: SPY/QQQ/IWM/EFA/EEM/TLT/IEF/GLD/DBC/UUP.
