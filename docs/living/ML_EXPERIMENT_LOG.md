@@ -61,6 +61,37 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Phase 4c (Alpha-v4) — Estimate-revision drift (3rd-premium candidate) — 2026-06-08 — VERDICT: ❌ DATA-BLOCKED (infeasible on current data)
+
+**Context**: After reversal + carry failed, the chosen next candidate was forward
+consensus-EPS-**revision** drift (Chan-Jegadeesh-Lakonishok) — the EVENT family that
+produced PEAD, and DISTINCT from the killed A1 (analyst ratings/grades). The CPCV harness
+(`EventEdgeStrategy` + `run_cpcv`) is ready and reusable; the make-or-break is the data.
+
+**Feasibility audit — the data is NOT there.** No forward analyst EPS *estimate* (and thus
+no revision series) is available in-repo or via any wired provider: FMP `/stable/earnings`
+(`get_earnings_history_fmp`) gives only the consensus *frozen at the report date* (a trailing
+snapshot, no revision history); FMP `/stable/grades` (`get_analyst_grades_fmp`) is ratings
+labels only (the A1 data — zero estimate values); the fundamentals parquets are realized
+actuals (`eps_diluted` = reported). FMP's forward `/stable/analyst-estimates` is NOT wired and
+likely needs a higher tier. **Critically, estimate-revision can't be reconstructed
+retroactively** — a revision is the time series of what consensus *was* on each past date; a
+current snapshot can't recover it. You'd have to collect a versioned PIT estimate panel
+*going forward* (mirroring `short_interest_provider`'s `knowable_date`), or buy point-in-time
+estimate history (I/B/E/S). **Verdict: data-blocked — not pursued; no backtest possible on
+free/current data.**
+
+**STRATEGIC INFLECTION (2026-06-08):** three 3rd-sleeve candidates eliminated this session —
+reversal (cost-dead), carry (pre-cost-negative), estimate-revision (data-blocked). This
+**confirms the 5-LLM review's core finding: the free-data opportunity set is fished out.** The
+book stays PEAD + TSMOM trend (allocator wired). The genuine next moves are owner-gated:
+(a) a **paid-data** spend (options-VRP IV history = highest ceiling; or I/B/E/S PIT estimates),
+(b) **consolidate** — operate/harden the 2-sleeve book + allocator (capital ladder, monitoring,
+re-run the gate as live history accrues), or (c) cheap **squeeze-conditioning** of PEAD (uses
+existing SI data; improves PEAD rather than adding a 4th premium).
+
+---
+
 ## Phase 4b (Alpha-v4) — Cross-asset carry (3rd-premium candidate) — 2026-06-08 — VERDICT: ❌ DEAD-ON-ARRIVAL (quick screen, not pursued)
 
 **Context**: After reversal failed, carry was the next free-data 3rd-sleeve candidate. A
