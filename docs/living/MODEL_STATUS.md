@@ -4,7 +4,20 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-06
+**Last updated:** 2026-06-08
+
+---
+
+## Sleeve allocator — LIVE-WIRED, gate-controlled (DISABLED by default) — 2026-06-08
+
+The book's sleeve weights are now set by a live, kill-switchable allocator
+(`app/live_trading/sleeve_allocator_live.py`) — **shipped `pm.allocator_enabled=false` =
+today's static budgets (trend 0.40 / PEAD telemetry)**. Default scheme `equal` (Phase-3
+validated winner); `vol`/`regime` live-capable but OFF until the book-level gate
+(`scripts/run_book_allocator.py`) selects them (on 2 sleeves equal beats both). Enable via
+`python -m scripts.set_allocator_config --enable`. Recomputes weekly before the trend
+rebalance; readers fall back to static on disabled/stale/warmup/error. PEAD regime
+double-tilt guarded. See DECISIONS 2026-06-08.
 
 ---
 

@@ -620,6 +620,8 @@ All live in `app/ml/retrain_config.py`.
 |---|---|---|---|
 | `RETRAIN_WEEKDAY` | -1 (disabled) | Day of week for scheduled retrains; -1 = off. **Now honored by `orchestrator._trigger_retraining`** (Alpha-v4 P0) — the daily trigger previously ignored it and retrained every night | Phase C / P0 |
 | `SWING_ENABLED` | False | Enable nightly swing XS-ranker retrain. False = FROZEN (dead model: per-fold CPCV +0.22, t=0.17). Honored by `retrain_cron.run_swing` | Alpha-v4 P0 |
+| `pm.allocator_enabled` (agent_config) | "false" | Live regime-aware sleeve allocator master switch. false = sleeves use static budgets (today). true = `sleeve_allocator_live.run_allocator` sets effective weights weekly; readers fall back to static on disabled/stale/warmup/error | Alpha-v4 P3 |
+| `pm.allocator_scheme` (agent_config) | "equal" | Allocator weighting: equal \| vol \| regime. Keep equal until `run_book_allocator.py` gate selects vol/regime (on 2 sleeves equal wins). Under regime, PEAD's size_mult is NOT allocator-tilted (PM already tilts PEAD by regime — double-tilt guard) | Alpha-v4 P3 |
 | `USE_NIS_FEATURES` | False | Include NIS macro LLM sentiment in swing training | Phase A |
 | `USE_FMP_FUNDAMENTALS` | True | Load PIT FMP fundamentals (overrides EDGAR) | Phase 93 |
 | `USE_REALIZED_R_LABELS` | False | Intraday: absolute R threshold labels vs cross-sectional | Phase 88 |

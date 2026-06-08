@@ -1721,7 +1721,15 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 _cfg["require_positive_revision"] = (
                     str(_gac_pead(_db_pead, "pm.pead_require_positive_revision") or "false").lower() == "true"
                 )
-                _cfg["size_mult"] = float(_gac_pead(_db_pead, "pm.pead_size_mult"))
+                # Alpha-v4 P3: when the live allocator is enabled+fresh, the PEAD sleeve
+                # weight scales the size_mult; otherwise the static value (today's behavior).
+                # Per-name cap stays a hard ceiling. Fail-closed to the static base.
+                _pead_base_mult = float(_gac_pead(_db_pead, "pm.pead_size_mult"))
+                try:
+                    from app.live_trading.sleeve_allocator_live import effective_pead_size_mult
+                    _cfg["size_mult"] = effective_pead_size_mult(_db_pead, _pead_base_mult)
+                except Exception:
+                    _cfg["size_mult"] = _pead_base_mult
                 _cfg["max_position_pct"] = float(_gac_pead(_db_pead, "pm.pead_max_position_pct"))
                 _cfg["regime_control"] = (_gac_pead(_db_pead, "pm.pead_regime_control") or "").strip()
                 _cfg["trend_ma"] = int(_gac_pead(_db_pead, "pm.pead_trend_ma"))

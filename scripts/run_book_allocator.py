@@ -57,6 +57,12 @@ def _sleeve_returns():
 
 
 def main() -> int:
+    import argparse
+    _ap = argparse.ArgumentParser(description="Book-level sleeve-allocator gate")
+    _ap.add_argument("--emit-config", action="store_true",
+                     help="print the recommended pm.allocator_scheme for the live allocator")
+    _args = _ap.parse_args()
+
     from app.strategy.sleeve_allocator import build_book, AllocatorConfig, DEFAULT_REGIME_TILT
     from scripts.walkforward.regime import load_regime_map
 
@@ -122,6 +128,12 @@ def main() -> int:
     print()
     logger.info("allocator: equal SR %.3f | vol SR %.3f | regime SR %.3f -> SHIP %s",
                 eq_b["sharpe"], vol_b["sharpe"], reg_b["sharpe"], ship)
+
+    if _args.emit_config:
+        scheme = ("regime" if ship == "regime-tilted"
+                  else "vol" if ship == "static vol-weight" else "equal")
+        print(f"  RECOMMENDED LIVE CONFIG: pm.allocator_scheme = {scheme}")
+        print(f"    apply with: python -m scripts.set_allocator_config --enable --scheme {scheme}")
     return 0
 
 
