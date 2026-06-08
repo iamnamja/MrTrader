@@ -4,6 +4,29 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-08 — Alpha-v4 P4: short-term reversal sleeve KILLED (cost-dead); 3rd-sleeve slot stays open
+
+**Context**: Sought a 3rd uncorrelated premium after PEAD + TSMOM trend. Owner chose
+short-term cross-sectional reversal (the momentum complement). Built + validated a
+dollar-neutral, PIT, survivorship-safe sleeve (`app/strategy/reversal.py` + `run_reversal.py`).
+
+**Decision**: **KILL / benchmark-only — do not live-wire.** The reversal signal is real but
+weak (gross +0.40, t=1.28 @2bps) and **cost-dead**: ~159x/yr turnover → ~16%/yr cost drag →
+**-0.90 Sharpe at a realistic 10bps**; adding it *drags* the book (equal-capital +1.145 →
++0.138). It IS genuinely uncorrelated (β~0.10, corr +0.13/+0.03 to PEAD/trend) — the concept
+is right, the tradeable edge isn't.
+
+**Rationale**: Opus 4.8 adversarial review verified the KILL is real, not a bug (sign / cost
+single-charge / look-ahead / dollar-neutrality / liquidity-masking all correct). Short-term
+reversal is the most-arbitraged anomaly; this is the expected null. **Explicitly NOT
+filter-hunted** to rescue it (only-trade-in-high-VIX etc.) — that's the B5 trap on the STOP
+list. **Consequences**: the harness is retained as a reusable validated null (7 tests); the
+3rd-sleeve slot remains OPEN. Next candidates: options-VRP feasibility spike (needs paid IV
+data — a spend decision), cross-asset carry (free data), or squeeze-conditioning (existing
+SI data, but a PEAD conditioner rather than a standalone premium).
+
+---
+
 ## 2026-06-08 — Alpha-v4 P3: live regime-aware sleeve allocator (gate-controlled, default-equal, kill-switchable)
 
 **Context**: The live book ran two independent sleeves at static budgets (trend
