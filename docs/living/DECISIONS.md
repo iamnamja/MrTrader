@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5 OPT-3 deep-dive + fair re-test: verdict holds (KILL) but the REASON corrected — thin/cost-killed, not structurally negative
+
+**Context**: Before pivoting to OPT-4, the owner asked for a full Opus 4.8 deep-dive of the *entire* options build to be certain nothing could have impacted the OPT-3 outcome. Three parallel auditors covered (1) backfilled-data quality + integration, (2) simulator P&L, (3) strategy-construction fairness.
+
+**Findings**: (1) and (2) certified the **harness/data/simulator clean** — data pristine (0 NaN/zero/neg closes across 45M bars, IV-crush empirically visible in real marks, 3.13% conservative stale marks, all 39 names fully covered, OCC strings exact, PIT verified; split-relabeled in-store discontinuities exist but are never held by the short-hold strategy — noted as a latent guard for any future long-horizon options sleeve); sim P&L sign + accounting correct, cost model mildly conservative and far too small to flip the verdict. (3) found the *first* parameterization was **handicapped** (nearest-weekly ~3-DTE expiry → max gamma/tiny vega; short strikes only 1×EM → ~40% breach; ATM strawman traded on each name's first event), so the original −1.82 understated the edge.
+
+**Decision**: re-ran the **canonical** structure (expiry nearest ~25 DTE, short strikes 1.3×EM, strawman events skipped). Result at realistic 1× spreads: **gross-profitable but risk-adjusted-flat** — Avg PF 1.21, Calmar 0.85, residual-α t **−0.24 (≈ zero)**, mean Sharpe −1.0 with 33% positive folds (short-vol fat left tail); **collapses at 2× spread** (PF 0.82). **Verdict unchanged: KILL** (fails the 2× stress mandate + the significance/Sharpe gate), but the reason is now correct: **single-name earnings IV-crush is a real-but-too-thin premium killed by options transaction costs**, not a structurally negative trade. Three structures tested + logged (multiplicity noted); the re-parameterization was a-priori options-theory correction of objective flaws, not result-driven filter-hunting — and I stop tweaking after this canonical run regardless of outcome.
+
+**Consequences**: the deep-dive *changed the reason, not the verdict*, and validated the build end-to-end (high confidence for all downstream options work). It **strengthens the OPT-4 pivot to index/ETF VRP**: index options spreads are ~pennies (vs 1-5% single-name) and the VRP is fatter and crisis-negative — the exact cost wall that kills single-name earnings vol is minimal there. Code: builder revised to the canonical parameterization (target-DTE expiry selection, 1.3×EM strikes, `allow_atm` gate so the ATM strawman is never traded in production).
+
+---
+
 ## 2026-06-09 — Alpha-v5 OPT-3: earnings IV-crush KILLED (negative single-name VRP); options pipeline proven; OPT-4 pivots to index VRP
 
 **Context**: OPT-3 wires the first end-to-end options strategy through the trusted WF/CPCV path and produces the program's first KEEP/KILL verdict (the owner checkpoint). Strategy: sell a defined-risk iron condor into each earnings event (enter T-1 close, exit T+1 close) to harvest the post-earnings IV crush, across a 39-name growth-heavy universe, 4 years, CPCV k=8/p=2, with the mandatory 1×/2× spread-stress sweep.

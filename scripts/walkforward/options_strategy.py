@@ -47,21 +47,33 @@ logger = logging.getLogger(__name__)
 # ── Position builder: earnings IV-crush iron condor ────────────────────────────
 
 def build_ivcrush_iron_condor(symbol, event_date, get_chain, underlying_closes, *,
-                              min_dte=2, max_dte=45, wing_steps=2, expected_move=None,
-                              short_em_mult=1.0) -> Optional[OptionPosition]:
+                              min_dte=10, max_dte=45, target_dte=25, wing_steps=2,
+                              expected_move=None, short_em_mult=1.3,
+                              allow_atm=False) -> Optional[OptionPosition]:
     """Short-vol-into-earnings, DEFINED RISK. Enter an iron condor the trading day BEFORE the
     report and exit the trading day AFTER (bracketing BMO/AMC), so the post-earnings IV crush
     reprices the short premium lower.
 
-    Strike placement: short strikes ~``short_em_mult`` × the expected move OUTSIDE spot (so the
-    typical earnings move stays inside the short strikes and the credit + IV-crush is kept),
-    with long wings ``wing_steps`` strikes further out. ``expected_move`` is a fractional move
-    (e.g. 0.06 = 6%); when None the short strikes sit at-the-money (a deliberately naive
-    strawman — tight ATM wings get blown through by earnings and lose, see ML_EXPERIMENT_LOG).
-    Nearest expiry in [event+min_dte, event+max_dte]. Returns None if the chain isn't there."""
+    Canonical earnings short-vol parameterization (OPT-3 fair-test revision):
+      * Expiry nearest ``target_dte`` (~25 DTE monthly) within [min_dte, max_dte] — NOT the
+        nearest weekly. A ~2-3 DTE weekly is the worst tenor for short-vol (tiny vega to
+        harvest, max gamma on a breach); ~25 DTE maximizes the vega/gamma ratio.
+      * Short strikes ~``short_em_mult`` × expected move OUTSIDE spot (1.3× — pushes breach
+        probability into the ~20-30% range where credit + crush win on average; 1.0× breaches
+        ~40% and loses), long wings ``wing_steps`` strikes further out.
+    ``expected_move`` is a fractional move (e.g. 0.06 = 6%). When None we SKIP the event
+    (no position) unless allow_atm=True — the ATM strawman is a known guaranteed-loser and is
+    not traded in production (it injected losers into the first naive run). Returns None when
+    the event can't be traded (the adapter/sim count drops)."""
     closes = underlying_closes.get(symbol)
     if not closes:
         return None
+    if expected_move is None:
+        if not allow_atm:
+            return None        # no expected-move estimate -> skip (never trade ATM strawman)
+        em = 0.0
+    else:
+        em = expected_move * short_em_mult
     dates = sorted(closes)
     prior = [x for x in dates if x < event_date]
     after = [x for x in dates if x > event_date]
@@ -77,10 +89,11 @@ def build_ivcrush_iron_condor(symbol, event_date, get_chain, underlying_closes, 
         return None
     lo, hi = event_date + timedelta(days=min_dte), event_date + timedelta(days=max_dte)
     exp_col = pd.to_datetime(chain["expiration"]).dt.date
-    span = chain[(exp_col >= lo) & (exp_col <= hi)]
-    if span.empty:
+    span_exps = sorted({e for e in exp_col if lo <= e <= hi})
+    if not span_exps:
         return None
-    expiry = min(pd.to_datetime(span["expiration"]).dt.date)
+    # nearest to the target tenor (canonical monthly), not the nearest weekly
+    expiry = min(span_exps, key=lambda e: abs((e - event_date).days - target_dte))
     leg_chain = chain[pd.to_datetime(chain["expiration"]).dt.date == expiry]
     calls = sorted(leg_chain[leg_chain["contract_type"] == "call"]["strike"].unique())
     puts = sorted(leg_chain[leg_chain["contract_type"] == "put"]["strike"].unique())
@@ -88,7 +101,6 @@ def build_ivcrush_iron_condor(symbol, event_date, get_chain, underlying_closes, 
         return None
 
     # Short-strike targets: outside the expected move (canonical) or ATM (strawman).
-    em = (expected_move or 0.0) * short_em_mult
     call_target = spot * (1.0 + em)
     put_target = spot * (1.0 - em)
 

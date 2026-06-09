@@ -53,7 +53,17 @@ Tracks model improvement iterations for active and recent phases.
 - **Opus 4.8 look-ahead review certified the KILL trustworthy** — all surfaces causal, P&L sign golden-tested, negative Sharpe faithful (not an artifact). Caveats (liquidity drops, ATM strawman, current-liquid universe) would understate an edge, not fake a KILL.
 - Two structures tested + logged (multiplicity noted); not filter-hunted. **A KILL is a success of the harness** (cf. reversal / carry).
 
-**Next**: OPT-4 reprioritized → index/ETF systematic short-vol (positive VRP, crisis-negative → pairs with trend) + cross-sectional/relative VRP (delta-neutral). Single-name outright earnings short-vol is dead.
+**Deep-dive + fair re-test (2026-06-09, authoritative)**: owner requested a full Opus 4.8 audit of the whole build before pivoting. 3 auditors → harness/data/sim CLEAN (data pristine, IV-crush visible in real marks, PIT/OCC/survivorship verified, P&L correct); fair-test auditor found the first parameterization handicapped (nearest-weekly ~3-DTE, 1×EM strikes, ATM strawman). Re-ran the **canonical** structure (≈25-DTE expiry, 1.3×EM strikes, no strawman):
+| | 1× | 2× |
+|---|---|---|
+| Mean Sharpe | −1.02 | −1.67 |
+| % positive | 33% | 26% |
+| residual-α t | −0.24 | −1.75 |
+| Avg PF | **1.21** | 0.82 |
+| Avg Calmar | **0.85** | −0.53 |
+Gross-profitable at 1× (PF 1.21) but risk-adjusted-flat (Sharpe −1.0, residual-α ≈ 0, 33% pos — short-vol fat tail) and **dies at 2× spread**. **Verdict unchanged: KILL** — single-name earnings IV-crush is a real-but-too-thin premium killed by options transaction costs (cf. reversal). The deep-dive changed the *reason*, not the verdict.
+
+**Next**: OPT-4 reprioritized → index/ETF systematic short-vol (positive, fatter VRP; ~penny spreads so the cost wall that killed single-name vol is minimal; crisis-negative → pairs with trend) + cross-sectional/relative VRP (delta-neutral). Single-name outright earnings short-vol is dead.
 
 ---
 

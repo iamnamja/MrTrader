@@ -8,6 +8,7 @@ from the live CPCV run on the backfilled data (scripts/run_options_ivcrush_cpcv.
 from __future__ import annotations
 
 from datetime import date
+from functools import partial
 
 import pandas as pd
 
@@ -31,28 +32,45 @@ def _chain_df(symbol="AAPL", expiry=date(2025, 1, 17), strikes=(180, 185, 190, 1
     return pd.DataFrame(rows)
 
 
-def test_builder_picks_atm_condor_strikes():
+def test_builder_otm_strikes_from_expected_move():
+    # Canonical path: short strikes ~short_em_mult x EM outside spot. spot=190, em=0.05,
+    # mult=1.3 -> targets 190*(1±0.065) = 202.35 / 177.65. With a 5-wide grid up to 200/175:
+    chain = _chain_df(strikes=(165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215))
+    get_chain = lambda s, asof: chain  # noqa: E731
+    closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 7): 191.0,
+                       date(2025, 1, 8): 192.0}}
+    pos = build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
+                                    min_dte=2, max_dte=45, wing_steps=2,
+                                    expected_move=0.05, short_em_mult=1.3)
+    assert pos is not None
+    # em_used 0.065: call_target 202.35 -> short call 205; put_target 177.65 -> short put 175.
+    short_ks = [s.contract for s in pos.legs if s.side == -1]
+    assert any("C00205000" in c for c in short_ks)   # short call OTM at 205
+    assert any("P00175000" in c for c in short_ks)   # short put OTM at 175
+
+
+def test_builder_atm_only_with_allow_atm():
     chain = _chain_df(strikes=(180, 185, 190, 195, 200))
     get_chain = lambda s, asof: chain  # noqa: E731
     closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 7): 191.0,
                        date(2025, 1, 8): 192.0}}
-    # earnings on 2025-01-07 -> entry 2025-01-06 (spot 190), exit 2025-01-08
+    # expected_move=None -> SKIP in production (no strawman) ...
+    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
+                                     min_dte=2, wing_steps=1) is None
+    # ... unless allow_atm=True (explicit strawman): short strikes at-the-money.
     pos = build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
-                                    min_dte=2, max_dte=45, wing_steps=1)
+                                    min_dte=2, max_dte=45, wing_steps=1, allow_atm=True)
     assert pos is not None
-    assert pos.entry_date == date(2025, 1, 6) and pos.exit_date == date(2025, 1, 8)
     sides = {leg.contract: leg.side for leg in pos.legs}
-    # spot 190: short call @190 (>=spot), long call @195 (wing); short put @190, long put @185
-    assert sides["O:AAPL250117C00190000"] == -1   # short call ATM
-    assert sides["O:AAPL250117C00195000"] == +1    # long call wing
-    assert sides["O:AAPL250117P00190000"] == -1    # short put ATM
-    assert sides["O:AAPL250117P00185000"] == +1    # long put wing
+    assert sides["O:AAPL250117C00190000"] == -1 and sides["O:AAPL250117C00195000"] == +1
+    assert sides["O:AAPL250117P00190000"] == -1 and sides["O:AAPL250117P00185000"] == +1
 
 
 def test_builder_returns_none_without_chain():
     get_chain = lambda s, asof: None  # noqa: E731
     closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 8): 192.0}}
-    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes) is None
+    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
+                                     expected_move=0.06, min_dte=2) is None
 
 
 def test_builder_respects_dte_window():
@@ -60,7 +78,8 @@ def test_builder_respects_dte_window():
     chain = _chain_df(expiry=date(2025, 6, 20))
     get_chain = lambda s, asof: chain  # noqa: E731
     closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 8): 192.0}}
-    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes) is None
+    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
+                                     expected_move=0.06) is None
 
 
 def test_builder_pit_chain_filtered_by_asof():
@@ -71,12 +90,16 @@ def test_builder_pit_chain_filtered_by_asof():
     def get_chain(s, asof):
         return chain[chain["knowable_date"] <= pd.Timestamp(asof)]
     closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 8): 192.0}}
-    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes) is None
+    assert build_ivcrush_iron_condor("AAPL", date(2025, 1, 7), get_chain, closes,
+                                     expected_move=0.06, min_dte=2) is None
 
 
 def test_adapter_run_fold_produces_foldresult():
     # Wire a tiny synthetic end-to-end: one AAPL earnings event, full chain + option bars.
-    strat = OptionsStrategy(symbols=["AAPL"])
+    # Single synthetic event with no prior earnings -> em=None; use the explicit ATM strawman
+    # builder so a position is created (production would skip; we just exercise run_fold wiring).
+    strat = OptionsStrategy(symbols=["AAPL"],
+                            position_builder=partial(build_ivcrush_iron_condor, allow_atm=True))
     expiry = date(2025, 1, 17)
     strat._chain_by_sym = {"AAPL": _chain_df(expiry=expiry, knowable=date(2024, 12, 1))}
     strat._underlying_closes = {"AAPL": {date(2025, 1, 6): 190.0, date(2025, 1, 7): 191.0,
