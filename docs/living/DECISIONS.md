@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5 OPT-2: contract-level options simulator — mark to REAL closes, not theoretical prices
+
+**Context**: With the engine (OPT-1a) and PIT data (OPT-1b) in place, we need to turn a sequence of option positions into a daily-MTM equity curve that the existing WF/CPCV gates can grade. The OPT-0 contract said "marks daily to the engine" — but we have the actual EOD option closes from OPT-1b.
+
+**Decision**:
+1. **Mark to REAL EOD option closes** (forward-filled on no-trade days), not theoretical engine prices. Real closes embed the actual market IV, so IV-crush is carried by the data itself (a short straddle into earnings simply reprices lower the next day) with zero synthesis — strictly more faithful than a model mark. The OPT-1a engine is for greeks/analytics in strategies, not for marking. Settlement at/after expiry uses the underlying close intrinsic. (`app/backtesting/options_simulator.py`.)
+2. **Defined-risk payoff caps are automatic**: every leg is marked and settles at its own intrinsic, so a vertical caps at the strike width minus net debit — no special-case cap logic that could drift from reality.
+3. **Cost = modeled spread** (% of premium × a mandatory 1×/2×/3× stress mult + per-contract fee); held-to-expiry legs pay no exit cost (assignment/expiry, no trade). Emits the same `SimResult` so every downstream gate reuses verbatim; attaches `daily_returns_dated` (for the OPT-3 FoldResult) + health flags.
+4. **Opus 4.8 adversarial review** (P&L accounting / look-ahead) confirmed the MTM and look-ahead discipline correct, and drove fixes for *silent failure modes* (the dangerous class): dropped-position logging + `dropped_positions` count; `blown_up` hard-fail flag for any defined-risk book that goes ≤ 0 (was reporting a benign 0% Calmar); profit-factor cap (inf → 99, which would poison gates); rejection of unparseable contracts (was collapsing to a same-day no-op); day-1 entry-cost capture in the return series. 19 golden-path tests (hand-computed long/short/vertical-cap P&L, calendar spread, multi-day fwd-fill, intermediate short-MTM sign, qty scaling, cost-sweep monotonicity, all guards).
+
+**Rationale**: Marking to real closes removes a whole class of model-error in the backtest (the engine's theoretical price vs the market's) and is only possible because OPT-1b gives us real per-contract closes. The silent-failure fixes matter because a defined-risk options backtest that quietly drops trades or masks a blow-up would produce a confident but false KEEP/KILL verdict.
+
+**Consequences**: A trustworthy contract-level options P&L engine exists. `PIPELINE_ARCHITECTURE.md` §2 now lists `OptionsSimulator` (4th simulator; DAILY MTM) + a changelog entry. Unblocks OPT-3 (adapter wires `daily_returns_dated` into `FoldResult` → `run_cpcv` + significance gate + CAPM residual-α + the 2× spread-stress sweep → the program's FIRST real KEEP/KILL verdict, an owner checkpoint).
+
+---
+
 ## 2026-06-09 — Alpha-v5 OPT-1b: options data layer — survivorship from the OPRA day files, PIT via holiday-aware knowable_date
 
 **Context**: The pricing engine (OPT-1a) needs historical OHLCV + a contract universe to price against. Polygon Developer serves NO historical IV/greeks/OI (only the current snapshot) and NO historical NBBO — so this layer carries only PIT OHLCV + the universe; IV/greeks are computed by the engine. The two ways an options backtest silently lies are **survivorship bias** (building the universe from today's active chain drops every contract that expired worthless — the modal outcome for short premium) and **look-ahead** (using an EOD bar before it printed).
