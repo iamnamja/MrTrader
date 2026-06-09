@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5 OPT-3: earnings IV-crush KILLED (negative single-name VRP); options pipeline proven; OPT-4 pivots to index VRP
+
+**Context**: OPT-3 wires the first end-to-end options strategy through the trusted WF/CPCV path and produces the program's first KEEP/KILL verdict (the owner checkpoint). Strategy: sell a defined-risk iron condor into each earnings event (enter T-1 close, exit T+1 close) to harvest the post-earnings IV crush, across a 39-name growth-heavy universe, 4 years, CPCV k=8/p=2, with the mandatory 1×/2× spread-stress sweep.
+
+**Decision / finding**: **KILL.** Two economically-motivated structures were tested and logged (no filter-hunting): an ATM iron butterfly (mean Sharpe −3.86 — a strawman: 1-strike ATM wings are blown through by the earnings move) and the canonical OTM iron condor with short strikes ~1 expected-move out (mean Sharpe **−1.82 @1×, −2.52 @2×**; PF 0.59→0.47; residual-α t −2.57, beta-driven; win rate 57%). The payoff is the genuine short-vol shape — many small credit-kept wins (median trade +$12) overwhelmed by the occasional breach (worst −$848). **Economic reading: realized single-name earnings moves EXCEED the implied move on this universe, so the variance risk premium is *negative* at the single-name earnings level** — the opposite of the well-documented *index* VRP.
+
+**Trustworthiness**: an Opus 4.8 adversarial review focused on look-ahead certified the verdict — every surface is causal (entry/exit dates strictly bracket the event; expected-move uses only past earnings; chain PIT `knowable<=entry`; bars marked by trade-date `<=d`; raw closes match unadjusted OCC strikes), P&L sign correct and golden-tested, and the negative Sharpe is a faithful consequence of a losing cost-heavy short-vol book — not an artifact. The minor caveats (liquidity-based position drops; ATM strawman on missing earnings history; current-liquid underlying universe) would *understate* an edge if anything, so none can manufacture a false KILL.
+
+**Consequences**: (1) **The options program's data→engine→sim→adapter→CPCV pipeline is proven** — it produced a trustworthy verdict on real multi-year data (45M option bars backfilled). A KILL is a success of the harness (cf. reversal / carry). (2) **OPT-4 is reprioritized**: lead with **index/ETF systematic short-vol** (positive VRP, crisis-negative → diversifies the trend sleeve) and **cross-sectional / relative VRP** (delta-neutral long-cheap/short-rich); single-name *outright* earnings short-vol is dead. (3) The IV-crush scorer + `OptionsStrategy` adapter remain as reusable harness (a new strategy = a new position builder). Not a WF/CPCV-core change (new disposable adapter only), so `PIPELINE_ARCHITECTURE.md` is unchanged beyond OPT-2's simulator entry.
+
+---
+
 ## 2026-06-09 — Alpha-v5 OPT-2: contract-level options simulator — mark to REAL closes, not theoretical prices
 
 **Context**: With the engine (OPT-1a) and PIT data (OPT-1b) in place, we need to turn a sequence of option positions into a daily-MTM equity curve that the existing WF/CPCV gates can grade. The OPT-0 contract said "marks daily to the engine" — but we have the actual EOD option closes from OPT-1b.

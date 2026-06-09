@@ -39,6 +39,24 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-3 (Alpha-v5) — Earnings IV-crush sleeve — 2026-06-09 — VERDICT: ❌ KILL (negative single-name VRP; harness Opus-certified)
+
+**What**: First end-to-end options strategy through WF/CPCV. `scripts/walkforward/options_strategy.py` (`OptionsStrategy` adapter, duck-types `event_edge`, drives the OPT-2 OptionsSimulator) + earnings IV-crush iron-condor builder + `scripts/run_options_ivcrush_cpcv.py`. Universe: 39 growth-heavy single names, 4y, CPCV k=8/p=2, 1×/2× spread stress. Data: 45.3M option bars / 1.93M contracts backfilled (broad, 47 underlyings).
+
+**Result** (CPCV, 27 paths / N_eff=8 folds):
+| Structure | mean Sharpe @1× | @2× | PF @1× | residual-α t | %pos | Verdict |
+|---|---|---|---|---|---|---|
+| ATM iron butterfly (1-wide) | −3.86 | — | 0.16 | −5.75 | 0% | ❌ KILL (strawman) |
+| OTM iron condor (~1×EM, 2-wide) | **−1.82** | **−2.52** | 0.59 | −2.57 (beta) | 0% | ❌ **KILL** |
+
+- Win rate 57%, median trade +$12, worst −$848 — genuine asymmetric short-vol payoff: realized single-name earnings moves **exceed** implied → negative VRP at the single-name level (opposite of index VRP).
+- **Opus 4.8 look-ahead review certified the KILL trustworthy** — all surfaces causal, P&L sign golden-tested, negative Sharpe faithful (not an artifact). Caveats (liquidity drops, ATM strawman, current-liquid universe) would understate an edge, not fake a KILL.
+- Two structures tested + logged (multiplicity noted); not filter-hunted. **A KILL is a success of the harness** (cf. reversal / carry).
+
+**Next**: OPT-4 reprioritized → index/ETF systematic short-vol (positive VRP, crisis-negative → pairs with trend) + cross-sectional/relative VRP (delta-neutral). Single-name outright earnings short-vol is dead.
+
+---
+
 ## OPT-2 (Alpha-v5) — Contract-level options simulator + cost model — 2026-06-09 — VERDICT: ✅ SHIPPED (golden-path P&L verified)
 
 **What**: `app/backtesting/options_simulator.py` — `OptionsSimulator` (daily MTM off real EOD option closes fwd-filled, intrinsic settle at expiry; emits the same `SimResult`) + `OptionsSpreadCostModel` (modeled spread % premium × 1×/2×/3× stress + per-contract fee). Implements the OPT-0 `OptionContractSim`/`OptionsSpreadCostModel` contracts.
