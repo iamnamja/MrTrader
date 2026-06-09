@@ -4,6 +4,36 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5: Options Strategy Program launched (Polygon Developer); OPT-0 charter + spike PASS
+
+**Context**: Free-data 3rd-sleeve candidates are exhausted (reversal/carry/estimate-revision all
+eliminated — the opportunity set is fished out on free data). Owner subscribed **Polygon Options
+Developer ($79/mo)** to pursue the highest-ceiling edge: the options variance risk premium.
+
+**Decision**: Launch a phased **Options Program** (Alpha-v5) — SSOT `docs/living/OPTIONS_PROGRAM.md`.
+Build a **resilient five-layer base** (data ⟂ pricing engine ⟂ simulator ⟂ pluggable strategy ⟂
+reused gates/allocator/live; four frozen contracts in `app/options/contracts.py`) and explore MANY
+options strategies, each validated KEEP/KILL on the SAME `run_cpcv` + significance gate + CAPM
+residual-α we trust for equities, plus an options-specific **spread-stress sweep (KEEP must survive
+2×)** and capacity check. Foundation first, but prove the whole pipeline end-to-end with ONE
+strategy (earnings IV-crush) before building the catalog. Phases OPT-0…OPT-8; owner checkpoints at
+OPT-0, OPT-3 (first verdict), OPT-8 (arm live).
+
+**Forced data-architecture facts (Developer tier)**: Polygon serves IV/greeks/OI only in the CURRENT
+snapshot → **we compute historical IV/greeks ourselves** (BS-European + Bjerksund-Stensland); **no
+historical NBBO** → mark off EOD close + model/stress the spread; **no historical OI** → liquidity via
+volume/notional; survivorship cured via the expired-contract universe.
+
+**Rationale / de-risking**: the OPT-0 feasibility spike (`scripts/spike_options_iv_check.py`) proved
+the confidence keystone — computed BS-European IV matches Polygon's served IV to **0.86 vol-points
+median, unbiased, near-ATM** (the contracts VRP trades); all-contract bias (+0.035) is the expected
+ITM/OTM + dividend gap that BjS + real dividends close in OPT-1. So computing historical IV from EOD
+close is accurate enough to backtest with confidence. **Consequences**: the program's foundational
+risk (computed-IV accuracy) is retired up front; OPT-1 (data + engine) green-lit. Live execution
+(Alpaca options `OptionLegRequest`/mleg) is supported by the SDK but not yet wired — a later build.
+
+---
+
 ## 2026-06-08 — Alpha-v4 P4: short-term reversal sleeve KILLED (cost-dead); 3rd-sleeve slot stays open
 
 **Context**: Sought a 3rd uncorrelated premium after PEAD + TSMOM trend. Owner chose
