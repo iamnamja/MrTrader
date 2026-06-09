@@ -16,8 +16,12 @@ def test_n_trials_tested_imported_in_gates():
     """gates.py must import N_TRIALS_TESTED from retrain_config, not redefine it."""
     from app.ml.retrain_config import N_TRIALS_TESTED as config_val
     from scripts.walkforward.gates import N_TRIALS_TESTED as gates_val
-    assert config_val is gates_val, (
-        "gates.py N_TRIALS_TESTED is not the same object as retrain_config.N_TRIALS_TESTED. "
+    # Value equality, NOT identity: N_TRIALS_TESTED is 300 (> CPython's 256 small-int cache),
+    # so `is` is unreliable across pytest-xdist worker re-imports (two equal-but-distinct int
+    # objects) and flaked CI on nearly every PR. `==` still catches the real risk — gates.py
+    # redefining it to a STALE/different value — without the int-interning fragility.
+    assert config_val == gates_val, (
+        "gates.py N_TRIALS_TESTED differs from retrain_config.N_TRIALS_TESTED. "
         "gates.py must import from retrain_config, not redefine."
     )
 
@@ -28,8 +32,10 @@ def test_n_trials_tested_imported_in_walkforward_tier3():
     from app.ml.retrain_config import N_TRIALS_TESTED as config_val
     tier3_val = getattr(wf3, "N_TRIALS_TESTED", None)
     assert tier3_val is not None, "N_TRIALS_TESTED not found in walkforward_tier3 namespace"
-    assert tier3_val is config_val, (
-        "walkforward_tier3.N_TRIALS_TESTED is not the same object as retrain_config.N_TRIALS_TESTED"
+    # Value equality, NOT identity (see test_n_trials_tested_imported_in_gates): `is` on the
+    # non-interned int 300 flaked under xdist re-imports; `==` enforces the value match robustly.
+    assert tier3_val == config_val, (
+        "walkforward_tier3.N_TRIALS_TESTED differs from retrain_config.N_TRIALS_TESTED"
     )
 
 

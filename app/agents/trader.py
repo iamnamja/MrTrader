@@ -650,6 +650,23 @@ class Trader(BaseAgent):
 
     # ─── Entry ────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _pead_sized_stop_target(entry_price, proposal):
+        """PEAD live-sizing fidelity: scale the proposal's OWN stop/target (0.5×/1.5× ATR_norm,
+        set by the PM) — expressed as a fraction of its scan price — onto the live entry, so
+        risk-per-share (and thus position size) matches the PEAD backtest instead of
+        generate_signal's wider swing ATR stop. Preserving the *fraction* keeps a small scan→now
+        drift (bounded by the entry-quality gate) from distorting sizing, and preserves the
+        long/short side. Returns (stop, target); either may be None if unavailable."""
+        p_entry = proposal.get("entry_price")
+        p_stop = proposal.get("stop_loss")
+        p_tgt = proposal.get("profit_target")
+        if not (entry_price and entry_price > 0 and p_entry and p_entry > 0):
+            return None, None
+        stop = round(entry_price * (p_stop / p_entry), 2) if (p_stop and p_stop > 0) else None
+        tgt = round(entry_price * (p_tgt / p_entry), 2) if (p_tgt and p_tgt > 0) else None
+        return stop, tgt
+
     async def _check_entry(self, symbol: str, proposal: Dict[str, Any], alpaca):
         """Fetch daily bars, compute entry prices via generate_signal(), enter if ML score passes.
 
@@ -834,6 +851,23 @@ class Trader(BaseAgent):
 
         # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
         result = generate_signal(symbol, bars, ml_score=ml_score, check_regime=False, check_earnings=True)
+
+        # PEAD live-sizing FIDELITY (Opus live-path sweep finding): generate_signal returns the
+        # *swing* 2.5×ATR stop; sizing PEAD off it under-sizes PEAD vs its backtest (PEAD's own
+        # stop is the tighter 0.5×ATR), and a no-signal generate_signal returns stop=0 (degenerate
+        # sizing). Override result.stop/target with the proposal's own stop DISTANCE (as a % of its
+        # scan price) scaled to the live entry. NOTE: this affects ONLY position SIZING
+        # (size_position reads result.stop_price); the entry order + Trade record already use the
+        # proposal's stop/target (via _write_pending_fill), and result.entry_price (live) is left
+        # untouched so the entry-quality gate is unaffected. LONG-only today: size_position returns
+        # 0 for stop>=entry, so short PEAD (stop>entry) won't size until size_position is made
+        # abs(entry-stop)-aware — fix before enabling pm.pead_enable_shorts (currently false).
+        if (proposal.get("selector") or "").lower() == "pead":
+            _ps, _pt = self._pead_sized_stop_target(result.entry_price, proposal)
+            if _ps is not None:
+                result.stop_price = _ps
+            if _pt is not None:
+                result.target_price = _pt
 
         # ── Real-time entry quality check ─────────────────────────────────────
         # Validate current market conditions before committing capital.

@@ -4,7 +4,16 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-08 (Alpha-v4 P3: regime-aware sleeve allocator LIVE-WIRED, gate-controlled, shipped DISABLED = today's fixed weights)
+**Last updated:** 2026-06-09 (Alpha-v5 options program built + PAUSED; live book hardened; focus → operate/harden PEAD + trend)
+
+## 🧭 NOW (2026-06-09): options program PAUSED; operating the validated live book
+- **Live book = PEAD (telemetry size) + TSMOM trend.** The **dead cross-sectional swing ML ranker is now OFF in the live path** (`pm.swing_ml_live_enabled=false`) — it was silently producing ~30/32 recent trades of a validated-null strategy (#418). The Trader's ML-score gate is now observable (`REJECTED_ML_SCORE`).
+- **Trend armed for paper:** `pm.trend_enabled=true`, `pm.trend_shadow=false` → first REAL paper rebalance **Mon 2026-06-15 09:45 ET** (weekly cadence, ~7 ETFs, 40% alloc), via the orchestrator scheduler.
+- **PEAD** clears the 0.55 entry gate (confidence 0.65–0.90); event-sparse (fires on earnings). Live-sizing fidelity fixed (sizes off PEAD's own ATR stop, not the swing stop).
+- **Alpha-v5 Options Program (OPT-0..4): built, validated, PAUSED.** Two Opus-certified verdicts: single-name earnings IV-crush = KILL (cost-killed); index short-vol = KILL standalone but **VRP real + cost-robust** (PF 2.24/1.75), just Sharpe-weak. Key insight: our gate is an *alpha* gate, short-vol is a *risk premium* (wrong ruler). Harness retained; revisit later as a book diversifier with a risk-premium framework + more data. See DECISIONS 2026-06-09.
+- **Next:** OPT-5 (options-data-as-signal: implied-move filter for PEAD + put-skew risk-off, judged on the host sleeve's gate — sanctioned parting options win, data kept) + continued live-book hardening. ⚠️ Recurring CI flake (`test_agent_simulator_rebalance.py` DB-lock) still costs a rerun on most PRs.
+
+---
 
 ## 🧭 P3 (2026-06-08): Live regime-aware sleeve allocator — wired, shipped DISABLED
 `app/live_trading/sleeve_allocator_live.py` turns the backtest allocator into a live,
