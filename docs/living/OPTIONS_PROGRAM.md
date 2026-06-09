@@ -2,7 +2,7 @@
 
 **One-screen truth for the options program: architecture, confidence plan, phase status, and the per-strategy verdict table.** Append-as-you-go.
 
-**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0 (charter) shipped; OPT-1 next.
+**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0 (charter) + OPT-1a (pricing engine) shipped; OPT-1b (data layer) next.
 
 ## Why
 The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-negative, estimate-revision data-blocked — see ML_EXPERIMENT_LOG Phase 4/4b/4c). Options unlock the **highest-ceiling** remaining edge: the **variance risk premium** (earnings IV-crush, cross-sectional VRP, systematic short-vol), plus options-data-as-signal and tail-hedging. Goal = a **resilient base** to explore MANY options strategies and validate each **with confidence**, honestly KEEP/KILL-ing like the prior nulls.
@@ -39,12 +39,19 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 - All contracts (n=4166): median |err| 0.011, **mean +0.035** (ITM/OTM + dividend bias from q=0/European) → OPT-1 adds BjS + real dividends/rate to tighten tails.
 - **OPT-1 acceptance tolerance (set empirically):** near-ATM median |IV err| < 0.010 (target < 0.005 with BjS+div); all-contract mean bias → ~0 after dividends.
 
+## OPT-1a engine validation result (2026-06-09) — ✅ PASSES (confidence keystone re-run with real engine)
+`scripts/validate_options_engine.py`: computed **American (Bjerksund-Stensland) IV vs Polygon served IV**, 15 underlyings, current snapshot, real per-underlying dividend yield, r=4.3%, **liquidity filter (day-vol ≥ 10)** to drop stale untraded marks.
+- **Near-ATM (n=231): median |IV err| = 0.0072, mean bias +0.0071, p90 = 0.024 → PASS (< 0.010).**
+- **All contracts (n=1,541): mean IV bias +0.0068 → PASS (< 0.010).** (Unfiltered, the bias was +0.022, concentrated in illiquid tails — a **data-timing artifact**: the live snapshot pairs an option's last trade with the *live* spot; untraded deep contracts are stale. EOD-bar backtests pair same-day option+underlying closes, so the artifact does not occur in OPT-1b backtests.)
+- **Delta cross-check (engine delta vs served delta, n=1,541): median |err| = 0.0011** — the engine greeks are essentially exact.
+- Residual +0.0068 bias attributed to flat-rate (4.3% vs Polygon's curve) + crude dividend estimate; OPT-2 wires a real rate series. American + dividends + CRR-fallback removed the OPT-0 spike's +0.035 European/q=0 bias.
+
 ## Phase roadmap + status
 | Phase | What | Status |
 |---|---|---|
 | **OPT-0** | Charter + 4 contracts + feasibility spike | ✅ shipped 2026-06-09 (spike PASS) |
-| **OPT-1a** | Pricing engine (BS + Bjerksund-Stensland) + parity tests + `validate_options_engine.py` vs snapshot | NEXT |
-| **OPT-1b** | `options_provider.py` PIT parquet + `backfill_options.py` + `polygon_s3` `us_options_opra` | after 1a |
+| **OPT-1a** | Pricing engine (BS-European + Bjerksund-Stensland American + CRR cross-check + IV solver + greeks) + 18 unit tests + `validate_options_engine.py` vs snapshot | ✅ shipped 2026-06-09 (validation PASS) |
+| **OPT-1b** | `options_provider.py` PIT parquet + `backfill_options.py` + `polygon_s3` `us_options_opra` | NEXT |
 | **OPT-2** | Contract-level simulator + `OptionsSpreadCostModel` (golden-path P&L tests) | after 1 |
 | **OPT-3** | Strategy adapter + **earnings IV-crush** E2E → first KEEP/KILL **[owner checkpoint]** | after 2 |
 | **OPT-4** | VRP catalog: cross-sectional VRP, index short-vol, skew/term carry | after 3 |

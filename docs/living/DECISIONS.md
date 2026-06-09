@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5 OPT-1a: options pricing/greeks engine (BS + Bjerksund-Stensland + CRR) validated vs live snapshot
+
+**Context**: Polygon Developer serves IV/greeks only in the *current* snapshot, so all historical IV/greeks must be **computed** — the program's confidence keystone (a wrong pricer silently corrupts every options backtest). OPT-1a builds that engine and proves it against the one window with ground truth (the served-IV snapshot).
+
+**Decision**:
+1. **Engine** (`app/options/pricing_engine.py`, pure/no-I/O, implements the OPT-0 `OptionsPricingEngine` Protocol): Black-Scholes-European closed-form price + greeks; **Bjerksund-Stensland 1993** American approximation (calls direct; puts via the put-call transform P(S,K,r,b)=C(K,S,r−b,−b)); **CRR binomial** as an independent reference; bisection IV solver; American greeks via kink-aware central finite differences.
+2. **Validation** (`scripts/validate_options_engine.py`, the keystone): recompute American IV from EOD close + spot + real per-underlying dividend yield + rate, compare to Polygon's served IV/delta over 15 underlyings, PASS/FAIL on the OPT-1 tolerance. **Result: PASS** — near-ATM median |IV err| 0.0072, all-contract bias +0.0068 (both < 0.010), engine-delta vs served-delta median |err| 0.0011 (greeks essentially exact). A **day-vol ≥ 10 liquidity filter** removes a +0.022 tail bias shown to be a *data-timing artifact* (snapshot pairs an option's stale last trade with the live spot) — absent in EOD-bar backtests.
+3. **Adversarial review (Opus 4.8) found + fixed 3 bugs before merge**: **(CRITICAL)** for dividend-yield > rate calls the BjS h(T) term flips positive and the trigger boundary degenerates, underpricing ~95% (0.0017 vs 0.30 true) → route the strongly-negative-carry regime to the exact CRR binomial. **(HIGH)** the IV solver marched to the bracket top (3.0) for deep-ITM American prices pinned to the intrinsic floor → return `None` (vol is unrecoverable from a price = intrinsic). **(MEDIUM)** central-difference gamma spiked ~10× at the early-exercise boundary strike → one-sided 2nd difference on the smooth side. All three have regression tests (18 unit tests total: textbook BS, put-call parity, American≥European, BjS↔CRR cross-check, IV round-trip, greeks signs, contract conformance).
+
+**Rationale**: BjS-1993 is fast and accurate in its valid regime but has a known degenerate carry regime; rather than ship a higher-order approximation, we fall back to CRR (exact in the limit) only for the rare contracts that need it — fast path stays fast, edge cases stay correct. Computing IV per-contract from its own price means we match each strike's own smile point, so the validation tests the *engine*, not a smile model.
+
+**Consequences**: The historical IV/greeks engine is trustworthy (validated to <1 vol-pt near-ATM, exact greeks). `validate_options_engine.py` is now a repeatable nightly health gate (PASS/FAIL exit). Residual +0.0068 bias is flat-rate + crude-dividend; OPT-2 wires a real rate series. Unblocks OPT-1b (data layer) → OPT-2 (simulator). Not a WF/CPCV pipeline change yet, so `PIPELINE_ARCHITECTURE.md` is untouched until the options simulator lands (OPT-2).
+
+---
+
 ## 2026-06-09 — Alpha-v5: Options Strategy Program launched (Polygon Developer); OPT-0 charter + spike PASS
 
 **Context**: Free-data 3rd-sleeve candidates are exhausted (reversal/carry/estimate-revision all
