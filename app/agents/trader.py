@@ -797,11 +797,39 @@ class Trader(BaseAgent):
 
         ml_score = proposal.get("confidence")
         if ml_score is None or ml_score < ML_SCORE_THRESHOLD:
-            self.logger.debug(
-                "%s: ML score %.3f below threshold %.2f — skipping",
-                symbol, ml_score or 0.0, ML_SCORE_THRESHOLD,
-            )
+            # Observability fix: this was the ONLY entry gate that rejected silently (DEBUG +
+            # no trader_status), so RM-approved proposals below the Trader's threshold sat
+            # looking "Queued" with no reason — the #1 cause of "why aren't trades firing?".
+            # Now it logs at INFO and writes a terminal status like every other gate, and the
+            # proposal is discarded (ml_score is fixed, so it can never clear on a later pass).
+            reason = (f"ML score {ml_score:.3f} < entry threshold {ML_SCORE_THRESHOLD:.2f}"
+                      if ml_score is not None else "no ML score on proposal")
+            self.logger.info("%s: %s — rejecting entry", symbol, reason)
+            self.approved_symbols.pop(symbol, None)
             self._release_intraday_slot(trade_type)
+            await self.log_decision("ENTRY_REJECTED_ML_SCORE", reasoning={
+                "symbol": symbol, "trade_type": trade_type,
+                "ml_score": round(ml_score, 4) if ml_score is not None else None,
+                "threshold": ML_SCORE_THRESHOLD, "reason": reason,
+            })
+            proposal_uuid = proposal.get("proposal_uuid")
+            if proposal_uuid:
+                try:
+                    from app.database.session import get_session
+                    from app.database.models import ProposalLog
+                    _db = get_session()
+                    try:
+                        for _row in _db.query(ProposalLog).filter(
+                            ProposalLog.proposal_uuid == proposal_uuid
+                        ).all():
+                            _row.trader_status = "REJECTED_ML_SCORE"
+                            _row.trader_reason = reason
+                            _row.trader_decided_at = datetime.now(ET)
+                        _db.commit()
+                    finally:
+                        _db.close()
+                except Exception as _e:
+                    self.logger.debug("Could not write REJECTED_ML_SCORE status: %s", _e)
             return
 
         # Use generate_signal for ATR-based stop/target prices only (not as entry gate)
