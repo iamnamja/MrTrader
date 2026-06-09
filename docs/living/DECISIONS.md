@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-09 — Alpha-v5 OPT-1b: options data layer — survivorship from the OPRA day files, PIT via holiday-aware knowable_date
+
+**Context**: The pricing engine (OPT-1a) needs historical OHLCV + a contract universe to price against. Polygon Developer serves NO historical IV/greeks/OI (only the current snapshot) and NO historical NBBO — so this layer carries only PIT OHLCV + the universe; IV/greeks are computed by the engine. The two ways an options backtest silently lies are **survivorship bias** (building the universe from today's active chain drops every contract that expired worthless — the modal outcome for short premium) and **look-ahead** (using an EOD bar before it printed).
+
+**Decision**:
+1. **Survivorship by construction.** The universe is built FROM the OPRA daily flat files (`us_options_opra/day_aggs_v1`, every contract that *actually traded* that day, expired included) — not from the REST active chain. A contract enters the store the first day it prints a bar and is never removed. `fetch_contracts`/`get_current_snapshot` (REST) exist only for live/validation and are never on any historical path. (`app/data/options_provider.py`, `scripts/backfill_options.py`.)
+2. **PIT via holiday-aware knowable_date.** An EOD bar trade-dated D is knowable the next *trading* day; `knowable_date = D + 1 NYSE business day` using a proper NYSE holiday calendar (observes Good Friday; not Columbus/Veterans) so it never lands on a closed session. Every historical accessor filters `knowable_date <= as_of`. Contract metadata (strike/expiry/type) is decoded from the OCC ticker; `knowable_date` for a contract is the MIN over its bars (first knowable). (`docs/reference/OPTIONS_DATA.md`.)
+3. **Storage**: `data/options_bars.parquet` (long OHLCV + knowable_date) + `data/options_contracts.parquet` (derived from the bars, always consistent). Provider `PolygonOptionsProvider` implements the OPT-0 `OptionsDataProvider` contract; `polygon_s3.py` extended with `get_options_day_file` + a `dataset` param.
+4. **Opus 4.8 adversarial review (look-ahead / survivorship focus) confirmed the architecture sound and drove fixes**: holiday-aware knowable_date (was weekday-only `BDay`, could stamp a holiday); datetime-resolution + dtype coercion on load (parquet round-trips ms, fresh bars are ns → concat crash; now forced to ns); coverage-start guard (an empty universe before our data window logs a DATA-GAP warning instead of masquerading as "no contracts existed"); per-day logging of dropped adjusted/non-standard roots (split-driven gaps become visible). 22 tests (OCC parse, prefix-root disambiguation, PIT no-look-ahead, survivorship incl./excl. expired, holiday knowable_date, dtype coercion, merge revision-keep, multi-underlying alignment). S3 path smoke-tested: 3 days × SPY = 19,392 bars / 8,939 contracts, 791 expired retained, PIT confirmed.
+
+**Rationale**: Deriving the universe from traded bars is *more* survivorship-safe than the REST reference endpoint (the files are ground truth of what traded) and avoids REST pagination for history. Computing knowable_date holiday-aware (vs the SI provider's padded weekday lag) keeps the options lag exact (+1 trading day) without staleness. We backfill a focused liquid universe (index ETFs + large caps), not all of OPRA — the IV-crush/VRP strategies only need the names we trade.
+
+**Consequences**: A multi-year, PIT, survivorship-safe options OHLCV + universe store is available behind the frozen contract. Unblocks OPT-2 (contract-level simulator marks against this data + the OPT-1a engine). Not a WF/CPCV pipeline change yet → `PIPELINE_ARCHITECTURE.md` untouched until the options simulator lands (OPT-2).
+
+---
+
 ## 2026-06-09 — Alpha-v5 OPT-1a: options pricing/greeks engine (BS + Bjerksund-Stensland + CRR) validated vs live snapshot
 
 **Context**: Polygon Developer serves IV/greeks only in the *current* snapshot, so all historical IV/greeks must be **computed** — the program's confidence keystone (a wrong pricer silently corrupts every options backtest). OPT-1a builds that engine and proves it against the one window with ground truth (the served-IV snapshot).

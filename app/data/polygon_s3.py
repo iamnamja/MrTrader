@@ -2,11 +2,14 @@
 Polygon S3 flat-file downloader.
 
 Polygon stores complete market history as gzipped CSV files on S3:
-  us_stocks_sip/day_aggs_v1/{year}/{month}/{YYYY-MM-DD}.csv.gz   — daily bars
-  us_stocks_sip/minute_aggs_v1/{year}/{month}/{YYYY-MM-DD}.csv.gz — 1-min bars
+  us_stocks_sip/day_aggs_v1/{year}/{month}/{YYYY-MM-DD}.csv.gz    — daily stock bars
+  us_stocks_sip/minute_aggs_v1/{year}/{month}/{YYYY-MM-DD}.csv.gz — 1-min stock bars
+  us_options_opra/day_aggs_v1/{year}/{month}/{YYYY-MM-DD}.csv.gz  — daily OPTION bars
 
-Each file contains ALL traded symbols for that day, so one download gives
-data for every SP100 stock at once — far faster than per-symbol REST calls.
+Each file contains ALL traded symbols/contracts for that day, so one download gives
+data for every SP100 stock (or every option contract) at once — far faster than
+per-symbol REST calls. Options day files key on the OCC contract ticker
+(e.g. ``O:SPY260116C00500000``); OHLCV columns are identical to the stock files.
 """
 
 import gzip
@@ -164,11 +167,34 @@ class PolygonS3:
         out = out.dropna(subset=["close", "volume"])
         return out.reset_index(drop=True)
 
+    def get_options_day_file(self, day: date) -> Optional[pd.DataFrame]:
+        """Return the FULL options grouped-daily panel for *day* — every OPTION
+        contract (OCC ticker) that printed a bar, including contracts that have
+        since expired (the survivorship-safe source). Columns:
+        ['contract', 'open', 'high', 'low', 'close', 'volume'] (+ 'timestamp' if
+        present). Returns None if the file is missing (holiday) or malformed.
+        """
+        df = self._fetch_day_file("day_aggs_v1", day, dataset="us_options_opra")
+        if df is None:
+            return None
+        needed = {"symbol", "open", "high", "low", "close", "volume"}
+        if not needed.issubset(df.columns):
+            return None
+        keep = ["symbol", "open", "high", "low", "close", "volume"]
+        if "timestamp" in df.columns:
+            keep.append("timestamp")
+        out = df[keep].copy().rename(columns={"symbol": "contract"})
+        for col in ("open", "high", "low", "close", "volume"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out = out.dropna(subset=["close", "volume"])
+        return out.reset_index(drop=True)
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _fetch_day_file(self, prefix: str, day: date) -> Optional[pd.DataFrame]:
-        """Download and parse one CSV.gz file for *day*."""
-        key = f"us_stocks_sip/{prefix}/{day.year}/{day.month:02d}/{day}.csv.gz"
+    def _fetch_day_file(self, prefix: str, day: date,
+                        dataset: str = "us_stocks_sip") -> Optional[pd.DataFrame]:
+        """Download and parse one CSV.gz file for *day* from *dataset*."""
+        key = f"{dataset}/{prefix}/{day.year}/{day.month:02d}/{day}.csv.gz"
         try:
             resp = self._client.get_object(Bucket=self._bucket, Key=key)
             raw = resp["Body"].read()
