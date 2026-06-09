@@ -39,6 +39,19 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-1b (Alpha-v5) — Options data layer (PIT + survivorship) — 2026-06-09 — VERDICT: ✅ SHIPPED (S3 path smoke-tested)
+
+**What**: `app/data/options_provider.py` (PIT, survivorship-safe provider implementing the OPT-0 `OptionsDataProvider` contract) + `scripts/backfill_options.py` (builds the parquet from Polygon S3 OPRA day files) + `polygon_s3.py` `us_options_opra` extension + `docs/reference/OPTIONS_DATA.md`.
+
+- **Survivorship**: universe built FROM the daily flat files (every contract that traded that day, expired included), never from the live chain. **PIT**: holiday-aware `knowable_date = D + 1 NYSE trading day`; every accessor filters `knowable_date <= as_of`.
+- **Opus 4.8 adversarial review** (look-ahead/survivorship) confirmed architecture sound; drove 4 fixes: holiday-aware knowable_date, datetime resolution+dtype coercion on load (ms↔ns concat crash), coverage-start data-gap guard, dropped-adjusted-root logging.
+- **Smoke test** (real S3): 3 business days × SPY = 19,392 bars / 8,939 contracts; 791 already-expired contracts retained (survivorship verified); latest trade date's bars correctly excluded as-of that date (PIT verified); re-run merge path verified.
+- 22 tests (OCC parse + prefix-root disambiguation, PIT no-look-ahead, survivorship incl./excl. expired, holiday knowable_date, dtype coercion, merge revision-keep, multi-underlying alignment, contract conformance); flake8 clean.
+
+**Next**: OPT-2 — contract-level options simulator (marks daily against the OPT-1a engine + this data) + `OptionsSpreadCostModel` (% premium, 1×/2×/3× stress).
+
+---
+
 ## OPT-1a (Alpha-v5) — Options pricing/greeks engine — 2026-06-09 — VERDICT: ✅ VALIDATED (engine vs live snapshot PASSES; confidence keystone)
 
 **What**: Built `app/options/pricing_engine.py` (BS-European + Bjerksund-Stensland 1993 American + CRR cross-check + bisection IV solver + greeks) and validated computed IV/greeks against Polygon's served snapshot values (the one window with ground truth).

@@ -2,7 +2,7 @@
 
 **One-screen truth for the options program: architecture, confidence plan, phase status, and the per-strategy verdict table.** Append-as-you-go.
 
-**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0 (charter) + OPT-1a (pricing engine) shipped; OPT-1b (data layer) next.
+**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0 (charter) + OPT-1a (pricing engine) + OPT-1b (data layer) shipped; OPT-2 (simulator) next.
 
 ## Why
 The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-negative, estimate-revision data-blocked — see ML_EXPERIMENT_LOG Phase 4/4b/4c). Options unlock the **highest-ceiling** remaining edge: the **variance risk premium** (earnings IV-crush, cross-sectional VRP, systematic short-vol), plus options-data-as-signal and tail-hedging. Goal = a **resilient base** to explore MANY options strategies and validate each **with confidence**, honestly KEEP/KILL-ing like the prior nulls.
@@ -51,8 +51,8 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 |---|---|---|
 | **OPT-0** | Charter + 4 contracts + feasibility spike | ✅ shipped 2026-06-09 (spike PASS) |
 | **OPT-1a** | Pricing engine (BS-European + Bjerksund-Stensland American + CRR cross-check + IV solver + greeks) + 18 unit tests + `validate_options_engine.py` vs snapshot | ✅ shipped 2026-06-09 (validation PASS) |
-| **OPT-1b** | `options_provider.py` PIT parquet + `backfill_options.py` + `polygon_s3` `us_options_opra` | NEXT |
-| **OPT-2** | Contract-level simulator + `OptionsSpreadCostModel` (golden-path P&L tests) | after 1 |
+| **OPT-1b** | `options_provider.py` PIT parquet (survivorship-from-bars, holiday-aware knowable_date) + `backfill_options.py` (S3 OPRA day files) + `polygon_s3` `us_options_opra` + `OPTIONS_DATA.md` + 22 tests | ✅ shipped 2026-06-09 (S3 path smoke-tested) |
+| **OPT-2** | Contract-level simulator + `OptionsSpreadCostModel` (golden-path P&L tests) | NEXT |
 | **OPT-3** | Strategy adapter + **earnings IV-crush** E2E → first KEEP/KILL **[owner checkpoint]** | after 2 |
 | **OPT-4** | VRP catalog: cross-sectional VRP, index short-vol, skew/term carry | after 3 |
 | **OPT-5** | Data-as-signal: implied-move PEAD filter, put-skew risk-off (no options exec; needs only OPT-1) | pullable early |
