@@ -2,7 +2,7 @@
 
 **One-screen truth for the options program: architecture, confidence plan, phase status, and the per-strategy verdict table.** Append-as-you-go.
 
-**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0..OPT-3 shipped. **First verdict in: earnings IV-crush = KILL** (single-name short-vol is negative-EV; harness certified by Opus look-ahead review). OPT-4 pivots to **index/ETF systematic short-vol + cross-sectional VRP** (where the variance risk premium is positive) — **owner checkpoint**.
+**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0..OPT-4 shipped. **Two verdicts in:** earnings IV-crush = KILL (single-name, cost-killed); index short-vol = KILL standalone but **VRP real + cost-robust** (PF 2.24 @1× / 1.75 @2×) just Sharpe-weak/under-powered. **Owner checkpoint:** refine index short-vol (regime overlay + weekly cadence) vs OPT-4b cross-sectional VRP vs reassess.
 
 ## Why
 The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-negative, estimate-revision data-blocked — see ML_EXPERIMENT_LOG Phase 4/4b/4c). Options unlock the **highest-ceiling** remaining edge: the **variance risk premium** (earnings IV-crush, cross-sectional VRP, systematic short-vol), plus options-data-as-signal and tail-hedging. Goal = a **resilient base** to explore MANY options strategies and validate each **with confidence**, honestly KEEP/KILL-ing like the prior nulls.
@@ -54,7 +54,8 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 | **OPT-1b** | `options_provider.py` PIT parquet (survivorship-from-bars, holiday-aware knowable_date) + `backfill_options.py` (S3 OPRA day files) + `polygon_s3` `us_options_opra` + `OPTIONS_DATA.md` + 22 tests | ✅ shipped 2026-06-09 (S3 path smoke-tested) |
 | **OPT-2** | `OptionsSimulator` (daily MTM off real closes, intrinsic settle) + `OptionsSpreadCostModel` (1×/2×/3× stress) + 19 golden-path tests | ✅ shipped 2026-06-09 |
 | **OPT-3** | Strategy adapter (`options_strategy.py`) + **earnings IV-crush** E2E → first verdict: **❌ KILL** (Opus-certified) **[owner checkpoint]** | ✅ shipped 2026-06-09 |
-| **OPT-4** | VRP catalog — **reprioritized by the OPT-3 finding**: lead with **index/ETF systematic short-vol** (SPY/QQQ/IWM put-write / short-strangle + vol-target + regime overlay — positive VRP, crisis-negative → pairs with trend) and **cross-sectional / relative VRP** (long cheap-vol vs short rich-vol, delta-neutral); single-name *outright* earnings short-vol is dead (OPT-3). | NEXT |
+| **OPT-4** | Index/ETF systematic short-vol (SPY/QQQ/IWM iron condors, 1.5×-SD strikes) + `IndexShortVolStrategy` + 6 tests | ✅ shipped 2026-06-09 — **KILL standalone** (VRP real + cost-robust PF 2.24/1.75, but Sharpe-weak/under-powered) |
+| **OPT-4b** | Index short-vol refinement (regime/VIX overlay + weekly cadence for power) **OR** cross-sectional/relative VRP (delta-neutral long-cheap/short-rich) | NEXT (owner steer) |
 | **OPT-5** | Data-as-signal: implied-move PEAD filter, put-skew risk-off (no options exec; needs only OPT-1) | pullable early |
 | **OPT-6** | Allocator integration (re-run gate, ≥3 sleeves) | after survivors |
 | **OPT-7** | Tail hedge (covers trend fast-crash gap) | after 6 |
@@ -68,6 +69,16 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 | Earnings IV-crush — ATM iron butterfly (1-wide, strawman) | OPT-3 | −3.86 | — | −5.75 | 0.16 | ❌ KILL (tight ATM wings blown through) |
 | Earnings IV-crush — OTM condor 1×EM, nearest-weekly (aggressive) | OPT-3 | −1.82 | −2.52 | −2.57 | 0.59 | ❌ KILL (mis-parameterized: ~3-DTE gamma) |
 | **Earnings IV-crush — CANONICAL (≈25-DTE, 1.3×EM, no strawman)** | OPT-3 | **−1.02** | **−1.67** | **−0.24** | **1.21** | ❌ **KILL (thin / cost-killed)** |
+
+### OPT-4 — index/ETF systematic short-vol (SPY/QQQ/IWM iron condors)
+| Structure | Net Sharpe @1× | @2× spread | residual-α t | Avg PF @1× | @2× | Verdict |
+|---|---|---|---|---|---|---|
+| 1.0× realized-SD strikes (too tight, strawman) | −0.44 | −0.80 | −1.10 | 0.78 | 0.52 | ❌ KILL |
+| **1.5× realized-SD strikes (canonical ≈16-delta)** | **+0.04** | −0.19 | −1.25 | **2.24** | **1.75** | ❌ **KILL (Sharpe-weak / under-powered)** |
+
+**OPT-4 finding (2026-06-09, Opus-certified — PF is genuine, no look-ahead).** Systematic index short-vol (monthly ~35-DTE condors, short strikes 1.5× realized-SD ≈ 16-delta, 21-day hold) on SPY/QQQ/IWM, 4y, CPCV k=8/p=2. **The index VRP is REAL and cost-robust** — Avg PF **2.24 @1× and still 1.75 @2× spread** (index spreads are ~pennies, so the 2× stress that killed single-name earnings vol barely dents it; a clear qualitative win over OPT-3). **But it is risk-adjusted-flat** (mean Sharpe ~0, 56% positive folds, path-t ~0, residual-α t −1.25) — the crisis fat-tail eats the vol-adjusted return — and **statistically under-powered** (7-fold LOW COVERAGE on 3 ETFs / monthly cadence). So it **KILLs the significance gate** as a *naked* sleeve. Strike sizing was decisive: 1.0× realized-SD (≈32% breach) is structurally negative; 1.5× (≈16-delta) flips PF to 2.24 — the same "strikes outside the move" lesson as OPT-3. **The planned refinements** (regime/VIX de-risk overlay to cut the crisis tail → lift Sharpe; weekly cadence + more ETFs → power) are the path to potentially clearing it, but pile parameters on a thin sample (overfitting risk) — an owner checkpoint. Net: the options VRP is *real and cost-robust at the index level* but not yet a gate-clearing standalone sleeve.
+
+---
 
 **OPT-3 finding (2026-06-09 — authoritative, after a full Opus 4.8 deep-dive of the whole build).** Three deep-dive auditors confirmed the **harness, data, and simulator are clean** (data pristine: 0 bad closes, IV-crush visible in real marks, PIT/survivorship/OCC all verified; sim P&L sign + accounting correct, cost model mildly conservative). The fair-test auditor found the *first* parameterization was handicapped (nearest-weekly ~3-DTE expiry = max gamma/tiny vega; short strikes only 1×EM; ATM strawman on first-events), so we re-ran the **canonical** structure. Result: at realistic 1× spreads the edge is **gross-profitable but risk-adjusted-flat** — Avg PF 1.21, Calmar 0.85, **residual-α t −0.24 (≈ zero)**, but mean Sharpe −1.0 with only 33% positive folds (the classic short-vol fat left tail), and it **dies at 2× spread** (PF 0.82). **Conclusion: single-name earnings IV-crush is a real but too-thin premium, killed by options transaction costs** (cf. the equity reversal sleeve). Not a keepable standalone edge. The deep-dive *changed the reason, not the verdict* — and points the program at **index/ETF VRP**, where spreads are ~pennies and the VRP is fatter (the cost problem that kills single-name vol is minimal there). **A KILL is a success of the harness.**
 
