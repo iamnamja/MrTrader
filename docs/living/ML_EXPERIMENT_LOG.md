@@ -39,6 +39,24 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-1a (Alpha-v5) — Options pricing/greeks engine — 2026-06-09 — VERDICT: ✅ VALIDATED (engine vs live snapshot PASSES; confidence keystone)
+
+**What**: Built `app/options/pricing_engine.py` (BS-European + Bjerksund-Stensland 1993 American + CRR cross-check + bisection IV solver + greeks) and validated computed IV/greeks against Polygon's served snapshot values (the one window with ground truth).
+
+**Run** (`scripts/validate_options_engine.py`, 15 underlyings, current snapshot, American + real per-underlying dividend yield, r=4.3%, day-vol ≥ 10 liquidity filter):
+| Metric | Value | Threshold | Result |
+|---|---|---|---|
+| Near-ATM median \|IV err\| | 0.0072 | < 0.010 | ✅ PASS |
+| All-contract mean IV bias | +0.0068 | < 0.010 | ✅ PASS |
+| Engine-delta vs served-delta median \|err\| | 0.0011 | (sanity) | ✅ exact |
+
+- Unfiltered all-contract bias was +0.022, concentrated in illiquid tails — diagnosed as a **data-timing artifact** (snapshot pairs an option's stale last trade with the *live* spot), not engine error; absent in EOD-bar backtests. American + dividends + CRR-fallback removed the OPT-0 spike's +0.035 European/q=0 bias.
+- **Opus 4.8 adversarial review found + fixed 3 bugs pre-merge**: CRITICAL (dividend>rate calls underpriced ~95% — BjS h(T) degenerate → CRR fallback), HIGH (IV solver spurious 3.0 root on intrinsic-floor prices → None), MEDIUM (gamma kink-spike at early-exercise boundary → one-sided FD). 18 unit tests (textbook/parity/American≥European/BjS↔CRR/IV round-trip/greeks/contract-conformance), all green; flake8 clean.
+
+**Next**: OPT-1b — `options_provider.py` PIT parquet + `backfill_options.py` (multi-year, expired-inclusive) + `polygon_s3` `us_options_opra` flat-file OHLCV.
+
+---
+
 ## Phase 3 (Alpha-v4) — Regime-aware sleeve allocator — 2026-06-06 — VERDICT: ✅ scaffold built; SHIP SIMPLE FIXED-WEIGHT (vol-tilt + regime-tilt do NOT earn complexity yet)
 
 **Context**: With two validated sleeves (PEAD weak-beta satellite + TSMOM trend), build the multi-sleeve book allocator (the architectural unlock) and answer the disciplined question: does a regime tilt — or even inverse-vol risk-parity — beat simple fixed weights, net of turnover? Built `app/strategy/sleeve_allocator.py` (general N-sleeve: equal-capital / static vol-weight / regime-tilted; inverse-vol risk parity; regime **hysteresis** (persistence) + continuous **EWMA blend**; PIT) + `scripts/run_book_allocator.py`.
