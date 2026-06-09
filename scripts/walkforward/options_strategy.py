@@ -29,9 +29,12 @@ the in-window splits (NVDA/AMZN/TSLA/GOOGL).
 from __future__ import annotations
 
 import logging
+import math
+import statistics
 import time
 from datetime import date as _date
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Callable, Dict, List, Optional
 
 import pandas as pd
@@ -42,6 +45,59 @@ from app.backtesting.options_simulator import (
 from app.data.options_provider import load_options_bars, load_options_contracts
 
 logger = logging.getLogger(__name__)
+
+
+# ── Shared: condor expiry + strike selection ───────────────────────────────────
+
+def _select_condor_legs(symbol, chain, spot, em, anchor_date, *,
+                        min_dte, max_dte, target_dte, wing_steps):
+    """Pick the expiry (nearest ``target_dte`` within [min_dte, max_dte] from anchor_date) and
+    the four iron-condor strikes: short call/put ~``em`` (fractional) OUTSIDE spot, long wings
+    ``wing_steps`` strikes further out. Returns [short_call, long_call, short_put, long_put]
+    OptionLeg list, or None if the chain can't support it. Shared by the earnings + index
+    builders so the validated strike logic stays identical."""
+    if chain is None or chain.empty:
+        return None
+    lo, hi = anchor_date + timedelta(days=min_dte), anchor_date + timedelta(days=max_dte)
+    exp_col = pd.to_datetime(chain["expiration"]).dt.date
+    span_exps = sorted({e for e in exp_col if lo <= e <= hi})
+    if not span_exps:
+        return None
+    expiry = min(span_exps, key=lambda e: abs((e - anchor_date).days - target_dte))
+    leg_chain = chain[pd.to_datetime(chain["expiration"]).dt.date == expiry]
+    calls = sorted(leg_chain[leg_chain["contract_type"] == "call"]["strike"].unique())
+    puts = sorted(leg_chain[leg_chain["contract_type"] == "put"]["strike"].unique())
+    if len(calls) < wing_steps + 1 or len(puts) < wing_steps + 1:
+        return None
+    call_target = spot * (1.0 + em)
+    put_target = spot * (1.0 - em)
+    sc = [k for k in calls if k >= call_target]
+    if not sc:
+        return None
+    short_call_k = sc[0]
+    sc_idx = calls.index(short_call_k)
+    if sc_idx + wing_steps >= len(calls):
+        return None
+    long_call_k = calls[sc_idx + wing_steps]
+    sp = [k for k in puts if k <= put_target]
+    if not sp:
+        return None
+    short_put_k = sp[-1]
+    sp_idx = puts.index(short_put_k)
+    if sp_idx - wing_steps < 0:
+        return None
+    long_put_k = puts[sp_idx - wing_steps]
+
+    def _occ(strike, kind):
+        cp = "C" if kind == "call" else "P"
+        return f"O:{symbol}{expiry.strftime('%y%m%d')}{cp}{int(round(strike * 1000)):08d}"
+
+    return [
+        OptionLeg(_occ(short_call_k, "call"), side=-1, qty=1),
+        OptionLeg(_occ(long_call_k, "call"), side=+1, qty=1),
+        OptionLeg(_occ(short_put_k, "put"), side=-1, qty=1),
+        OptionLeg(_occ(long_put_k, "put"), side=+1, qty=1),
+    ]
 
 
 # ── Position builder: earnings IV-crush iron condor ────────────────────────────
@@ -85,54 +141,49 @@ def build_ivcrush_iron_condor(symbol, event_date, get_chain, underlying_closes, 
         return None
 
     chain = get_chain(symbol, entry)   # PIT chain metadata (knowable <= entry)
-    if chain is None or chain.empty:
+    legs = _select_condor_legs(symbol, chain, spot, em, event_date, min_dte=min_dte,
+                               max_dte=max_dte, target_dte=target_dte, wing_steps=wing_steps)
+    if legs is None:
         return None
-    lo, hi = event_date + timedelta(days=min_dte), event_date + timedelta(days=max_dte)
-    exp_col = pd.to_datetime(chain["expiration"]).dt.date
-    span_exps = sorted({e for e in exp_col if lo <= e <= hi})
-    if not span_exps:
-        return None
-    # nearest to the target tenor (canonical monthly), not the nearest weekly
-    expiry = min(span_exps, key=lambda e: abs((e - event_date).days - target_dte))
-    leg_chain = chain[pd.to_datetime(chain["expiration"]).dt.date == expiry]
-    calls = sorted(leg_chain[leg_chain["contract_type"] == "call"]["strike"].unique())
-    puts = sorted(leg_chain[leg_chain["contract_type"] == "put"]["strike"].unique())
-    if len(calls) < wing_steps + 1 or len(puts) < wing_steps + 1:
-        return None
-
-    # Short-strike targets: outside the expected move (canonical) or ATM (strawman).
-    call_target = spot * (1.0 + em)
-    put_target = spot * (1.0 - em)
-
-    sc = [k for k in calls if k >= call_target]
-    if not sc:
-        return None
-    short_call_k = sc[0]
-    sc_idx = calls.index(short_call_k)
-    if sc_idx + wing_steps >= len(calls):
-        return None
-    long_call_k = calls[sc_idx + wing_steps]
-    sp = [k for k in puts if k <= put_target]
-    if not sp:
-        return None
-    short_put_k = sp[-1]
-    sp_idx = puts.index(short_put_k)
-    if sp_idx - wing_steps < 0:
-        return None
-    long_put_k = puts[sp_idx - wing_steps]
-
-    def _occ(strike, kind):
-        cp = "C" if kind == "call" else "P"
-        return f"O:{symbol}{expiry.strftime('%y%m%d')}{cp}{int(round(strike * 1000)):08d}"
-
-    legs = [
-        OptionLeg(_occ(short_call_k, "call"), side=-1, qty=1),
-        OptionLeg(_occ(long_call_k, "call"), side=+1, qty=1),
-        OptionLeg(_occ(short_put_k, "put"), side=-1, qty=1),
-        OptionLeg(_occ(long_put_k, "put"), side=+1, qty=1),
-    ]
     return OptionPosition(legs, entry_date=entry, exit_date=exit_d,
                           label=f"{symbol}@{event_date}")
+
+
+# ── Position builder: systematic INDEX short-vol iron condor (OPT-4) ────────────
+
+def build_index_short_condor(symbol, entry_date, get_chain, underlying_closes, *,
+                             min_dte=20, max_dte=55, target_dte=35, wing_steps=2,
+                             hold_trading_days=21, sd_mult=1.0,
+                             expected_move=None) -> Optional[OptionPosition]:
+    """Systematic short iron condor on an index ETF — harvest the (positive, well-documented)
+    INDEX variance risk premium. Enter ON the scheduled date, short strikes ~``sd_mult`` × the
+    expected (1-SD) move OUTSIDE spot, ``wing_steps``-wide wings, exit ``hold_trading_days``
+    trading days later (well before expiry, so it's a vega/theta harvest, not a gamma bet).
+    ``expected_move`` is REQUIRED (the adapter computes it from trailing realized vol scaled to
+    the tenor). Returns None when the chain can't support the structure."""
+    closes = underlying_closes.get(symbol)
+    if not closes or expected_move is None:
+        return None
+    em = expected_move * sd_mult
+    dates = sorted(closes)
+    on_before = [d for d in dates if d <= entry_date]
+    if not on_before:
+        return None
+    entry = max(on_before)
+    spot = closes[entry]
+    if spot <= 0:
+        return None
+    after_entry = [d for d in dates if d > entry]
+    if not after_entry:
+        return None
+    exit_d = after_entry[min(hold_trading_days - 1, len(after_entry) - 1)]
+
+    chain = get_chain(symbol, entry)
+    legs = _select_condor_legs(symbol, chain, spot, em, entry, min_dte=min_dte,
+                               max_dte=max_dte, target_dte=target_dte, wing_steps=wing_steps)
+    if legs is None:
+        return None
+    return OptionPosition(legs, entry_date=entry, exit_date=exit_d, label=f"{symbol}@{entry}")
 
 
 # ── Adapter ────────────────────────────────────────────────────────────────────
@@ -145,6 +196,7 @@ class OptionsStrategy:
     pit_trade_type = "swing"
     is_trained = False
     per_fold_retrain = False
+    _needs_earnings = True   # subclasses (e.g. scheduled index short-vol) set False to skip FMP
 
     def __init__(self, symbols, position_builder: Callable = build_ivcrush_iron_condor, *,
                  model_type: Optional[str] = None, spread_mult: float = 1.0,
@@ -200,15 +252,16 @@ class OptionsStrategy:
         self.spy_prices = spy["close"]
         self.symbols_data["SPY"] = spy
 
-        for sym in self.symbols:
-            try:
-                recs = get_earnings_history_fmp(sym)
-                dts = sorted({datetime.strptime(r["date"], "%Y-%m-%d").date()
-                              for r in recs if r.get("date")})
-                if dts:
-                    self._earnings[sym] = dts
-            except Exception:
-                pass
+        if self._needs_earnings:
+            for sym in self.symbols:
+                try:
+                    recs = get_earnings_history_fmp(sym)
+                    dts = sorted({datetime.strptime(r["date"], "%Y-%m-%d").date()
+                                  for r in recs if r.get("date")})
+                    if dts:
+                        self._earnings[sym] = dts
+                except Exception:
+                    pass
 
         # Pre-index the options store ONCE (the per-event/per-fold hot path then slices small
         # per-symbol frames instead of scanning the 45M-row / 1.9M-row global frames).
@@ -328,3 +381,70 @@ class OptionsStrategy:
             n_obs=n_obs, regime_sharpes=regime_sharpes, regime_obs_counts=_regime_obs,
             daily_returns_dated=dr_tuples,
         )
+
+
+# ── Adapter: systematic index short-vol (OPT-4) ────────────────────────────────
+
+INDEX_ETFS = ["SPY", "QQQ", "IWM"]
+
+
+class IndexShortVolStrategy(OptionsStrategy):
+    """CPCV adapter for systematic INDEX short-vol (short iron condors on SPY/QQQ/IWM, opened
+    on a fixed cadence). Reuses everything in OptionsStrategy (data load, sim driving, FoldResult)
+    and overrides only: the schedule (calendar cadence, not earnings events) and the expected-move
+    estimate (trailing realized vol scaled to the tenor, since an index has no single event).
+
+    The index VRP is the well-documented, positive, crisis-NEGATIVE premium (it pairs with the
+    trend sleeve), and index option spreads are ~pennies — so the transaction-cost wall that
+    killed single-name earnings short-vol (OPT-3) is minimal here.
+    """
+
+    model_type = "options_index_shortvol"
+    _needs_earnings = False
+
+    def __init__(self, symbols=None, *, rebalance_trading_days=21, hold_trading_days=21,
+                 dte_target=35, min_dte=20, max_dte=55, sd_mult=1.0, wing_steps=2,
+                 rv_lookback=20, spread_mult=1.0, cost_model=None,
+                 starting_capital=1_000_000.0):
+        builder = partial(build_index_short_condor, hold_trading_days=hold_trading_days,
+                          target_dte=dte_target, min_dte=min_dte, max_dte=max_dte,
+                          sd_mult=sd_mult, wing_steps=wing_steps)
+        super().__init__(symbols or INDEX_ETFS, position_builder=builder,
+                         model_type="options_index_shortvol", spread_mult=spread_mult,
+                         cost_model=cost_model, starting_capital=starting_capital)
+        self.rebalance_trading_days = rebalance_trading_days
+        self.hold_trading_days = hold_trading_days
+        self.dte_target = dte_target
+        self.rv_lookback = rv_lookback
+
+    def _events_in_window(self, te_start, te_end):
+        """Scheduled entries: every ``rebalance_trading_days`` trading days within the test
+        window, per index symbol (a rolling short-vol book)."""
+        for sym in self.symbols:
+            closes = self._underlying_closes.get(sym)
+            if not closes:
+                continue
+            window_dates = sorted(d for d in closes if te_start <= d <= te_end)
+            for i in range(0, len(window_dates), self.rebalance_trading_days):
+                yield sym, window_dates[i]
+
+    def _expected_move(self, sym, entry_date, **_):
+        """1-SD move over the option's tenor from trailing realized vol (PIT: only closes on/
+        before entry). Fractional (e.g. 0.05 = 5%). None if insufficient history."""
+        closes = self._underlying_closes.get(sym)
+        if not closes:
+            return None
+        dates = sorted(d for d in closes if d <= entry_date)
+        if len(dates) < self.rv_lookback + 1:
+            return None
+        recent = dates[-(self.rv_lookback + 1):]
+        rets = []
+        for a, b in zip(recent[:-1], recent[1:]):
+            p0, p1 = closes[a], closes[b]
+            if p0 > 0 and p1 > 0:
+                rets.append(math.log(p1 / p0))
+        if len(rets) < 5:
+            return None
+        sigma_d = statistics.pstdev(rets)            # daily log-return std
+        horizon_td = self.dte_target * (252.0 / 365.0)   # ~trading days in the DTE window
+        return sigma_d * math.sqrt(max(horizon_td, 1.0))

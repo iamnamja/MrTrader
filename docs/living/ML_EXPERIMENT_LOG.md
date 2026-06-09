@@ -39,6 +39,25 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-4 (Alpha-v5) — Index/ETF systematic short-vol — 2026-06-09 — VERDICT: ❌ KILL standalone (VRP real + cost-robust, but Sharpe-weak/under-powered)
+
+**What**: `IndexShortVolStrategy` (subclasses `OptionsStrategy`) + `build_index_short_condor` + shared `_select_condor_legs` + `scripts/run_index_shortvol_cpcv.py`. Short iron condors on SPY/QQQ/IWM, monthly ~35-DTE, 21-day hold, short strikes at N× trailing-realized-SD. CPCV k=8/p=2, 4y, 1×/2× spread sweep.
+
+**Result**:
+| sd_mult | mean Sharpe @1× | @2× | Avg PF @1× | @2× | %pos |
+|---|---|---|---|---|---|
+| 1.0 (too tight) | −0.44 | −0.80 | 0.78 | 0.52 | 18% |
+| **1.5 (≈16-delta)** | **+0.04** | −0.19 | **2.24** | **1.75** | 56% |
+
+- **Index VRP is real + cost-robust**: PF 2.24 @1× / **1.75 @2×** — survives the 2× spread stress that killed single-name earnings vol (index spreads ~pennies). Qualitative win over OPT-3.
+- **But risk-adjusted-flat** (Sharpe ~0, path-t ~0, residual-α t −1.25) + under-powered (7-fold low coverage) → KILLs the significance gate as a naked sleeve.
+- Opus 4.8 look-ahead review **certified PF genuine** (no leak; realized-vol→strike units coherent; refactor behavior-preserving).
+- Strikes decisive (1.0×→1.5× realized-SD flips PF 0.78→2.24) — same "strikes outside the move" lesson as OPT-3. 3 structures logged across OPT-3/4; stopped to avoid overfitting a thin sample.
+
+**Next (owner steer)**: refine index short-vol (regime/VIX overlay to cut the crisis tail + weekly cadence for power) vs OPT-4b cross-sectional/relative VRP vs reassess.
+
+---
+
 ## OPT-3 (Alpha-v5) — Earnings IV-crush sleeve — 2026-06-09 — VERDICT: ❌ KILL (negative single-name VRP; harness Opus-certified)
 
 **What**: First end-to-end options strategy through WF/CPCV. `scripts/walkforward/options_strategy.py` (`OptionsStrategy` adapter, duck-types `event_edge`, drives the OPT-2 OptionsSimulator) + earnings IV-crush iron-condor builder + `scripts/run_options_ivcrush_cpcv.py`. Universe: 39 growth-heavy single names, 4y, CPCV k=8/p=2, 1×/2× spread stress. Data: 45.3M option bars / 1.93M contracts backfilled (broad, 47 underlyings).
