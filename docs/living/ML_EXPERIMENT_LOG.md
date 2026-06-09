@@ -39,6 +39,18 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-2 (Alpha-v5) — Contract-level options simulator + cost model — 2026-06-09 — VERDICT: ✅ SHIPPED (golden-path P&L verified)
+
+**What**: `app/backtesting/options_simulator.py` — `OptionsSimulator` (daily MTM off real EOD option closes fwd-filled, intrinsic settle at expiry; emits the same `SimResult`) + `OptionsSpreadCostModel` (modeled spread % premium × 1×/2×/3× stress + per-contract fee). Implements the OPT-0 `OptionContractSim`/`OptionsSpreadCostModel` contracts.
+
+- **Marks to REAL closes** (not theoretical) → IV-crush carried by the data; defined-risk caps automatic via per-leg intrinsic settlement.
+- **Opus 4.8 review** confirmed MTM + look-ahead correct; drove 5 silent-failure fixes (dropped-position count, blow-up hard-fail flag, PF cap inf→99, unparseable-contract rejection, day-1 cost capture).
+- 19 golden-path tests: hand-computed long-call-to-expiry, OTM-worthless, vertical cap at strike width + max-loss bound, short-put assignment/OTM, cost-sweep monotonicity (1×>2×>3×), calendar spread, multi-day fwd-fill, intermediate short-MTM sign, qty scaling, drop/blow-up/PF guards. flake8 clean.
+
+**Next**: OPT-3 — strategy adapter (duck-types `event_edge.py`) + earnings IV-crush scorer → `run_cpcv` + significance gate + CAPM residual-α + 2× spread stress → the program's FIRST KEEP/KILL verdict (owner checkpoint).
+
+---
+
 ## OPT-1b (Alpha-v5) — Options data layer (PIT + survivorship) — 2026-06-09 — VERDICT: ✅ SHIPPED (S3 path smoke-tested)
 
 **What**: `app/data/options_provider.py` (PIT, survivorship-safe provider implementing the OPT-0 `OptionsDataProvider` contract) + `scripts/backfill_options.py` (builds the parquet from Polygon S3 OPRA day files) + `polygon_s3.py` `us_options_opra` extension + `docs/reference/OPTIONS_DATA.md`.
