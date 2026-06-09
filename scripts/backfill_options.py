@@ -114,6 +114,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Backfill option OHLCV + universe (Polygon S3)")
     p.add_argument("--underlyings", nargs="+", default=None,
                    help=f"Underlyings (default: {len(DEFAULT_UNDERLYINGS)} liquid names)")
+    p.add_argument("--r1k", action="store_true",
+                   help="Use the Russell-1000 union + index ETFs (PEAD universe, for OPT-5). "
+                        "~131k option rows/day -> use a shorter --years (e.g. 2) to fit memory.")
     p.add_argument("--years", type=int, default=4, help="History depth if --start omitted")
     p.add_argument("--start", type=str, default=None, help="YYYY-MM-DD")
     p.add_argument("--end", type=str, default=None, help="YYYY-MM-DD (default: yesterday)")
@@ -122,7 +125,12 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
-    underlyings = [u.upper() for u in (args.underlyings or DEFAULT_UNDERLYINGS)]
+    if args.r1k:
+        from app.utils.constants import RUSSELL_1000_TICKERS
+        _idx_etfs = ["SPY", "QQQ", "IWM", "DIA", "XLE", "GLD", "SLV", "TLT"]
+        underlyings = sorted({u.upper() for u in RUSSELL_1000_TICKERS} | set(_idx_etfs))
+    else:
+        underlyings = [u.upper() for u in (args.underlyings or DEFAULT_UNDERLYINGS)]
     end = (date.fromisoformat(args.end) if args.end
            else date.today() - timedelta(days=1))
     start = (date.fromisoformat(args.start) if args.start

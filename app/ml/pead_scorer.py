@@ -107,6 +107,15 @@ class PEADScorer:
         regime_control_vol_lookback: int = 20,     # trading-day lookback for realized vol
         regime_control_trend_ma: int = 200,        # SPY SMA window (trend)
         regime_control_floor: float = 0.50,        # scalar below this -> block new entries
+        # ── OPT-5 — options-implied "priced-in" filter (default OFF) ──────────────
+        # implied_move_fn(symbol, announce_date, spot) -> fractional implied move (ATM
+        # straddle / spot) the option market priced in PRE-earnings. When set with
+        # min_move_vs_implied>0, SKIP an entry whose realized announce-day move was within/under
+        # what was implied (realized/implied < threshold) — i.e. the surprise was already
+        # priced in by options, so the post-earnings drift is (hypothesis) exhausted. Default
+        # None/0 → committed config byte-identical. Judged on PEAD's own CPCV gate (OPT-5).
+        implied_move_fn=None,
+        min_move_vs_implied: float = 0.0,
     ):
         self.long_threshold = long_threshold
         self.short_threshold = short_threshold
@@ -116,6 +125,8 @@ class PEADScorer:
         self.vix_block_short = vix_block_short
         self.vix_conf_ref = vix_conf_ref
         self.max_announce_day_move = max_announce_day_move
+        self.implied_move_fn = implied_move_fn
+        self.min_move_vs_implied = min_move_vs_implied
         self.long_threshold_hv = long_threshold_hv
         self.vix_adaptive = vix_adaptive
         self.regime_control = regime_control
@@ -294,6 +305,33 @@ class PEADScorer:
                             continue
                 except Exception:
                     pass  # if bars unavailable, proceed without filter
+
+            # OPT-5: options-implied "priced-in" filter. Compare the realized announce-day move
+            # to the pre-earnings IMPLIED move (ATM straddle the day before the report). If the
+            # realized move was within/under what options priced in (realized/implied <
+            # min_move_vs_implied), the surprise was already discounted -> skip. PIT: implied is
+            # read as-of the announce-day close (knowable by the scoring day).
+            if self.implied_move_fn is not None and self.min_move_vs_implied > 0:
+                try:
+                    _ts_announce = _ts - pd.Timedelta(days=int(days_since))
+                    _sub = df.loc[:_ts_announce]
+                    if len(_sub) >= 2:
+                        _ann_c = float(_sub.iloc[-1]["close"])
+                        _prev_c = float(_sub.iloc[-2]["close"])
+                        _realized = abs(_ann_c / _prev_c - 1) if _prev_c > 0 else None
+                        # implied move as-of the PRE-announce close (what was priced in)
+                        _pre_date = _sub.index[-2].date() if hasattr(_sub.index[-2], "date") \
+                            else _sub.index[-2]
+                        _implied = self.implied_move_fn(sym, _pre_date, _prev_c, as_of)
+                        if _realized is not None and _implied and _implied > 0:
+                            if (_realized / _implied) < self.min_move_vs_implied:
+                                logger.debug(
+                                    "PEAD implied priced-in skip %s: realized=%.1f%% implied=%.1f%% "
+                                    "ratio=%.2f < %.2f", sym, _realized * 100, _implied * 100,
+                                    _realized / _implied, self.min_move_vs_implied)
+                                continue
+                except Exception:
+                    pass  # implied move unavailable -> proceed without the options filter
 
             # Map surprise magnitude to confidence
             abs_surprise = abs(surprise)

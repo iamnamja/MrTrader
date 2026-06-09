@@ -39,6 +39,22 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## OPT-5 (Alpha-v5) — Options-data-as-signal: implied-move filter for PEAD — 2026-06-09 — VERDICT: 🟡 PROMISING LEAD (improves PEAD; unconfirmed, not deployed)
+
+**What**: `app/data/options_signal.ImpliedMoveProvider` (PIT pre-earnings implied move = ATM straddle/spot, lazy per-symbol parquet reads) + PEAD scorer hook (`implied_move_fn`/`min_move_vs_implied`, default OFF) + `scripts/run_pead_implied_filter_cpcv.py`. Re-backfilled options for R1K (60.8M bars, 100% PEAD coverage). Filter: skip PEAD entry if realized announce move / pre-earnings implied move < 1.0 (already priced in).
+
+**Result** (PEAD CPCV, k=8/p=2, 2y options-covered window, same period both arms):
+| arm | mean Sharpe | path-t | Avg PF | Calmar | %pos |
+|---|---|---|---|---|---|
+| baseline | 0.891 | 1.56 | 2.09 | 5.4 | 74.1% |
+| **implied-filter** | **1.346** | **1.90** | **2.52** | 8.6 | 74.1% |
+| **delta** | **+0.45** | +0.34 | +0.43 | +3.2 | 0 |
+
+- The filter **improves PEAD** — opposite of the prior *price-based* priced-in filter (which hurt). First positive options signal of the program.
+- **UNCONFIRMED / not deployed**: thin sample (7-8 folds/2y, no bull regime; DSR saturated), single threshold (multiplicity), **residual-α/beta NOT checked** (EventEdge harness emits no daily_returns_dated; PEAD base edge is beta-driven so lift may be beta), neither arm clears the gate. Confirm via pead_phase1_attribution (beta-isolation) + threshold robustness + more data before any live change. Scorer hook ships default OFF. Implied moves sanity-checked on real data (NVDA 10.7%, AAPL 4.2%, CRM 8.8%, MSFT 4.3%).
+
+---
+
 ## OPT-4 (Alpha-v5) — Index/ETF systematic short-vol — 2026-06-09 — VERDICT: ❌ KILL standalone (VRP real + cost-robust, but Sharpe-weak/under-powered)
 
 **What**: `IndexShortVolStrategy` (subclasses `OptionsStrategy`) + `build_index_short_condor` + shared `_select_condor_legs` + `scripts/run_index_shortvol_cpcv.py`. Short iron condors on SPY/QQQ/IWM, monthly ~35-DTE, 21-day hold, short strikes at N× trailing-realized-SD. CPCV k=8/p=2, 4y, 1×/2× spread sweep.
