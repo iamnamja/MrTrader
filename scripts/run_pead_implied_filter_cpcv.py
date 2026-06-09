@@ -73,6 +73,7 @@ def _m(res):
         "sharpe": g("mean_sharpe", "avg_sharpe"),
         "t": g("path_sharpe_tstat"),
         "ra_t": g("residual_alpha_t_hac"),
+        "ra_sharpe": g("residual_alpha_sharpe", "hedged_sharpe"),
         "pf": g("avg_profit_factor"),
         "pos": g("pct_positive"),
     }
@@ -92,16 +93,23 @@ def main() -> int:
               f"{m['pf']:>7.2f}{_pos:>6.1f}%")
     d_sharpe = filt["sharpe"] - base["sharpe"]
     d_pf = filt["pf"] - base["pf"]
+    d_rasharpe = filt["ra_sharpe"] - base["ra_sharpe"]
     print("-" * 80)
-    print(f"  delta: mean_sharpe {d_sharpe:+.3f}, PF {d_pf:+.2f}")
-    # NOTE: the EventEdge/PEAD CPCV harness does not populate daily_returns_dated, so residual-α
-    # (alpha-vs-beta) is NOT available here — confirm separately (pead_phase1_attribution) before
-    # any deploy, since PEAD's base edge is beta-driven.
+    print(f"  delta: mean_sharpe {d_sharpe:+.3f}, PF {d_pf:+.2f}, "
+          f"beta-hedged Sharpe {d_rasharpe:+.3f} (resid-α t {base['ra_t']:.2f}->{filt['ra_t']:.2f})")
+    # residual-α now available (EventEdge emits daily_returns_dated). The make-or-break check for
+    # a PEAD enhancement is whether the lift is ALPHA (beta-hedged Sharpe up, β ~flat) vs just
+    # more beta. Significance (resid-α t > 2) still needs power (more data / thresholds).
     improves = d_sharpe > 0.10 and d_pf > 0.0
-    if improves:
-        verdict = ("FILTER IMPROVES PEAD CPCV (Sharpe/PF up) — but UNCONFIRMED: thin sample, "
-                   "single threshold, residual-α/beta NOT checked, neither arm clears the gate. "
-                   "Promising LEAD, not a deploy.")
+    alpha_like = d_rasharpe > 0.05 and filt["ra_t"] >= base["ra_t"]
+    if improves and alpha_like:
+        verdict = ("FILTER IMPROVES PEAD and the lift is ALPHA-LIKE (beta-hedged Sharpe up, "
+                   "β ~flat) — STRONGER lead. Still UNDERPOWERED (resid-α t<2, thin 2y sample, "
+                   "single threshold, gate not cleared): confirm with threshold robustness + "
+                   "more data before any deploy.")
+    elif improves:
+        verdict = ("FILTER improves headline Sharpe but the lift is NOT clearly alpha "
+                   "(beta-hedged Sharpe flat) — likely beta; do not deploy.")
     else:
         verdict = "NO IMPROVEMENT (drop filter)"
     print(f"  VERDICT: {verdict}")
