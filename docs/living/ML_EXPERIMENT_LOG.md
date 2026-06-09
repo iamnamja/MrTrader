@@ -51,7 +51,8 @@ Tracks model improvement iterations for active and recent phases.
 | **delta** | **+0.45** | +0.34 | +0.43 | +3.2 | 0 |
 
 - The filter **improves PEAD** — opposite of the prior *price-based* priced-in filter (which hurt). First positive options signal of the program.
-- **UNCONFIRMED / not deployed**: thin sample (7-8 folds/2y, no bull regime; DSR saturated), single threshold (multiplicity), **residual-α/beta NOT checked** (EventEdge harness emits no daily_returns_dated; PEAD base edge is beta-driven so lift may be beta), neither arm clears the gate. Confirm via pead_phase1_attribution (beta-isolation) + threshold robustness + more data before any live change. Scorer hook ships default OFF. Implied moves sanity-checked on real data (NVDA 10.7%, AAPL 4.2%, CRM 8.8%, MSFT 4.3%).
+- **Alpha-vs-beta CONFIRMED** (after #422 made EventEdge emit daily_returns_dated → residual-α computes): baseline beta-hedged Sharpe **+0.035** (β=0.12, resid-α t +0.04 = pure beta, as known); **filtered beta-hedged Sharpe +0.587** (β=0.14 ~flat, resid-α t +0.65). The lift is **ALPHA-like, not beta** — the filter selects PEAD trades with genuine drift. First real (non-beta) edge enhancement in the program.
+- **Still UNDERPOWERED / not deployed**: resid-α t 0.65 < 2 (thin 2y/8-fold sample), single threshold (multiplicity), DSR saturated, gate not cleared. **Materially stronger lead.** Remaining confirmation: threshold robustness (0.75/1.25) + more data (4y R1K backfill, needs partitioned-write refactor). Scorer hook default OFF. Implied moves sanity-checked on real data (NVDA 10.7%, AAPL 4.2%, CRM 8.8%, MSFT 4.3%).
 
 ---
 
