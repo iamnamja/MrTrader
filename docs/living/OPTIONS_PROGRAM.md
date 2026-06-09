@@ -2,7 +2,7 @@
 
 **One-screen truth for the options program: architecture, confidence plan, phase status, and the per-strategy verdict table.** Append-as-you-go.
 
-**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0..OPT-2 shipped (charter, pricing engine, data layer, simulator); OPT-3 (adapter + earnings IV-crush E2E, first verdict) next — **owner checkpoint**.
+**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0..OPT-3 shipped. **First verdict in: earnings IV-crush = KILL** (single-name short-vol is negative-EV; harness certified by Opus look-ahead review). OPT-4 pivots to **index/ETF systematic short-vol + cross-sectional VRP** (where the variance risk premium is positive) — **owner checkpoint**.
 
 ## Why
 The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-negative, estimate-revision data-blocked — see ML_EXPERIMENT_LOG Phase 4/4b/4c). Options unlock the **highest-ceiling** remaining edge: the **variance risk premium** (earnings IV-crush, cross-sectional VRP, systematic short-vol), plus options-data-as-signal and tail-hedging. Goal = a **resilient base** to explore MANY options strategies and validate each **with confidence**, honestly KEEP/KILL-ing like the prior nulls.
@@ -53,8 +53,8 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 | **OPT-1a** | Pricing engine (BS-European + Bjerksund-Stensland American + CRR cross-check + IV solver + greeks) + 18 unit tests + `validate_options_engine.py` vs snapshot | ✅ shipped 2026-06-09 (validation PASS) |
 | **OPT-1b** | `options_provider.py` PIT parquet (survivorship-from-bars, holiday-aware knowable_date) + `backfill_options.py` (S3 OPRA day files) + `polygon_s3` `us_options_opra` + `OPTIONS_DATA.md` + 22 tests | ✅ shipped 2026-06-09 (S3 path smoke-tested) |
 | **OPT-2** | `OptionsSimulator` (daily MTM off real closes, intrinsic settle) + `OptionsSpreadCostModel` (1×/2×/3× stress) + 19 golden-path tests | ✅ shipped 2026-06-09 |
-| **OPT-3** | Strategy adapter + **earnings IV-crush** E2E → first KEEP/KILL **[owner checkpoint]** | NEXT |
-| **OPT-4** | VRP catalog: cross-sectional VRP, index short-vol, skew/term carry | after 3 |
+| **OPT-3** | Strategy adapter (`options_strategy.py`) + **earnings IV-crush** E2E → first verdict: **❌ KILL** (Opus-certified) **[owner checkpoint]** | ✅ shipped 2026-06-09 |
+| **OPT-4** | VRP catalog — **reprioritized by the OPT-3 finding**: lead with **index/ETF systematic short-vol** (SPY/QQQ/IWM put-write / short-strangle + vol-target + regime overlay — positive VRP, crisis-negative → pairs with trend) and **cross-sectional / relative VRP** (long cheap-vol vs short rich-vol, delta-neutral); single-name *outright* earnings short-vol is dead (OPT-3). | NEXT |
 | **OPT-5** | Data-as-signal: implied-move PEAD filter, put-skew risk-off (no options exec; needs only OPT-1) | pullable early |
 | **OPT-6** | Allocator integration (re-run gate, ≥3 sleeves) | after survivors |
 | **OPT-7** | Tail hedge (covers trend fast-crash gap) | after 6 |
@@ -63,9 +63,12 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 **Dependencies:** OPT-1 blocks all; OPT-2 blocks OPT-3; OPT-3 gates catalog work; OPT-5 only needs OPT-1.
 
 ## Strategy verdict table (append per validation)
-| Strategy | Phase | Net Sharpe @1× | @2× spread | residual-α t | corr to book | Verdict |
+| Strategy | Phase | Net Sharpe @1× | @2× spread | residual-α t | win rate | Verdict |
 |---|---|---|---|---|---|---|
-| _(earnings IV-crush)_ | OPT-3 | — | — | — | — | pending |
+| Earnings IV-crush — ATM iron butterfly (1-wide) | OPT-3 | −3.86 | — | — | — | ❌ KILL (strawman: tight ATM wings blown through by earnings move) |
+| Earnings IV-crush — OTM iron condor (~1×EM strikes, 2-wide) | OPT-3 | −1.82 | −2.52 | −2.57 (beta) | 57% | ❌ KILL (negative single-name VRP) |
+
+**OPT-3 finding (2026-06-09, Opus-certified harness):** earnings short-premium on the 39-name growth-heavy universe is **negative-EV**. Win rate is a healthy 57% (keeps the credit most events) but the payoff is asymmetric — the occasional earnings move that breaches the short strike (median trade +$12, worst −$848) overwhelms the small wins. Economic reading: **realized single-name earnings moves exceed the implied move** here, so the variance risk premium is *negative* at the single-name earnings level — the opposite of the well-documented *index* VRP. Two economically-motivated structures tested + logged (multiplicity noted); not filter-hunted. **A KILL is a success of the harness** (cf. reversal / carry). Steers OPT-4 to index/ETF short-vol + cross-sectional (relative) VRP.
 
 ## Risks → mitigations (top)
 computed-IV inaccuracy → daily engine-vs-snapshot validation (spike already PASS) · look-ahead → knowable_date + as-of accessor · spread unrealism → settlement-mark + mandatory 2× stress · survivorship → expired-inclusive universe · American/dividend → BjS + tri-model + parity tests · capacity (no OI) → volume/notional caps · live-exec gap → shadow-first + fill reconciliation · catalog overfitting → DSR + N_TRIALS + log nulls, never filter-hunt (B5 trap).
