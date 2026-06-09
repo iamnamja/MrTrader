@@ -1717,6 +1717,24 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 _cfg["vix_block_all"] = float(_gac_pead(_db_pead, "pm.pead_vix_block_all"))
                 _cfg["vix_block_short"] = float(_gac_pead(_db_pead, "pm.pead_vix_block_short"))
                 _cfg["vix_conf_ref"] = float(_gac_pead(_db_pead, "pm.pead_vix_conf_ref"))
+                # Config-coherence guard (Opus sweep): a low vix_conf_ref lets the VIX damping
+                # push the MINIMUM PEAD confidence (CONF_MIN) below the Trader's entry gate
+                # (ML_SCORE_THRESHOLD) in merely-elevated VIX -> the PEAD long book is SILENTLY
+                # rejected at entry. Warn when that danger-VIX is below a plausible level (~35).
+                try:
+                    from app.ml.pead_scorer import CONF_MIN as _PCM
+                    from app.strategy.signals import ML_SCORE_THRESHOLD as _ETHR
+                    _vcr = _cfg["vix_conf_ref"]
+                    if _vcr and _ETHR > 0 and _PCM > _ETHR:
+                        _danger_vix = _vcr * (_PCM / _ETHR)
+                        if _danger_vix < 35.0:
+                            self.logger.warning(
+                                "PEAD config-coherence: pm.pead_vix_conf_ref=%.1f makes min PEAD "
+                                "confidence %.2f fall below the Trader entry gate %.2f once "
+                                "VIX>%.1f — PEAD longs would be SILENTLY blocked in elevated vol. "
+                                "Raise pead_vix_conf_ref.", _vcr, _PCM, _ETHR, _danger_vix)
+                except Exception:
+                    pass
                 _cfg["max_announce_day_move"] = float(_gac_pead(_db_pead, "pm.pead_max_announce_day_move"))
                 _cfg["require_positive_revision"] = (
                     str(_gac_pead(_db_pead, "pm.pead_require_positive_revision") or "false").lower() == "true"
