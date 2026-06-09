@@ -207,6 +207,14 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "B5 regime-scalar floor: block PEAD entries when the regime scalar is below this (trend mode returns 0/1, so any floor in (0,1] gates downtrends).",
         "group": "Portfolio Manager",
     },
+    # ── Dead cross-sectional swing ML ranker — live kill switch ──────────────────
+    {
+        "key": "pm.swing_ml_live_enabled",
+        "default": "false",
+        "type": "str",
+        "description": "MASTER FLAG for the live cross-sectional swing ML ranker (selector='ml_model' premarket fall-through + the 30-min _scan_new_opportunities rescan). 'false' = DORMANT: the validated-null ranker (DECISIONS 2026-06-03; frozen for retraining via SWING_ENABLED=False) proposes no live trades. PEAD / quality_short / factor_portfolio / trend / intraday are unaffected. Set 'true' only to deliberately re-enable the dead ranker.",
+        "group": "Portfolio Manager",
+    },
     # ── Trend (TSMOM) sleeve — Alpha-v4 Phase 2/live wiring ──────────────────────
     {
         "key": "pm.trend_enabled",

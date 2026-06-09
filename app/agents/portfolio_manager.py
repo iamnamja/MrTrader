@@ -2009,6 +2009,20 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             await self._analyze_swing_factor_portfolio()
             return
 
+        # Dead cross-sectional swing ML ranker (selector='ml_model'). Validated NULL
+        # (DECISIONS 2026-06-03) and frozen for retraining (SWING_ENABLED=False); keep it
+        # dormant in the LIVE proposing path too unless explicitly re-enabled. Default OFF
+        # -> the live book is the validated sleeves (PEAD + trend + options).
+        if not self._swing_ml_live_enabled():
+            self.logger.info(
+                "Pre-market swing ML-ranker SKIPPED — pm.swing_ml_live_enabled is OFF "
+                "(dead XS-ML ranker dormant)")
+            self._swing_proposals = []   # match sibling branches (no stale cache to send)
+            await self.log_decision("SELECTION_SKIPPED", reasoning={
+                "selector": "ml_model", "reason": "swing_ml_live_enabled=false (dead ranker)",
+            })
+            return
+
         self.logger.info("Pre-market swing analysis starting — model v%s", model_ver)
 
         universe = self._get_universe()
@@ -3538,6 +3552,23 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         # After reviewing existing positions, look for new opportunities
         await self._scan_new_opportunities()
 
+    def _swing_ml_live_enabled(self) -> bool:
+        """Master flag for the live cross-sectional swing ML ranker. Default OFF: the ranker
+        is validated-null (DECISIONS 2026-06-03) and frozen for retraining
+        (SWING_ENABLED=False), so we keep it dormant in the LIVE proposing path too — the live
+        book is the validated sleeves (PEAD + trend + options). Flip pm.swing_ml_live_enabled
+        to 'true' to re-enable. Fail-closed (returns False on any error)."""
+        try:
+            from app.database.session import get_session as _gs
+            from app.database.agent_config import get_agent_config as _gac
+            _db = _gs()
+            try:
+                return str(_gac(_db, "pm.swing_ml_live_enabled") or "false").lower() == "true"
+            finally:
+                _db.close()
+        except Exception:
+            return False
+
     async def _scan_new_opportunities(self) -> None:
         """
         Check if account has budget for new swing entries.
@@ -3545,6 +3576,16 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         Called from _review_open_positions every 30 minutes.
         """
         if not self.model.is_trained:
+            return
+        # The 30-min rescan is the live DEAD XS-ML swing ranker (it ignores pm.swing_selector
+        # and proposes empty-selector top-k by self.model). Validated null + frozen for
+        # retraining, so keep it dormant live unless explicitly re-enabled. This was the
+        # source of ~30/32 recent live trades (sub-0.55 names the Trader then silently
+        # blocked). Default OFF -> PEAD (premarket) + trend carry the live book.
+        if not self._swing_ml_live_enabled():
+            self.logger.info(
+                "30-min swing-ranker rescan SKIPPED — pm.swing_ml_live_enabled is OFF "
+                "(dead XS-ML ranker dormant; PEAD + trend carry the live book)")
             return
         try:
             account = self._alpaca.get_account()
