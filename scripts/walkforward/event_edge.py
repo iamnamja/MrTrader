@@ -21,7 +21,6 @@ reference subclass and remains byte-identical to the committed +0.546 config.
 """
 
 import logging
-import os
 import time
 from datetime import date as _date
 from datetime import datetime
@@ -217,6 +216,16 @@ class EventEdgeStrategy:
         self._last_equity_curve = equity_curve
         self._last_trades = list(trades_list)
         n_obs = max(len(equity_curve) - 1, 0)
+        # Alpha-v4 P0: dated OOS daily returns for the residual-alpha (CAPM/HAC) diagnostic
+        # — (date, ret) aligned to the curve's own dates. PURE-ADDITIVE; mirrors swing.py.
+        # Without this the EventEdge/PEAD CPCV emitted no residual-α (the alpha-vs-beta check),
+        # which matters because PEAD's base edge is beta-driven (so does any enhancement to it).
+        _eq_vals = [v for _, v in equity_curve]
+        _daily_rets_dated = [
+            (equity_curve[i][0],
+             (_eq_vals[i] - _eq_vals[i - 1]) / max(_eq_vals[i - 1], 1e-9))
+            for i in range(1, len(_eq_vals))
+        ] if len(_eq_vals) >= 2 else []
         _regime_obs: dict = {}
         regime_sharpes = _crs(equity_curve, te_start, te_end,
                               regime_map=getattr(self, "_global_regime_map", None),
@@ -246,6 +255,7 @@ class EventEdgeStrategy:
             n_obs=n_obs,
             regime_sharpes=regime_sharpes,
             regime_obs_counts=_regime_obs,
+            daily_returns_dated=_daily_rets_dated,
         )
 
 
