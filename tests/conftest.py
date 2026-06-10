@@ -10,6 +10,13 @@ Fixture hierarchy:
 from __future__ import annotations
 
 import os as _os
+# Test-mode marker for the WHOLE session, set at conftest import (before any test
+# imports app.main). Unlike `pytest in sys.modules` / PYTEST_CURRENT_TEST, an env var
+# is INHERITED by spawned child processes, so the _DailyFileHandler in a pytest-spawned
+# subprocess still routes logs to test_mrtrader_<date>.log instead of leaking into the
+# live ops log. force-set (not setdefault) so the test session always wins.
+_os.environ["MRTRADER_TEST_MODE"] = "1"
+
 # Cap thread counts for all pytest workers — prevents loky/OpenMP spawning
 # cpu_count() threads per worker when running under pytest-xdist.
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY_MAX_CPU_COUNT"):
