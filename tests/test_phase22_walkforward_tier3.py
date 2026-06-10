@@ -45,6 +45,17 @@ def _mock_sim_result(trades=60, win_rate=0.52, sharpe=0.9, drawdown=0.04):
     r.total_return_pct = 0.05
     r.exit_breakdown = {"STOP": int(trades * 0.45), "TARGET": int(trades * 0.45), "TIME_EXIT": 6}
     r.print_report = MagicMock()
+    # Fully specify the list-valued result fields the WF reads. The walk-forward main
+    # process does `getattr(result, "trade_returns", None) or [...]` and
+    # `getattr(result, "equity_curve", []) or []` (walkforward_tier3 ~L1133/L1139) —
+    # UNGUARDED bool() calls. If these are left as auto-created child MagicMocks they get
+    # bool-evaluated, which is the only unguarded `bool(mock)` surface this test
+    # exercises and the only place a `__bool__ should return bool, returned MagicMock`
+    # TypeError could surface to fail the test. Real empty lists make the `or` resolve to
+    # the concrete default, so no mock is ever bool-evaluated downstream.
+    r.trade_returns = []
+    r.trades = []
+    r.equity_curve = []
     return r
 
 
