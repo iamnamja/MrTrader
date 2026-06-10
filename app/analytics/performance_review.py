@@ -10,10 +10,29 @@ Computes:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/inf) with None.
+
+    FastAPI serialises route returns with the stdlib json encoder, which emits
+    bare `NaN`/`Infinity` tokens that are NOT valid JSON — Starlette's strict
+    encoder then raises `ValueError: Out of range float values are not JSON
+    compliant`, surfacing as a 500. Any non-finite metric (e.g. an SPY return
+    computed off a partial bar) must therefore be scrubbed before return.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 # ── Backtest reference targets (from phase-7 backtesting results) ─────────────
@@ -31,8 +50,20 @@ def _spy_return(start: date, end: date) -> float:
         import yfinance as yf
         df = yf.download("SPY", start=start.isoformat(), end=end.isoformat(),
                          progress=False, auto_adjust=True)
-        if len(df) >= 2:
-            return round(float(df["Close"].iloc[-1]) / float(df["Close"].iloc[0]) * 100 - 100, 2)
+        close = df["Close"]
+        if hasattr(close, "columns"):  # yfinance may return a single-column DataFrame
+            close = close.iloc[:, 0]
+        # Drop NaN bars — the latest row is often a partial/unpublished session
+        # (e.g. queried premarket), whose NaN close would otherwise poison the
+        # ratio with NaN and 500 the endpoint at JSON-encode time.
+        close = close.dropna()
+        if len(close) >= 2:
+            first = float(close.iloc[0])
+            last = float(close.iloc[-1])
+            if first > 0:
+                ret = round(last / first * 100 - 100, 2)
+                if math.isfinite(ret):
+                    return ret
     except Exception:
         pass
     return 0.0
@@ -124,7 +155,9 @@ def get_performance_review(days: int = 30) -> Dict[str, Any]:
     alerts = [d for d in drift_items if d["status"] == "alert"]
     warnings = [d for d in drift_items if d["status"] == "warn"]
 
-    return {
+    # _json_safe scrubs any non-finite float (NaN/inf) so the dict is always
+    # JSON-serialisable regardless of which metric went non-finite upstream.
+    return _json_safe({
         "period_days": days,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
@@ -142,4 +175,4 @@ def get_performance_review(days: int = 30) -> Dict[str, Any]:
         "alerts": len(alerts),
         "warnings": len(warnings),
         "overall_status": "alert" if alerts else ("warn" if warnings else "ok"),
-    }
+    })
