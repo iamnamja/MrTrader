@@ -20,7 +20,7 @@ encouragement. Where you see something wrong, say so plainly and explain why.
 Review the system below and tell me how to make it **materially better**. I care about four
 things specifically, but range wider if you see something important:
 
-1. **Models & signals on the new options data.** We now have ~2–4 years of survivorship-safe,
+1. **Models & signals on the new options data.** We now have ~4 years of survivorship-safe,
    point-in-time daily OPRA option bars for the Russell-1000 universe (details below). Short-vol
    strategies we tried look like a *risk premium, not alpha*. What genuinely *alpha-shaped*
    uses of this options data would you pursue (e.g., dispersion, skew/term-structure signals,
@@ -104,8 +104,9 @@ gate-controlled) allocator. Goal: find and run **capital-grade alpha**, not coll
 
 **The options data we now hold locally (the new asset):**
 - Source: **Polygon Options Developer** ($79/mo), S3 flat files `us_options_opra/day_aggs_v1`.
-- ~**60M+ daily option bars**, ~**711 underlyings** (Russell-1000 union + index ETFs), ~2 years
-  (extending toward the ~4y the subscription allows). Survivorship-safe + PIT by construction.
+- ~**112M daily option bars**, **733 underlyings** (Russell-1000 union + index ETFs),
+  **2022-06-09 → 2026-06-08 (~4 years — the maximum the subscription provides)**, ~6.2M distinct
+  contracts. Survivorship-safe + PIT by construction.
 - **Hard limits:** historical **IV / greeks / open-interest / NBBO are NOT available** — we
   *compute* greeks (Black-Scholes / Bjerksund-Stensland / CRR) from close + spot + r + q, mark
   off EOD close, and never use OI (liquidity via volume/notional). Current-chain IV/greeks/OI
