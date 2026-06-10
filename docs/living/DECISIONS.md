@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Reliability: KillSwitch.load_state() strict-bool — never coerce a malformed persisted value to ACTIVE
+
+**Context**: The live log showed `Kill switch restored as ACTIVE from persisted state` at a 09:41 startup, yet the kill switch had **never been activated** — the persisted config (`kill_switch.active`) was a real bool `False` (last written 2026-05-29) and the only kill-switch audit event ever is an April test-reset. Root cause: that "startup" was a **pytest run that leaked into the production log** (its banner carried `MagicMock` objects), and `KillSwitch.load_state()` did `self._active = bool(val)`. The mocked config store returned a `MagicMock`, and `bool(MagicMock())` is `True` → it falsely logged "restored as ACTIVE." The same `bool()` coercion would misfire in **production** for any non-bool value: a legacy/corrupted string `"false"` also evaluates `bool("false") == True`, which would spuriously HALT live trading on startup. (Same "unguarded `bool(mock)` surface" family as #429.)
+
+**Decision**: Harden `load_state()` to a **strict `isinstance(val, bool)`** check. A genuine `activate()`/`reset()` always persists a real JSON bool, so a clean `True` is never lost; any non-bool is malformed → log a WARNING and treat as **INACTIVE**. We deliberately fail toward *not* halting on garbage rather than fail toward a spurious halt: we only ever ignore values that could not have come from a legitimate activation, and a real emergency activation (clean bool `True`) is always honored.
+
+**Rationale**: A kill switch is a safety device, but a spurious self-engaging halt on every restart (from a mock under test, or one bad config row in prod) is itself a serious reliability failure and erodes trust in the control. Strict-bool removes the only path by which a non-activated switch could read as active. 6 regression tests (`tests/test_kill_switch_load_state.py`) cover the exact MagicMock case + string `"false"`/`"true"` + genuine bool True/False + missing row.
+
+**Consequences**: Startup can no longer be tricked into a false halt by a malformed `kill_switch.active`. Live trading was never actually halted by this (the real value was always False) — the only prior effect was misleading log noise. **Separately noted (not fixed here):** a test exercising the startup/lifespan path still logs to the production `mrtrader_<date>.log` instead of the isolated `test_mrtrader_<date>.log` — a log-isolation gap worth a follow-up. Not a WF/CPCV change → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-10 — Live trading: PEAD execution now honors the 5% telemetry position cap
 
 **Context**: Pre-Monday verification (Opus live-path review) found the Trader re-sizes every entry via the generic `size_position` (2%-risk / ATR-stop, hard-capped at the global `MAX_POSITION_PCT=0.10`) and **discarded** the PM's PEAD-ramped `proposal["quantity"]`. So `pm.pead_max_position_pct=0.05` (the owner's deliberate Alpha-v4 telemetry-size decision) and `pm.pead_size_mult` were **inert at execution** — live PEAD names could be sized to the global 10% cap, double the validated 5% telemetry size. (The earlier #420 fix corrected the PEAD *stop* used for sizing — PEAD's own 0.5×ATR vs the swing stop — but not the position-% cap.)
