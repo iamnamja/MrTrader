@@ -44,3 +44,31 @@ def test_pead_sized_returns_none_when_unavailable():
     assert Trader._pead_sized_stop_target(100.0, {"entry_price": 100.0}) == (None, None)
     s, t = Trader._pead_sized_stop_target(100.0, {"entry_price": 100.0, "stop_loss": 97.0})
     assert s == 97.0 and t is None
+
+
+# ── PEAD live-sizing CAP fidelity (HIGH-2): size_position honors a custom cap ──────────
+# The Trader re-sizes PEAD via size_position; previously it used the global 10%
+# MAX_POSITION_PCT, silently overriding the owner-set pm.pead_max_position_pct=0.05
+# telemetry cap. size_position now takes max_position_pct so the Trader can pass PEAD's 5%.
+from app.strategy.position_sizer import size_position  # noqa: E402
+
+
+def test_size_position_custom_cap_binds_when_tight_stop():
+    """With a tight stop (cap is the binding constraint), a 5% cap halves the position
+    vs the 10% default — the PEAD telemetry cap is now enforceable at execution."""
+    eq = cash = 100_000.0
+    # entry 100, stop 99 -> $1/share risk; risk-based=2000, cash-cap=900, so the
+    # per-position cap binds. ml_score=0 -> no conviction multiplier.
+    default = size_position(eq, cash, 100.0, 99.0, ml_score=0.0)
+    pead = size_position(eq, cash, 100.0, 99.0, ml_score=0.0, max_position_pct=0.05)
+    assert default == int(eq * 0.10 / 100.0) == 100
+    assert pead == int(eq * 0.05 / 100.0) == 50
+
+
+def test_size_position_custom_cap_inert_when_risk_based_smaller():
+    """When the risk-based size is below both caps, max_position_pct doesn't change it."""
+    eq = cash = 100_000.0
+    # entry 100, stop 50 -> $50/share; risk-based = 2000*0.02... = 40 shares << caps.
+    default = size_position(eq, cash, 100.0, 50.0, ml_score=0.0)
+    pead = size_position(eq, cash, 100.0, 50.0, ml_score=0.0, max_position_pct=0.05)
+    assert default == pead == 40

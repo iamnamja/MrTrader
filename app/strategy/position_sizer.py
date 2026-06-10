@@ -44,6 +44,7 @@ def size_position(
     stop_price: float,
     risk_fraction: float = RISK_FRACTION,
     ml_score: float = 0.0,
+    max_position_pct: float = MAX_POSITION_PCT,
 ) -> int:
     """
     Compute integer share count for a new position.
@@ -56,6 +57,8 @@ def size_position(
         risk_fraction:   fraction of equity to risk (default 2%)
         ml_score:        ML model confidence (0–1). When > 0, applies a
                          conviction multiplier to risk_fraction (0.75–1.25×).
+        max_position_pct: per-position cap as a fraction of equity (default 10%).
+                         Pass a sleeve-specific cap (e.g. PEAD's validated 5%).
 
     Returns:
         Integer share count >= 0. Returns 0 if inputs are invalid
@@ -82,8 +85,9 @@ def size_position(
 
     # Cap at 90% of available cash
     max_affordable = int(available_cash * CASH_CAP / entry_price)
-    # Cap at 10% of account equity per position (prevents oversized bets on tight-stop stocks)
-    max_position = int(account_equity * MAX_POSITION_PCT / entry_price)
+    # Cap at max_position_pct of account equity per position (default 10%; callers pass a
+    # tighter cap for sleeves with their own validated sizing, e.g. PEAD's 5% telemetry cap).
+    max_position = int(account_equity * max_position_pct / entry_price)
     shares = min(risk_based_shares, max_affordable, max_position)
 
     if shares <= 0:
