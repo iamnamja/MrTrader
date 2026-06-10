@@ -4,9 +4,19 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-09 (Alpha-v5 options program built + PAUSED; live book hardened; focus → operate/harden PEAD + trend)
+**Last updated:** 2026-06-10 (4y options data acquired; OPT-5 implied filter → FRAGILE/parked; live-path + test-infra hardening; external quant review prepped)
 
-## 🧭 NOW (2026-06-09): options program PAUSED; operating the validated live book
+## 🧭 NOW (2026-06-10): operating the live book; options = data asset (not a sleeve); external review out
+- **Live book unchanged = PEAD (telemetry size) + TSMOM trend.** First REAL trend paper rebalance still **Mon 2026-06-15 09:45 ET** — verified READY (read-only shadow sim) and reliability-hardened (per-order commit + 1800s weekly misfire grace, #430). Today is quiet/no-trades and that's correct: swing ML ranker dormant by design (`pm.swing_ml_live_enabled=false`), PEAD found 0 qualifying earnings signals, trend not due until Monday.
+- **OPT-5 implied-move filter → ❌ FRAGILE / PARKED (#433).** The threshold-robustness sweep showed the PEAD lift exists only at ratio=1.0 and *inverts* at 1.25 → overfit-suspect. Don't pursue without a powered + pre-registered re-test. Broader options program stays PAUSED (short-vol = risk premium, not alpha).
+- **Options data → full 4y local store acquired (#440).** 2022-06-09 → 2026-06-08, ~112.8M bars, 733 names, ~6.18M contracts — the max the Polygon Developer plan serves. We now own the complete copy **even if the subscription is cancelled.**
+- **Reliability / test-infra hardening (this session):** kill-switch strict-bool restore (#434); test→prod log/DB bleed closed via one shared `is_test_mode()` (#435/#436); weekly regime retrain + fixed 3-class gate revived from an abandoned PR (#439); Finnhub+FMP economic-calendar 403 log-spam silenced (#437/#441 — the calendar needs a paid tier on BOTH providers; falls back to FRED macro + hardcoded FOMC/NFP).
+- **External quant review prepped:** `docs/reference/prompts/EXTERNAL_QUANT_REVIEW_PROMPT.md` + the `20260610_Quant_Options_Review/` kit — soliciting world-class-quant feedback on the next phase across multiple LLMs (harness soundness, options models, architecture gaps).
+- **Next:** synthesize the external LLM reviews → choose the next research direction (likely a 2nd event-driven edge and/or an alpha-shaped options signal on the new 4y data); operate Monday's first trend rebalance.
+
+---
+
+## 🧭 PRIOR (2026-06-09): options program PAUSED; operating the validated live book
 - **Live book = PEAD (telemetry size) + TSMOM trend.** The **dead cross-sectional swing ML ranker is now OFF in the live path** (`pm.swing_ml_live_enabled=false`) — it was silently producing ~30/32 recent trades of a validated-null strategy (#418). The Trader's ML-score gate is now observable (`REJECTED_ML_SCORE`).
 - **Trend armed for paper:** `pm.trend_enabled=true`, `pm.trend_shadow=false` → first REAL paper rebalance **Mon 2026-06-15 09:45 ET** (weekly cadence, ~7 ETFs, 40% alloc), via the orchestrator scheduler.
 - **PEAD** clears the 0.55 entry gate (confidence 0.65–0.90); event-sparse (fires on earnings). Live-sizing fidelity fixed (sizes off PEAD's own ATR stop, not the swing stop).

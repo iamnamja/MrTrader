@@ -55,10 +55,28 @@ snapshot-validated engine → PIT survivorship-safe data (expired-inclusive, kno
 | **OPT-2** | `OptionsSimulator` (daily MTM off real closes, intrinsic settle) + `OptionsSpreadCostModel` (1×/2×/3× stress) + 19 golden-path tests | ✅ shipped 2026-06-09 |
 | **OPT-3** | Strategy adapter (`options_strategy.py`) + **earnings IV-crush** E2E → first verdict: **❌ KILL** (Opus-certified) **[owner checkpoint]** | ✅ shipped 2026-06-09 |
 | **OPT-4** | Index/ETF systematic short-vol (SPY/QQQ/IWM iron condors, 1.5×-SD strikes) + `IndexShortVolStrategy` + 6 tests | ✅ shipped 2026-06-09 — **KILL standalone** (VRP real + cost-robust PF 2.24/1.75, but Sharpe-weak/under-powered) |
-| **OPT-5** | Options-data-as-signal: implied-move "priced-in" filter for PEAD (`ImpliedMoveProvider` + scorer hook) on the R1K 2y backfill | ✅ shipped 2026-06-09 — **STRONGER LEAD** (improves PEAD; lift is ALPHA-like, not beta; still underpowered) |
+| **OPT-5** | Options-data-as-signal: implied-move "priced-in" filter for PEAD (`ImpliedMoveProvider` + scorer hook) on the R1K backfill | ✅ shipped 2026-06-09 — was STRONGER LEAD → **UPDATE 2026-06-10: ❌ threshold-FRAGILE/overfit-suspect (#433); PARKED** (revivable only with a powered + pre-registered re-test; 4y data now available) |
 | **OPT-4b** | Index short-vol refinement (regime/VIX overlay + weekly cadence for power) **OR** cross-sectional/relative VRP (delta-neutral long-cheap/short-rich) | deferred (owner steer) |
 
 **OPT-5 finding (2026-06-09).** Options-data-as-SIGNAL (not execution), judged on PEAD's OWN CPCV gate — so no alpha-gate-vs-risk-premium mismatch. The implied-move "priced-in" filter (skip PEAD entries whose realized announce move was within the pre-earnings IMPLIED move, realized/implied < 1.0) **improves PEAD** on the 2y options-covered window: mean Sharpe **0.891 → 1.346** (+0.45), path-t **1.56 → 1.90**, Avg PF **2.09 → 2.52**, Calmar 5.4 → 8.6 (%pos 74.1% unchanged). This is the **opposite** of the prior *price-based* priced-in filter (which hurt PEAD) and the program's first positive options signal. **Alpha-vs-beta CONFIRMED (the key check)** — after fixing the EventEdge harness to emit daily_returns_dated (#422), residual-α now computes: baseline beta-hedged Sharpe **+0.035** (β=0.12, resid-α t +0.04 = pure beta, as known); **filtered beta-hedged Sharpe +0.587** (β=0.14 ~flat, resid-α t +0.65). So the lift is **ALPHA-like, not beta** — the filter selects trades with genuine drift. The program's first real (non-beta) edge enhancement. Still **UNDERPOWERED / do NOT deploy**: resid-α t 0.65 < 2 on the thin 2y/8-fold sample; single threshold (multiplicity); DSR saturated; neither arm clears the gate. **A materially stronger lead** — remaining confirmation: threshold robustness (0.75/1.25) + more data (4y R1K backfill, needs a partitioned-write refactor). Default OFF. Built: `app/data/options_signal.py`, PEAD scorer hook (default OFF), `run_pead_implied_filter_cpcv.py`, `--r1k` backfill (60.8M bars, 100% PEAD coverage).
+
+**OPT-5 UPDATE (2026-06-10) — threshold robustness RUN → ❌ FRAGILE; filter PARKED.** The two
+remaining confirmations both resolved:
+- **Threshold robustness sweep** (`run_pead_implied_threshold_sweep.py`, #433): tested at
+  {0.75, 1.0, 1.25} on the same window. The lift is **concentrated entirely at 1.0** (Δmean
+  +0.455, Δhedged +0.551), marginal at 0.75 (Δmean +0.098), and **NEGATIVE at 1.25** (Δmean
+  −0.264, Δhedged −0.311). A real effect plateaus; this spikes → **threshold-overfit /
+  overfit-suspect**. (An Opus deep-dive also caught + fixed a NaN-verdict bug in the sweep, so the
+  FRAGILE verdict is data-driven, not an artifact.) Decision: **do not advance the filter** without
+  (1) a demonstrated PLATEAU on a powered re-run AND (2) a single PRE-REGISTERED threshold. See
+  DECISIONS 2026-06-10 + `ML_EXPERIMENT_LOG.md`.
+- **More data: the "4y R1K backfill needs a partitioned-write refactor" blocker is RESOLVED**
+  (#440). The OOM was avoided WITHOUT a full refactor — backfill the missing earlier window as a
+  separate proven-size run (`--no-merge-existing --out …`), then bounded-memory stream-merge
+  (`scripts/merge_options_parquet.py`). **The options store now spans 2022-06-09 → 2026-06-08
+  (~4 years, ~112.8M bars, 733 underlyings, ~6.18M contracts)** — see `OPTIONS_DATA.md` §7. A
+  *powered, pre-registered* re-test is now feasible if revisited (lower priority per the FRAGILE
+  result — more data fixes power, not the threshold fragility).
 | **OPT-5** | Data-as-signal: implied-move PEAD filter, put-skew risk-off (no options exec; needs only OPT-1) | pullable early |
 | **OPT-6** | Allocator integration (re-run gate, ≥3 sleeves) | after survivors |
 | **OPT-7** | Tail hedge (covers trend fast-crash gap) | after 6 |
