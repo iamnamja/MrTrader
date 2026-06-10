@@ -27,6 +27,13 @@ _TIMEOUT = 8  # seconds
 _IMPACT_RANK = {"low": 0, "medium": 1, "high": 2}
 
 
+# FMP's economic_calendar is a PAID endpoint — a free/under-entitled key gets 401/403 on
+# every poll. A 403 is permanent, so after the first one we disable + log ONCE and skip the
+# call thereafter (no per-poll log spam). Reset only by a process restart (also when a plan
+# upgrade would take effect). Same discipline as finnhub_source._get.
+_ECON_CAL_DISABLED = False
+
+
 def _key() -> Optional[str]:
     from app.config import settings
     return getattr(settings, "fmp_api_key", None)
@@ -42,9 +49,12 @@ def fetch_economic_calendar(
     prior, actual, country, currency, id, source. Returns ``None`` if FMP is unavailable
     (so a caller may fall back to another provider).
     """
+    global _ECON_CAL_DISABLED
     key = _key()
     if not key:
         logger.debug("FMP key not configured — skipping economic calendar")
+        return None
+    if _ECON_CAL_DISABLED:
         return None
 
     today = date.today()
@@ -56,8 +66,16 @@ def fetch_economic_calendar(
             timeout=_TIMEOUT,
         )
         # Log status only — the URL/exception carries ?apikey=...
+        if r.status_code in (401, 403):
+            _ECON_CAL_DISABLED = True
+            logger.warning(
+                "FMP economic_calendar returned %d — the key lacks access (paid endpoint). "
+                "Disabling further calls this session; restart after upgrading the plan.",
+                r.status_code,
+            )
+            return None
         if r.status_code != 200:
-            logger.warning("FMP economic_calendar failed: HTTP %s", r.status_code)
+            logger.warning("FMP economic_calendar failed: HTTP %s (transient)", r.status_code)
             return None
         data = r.json()
     except Exception as exc:

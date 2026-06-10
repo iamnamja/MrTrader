@@ -1,17 +1,28 @@
 """Tests for the FMP economic-calendar source + the provider-agnostic dispatcher.
 
-The economic calendar moved from Finnhub (premium-only → 403 on the free tier) to FMP
-(free-tier capable). These cover: FMP response normalization to the shared schema, the
-fail-open None contract, token non-leakage, and the dispatcher's FMP-primary /
-Finnhub-fallback logic.
+The economic calendar moved from Finnhub to FMP — but FMP's economic_calendar is ALSO a
+paid endpoint (401/403 on a free/under-entitled key), so the source must disable it after the
+first permanent failure (no per-poll log spam), exactly like finnhub_source. These cover: FMP
+response normalization to the shared schema, the fail-open None contract, token non-leakage,
+the permanent-403 disable, and the dispatcher's FMP-primary / Finnhub-fallback logic.
 """
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import app.news.sources.fmp_source as fmp
 import app.news.sources.economic_calendar as ecal
 
 _KEY = "FMP_SECRET_do_not_log"
+
+
+@pytest.fixture(autouse=True)
+def _reset_disabled():
+    """The disable flag is module-global; reset around each test."""
+    fmp._ECON_CAL_DISABLED = False
+    yield
+    fmp._ECON_CAL_DISABLED = False
 
 
 def _near_future_event(**over):
@@ -91,6 +102,29 @@ def test_fmp_exception_returns_none_logs_type(caplog):
             assert fmp.fetch_economic_calendar() is None
     assert all(_KEY not in r.getMessage() for r in caplog.records)
     assert any("ConnectionError" in r.getMessage() for r in caplog.records)
+
+
+def test_fmp_403_disables_and_short_circuits(caplog):
+    """A 403 (paid endpoint) disables the source: returns None, the SECOND call makes NO
+    HTTP request, and it's logged once — no per-poll spam."""
+    with patch.object(fmp, "_key", return_value=_KEY), \
+         patch.object(fmp.requests, "get", return_value=_resp(403, [])) as mock_get:
+        with caplog.at_level("WARNING"):
+            assert fmp.fetch_economic_calendar() is None
+            assert fmp.fetch_economic_calendar() is None  # short-circuits
+    assert mock_get.call_count == 1, "disabled endpoint was retried"
+    assert fmp._ECON_CAL_DISABLED is True
+    assert sum("returned 403" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_fmp_transient_5xx_does_not_disable():
+    """A 503 is transient — must NOT disable (it may recover)."""
+    with patch.object(fmp, "_key", return_value=_KEY), \
+         patch.object(fmp.requests, "get", return_value=_resp(503, [])) as mock_get:
+        assert fmp.fetch_economic_calendar() is None
+        assert fmp.fetch_economic_calendar() is None  # retried, not disabled
+    assert mock_get.call_count == 2
+    assert fmp._ECON_CAL_DISABLED is False
 
 
 # ───────────────────────── dispatcher ──────────────────────────────────────────
