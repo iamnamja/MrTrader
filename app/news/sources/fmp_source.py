@@ -22,15 +22,17 @@ from app.news.sources.finnhub_source import _classify_event
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://financialmodelingprep.com/api/v3"
+_BASE = "https://financialmodelingprep.com/stable"
 _TIMEOUT = 8  # seconds
 _IMPACT_RANK = {"low": 0, "medium": 1, "high": 2}
 
 
-# FMP's economic_calendar is a PAID endpoint — a free/under-entitled key gets 401/403 on
-# every poll. A 403 is permanent, so after the first one we disable + log ONCE and skip the
-# call thereafter (no per-poll log spam). Reset only by a process restart (also when a plan
-# upgrade would take effect). Same discipline as finnhub_source._get.
+# Uses FMP's /stable/economic-calendar (covered by the Starter plan). NOTE: FMP deprecated
+# the legacy /api/v3 API on 2025-08-31 — it returns 403 "Legacy Endpoint" for non-legacy
+# keys, which was the real cause of the old econ-calendar 403 spam (NOT a missing paid tier);
+# fixed by moving to /stable/. We still disable + log ONCE on any 401/403 (e.g. a key that
+# genuinely lacks the endpoint) and skip thereafter (no per-poll spam); reset by a process
+# restart. Same discipline as finnhub_source._get.
 _ECON_CAL_DISABLED = False
 
 
@@ -61,7 +63,7 @@ def fetch_economic_calendar(
     to_date = today + timedelta(days=max(0, days_ahead))
     try:
         r = requests.get(
-            f"{_BASE}/economic_calendar",
+            f"{_BASE}/economic-calendar",
             params={"from": today.isoformat(), "to": to_date.isoformat(), "apikey": key},
             timeout=_TIMEOUT,
         )
@@ -69,8 +71,9 @@ def fetch_economic_calendar(
         if r.status_code in (401, 403):
             _ECON_CAL_DISABLED = True
             logger.warning(
-                "FMP economic_calendar returned %d — the key lacks access (paid endpoint). "
-                "Disabling further calls this session; restart after upgrading the plan.",
+                "FMP economic-calendar returned %d — the configured key lacks access to this "
+                "/stable endpoint. Disabling further calls this session; restart after fixing "
+                "the key/plan to re-enable.",
                 r.status_code,
             )
             return None
