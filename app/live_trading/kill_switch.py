@@ -48,7 +48,24 @@ class KillSwitch:
             try:
                 val = get_config(db, _CFG_KS_ACTIVE)
                 if val is not None:
-                    self._active = bool(val)
+                    # STRICT bool check — NEVER coerce via bool(). The genuine
+                    # activate()/reset() path always persists a real JSON bool, so a
+                    # non-bool value here is malformed (corrupted/legacy row, or a
+                    # mocked config store under test). bool() would turn ANY non-empty
+                    # such value — the string "false", a MagicMock, etc. — into True
+                    # and spuriously HALT live trading on startup. Treat malformed as
+                    # INACTIVE: a clean True is never misread, so a real activation is
+                    # never lost; we only ever ignore values that could not have come
+                    # from a legitimate activation.
+                    if isinstance(val, bool):
+                        self._active = val
+                    else:
+                        logger.warning(
+                            "Kill switch persisted state is non-bool (%r, type=%s) — "
+                            "treating as INACTIVE (refusing to halt on a malformed value)",
+                            val, type(val).__name__,
+                        )
+                        self._active = False
                     if self._active:
                         logger.warning("Kill switch restored as ACTIVE from persisted state")
                     return True
