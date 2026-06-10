@@ -23,7 +23,7 @@ from app.agents.base import BaseAgent
 from app.agents.circuit_breaker import circuit_breaker
 from app.database.models import Order, Trade
 from app.database.session import get_session
-from app.strategy.position_sizer import size_position
+from app.strategy.position_sizer import size_position, RISK_FRACTION, MAX_POSITION_PCT
 from app.strategy.signals import check_exit, generate_signal
 
 logger = logging.getLogger(__name__)
@@ -999,12 +999,42 @@ class Trader(BaseAgent):
         # Also cap cash to actual cash (not buying_power) to avoid margin inflation
         cash = min(cash, float(account.get("cash", cash)))
 
+        # PEAD live-sizing FIDELITY: PEAD's validated Alpha-v4 telemetry size is
+        # pm.pead_max_position_pct (0.05) scaled by pm.pead_size_mult — NOT the generic
+        # size_position cap (MAX_POSITION_PCT=0.10). Without this the owner's deliberate
+        # 5% cap is silently replaced by the global 10%, doubling the live PEAD position
+        # cap vs the validated/documented telemetry size. size_mult scales the risk
+        # budget (1.0 = no-op today). Reads are cheap — PEAD entries are event-sparse.
+        _risk_fraction = RISK_FRACTION
+        _max_position_pct = MAX_POSITION_PCT
+        if (proposal.get("selector") or "").lower() == "pead":
+            from app.database.agent_config import get_agent_config
+            from app.database.session import get_session
+            _cfg_db = get_session()
+            try:
+                _sm = get_agent_config(_cfg_db, "pm.pead_size_mult")
+                _mp = get_agent_config(_cfg_db, "pm.pead_max_position_pct")
+            finally:
+                _cfg_db.close()
+            try:
+                _size_mult = float(_sm) if _sm not in (None, "") else 1.0
+            except (TypeError, ValueError):
+                _size_mult = 1.0
+            try:
+                _max_position_pct = (float(_mp) if _mp not in (None, "")
+                                     else MAX_POSITION_PCT)
+            except (TypeError, ValueError):
+                _max_position_pct = MAX_POSITION_PCT
+            _risk_fraction = RISK_FRACTION * max(_size_mult, 0.0)
+
         shares = size_position(
             account_equity=equity,
             available_cash=cash,
             entry_price=result.entry_price,
             stop_price=result.stop_price,
+            risk_fraction=_risk_fraction,
             ml_score=ml_score or 0.0,
+            max_position_pct=_max_position_pct,
         )
         if shares <= 0:
             self.logger.warning("%s: position sizer returned 0 shares — skipping", symbol)

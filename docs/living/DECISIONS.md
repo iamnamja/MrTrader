@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Live trading: PEAD execution now honors the 5% telemetry position cap
+
+**Context**: Pre-Monday verification (Opus live-path review) found the Trader re-sizes every entry via the generic `size_position` (2%-risk / ATR-stop, hard-capped at the global `MAX_POSITION_PCT=0.10`) and **discarded** the PM's PEAD-ramped `proposal["quantity"]`. So `pm.pead_max_position_pct=0.05` (the owner's deliberate Alpha-v4 telemetry-size decision) and `pm.pead_size_mult` were **inert at execution** — live PEAD names could be sized to the global 10% cap, double the validated 5% telemetry size. (The earlier #420 fix corrected the PEAD *stop* used for sizing — PEAD's own 0.5×ATR vs the swing stop — but not the position-% cap.)
+
+**Decision**: `size_position` gains a `max_position_pct` parameter (default `MAX_POSITION_PCT`, so non-PEAD is byte-identical). For PEAD entries the Trader reads `pm.pead_max_position_pct` / `pm.pead_size_mult` and passes the 5% cap plus `risk_fraction = RISK_FRACTION * size_mult`. The caps now match the PM's `apply_pead_size_ramp` formula exactly (`account_value * max_position_pct / price`).
+
+**Rationale**: The owner set 5% intending PEAD capped at 5%; execution silently ignoring it is a fidelity bug, not a design choice. With `size_mult=1.0` (current) the only behavioral change is the cap (10%→5%) when it binds (tight PEAD stop → large risk-based size → cap binds), making live PEAD position size match its validated telemetry size. Opus diff re-review: correct + safe, no regressions (REST-config read robust; conviction multiplier inert once the cap binds; non-PEAD unchanged).
+
+**Consequences**: live PEAD per-name size is now ≤5% of equity (was ≤10%) — paper-only, more conservative, faithful to the validated book. 2 sizing tests added. Not a WF/CPCV change → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-10 — Live trading: harden the trend-sleeve rebalance for its first real run (Mon 2026-06-15)
 
 **Context**: Pre-Monday verification (two independent Opus deep-dives of the live PEAD and trend paths) found the system has **no hard blocker** — PEAD and trend both fire correctly — but surfaced two latent reliability risks in the never-yet-run trend rebalance path: **(F1)** `run_trend_rebalance` deferred its `db.commit()` to *after* the order-placement loop, so a crash/restart mid-loop orphaned already-placed Alpaca ETF positions with uncommitted Trade rows — which startup reconciliation then adopts as `trade_type="swing"` with a synthetic 2%/6% stop/target, letting the Trader liquidate a trend leg mid-week and re-buy it next Monday (double-trade). **(F2)** the shared `schedule_daily_at_time` used `misfire_grace_time=60`; for the *weekly* (Monday-only, in-handler-gated) trend job a >60s-late fire at 09:45 (busy loop / restart) makes APScheduler DROP the entire week's rebalance.
