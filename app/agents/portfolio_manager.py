@@ -4604,5 +4604,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         return swing_loaded or intraday_loaded
 
 
-# Module-level singleton (lazy — no connections at import time)
+# Module-level singleton. NOTE: NOT connection-free at import — the constructor
+# builds a ModelTrainer that opens the feature-store SQLite DB. That path honors
+# MRTRADER_FEATURE_STORE_DB so pytest-xdist workers stay isolated (see
+# ModelTrainer.__init__); production leaves it at {model_dir}/feature_store.db.
 portfolio_manager = PortfolioManager()

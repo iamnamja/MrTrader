@@ -720,8 +720,20 @@ class ModelTrainer:
         self.multi_window = multi_window
         self._feature_store_lock = threading.Lock()
         if use_feature_store:
+            import os
             from app.ml.feature_store import FeatureStore
-            self._feature_store: Optional[object] = FeatureStore(f"{model_dir}/feature_store.db")
+            # Honor the same MRTRADER_FEATURE_STORE_DB override that
+            # app.ml.feature_store / app.data.universe_history use. In production
+            # the env is unset → f"{model_dir}/feature_store.db" (byte-identical to
+            # before). Under pytest-xdist, conftest forces a per-worker path here so
+            # the module-level `portfolio_manager = PortfolioManager()` singleton —
+            # which constructs a ModelTrainer at import time — does NOT open the one
+            # shared on-disk feature_store.db across every worker (the cross-worker
+            # "database is locked" flake in test_agent_simulator_rebalance.py).
+            fs_path = os.environ.get(
+                "MRTRADER_FEATURE_STORE_DB", f"{model_dir}/feature_store.db"
+            )
+            self._feature_store: Optional[object] = FeatureStore(fs_path)
         else:
             self._feature_store = None
 
