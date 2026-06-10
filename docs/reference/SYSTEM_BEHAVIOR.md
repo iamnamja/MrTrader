@@ -378,3 +378,33 @@ hundreds of fake "Orchestrator started" banners and test-only errors into the
 file prefix to `test_mrtrader_<date>.log`. Production behavior is unchanged — the
 env var is never set outside pytest, and the live server keeps writing
 `mrtrader_<date>.log`. Covered by `tests/test_log_isolation.py`.
+
+---
+
+## Trend sleeve (TSMOM) — rebalance cadence & why Monday
+
+The trend sleeve (`app/live_trading/trend_sleeve.py`) rebalances the 10-ETF basket
+(SPY,QQQ,IWM,EFA,EEM,TLT,IEF,GLD,DBC,UUP) **weekly, on Monday 09:45 ET** to inverse-vol
+long-flat TSMOM target weights. The orchestrator registers the job **daily** (cron Mon–Fri
+09:45) with an in-handler `weekday == pm.trend_rebalance_weekday` (default 0 = Monday) guard,
+so the rebalance day is live-tunable (`agent_config`) without redeploy, and a market-open
+clock guard fails closed on holidays. `misfire_grace_time=1800` (vs the 60s default for daily
+jobs): a *weekly* job dropped by a >60s-late fire would skip the ENTIRE week, so it tolerates
+a 30-min-late fire (TSMOM is slow → benign). Orders are placed directly via Alpaca, tagged
+`selector/trade_type="trend"`, committed **per order** (a restart mid-loop must not orphan a
+placed ETF), and excluded from the Trader's stop/target exit loop (the rebalancer is their
+sole manager).
+
+**Why weekly:** `TSMOMConfig.rebalance_days=5` is the validated backtest cadence — the
+standalone +0.71 Sharpe (2007–26, all crises) was measured on a 5-day rebalance grid; the
+Monday wall-clock rebalance is its faithful live analog. **Why Monday:** a fixed weekday gives
+a deterministic weekly cadence; 09:45 is after the 09:30 selection nudge and after the open
+settles so daily bars/quotes are stable.
+
+**Why not more frequent:** mechanically safe (the path is rebalance-to-target + idempotent
+per-day `client_order_id` + fail-closed + gross-capped), but economically counter-productive —
+TSMOM signals use 21/63/126/252-day lookbacks and barely move day-to-day, so daily rebalancing
+mostly churns transaction costs (the backtest charges 2bps/one-way turnover; daily would
+multiply turnover ~5× against a near-static signal, degrading the validated Sharpe). The
+per-day `client_order_id` dedup is also keyed on the date, so a finer cadence would need a
+finer dedup key. **Keep weekly** unless a future signal redesign justifies otherwise.
