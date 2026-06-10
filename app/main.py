@@ -57,10 +57,21 @@ class _DailyFileHandler(logging.Handler):
 
     @staticmethod
     def _prefix() -> str:
-        # Detect pytest so test runs write to a separate log file, never the
-        # live mrtrader_<date>.log used by the running (paper) server.
-        # PYTEST_CURRENT_TEST is set during test execution; "pytest" in sys.modules
-        # covers collection/fixture-setup before the first test starts.
+        # Route test runs to a separate log file, never the live mrtrader_<date>.log
+        # the running (paper) server writes to.
+        #
+        # PRIMARY signal: the MRTRADER_TEST_MODE env var set by conftest at session
+        # start. Unlike the two runtime signals below, an env var PROPAGATES to
+        # spawned child processes — so an app boot in a pytest-spawned subprocess
+        # (Windows 'spawn' starts a fresh interpreter with no `pytest` in sys.modules
+        # and possibly no PYTEST_CURRENT_TEST) still routes to the test log. This is
+        # the blind spot that previously leaked a mocked startup into the live log.
+        #
+        # FALLBACK signals (belt-and-suspenders for in-process tests): PYTEST_CURRENT_TEST
+        # is set during test execution; "pytest" in sys.modules covers collection /
+        # fixture-setup before the first test starts.
+        if os.environ.get("MRTRADER_TEST_MODE") == "1":
+            return "test_mrtrader_"
         under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
         return "test_mrtrader_" if under_pytest else "mrtrader_"
 

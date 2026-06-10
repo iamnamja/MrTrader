@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Test isolation: route logs by an inherited env var so subprocess app-boots can't leak into the live log
+
+**Context**: The kill-switch false-ACTIVE log (above) was traced to a pytest run whose app-boot wrote into the **production** `mrtrader_<date>.log`. Empirically the isolation works ~99.9% of the time (a full suite produced 915 startup banners, all correctly routed to `test_mrtrader_<date>.log`); the leak is one specific path. `_DailyFileHandler._prefix()` decided the prefix from `PYTEST_CURRENT_TEST` (env, per-test) **or** `"pytest" in sys.modules`. Both are runtime signals that **do not survive a process boundary**: a pytest-spawned subprocess (Windows 'spawn' → fresh interpreter, no `pytest` imported, possibly no PYTEST_CURRENT_TEST) booting `app.main` falls through to the LIVE prefix.
+
+**Decision**: Add `MRTRADER_TEST_MODE=1`, force-set in `conftest.py` at import (before any test imports `app.main`), and make `_prefix()` check it FIRST. Env vars are **inherited by spawned children**, so any app boot under the test session — in-process or subprocess — routes to the isolated log. The two runtime signals are kept as belt-and-suspenders. Same env-propagation pattern already proven for the per-worker DB isolation (`MRTRADER_*_DB`).
+
+**Rationale**: The root fragility is relying on in-memory state (`sys.modules`) for a cross-process decision. An inherited env var is the only signal that is correct on both sides of a spawn. Production is unaffected (conftest never runs, the var is never set → live prefix; covered by an explicit "no signal → live prefix" test). 2 new regression tests in `test_log_isolation.py` (the subprocess blind spot + the production-default).
+
+**Consequences**: Closes the test→live-log leak class deterministically. Part of a broader test/prod-bleed and mock-fragility hardening sweep (see ML_EXPERIMENT_LOG / this date). Not a WF/CPCV change → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-10 — Reliability: KillSwitch.load_state() strict-bool — never coerce a malformed persisted value to ACTIVE
 
 **Context**: The live log showed `Kill switch restored as ACTIVE from persisted state` at a 09:41 startup, yet the kill switch had **never been activated** — the persisted config (`kill_switch.active`) was a real bool `False` (last written 2026-05-29) and the only kill-switch audit event ever is an April test-reset. Root cause: that "startup" was a **pytest run that leaked into the production log** (its banner carried `MagicMock` objects), and `KillSwitch.load_state()` did `self._active = bool(val)`. The mocked config store returned a `MagicMock`, and `bool(MagicMock())` is `True` → it falsely logged "restored as ACTIVE." The same `bool()` coercion would misfire in **production** for any non-bool value: a legacy/corrupted string `"false"` also evaluates `bool("false") == True`, which would spuriously HALT live trading on startup. (Same "unguarded `bool(mock)` surface" family as #429.)

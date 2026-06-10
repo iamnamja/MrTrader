@@ -15,6 +15,7 @@ NOT the live mrtrader_<date>.log.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -58,6 +59,30 @@ def test_emit_writes_only_to_test_log(tmp_path):
         assert "isolation probe" in test_path.read_text(encoding="utf-8")
     finally:
         handler.close()
+
+
+def test_subprocess_blind_spot_closed_by_env_var(monkeypatch):
+    """The historical leak: a pytest-SPAWNED subprocess boots app.main with a fresh
+    interpreter — no `pytest` in sys.modules and (often) no PYTEST_CURRENT_TEST — so the
+    old runtime-only detection fell through to the LIVE prefix. The MRTRADER_TEST_MODE
+    env var (set by conftest, inherited by children) must route it to the test log anyway.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delitem(sys.modules, "pytest", raising=False)
+    # conftest set MRTRADER_TEST_MODE=1 for the session; with BOTH runtime signals gone
+    # it is the only thing that can still pick the test prefix.
+    monkeypatch.setenv("MRTRADER_TEST_MODE", "1")
+    assert _DailyFileHandler._prefix() == "test_mrtrader_"
+
+
+def test_without_any_signal_prefix_is_live(monkeypatch):
+    """Sanity: with NO env var AND no pytest runtime signals (a genuine production
+    process), the prefix is the live one — confirming the env var is what closes the
+    gap, and that production behaviour is unchanged."""
+    monkeypatch.delenv("MRTRADER_TEST_MODE", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delitem(sys.modules, "pytest", raising=False)
+    assert _DailyFileHandler._prefix() == "mrtrader_"
 
 
 def test_no_active_daily_handler_targets_live_log():
