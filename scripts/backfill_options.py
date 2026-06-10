@@ -122,8 +122,21 @@ def main() -> int:
     p.add_argument("--end", type=str, default=None, help="YYYY-MM-DD (default: yesterday)")
     p.add_argument("--workers", type=int, default=4, help="Parallel day-file downloads")
     p.add_argument("--max-days", type=int, default=None, help="Cap (debug)")
+    p.add_argument("--out", type=str, default=None,
+                   help="Bars output path (default: data/options_bars.parquet)")
+    p.add_argument("--out-contracts", type=str, default=None,
+                   help="Contracts output path (default: data/options_contracts.parquet)")
+    p.add_argument("--no-merge-existing", action="store_true",
+                   help="Write ONLY the freshly-downloaded window — do NOT read+merge the "
+                        "existing store. Use for a separate-window backfill that is later "
+                        "stream-merged (scripts/merge_options_parquet.py), avoiding the "
+                        "in-memory full-history concat that OOMs at 4y R1K.")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
+
+    from pathlib import Path as _Path
+    out_bars = _Path(args.out) if args.out else op.OPTIONS_BARS_PARQUET
+    out_contracts = _Path(args.out_contracts) if args.out_contracts else op.OPTIONS_CONTRACTS_PARQUET
 
     if args.r1k:
         from app.utils.constants import RUSSELL_1000_TICKERS
@@ -172,19 +185,21 @@ def main() -> int:
                 logger.info("  %d/%d day-files scanned (%d bar rows so far)",
                             done, len(days), rows)
 
-    existing = op.load_options_bars(refresh=True)
+    existing = pd.DataFrame() if args.no_merge_existing else op.load_options_bars(refresh=True)
+    if args.no_merge_existing:
+        logger.info("--no-merge-existing: writing ONLY the downloaded window (no merge with store)")
     merged = _merge(existing, parts, op.BARS_COLS, ["contract", "date"])
-    op.OPTIONS_BARS_PARQUET.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_parquet(op.OPTIONS_BARS_PARQUET, index=False)
+    out_bars.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_parquet(out_bars, index=False)
     logger.info("wrote %s  (%d bar rows, %d contracts, %d underlyings)",
-                op.OPTIONS_BARS_PARQUET, len(merged),
+                out_bars, len(merged),
                 merged["contract"].nunique() if not merged.empty else 0,
                 merged["underlying"].nunique() if not merged.empty else 0)
 
     contracts = op.contracts_from_bars(merged)
-    contracts.to_parquet(op.OPTIONS_CONTRACTS_PARQUET, index=False)
+    contracts.to_parquet(out_contracts, index=False)
     logger.info("wrote %s  (%d contracts; expired+active, survivorship-safe)",
-                op.OPTIONS_CONTRACTS_PARQUET, len(contracts))
+                out_contracts, len(contracts))
     return 0
 
 
