@@ -28,18 +28,29 @@ class AgentScheduler:
             logger.info("Agent scheduler stopped")
 
     def schedule_daily_at_time(
-        self, func: Callable, hour: int, minute: int, job_id: str
+        self, func: Callable, hour: int, minute: int, job_id: str,
+        misfire_grace_time: int = 60,
     ):
-        """Run func daily at hh:mm ET on weekdays."""
+        """Run func daily at hh:mm ET on weekdays.
+
+        misfire_grace_time: seconds the run may fire late before APScheduler DROPS it.
+        The 60s default suits jobs that run every weekday (a miss costs one day). For a
+        WEEKLY job (e.g. the Monday-only trend rebalance, gated in-handler) a 60s miss
+        would silently skip the ENTIRE week, so pass a generous grace (the trend job
+        uses 1800s) — the rebalance target is a slow signal, so firing up to 30 min late
+        is harmless, whereas dropping the week is not.
+        """
         self.scheduler.add_job(
             func,
             CronTrigger(hour=hour, minute=minute, day_of_week="0-4",
                         timezone="America/New_York"),
             id=job_id,
             replace_existing=True,
-            misfire_grace_time=60,
+            misfire_grace_time=misfire_grace_time,
+            coalesce=True,
         )
-        logger.info("Scheduled %s daily at %02d:%02d ET", job_id, hour, minute)
+        logger.info("Scheduled %s daily at %02d:%02d ET (grace=%ds)",
+                    job_id, hour, minute, misfire_grace_time)
 
     def schedule_every_n_minutes(
         self, func: Callable, minutes: int, job_id: str

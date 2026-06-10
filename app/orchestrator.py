@@ -115,9 +115,13 @@ class AgentOrchestrator:
         # an in-function weekday guard so pm.trend_rebalance_weekday stays live-tunable
         # (no redeploy to change the rebalance day). 09:45 is after the 09:30 selection
         # nudge and after the open settles so daily bars/quotes are stable.
+        # misfire_grace_time=1800: this is a WEEKLY rebalance (Monday-only, in-handler
+        # gated). With the 60s default, a >60s-late fire at 09:45 (busy loop / restart)
+        # would make APScheduler DROP the whole week's rebalance. A 30-min grace lets a
+        # delayed Monday fire still run; TSMOM is a slow signal so a late fire is benign.
         scheduler.schedule_daily_at_time(
             self._trigger_trend_rebalance, hour=9, minute=45,
-            job_id="trend_rebalance_trigger"
+            job_id="trend_rebalance_trigger", misfire_grace_time=1800,
         )
 
     # ─── Agent runner ─────────────────────────────────────────────────────────
