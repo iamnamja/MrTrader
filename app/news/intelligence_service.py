@@ -52,7 +52,7 @@ class NewsIntelligenceService:
 
     def _build_macro_context(self) -> MacroContext:
         try:
-            from app.news.sources.finnhub_source import fetch_economic_calendar
+            from app.news.sources.economic_calendar import fetch_economic_calendar
             from app.news.llm_scorer import macro_classify
 
             events = fetch_economic_calendar(days_ahead=1, min_impact="medium")

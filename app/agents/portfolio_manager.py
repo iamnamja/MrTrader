@@ -799,7 +799,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         """
         POST_EVENT_DELAY_MINUTES = 3
         try:
-            from app.news.sources.finnhub_source import fetch_economic_calendar
+            from app.news.sources.economic_calendar import fetch_economic_calendar
             from app.news.intelligence_service import nis
             from datetime import timezone
 
