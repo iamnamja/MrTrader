@@ -47,7 +47,7 @@ def _fetch_polygon(start_dt: date, end_dt: date) -> dict:
         return {}
 
 
-def _fetch_yfinance(start_dt: date, end_dt: date) -> dict:
+def _fetch_yfinance(start_dt: date, end_dt: date, min_bars: int = 5) -> dict:
     import pandas as pd
     import yfinance as yf
 
@@ -75,7 +75,11 @@ def _fetch_yfinance(start_dt: date, end_dt: date) -> dict:
                 df = raw.copy()
             df.columns = [c.lower() for c in df.columns]
             df = df.dropna(subset=["close"])
-            if not df.empty and len(df) >= 5:
+            # min_bars is a history sanity floor for FULL backfills (reject garbage
+            # series). Incremental daily appends legitimately have 1 new bar, so the
+            # caller drops the floor to 1 — otherwise every daily increment is silently
+            # discarded and the yfinance fallback can never advance the file.
+            if not df.empty and len(df) >= min_bars:
                 result[etf] = df[["open", "high", "low", "close", "volume"]].astype(float)
         except Exception as exc:
             logger.warning("yfinance parse failed for %s: %s", etf, exc)
@@ -112,17 +116,27 @@ def run(days: int = 2520, dry_run: bool = False, incremental: bool = False) -> N
         logger.info("[DRY-RUN] Would fetch %s from %s to %s", SECTOR_ETFS, start_dt, end_dt)
         return
 
-    # Try Polygon first; fall back to yfinance
+    # Try Polygon first; fall back to yfinance. Incremental appends are typically a
+    # single new trading day, so drop the yfinance history floor to 1 bar.
+    min_bars = 1 if incremental else 5
     data = _fetch_polygon(start_dt, end_dt)
     if not data:
-        data = _fetch_yfinance(start_dt, end_dt)
+        data = _fetch_yfinance(start_dt, end_dt, min_bars=min_bars)
 
     ok = len(data)
-    errors = len(SECTOR_ETFS) - ok
-    logger.info("Fetch complete: %d ETFs ok, %d errors", ok, errors)
+    missing = len(SECTOR_ETFS) - ok
+    logger.info("Fetch complete: %d ETFs ok, %d not returned", ok, missing)
 
     if not data:
-        logger.warning("No data fetched — exiting")
+        if incremental:
+            # The common premarket/weekend/holiday case: today's daily bar simply
+            # isn't published yet. Nothing is wrong and nothing is stale — the file is
+            # already current through the last completed trading day.
+            logger.info("No new bars available yet for %s → %s (providers have no data "
+                        "for this window) — file already current, nothing to append",
+                        start_dt, end_dt)
+        else:
+            logger.warning("No data fetched — exiting")
         return
 
     for etf, df in data.items():
