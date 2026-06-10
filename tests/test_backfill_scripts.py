@@ -142,3 +142,39 @@ class TestSectorEtfBackfill:
         result = pd.read_parquet(out)
         assert set(result.columns) >= {"etf", "date", "open", "high", "low", "close", "volume"}
         assert set(result["etf"].unique()) == set(SECTOR_ETFS)
+
+    def _make_yf_raw(self, n_rows):
+        """Build a yfinance group_by='ticker' MultiIndex frame with n_rows daily bars."""
+        from scripts.backfill_sector_etf_history import SECTOR_ETFS
+        idx = pd.date_range("2026-06-04", periods=n_rows, freq="B")
+        cols = pd.MultiIndex.from_product(
+            [SECTOR_ETFS, ["Open", "High", "Low", "Close", "Volume"]]
+        )
+        data = {
+            (etf, field): ([100.0] * n_rows if field != "Volume" else [1_000_000] * n_rows)
+            for etf in SECTOR_ETFS for field in ["Open", "High", "Low", "Close", "Volume"]
+        }
+        return pd.DataFrame(data, index=idx, columns=cols)
+
+    def test_yfinance_min_bars_floor_drops_short_series_on_full_backfill(self):
+        """A <5-bar series is rejected by the history sanity floor in full mode."""
+        from scripts.backfill_sector_etf_history import _fetch_yfinance, SECTOR_ETFS
+        from datetime import date
+        raw = self._make_yf_raw(1)
+        with patch("yfinance.download", return_value=raw):
+            out = _fetch_yfinance(date(2026, 6, 4), date(2026, 6, 4), min_bars=5)
+        assert out == {}  # 1 bar < floor of 5
+
+    def test_yfinance_incremental_keeps_single_new_bar(self):
+        """Regression: incremental appends (min_bars=1) must NOT drop a 1-bar series.
+
+        With the old hard-coded `len(df) >= 5` floor the yfinance fallback silently
+        discarded every daily increment, so the file could never advance via yfinance.
+        """
+        from scripts.backfill_sector_etf_history import _fetch_yfinance, SECTOR_ETFS
+        from datetime import date
+        raw = self._make_yf_raw(1)
+        with patch("yfinance.download", return_value=raw):
+            out = _fetch_yfinance(date(2026, 6, 4), date(2026, 6, 4), min_bars=1)
+        assert set(out.keys()) == set(SECTOR_ETFS)
+        assert all(len(df) == 1 for df in out.values())

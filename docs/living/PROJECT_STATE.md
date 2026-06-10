@@ -170,9 +170,9 @@ All 3 phases of the gate integrity overhaul are merged (PRs #329–#334). Pipeli
 ## Model Status
 → See `docs/living/MODEL_STATUS.md` for full details.
 
-- **swing v224** — trained 2026-05-29; never CPCV-validated post-audit. **CPCV launching tonight.**
-- **intraday_meta v63** — CPCV +5.143 (2026-05-30) but that run predates Phase 1 deployment tracking + Phase 2 regime gate. **Re-running CPCV tonight** to get deployment-adjusted Sharpe.
-- **regime v5** — active
+- **swing v229** — trained 2026-06-06 (age 4d); XS swing ranker is OFF in the live path (`pm.swing_ml_live_enabled=false`).
+- **intraday_meta v65** — trained 2026-06-06 (age 4d).
+- **regime v5** — active (age 20d).
 
 ---
 
