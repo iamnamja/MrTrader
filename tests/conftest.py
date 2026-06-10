@@ -64,6 +64,18 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from app.database.models import Base
 
+# Pre-import modules that bind `get_session` via `from app.database.session import
+# get_session`, BEFORE any test patches app.database.session.get_session. The
+# test_client fixture patches session.get_session AND these modules' get_session in one
+# `with` block. If such a module is imported FRESH while session.get_session is already
+# patched, its `from ... import get_session` binds to the MOCK; unittest.mock then
+# captures that mock as the patch's "original" and "restores" to it on exit — leaking the
+# mock into every later test in the worker (proven: test_client left
+# signal_attribution.get_session a MagicMock). Importing them here binds their name to the
+# REAL function once, so the patch's capture/restore is symmetric and the leak is closed.
+import app.analytics.signal_attribution  # noqa: E402,F401
+import app.analytics.drawdown_analyzer  # noqa: E402,F401
+
 
 # ── Phase-4 gate-mode default for the legacy test corpus ──────────────────────
 # The production default is GATE_MODE="significance" (the new two-tier gate). The
