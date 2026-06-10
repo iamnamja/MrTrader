@@ -39,7 +39,29 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
-## OPT-5 (Alpha-v5) — Options-data-as-signal: implied-move filter for PEAD — 2026-06-09 — VERDICT: 🟡 PROMISING LEAD (improves PEAD; unconfirmed, not deployed)
+## OPT-5 threshold robustness — implied-move filter is THRESHOLD-FRAGILE — 2026-06-10 — VERDICT: ❌ FRAGILE (lift does not replicate off 1.0; overfit-suspect)
+
+**What**: Follow-up the 2026-06-09 OPT-5 entry (below) explicitly flagged as "remaining confirmation: threshold robustness (0.75/1.25)". `scripts/run_pead_implied_threshold_sweep.py` runs the PEAD baseline ONCE and the implied-move filter at **{0.75, 1.0, 1.25}** on the SAME 2y R1K options-covered window (PEAD's own CPCV, k=8/p=2, no options execution — same gate/lens as #421/#423). Robust = the lift PLATEAUS across thresholds (real effect); fragile = it SPIKES only at 1.0 (threshold overfit).
+
+**Result** (PEAD CPCV, k=8/p=2, 2y R1K, same period all arms):
+| arm | mean Sharpe | path-t | resid-α t | hedged Sharpe | Δmean | Δhedged |
+|---|---|---|---|---|---|---|
+| baseline | 0.891 | 1.56 | +0.05 | +0.036 | — | — |
+| filter@0.75 | 0.989 | 1.48 | +0.37 | +0.338 | +0.098 | +0.302 |
+| **filter@1.0** | **1.346** | **1.90** | **+0.65** | **+0.587** | **+0.455** | **+0.551** |
+| filter@1.25 | 0.628 | 1.03 | −0.30 | −0.275 | −0.264 | −0.311 |
+
+(baseline 0.891 + filter@1.0 1.346 + hedged 0.036/0.587 reproduce the 2026-06-09 run EXACTLY — the only new info is the 0.75 / 1.25 arms.)
+
+- **FRAGILE — the lift is concentrated entirely at 1.0.** At 0.75 the mean lift is marginal (+0.098, below the +0.10 bar) though hedged improves; at **1.25 it goes clearly NEGATIVE on both mean (−0.264) and hedged (−0.311)** — worse than no filter. Only 1.0 clears both the mean (>+0.10) and hedged (>0) bars. A real effect would plateau; this spikes. Consistent with **threshold overfit on the thin 2y/8-fold sample** (the #423 multiplicity concern, now confirmed).
+- Even at the "best" 1.0 the alpha is **not statistically established** (resid-α t 0.65 < 1, DSR saturated, the per-arm CPCV gate FAILS on tstat/pct_positive/p5). The robustness check is a screen, not a deploy gate — and it screened the filter OUT.
+- **Critical bug found+fixed during this work (Opus deep-dive):** the sweep's `_m()` read the beta-hedged Sharpe from `residual_alpha_sharpe`/`hedged_sharpe` — neither exists on `CPCVResult` (the attr is `residual_sharpe`, cpcv.py:84) — so that metric was always NaN, which **hardcoded the verdict to FRAGILE regardless of the data**. Fixed the attr name; hardened the verdict to surface a non-computable hedged Sharpe honestly ("HEDGED UNAVAILABLE") and added an INCONCLUSIVE branch for non-finite mean-Sharpe; extracted a pure `classify_robustness()`. **17 tests** (`tests/test_pead_threshold_sweep.py`) incl. a direct regression guard. The hedged column above being populated (n=283) proves the verdict is now data-driven, NOT the NaN artifact.
+
+**Opus 4.8 verdict — FRAGILE / do NOT pursue as-is.** The #423 single-threshold lift is an overfit-suspect artifact: it does not survive a ±0.25 threshold perturbation, and inverts to a loss at 1.25. **Decision:** do not advance the implied-move filter toward deploy on the current evidence; if revisited, require (1) a PLATEAU on a powered (4y R1K) re-run, AND (2) a single PRE-REGISTERED threshold (no post-hoc 1.0-picking). This is a clean negative result that prevents chasing a thin-sample artifact. The Phase-4 4y-data refactor is now LOWER priority — it would only resolve power, not the fragility this sweep already exposes. See DECISIONS 2026-06-10.
+
+---
+
+## OPT-5 (Alpha-v5) — Options-data-as-signal: implied-move filter for PEAD — 2026-06-09 — VERDICT: 🟡 PROMISING LEAD (improves PEAD; unconfirmed, not deployed) — **UPDATE 2026-06-10: ❌ threshold-FRAGILE, superseded by the entry above**
 
 **What**: `app/data/options_signal.ImpliedMoveProvider` (PIT pre-earnings implied move = ATM straddle/spot, lazy per-symbol parquet reads) + PEAD scorer hook (`implied_move_fn`/`min_move_vs_implied`, default OFF) + `scripts/run_pead_implied_filter_cpcv.py`. Re-backfilled options for R1K (60.8M bars, 100% PEAD coverage). Filter: skip PEAD entry if realized announce move / pre-earnings implied move < 1.0 (already priced in).
 
