@@ -14,7 +14,7 @@
 
 | Phase | Item | Track | Effort | Status |
 |---|---|---|---|---|
-| **P0** | **Calibrate the ruler** (blocks trustworthy verdicts): positive/negative gate controls (**TSMOM-on-4y decisive**), **two-track acceptance** (A: standalone alpha / B: book-delta diversifier), research registry + pre-registration, DSR→report-only, `event_regime_sharpes()`. | — | M ~1.5wk | **NEXT** |
+| **P0** | **Calibrate the ruler** (blocks trustworthy verdicts): positive/negative gate controls (**TSMOM-on-4y decisive**), **two-track acceptance** (A: standalone alpha / B: book-delta diversifier), research registry + pre-registration, DSR→report-only, `event_regime_sharpes()`. | — | M ~1.5wk | 🔨 **IN PROGRESS** — gate-calibration harness shipped (#444, 49 tests); full control run + two-track gate + registry next |
 | **P1** | **Live-book fidelity** (make it boring before new capital): StrategySpec replay-diff, fill-quality table, nightly NBBO→calibrated spread table, multi-factor residual-α, paper-confirmation reworded as fidelity-only. | infra | M ~2wk | ∥ P0 |
 | **P2** | **Options feature layer**: persist computed IV/greeks (one pass over 112.8M bars), surface-quality reader, BMO/AMC event-time-aware snapshots, daily per-underlying feature table, R1K-union survivorship audit. | infra | M ~2wk | ∥ P0/P1 |
 | **P3** | **Earnings-event panel + PEAD v2** (centerpiece): one-row-per-event table; **event-LEVEL inference** (two-way clustered announce-day×firm); pre-registered H1 (re-adjudicate live PEAD), H2 (continuous reaction-ratio — settles OPT-5), H3 (continuous options-conditioned scorecard, NOT XGBoost). | A | L ~3–4wk | after P0+P2 |
