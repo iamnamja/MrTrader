@@ -189,12 +189,12 @@ class PremarketIntelligence:
         """
         found: Dict[str, Any] = {}
 
-        # Try FMP economic calendar (free tier, 3 days)
+        # Try FMP economic calendar (/stable/ — Starter plan; legacy /api/v3 deprecated 2025-08-31)
         try:
             from app.config import settings
             fmp_key = getattr(settings, "fmp_api_key", None)
             if fmp_key:
-                url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today}&to={today}&apikey={fmp_key}"
+                url = f"https://financialmodelingprep.com/stable/economic-calendar?from={today}&to={today}&apikey={fmp_key}"
                 resp = requests.get(url, timeout=8)
                 if resp.status_code == 200:
                     events = resp.json() or []
