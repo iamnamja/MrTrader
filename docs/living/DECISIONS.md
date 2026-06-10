@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Live trading: harden the trend-sleeve rebalance for its first real run (Mon 2026-06-15)
+
+**Context**: Pre-Monday verification (two independent Opus deep-dives of the live PEAD and trend paths) found the system has **no hard blocker** — PEAD and trend both fire correctly — but surfaced two latent reliability risks in the never-yet-run trend rebalance path: **(F1)** `run_trend_rebalance` deferred its `db.commit()` to *after* the order-placement loop, so a crash/restart mid-loop orphaned already-placed Alpaca ETF positions with uncommitted Trade rows — which startup reconciliation then adopts as `trade_type="swing"` with a synthetic 2%/6% stop/target, letting the Trader liquidate a trend leg mid-week and re-buy it next Monday (double-trade). **(F2)** the shared `schedule_daily_at_time` used `misfire_grace_time=60`; for the *weekly* (Monday-only, in-handler-gated) trend job a >60s-late fire at 09:45 (busy loop / restart) makes APScheduler DROP the entire week's rebalance.
+
+**Decision**: **(F1)** commit the `PENDING_FILL` Trade row immediately **per order** (with `db.rollback()` on failure) instead of one deferred post-loop commit — shrinking the orphan window from "the whole loop" to "one in-flight order." **(F2)** parameterize `schedule_daily_at_time(misfire_grace_time=…)` (default unchanged at 60) and give the trend job **1800s** (30 min) — TSMOM is a slow signal so a late fire is benign, whereas dropping the week is not. Also set `coalesce=True` explicitly (a no-op — APScheduler already defaults it).
+
+**Rationale**: Both are defense for the *first-ever* live rebalance. The per-order commit is strictly better than before (no scenario is made worse) and the residual one-order window is inherent to any place-then-record flow. The grace bump only affects the trend job's drop-threshold; the in-handler weekday + market-open guards + natural target==current idempotency mean even a spurious late/re-fire places zero wrong orders. Opus re-review of the diff: correct and safe, no BLOCKER/HIGH.
+
+**Consequences**: Monday's first trend rebalance is restart-safe and won't be silently skipped by a slightly-late fire. 4 new tests (per-order commit count, mid-loop order-failure durability, commit-failure rollback, scheduler grace). No WF/CPCV pipeline change → `PIPELINE_ARCHITECTURE.md` untouched. A separate follow-up tracks PEAD live-sizing fidelity (the Trader re-sizes via the generic 10%-cap `size_position`, not honoring `pm.pead_max_position_pct=0.05`).
+
+---
+
 ## 2026-06-09 — Alpha-v5 Options Program PAUSED after reassessment: our gate is an ALPHA gate, short-vol is a RISK PREMIUM
 
 **Context**: After two Opus-certified KILLs (OPT-3 single-name earnings IV-crush = cost-killed; OPT-4 index short-vol = VRP real + cost-robust PF 2.24/1.75 but standalone Sharpe ~0 + under-powered), the owner asked to reassess rather than keep building.

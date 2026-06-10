@@ -248,6 +248,68 @@ def test_run_live_places_orders(monkeypatch, _patch_env):
     assert all(o["client_order_id"].startswith("trend-") for o in fake.orders)
 
 
+def test_run_live_commits_per_order(monkeypatch, _patch_env):
+    """F1: each placed order is committed immediately (one db.commit per order), not a
+    single deferred commit after the loop — so a restart mid-loop cannot leave a placed
+    ETF with an uncommitted Trade row (which reconciliation would adopt as a swing)."""
+    cfg, audits = _patch_env
+    cfg["pm.trend_shadow"] = "false"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+    db = MagicMock()
+
+    summary = ts.run_trend_rebalance(db=db)
+
+    n = len(fake.orders)
+    assert summary["mode"] == "live" and n > 0
+    assert db.commit.call_count == n, (
+        f"expected one commit per order ({n}), got {db.commit.call_count} "
+        "(deferred post-loop commit would be 1)")
+
+
+def test_run_live_earlier_orders_committed_when_later_order_fails(monkeypatch, _patch_env):
+    """F1 durability: a mid-loop order failure does not lose earlier orders' commits."""
+    cfg, audits = _patch_env
+    cfg["pm.trend_shadow"] = "false"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    _orig = fake.place_market_order
+    _n = {"i": 0}
+
+    def _flaky(sym, qty, side, client_order_id=None):
+        _n["i"] += 1
+        if _n["i"] == 2:
+            raise RuntimeError("alpaca transient")
+        return _orig(sym, qty, side, client_order_id=client_order_id)
+
+    fake.place_market_order = _flaky
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+    db = MagicMock()
+
+    summary = ts.run_trend_rebalance(db=db)
+
+    # The run survives one bad order, and at least the first order was committed
+    # before the failure (durability — not all-or-nothing at the end).
+    assert summary["status"] == "ok"
+    assert db.commit.call_count >= 1
+
+
+def test_run_live_commit_failure_rolls_back_and_survives(monkeypatch, _patch_env):
+    """F1: a db.commit() failure is rolled back (session left usable) and does NOT abort
+    the rebalance run — exercises the new rollback branch."""
+    cfg, audits = _patch_env
+    cfg["pm.trend_shadow"] = "false"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+    db = MagicMock()
+    db.commit.side_effect = RuntimeError("db write conflict")
+
+    summary = ts.run_trend_rebalance(db=db)
+
+    assert summary["status"] == "ok"      # run survives commit failures
+    assert db.rollback.called             # the new rollback path is exercised
+    assert len(fake.orders) > 0           # orders still attempted despite commit issues
+
+
 def test_run_dormant_when_disabled(monkeypatch, _patch_env):
     cfg, audits = _patch_env
     cfg["pm.trend_enabled"] = "false"

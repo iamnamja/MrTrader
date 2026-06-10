@@ -50,6 +50,19 @@ class TestAgentScheduler:
         assert "test_daily" in job_ids
 
     @pytest.mark.asyncio
+    async def test_schedule_daily_default_and_custom_misfire_grace(self):
+        """F2: default grace is 60s; a weekly job (trend rebalance) can pass a larger
+        grace so a slightly-late fire isn't dropped (which would skip a whole week)."""
+        self.sched.start()
+        self.sched.schedule_daily_at_time(lambda: None, hour=9, minute=30,
+                                          job_id="daily_default")
+        self.sched.schedule_daily_at_time(lambda: None, hour=9, minute=45,
+                                          job_id="weekly_trend", misfire_grace_time=1800)
+        jobs = {j.id: j for j in self.sched.get_jobs()}
+        assert jobs["daily_default"].misfire_grace_time == 60
+        assert jobs["weekly_trend"].misfire_grace_time == 1800
+
+    @pytest.mark.asyncio
     async def test_schedule_interval_registers_job(self):
         self.sched.start()
         self.sched.schedule_every_n_minutes(lambda: None, minutes=5,

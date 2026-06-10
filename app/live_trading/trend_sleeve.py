@@ -465,13 +465,21 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                     _audit(sym, side, price=price, final_decision="block",
                            block_reason="order_error")
                     continue
+                # Persist the PENDING_FILL row and COMMIT immediately, per order. A
+                # deferred (post-loop) commit leaves every already-placed ETF with an
+                # UNCOMMITTED Trade row, so a crash/restart mid-loop orphans real Alpaca
+                # positions — which startup reconciliation then adopts as trade_type=
+                # "swing" with a synthetic 2%/6% stop/target, letting the Trader liquidate
+                # a trend leg mid-week and re-buy it next Monday (double-trade). Committing
+                # per order shrinks that window to a single in-flight order.
                 try:
                     _sync_trend_trade(db, sym, it["target_shares"], price, oid)
+                    db.commit()
                 except Exception:
-                    log.debug("trend: _sync_trend_trade failed (swallowed)", exc_info=True)
+                    db.rollback()
+                    log.debug("trend: _sync_trend_trade/commit failed (swallowed)", exc_info=True)
                 _audit(sym, side, price=price, final_decision="enter")
                 placed += 1
-            db.commit()
             log.info("trend LIVE: placed %d order(s) (%d blocked)", placed, len(blocked))
             summary["placed"] = placed
 
