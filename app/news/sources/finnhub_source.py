@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 _BASE = "https://finnhub.io/api/v1"
 _TIMEOUT = 8  # seconds
 
+# Endpoints that returned a PERMANENT auth/permission error (401/403) this process —
+# e.g. a premium-tier endpoint the configured (free) token can't access. Retrying such
+# an endpoint will never succeed, so after the first failure we record it here, log ONCE,
+# and skip it thereafter: no per-poll log spam, no pointless network round-trips. Reset
+# only by a process restart (which is also when a token upgrade would take effect).
+_DISABLED_ENDPOINTS: set[str] = set()
+
 # High-impact US macro event keywords (subset of what Finnhub returns)
 _HIGH_IMPACT_KEYWORDS = {
     "nonfarm": "NFP",
@@ -60,13 +67,36 @@ def _get(endpoint: str, params: dict) -> Optional[dict]:
     if not key:
         logger.debug("Finnhub key not configured — skipping %s", endpoint)
         return None
+    # Already-known-forbidden endpoint: skip silently (logged once, on first failure).
+    if endpoint in _DISABLED_ENDPOINTS:
+        return None
     params["token"] = key
     try:
         r = requests.get(f"{_BASE}/{endpoint}", params=params, timeout=_TIMEOUT)
+        # 401/403 = permanent (bad/insufficient token, e.g. a premium-only endpoint on the
+        # free tier). Disable + log ONCE rather than re-failing every poll. NOTE: log the
+        # status + endpoint only — never the exception/URL, which carry the API token.
+        if r.status_code in (401, 403):
+            _DISABLED_ENDPOINTS.add(endpoint)
+            logger.warning(
+                "Finnhub %s returned %d — the configured token lacks access (likely a "
+                "premium-only endpoint). Disabling further calls this session; restart "
+                "after upgrading the token to re-enable.",
+                endpoint, r.status_code,
+            )
+            return None
         r.raise_for_status()
         return r.json()
+    except requests.HTTPError as exc:
+        # Transient HTTP error (429 / 5xx) — may recover, so do NOT disable. Log status
+        # only (the exception's str embeds the full URL incl. ?token=...).
+        status = exc.response.status_code if exc.response is not None else "?"
+        logger.warning("Finnhub %s failed: HTTP %s (transient)", endpoint, status)
+        return None
     except Exception as exc:
-        logger.warning("Finnhub %s failed: %s", endpoint, exc)
+        # Network/timeout/parse error — log the exception TYPE, not its message (which can
+        # embed the token-bearing URL). Fail open: callers treat None as "no data".
+        logger.warning("Finnhub %s failed: %s", endpoint, type(exc).__name__)
         return None
 
 
