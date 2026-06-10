@@ -183,8 +183,19 @@ class TestSwingWalkforward:
             with patch("yfinance.download", side_effect=fake_download):
                 with patch("app.backtesting.agent_simulator.AgentSimulator.run",
                            return_value=mock_result):
+                    # feature_cache_disable=True keeps this fold-count unit test
+                    # hermetic. Otherwise run_swing_walkforward spawns a feature-cache
+                    # ProcessPoolExecutor and feeds it `model.feature_names` — a child
+                    # MagicMock here (walkforward_tier3 ~L896:
+                    # `getattr(model, "feature_names", None) or []`). That mock can't
+                    # pickle across the pool boundary (real "Can't pickle MagicMock"
+                    # warning) and the subprocess+mock path is the prime suspect for the
+                    # rare cross-worker `__bool__ should return bool, returned MagicMock`
+                    # flake seen in CI. A mocked-sim fold-count test should never spawn
+                    # that pool.
                     report = run_swing_walkforward(
-                        n_folds=2, total_years=3, symbols=["AAPL", "MSFT"]
+                        n_folds=2, total_years=3, symbols=["AAPL", "MSFT"],
+                        feature_cache_disable=True,
                     )
 
         assert len(report.folds) == 2
