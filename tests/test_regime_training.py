@@ -189,16 +189,19 @@ class TestGateThresholds:
         assert RISK_ON_THRESHOLD == 0.60
 
     def test_train_script_gate_values(self):
-        """Gate thresholds in train_regime_model.py must match reviewed values.
-
-        The reviewed gate: F1 >= 0.60, log_loss < 0.45.
-        Verify the inline literals in the script haven't drifted.
+        """The regime gate must use the reviewed 3-class values (macro_F1 >= 0.60,
+        log_loss < 0.45) — now centralized in retrain_config + the shared regime_gate(),
+        NOT inline literals in the CLI script. (The old 0.22 was a 2-class Brier cutoff
+        wrongly applied to 3-class cross-entropy log-loss.)
         """
         from pathlib import Path
+        from app.ml.retrain_config import REGIME_GATE_MACRO_F1_MIN, REGIME_GATE_LOG_LOSS_MAX
+        assert REGIME_GATE_MACRO_F1_MIN == 0.60
+        assert REGIME_GATE_LOG_LOSS_MAX == 0.45
+        # The CLI must delegate to the shared evaluator, and the stale 0.22 must be gone.
         src = (Path(__file__).parent.parent / "scripts" / "train_regime_model.py").read_text()
-        # These strings must appear in the script (gate logic uses inline literals)
-        assert ">= 0.60" in src or "auc_min >= 0.60" in src, \
-            "F1/AUC gate threshold 0.60 not found in train_regime_model.py"
+        assert "regime_gate" in src, "train_regime_model.py must use the shared regime_gate()"
+        assert "0.22" not in src, "stale 2-class Brier threshold 0.22 must be removed"
 
 
 class TestPklPayloadKeys:

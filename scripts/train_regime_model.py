@@ -46,7 +46,7 @@ def main() -> int:
 
     # Gate via the shared evaluator (single source of truth — see regime_gate()).
     # PRIOR BUG: this read payload["wf_auc_min"]/["brier_score"] directly, but those keys
-    # were only written to the DB row, NOT the pickle → KeyError; and the 0.22 cutoff was a
+    # were only written to the DB row, NOT the pickle → KeyError; and the old cutoff was a
     # 2-class Brier value wrongly applied to the 3-class cross-entropy log-loss.
     from app.ml.regime_training import regime_gate
     from app.ml.retrain_config import REGIME_GATE_MACRO_F1_MIN, REGIME_GATE_LOG_LOSS_MAX
