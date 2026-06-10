@@ -57,6 +57,10 @@ Parquet under `data/` (gitignored, like the other data stores):
 
 ## 7. Backfill
 
-`scripts/backfill_options.py` — `--underlyings`, `--years N` / `--start`/`--end`, `--workers N` (parallel day-file downloads), `--max-days` (debug), `--dry-run`. Defaults to a focused liquid optionable set (index ETFs + large caps) rather than all of OPRA — the earnings IV-crush (OPT-3) and VRP (OPT-4) strategies only need the names we actually trade. Re-runnable: merges + dedupes on `(contract, date)`. ASCII-safe console (Windows cp1252).
+`scripts/backfill_options.py` — `--underlyings`, `--r1k` (Russell-1000 union + index ETFs), `--years N` / `--start`/`--end`, `--workers N` (parallel day-file downloads), `--max-days` (debug), `--dry-run`. Defaults to a focused liquid optionable set (index ETFs + large caps) rather than all of OPRA — the earnings IV-crush (OPT-3) and VRP (OPT-4) strategies only need the names we actually trade. Re-runnable: merges + dedupes on `(contract, date)`. ASCII-safe console (Windows cp1252).
+
+**Large/deep backfills without OOM (added #440).** A full 4y R1K run in one shot OOMs on the in-memory full-history concat (~120M+ rows). Instead: backfill the missing earlier window as a *separate, proven-size* run — `--out PATH` / `--out-contracts PATH` (target alternate files) + `--no-merge-existing` (write only the freshly-downloaded window, skipping the read+merge of the existing store) — then **`scripts/merge_options_parquet.py`** stream-merges the windows one parquet row-group at a time (peak memory = one row group), with a row-group-statistics overlap guard that aborts on overlapping date ranges.
+
+**Current coverage (2026-06-10):** `data/options_bars.parquet` ≈ **112.8M bars** / **733 underlyings** / **~6.18M contracts**, spanning **2022-06-09 → 2026-06-08 (~4 years)** — the maximum the Polygon Developer plan serves (no data before ~mid-2022). This is the full local copy retained even if the subscription is cancelled.
 
 Smoke-tested 2026-06-09: 3 business days × SPY = 19,392 bars / 8,939 contracts; 791 already-expired contracts retained (survivorship verified); PIT filter confirmed (the latest trade date's bars, knowable next day, are correctly excluded as-of that date).
