@@ -32,6 +32,35 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 
+
+def regime_gate(payload: dict) -> tuple[bool, list[str]]:
+    """Evaluate the regime-model promotion gate from a saved pickle payload.
+
+    SINGLE SOURCE OF TRUTH for the gate — used by both ``scripts/train_regime_model.py``
+    and ``PortfolioManager._retrain_regime`` so the thresholds can never drift apart
+    (the prior bug was a 2-class Brier threshold 0.22 mis-applied to the 3-class model).
+
+    Gate: macro_F1 min across folds >= REGIME_GATE_MACRO_F1_MIN
+          AND log_loss mean (3-class cross-entropy; random baseline = log(3) ≈ 1.099)
+          < REGIME_GATE_LOG_LOSS_MAX.
+
+    Reads with safe defaults so a missing/garbage payload FAILS the gate rather than
+    raising. Returns (passed, failure_reasons).
+    """
+    from app.ml.retrain_config import (
+        REGIME_GATE_MACRO_F1_MIN,
+        REGIME_GATE_LOG_LOSS_MAX,
+    )
+    f1_min = payload.get("wf_auc_min", 0.0)            # macro_F1 min across folds
+    log_loss = payload.get("wf_log_loss_mean", 99.0)   # 3-class CE mean across folds
+    failures: list[str] = []
+    if not isinstance(f1_min, (int, float)) or f1_min < REGIME_GATE_MACRO_F1_MIN:
+        failures.append(f"macro_F1_min {f1_min} < {REGIME_GATE_MACRO_F1_MIN}")
+    if not isinstance(log_loss, (int, float)) or log_loss >= REGIME_GATE_LOG_LOSS_MAX:
+        failures.append(f"log_loss {log_loss} >= {REGIME_GATE_LOG_LOSS_MAX}")
+    return (not failures, failures)
+
+
 # Thresholds on the continuous score for display/legacy label derivation
 RISK_OFF_SCORE_THRESHOLD = 0.30   # score < 0.30 → RISK_OFF
 RISK_ON_SCORE_THRESHOLD = 0.60    # score >= 0.60 → RISK_ON
@@ -286,6 +315,10 @@ class RegimeModelTrainer:
         model_path = MODEL_DIR / f"regime_model_v{version}.pkl"
         xgb_model, temperature = self.train_final(df)
 
+        f1_min = min(
+            (r["macro_f1"] for r in fold_results if r.get("macro_f1") is not None),
+            default=0.0,
+        )
         with open(model_path, "wb") as f:
             pickle.dump({
                 "xgb_model": xgb_model,
@@ -299,6 +332,15 @@ class RegimeModelTrainer:
                 "wf_results": fold_results,
                 "wf_log_loss_mean": ll_mean,
                 "wf_macro_f1_mean": f1_mean,
+                # Gate inputs IN THE PICKLE so the CLI and the PM weekly retrain evaluate
+                # the gate without a DB query. `wf_auc_min` holds macro_F1 MIN across folds
+                # (legacy key name, repurposed for the 3-class model); `brier_score` holds
+                # log_loss mean (repurposed — it is 3-class cross-entropy, not a Brier
+                # score). Consumed by regime_gate(). PRIOR BUG: train_regime_model.py read
+                # these keys but they were only written to the DB row, never the pickle.
+                "wf_auc_min": f1_min,
+                "wf_auc_mean": f1_mean,
+                "brier_score": ll_mean,
             }, f)
 
         logger.info("Regime model v%d saved → %s", version, model_path)
