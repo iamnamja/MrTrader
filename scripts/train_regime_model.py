@@ -44,23 +44,26 @@ def main() -> int:
     with open(model_path, "rb") as f:
         payload = pickle.load(f)
 
-    auc_min = payload["wf_auc_min"]
-    brier = payload["brier_score"]
+    # Gate via the shared evaluator (single source of truth — see regime_gate()).
+    # PRIOR BUG: this read payload["wf_auc_min"]/["brier_score"] directly, but those keys
+    # were only written to the DB row, NOT the pickle → KeyError; and the 0.22 cutoff was a
+    # 2-class Brier value wrongly applied to the 3-class cross-entropy log-loss.
+    from app.ml.regime_training import regime_gate
+    from app.ml.retrain_config import REGIME_GATE_MACRO_F1_MIN, REGIME_GATE_LOG_LOSS_MAX
+
+    f1_min = payload.get("wf_auc_min", 0.0)               # macro_F1 min across folds
+    log_loss_mean = payload.get("wf_log_loss_mean", 99.0)  # 3-class CE mean across folds
+    gate_pass, failures = regime_gate(payload)
 
     logger.info("=" * 60)
-    logger.info("Walk-forward AUC min : %.4f  (gate: >= 0.60)", auc_min)
-    logger.info("Brier score (mean)   : %.4f  (gate: < 0.22)", brier)
-    logger.info("Model path           : %s", model_path)
+    logger.info("Walk-forward macro_F1 min : %.4f  (gate: >= %.2f)", f1_min, REGIME_GATE_MACRO_F1_MIN)
+    logger.info("Log-loss mean (3-class CE): %.4f  (gate: < %.2f, random baseline=1.099)",
+                log_loss_mean, REGIME_GATE_LOG_LOSS_MAX)
+    logger.info("Model path                : %s", model_path)
 
-    gate_pass = auc_min >= 0.60 and brier < 0.22
     if gate_pass:
         logger.info("GATE: PASSED ✓")
     else:
-        failures = []
-        if auc_min < 0.60:
-            failures.append(f"AUC min {auc_min:.4f} < 0.60")
-        if brier >= 0.22:
-            failures.append(f"Brier {brier:.4f} >= 0.22")
         logger.error("GATE: FAILED — %s", ", ".join(failures))
         return 1
 

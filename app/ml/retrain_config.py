@@ -76,6 +76,20 @@ MAX_FOLD_WORKERS: int = 1 if _sys.platform == "win32" else 4
 # current 69-feature arch is counterproductive; re-enable after v200 ships).
 RETRAIN_WEEKDAY: int = -1  # disabled — Phase C in progress (was: 2 = Wednesday)
 
+# ── Regime model retrain cadence + gate (independent of RETRAIN_WEEKDAY) ─────
+# The regime classifier is macro-level (slow-moving: VIX term structure, credit
+# spreads, breadth) — daily retraining adds noise without benefit, and it must stay
+# active even while the swing/intraday retrain is frozen (RETRAIN_WEEKDAY=-1), since
+# regime_model_v5 carries the live book's sizing. 7 days (weekly) matches the cadence
+# at which regime features meaningfully shift.
+REGIME_RETRAIN_INTERVAL_DAYS: int = 7
+# Promotion gate for the regime model. The model is 3-class (BULL/NEUTRAL/BEAR) scored
+# by cross-entropy log-loss (random baseline = log(3) ≈ 1.099) — NOT a 2-class Brier
+# score. (The old 0.22 threshold was a 2-class Brier value mis-applied to 3-class CE.)
+# v5 reference: macro_F1 min=0.728, log_loss mean=0.358 → PASSES both.
+REGIME_GATE_MACRO_F1_MIN: float = 0.60
+REGIME_GATE_LOG_LOSS_MAX: float = 0.45
+
 # ── Per-model retrain freeze (Alpha-v4 P0, 2026-06-07) ───────────────────────
 # The large-cap daily cross-sectional swing ranker is DEAD on the honest harness
 # (per-fold CPCV +0.22, t=0.17 — noise; MODEL_STATUS.md). Stop wasting nightly

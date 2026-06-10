@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Regime-model retrain: weekly cadence, fixed 3-class gate, one shared evaluator (revived from abandoned PR #240)
+
+**Context**: Investigating stale branches surfaced that `feat/phase-n-audit8b` (PR #240, closed unmerged ~3 weeks ago) carried a real, never-landed fix. Verified against main: **(1)** `scripts/train_regime_model.py` is BROKEN — it reads `payload["wf_auc_min"]`/`["brier_score"]` from the saved **pickle**, but `regime_training.py` only writes those keys to the **DB row** (the pickle has `wf_log_loss_mean`/`wf_macro_f1_mean`) → `KeyError` whenever the script runs. **(2)** The gate cutoff `brier < 0.22` is a 2-class Brier value mis-applied to the Regime-V2 **3-class cross-entropy log-loss** (random baseline = log(3) ≈ 1.099; v5 mean = 0.358) — wrong metric, wrong threshold. **(3)** There is no automated regime retrain at all — `regime_model_v5` (live, carries book sizing) only retrains via the broken manual script, and was 20 days stale.
+
+**Decision**: Re-implement on a fresh branch off main (NOT merge the 345-behind branch). **(a)** Write the gate inputs into the pickle (`wf_auc_min`=macro_F1 min, `brier_score`=log_loss mean, repurposed names kept for back-compat). **(b)** Introduce ONE shared `regime_gate(payload)` (in `regime_training.py`) used by BOTH the CLI and the PM — so the threshold can never drift into two copies again (the root shape of the 0.22-vs-0.45 bug) — backed by config constants `REGIME_GATE_MACRO_F1_MIN=0.60`, `REGIME_GATE_LOG_LOSS_MAX=0.45`. It reads with safe defaults so a missing/garbage payload FAILS the gate rather than raising. **(c)** Add `PortfolioManager._retrain_regime`, scheduled weekly at 17:30 ET on a FILE-AGE cadence (`REGIME_RETRAIN_INTERVAL_DAYS=7`) **independent of `RETRAIN_WEEKDAY`** — so the regime model stays current even while swing/intraday retraining is frozen (Alpha-v4 P0). Gate-failed models are deleted so the filename-based loader keeps the prior passing version.
+
+**Rationale**: The regime classifier feeds live sizing, so a silently-broken retrain path is an operational gap. Centralizing the gate + putting thresholds in config is the durable fix (same "single source of truth" principle as the test-mode detector above). The weekly file-age cadence (vs a fixed weekday) means a missed 17:30 window self-heals the next day, and the model never exceeds ~8 days old.
+
+**Consequences**: `train_regime_model.py` works again; the regime model auto-retrains weekly with a correct 3-class gate. Known minor: on gate failure the freshly-trained pickle is deleted but its `RegimeModelVersion` DB audit row remains (the loader is filename-based, so this is cosmetic). Per the CLAUDE.md rule, `PIPELINE_ARCHITECTURE.md` changelog updated (retrain_config gate-threshold change). The abandoned `feat/phase-n-audit8b` branch can now be deleted. 9 tests (`tests/test_regime_retrain.py`).
+
+---
+
 ## 2026-06-10 — Hardening sweep: centralize test-mode detection (one subprocess-safe `is_test_mode()`) — prevent the whole test→prod-bleed class
 
 **Context**: After fixing the kill-switch false-ACTIVE log (#434) and the log-isolation leak (#435), an Opus deep-dive audited the codebase for the *same family* of bug — test behaviour/output bleeding into production resources, and the mock-fragility that enables it. Findings:
