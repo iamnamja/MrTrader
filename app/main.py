@@ -57,23 +57,11 @@ class _DailyFileHandler(logging.Handler):
 
     @staticmethod
     def _prefix() -> str:
-        # Route test runs to a separate log file, never the live mrtrader_<date>.log
-        # the running (paper) server writes to.
-        #
-        # PRIMARY signal: the MRTRADER_TEST_MODE env var set by conftest at session
-        # start. Unlike the two runtime signals below, an env var PROPAGATES to
-        # spawned child processes — so an app boot in a pytest-spawned subprocess
-        # (Windows 'spawn' starts a fresh interpreter with no `pytest` in sys.modules
-        # and possibly no PYTEST_CURRENT_TEST) still routes to the test log. This is
-        # the blind spot that previously leaked a mocked startup into the live log.
-        #
-        # FALLBACK signals (belt-and-suspenders for in-process tests): PYTEST_CURRENT_TEST
-        # is set during test execution; "pytest" in sys.modules covers collection /
-        # fixture-setup before the first test starts.
-        if os.environ.get("MRTRADER_TEST_MODE") == "1":
-            return "test_mrtrader_"
-        under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-        return "test_mrtrader_" if under_pytest else "mrtrader_"
+        # Route test runs to a separate log file, never the live mrtrader_<date>.log the
+        # running (paper) server writes to. Uses the shared, subprocess-safe detector
+        # (env-var primary) — see app.utils.runtime.is_test_mode for why.
+        from app.utils.runtime import is_test_mode
+        return "test_mrtrader_" if is_test_mode() else "mrtrader_"
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d")
@@ -310,9 +298,10 @@ async def lifespan(app: FastAPI):
     # Test isolation: never spawn the live email drainer under pytest. The
     # TestClient runs this lifespan on every session that uses it, which would
     # otherwise leak an un-terminated notify_watcher subprocess per test file.
-    # Same pytest detection as _DailyFileHandler._prefix above.
+    # Shared, subprocess-safe detector (env-var primary) — see app.utils.runtime.
     app.state.notify_proc = None
-    _under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+    from app.utils.runtime import is_test_mode
+    _under_pytest = is_test_mode()
     if _under_pytest:
         log.info("Notification watcher skipped (running under pytest)")
     else:
