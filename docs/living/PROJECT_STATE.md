@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-10 (4y options data acquired; OPT-5 implied filter → FRAGILE/parked; live-path + test-infra hardening; external quant review prepped)
+**Last updated:** 2026-06-10 (4y options data acquired; OPT-5 implied filter → FRAGILE/parked; live-path + test-infra hardening; **5-LLM review synthesized → ALPHA-v6 direction chosen + documented**)
 
 ## 🧭 NOW (2026-06-10): operating the live book; options = data asset (not a sleeve); external review out
 - **Live book unchanged = PEAD (telemetry size) + TSMOM trend.** First REAL trend paper rebalance still **Mon 2026-06-15 09:45 ET** — verified READY (read-only shadow sim) and reliability-hardened (per-order commit + 1800s weekly misfire grace, #430). Today is quiet/no-trades and that's correct: swing ML ranker dormant by design (`pm.swing_ml_live_enabled=false`), PEAD found 0 qualifying earnings signals, trend not due until Monday.
@@ -12,7 +12,9 @@
 - **Options data → full 4y local store acquired (#440).** 2022-06-09 → 2026-06-08, ~112.8M bars, 733 names, ~6.18M contracts — the max the Polygon Developer plan serves. We now own the complete copy **even if the subscription is cancelled.**
 - **Reliability / test-infra hardening (this session):** kill-switch strict-bool restore (#434); test→prod log/DB bleed closed via one shared `is_test_mode()` (#435/#436); weekly regime retrain + fixed 3-class gate revived from an abandoned PR (#439); Finnhub+FMP economic-calendar 403 log-spam silenced (#437/#441 — the calendar needs a paid tier on BOTH providers; falls back to FRED macro + hardcoded FOMC/NFP).
 - **External quant review prepped:** `docs/reference/prompts/EXTERNAL_QUANT_REVIEW_PROMPT.md` + the `20260610_Quant_Options_Review/` kit — soliciting world-class-quant feedback on the next phase across multiple LLMs (harness soundness, options models, architecture gaps).
-- **Next:** synthesize the external LLM reviews → choose the next research direction (likely a 2nd event-driven edge and/or an alpha-shaped options signal on the new 4y data); operate Monday's first trend rebalance.
+- **✅ DIRECTION CHOSEN → ALPHA-v6** (SSOT: [NEXT_PHASE_BLUEPRINT_2026-06.md](../reference/NEXT_PHASE_BLUEPRINT_2026-06.md)). The 5-LLM synthesis (Gemini/DeepSeek/Grok/ChatGPT/Claude, deep-dived by Fable 5, code-grounded) converged: our harness over-corrected into a **Type-II / false-negative machine** — a t≥2.0 gate on ~8 folds of ≤4y data kills *true* Sharpe-0.5–0.7 edges (t≈SR·√years), so 100% KILL (incl. confirmed-real index VRP) is a miscalibrated ruler, not an empty opportunity set. **7-phase plan:** **P0** calibrate the ruler (gate positive/negative controls — TSMOM-on-4y decisive — + two-track acceptance [alpha vs book-delta] + research registry) → **P1** live-book fidelity (replay-diff / fill-quality / NBBO spread-calibration) ∥ **P2** options *feature* layer (persisted greeks / surface-quality / BMO-AMC snapshots) → **P3 (centerpiece)** earnings-event panel + event-LEVEL PEAD inference + PEAD v2 continuous score → **P4** options-as-equity-signal XS sleeve (CPIV/skew/O-S/term-slope) → **P5** trend broadening (19y) → **P6** index-VRP micro-sleeve behind the book gate. **Options = signal-first, not execution.** Reviews archived under `docs/reference/prompts/20260610_Quant_Options_Review/responses/`.
+- **▶️ FIRST MOVE = P0:** `scripts/walkforward/gate_calibration.py` with the **TSMOM-on-4y positive control** — the cheapest experiment that can falsify (or confirm) the central premise. Until controls run, every historical KILL has an unknown false-negative rate.
+- **Operate Monday's first real trend rebalance** (still Mon 2026-06-15 09:45 ET) in parallel.
 
 ---
 

@@ -2,7 +2,31 @@
 
 **Last updated:** 2026-06-06
 **Capital:** $100k (paper)
-**Status:** 🎯 **ALPHA-v4 — PORTFOLIO OF UNCORRELATED PREMIA** (active, 2026-06-06). After a 5-LLM deep-dive quant review (ChatGPT, Gemini, Grok, DeepSeek, Claude), the direction shifts from *hunting one hero edge* to *assembling a small book of uncorrelated sleeves + a regime-aware allocator*, on an **honest validation harness**. Full synthesis + detailed phased plan: **`docs/reference/QUANT_REVIEW_SYNTHESIS_2026-06.md`** (SSOT for this direction). Alpha-v3 (event-edge family) is **complete — PEAD remains the sole validated edge**; its sweep is archived below.
+**Status:** 🎯 **ALPHA-v6 — FIX THE RULER + OPTIONS-AS-SIGNAL** (active, 2026-06-10). SSOT: **`docs/reference/NEXT_PHASE_BLUEPRINT_2026-06.md`**. A second 5-LLM quant review (2026-06-10) converged that the harness over-corrected into a **Type-II / false-negative machine**; Alpha-v6 fixes the *measurement* (gate power calibration, event-LEVEL inference, two-track acceptance) and aims the 4y options data at **signal-first** uses. It **sharpens, not reverses, Alpha-v4** (portfolio of uncorrelated premia, complete) — Alpha-v4 built the sleeves + allocator and remains the substrate. See the Alpha-v6 section directly below.
+
+---
+
+## 🎯 ALPHA-v6 PLAN — Fix the Ruler + Options-as-Signal (2026-06-10)
+
+**SSOT:** `docs/reference/NEXT_PHASE_BLUEPRINT_2026-06.md` (full design + implementation spec — this table is the index). Inputs: 5 independent world-class-quant LLM reviews (Gemini/DeepSeek/Grok/ChatGPT/Claude), synthesized by a Fable 5 deep-dive and grounded against the code. Reviews archived: `docs/reference/prompts/20260610_Quant_Options_Review/responses/`.
+
+**Thesis (5/5 consensus):** the harness, hardened against inflation, is now a **Type-II / false-negative machine** — a t≥2.0 gate on N_eff≈6–8 folds of ≤4y data rejects *true* Sharpe-0.5–0.7 edges (t ≈ SR·√years); 100% KILL incl. the confirmed-real index VRP = a miscalibrated ruler, not an empty opportunity set. Fix the measurement, then harvest the options data as **signal at equity cost** (the spread wall that killed OPT-3 can't reach an equity book).
+
+| Phase | Item | Track | Effort | Status |
+|---|---|---|---|---|
+| **P0** | **Calibrate the ruler** (blocks trustworthy verdicts): positive/negative gate controls (**TSMOM-on-4y decisive**), **two-track acceptance** (A: standalone alpha / B: book-delta diversifier), research registry + pre-registration, DSR→report-only, `event_regime_sharpes()`. | — | M ~1.5wk | **NEXT** |
+| **P1** | **Live-book fidelity** (make it boring before new capital): StrategySpec replay-diff, fill-quality table, nightly NBBO→calibrated spread table, multi-factor residual-α, paper-confirmation reworded as fidelity-only. | infra | M ~2wk | ∥ P0 |
+| **P2** | **Options feature layer**: persist computed IV/greeks (one pass over 112.8M bars), surface-quality reader, BMO/AMC event-time-aware snapshots, daily per-underlying feature table, R1K-union survivorship audit. | infra | M ~2wk | ∥ P0/P1 |
+| **P3** | **Earnings-event panel + PEAD v2** (centerpiece): one-row-per-event table; **event-LEVEL inference** (two-way clustered announce-day×firm); pre-registered H1 (re-adjudicate live PEAD), H2 (continuous reaction-ratio — settles OPT-5), H3 (continuous options-conditioned scorecard, NOT XGBoost). | A | L ~3–4wk | after P0+P2 |
+| **P4** | **Options-as-equity-signal XS sleeve**: CPIV / 25Δ put-skew / O-S volume / term-slope / IV-RV decile L/S, executed in equities via the existing dollar-neutral engine. Kill if simple sorts fail net of costs (NOT an XS-ML revival). | A | M–L ~2–3wk | after P2 |
+| **P5** | **Trend broadening** (capital-grade EV): more legs / vol-targeting / long-short on the existing set, judged on 19y where t≥2 is reachable + Track-B book delta. | B | M ~1–2wk | ∥ (after P0+P1-trend-diff) |
+| **P6** | **Index-VRP micro-sleeve** behind the book gate: one pre-registered defined-risk structure, regime-gated, ≤2%-NAV tail budget; preconditioned on sim-mechanics fixes (stale-mark/unsmoothing, entry-fill convention) + calibrated spreads. 12-mo re-test lockout on fail. | B | M ~2wk | last |
+
+**Reconciliations (contested points):** dispersion = **feature-first / trade-maybe-never** (Claude's cost-wall objection over Gemini/DeepSeek/Grok, on the app's own OPT-3 evidence); CPCV **demoted to robustness** for event strategies (kept primary for path-dependent trained models — not killed); DSR → **report-only** (DeepSeek's `N_eff=k(k−1)/2` fix rejected — wrong direction). **Corrections to reviewers:** forward sacred holdout EXISTS (`SACRED_HOLDOUT_START=2026-11-09`); quarter-level event bootstrap exists (`pead_significance.py` — day-level panel is the upgrade); `EventEdgeStrategy`/options adapter/allocator already built.
+
+**Cross-cutting:** two-track gate spec → `PIPELINE_ARCHITECTURE.md` §7.0-B (P0); research registry = the program's true N_TRIALS; StrategySpec replay-diff contract (4 boring weekly diffs → capital-eligible); per-phase NO-DRIFT doc obligations in blueprint §6.
+
+**First move:** P0 — `scripts/walkforward/gate_calibration.py`, **TSMOM-on-4y positive control** (the cheapest experiment that can falsify the premise of the whole plan).
 
 ---
 
