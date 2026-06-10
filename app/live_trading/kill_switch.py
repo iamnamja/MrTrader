@@ -5,7 +5,6 @@ Closes every open position via Alpaca market orders and records the event
 in the audit log.  Idempotent: safe to call multiple times.
 """
 import logging
-import os
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -19,13 +18,17 @@ _CFG_KS_ACTIVE = "kill_switch.active"
 
 
 def _running_under_pytest() -> bool:
-    """Detect pytest at runtime so the kill switch never writes to the
-    production DB during tests, even if a test forgets to patch _persist_state.
+    """Detect pytest so the kill switch never writes to the production DB / audit log
+    during tests, even if a test forgets to patch _persist_state.
 
-    Defense-in-depth: a stray test that activates the real KillSwitch singleton
-    must NOT leave kill_switch.active=True in the persistent configuration store.
+    Defense-in-depth: a stray test that activates the real KillSwitch singleton must NOT
+    leave kill_switch.active=True in the persistent configuration store. Delegates to the
+    shared detector, which is subprocess-safe (env-var primary) — the previous local check
+    keyed on os.environ["_"] (a unix-ism rarely set on Windows) and broke across process
+    boundaries, the same fragility that let a test app-boot leak into the live log.
     """
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.environ.get("_", "")
+    from app.utils.runtime import is_test_mode
+    return is_test_mode()
 
 
 class KillSwitch:

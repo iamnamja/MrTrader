@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Hardening sweep: centralize test-mode detection (one subprocess-safe `is_test_mode()`) — prevent the whole test→prod-bleed class
+
+**Context**: After fixing the kill-switch false-ACTIVE log (#434) and the log-isolation leak (#435), an Opus deep-dive audited the codebase for the *same family* of bug — test behaviour/output bleeding into production resources, and the mock-fragility that enables it. Findings:
+- **Inconsistent, fragile test-mode detection at 3 sites**, each rolling its own check: `_DailyFileHandler._prefix` and the notify-watcher-skip (both `PYTEST_CURRENT_TEST` env **or** `pytest` in `sys.modules`), and — worst — `kill_switch._running_under_pytest`, which keyed on `os.environ.get("_")` (a unix-ism rarely set on Windows) and **guards real DB/audit writes**. All three are runtime-only signals that do **not** survive a process boundary (Windows `spawn` → fresh interpreter, env may lack `PYTEST_CURRENT_TEST`), the exact fragility behind the log leak.
+- **Main-DB test isolation is achieved by patching `get_session` → `MagicMock`** in the `test_client` fixture (not a global DATABASE_URL override). This is what produces the `MagicMock` objects seen in mocked startups, and is the upstream source of the `bool(mock)`/comparison-on-mock surfaces (kill_switch.load_state #434, the startup `>`/`>=` errors, #429).
+- **Verified-robust (no action needed):** `get_agent_config` coerces int/float with try/except→default (and there are currently **no** bool-typed configs, so the uncoerced-bool path is unreachable today); `risk_manager` peak-equity restore wraps `float(val)` in a broad except; no other unguarded `bool(config)` surfaces remain after #434.
+
+**Decision**: Introduce **one** authoritative detector, `app.utils.runtime.is_test_mode()` (stdlib-only, import-safe from early logging code), with `MRTRADER_TEST_MODE` as the PRIMARY signal (inherited across spawns) and the runtime signals as fallback. Route all three sites through it — notably hardening the kill-switch persist/audit guard, which could previously have persisted `kill_switch.active=True` to the real config store / written a real audit row from a subprocess or Windows test.
+
+**Rationale**: A single shared detector stops detection logic from drifting per-site (the root reason three subtly-different, subtly-broken copies existed) and makes "is this the test session?" correct on both sides of a process boundary everywhere. The env-var-primary design is the same pattern already proven for per-worker DB isolation (`MRTRADER_*_DB`) and the log prefix (#435).
+
+**Consequences**: The test→prod-bleed class (logs today, and the latent DB/audit-write path) is closed at its common root. 5 new tests (`test_runtime_test_mode.py`) incl. the subprocess case and the kill-switch guard delegation. **Documented residual (not fixed here, lower priority):** main-DB isolation still relies on per-fixture `get_session` patching — a test path that uses `get_session` without the `test_client` fixture, or a real subprocess app-boot, would hit the configured DATABASE_URL; a global test-DB override would be more defense-in-depth but has broad blast radius. Not a WF/CPCV change → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-10 — Test isolation: route logs by an inherited env var so subprocess app-boots can't leak into the live log
 
 **Context**: The kill-switch false-ACTIVE log (above) was traced to a pytest run whose app-boot wrote into the **production** `mrtrader_<date>.log`. Empirically the isolation works ~99.9% of the time (a full suite produced 915 startup banners, all correctly routed to `test_mrtrader_<date>.log`); the leak is one specific path. `_DailyFileHandler._prefix()` decided the prefix from `PYTEST_CURRENT_TEST` (env, per-test) **or** `"pytest" in sys.modules`. Both are runtime signals that **do not survive a process boundary**: a pytest-spawned subprocess (Windows 'spawn' → fresh interpreter, no `pytest` imported, possibly no PYTEST_CURRENT_TEST) booting `app.main` falls through to the LIVE prefix.
