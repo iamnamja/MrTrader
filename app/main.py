@@ -97,6 +97,26 @@ class _DailyFileHandler(logging.Handler):
         super().close()
 
 
+class _UvicornRelabelFilter(logging.Filter):
+    """Relabel uvicorn's general server logger so the name matches the severity.
+
+    Uvicorn emits ALL of its non-access logs — startup/shutdown lifecycle,
+    "Uvicorn running on…", WebSocket connect/disconnect — under the logger named
+    ``uvicorn.error``, even at INFO level. That misleadingly tags routine INFO
+    lines as "error". Best practice (and uvicorn's own intent) is for the
+    ``levelname`` field to be the source of truth for severity; the logger name
+    should just identify the component. This filter never drops a record (always
+    returns True) — it only renames the misleading ``uvicorn.error`` label to
+    ``uvicorn`` so ``[uvicorn] INFO`` reads correctly. Genuine errors still log
+    at WARNING/ERROR level under the same ``uvicorn`` name, so nothing is hidden.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.error":
+            record.name = "uvicorn"
+        return True
+
+
 def _configure_logging() -> None:
     """Replace the root handler list with exactly two handlers via dictConfig.
 
@@ -114,15 +134,22 @@ def _configure_logging() -> None:
         "formatters": {
             "standard": {"format": fmt},
         },
+        "filters": {
+            # Relabel uvicorn's misnamed general logger (uvicorn.error -> uvicorn);
+            # severity is carried by levelname, not the logger name.
+            "uvicorn_relabel": {"()": _UvicornRelabelFilter},
+        },
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "standard",
+                "filters": ["uvicorn_relabel"],
                 "stream": "ext://sys.stderr",
             },
             "daily_file": {
                 "()": _DailyFileHandler,
                 "formatter": "standard",
+                "filters": ["uvicorn_relabel"],
                 "log_dir": "logs",
             },
         },
