@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — P0 gate-calibration RESULT: do NOT lower the significance bar; the false-negative lever is the worst-regime backstop (→ two-track acceptance) and the path-t is unreliable (→ event-level inference)
+
+**Context**: Ran the pre-registered calibration controls (the #444 harness) through the production gate. Positive PAPER pass-rate **0/4** (confirms a real Type-II problem for the edges we care about) but significance-CORE pass-rate **2/4** — `tsmom_4y` (t=6.72) and `tsmom_19y` (t=4.46) clear the significance core and fail ONLY on `worst_regime_sharpe`. Meanwhile **3/5 TRUE zero-SR balanced nulls posted t=2.6–3.5** (≥ the 2.0 bar), and PEAD's t=3.33 is statistically indistinguishable from a noise null (t=3.47). The pre-registered recalibration rule self-returned **`NO_ADMISSIBLE_TSTAR`** (the binding failure is not the t-stat). Type-I control is sound (0/10 nulls pass the full gate; the leaky control is flagged implausible). Full OC table in ML_EXPERIMENT_LOG; artifact `logs/gate_calibration_20260610.json`.
+
+**Decision**: P0's next step is **NOT** a t-threshold recalibration (empirically shown to admit noise). Instead: **(a)** build the **two-track acceptance** gate (Track B book-delta) so crisis-diversifiers / risk premia (TSMOM, index VRP) are judged on book contribution, not a standalone worst-regime floor — this is the lever that actually unblocks TSMOM; **(b)** treat the 8-fold CPCV path t-stat as non-promotion-grade for event/series strategies and bring forward **event-level / cluster inference** (P3) as the significance instrument. **No gate threshold is changed.**
+
+**Rationale**: The calibration **refuted the blueprint's specific "the t≥2.0 bar is arithmetically too strict" hypothesis** and localized the real false-negative to the worst-regime backstop. The harness did its job — it prevented a plausible-but-wrong change and pointed at the two levers the blueprint already names (two-track acceptance + event-level inference). The result also empirically validates the reviewers' warning that the CPCV path t-stat (correlated paths, N_eff=8) is not a clean discriminator — pure-noise nulls cleared it.
+
+**Consequences**: Blueprint P0 framing recast (the "recalibrate t*" sub-task becomes "two-track acceptance + a better significance instrument"); ML_EXPERIMENT_LOG carries the OC table; PROJECT_STATE updated. No code/gate change this entry → PIPELINE_ARCHITECTURE §7 thresholds untouched (the harness + §7.0a landed in #444). Next concrete P0 PR: the Track-A/Track-B two-track acceptance scaffold (`book_gate.py`) + research registry.
+
+---
+
 ## 2026-06-10 — Alpha-v6 direction: fix the ruler (two-track acceptance + event-level inference) + options-as-signal; calibrate first
 
 **Context**: Five independent world-class-quant LLM reviews of the 2026-06-10 package (Gemini, DeepSeek, Grok, ChatGPT, Claude — archived under `docs/reference/prompts/20260610_Quant_Options_Review/responses/`) were synthesized by a Fable 5 deep-dive and grounded against the code. They **converge** on one diagnosis: the harness, hardened so far against *inflation*, is now a **Type-II / false-negative machine** — a t≥2.0 gate on N_eff≈6–8 folds of ≤4y data rejects *true* Sharpe-0.5–0.7 edges (t ≈ SR·√years), so 100% KILL (including the confirmed-real index VRP, PF 2.24/1.75) is the signature of a miscalibrated ruler, not an empty opportunity set. Second: the 4y options store is a **signal/information asset, not an options-execution edge** — OPT-3 died on single-name spreads; OPT-5 (signal-only) produced the program's only alpha-like lift. Third: for event strategies the independence unit is the announcement-day cluster, not the fold.

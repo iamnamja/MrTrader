@@ -169,6 +169,8 @@ P6 index VRP micro-sleeve (Track B; needs P0 + P1-spreads + sim-mechanics fixes)
 **Validation:** the phase validates the validator — exit = OC table published, thresholds either recalibrated (documented in `PIPELINE_ARCHITECTURE.md` §7 + changelog) or confirmed, Track B spec merged as §7.0-B, registry enforced.
 **Effort:** **M, ~1–1.5 wk.** **Dependencies:** none. **Risks:** recalibration becomes threshold-shopping → mitigated by pre-registering the recalibration rule itself before running controls.
 
+**🔬 P0 RESULT (2026-06-10 — harness shipped #444, full 16-control run complete):** **The "lower the t-bar" hypothesis is REFUTED.** `tsmom_4y` (t=6.72) and `tsmom_19y` (t=4.46) pass the significance CORE but fail the PAPER gate ONLY on the `worst_regime_sharpe` backstop; **3/5 TRUE zero-SR nulls cleared t≥2.0** (so lowering t* admits noise — the pre-registered rule returned `NO_ADMISSIBLE_TSTAR`); PEAD's t=3.33 ≈ a noise null (t=3.47). Type-I control is sound (0/10 nulls pass the full gate; leaky control flagged implausible). **Recast of this phase's remaining work:** do NOT touch significance thresholds. Instead prioritize **(a) two-track acceptance** (Track B book-delta — the lever that actually unblocks crisis-diversifiers like TSMOM, which die on the standalone worst-regime floor) and **(b) bringing forward event-level / cluster inference** (P3) to replace the 8-fold path t-stat, now empirically shown to be an unreliable discriminator. See `ML_EXPERIMENT_LOG.md` + `DECISIONS.md` 2026-06-10.
+
 ---
 
 ### Phase 1 — Live-book fidelity: replay-diff, fill quality, spread calibration (make the book boring)
