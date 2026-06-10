@@ -121,7 +121,7 @@ Trigger → doc to update (in the same PR):
 | Calmar ratio | ≥ 0.30 | ≥ 0.30 |
 | Purge days | 85 calendar | 2 trading days |
 | Sacred holdout | 2026-11-09 | 2026-11-09 |
-| N_TRIALS_TESTED (DSR) | 250 | 250 |
+| N_TRIALS_TESTED (DSR) | 300 | 300 |
 
 ---
 
