@@ -91,11 +91,18 @@ docs/
 - Always use `--no-fundamentals --workers 8` for swing training (prevents OOM)
 - Never use `fetch_fundamentals=True` in overnight job commands
 
-### Documentation
-- Update `docs/living/ML_EXPERIMENT_LOG.md` for every retrain/WF/CPCV run
-- Update `docs/living/PIPELINE_ARCHITECTURE.md` per the rule above
-- Update `docs/living/MODEL_STATUS.md` after every model promotion/retrain
-- Update `docs/living/PROJECT_STATE.md` at session start/end when focus changes
+### Documentation — keep the docs in sync (NO DRIFT)
+
+**Before opening any PR, ask: "which docs does this change make stale?" — and update ALL of them in the SAME PR.** Drift happens when a change updates one doc (e.g. `ML_EXPERIMENT_LOG`/`DECISIONS`) but not the others it also affects (e.g. `OPTIONS_PROGRAM`, `OPTIONS_DATA`, `MODEL_STATUS`, `PROJECT_STATE`). The source of truth is the canonical doc in `docs/` — NOT a copy elsewhere; if you edit a copy (e.g. a review-prompt kit), update the canonical one too.
+
+Trigger → doc to update (in the same PR):
+- Any retrain / WF / CPCV run → `docs/living/ML_EXPERIMENT_LOG.md`
+- Files under the PIPELINE rule (top of this file) → `docs/living/PIPELINE_ARCHITECTURE.md` (incl. gate/threshold changes)
+- Model promotion / retrain / active-version change → `docs/living/MODEL_STATUS.md`
+- A strategy/sleeve verdict OR program-status change → the program SSOT (`docs/living/OPTIONS_PROGRAM.md`, `docs/living/MASTER_BACKLOG.md`) **and** `docs/living/DECISIONS.md`
+- Options data-layer / coverage change → `docs/reference/OPTIONS_DATA.md`
+- Anything that changes "what's live / happening now" → `docs/living/MODEL_STATUS.md` + `docs/living/PROJECT_STATE.md`
+- Session start/end when focus changes → `docs/living/PROJECT_STATE.md`
 
 ### Notifications
 - Use `notifier.enqueue("phase_complete", {...})` to email kimminjae@gmail.com on phase completion
