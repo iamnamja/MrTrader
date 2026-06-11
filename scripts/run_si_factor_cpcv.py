@@ -16,9 +16,10 @@ Env levers:
   CPCV_SMOKE=1       fast smoke: k=3, 2yr, SI_SMOKE_SYMBOLS subset
 
 Usage:
-    python scripts/run_si_factor_cpcv.py
+    python scripts/run_si_factor_cpcv.py [--hypothesis-id HYP-ID | --exploratory]
     CPCV_SMOKE=1 python scripts/run_si_factor_cpcv.py
 """
+import argparse
 import logging
 import os
 import sys
@@ -61,6 +62,13 @@ def main() -> int:
     from app.utils.constants import RUSSELL_1000_TICKERS
     from scripts.walkforward.cpcv import run_cpcv
     from app.data.short_interest_provider import load_short_interest
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(description="Dollar-neutral short-interest factor CPCV")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
 
     si = load_short_interest(refresh=True)
     if si is None or si.empty:
@@ -99,6 +107,19 @@ def main() -> int:
     verdict = "CPCV GATE PASSED" if gate_ok else "CPCV GATE FAILED"
     logger.info("SI-FACTOR CPCV %s - mean_sharpe=%.3f p5=%.3f p95=%.3f",
                 verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe)
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "mean_sharpe": result.mean_sharpe,
+            "p5_sharpe": result.p5_sharpe,
+            "p95_sharpe": result.p95_sharpe,
+            "tstat": result.path_sharpe_tstat,
+            "n_paths": len(result.path_sharpes),
+            "gate_detail": gate_detail,
+            "gate_ok": gate_ok,
+        }, decision=None)
 
     if not _SMOKE:
         try:

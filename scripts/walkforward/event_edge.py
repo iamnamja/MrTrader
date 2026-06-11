@@ -185,6 +185,7 @@ class EventEdgeStrategy:
             FoldResult, compute_profit_factor, compute_calmar, compute_k_ratio, fold_years,
         )
         from scripts.walkforward.regime import compute_regime_sharpes as _crs
+        from scripts.walkforward.regime import event_regime_sharpes as _ers
 
         pit_members = self._fold_universe(tr_start, te_start)
         fold_symbols_data = {
@@ -230,6 +231,22 @@ class EventEdgeStrategy:
         regime_sharpes = _crs(equity_curve, te_start, te_end,
                               regime_map=getattr(self, "_global_regime_map", None),
                               obs_counts=_regime_obs)
+        # Alpha-v6 P0 (blueprint X6): EVENT-LEVEL per-regime Sharpes. Each CLOSED
+        # trade is one event; its whole-holding return is bucketed by the regime
+        # of its ENTRY day. With hundreds of events per window every regime
+        # bucket clears REGIME_MIN_OBS in EVENT units, so run_cpcv can populate
+        # worst_regime_sharpe even when the daily binning above starves out
+        # (the case that used to trigger the paper-only event-sparsity waiver).
+        # PURE-ADDITIVE: new FoldResult fields, never touches regime_sharpes.
+        _event_regime_obs: dict = {}
+        _event_returns = [
+            (t.entry_date, float(t.pnl_pct)) for t in trades_list
+            if getattr(t, "exit_date", None) is not None
+            and getattr(t, "pnl_pct", None) is not None
+        ]
+        event_sharpes = _ers(_event_returns,
+                             getattr(self, "_global_regime_map", None),
+                             obs_counts=_event_regime_obs)
         years = fold_years(te_start, te_end)
         sharpe = float(result.sharpe_ratio)
         total_ret = float(result.total_return_pct)
@@ -255,6 +272,8 @@ class EventEdgeStrategy:
             n_obs=n_obs,
             regime_sharpes=regime_sharpes,
             regime_obs_counts=_regime_obs,
+            event_regime_sharpes=event_sharpes,
+            event_regime_obs_counts=_event_regime_obs,
             daily_returns_dated=_daily_rets_dated,
         )
 

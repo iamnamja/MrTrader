@@ -86,6 +86,20 @@ class CPCVResult:
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
+    # Alpha-v6 P0 / blueprint X6: which instrument populated worst_regime_sharpe.
+    # Always "daily" today — the gate gates only on the annualized daily-MTM
+    # regime Sharpes. The EVENT-LEVEL regime Sharpe is REPORT-ONLY
+    # (event_worst_regime_sharpe below) and never feeds the gate in PR1: retiring
+    # the event-sparsity waiver is H1's PRE-REGISTERED consequence (Phase 3), and
+    # the per-event units are not calibrated to MIN_WORST_REGIME_SHARPE.
+    worst_regime_sharpe_source: str = "daily"
+    # X6 report-only: per-event (UN-annualized, no sqrt(252)) cross-event Sharpe
+    # bucketed by entry-day regime — the min across regimes. Populated for event
+    # strategies whose daily buckets were all event-sparse, purely for visibility
+    # and as the seam Phase 3 / H1 will consume once an event-unit floor is
+    # calibrated and registered. NEVER read by any gate (does not feed regime_ok,
+    # does not retire the waiver — the FIX-2 waiver path runs unchanged).
+    event_worst_regime_sharpe: Optional[float] = None
     # Phase-4 FIX-2: True when worst_regime_sharpe is None DUE TO EVENT-SPARSITY —
     # i.e. regime returns WERE observed (folds reported regime_obs_counts) but every
     # bucket fell below REGIME_MIN_OBS, so no usable per-regime Sharpe could be
@@ -700,6 +714,12 @@ class CPCVResult:
             print(f"  Avg Calmar:   {self.avg_calmar:.3f}  "
                   f"(gate: > {MIN_CALMAR})  "
                   f"{'OK' if self.avg_calmar >= MIN_CALMAR else 'FAIL'}")
+        # X6: the event-level regime Sharpe is REPORT-ONLY (per-event units, not
+        # gate-calibrated) — surface it for visibility, never as a gate verdict.
+        if self.event_worst_regime_sharpe is not None:
+            print(f"  Worst regime Sharpe (event-level, REPORT-ONLY): "
+                  f"{self.event_worst_regime_sharpe:+.3f}  (PER-EVENT units, X6; "
+                  f"NOT a gate criterion — see H1 pre-registration)")
         print()
         if self.gate_passed():
             _ok(f"CPCV GATE PASSED - mean Sharpe {self.mean_sharpe:.3f}, "
@@ -930,6 +950,12 @@ def run_cpcv(
     # regime-by-regime (mean across folds) then take the min over regimes,
     # avoiding the raw-min-over-all-pairs noise bias.
     all_regime_sharpes_by_regime: dict = {}  # regime_name -> [sharpe, ...]
+    # Alpha-v6 P0 (X6): EVENT-LEVEL per-regime Sharpes, accumulated in parallel.
+    # Only event strategies populate FoldResult.event_regime_sharpes, and the
+    # aggregate is consumed ONLY when the daily dict above stays empty — the
+    # exact case that used to fire the event-sparsity waiver. Daily strategies
+    # and the daily path are byte-for-byte unchanged.
+    all_event_regime_sharpes_by_regime: dict = {}  # regime_name -> [sharpe, ...]
     # Phase-4 FIX-2: track whether ANY fold observed regime returns at all
     # (regime_obs_counts non-empty). This distinguishes EVENT-SPARSITY (returns
     # were mapped to regimes but every bucket was below REGIME_MIN_OBS → dropped)
@@ -967,6 +993,8 @@ def run_cpcv(
         # C8-5: accumulate per-regime within this combo to average before global append,
         # so each combo contributes equally (not proportional to its fold count).
         combo_regime_by_name: dict = {}  # regime -> [sharpe, ...]
+        # X6: event-level counterpart (same per-combo averaging discipline).
+        combo_event_regime_by_name: dict = {}  # regime -> [event sharpe, ...]
         # §1.2 instrumentation: global fold ids actually run (post-guard) for this
         # combo, in run order — aligned 1:1 with combo_sharpes appends.
         combo_fold_ids: List[int] = []
@@ -1095,6 +1123,10 @@ def run_cpcv(
                     combo_grosses.append(getattr(fold, "mean_gross", 0.0) or 0.0)
                 for regime, sh in getattr(fold, "regime_sharpes", {}).items():
                     combo_regime_by_name.setdefault(regime, []).append(sh)
+                # X6: event-level per-regime Sharpes (event strategies only;
+                # empty for everything else, so this loop is a no-op for them).
+                for regime, sh in getattr(fold, "event_regime_sharpes", {}).items():
+                    combo_event_regime_by_name.setdefault(regime, []).append(sh)
                 # FIX-2: did this fold observe ANY regime returns (pre-filter)?
                 # If regime_obs_counts is non-empty the regime map worked and days
                 # were labelled — an empty regime_sharpes then means event-sparsity
@@ -1151,6 +1183,10 @@ def run_cpcv(
             # combo contributes equally to worst_regime_sharpe regardless of fold count.
             for regime, vals in combo_regime_by_name.items():
                 all_regime_sharpes_by_regime.setdefault(regime, []).append(float(np.mean(vals)))
+            # X6: same per-combo averaging for the event-level counterpart.
+            for regime, vals in combo_event_regime_by_name.items():
+                all_event_regime_sharpes_by_regime.setdefault(regime, []).append(
+                    float(np.mean(vals)))
 
         if (combo_idx + 1) % 5 == 0 or combo_idx == len(combinations) - 1:
             logger.info("CPCV: %d/%d combinations done, mean Sharpe so far: %.3f",
@@ -1163,6 +1199,24 @@ def run_cpcv(
         per_regime_means = [float(np.mean(v)) for v in all_regime_sharpes_by_regime.values()]
         result.worst_regime_sharpe = float(min(per_regime_means))
     else:
+        # Alpha-v6 P0 (blueprint X6): the daily binning starved every regime
+        # bucket (the event-sparsity case). If the strategy emitted per-event
+        # regime Sharpes, surface their min as event_worst_regime_sharpe —
+        # REPORT-ONLY. It does NOT feed worst_regime_sharpe or the gate: the
+        # per-event units are not calibrated to MIN_WORST_REGIME_SHARPE, and
+        # retiring the event-sparsity waiver is H1's pre-registered consequence
+        # (Phase 3), not PR1's. worst_regime_sharpe stays None so the FIX-2
+        # waiver path below is byte-for-byte unchanged (the waiver still fires).
+        if all_event_regime_sharpes_by_regime:
+            result.event_worst_regime_sharpe = float(min(
+                float(np.mean(v)) for v in all_event_regime_sharpes_by_regime.values()))
+            logger.info(
+                "CPCV: event-level worst regime Sharpe = %.3f (PER-EVENT units, "
+                "REPORT-ONLY — does NOT gate; the event-sparsity waiver still "
+                "applies until H1 retires it in Phase 3). regimes=%s",
+                result.event_worst_regime_sharpe,
+                sorted(all_event_regime_sharpes_by_regime),
+            )
         # FIX-2: disambiguate WHY worst_regime_sharpe is None.
         #   - any_regime_obs_seen=True  → EVENT-SPARSITY: returns were mapped to
         #     regimes but every bucket was below REGIME_MIN_OBS. Structural for

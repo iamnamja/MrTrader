@@ -413,6 +413,38 @@ conservative end of the 25–40% range; the Phase-2/3 book ran trend at ~40–50
 budget→ΔSharpe sweep flips PASS at ~12.5%, so 0.25 sits in the pass region with margin — chosen on
 principle, not reverse-engineered.
 
+### §7.0c — Research-registry enforcement + the event-level regime instrument (Alpha-v6 P0, 2026-06-11, #454)
+
+**Pre-registration enforcement on confirmatory runs.** The research registry (#449) is now *enforced*
+at the run scripts. A shared helper `scripts/walkforward/registry_enforcement.py` (`begin_run()` /
+`HypothesisRun`) is wired into all nine `run_*_cpcv` scripts. `begin_run()` runs FIRST (before the
+multi-hour fetch/CPCV) and **fails fast** — `RegistryEnforcementError` — on: an unregistered
+`--hypothesis-id`; a confirmatory/`live_confirm` row that was never preregistered (R2); a row that
+already has a result (R4 — its result could never be recorded); or a run starting at/before the
+prereg instant (R2 ordering). With no `--hypothesis-id` it **warns only** until
+`GRACE_UNTIL = 2026-06-25` (`registry_enforcement.py`), and on/after that date **requires**
+`--hypothesis-id` or an explicit `--exploratory`. `HypothesisRun.record()` writes the run's compact
+result summary best-effort (a completed CPCV is never lost to a registry hiccup; `decision=None` —
+promotion is owner-gated). **Zero-flag invocation is byte-for-byte unchanged** except one warn line.
+⚠️ **2026-06-25 cutover:** overnight/manual bare CPCV invocations must add `--hypothesis-id` or
+`--exploratory` from that date.
+
+**Event-level regime Sharpe — REPORT-ONLY (does NOT gate).** `event_regime_sharpes()` (in
+`regime.py`) computes a per-event, **UN-annualized** (no √252) cross-event Sharpe bucketed by each
+event's *entry-day* regime — the instrument that will eventually retire the event-sparsity waiver
+(blueprint X6), because hundreds of events populate buckets that daily MTM binning starves.
+EventEdge strategies now emit per-event `(entry_date, pnl_pct)`; `run_cpcv` surfaces the min as
+`CPCVResult.event_worst_regime_sharpe`. **In PR1 this is REPORT-ONLY:** it does NOT feed
+`worst_regime_sharpe` / `regime_ok`, does NOT change any gate verdict, and the FIX-2 event-sparsity
+waiver path (PAPER waives + flags `requires_human_review`; CAPITAL fails closed) is unchanged. The
+*reason it is not yet wired into the gate*: a per-event Sharpe is not unit-comparable to the
+annualized-daily `MIN_WORST_REGIME_SHARPE=-0.5` floor (for PEAD's 10–40d holds, −0.5 event-units ≈
+−1.25 to −2.5 annualized → 2.5–5× looser, near-unbinding), and retiring the waiver is **H1's
+pre-registered consequence** (at p<0.05), not a silent threshold change. Gate consumption — with an
+event-unit floor calibrated and registered — is deferred to Phase 3 / H1. (An initial build wired
+it into the gate; the independent Fable-5 review flagged it as a BLOCKER and it was reverted to
+report-only — DECISIONS 2026-06-11.)
+
 The tables in §7a/§7b below describe the **legacy `mean_sharpe`** gate (active only
 when `GATE_MODE="mean_sharpe"`).
 
@@ -723,6 +755,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-06-11 | #454 | **Alpha-v6 P0 FINISHED — `--hypothesis-id` enforcement + `event_regime_sharpes()` (report-only) + H1/H2/H3 pre-registered.** (1) New shared helper `scripts/walkforward/registry_enforcement.py` (`begin_run`/`HypothesisRun`) wired into all 9 `run_*_cpcv` scripts: fails fast pre-run on unregistered / not-preregistered / already-recorded (R4) / pre-prereg (R2-ordering) ids; warns with no id until `GRACE_UNTIL=2026-06-25`, then requires `--hypothesis-id` or `--exploratory`; `record()` is best-effort. Zero-flag behavior byte-for-byte unchanged (one warn line). (2) `event_regime_sharpes()` in `regime.py` (per-event UN-annualized cross-event Sharpe by entry-day regime); EventEdge emits per-event `(entry_date, pnl_pct)`; `run_cpcv` surfaces `CPCVResult.event_worst_regime_sharpe` — **REPORT-ONLY, does NOT feed the gate or retire the waiver** (FIX-2 waiver path unchanged). The independent Fable-5 review caught + I reverted a first-cut gate-fallback that compared per-event units to the annualized-daily `-0.5` floor (2.5–5× looser; pre-empted H1) — see §7.0c + DECISIONS 2026-06-11. (3) `scripts/preregister_event_hypotheses.py` froze H1/H2/H3 (confirmatory, `preregistered_at=2026-06-11T12:00Z`). No threshold changed; no gate verdict changed. 19+11+5 new tests. See §7.0c. | `scripts/walkforward/registry_enforcement.py`, `scripts/walkforward/regime.py`, `scripts/walkforward/cpcv.py`, `scripts/walkforward/event_edge.py`, `scripts/walkforward/gates.py`, `scripts/run_*_cpcv.py` (×9), `scripts/preregister_event_hypotheses.py`, `tests/test_registry_enforcement.py`, `tests/test_event_regime_sharpes.py`, `tests/test_preregister_event_hypotheses.py` |
 | 2026-06-11 | #451 | **Alpha-v6 P0 — Track B risk-budget amendment (registered): `TRACKB_MAX_RISK_BUDGET` 0.10 → 0.25.** The first real Track B run (#450) confirmed the 10% budget structurally rejects any realistic diversifier on ΔSharpe (TSMOM improved the PEAD book on every metric but missed ΔSharpe by 0.0115; ΔSR ≈ budget·(SR_cand − corr·SR_book) ⇒ needs SR_cand ≳ 1.11 at b=10%/corr=0.27). Owner-approved REGISTERED amendment (NOT ad-hoc): raised the budget to 0.25 (a quarter; conservative end of the 25–40% range; Phase-2/3 book ran trend ~40–50%) — chosen on principle, the budget→ΔSharpe sweep flips PASS at ~12.5% so 0.25 is comfortably in the pass region. Re-run at 0.25: **TSMOM PASSES all 8 criteria** (Sharpe 0.411→0.640, Calmar 0.278→0.588, maxDD −5.75%→−3.7%, corr +0.274, tail-overlap 1/14); no criterion newly binds. Recorded as the registry re-test `TRACKB-TSMOM-VS-PEAD-20260611-AMEND25` (parent=the original, decision=park; book inclusion stays owner-gated). `run_book_gate` gains `--sweep`; 3 tests updated. 28 tests. See §7.0-B. | `app/ml/retrain_config.py`, `scripts/run_book_gate.py`, `tests/test_book_gate.py` |
 | 2026-06-10 | #448 | **Alpha-v6 P0 — Track B (book-delta) acceptance gate (two-track acceptance).** New `scripts/walkforward/book_gate.py::book_delta_gate` (PURE) — judges a candidate sleeve (risk_premium / diversifier / tail_hedge) on its contribution to the COMBINED book at a ≤10% risk budget, the lever the calibration result (§7.0a) pointed at (TSMOM passes the significance CORE but fails PAPER only on the worst_regime backstop; lowering the t-bar admits noise). PASS iff all 8 pre-registered `TRACKB_*` criteria hold (Sharpe Δ≥0.10, Calmar Δ≥0, maxDD not deeper, corr<0.30 one-sided, standalone vol-targeted SR∈(0.20, `SHARPE_IMPLAUSIBILITY_CEILING`], risk budget≤10%, and the **tail-overlap** test `\|base-worst ∩ cand-worst\|/n_tail ≤ TRACKB_MAX_TAIL_OVERLAP`). Vol-targets the candidate PIT (60d trailing, shift(1), 2% floor, no fixed leverage cap → target-invariant); builds with/without books via `sleeve_allocator.combine()` (metrics identical to the book harness). Track A (significance gate) UNCHANGED; Track B is ADDITIVE (no live/gate code touched) and gates PAPER-level book inclusion ONLY (never auto-CAPITAL). Built + 2× Fable-5 adversarial review (3 MAJOR found+fixed: 5× leverage cap broke target-invariance → removed; the mean tail-test was maskable + ~43% false-reject → replaced with the REGISTERED overlap test; added an implausibility ceiling). 19 tests. New `TRACKB_*` constants in retrain_config. See §7.0-B. | `scripts/walkforward/book_gate.py`, `app/ml/retrain_config.py`, `tests/test_book_gate.py` |
 | 2026-06-10 | #444 | **Alpha-v6 P0 — gate-calibration harness (measures the gate's operating characteristics; changes NO threshold).** New `scripts/walkforward/gate_calibration.py` scores known-real (positive) and known-null (negative) control strategies through the PRODUCTION gate (`run_cpcv` → `CPCVResult.gate_passed`) to MEASURE its false-negative (Type-II) and false-positive rates — the empirical test of the Alpha-v6 thesis that a t≥2.0 gate on ≈8 folds of ≤4y data over-rejects true Sharpe-0.5–0.7 edges. Positive controls: `tsmom_4y` (DECISIVE — +0.71/19y sleeve on a 4y window), `tsmom_19y`, `xmom_12_1`, `pead_baseline`, `spy_buyhold` via a PIT `SeriesReturnStrategy` adapter (per-fold test-window slice — proven leak-free to 1e-9) + the reused `run_pead_cpcv` path. Negative controls: `random_balanced_seed_1..5` (true zero-SR long/short nulls), `random_seed_1..5` (beta-loaded diagnostic), `leaky_tplus1` (look-ahead → trips `SHARPE_IMPLAUSIBILITY_CEILING`). Emits an OC table + a PURE, PRE-REGISTERED recalibration *recommendation* (structurally cannot mutate config). **Dual aggregates** (full-gate vs significance-core: t-stat/%pos/P5/mean only) separate genuine Type-II behavior from the per-trade-calibrated PF/Calmar backstop mis-scoring daily-return series controls; `run_failed` rows excluded from aggregates + rule; smoke/full artifact separation + merge-upsert; residual-alpha-t per row. **Diagnostic only — recalibration, if triggered, is a follow-up PR.** Built + 2× Fable-5 adversarial review (1 BLOCKER + 3 MAJOR found+fixed). 49 tests. See §7.0a. | `scripts/walkforward/gate_calibration.py`, `tests/test_gate_calibration.py` |

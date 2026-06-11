@@ -11,7 +11,9 @@ stays byte-identical to the committed long-only +0.546 config.
 
 Usage:
     python scripts/run_pead_cpcv.py
+    python scripts/run_pead_cpcv.py --hypothesis-id H1-PEAD-... [--exploratory]
 """
+import argparse
 import logging
 import os
 import sys
@@ -148,6 +150,13 @@ def build_pead_scorer():
 def main() -> int:
     from app.utils.constants import RUSSELL_1000_TICKERS
     from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(description="PEAD CPCV (k=8, paths=2)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
 
     scorer = build_pead_scorer()
     strategy = PEADStrategy(
@@ -182,6 +191,19 @@ def main() -> int:
         "PEAD CPCV %s - mean_sharpe=%.3f  p5=%.3f  p95=%.3f",
         verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe,
     )
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "mean_sharpe": result.mean_sharpe,
+            "p5_sharpe": result.p5_sharpe,
+            "p95_sharpe": result.p95_sharpe,
+            "tstat": result.path_sharpe_tstat,
+            "n_paths": len(result.path_sharpes),
+            "gate_detail": gate_detail,
+            "gate_ok": gate_ok,
+        }, decision=None)
 
     if os.environ.get("PEAD_NO_EMAIL") == "1":
         logger.info("PEAD_NO_EMAIL=1 - skipping email (validation run)")

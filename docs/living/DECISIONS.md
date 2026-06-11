@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-11 — P0 finished: `--hypothesis-id` enforcement + `event_regime_sharpes()` (report-only) + H1/H2/H3 pre-registered (#454)
+
+**Context**: The last two P0 stubs from the blueprint Phase-0 list, plus the Phase-3 pre-registration the blueprint requires "BEFORE the panel exists." Closes P0; the next work is the slow fuses (P1c NBBO logger + P2 greeks backfill) and the event panel / H1.
+
+**Decisions**:
+1. **`--hypothesis-id` registry enforcement** is now wired into all nine `run_*_cpcv` scripts via one shared helper (`scripts/walkforward/registry_enforcement.py`). `begin_run()` FAILS FAST (before the multi-hour fetch/CPCV) on an unregistered id, a confirmatory-but-not-preregistered id, an already-recorded id (R4 — its result could never be recorded), or a run starting at/before the prereg instant (R2 ordering). With no id it WARNS during the 2-week grace window (`GRACE_UNTIL=2026-06-25`) and REQUIRES an id (or `--exploratory`) on/after that date. `HypothesisRun.record()` is best-effort (a completed CPCV is never lost to a registry hiccup). **Behavior with zero new flags is byte-for-byte unchanged** except one warning line.
+2. **`event_regime_sharpes()`** added to `scripts/walkforward/regime.py` — per-event (UN-annualized) cross-event Sharpe bucketed by entry-day regime, the instrument that will retire the event-sparsity waiver. EventEdge strategies now emit per-event `(entry_date, pnl_pct)` and `run_cpcv` surfaces the min as `CPCVResult.event_worst_regime_sharpe`. **It is REPORT-ONLY in the gate** — it does NOT feed `worst_regime_sharpe`/`regime_ok` and does NOT retire the waiver in PR1.
+3. **H1/H2/H3 pre-registered** with FROZEN acceptance criteria (`scripts/preregister_event_hypotheses.py` → `H1-PEAD-EVENTLEVEL-20260611`, `H2-IMPLIEDMOVE-CONTINUOUS-20260611`, `H3-PEADV2-SCORECARD-20260611`; `preregistered_at=2026-06-11T12:00Z`, label=confirmatory). H1 decision rule (pre-committed): p<0.05 → PEAD graduates to honest Track-A paper (waiver retired); p>0.15 → demote to trend-plus-cash; 0.05–0.15 → inconclusive. H2: continuous reaction_ratio, NEGATIVE coeff t≤−2, no thresholds. H3: monotonic scorecard (NOT XGBoost), train 2022-24 / validate 2025-26, t≥2.
+
+**Rationale / adversarial findings (Fable-5 loop)**: The first implementation WIRED the event-level Sharpe into the live gate as a fallback (fires whenever daily buckets are starved — exactly PEAD's case). The independent Fable-5 review flagged this as a BLOCKER and I agree: it compared a **per-event un-annualized** Sharpe against `MIN_WORST_REGIME_SHARPE=-0.5` (calibrated for **annualized daily** Sharpe). For PEAD's 10–40d holds, −0.5 in event units ≈ −1.25 to −2.5 annualized → the backstop becomes 2.5–5× looser and near-unbinding; it also silently removed the CAPITAL-tier human-sign-off fail-closed, and it **pre-empted H1's own pre-registered decision rule** (waiver retirement is H1's *consequence at p<0.05*, not PR1's). The blueprint (X6) says adopt it "inside Phase 3, once validated." → reverted gate consumption to **report-only**; the FIX-2 waiver path is unchanged. Also fixed (review): `begin_run` fail-fast on R4/ordering; `pnl_pct is None` guard in `event_edge.py` (a None would have silently dropped a whole fold); narrowed the prereg-script R1 catch.
+
+**Consequences**: P0's measurement machinery is complete. No threshold changed; no live/gate verdict changed (the report-only field is informational). Each Hn gets ONE confirmatory run (R4); the H1 run lands in PR3 with `run_at > 2026-06-11T12:00Z`. Per CLAUDE.md the `scripts/walkforward/` touch updates PIPELINE_ARCHITECTURE (§7.0c + changelog; `GRACE_UNTIL` is a `registry_enforcement.py` constant, not a retrain_config feature flag, so §13 is unchanged). **NOTE — 2026-06-25 cutover:** any overnight/manual CPCV run after that date needs `--hypothesis-id` or `--exploratory`.
+
+---
+
 ## 2026-06-11 — Track B budget amendment APPLIED (0.10→0.25, owner-approved registered): TSMOM now PASSES (#451)
 
 **Context**: The first Track B run (#450) showed the 10% budget structurally rejects any realistic diversifier on ΔSharpe (TSMOM improved the PEAD book on every metric yet missed ΔSharpe by 0.0115). The owner approved raising the risk budget — a REGISTERED amendment, not ad-hoc tuning.

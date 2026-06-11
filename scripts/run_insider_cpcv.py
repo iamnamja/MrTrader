@@ -8,8 +8,9 @@ profit_factor, PIT universe via te_start, OOS guard trained_through=date.min,
 5bps costs, C(8,2) k=8 ~6yr).
 
 Usage:
-    python scripts/run_insider_cpcv.py
+    python scripts/run_insider_cpcv.py [--hypothesis-id HYP-ID | --exploratory]
 """
+import argparse
 import logging
 import os
 import sys
@@ -211,6 +212,13 @@ def main() -> int:
     from app.ml.insider_scorer import InsiderClusterScorer
     from app.utils.constants import RUSSELL_1000_TICKERS
     from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(description="Insider-cluster CPCV (k=8, paths=2)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
 
     scorer = InsiderClusterScorer()
     strategy = InsiderStrategy(
@@ -245,6 +253,19 @@ def main() -> int:
         "Insider CPCV %s — mean_sharpe=%.3f  p5=%.3f  p95=%.3f",
         verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe,
     )
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "mean_sharpe": result.mean_sharpe,
+            "p5_sharpe": result.p5_sharpe,
+            "p95_sharpe": result.p95_sharpe,
+            "tstat": result.path_sharpe_tstat,
+            "n_paths": len(result.path_sharpes),
+            "gate_detail": gate_detail,
+            "gate_ok": gate_ok,
+        }, decision=None)
 
     try:
         from app.notifications.notifier import _smtp_send
