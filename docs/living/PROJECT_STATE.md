@@ -4,9 +4,29 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-10 (4y options data acquired; OPT-5 implied filter → FRAGILE/parked; live-path + test-infra hardening; **5-LLM review synthesized → ALPHA-v6 direction chosen + documented**)
+**Last updated:** 2026-06-11 (**Alpha-v6 Phase-0 machinery built + validated end-to-end; TSMOM passes Track B; NEXT = lead with P3 event panel / H1**)
 
-## 🧭 NOW (2026-06-10): operating the live book; options = data asset (not a sleeve); external review out
+## 🧭 NOW (2026-06-11): Alpha-v6 Phase-0 machinery COMPLETE — next = lead with P3 (earnings-event panel / H1)
+
+**Shipped overnight (8 PRs, all CI-merged; main @ `ab8151c`):** the P0 *measurement* machinery is built + validated end-to-end —
+- **Gate-calibration harness** (#444) + result (#447): the gate's false-negative is the **worst-regime backstop, NOT the t-stat**. "Lower the t-bar" is empirically **REFUTED** — 3/5 TRUE zero-SR nulls clear t≥2.0, and PEAD's t=3.33 ≈ a noise null's 3.47 (the 8-fold path-t can't separate PEAD from noise).
+- **Two-track Track B book-delta gate** (#448) — judges diversifiers/risk-premia on book contribution, not the standalone floor.
+- **Research registry / pre-registration ledger** (#449) — the program's true N_TRIALS (DSR demoted to report-only).
+- **First real Track B run** (#450) + **owner-approved REGISTERED budget amendment 10%→25%** (#451) → **TSMOM PASSES Track B** (Sharpe 0.41→0.64; sweep crossover ~12.5%, so 25% is in the pass region with margin). TSMOM is now Track-B-validated (trend is already live at 40% capital; reconciling the live weight to the 25% *risk* framing is a SEPARATE owner call).
+- **Ops:** uvicorn `[uvicorn.error]`→`[uvicorn]` (#445); FMP econ-calendar fixed (#446 — it was a **dead legacy `/api/v3`**, NOT a paywall; migrated to `/stable/`, works on the $29 plan) + new `docs/reference/DATA_PROVIDERS.md`; stale `risk.peak_equity` $50k→$101k reset.
+
+**▶️ NEXT DIRECTION (Fable 5 recommendation, ADOPTED): LEAD WITH P3 — the earnings-event panel — breaking the blueprint's "P3-after-P2" dependency.** Why: P0 proved the path-t can't separate PEAD from noise, and **PEAD is live capital on that broken instrument**; event-level inference (H1) is the replacement and needs **ZERO options features** → it is NOT blocked on P2.
+- **This week:** (1) finish the 2 P0 stubs — wire `--hypothesis-id` registry enforcement into the `run_*_cpcv` scripts + add `event_regime_sharpes()` (retire the event-sparsity waiver); (2) **pre-register H1/H2/H3 in the registry NOW** (criteria frozen before the panel exists); (3) light the 2 slow calendar-clocked fuses in parallel (every day lost is lost) — the nightly **NBBO snapshot logger** (P1c; needs 4–6 wks; gates P6 + cost realism) and **`backfill_computed_greeks.py`** (one-time pass over the 112.8M-bar options store, P2); (4) build **`app/research/event_panel.py`** (equity cols, 2019→2026) + **`scripts/walkforward/event_inference.py`** (two-way cluster-robust OLS, Cameron-Gelbach-Miller, unit-tested vs a published reference) → **run H1**. Pre-committed acceptance: p<0.05 → PEAD graduates to an honest Track-A paper pass (no waiver); p>0.15 → live book = trend-plus-cash (trend is the capital base either way). H1 may well **demote** PEAD (Phase-1 CAPM had hedged Sharpe −0.37) — that's the decision the live book needs.
+
+**Process (standing):** Fable 5 (model:fable) for design/analysis/implementation → INDEPENDENT Fable-5 deep-dive for bugs → fix + re-review until perfect → tests → NO-DRIFT docs → email phase_complete → CI-gated merge. One branch/PR at a time, squash-merge, delete branch, sync main.
+
+**Guardrails (what NOT to do):** don't touch significance thresholds (refuted); no new Track-B sleeves / index-VRP re-test on the TSMOM-pass high (preconditions unmet + cooling-off); no more binary threshold sweeps (the OPT-5 trap) — the `run_pead_implied_threshold_sweep.py` tooling was REMOVED (#452; H2's continuous pre-registered coefficient is the sanctioned settlement; the OPT-5 FRAGILE verdict stays logged). Don't start P5 trend-broadening until Monday's first real rebalance + the trend replay-diff are boring.
+
+**Live ops:** first REAL trend rebalance **Mon 2026-06-15 09:45 ET** (unchanged). ⚠️ **Restart uvicorn** to pick up #445/#446 (cleaner logs + the working FMP calendar). SSOT for the full plan: [NEXT_PHASE_BLUEPRINT_2026-06.md](../reference/NEXT_PHASE_BLUEPRINT_2026-06.md).
+
+---
+
+## 🧭 PRIOR (2026-06-10): operating the live book; options = data asset (not a sleeve); external review out
 - **Live book unchanged = PEAD (telemetry size) + TSMOM trend.** First REAL trend paper rebalance still **Mon 2026-06-15 09:45 ET** — verified READY (read-only shadow sim) and reliability-hardened (per-order commit + 1800s weekly misfire grace, #430). Today is quiet/no-trades and that's correct: swing ML ranker dormant by design (`pm.swing_ml_live_enabled=false`), PEAD found 0 qualifying earnings signals, trend not due until Monday.
 - **OPT-5 implied-move filter → ❌ FRAGILE / PARKED (#433).** The threshold-robustness sweep showed the PEAD lift exists only at ratio=1.0 and *inverts* at 1.25 → overfit-suspect. Don't pursue without a powered + pre-registered re-test. Broader options program stays PAUSED (short-vol = risk premium, not alpha).
 - **Options data → full 4y local store acquired (#440).** 2022-06-09 → 2026-06-08, ~112.8M bars, 733 names, ~6.18M contracts — the max the Polygon Developer plan serves. We now own the complete copy **even if the subscription is cancelled.**
