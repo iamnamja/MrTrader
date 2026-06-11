@@ -48,6 +48,7 @@ def _set_test_db_env(worker: str = "gw_main", *, force: bool = False) -> None:
     setter("MRTRADER_TREND_TRACKING_DB", str(db_dir / "trend_tracking.db"))
     setter("MRTRADER_ALLOCATOR_TRACKING_DB", str(db_dir / "allocator_tracking.db"))
     setter("MRTRADER_NOTIFICATIONS_DB", str(db_dir / "notifications.db"))
+    setter("MRTRADER_RESEARCH_REGISTRY_DB", str(db_dir / "research_registry.db"))
 
 
 _set_test_db_env()  # import-time safety default (shared 'gw_main'); overridden below

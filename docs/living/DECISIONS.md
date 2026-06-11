@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-11 — Research registry shipped: the pre-registration ledger = the program's true N_TRIALS (#449)
+
+**Context**: Third Alpha-v6 P0 unit. DSR is report-only (it can't represent iterative human/LLM research), and CPCV protects a single run — not the research PROGRAM. The real multiplicity defenses are pre-registration + a registry + the forward sacred holdout. This builds the registry: `app/research/registry.py::ResearchRegistry` (sqlite, env-isolated) + `scripts/registry.py` CLI.
+
+**Decision**: Every experiment is recorded; confirmatory runs must be pre-registered. Enforced integrity rules (each raises): **R1** unique `hypothesis_id`; **R2** a confirmatory result requires `preregistered_at` STRICTLY before `run_at` AND non-empty `acceptance_criteria`; **R3** exploratory results can NEVER promote (kill/park/exploratory_only only); **R4** one result per hypothesis (a re-test = new id + `parent_id` + a `cooling_off_until` preceding the re-test's `run_at`); **R5** pre-registration is immutable / not post-hoc. Unknown labels + orphan parents fail closed; concurrency-safe (single-transaction guarded UPDATEs). Going forward, confirmatory WF/CPCV/panel runs register a `hypothesis_id`; the `--hypothesis-id` enforcement wiring into `run_*_cpcv` is a follow-up PR.
+
+**Rationale / adversarial findings**: Built + 2× Fable-5 review. 1 BLOCKER + 3 MAJOR found+fixed: (BLOCKER) conftest didn't isolate the registry DB → a bare construction in a future test would pollute the real ledger; (MAJOR) criteria-less confirmatory promotion (R2 checked only the timestamp); cooling-off compared to caller-`now` instead of `run_at` (a run executed DURING cooling-off could be recorded); a check-then-write TOCTOU on the one-shot UPDATE. All probed closed under raw-SQL adversarial testing. 45 tests.
+
+**Consequences**: Additive (no existing behavior changed beyond a 1-line conftest isolation addition). Timestamps are caller-supplied — the registry is honest-recording infrastructure (a self-reported ledger), with the forward sacred holdout (2026-11-09) as the tamper backstop. Not a PIPELINE-rule file → `PIPELINE_ARCHITECTURE.md` unchanged. **P0 now has its three core units shipped** (calibration harness #444 + result #447; Track B gate #448; research registry #449). Remaining P0 / early-P3: the `--hypothesis-id` run-script wiring + `event_regime_sharpes()` + bringing forward event-level inference.
+
+---
+
 ## 2026-06-10 — Track B (book-delta) acceptance gate shipped — the two-track framework's first half (#448)
 
 **Context**: The P0 gate-calibration RESULT (below) localized the false-negative to the worst-regime backstop and prescribed two-track acceptance. This builds **Track B**: `scripts/walkforward/book_gate.py::book_delta_gate` — a PURE gate that judges a candidate sleeve (risk-premium / diversifier / tail-hedge) on its contribution to the COMBINED book at a ≤10% risk budget, not on the standalone significance gate.
