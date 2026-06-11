@@ -359,6 +359,56 @@ our +0.71/19y sleeve scored on a 4y window: if it fails its own production gate,
 Type-II thesis is confirmed and a threshold recalibration follows (separate PR). The full
 control run + the resulting OC table are tracked in `ML_EXPERIMENT_LOG.md`.
 
+### §7.0-B — Track A / Track B two-track acceptance (Alpha-v6 Phase 0, 2026-06-10, #448)
+
+**Why.** The P0 gate-calibration run (§7.0a; `logs/gate_calibration_20260610.json`; DECISIONS
+2026-06-10) showed the standalone significance gate is the wrong ruler for crisis-diversifiers:
+`tsmom_4y` (t=6.72) and `tsmom_19y` (t=4.46) pass the significance CORE but fail PAPER ONLY on
+the `worst_regime_sharpe` backstop — by design, a crisis-diversifier whipsaws in one regime.
+Lowering the t-bar was empirically refuted (3/5 TRUE zero-SR nulls cleared t≥2.0; the
+pre-registered rule returned `NO_ADMISSIBLE_TSTAR`). Acceptance is therefore split by component
+type, never by threshold-shopping.
+
+**Routing.** Every registered hypothesis declares `component_type ∈ {alpha, risk_premium,
+diversifier, filter, tail_hedge}`:
+- `alpha` → **Track A**: the existing standalone significance gate (`CPCVResult.gate_passed`,
+  `GATE_MODE='significance'`, PAPER/CAPITAL tiers) — unchanged. (Event/XS strategies move to
+  event-panel clustered inference as primary when P3 lands; CPCV becomes the robustness check.)
+- `risk_premium | diversifier | tail_hedge` → **Track B**: the book-delta gate
+  (`scripts/walkforward/book_gate.py::book_delta_gate`), judged on contribution to the COMBINED
+  book at a small fixed risk budget, not on standalone significance.
+
+**Track B criteria** (pre-registered 2026-06-10, frozen in `app/ml/retrain_config.py`; the gate is
+a PURE function of these constants and cannot edit them). PASS iff ALL hold:
+
+| Criterion | Constant | Bar |
+|---|---|---|
+| Book Sharpe Δ (with − without) | `TRACKB_MIN_SHARPE_DELTA` | ≥ +0.10 |
+| Book Calmar Δ | `TRACKB_MIN_CALMAR_DELTA` | ≥ 0.0 |
+| Book maxDD Δ | `TRACKB_MAX_DD_DELTA` | with-book maxDD no deeper (maxDD ≤ 0 convention) |
+| Candidate corr to book (vol-targeted) | `TRACKB_MAX_CORR` | < 0.30 (one-sided; negative passes) |
+| Candidate standalone vol-targeted Sharpe | `TRACKB_MIN_STANDALONE_SR` | > 0.20 |
+| Standalone Sharpe plausibility | `SHARPE_IMPLAUSIBILITY_CEILING` | ≤ 3.0 (look-ahead/degenerate guard) |
+| Risk budget | `TRACKB_MAX_RISK_BUDGET` | candidate blended at ≤ 10% of book risk |
+| **Tail-overlap** | `TRACKB_MAX_TAIL_OVERLAP` / `TRACKB_JOINT_TAIL_PCTL` | `\|base-worst ∩ cand-worst\| / n_tail ≤ 0.30`, `n_tail=max(3, floor(1%·n_days))` — the candidate's worst days must not COINCIDE with the book's worst days |
+
+The tail-overlap test is the blueprint's REGISTERED criterion; an earlier build used a
+mean-of-tail-returns test (maskable by one lucky day + ~43% false-reject on independents) — that
+unregistered divergence was replaced (overlap false-reject 0/100 in re-review).
+
+**Mechanics.** Inner-join alignment; candidate PIT-vol-targeted to the base book's annual vol
+(allocator's 60d trailing estimator, `shift(1)`, 2% floor; leverage bounded by target/floor, NO
+fixed cap — preserves target-invariance of corr/SR/overlap); constant-mix blend at the risk
+budget; both books built through `sleeve_allocator.combine()` (weekly rebalance, 1bp symmetric
+turnover) so deltas are turnover-net and metric definitions are identical to the book harness. A
+zero-variance or implausibly-high-SR candidate hard-fails.
+
+**Promotion scope.** Track B gates PAPER-level book inclusion ONLY. It NEVER auto-promotes to
+CAPITAL (owner sign-off + a codified tail-loss budget required). **Open calibration (registered):**
+at a 10% budget, ΔSharpe ≥ 0.10 implicitly demands standalone SR ≈ 0.94 (corr 0) / ≈ 0.70 (corr
+−0.3), so TSMOM (SR≈0.71, corr≈+0.25 to PEAD) may be structurally rejected — resolve via a
+registered amendment after the first real TSMOM-vs-book run, NOT ad hoc.
+
 The tables in §7a/§7b below describe the **legacy `mean_sharpe`** gate (active only
 when `GATE_MODE="mean_sharpe"`).
 
@@ -669,6 +719,7 @@ All entries reference the PR that made the change.
 
 | Date | PR | Change | Files |
 |---|---|---|---|
+| 2026-06-10 | #448 | **Alpha-v6 P0 — Track B (book-delta) acceptance gate (two-track acceptance).** New `scripts/walkforward/book_gate.py::book_delta_gate` (PURE) — judges a candidate sleeve (risk_premium / diversifier / tail_hedge) on its contribution to the COMBINED book at a ≤10% risk budget, the lever the calibration result (§7.0a) pointed at (TSMOM passes the significance CORE but fails PAPER only on the worst_regime backstop; lowering the t-bar admits noise). PASS iff all 8 pre-registered `TRACKB_*` criteria hold (Sharpe Δ≥0.10, Calmar Δ≥0, maxDD not deeper, corr<0.30 one-sided, standalone vol-targeted SR∈(0.20, `SHARPE_IMPLAUSIBILITY_CEILING`], risk budget≤10%, and the **tail-overlap** test `\|base-worst ∩ cand-worst\|/n_tail ≤ TRACKB_MAX_TAIL_OVERLAP`). Vol-targets the candidate PIT (60d trailing, shift(1), 2% floor, no fixed leverage cap → target-invariant); builds with/without books via `sleeve_allocator.combine()` (metrics identical to the book harness). Track A (significance gate) UNCHANGED; Track B is ADDITIVE (no live/gate code touched) and gates PAPER-level book inclusion ONLY (never auto-CAPITAL). Built + 2× Fable-5 adversarial review (3 MAJOR found+fixed: 5× leverage cap broke target-invariance → removed; the mean tail-test was maskable + ~43% false-reject → replaced with the REGISTERED overlap test; added an implausibility ceiling). 19 tests. New `TRACKB_*` constants in retrain_config. See §7.0-B. | `scripts/walkforward/book_gate.py`, `app/ml/retrain_config.py`, `tests/test_book_gate.py` |
 | 2026-06-10 | #444 | **Alpha-v6 P0 — gate-calibration harness (measures the gate's operating characteristics; changes NO threshold).** New `scripts/walkforward/gate_calibration.py` scores known-real (positive) and known-null (negative) control strategies through the PRODUCTION gate (`run_cpcv` → `CPCVResult.gate_passed`) to MEASURE its false-negative (Type-II) and false-positive rates — the empirical test of the Alpha-v6 thesis that a t≥2.0 gate on ≈8 folds of ≤4y data over-rejects true Sharpe-0.5–0.7 edges. Positive controls: `tsmom_4y` (DECISIVE — +0.71/19y sleeve on a 4y window), `tsmom_19y`, `xmom_12_1`, `pead_baseline`, `spy_buyhold` via a PIT `SeriesReturnStrategy` adapter (per-fold test-window slice — proven leak-free to 1e-9) + the reused `run_pead_cpcv` path. Negative controls: `random_balanced_seed_1..5` (true zero-SR long/short nulls), `random_seed_1..5` (beta-loaded diagnostic), `leaky_tplus1` (look-ahead → trips `SHARPE_IMPLAUSIBILITY_CEILING`). Emits an OC table + a PURE, PRE-REGISTERED recalibration *recommendation* (structurally cannot mutate config). **Dual aggregates** (full-gate vs significance-core: t-stat/%pos/P5/mean only) separate genuine Type-II behavior from the per-trade-calibrated PF/Calmar backstop mis-scoring daily-return series controls; `run_failed` rows excluded from aggregates + rule; smoke/full artifact separation + merge-upsert; residual-alpha-t per row. **Diagnostic only — recalibration, if triggered, is a follow-up PR.** Built + 2× Fable-5 adversarial review (1 BLOCKER + 3 MAJOR found+fixed). 49 tests. See §7.0a. | `scripts/walkforward/gate_calibration.py`, `tests/test_gate_calibration.py` |
 | 2026-06-10 | #439 | **Regime-model retrain: weekly cadence + fixed gate + one shared evaluator.** Adds `REGIME_RETRAIN_INTERVAL_DAYS=7` and the regime promotion gate as config (`REGIME_GATE_MACRO_F1_MIN=0.60`, `REGIME_GATE_LOG_LOSS_MAX=0.45`). Fixes a latent bug: `scripts/train_regime_model.py` read `payload["wf_auc_min"]`/`["brier_score"]` from the PICKLE, but those keys were only written to the DB row → `KeyError`; and `0.22` was a 2-class Brier cutoff wrongly applied to the 3-class cross-entropy log-loss (random baseline = log(3) ≈ 1.099 → correct threshold 0.45). `regime_training.py` now writes the gate inputs into the pickle; a single `regime_gate()` (used by BOTH the CLI and the PM) is the sole source of truth. New `PortfolioManager._retrain_regime` retrains weekly at 17:30 ET on a FILE-AGE cadence independent of `RETRAIN_WEEKDAY` (so the regime model stays current while swing/intraday retraining is frozen); gate-failed models are deleted so the filename-based loader keeps the prior passing version. NOTE: this is the regime-classifier's own training gate — separate from the WF/CPCV strategy gates in §7. 9 tests. | `app/ml/retrain_config.py`, `app/ml/regime_training.py`, `scripts/train_regime_model.py`, `app/agents/portfolio_manager.py`, `tests/test_regime_retrain.py` |
 | 2026-06-09 | #415 | **Alpha-v5 OPT-2 — contract-level options simulator + spread cost model.** New `OptionsSimulator` (DAILY-MTM, marks each option leg to its real EOD close fwd-filled, settles at intrinsic at expiry using the underlying close; emits the same `SimResult`) + `OptionsSpreadCostModel` (modeled half-spread % of premium × a 1×/2×/3× stress mult + per-contract fee; no exit cost held-to-expiry). Implements the OPT-0 `OptionContractSim`/`OptionsSpreadCostModel` contracts. Marks to REAL closes (not theoretical engine prices) so IV-crush is carried by the data; defined-risk payoff caps are automatic via per-leg intrinsic settlement. **Not yet wired to WF/CPCV** — the OPT-3 adapter (next) will feed `daily_returns_dated` into `FoldResult` so `run_cpcv` + all gates apply unchanged. Opus 4.8 adversarial review confirmed MTM + look-ahead discipline correct; drove fixes for silent failure modes: dropped-position logging+count (`dropped_positions`), blow-up flag for equity ≤ 0 (`blown_up`, hard fail), profit-factor cap (inf→99), unparseable-contract rejection, day-1 entry-cost capture in the return series. 19 tests (hand-computed long/short/vertical-cap P&L, calendar spread, multi-day fwd-fill, intermediate short MTM sign, qty scaling, cost-sweep monotonicity, drop/blow-up/PF guards). | `app/backtesting/options_simulator.py`, `tests/test_options_simulator.py` |
