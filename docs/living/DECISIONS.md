@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-11 — Track B budget amendment APPLIED (0.10→0.25, owner-approved registered): TSMOM now PASSES (#451)
+
+**Context**: The first Track B run (#450) showed the 10% budget structurally rejects any realistic diversifier on ΔSharpe (TSMOM improved the PEAD book on every metric yet missed ΔSharpe by 0.0115). The owner approved raising the risk budget — a REGISTERED amendment, not ad-hoc tuning.
+
+**Change**: `TRACKB_MAX_RISK_BUDGET` 0.10 → **0.25** (a quarter of book risk — the conservative end of the owner-endorsed 25–40% range; the validated Phase-2/3 book ran trend at ~40–50%). Chosen on PRINCIPLE, not to barely clear TSMOM: the budget→ΔSharpe sweep flips PASS at ~12.5%, so 0.25 is comfortably in the pass region (passes at any budget ≥ 12.5%). Full rationale in the retrain_config comment.
+
+**Result (re-run, recorded as the registry re-test `TRACKB-TSMOM-VS-PEAD-20260611-AMEND25`, parent = the original)**: at 0.25, TSMOM **PASSES Track B on ALL 8 criteria** — Sharpe 0.411→0.640 (Δ+0.229), Calmar 0.278→0.588 (Δ+0.310), maxDD −5.75%→−3.7% (shallower), corr +0.274, tail-overlap 1/14, standalone vt-SR 0.92. No criterion newly binds at the higher budget. decision=park (book inclusion remains owner-gated — Track B never auto-promotes).
+
+**Consequences**: Track B is now well-calibrated (the first real diversifier clears it with margin). The registry dogfooding worked end-to-end AND its integrity fired in the wild — a redundant concurrent re-run was correctly rejected by R1 (duplicate) + R4 (one-shot). PIPELINE_ARCHITECTURE §7.0-B (calibration RESOLVED) + changelog updated (gate-threshold change). **TSMOM is now Track-B-eligible for PAPER book inclusion; actually wiring TSMOM into the live book at a 25% weight is a SEPARATE owner decision.** Next P0: wire `--hypothesis-id` into the run scripts + `event_regime_sharpes()`; then event-level inference (P3).
+
+---
+
 ## 2026-06-11 — Track B first real run: TSMOM vs PEAD book FAILS only on ΔSharpe@10% — calibration question answered; amendment PENDING OWNER (#450)
 
 **Context**: First real application of the Track B gate — the registered open calibration question from 2026-06-10. `scripts/run_book_gate.py` ran `book_delta_gate(PEAD, TSMOM)` at the 10% risk budget on the 2020-06→2026-06 sleeve overlap (1495 evaluated days). Pre-registered + recorded in the research registry (first real ledger row `TRACKB-TSMOM-VS-PEAD-20260611`, decision=park — book inclusion is owner-gated, NOT auto-promoted).
