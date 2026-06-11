@@ -1,29 +1,42 @@
 """
-run_book_gate.py - FIRST real application of the Track B (book-delta) gate.
+run_book_gate.py - real application of the Track B (book-delta) gate.
 
 Base book = PEAD (the live alpha satellite); candidate = TSMOM trend (the
-crisis-diversifier Track B was built for). Answers the OPEN CALIBRATION
-QUESTION recorded in docs/living/DECISIONS.md (2026-06-10): at the 10% risk
-budget, does Delta-Sharpe >= 0.10 structurally reject TSMOM (SR ~ 0.71,
-corr ~ +0.25 to PEAD)? This runner only OBSERVES - it changes no constant.
+crisis-diversifier Track B was built for). The FIRST run (2026-06-11, budget
+0.10, hypothesis TRACKB-TSMOM-VS-PEAD-20260611) answered the OPEN CALIBRATION
+QUESTION recorded in docs/living/DECISIONS.md (2026-06-10): TSMOM improved
+the book on every metric but missed Delta-Sharpe (+0.0885 vs 0.10) at the
+10% budget. The owner-approved REGISTERED amendment (2026-06-11) raised
+TRACKB_MAX_RISK_BUDGET 0.10 -> 0.25 (see the comment block in
+app/ml/retrain_config.py); this runner now RE-RUNS the gate at the amended
+budget. It only OBSERVES - it changes no constant.
 
 Mechanics:
   1. rets = _sleeve_returns() (reused from scripts/run_book_allocator.py:
      PEAD R1K cached full-window pass + TSMOM ETF backtest, inner-joined).
-  2. criteria = BookGateCriteria.from_retrain_config() (frozen, registered
-     2026-06-10 BEFORE this run).
+  2. criteria = BookGateCriteria.from_retrain_config() (frozen; the budget
+     amendment was registered 2026-06-11T05:00Z BEFORE this re-run).
   3. result = book_delta_gate(pead, trend) at the default (max) risk budget.
   4. Print format_report(result); dump the result dict to
      logs/track_b_tsmom_vs_pead_<as_of>.json (--as-of supplies the date so
      the filename never reads the wall clock).
-  5. Best-effort: record the run in the research registry
-     (data/research_registry.db) as confirmatory hypothesis
-     TRACKB-TSMOM-VS-PEAD-20260611 with decision='park' regardless of
-     PASS/FAIL - book inclusion is owner-gated, never auto-promoted.
-     A registry hiccup (e.g. duplicate id on a re-run) NEVER crashes the
-     gate run; it is reported and the verdict still stands.
+  5. Best-effort: record the re-run in the research registry
+     (data/research_registry.db) as the REGISTERED RE-TEST (R4 path)
+     TRACKB-TSMOM-VS-PEAD-20260611-AMEND25 (parent = the original
+     hypothesis, cooling_off_until = the amendment registration instant)
+     with decision='park' regardless of PASS/FAIL - book inclusion is
+     owner-gated, never auto-promoted. A registry hiccup (e.g. duplicate id
+     on a re-run) NEVER crashes the gate run; it is reported and the verdict
+     still stands.
+  6. --sweep: budget-transparency curve. Runs the gate at each budget in
+     SWEEP_BUDGETS (all <= the registered 0.25 cap) and prints an ASCII
+     table (budget | dSharpe | verdict | failed criteria) so the amended
+     0.25 is auditable against the whole curve, not a magic number.
+     Sweep mode is REPORT-ONLY: no JSON dump, no registry write.
 
-Usage: python -m scripts.run_book_gate --as-of 2026-06-11
+Usage:
+  python -m scripts.run_book_gate --as-of 2026-06-11
+  python -m scripts.run_book_gate --as-of 2026-06-11 --sweep
 """
 from __future__ import annotations
 
@@ -38,14 +51,28 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv  # noqa: E402
 load_dotenv()
 
-HYPOTHESIS_ID = "TRACKB-TSMOM-VS-PEAD-20260611"
-# Genuinely registered 2026-06-10 (retrain_config TRACKB_* constants + the
-# DECISIONS.md entry), BEFORE this first run - legitimate pre-registration.
-PREREGISTERED_AT = "2026-06-10T00:00:00+00:00"
+# REGISTERED RE-TEST of the original first run (registry R4 path): a NEW
+# hypothesis_id with parent_id = the original and a cooling_off_until that the
+# run must strictly post-date.
+HYPOTHESIS_ID = "TRACKB-TSMOM-VS-PEAD-20260611-AMEND25"
+PARENT_HYPOTHESIS_ID = "TRACKB-TSMOM-VS-PEAD-20260611"
+# The owner-approved budget amendment (0.10 -> 0.25) was registered
+# 2026-06-11T05:00Z (retrain_config TRACKB_MAX_RISK_BUDGET comment +
+# DECISIONS.md 2026-06-11), BEFORE this re-run - legitimate pre-registration.
+# The same instant is the re-test's cooling_off_until: R4 requires the run to
+# EXECUTE strictly after it, i.e. after the amendment was on the books.
+PREREGISTERED_AT = "2026-06-11T05:00:00+00:00"
+COOLING_OFF_UNTIL = "2026-06-11T05:00:00+00:00"
 MECHANISM = (
-    "Track B book-delta: does TSMOM (crisis-diversifier) improve the PEAD "
-    "book at a 10% risk budget?"
+    "Track B book-delta RE-TEST under the registered budget amendment "
+    "(0.10 -> 0.25): does TSMOM (crisis-diversifier) improve the PEAD book "
+    "at a 25% risk budget?"
 )
+
+# --sweep budget grid: the transparency curve around the amended cap. Every
+# value is <= TRACKB_MAX_RISK_BUDGET (0.25) so the gate's input validation
+# accepts it; 0.10 reproduces the original run's budget for lineage.
+SWEEP_BUDGETS = (0.05, 0.10, 0.125, 0.15, 0.20, 0.25)
 
 
 def _to_jsonable(obj):
@@ -68,8 +95,11 @@ def _to_jsonable(obj):
 
 
 def _record_in_registry(result_dict: dict, criteria_dict: dict, run_at: str) -> None:
-    """Dogfood the research registry (best-effort; never crashes the run).
-    decision='park' regardless of PASS/FAIL: Track B inclusion is owner-gated."""
+    """Dogfood the research registry's RE-TEST path (R4): new hypothesis_id,
+    parent_id = the original first run, cooling_off_until = the amendment
+    registration instant (strictly before run_at). Best-effort; never crashes
+    the run. decision='park' regardless of PASS/FAIL: Track B inclusion is
+    owner-gated."""
     from app.research.registry import RegistryIntegrityError, ResearchRegistry
 
     reg = ResearchRegistry()
@@ -79,7 +109,8 @@ def _record_in_registry(result_dict: dict, criteria_dict: dict, run_at: str) -> 
             family="trend",
             label="confirmatory",
             mechanism=MECHANISM,
-            parent_id=None,
+            parent_id=PARENT_HYPOTHESIS_ID,
+            cooling_off_until=COOLING_OFF_UNTIL,
         )
         reg.preregister(
             HYPOTHESIS_ID,
@@ -94,8 +125,36 @@ def _record_in_registry(result_dict: dict, criteria_dict: dict, run_at: str) -> 
     row = reg.record_result(
         HYPOTHESIS_ID, run_at=run_at, result=result_dict, decision="park"
     )
-    print(f"[registry] recorded {HYPOTHESIS_ID} at {reg.db_path} "
+    print(f"[registry] recorded {HYPOTHESIS_ID} "
+          f"(parent={row['parent_id']}, re-test accepted by R4) at {reg.db_path} "
           f"(run_at={row['run_at']}, decision={row['decision']})")
+
+
+def _run_sweep(rets, criteria) -> None:
+    """Budget-transparency curve: the gate at every SWEEP_BUDGETS value, as an
+    ASCII table (budget | dSharpe | verdict | failed criteria). Report-only -
+    the amended 0.25 cap is auditable against the whole curve. All budgets are
+    <= criteria.max_risk_budget so the gate's input validation accepts them."""
+    from scripts.walkforward.book_gate import book_delta_gate
+
+    bar = "-" * 78
+    print()
+    print("  TRACK B BUDGET SWEEP - dSharpe and verdict vs candidate risk budget")
+    print(f"  (criteria: dSharpe >= {criteria.min_sharpe_delta:+.2f}; "
+          f"registered budget cap {criteria.max_risk_budget:.2f})")
+    print(bar)
+    print(f"  {'budget':>8} | {'dSharpe':>8} | {'verdict':>7} | failed criteria")
+    print(bar)
+    for b in SWEEP_BUDGETS:
+        res = book_delta_gate(
+            rets["pead"], rets["trend"],
+            criteria=criteria, candidate_risk_budget=b,
+            candidate_label="tsmom_trend",
+        )
+        failed = ", ".join(res.failed_criteria) if res.failed_criteria else "-"
+        print(f"  {b:>8.3f} | {res.sharpe_delta:>+8.4f} | "
+              f"{'PASS' if res.passed else 'FAIL':>7} | {failed}")
+    print(bar)
 
 
 def main() -> int:
@@ -103,6 +162,9 @@ def main() -> int:
         description="Track B book-delta gate: TSMOM trend vs the PEAD book")
     ap.add_argument("--as-of", required=True, metavar="YYYY-MM-DD",
                     help="run date used for the JSON dump filename")
+    ap.add_argument("--sweep", action="store_true",
+                    help="report-only budget-transparency curve over "
+                         f"{SWEEP_BUDGETS} (no JSON dump, no registry write)")
     args = ap.parse_args()
 
     from scripts.run_book_allocator import _sleeve_returns
@@ -111,11 +173,16 @@ def main() -> int:
     )
 
     criteria = BookGateCriteria.from_retrain_config()
-    print(f"[gate] frozen criteria (registered 2026-06-10): {criteria.to_dict()}")
+    print(f"[gate] frozen criteria (budget amended 2026-06-11, registered "
+          f"before this re-run): {criteria.to_dict()}")
 
     rets = _sleeve_returns()
     print(f"[gate] sleeve overlap: {rets.index[0].date()} -> "
           f"{rets.index[-1].date()} ({len(rets)} days)")
+
+    if args.sweep:
+        _run_sweep(rets, criteria)
+        return 0
 
     result = book_delta_gate(
         rets["pead"], rets["trend"],

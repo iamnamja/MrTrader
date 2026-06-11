@@ -438,7 +438,16 @@ TRACKB_MAX_DD_DELTA: float = 0.0        # max allowed book maxDD worsening (0 = 
 #                                         maxDD <= 0 convention, sleeve_allocator._maxdd)
 TRACKB_MAX_CORR: float = 0.30           # candidate corr to the existing book must be < this
 TRACKB_MIN_STANDALONE_SR: float = 0.20  # candidate's own vol-targeted Sharpe must be > this
-TRACKB_MAX_RISK_BUDGET: float = 0.10    # candidate blended at <= this fraction of book risk
+TRACKB_MAX_RISK_BUDGET: float = 0.25    # candidate blended at <= this fraction of book risk.
+#   AMENDED 2026-06-11 (0.10 -> 0.25), owner-approved REGISTERED amendment. The original 0.10 was
+#   arbitrarily conservative: at b=0.10 the TRACKB_MIN_SHARPE_DELTA>=0.10 bar implicitly demands a
+#   candidate standalone SR >~ 1.11 (since dSR ~= b*(SR_cand - corr*SR_book)), which NO realistic
+#   diversifier can clear. The first real run (TSMOM vs PEAD book, #450) improved the book on EVERY
+#   metric (Sharpe 0.41->0.50, maxDD shallower, Calmar up, lower vol) yet failed dSharpe by 0.0115.
+#   A diversifier is realistically a minority-but-meaningful share of book risk (the validated
+#   Phase-2/3 book ran trend at ~40-50%); 0.25 = a quarter, the CONSERVATIVE end of the
+#   owner-endorsed 25-40% range, chosen on principle (NOT reverse-engineered to make TSMOM pass —
+#   the budget-vs-dSharpe curve is reported alongside the re-test). See DECISIONS 2026-06-11.
 TRACKB_JOINT_TAIL_PCTL: float = 0.01    # tail-overlap test: tail size = max(3, floor(pctl *
 #                                         n_days)) worst days of EACH book (the base book, and
 #                                         the vol-targeted candidate) on the shared evaluation index
