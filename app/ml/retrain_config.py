@@ -419,6 +419,44 @@ CAPITAL_GATE_MIN_N_FOLDS: int = 10         # power floor (N_eff=n_folds; 8 is to
 CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.45
 CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR documented live-paper confirmation
 
+# ── Alpha-v6 Phase 0: Track B (book-delta) acceptance ─────────────────────────
+# PRE-REGISTERED criteria for the Track B gate (scripts/walkforward/book_gate.py;
+# NEXT_PHASE_BLUEPRINT_2026-06.md Phase 0 / consensus C2). Track B judges
+# crisis-diversifiers / risk premia (TSMOM extensions, index VRP, tail hedges)
+# on their CONTRIBUTION TO THE COMBINED BOOK at a small fixed risk budget —
+# NOT on the standalone Track-A significance gate, whose worst-regime backstop
+# a crisis-diversifier intentionally fails (P0 RESULT 2026-06-10: tsmom t=6.72
+# passes the significance core, fails PAPER only on worst_regime_sharpe;
+# lowering the t-bar was empirically refuted — 3/5 zero-SR nulls cleared t>=2.0).
+# Frozen 2026-06-10 BEFORE any Track B candidate was evaluated. The gate is a
+# PURE function of these constants — it never mutates them.
+# Track B NEVER auto-promotes to CAPITAL: it gates PAPER-level book inclusion
+# only; capital requires explicit owner sign-off plus a codified tail budget.
+TRACKB_MIN_SHARPE_DELTA: float = 0.10   # combined-book Sharpe must improve by >= this
+TRACKB_MIN_CALMAR_DELTA: float = 0.0    # book Calmar delta must be >= this (must not worsen)
+TRACKB_MAX_DD_DELTA: float = 0.0        # max allowed book maxDD worsening (0 = must not worsen;
+#                                         maxDD <= 0 convention, sleeve_allocator._maxdd)
+TRACKB_MAX_CORR: float = 0.30           # candidate corr to the existing book must be < this
+TRACKB_MIN_STANDALONE_SR: float = 0.20  # candidate's own vol-targeted Sharpe must be > this
+TRACKB_MAX_RISK_BUDGET: float = 0.10    # candidate blended at <= this fraction of book risk
+TRACKB_JOINT_TAIL_PCTL: float = 0.01    # tail-overlap test: tail size = max(3, floor(pctl *
+#                                         n_days)) worst days of EACH book (the base book, and
+#                                         the vol-targeted candidate) on the shared evaluation index
+TRACKB_MAX_TAIL_OVERLAP: float = 0.30   # PASS iff |base_worst INTERSECT cand_worst| / n_tail
+#                                         <= this. Registered 2026-06-10, before any Track B
+#                                         candidate was evaluated. This IS the blueprint's
+#                                         registered criterion ("candidate's worst-1% days must
+#                                         not coincide with the book's worst-1%"); an earlier
+#                                         mean-return-on-tail-days implementation was an
+#                                         UNREGISTERED divergence — maskable by one large
+#                                         positive tail day, and ~43% false-REJECT on genuinely
+#                                         independent diversifiers. Under independence the
+#                                         expected overlap fraction is ~n_tail/n_days (~1%),
+#                                         far below 0.30; a co-crasher overlaps heavily and fails.
+# Track B also enforces SHARPE_IMPLAUSIBILITY_CEILING (above, 3.0) on the candidate's
+# standalone vol-targeted Sharpe — an SR > 3.0 FAILS the gate as look-ahead/degenerate,
+# mirroring Track A's CRITICAL-1 ceiling intent.
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 # USE_NIS_FEATURES: include NIS/macro LLM sentiment features in swing training.
 #   False (default): NIS excluded — ~80% NaN creates a time-proxy (NaN = pre-May-2025

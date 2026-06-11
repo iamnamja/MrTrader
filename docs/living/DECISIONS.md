@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-10 — Track B (book-delta) acceptance gate shipped — the two-track framework's first half (#448)
+
+**Context**: The P0 gate-calibration RESULT (below) localized the false-negative to the worst-regime backstop and prescribed two-track acceptance. This builds **Track B**: `scripts/walkforward/book_gate.py::book_delta_gate` — a PURE gate that judges a candidate sleeve (risk-premium / diversifier / tail-hedge) on its contribution to the COMBINED book at a ≤10% risk budget, not on the standalone significance gate.
+
+**Decision**: Adopt two-track routing (`component_type` → Track A significance gate for `alpha`; Track B book-delta for `risk_premium`/`diversifier`/`tail_hedge` — PIPELINE_ARCHITECTURE §7.0-B). Track B PASS iff all 8 pre-registered criteria hold (Sharpe Δ≥0.10, Calmar Δ≥0, maxDD not deeper, corr<0.30, standalone vol-targeted SR∈(0.20, 3.0], risk budget≤10%, tail-overlap≤0.30). Track B gates **PAPER-level book inclusion only — NEVER auto-promotes to CAPITAL** (owner sign-off + tail budget). Constants frozen in retrain_config (`TRACKB_*`), pre-registered 2026-06-10.
+
+**Rationale / adversarial findings**: Built + 2× Fable-5 review. Three MAJOR bugs found+fixed: (1) a 5× leverage cap broke vol-target invariance → removed (leverage now bounded by the 2% floor; invariance to ~4e-16); (2) the joint-tail criterion was first implemented as a mean-of-tail-returns test — BOTH maskable (one lucky day → false ADMIT of a tail-amplifier) AND ~43% false-REJECT on independent diversifiers → replaced with the blueprint's actually-REGISTERED **overlap** test (candidate's worst days must not coincide with the book's; independent false-reject 0/100 in re-review); (3) no implausibility ceiling → added (reuses `SHARPE_IMPLAUSIBILITY_CEILING`). 19 tests; metrics reuse `sleeve_allocator.combine()` (identical to the book harness).
+
+**Consequences**: Track A (significance gate) UNCHANGED; Track B is additive (no live/gate code touched). **Open calibration question (registered):** at a 10% budget, ΔSharpe≥0.10 implicitly demands standalone SR ≈0.94 (corr 0) / ≈0.70 (corr −0.3), so TSMOM (SR≈0.71, corr≈+0.25 to PEAD) may be structurally rejected — resolve via a registered amendment after the first real TSMOM-vs-book run, NOT ad hoc. Per CLAUDE.md, PIPELINE_ARCHITECTURE §7.0-B + changelog updated this PR. Next P0: the research registry (pre-registration ledger) + bringing forward event-level inference (P3).
+
+---
+
 ## 2026-06-10 — P0 gate-calibration RESULT: do NOT lower the significance bar; the false-negative lever is the worst-regime backstop (→ two-track acceptance) and the path-t is unreliable (→ event-level inference)
 
 **Context**: Ran the pre-registered calibration controls (the #444 harness) through the production gate. Positive PAPER pass-rate **0/4** (confirms a real Type-II problem for the edges we care about) but significance-CORE pass-rate **2/4** — `tsmom_4y` (t=6.72) and `tsmom_19y` (t=4.46) clear the significance core and fail ONLY on `worst_regime_sharpe`. Meanwhile **3/5 TRUE zero-SR balanced nulls posted t=2.6–3.5** (≥ the 2.0 bar), and PEAD's t=3.33 is statistically indistinguishable from a noise null (t=3.47). The pre-registered recalibration rule self-returned **`NO_ADMISSIBLE_TSTAR`** (the binding failure is not the t-stat). Type-I control is sound (0/10 nulls pass the full gate; the leaky control is flagged implausible). Full OC table in ML_EXPERIMENT_LOG; artifact `logs/gate_calibration_20260610.json`.
