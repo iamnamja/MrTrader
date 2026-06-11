@@ -24,6 +24,7 @@ Build only. Run with:
     python scripts/build_smallmid_universe.py --years 6      # ONCE, builds cache
     python scripts/run_pead_smallmid_cpcv.py                  # uses the cache
 """
+import argparse
 import logging
 import os
 import sys
@@ -265,6 +266,14 @@ def main() -> int:
     from app.ml.pead_scorer import PEADScorer
     from scripts.walkforward.cpcv import run_cpcv
     from scripts.build_smallmid_universe import load_cached
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(
+        description="Small/mid-cap PEAD CPCV (survivorship-safe, k=8, paths=2)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
 
     cached = load_cached()
     if cached is None:
@@ -327,6 +336,19 @@ def main() -> int:
         "Small/mid-cap PEAD CPCV %s — mean_sharpe=%.3f  p5=%.3f  p95=%.3f",
         verdict, result.mean_sharpe, result.p5_sharpe, result.p95_sharpe,
     )
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "mean_sharpe": result.mean_sharpe,
+            "p5_sharpe": result.p5_sharpe,
+            "p95_sharpe": result.p95_sharpe,
+            "tstat": result.path_sharpe_tstat,
+            "n_paths": len(result.path_sharpes),
+            "gate_detail": gate_detail,
+            "gate_ok": gate_ok,
+        }, decision=None)
 
     try:
         from app.notifications.notifier import _smtp_send

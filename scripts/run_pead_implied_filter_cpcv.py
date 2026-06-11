@@ -15,7 +15,9 @@ result — the prior PRICE-based priced-in filter HURT PEAD, so this is genuinel
 Usage:
     PYTHONIOENCODING=utf-8 python scripts/run_pead_implied_filter_cpcv.py
     OPT_IMPLIED_RATIO=1.25 python scripts/run_pead_implied_filter_cpcv.py
+    python scripts/run_pead_implied_filter_cpcv.py [--hypothesis-id HYP-ID | --exploratory]
 """
+import argparse
 import logging
 import os
 import sys
@@ -80,6 +82,15 @@ def _m(res):
 
 
 def main() -> int:
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(
+        description="OPT-5 PEAD options-implied priced-in filter (baseline vs filtered CPCV)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
+
     base = _m(_run("baseline", with_filter=False))
     filt = _m(_run(f"implied-filter@{IMPLIED_RATIO}", with_filter=True))
     print("\n" + "=" * 80)
@@ -114,6 +125,19 @@ def main() -> int:
         verdict = "NO IMPROVEMENT (drop filter)"
     print(f"  VERDICT: {verdict}")
     print("=" * 80)
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "implied_ratio": IMPLIED_RATIO,
+            "baseline": base,
+            "filtered": filt,
+            "delta_mean_sharpe": d_sharpe,
+            "delta_pf": d_pf,
+            "delta_hedged_sharpe": d_rasharpe,
+            "verdict": verdict,
+        }, decision=None)
     return 0
 
 

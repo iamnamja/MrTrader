@@ -240,3 +240,83 @@ def compute_regime_sharpes(
     except Exception:
         # DATA-BUG path: leave obs_counts empty (already cleared above).
         return {}
+
+
+def event_regime_sharpes(
+    event_returns: list,
+    regime_map: Optional[Dict[date, str]],
+    obs_counts: Optional[Dict[str, int]] = None,
+) -> Dict[str, float]:
+    """Cross-EVENT Sharpe per regime, bucketed by each event's ENTRY-day regime.
+
+    Alpha-v6 P0 / blueprint X6 (DeepSeek): for EVENT strategies (PEAD, analyst
+    drift, ...) the daily-MTM regime binning in compute_regime_sharpes starves
+    every bucket — the book is flat most days, so each regime collects fewer
+    than REGIME_MIN_OBS *active* daily returns and worst_regime_sharpe comes
+    back None (the event-sparsity case behind the paper-only regime waiver in
+    cpcv._significance_backstops_ok). But the natural unit of an event strategy
+    is the EVENT, not the day: with hundreds of independent events per CPCV
+    window, bucketing each event's whole-trade return by the regime of its
+    ENTRY day gives every regime enough EVENTS for a real cross-event Sharpe.
+    This is the instrument that will RETIRE the event-sparsity waiver — but
+    only in Phase 3, as H1's pre-registered consequence and with an event-unit
+    floor calibrated + registered. In PR1 run_cpcv surfaces the min purely as
+    CPCVResult.event_worst_regime_sharpe (REPORT-ONLY); it does NOT yet feed
+    worst_regime_sharpe or the gate (per-event units are not comparable to the
+    annualized-daily MIN_WORST_REGIME_SHARPE floor).
+
+    event_returns: list of (entry_date, event_return) tuples — one per CLOSED
+    event/trade, where event_return is the trade's whole-holding-period return
+    (e.g. Trade.pnl_pct). entry_date may be a date or datetime.
+
+    ANNUALIZATION — none, deliberately. The returned value is the PER-EVENT
+    Sharpe mean(rets) / std(rets, ddof=1): event returns span variable
+    multi-day holds and are not a daily series, so the sqrt(252) daily
+    annualization of compute_regime_sharpes would be meaningless here. Callers
+    comparing against thresholds must know these are per-event units.
+
+    Contract mirrors compute_regime_sharpes:
+      - returns {} on any error / empty input / empty regime_map;
+      - when obs_counts is supplied it is cleared then populated with the RAW
+        per-regime EVENT count BEFORE the REGIME_MIN_OBS filter, so the caller
+        can distinguish event-sparsity (counts present, all below the floor)
+        from a data-bug (no counts at all);
+      - buckets with fewer than REGIME_MIN_OBS events are dropped from the
+        result (the floor is the same constant, now measured in EVENTS);
+      - a zero-variance bucket reports 0.0 (matches the daily convention).
+    """
+    if obs_counts is not None:
+        obs_counts.clear()
+    try:
+        import numpy as np
+        from app.ml.retrain_config import REGIME_MIN_OBS as _REGIME_MIN_OBS
+
+        if not event_returns or not regime_map:
+            return {}
+
+        regime_event_rets: Dict[str, list] = {}
+        for d, ret in event_returns:
+            key = d.date() if hasattr(d, "date") else d
+            label = regime_map.get(key)
+            if label is None:
+                continue
+            regime_event_rets.setdefault(label, []).append(float(ret))
+
+        # Raw per-regime EVENT counts BEFORE the REGIME_MIN_OBS filter (same
+        # sparsity-vs-data-bug disambiguation as compute_regime_sharpes).
+        if obs_counts is not None:
+            for label, rets in regime_event_rets.items():
+                obs_counts[label] = len(rets)
+
+        result: Dict[str, float] = {}
+        for label, rets in regime_event_rets.items():
+            arr = np.array(rets, dtype=float)
+            if len(arr) < _REGIME_MIN_OBS:
+                continue
+            std = float(np.std(arr, ddof=1))
+            # Per-event Sharpe — NO sqrt(252): these are event returns, not daily.
+            result[label] = float(np.mean(arr)) / std if std > 0 else 0.0
+        return result
+    except Exception:
+        # DATA-BUG path: leave obs_counts empty (already cleared above).
+        return {}

@@ -213,6 +213,19 @@ class FoldResult:
     # regime_sharpes empty) from a DATA-BUG (no counts at all). See cpcv.py
     # run_cpcv regime aggregation and CPCVResult.regime_insufficient_obs.
     regime_obs_counts: Dict[str, int] = field(default_factory=dict)
+    # Alpha-v6 P0 / blueprint X6: EVENT-LEVEL per-regime Sharpes — the per-event
+    # (UN-annualized) cross-event Sharpe of closed-trade returns bucketed by each
+    # event's ENTRY-day regime (regime.event_regime_sharpes). Populated by event
+    # strategies only (EventEdgeStrategy); default empty so daily/trained
+    # strategies are byte-for-byte unchanged. run_cpcv surfaces the min as
+    # CPCVResult.event_worst_regime_sharpe — REPORT-ONLY: it does NOT feed
+    # worst_regime_sharpe or the gate, and does NOT retire the event-sparsity
+    # waiver (per-event units aren't calibrated to the annualized-daily floor;
+    # retiring the waiver is H1's pre-registered consequence in Phase 3).
+    event_regime_sharpes: Dict[str, float] = field(default_factory=dict)
+    # Raw per-regime EVENT counts BEFORE the REGIME_MIN_OBS filter (same
+    # sparsity-vs-data-bug disambiguation as regime_obs_counts, in EVENT units).
+    event_regime_obs_counts: Dict[str, int] = field(default_factory=dict)
     # WF-5a: abstention tracking
     opp_score_abstain_days: int = 0
     earnings_blackout_days: int = 0

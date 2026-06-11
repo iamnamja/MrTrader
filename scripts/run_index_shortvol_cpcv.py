@@ -12,7 +12,9 @@ Requires the options backfill (scripts/backfill_options.py) covering SPY/QQQ/IWM
 Usage:
     PYTHONIOENCODING=utf-8 python scripts/run_index_shortvol_cpcv.py
     OPT_SPREAD_MULTS=1,2,3 python scripts/run_index_shortvol_cpcv.py
+    python scripts/run_index_shortvol_cpcv.py [--hypothesis-id HYP-ID | --exploratory]
 """
+import argparse
 import logging
 import os
 import sys
@@ -63,6 +65,15 @@ def _run_one(spread_mult: float):
 
 
 def main() -> int:
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(
+        description="OPT-4 index short-vol CPCV (spread-stress sweep)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
+
     mults = [float(x) for x in os.environ.get("OPT_SPREAD_MULTS", "1,2").split(",")]
     outcomes = [_run_one(m) for m in mults]
 
@@ -78,8 +89,26 @@ def main() -> int:
               f"residual_alpha_t_HAC={ra_t:.2f}  PF={pf:.2f}  gate={'PASS' if ok else 'FAIL'}")
     print("=" * 78)
     stress = max(outcomes, key=lambda o: o[0])
-    print(f"  VERDICT (must pass at {stress[0]:.1f}x): {'KEEP' if stress[2] else 'KILL'}")
+    verdict = "KEEP" if stress[2] else "KILL"
+    print(f"  VERDICT (must pass at {stress[0]:.1f}x): {verdict}")
     print("=" * 78)
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "spread_mults": mults,
+            "outcomes": [
+                {"spread_mult": m,
+                 "mean_sharpe": getattr(res, "mean_sharpe", None),
+                 "tstat": getattr(res, "path_sharpe_tstat", None),
+                 "gate_ok": ok}
+                for m, res, ok in outcomes
+            ],
+            "stress_mult": stress[0],
+            "stress_gate_ok": stress[2],
+            "verdict": verdict,
+        }, decision=None)
     return 0
 
 

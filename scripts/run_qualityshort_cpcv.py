@@ -36,8 +36,9 @@ PIT-safety:
   scoring day (_build_closes_and_bars masks index < day). No look-ahead.
 
 Usage:
-    python scripts/run_qualityshort_cpcv.py
+    python scripts/run_qualityshort_cpcv.py [--hypothesis-id HYP-ID | --exploratory]
 """
+import argparse
 import logging
 import os
 import sys
@@ -237,6 +238,13 @@ def main() -> int:
     from app.ml.short_scorers import QualityShortScorer
     from app.utils.constants import RUSSELL_1000_TICKERS
     from scripts.walkforward.cpcv import run_cpcv
+    from scripts.walkforward.registry_enforcement import add_arguments, begin_run
+
+    ap = argparse.ArgumentParser(description="QualityShort CPCV (shorts-only, k=8, paths=2)")
+    add_arguments(ap)  # --hypothesis-id / --exploratory (all-optional)
+    args = ap.parse_args()
+    # Registry enforcement FAILS FAST — before the multi-hour fetch/run.
+    run = begin_run(args.hypothesis_id, exploratory=args.exploratory)
 
     # Shorts-only QualityShort: short fundamentally deteriorating names (operating
     # margin <= 0, revenue_growth <= 0, debt/equity >= 1.5, negative surprise),
@@ -285,6 +293,19 @@ def main() -> int:
         result.pct_positive * 100, result.path_sharpe_tstat,
         len(result.path_sharpes), result.n_skipped,
     )
+
+    # Best-effort registry recording (never crashes the run). decision=None:
+    # promotion is owner-gated, never auto-decided from one run.
+    if run is not None:
+        run.record({
+            "mean_sharpe": result.mean_sharpe,
+            "p5_sharpe": result.p5_sharpe,
+            "p95_sharpe": result.p95_sharpe,
+            "tstat": result.path_sharpe_tstat,
+            "n_paths": len(result.path_sharpes),
+            "gate_detail": gate_detail,
+            "gate_ok": gate_ok,
+        }, decision=None)
 
     try:
         from app.notifications.notifier import _smtp_send
