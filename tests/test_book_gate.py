@@ -50,10 +50,12 @@ CRASH = slice(700, 710)          # the base book's 10-day crisis (-2%/day)
 
 def _criteria() -> BookGateCriteria:
     """Fixed criteria for pure tests (match the registered production values by
-    design, but constructed locally so tests do not depend on live config)."""
+    design, but constructed locally so tests do not depend on live config).
+    max_risk_budget = 0.25 per the owner-approved REGISTERED amendment of
+    2026-06-11 (TRACKB_MAX_RISK_BUDGET 0.10 -> 0.25)."""
     return BookGateCriteria(
         min_sharpe_delta=0.10, min_calmar_delta=0.0, max_dd_delta=0.0,
-        max_corr=0.30, min_standalone_sr=0.20, max_risk_budget=0.10,
+        max_corr=0.30, min_standalone_sr=0.20, max_risk_budget=0.25,
         joint_tail_pctl=0.01, max_tail_overlap=0.30,
         sharpe_implausibility_ceiling=3.0,
     )
@@ -377,8 +379,9 @@ def test_n_days_matches_book_metrics_index():
 # ------------------------------------------------------------------ extras
 def test_risk_budget_validation():
     base, cand = _base_book(), _diversifier()
+    # 0.30 is above the amended 0.25 cap -> out of the pre-registered budget.
     with pytest.raises(ValueError):
-        book_delta_gate(base, cand, criteria=_criteria(), candidate_risk_budget=0.2)
+        book_delta_gate(base, cand, criteria=_criteria(), candidate_risk_budget=0.3)
     with pytest.raises(ValueError):
         book_delta_gate(base, cand, criteria=_criteria(), candidate_risk_budget=0.0)
     res = book_delta_gate(base, cand, criteria=_criteria(), candidate_risk_budget=0.05)
@@ -397,7 +400,7 @@ def test_to_dict_and_report_ascii():
                           candidate_label="diversifier")
     d = res.to_dict()
     assert d["passed"] is True
-    assert d["criteria"]["max_risk_budget"] == 0.10
+    assert d["criteria"]["max_risk_budget"] == 0.25
     assert d["criteria"]["max_tail_overlap"] == 0.30
     assert set(d["checks"]) == {
         "sharpe_delta", "calmar_delta", "max_dd_delta", "corr_to_book",
