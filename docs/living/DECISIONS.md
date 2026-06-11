@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-11 — Track B first real run: TSMOM vs PEAD book FAILS only on ΔSharpe@10% — calibration question answered; amendment PENDING OWNER (#450)
+
+**Context**: First real application of the Track B gate — the registered open calibration question from 2026-06-10. `scripts/run_book_gate.py` ran `book_delta_gate(PEAD, TSMOM)` at the 10% risk budget on the 2020-06→2026-06 sleeve overlap (1495 evaluated days). Pre-registered + recorded in the research registry (first real ledger row `TRACKB-TSMOM-VS-PEAD-20260611`, decision=park — book inclusion is owner-gated, NOT auto-promoted).
+
+**Finding (no constant changed)**: TSMOM **FAILS Track B on `sharpe_delta` ONLY** (7/8 criteria pass): ΔSharpe **+0.0885** vs the ≥0.10 bar. Yet it improves the book on EVERY metric — Sharpe **0.411→0.500**, maxDD −5.75%→−4.95% (0.81pp shallower), Calmar 0.278→0.371, lower vol; corr **+0.274** (<0.30), tail-overlap **1/14** (clean crisis profile), standalone vol-targeted SR **0.92**. The gate's math is correct; the **calibration** is the issue: ΔSR ≈ budget·(SR_cand − corr·SR_book), so a 10% slice at +0.27 corr against a 0.41-SR base implicitly demands SR_cand ≳ 1.11 — unreachable for any realistic diversifier. **The ΔSharpe-at-fixed-10%-budget bar rejects a sleeve that demonstrably diversifies.**
+
+**OPEN — a *registered* amendment is the OWNER's call (NOT made here; the discipline forbids ad-hoc tuning).** Options to weigh: (a) **raise the risk budget** — the Phase-2 validation used ~40-50% where PEAD+trend Sharpe went 0.31→0.92; 10% is a very thin slice and the likeliest mis-calibration; (b) **evaluate at the budget that maximizes book Sharpe** and gate on the improvement curve rather than a single 10% point; (c) **gate on a composite "book improves"** (Sharpe OR Calmar OR maxDD) since TSMOM clearly passes the latter two; (d) lower the ΔSharpe bar (threshold-shopping risk — least preferred). No constant changed; the result stands as recorded.
+
+**Consequences**: The two-track machinery + registry worked end-to-end (the gate produced the correct math; the registry recorded the first confirmatory run with valid pre-registration). The amend-or-not decision (and which option) awaits the owner. `scripts/run_book_gate.py` added (reusable). ML_EXPERIMENT_LOG + PROJECT_STATE updated.
+
+---
+
 ## 2026-06-11 — Research registry shipped: the pre-registration ledger = the program's true N_TRIALS (#449)
 
 **Context**: Third Alpha-v6 P0 unit. DSR is report-only (it can't represent iterative human/LLM research), and CPCV protects a single run — not the research PROGRAM. The real multiplicity defenses are pre-registration + a registry + the forward sacred holdout. This builds the registry: `app/research/registry.py::ResearchRegistry` (sqlite, env-isolated) + `scripts/registry.py` CLI.
