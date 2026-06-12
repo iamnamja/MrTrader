@@ -127,7 +127,14 @@ alone can never reach capital (the posterior is `P(SR>0 | backtest AND live pape
 Phase 3 ✅ LANDED (2026-06-12, PR #473) — `track_b_appraisal.py` (budget-invariant appraisal IR +
 block-bootstrap P(ΔSR>0)) behind `TRACKB_MODE="ruler_v2"`, DARK; legacy `book_delta_gate` untouched;
 Opus deep-dive verified budget-invariance empirically + ruled out junk-sleeve gaming (2 MINOR fixed:
-non-diversifier missing-regime now fails closed; doc/code reconciled) → SHIP. Phase 5 pending.
+non-diversifier missing-regime now fails closed; doc/code reconciled) → SHIP.
+Phase 5 ✅ LANDED (2026-06-12, PR #474) — `ruler_v2_rescore.py` (REPORT-ONLY kill-ledger re-score:
+tabulates the PAPER-tier flip REVIVED/DEMOTED vs the recorded significance verdict). Opus deep-dive
+caught a CRITICAL — the re-score MUTATED the caller's result via `requires_human_review_flag` (broke
+the PURE/report-only contract) + a swallowed-exception path that could manufacture a spurious REVIVED;
+fixed (deep-copy isolation + ERROR_SIG class + path-Sharpe-tstat columns so the owner sees definitional
+vs substantive flips) → SHIP. **Phase B build complete; the live `GATE_MODE`/`TRACKB_MODE` flip + the
+OD-1…OD-9 sign-off are the owner's calls.**
 
 | Phase | Build | Depends | Tested by | Risk |
 |---|---|---|---|---|
@@ -135,7 +142,7 @@ non-diversifier missing-regime now fails closed; doc/code reconciled) → SHIP. 
 | **2** ✅ | Persist `CPCVResult.oos_returns_dated` + `ruler_v2.py` + `bayes_sr.py` behind the flag; the dispatch branches. | 1 | flag coexistence (legacy tests unchanged); tier logic on synthetic results; structural live-paper requirement for CAPITAL | medium |
 | **3** ✅ | `track_b_appraisal.py` behind `TRACKB_MODE`. | 1 | budget-invariance property; diversifier-with-bad-regime passes | medium |
 | **4** | PBO sweep harness (Option A) — only when a config grid is on deck. | 1 | leak signature test | low (deferred) |
-| **5** | **Re-score the kill ledger** under Ruler v2 (extend `gate_calibration.py`, REPORT-ONLY). | 1-3 | OC-table; flips human-reviewed | medium |
+| **5** ✅ | **Re-score the kill ledger** under Ruler v2 (`ruler_v2_rescore.py`, REPORT-ONLY). | 1-3 | OC-table; flips human-reviewed | medium |
 
 ## 5. Risk register
 
