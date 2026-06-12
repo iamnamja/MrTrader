@@ -115,3 +115,6 @@ results/
 # Large generated log files — don't commit
 docs/phase_h_plus_rerun_log.txt
 docs/archive/data/phase_h_plus_rerun_log.txt
+
+# Alpha-v7 review request pack — local convenience copies (canonical files live in repo)
+docs/reference/prompts/20260612_AlphaV7_Request/
