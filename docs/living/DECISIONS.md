@@ -4,6 +4,25 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-12 — H4a–H4e VERDICTS: options-as-signal cross-sectional equity edge = DEAD (all 5 KILL)
+
+**Context**: P4's confirmatory adjudication of the five pre-registered options-as-signal hypotheses (frozen 2026-06-12T12:00Z) — does an options-derived feature carry a cross-sectional EQUITY edge, executed as a weekly dollar-neutral decile L/S sleeve at equity cost? Built `scripts/run_options_xs_cpcv.py` + `app/research/options_xs_ls.py` (decile high-minus-low construction, multi-factor residual alpha, H4c put-heavy composite) on the 730-name / 583k-row options feature table, over the full 4y window (208 weeks).
+
+**Result (the five one-shot R4 runs, recorded; `run_at` 2026-06-12T15:3x UTC > prereg)** — week-clustered t / net spread per week / residual-α t:
+- **H4a CPIV** (dir +): t=**−2.70**, −57bp/wk, α t=−2.79 → **KILL**
+- **H4b put-skew** (dir −): t=**−4.10**, −55bp/wk, α t=−4.30 → **KILL**
+- **H4c put-heavy O/S** (dir −): t=**−4.43**, −50bp/wk, α t=−3.16 → **KILL**
+- **H4d term-slope** (dir +): t=**−2.83**, −48bp/wk, α t=−2.78 → **KILL**
+- **H4e IV/RV** (dir −): t=**−0.12**, −2bp/wk, α t=−0.72 → **KILL**
+
+**Decision (the FROZEN kill rule: simple decile sorts show nothing net of costs → CLOSE the line)**: **all five options-as-signal lines are CLOSED.** H4a–H4d are *significantly negative* — the hypothesized books LOSE money (the academic CPIV/skew/O-S/term-slope signs do NOT survive 2022–26 in this R1K universe at equity cost); H4e is pure noise. **The inverse "working" is NOT a tradeable result**: flipping a pre-registered sign post-hoc is the sign-mining pre-registration forbids, and the independent Opus 4.8 deep-dive identified the strong-but-inverted signs as a **2022–23 growth-crash regime effect**, not a stable edge. NO escalation to ML combinations (the kill rule's explicit prohibition; the dead XS-ML is not revived).
+
+**Process / integrity**: built Opus 4.8 → independent Opus 4.8 deep-dive (verdict SHIP-AFTER-FIXES) → fixes → 29 tests. The deep-dive **confirmed NO look-ahead** (feature as-of, forward return, factor alignment all PIT-clean) and that an alarming smoke result (ρ −0.99 / −75bp/wk) was a genuine regime effect, not a bug. Two fixes pre-R4: a BLOCKER (an invalid decision label that would have crashed a PASS write) and the monotonicity reading (operationalized as the standard sign-of-Spearman trend, not strict every-step — the Type-II trap; both readings recorded for audit). NO verdict hinged on that interpretation (all fail the t≥2 gate outright).
+
+**Consequences**: the **options data is confirmed (again) as NOT a tradeable equity-signal edge** in this window — corroborating the whole Alpha-v6 arc (options-as-execution already killed; PEAD demoted). The live book stays **trend-only (25%) + cash**, unchanged. Options remain a *data asset* for event-conditioning research (H2/H3) only. See ML_EXPERIMENT_LOG + OPTIONS_PROGRAM 2026-06-12.
+
+---
+
 ## 2026-06-12 — Alpha-v6 P4a: options feature table + quality filter shipped; H4a–H4e pre-registered
 
 **Context**: With PEAD demoted (H1) the live book is trend-plus-cash, and the blueprint's next research thread is **P4 — options-as-signal**: do options-derived features carry a cross-sectional EQUITY edge, adjudicated as a weekly dollar-neutral L/S sleeve (information at equity cost, NOT an options trade)? The computed-greeks store (P2, 733/733, 112.8M rows) is the substrate; this PR builds the daily FEATURE layer on top of it and freezes the confirmatory hypotheses BEFORE any L/S run exists.
