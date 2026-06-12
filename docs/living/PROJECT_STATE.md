@@ -4,16 +4,16 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78); live book = trend-plus-cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. NEXT: PEAD→0 live flip (owner) + restart uvicorn; then the 5 H4 confirmatory runs**)
+**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted (overnight) → live book = trend-only (40%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. REMAINING owner item: reconcile trend weight 40%→25%; then the 5 H4 confirmatory runs**)
 
 ## 🧭 NOW (2026-06-12): H1 verdict in — PEAD is NOT an event-level edge → book = trend-plus-cash
 
 **The centerpiece answered the quarter's most important question.** H1 (`H1-PEAD-EVENTLEVEL-20260611`, one-shot R4, `panel_sha256=af206149…`) re-adjudicated the LIVE PEAD edge at the EVENT level on a 21,330-event / 9,774-qualified R1K panel (2019→2026) with two-way (announce_date×firm) CGM-clustered SEs (validated to the published Petersen-2009 pins): **PRIMARY 10d SPY-hedged mean −8.3bp, t=−0.77, one-sided p=0.7804 → DEMOTE.** Negative at every horizon; conservative bootstrap p=0.66; robust to all LOCO; the announce+1-vs-+2 gap is +2.6bp (negative even at the favorable entry). **PEAD's case for capital is closed** (corroborates Alpha-v4 Phase-1's CAPM hedged-Sharpe −0.37). The inference-upgrade success metric is met: no strategy is killed/kept on an 8-fold t-stat again.
 
-**▶️ OWNER ACTIONS (live-capital changes are owner-gated; decision=None recorded):**
-1. **Flip the live PEAD sleeve → 0** (keep the tracker for telemetry); book = **trend-plus-cash**. (Recommended; not auto-executed.)
-2. **Reconcile the live trend weight** (40% capital) to the Track-B **25% risk** framing (#451) — now the sole sleeve, this matters more.
-3. **Restart uvicorn** to pick up #445/#446 (clean logs + FMP calendar) AND activate the new 15:55 ET NBBO snapshot logger (#455).
+**▶️ OWNER ACTIONS — status (live config verified 2026-06-12):**
+1. ✅ **DONE — live PEAD sleeve flipped OFF** (overnight; notify id 59). Mechanism: `pm.swing_selector` `'pead'`→`'ml_model'` (+ `pm.swing_ml_live_enabled='false'`) → the swing/PEAD proposing path runs the dormant dead-ML branch and fires nothing; PEAD no longer trades. `pm.pead_size_mult` stays 1.0 (moot — PEAD isn't the selector; the pead_tracker telemetry is retained). **Live book = trend-only (`trend_enabled='true'`, `trend_shadow='false'`, 40%) + cash.**
+2. ⏳ **OPEN — reconcile the live trend weight** (40% capital, `pm.trend_allocation_pct=0.4`) to the Track-B **25% risk** framing (#451). Now the sole sleeve, this is the remaining deliberate owner call (`pm.allocator_enabled='false'`).
+3. ✅ **DONE — uvicorn restarted** (2026-06-12 07:52) → notify_watcher live (drained the queue incl. the P4a email), clean logs + FMP calendar (#445/#446), and the 15:55 ET NBBO snapshot logger (#455) active.
 4. **H2/H3 are NOT auto-run** — they were PEAD-improvement hypotheses; with PEAD demoted, whether to still run them as pure research (no live capital) is your call. The event-panel + CGM instrument is the standing tool for any future event hypothesis.
 
 **Also shipped 2026-06-12 — Alpha-v6 P4a (options-as-signal DATA LAYER, no verdict yet):** the daily options **feature table** (`app/data/options_features.py` + `scripts/build_options_features.py` → `data/options_features.parquet`: CPIV / 25Δ-skew / term-slope / IV-RV / O-S volume, PIT, holiday-aware knowable_date + split-adjusted RV) + the **options-quality universe filter** (`app/data/options_quality.py`), and **H4a–H4e PRE-REGISTERED** (`preregistered_at=2026-06-12T12:00Z`; kill = simple decile sorts net-of-costs show nothing → CLOSE, NOT an XS-ML revival). Built Opus 4.8 → independent Opus 4.8 deep-dive (**2 PIT/split BLOCKERs caught + fixed before any run**) → Opus verification = SHIP; 47 tests. The 5 confirmatory R4 L/S runs (zero live capital) are the next P4 step.
