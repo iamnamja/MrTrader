@@ -4,6 +4,34 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-12 — H1 VERDICT: PEAD DEMOTED at event level → live book = trend-plus-cash (#456)
+
+**Context**: The Alpha-v6 centerpiece. PEAD has been live (telemetry size) on an instrument P0 proved couldn't separate it from noise (8-fold path-t). H1 (`H1-PEAD-EVENTLEVEL-20260611`, pre-registered 2026-06-11T12:00Z) re-adjudicates the LIVE PEAD edge at the EVENT level — the right inference unit — on a 21,330-event / **9,774-qualified** R1K panel (2019→2026), with two-way (announce_date × firm) cluster-robust SEs (CGM, validated to the published Petersen 2009 pins).
+
+**Result (the ONE confirmatory run, recorded R4; `panel_sha256=af206149…` pinned in the registry)**:
+- **PRIMARY 10d SPY-hedged event return: mean −8.3bp, two-way-clustered t=−0.77, one-sided p = 0.7804.** NEGATIVE point estimate at every horizon (5d −9.4bp, 10d −8.3bp, 20d −14.0bp).
+- Conservative quarter-cluster bootstrap agrees: p=0.66, CI [−6.2%, +3.8%]. Beta-adjusted 10d −15.2bp. Live-B5 (SPY<200d trend-gated) slice −21.3bp (t=−1.80) — worse. Robust to leave-one-quarter/sector/top-10. Deciles vs pead_score_v1 non-monotone (ρ=+0.22).
+- F4 caveat MOOT: the announce+2 (live) vs announce+1 (primary) gap is only +2.6bp — the edge is negative even at the favorable announce+1 entry, so no execution-timing upgrade rescues it.
+
+**Decision (the FROZEN pre-registered rule: p>0.15 → DEMOTE)**: **PEAD is NOT an event-level edge. Per the pre-committed rule, the live book becomes trend-plus-cash** — TSMOM trend (Track-B-validated, #451) is the capital base; PEAD's research case for capital is closed. This corroborates and sharpens the Alpha-v4 Phase-1 finding (CAPM beta-hedged Sharpe −0.37): the positive long-only Sharpe was beta riding the bull, not drift alpha. **No strategy is ever again killed or kept on an 8-fold t-stat alone** — the success metric of the inference upgrade is met (PEAD now has an honest event-level verdict).
+
+**Consequences / OWNER ACTION (decision=None recorded — live-capital changes are owner-gated)**: the research verdict is DEMOTE; **actually flipping the live PEAD sleeve to zero (keep telemetry logging) is an owner action**, not auto-executed. Recommended: set PEAD allocation → 0 (retain the tracker for telemetry), book = trend (40% / Track-B 25% risk framing — the open reconciliation) + cash. H1/H2/H3's H1 is now answered; **H2 (continuous reaction_ratio) and H3 (PEAD v2 scorecard) are NOT auto-run** — they were PEAD-improvement hypotheses; with PEAD demoted, whether to still test them (as pure research, no live capital) is an owner call. The event panel + CGM inference instrument is now the standing tool for every future event hypothesis. See ML_EXPERIMENT_LOG + PIPELINE_ARCHITECTURE 2026-06-12. The PRE-COMMITMENT below was logged before this number was seen.
+
+---
+
+## 2026-06-11 — H1 interpretation PRE-COMMITMENT (logged BEFORE the run; integrity guard)
+
+**Context**: PR3 built the event panel + CGM two-way-clustered inference and is about to fire the ONE-shot confirmatory run `H1-PEAD-EVENTLEVEL-20260611`. The independent Fable-5 review (F4) noted a structural gap: H1's PRIMARY return stream enters at **announce+1 open** (the registered frozen decision), but the LIVE PEAD book enters at **announce+2 open at the earliest** (`pead_scorer` requires `days_since>=1`; `AgentSimulator` fills next-day open after the scoring day). So a GRADUATE could be earned partly by the day-1 open→open drift the current live implementation forfeits.
+
+**Pre-commitment (made BEFORE seeing any H1 number, to preserve pre-registration integrity — the frozen stat spec is unchanged):**
+1. A **GRADUATE** verdict (primary 10d one-sided p<0.05) means "PEAD is a real event-level edge **at announce+1-open entry**" — and is **conditional on an execution upgrade** (a market-on-open order at announce+1) before any capital step. It does NOT by itself license the current announce+2 live path to capital.
+2. At adjudication I will read the runner's reported **`entry_open_next2` (announce+2) cut** and the **`day1_momentum_gap`** alongside the primary. If the edge survives only at announce+1 and collapses at announce+2, the honest read is "edge exists but the live entry timing forfeits it" → an execution-timing fix is the prerequisite, not a capital increase.
+3. **DEMOTE** (p>0.15) and **INCONCLUSIVE** (0.05–0.15) are unaffected by this nuance and stand as registered (demote → live book = trend-plus-cash; inconclusive → PEAD stays telemetry size).
+
+This entry is the audit record that the announce+1-vs-announce+2 caveat was committed before the result, not rationalized after.
+
+---
+
 ## 2026-06-11 — P0 finished: `--hypothesis-id` enforcement + `event_regime_sharpes()` (report-only) + H1/H2/H3 pre-registered (#454)
 
 **Context**: The last two P0 stubs from the blueprint Phase-0 list, plus the Phase-3 pre-registration the blueprint requires "BEFORE the panel exists." Closes P0; the next work is the slow fuses (P1c NBBO logger + P2 greeks backfill) and the event panel / H1.

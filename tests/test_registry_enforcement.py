@@ -10,6 +10,8 @@ Coverage:
   - an already-recorded id (R4) fails fast (the re-run could never record);
   - a run starting at/before the prereg instant fails fast (R2 ordering pre-run);
   - an exploratory-labeled id needs no pre-registration;
+  - a real id + exploratory=True is CONTRADICTORY and fails fast (an
+    exploratory run must never record under / consume a real hypothesis id);
   - no id + exploratory=True -> None (unlimited exploratory runs);
   - no id before GRACE_UNTIL -> warn-only (printed) + None;
   - no id on/after GRACE_UNTIL -> raises (grace window over);
@@ -102,6 +104,22 @@ def test_begin_run_already_recorded_fails_fast(reg):
     begin_run(hid, run_at=RUN_AT).record({"mean_sharpe": 0.3})
     with pytest.raises(RegistryEnforcementError, match="already has a recorded result"):
         begin_run(hid, run_at=RUN_AT + timedelta(hours=1))
+
+
+def test_begin_run_exploratory_with_real_id_is_contradictory(reg):
+    # F3: `--exploratory --hypothesis-id H1-...` used to take the id branch and
+    # record under the real id — a user trusting --exploratory would burn the
+    # R4 one-shot. Contradictory flags must refuse outright.
+    hid = _confirmatory_preregistered(reg, "HYP-CONTRA")
+    with pytest.raises(RegistryEnforcementError, match="cannot be combined"):
+        begin_run(hid, exploratory=True)
+    assert reg.get(hid)["run_at"] is None       # one-shot untouched
+
+
+def test_begin_run_exploratory_with_unregistered_id_still_contradictory(reg):
+    # The guard fires BEFORE any registry lookup — even an unregistered id.
+    with pytest.raises(RegistryEnforcementError, match="cannot be combined"):
+        begin_run("H-something", exploratory=True)
 
 
 def test_begin_run_run_before_preregistration_fails_fast(reg):

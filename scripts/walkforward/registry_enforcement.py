@@ -28,6 +28,8 @@ record_result() time:
 During the grace window a missing hypothesis_id only WARNS (blueprint:
 "warn-only for 2 weeks"). Exploratory runs (--exploratory) never need an id —
 exploratory runs are unlimited and can inspire, but can never promote (R3).
+Passing BOTH --hypothesis-id and --exploratory is contradictory and fails
+fast: an exploratory run must never record under (and so consume) a real id.
 
 HypothesisRun.record() is BEST-EFFORT by design: a completed multi-hour CPCV
 must never be lost to a registry hiccup (e.g. R4 one-shot already recorded on
@@ -133,6 +135,9 @@ def begin_run(
     injectable in tests.
 
     Raises RegistryEnforcementError (fail fast) when:
+      - hypothesis_id and exploratory are BOTH given (contradictory: an
+        exploratory run must never carry a real hypothesis id — it would
+        record under it and consume the R4 one-shot);
       - hypothesis_id is given but not registered;
       - the row is confirmatory/live_confirm but has no preregistered_at
         (criteria were never frozen — the run's result could never be
@@ -143,6 +148,18 @@ def begin_run(
         run_at = datetime.now(timezone.utc)
     if as_of is None:
         as_of = date.today()
+
+    # Contradictory flags FIRST (before any registry lookup): an exploratory
+    # run is UNRECORDED by definition, but a supplied id would be recorded
+    # against — a user trusting --exploratory would burn the R4 one-shot.
+    if hypothesis_id is not None and exploratory:
+        raise RegistryEnforcementError(
+            f"--exploratory cannot be combined with --hypothesis-id "
+            f"({hypothesis_id!r}): an exploratory run must not carry a real "
+            f"hypothesis id (it would record under it and consume its R4 "
+            f"one-shot). Drop --exploratory to run the hypothesis, or drop "
+            f"--hypothesis-id for an unrecorded dev run."
+        )
 
     if hypothesis_id is not None:
         from app.research.registry import ResearchRegistry
