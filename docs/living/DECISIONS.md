@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-12 — H2 NOT_CONFIRMED (OPT-5 settled, stays parked); H3 BLOCKED (data-unavailable); event panel options-enriched
+
+**Context**: The two remaining 2026-06-11 pre-registered event hypotheses (PEAD-improvement; PEAD is demoted so these are pure research, no capital). Both adjudicate on the earnings-event panel — but its options-pre-event features were 100% empty (the H1-era panel was equity-only). Built the prerequisite **event-time options join** (`app/research/event_options_join.py` + `scripts/enrich_event_panel_options.py`): a PIT as-of join populating the panel's OPTION_COLUMNS (cpiv_pre, skew_25d_pre, reaction_ratio, iv_runup, opt_volume_z_pre, post_iv_retention, pre_event_implied_move) from the options feature table at the pre-event snapshot — the last chain knowable strictly BEFORE the announce day (gated on the holiday-aware `knowable_date`; UNK BMO/AMC → conservative). 46%→45% event coverage (options data starts 2022). 8 tests; independent Opus 4.8 deep-dive = **SAFE-TO-RECORD** (no look-ahead: the forward return starts at announce+1 open and excludes the announce-day gap, so reaction_ratio cannot mechanically correlate with the outcome).
+
+**Decisions / verdicts**:
+1. **H2 (`H2-IMPLIEDMOVE-CONTINUOUS-20260611`) → NOT_CONFIRMED (recorded R4, decision=park).** Two-way clustered OLS of 10d SPY-hedged drift on the CONTINUOUS reaction_ratio (= |announce-day move| / pre-event implied move), n=9,034: **coef −0.0010, day-clustered t=−1.21, decile ρ≈0** — weakly negative but NOT significant (frozen bar: coef<0 AND t≤−2 AND monotone). **OPT-5 is now settled PROPERLY as a continuous feature: no edge → the FRAGILE/PARKED verdict stands, no threshold-hunting** (the OPT-5 binary-sweep trap stays closed).
+2. **H3 (`H3-PEADV2-SCORECARD-20260611`) → BLOCKED, NOT recorded (one-shot preserved).** Its FROZEN 9-feature list includes `revision_momentum`, which is 100% null in the panel — forward-estimate-revision data is DATA-BLOCKED (the long-standing P4-estrev finding; needs paid I/B/E/S). The runner DETECTS the missing frozen feature and **refuses to consume the one-shot R4** on an un-runnable test. (An exploratory 8-feature peek dropping the blocked feature showed nothing: val decile ρ=+0.25, +4bp, non-monotone — but that is NOT the pre-registered test and is not recordable.) H3's pre-registration stands for if/when revision-revision data is ever acquired.
+
+**Consequences**: the event-conditioned PEAD-improvement thread is closed for now — H2 confirms no continuous implied-move edge; H3 is blocked on unavailable data. **No live-book impact** (trend-only 25% + cash, unchanged). The options-enriched event panel + the event-time join are retained as standing instruments for any future event hypothesis. See ML_EXPERIMENT_LOG + OPTIONS_DATA 2026-06-12.
+
+---
+
 ## 2026-06-12 — H4a–H4e VERDICTS: options-as-signal cross-sectional equity edge = DEAD (all 5 KILL)
 
 **Context**: P4's confirmatory adjudication of the five pre-registered options-as-signal hypotheses (frozen 2026-06-12T12:00Z) — does an options-derived feature carry a cross-sectional EQUITY edge, executed as a weekly dollar-neutral decile L/S sleeve at equity cost? Built `scripts/run_options_xs_cpcv.py` + `app/research/options_xs_ls.py` (decile high-minus-low construction, multi-factor residual alpha, H4c put-heavy composite) on the 730-name / 583k-row options feature table, over the full 4y window (208 weeks).
