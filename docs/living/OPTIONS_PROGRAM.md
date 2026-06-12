@@ -15,9 +15,10 @@ The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-n
 
 ## Architecture — five clean layers (resilience)
 ```
-[DATA] ⟂ [PRICING ENGINE] ⟂ [SIMULATOR + COST] ⟂ [STRATEGY SPEC] ⟂ [REUSED gates / allocator / live]
- durable      durable             durable            disposable          already built
+[DATA] ⟂ [PRICING ENGINE] ⟂ [FEATURES] ⟂ [SIMULATOR + COST] ⟂ [STRATEGY SPEC] ⟂ [REUSED gates / allocator / live]
+ durable      durable          durable        durable            disposable          already built
 ```
+**FEATURES (Alpha-v6 P2, 2026-06-11):** persisted computed greeks (`data/options_greeks/`, `scripts/backfill_computed_greeks.py`) + nightly NBBO snapshots (`data/options_spread_obs.parquet`, Alpaca) — turns the 112.8M-bar store into a queryable IV/greeks/spread feature asset so panel/XS queries are joins, not pricing runs. (The per-underlying feature table + surface-quality reader are the next P2 pieces.)
 A new strategy = a new scorer + a `run_*.py`; nothing below the adapter changes. If Polygon later sells historical IV, swap the data/engine internals and every strategy still runs.
 
 **Four frozen contracts** (`app/options/contracts.py`):

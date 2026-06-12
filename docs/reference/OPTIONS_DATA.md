@@ -48,12 +48,14 @@ An option's EOD bar for trade date **D** prints after the close, so it is only *
 Parquet under `data/` (gitignored, like the other data stores):
 - `data/options_bars.parquet`: `underlying, contract, date, open, high, low, close, volume, knowable_date`
 - `data/options_contracts.parquet`: `underlying, contract, contract_type, strike, expiration, first_date, knowable_date` — derived from the bars (`contracts_from_bars`), so the metadata table is always consistent with what traded.
+- `data/options_greeks/underlying={U}/part-0.parquet` (**computed greeks — Alpha-v6 P2**, `scripts/backfill_computed_greeks.py`): per (contract, date) `iv, delta, gamma, vega, theta, solver_status, stale_flag, volume`, hive-partitioned by underlying. IV/greeks are **COMPUTED** (the plan has none historically): BjS American engine via a **European-warm-start American refine** (European IV → bracketed American bisection; avoids the σ→1e-4 CRR-500 degenerate path that made naive solving ~122h → ~0.6h). Inputs are PIT and **as-traded**: Polygon `adjusted=false` daily closes (NOT yfinance — its `auto_adjust=False` is still SPLIT-adjusted, which mis-scales S vs the unadjusted OCC strikes), FRED DGS3MO rate, TTM dividend yield as-of each ex-date. `solver_status ∈ {ok, european_fallback, below_intrinsic, pinned, out_of_bracket, no_underlying, expired}` (never silently defaulted); `stale_flag` = no volume that day. `underlying` is the partition column (not stored in-file).
+- `data/options_spread_obs.parquet` (**nightly NBBO snapshots — Alpha-v6 P1c**, `scripts/log_options_nbbo.py`): per (contract, obs_date) `feed, bid, ask, mid, spread_pct, bid_size, ask_size, iv, oi, day_close, day_volume, underlying_price, moneyness, dte`. Logged 15:55 ET (trading days only) from the **Alpaca** options snapshot (`feed=indicative`, free) — **the Polygon plan serves NO NBBO** (see §1). Feeds the deferred `cost_models.CalibratedSpreadModel` once ~4–6 weeks accumulate.
 
 ## 6. Accessors (`app/data/options_provider.PolygonOptionsProvider`) — the OPT-0 `OptionsDataProvider` contract
 
 - `get_universe(underlying, as_of, include_expired=True) -> List[str]` — OCC tickers knowable on/before `as_of` (survivorship + PIT).
 - `get_contract_bars(underlying, as_of) -> DataFrame` — PIT panel of per-contract EOD OHLCV (`knowable_date <= as_of`).
-- `get_current_snapshot(underlying) -> Dict` — current chain w/ served IV/greeks/OI (validation/live only).
+- `get_current_snapshot(underlying) -> Dict` — current chain. ⚠️ On the $79 plan this serves **OI + DELAYED OHLCV/last-trade only — NO `last_quote` (NBBO), no IV, empty greeks** (verified 2026-06-11: `/v3/quotes/{ticker}` → HTTP 403). Live NBBO for spread calibration comes from **Alpaca** instead (`app/data/alpaca_options.fetch_option_snapshots`, free `indicative` feed → `data/options_spread_obs.parquet`).
 
 ## 7. Backfill
 
