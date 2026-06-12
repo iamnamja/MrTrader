@@ -232,11 +232,11 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "key": "pm.trend_allocation_pct",
-        "default": 0.40,
+        "default": 0.25,
         "type": "float",
         "min": 0.0,
         "max": 0.80,
-        "description": "Trend sleeve budget as a fraction of account value. Alpha-v4 equal-capital 50/50 split: ~0.40 trend / ~0.40 PEAD under the global 80% gross cap (matches the Phase-3-validated equal-capital book). Caps total trend gross.",
+        "description": "Trend sleeve budget as a fraction of account value (caps total trend gross). Reconciled 2026-06-12 from 0.40 (the Alpha-v4 50/50-with-PEAD split) to 0.25 after the H1 DEMOTE made trend the SOLE live sleeve — the Track-B 25% risk-budget framing (#451). PEAD is off (pm.swing_selector='ml_model'), so the old 40%/PEAD-pairing no longer applies.",
         "group": "Portfolio Manager",
     },
     {

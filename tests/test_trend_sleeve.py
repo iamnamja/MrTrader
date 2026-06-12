@@ -376,10 +376,11 @@ def test_trend_config_keys_registered():
     for k in ("pm.trend_enabled", "pm.trend_shadow", "pm.trend_allocation_pct",
               "pm.trend_max_position_pct", "pm.trend_universe", "pm.trend_rebalance_weekday"):
         assert k in by_key, f"missing config key {k}"
-    # shadow-safe + equal-capital defaults
+    # shadow-safe defaults; allocation reconciled 40%->25% after the H1 DEMOTE
+    # made trend the sole live sleeve (Track-B 25% framing).
     assert _DEFAULTS["pm.trend_enabled"] == "false"
     assert _DEFAULTS["pm.trend_shadow"] == "true"
-    assert _DEFAULTS["pm.trend_allocation_pct"] == 0.40
+    assert _DEFAULTS["pm.trend_allocation_pct"] == 0.25
     assert _DEFAULTS["pm.trend_max_position_pct"] == 0.25
 
 
