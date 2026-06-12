@@ -4,9 +4,21 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-11 (**Alpha-v6 Phase-0 COMPLETE — last 2 stubs done + H1/H2/H3 pre-registered (#454); NEXT = light the 2 slow fuses (P1c NBBO logger + P2 greeks backfill) then build the event panel / run H1**)
+**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78); live book = trend-plus-cash. P0+P1c+P2+P3-H1 all shipped (#454/#455/#456). OWNER: flip live PEAD→0 + reconcile trend weight + restart uvicorn**)
 
-## 🧭 NOW (2026-06-11): Alpha-v6 Phase-0 machinery COMPLETE — next = lead with P3 (earnings-event panel / H1)
+## 🧭 NOW (2026-06-12): H1 verdict in — PEAD is NOT an event-level edge → book = trend-plus-cash
+
+**The centerpiece answered the quarter's most important question.** H1 (`H1-PEAD-EVENTLEVEL-20260611`, one-shot R4, `panel_sha256=af206149…`) re-adjudicated the LIVE PEAD edge at the EVENT level on a 21,330-event / 9,774-qualified R1K panel (2019→2026) with two-way (announce_date×firm) CGM-clustered SEs (validated to the published Petersen-2009 pins): **PRIMARY 10d SPY-hedged mean −8.3bp, t=−0.77, one-sided p=0.7804 → DEMOTE.** Negative at every horizon; conservative bootstrap p=0.66; robust to all LOCO; the announce+1-vs-+2 gap is +2.6bp (negative even at the favorable entry). **PEAD's case for capital is closed** (corroborates Alpha-v4 Phase-1's CAPM hedged-Sharpe −0.37). The inference-upgrade success metric is met: no strategy is killed/kept on an 8-fold t-stat again.
+
+**▶️ OWNER ACTIONS (live-capital changes are owner-gated; decision=None recorded):**
+1. **Flip the live PEAD sleeve → 0** (keep the tracker for telemetry); book = **trend-plus-cash**. (Recommended; not auto-executed.)
+2. **Reconcile the live trend weight** (40% capital) to the Track-B **25% risk** framing (#451) — now the sole sleeve, this matters more.
+3. **Restart uvicorn** to pick up #445/#446 (clean logs + FMP calendar) AND activate the new 15:55 ET NBBO snapshot logger (#455).
+4. **H2/H3 are NOT auto-run** — they were PEAD-improvement hypotheses; with PEAD demoted, whether to still run them as pure research (no live capital) is your call. The event-panel + CGM instrument is the standing tool for any future event hypothesis.
+
+**Also shipped this session (all CI-merged):** P0 stubs + H1/H2/H3 pre-registration (#454); both slow fuses (#455) — the **Alpaca NBBO logger** (Polygon serves no options NBBO → free Alpaca feed; day-1 captured) and the **computed-greeks store COMPLETE** (`data/options_greeks/`, 733/733, 112.8M rows). Process held throughout: Fable-5 build → independent Fable-5 adversarial review → fix loop; **3 BLOCKERs caught before merge/run** (event-regime gate units, yfinance split-adjustment, empty-pre crash).
+
+## 🧭 PRIOR (2026-06-11): Alpha-v6 Phase-0 machinery COMPLETE — lead with P3 (earnings-event panel / H1)
 
 **Shipped overnight (8 PRs, all CI-merged; main @ `ab8151c`):** the P0 *measurement* machinery is built + validated end-to-end —
 - **Gate-calibration harness** (#444) + result (#447): the gate's false-negative is the **worst-regime backstop, NOT the t-stat**. "Lower the t-bar" is empirically **REFUTED** — 3/5 TRUE zero-SR nulls clear t≥2.0, and PEAD's t=3.33 ≈ a noise null's 3.47 (the 8-fold path-t can't separate PEAD from noise).

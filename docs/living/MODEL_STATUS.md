@@ -4,7 +4,12 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-12
+
+---
+
+## 🚦 H1 VERDICT — PEAD DEMOTED at event level (2026-06-12, #456)
+Event-level re-adjudication of the live PEAD edge (`H1-PEAD-EVENTLEVEL-20260611`, one-shot R4): on a 9,774-qualified R1K panel (2019→2026), two-way (announce_date×firm) CGM-clustered, **10d SPY-hedged mean −8.3bp, t=−0.77, one-sided p=0.7804 → DEMOTE** (negative at every horizon; bootstrap p=0.66; robust to all LOCO). **PEAD is NOT an event-level edge → live book = trend-plus-cash.** ⚠️ **OWNER-GATED:** flipping the live PEAD sleeve → 0 (keep tracker for telemetry) is an owner action, NOT auto-executed (registry decision=None). The PEAD-long-only section below is superseded by this verdict for any CAPITAL question.
 
 ---
 
