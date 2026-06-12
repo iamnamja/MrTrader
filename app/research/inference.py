@@ -157,17 +157,27 @@ def _auto_block_len(r: np.ndarray) -> float:
     return float(min(max(1, blk), max_lag))
 
 
-def _stationary_bootstrap_indices(n: int, p: float, rng) -> np.ndarray:
-    """One Politis-Romano stationary-bootstrap index path of length n: start at a
-    random index; each step with prob p jump to a fresh random index, else advance
-    circularly (geometric block lengths with mean 1/p)."""
-    idx = np.empty(n, dtype=np.int64)
-    cur = int(rng.integers(0, n))
-    jumps = rng.random(n) < p
-    for i in range(n):
-        idx[i] = cur
-        cur = int(rng.integers(0, n)) if jumps[i] else (cur + 1) % n
-    return idx
+def _stationary_bootstrap_index_matrix(n: int, p: float, n_reps: int,
+                                       rng) -> np.ndarray:
+    """All `n_reps` Politis-Romano stationary-bootstrap index paths at once, as an
+    (n_reps, n) int array — VECTORIZED (no per-element Python loop; ~100x faster than
+    path-at-a-time, which matters both for the 2000-rep default and for the gate's
+    real-time use). Semantics are identical: each path starts at a fresh random index
+    (column 0 is always a jump); thereafter, with prob p jump to a fresh random index,
+    else advance circularly. Block lengths are geometric with mean 1/p.
+
+    Construction: draw a jump mask and a fresh candidate index per cell; the realized
+    index at cell (i, j) is the fresh draw at that path's LAST jump position lj plus
+    (j - lj), taken mod n — i.e. "fresh start, then walk +1 within the block, wrap
+    circularly". Forward-filling lj via a running max over jump positions makes it a
+    pure numpy gather."""
+    jumps = rng.random((n_reps, n)) < p
+    jumps[:, 0] = True                                   # every path starts fresh
+    starts = rng.integers(0, n, size=(n_reps, n))        # candidate fresh indices
+    pos = np.arange(n)
+    last_jump = np.maximum.accumulate(np.where(jumps, pos[None, :], 0), axis=1)
+    start_at_lj = np.take_along_axis(starts, last_jump, axis=1)
+    return (start_at_lj + (pos[None, :] - last_jump)) % n
 
 
 def stationary_bootstrap_sr(returns: Sequence[float], *,
@@ -193,11 +203,10 @@ def stationary_bootstrap_sr(returns: Sequence[float], *,
     p = 1.0 / blk
     rng = np.random.default_rng(seed)
     sqrt_ann = np.sqrt(annualize)
-    sims = np.empty(n_reps, dtype=float)
-    for b in range(n_reps):
-        s = r[_stationary_bootstrap_indices(n, p, rng)]
-        sd = s.std(ddof=1)
-        sims[b] = (s.mean() / sd) * sqrt_ann if sd > EPS else 0.0
+    samp = r[_stationary_bootstrap_index_matrix(n, p, n_reps, rng)]  # (n_reps, n)
+    means = samp.mean(axis=1)
+    sds = samp.std(axis=1, ddof=1)
+    sims = np.where(sds > EPS, means / sds * sqrt_ann, 0.0)
     sr_point = float(r.mean() / sd0 * sqrt_ann)
     p_gt0 = float(np.mean(sims > 0.0))
     lo, hi = np.percentile(sims, [2.5, 97.5])

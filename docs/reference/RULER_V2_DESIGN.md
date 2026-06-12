@@ -110,15 +110,18 @@ t-stat (mirrors `capm_alpha`'s `n<30` zero-fill).
 
 ## 4. Phased build order
 
-**Status:** Phase 1 ✅ LANDED (2026-06-12, PR #471) — `app/research/inference.py` ships dark
-(no gate wiring); 22 known-answer tests; two independent Opus deep-dives (round 1: SE labeling +
-block-length; round 2: finite-mask `multifactor_alpha`, PBO fail-closed on non-finite, PBO tie-fair
-mid-rank) → SHIP. Phases 2-5 pending.
+**Status:** Phase 1 ✅ LANDED (2026-06-12, PR #471). Phase 2 ✅ LANDED (2026-06-12, PR #472) —
+`bayes_sr.py` + `ruler_v2.py` + `CPCVResult.oos_returns_dated` + the `GATE_MODE="ruler_v2"`
+dispatch, all DARK; 25 new tests + 89 legacy gate tests unchanged (R5); two independent Opus
+deep-dives (round-2 CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck →
+made live-paper a STRUCTURAL gating criterion; + run_cpcv-population integration test) → SHIP.
+**Key design property: CAPITAL now requires a live-paper observation by construction** — a backtest
+alone can never reach capital (the posterior is `P(SR>0 | backtest AND live paper)`). Phases 3-5 pending.
 
 | Phase | Build | Depends | Tested by | Risk |
 |---|---|---|---|---|
 | **1** ✅ | **Pure inference core** (`inference.py`): hac_sharpe, stationary_bootstrap_sr, pbo_cscv, move multifactor_alpha. No wiring. | numpy/scipy only | known-answer fixtures (IID→Lo SE; AR(1)→HAC SE > IID; bootstrap 0.5 on noise→1.0 on drift; PBO 0.5 on noise, low on dominant, high on IS-selected) | **low** |
-| **2** | Persist `CPCVResult.oos_returns_dated` + `ruler_v2.py` + `bayes_sr.py` behind the flag; the dispatch branches. | 1 | flag coexistence (legacy tests unchanged); tier logic on synthetic results | medium |
+| **2** ✅ | Persist `CPCVResult.oos_returns_dated` + `ruler_v2.py` + `bayes_sr.py` behind the flag; the dispatch branches. | 1 | flag coexistence (legacy tests unchanged); tier logic on synthetic results; structural live-paper requirement for CAPITAL | medium |
 | **3** | `track_b_appraisal.py` behind `TRACKB_MODE`. | 1 | budget-invariance property; diversifier-with-bad-regime passes | medium |
 | **4** | PBO sweep harness (Option A) — only when a config grid is on deck. | 1 | leak signature test | low (deferred) |
 | **5** | **Re-score the kill ledger** under Ruler v2 (extend `gate_calibration.py`, REPORT-ONLY). | 1-3 | OC-table; flips human-reviewed | medium |
