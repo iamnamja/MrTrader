@@ -132,7 +132,7 @@ live book from one sleeve into two or three.
 - **A3 — TSMOM honesty audit.** CAPM + FF5 attribution on the live sleeve; rebalance-offset
   sensitivity (offsets 1–4). Report-only; informs sizing + the re-charter framing.
 
-### Phase B — Ruler v2 (gate redesign). The foundational fix; do as one careful PR.
+### Phase B — Ruler v2 (gate redesign). **Detailed technical design + phased build: `RULER_V2_DESIGN.md`.**
 - **B1** retire `path_sharpe_tstat` from all gating.
 - **B2** primary inference = HAC Sharpe SE + stationary bootstrap on the concatenated OOS
   **daily** series; events keep CGM.
