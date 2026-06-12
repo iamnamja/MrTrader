@@ -114,8 +114,11 @@ def test_capital_structurally_unreachable_on_backtest_alone():
     # NO live-paper observation, CAPITAL fails on the `live_paper_present` criterion
     # for EVERY draw — the posterior is P(SR>0 | backtest AND live paper). This is the
     # deliberate fix for "promoted to capital on a backtest alone".
-    for seed in range(25):
-        res = _result(_strong(n=1500, seed=seed))
+    # The property is deterministic in `live_paper` (not the random series), so a few
+    # seeds at the minimum capital-power length (504) suffice — no need for many long
+    # series (which would just re-run the bootstrap needlessly).
+    for seed in range(6):
+        res = _result(_strong(n=520, seed=seed))
         d = ruler_v2.evaluate(res, tier="capital", n_trials=_REAL_TRIALS)  # no live
         assert d["live_paper_present"] == (False, False)
         assert ruler_v2.gate_passed(res, tier="capital", n_trials=_REAL_TRIALS) is False
