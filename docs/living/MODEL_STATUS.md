@@ -9,7 +9,7 @@
 ---
 
 ## 🚦 H1 VERDICT — PEAD DEMOTED at event level (2026-06-12, #456)
-Event-level re-adjudication of the live PEAD edge (`H1-PEAD-EVENTLEVEL-20260611`, one-shot R4): on a 9,774-qualified R1K panel (2019→2026), two-way (announce_date×firm) CGM-clustered, **10d SPY-hedged mean −8.3bp, t=−0.77, one-sided p=0.7804 → DEMOTE** (negative at every horizon; bootstrap p=0.66; robust to all LOCO). **PEAD is NOT an event-level edge → live book = trend-plus-cash.** ⚠️ **OWNER-GATED:** flipping the live PEAD sleeve → 0 (keep tracker for telemetry) is an owner action, NOT auto-executed (registry decision=None). The PEAD-long-only section below is superseded by this verdict for any CAPITAL question.
+Event-level re-adjudication of the live PEAD edge (`H1-PEAD-EVENTLEVEL-20260611`, one-shot R4): on a 9,774-qualified R1K panel (2019→2026), two-way (announce_date×firm) CGM-clustered, **10d SPY-hedged mean −8.3bp, t=−0.77, one-sided p=0.7804 → DEMOTE** (negative at every horizon; bootstrap p=0.66; robust to all LOCO). **PEAD is NOT an event-level edge → live book = trend-plus-cash.** ✅ **EXECUTED (2026-06-12, overnight):** the live PEAD sleeve is flipped OFF — `pm.swing_selector` `'pead'`→`'ml_model'` (+ `pm.swing_ml_live_enabled='false'`) so the swing/PEAD path fires nothing; `pead_tracker` telemetry retained. **Live book = trend-only (`pm.trend_enabled='true'`, `pm.trend_shadow='false'`, `pm.trend_allocation_pct=0.4`) + cash.** (Remaining owner call: reconcile the trend weight 40%→25% risk framing.) The PEAD-long-only section below is superseded by this verdict for any CAPITAL question.
 
 ---
 
