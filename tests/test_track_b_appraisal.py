@@ -103,11 +103,24 @@ def test_worst_regime_gates_non_diversifier():
     assert res.passed is False
 
 
-def test_non_diversifier_without_regime_data_is_report_only():
+def test_non_diversifier_without_regime_data_fails_closed():
+    # Mirrors Track-A: a non-diversifier with NO regime data and no human waiver must
+    # NOT silently pass — the missing backstop fails closed.
     res = tba.appraise_track_b(_base(), _diversifier(), component_type="alpha",
                                criteria=CRIT, candidate_risk_budget=0.20, seed=0)
-    assert "worst_regime" not in res.checks
-    assert any("REPORT-ONLY" in w for w in res.warnings)
+    val, ok = res.checks["worst_regime"]
+    assert np.isnan(val) and ok is False
+    assert res.passed is False
+    assert any("FAILING CLOSED" in w for w in res.warnings)
+
+
+def test_non_diversifier_missing_regime_passes_only_with_explicit_waiver():
+    res = tba.appraise_track_b(_base(), _diversifier(), component_type="alpha",
+                               criteria=CRIT, candidate_risk_budget=0.20,
+                               regime_waiver_approved=True, seed=0)
+    assert "worst_regime" not in res.checks          # not gating under the waiver
+    assert res.checks["requires_human_review"][1] is False   # surfaced as a flag
+    assert res.passed is True
 
 
 # ───────────────────────── guards / determinism ─────────────────────────────

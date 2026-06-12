@@ -23,8 +23,14 @@ standalone vol-targeted Sharpe, implausibility ceiling, tail-overlap, risk-budge
 ceiling). The WORST-REGIME floor is WAIVED for declared diversifiers / risk premia
 (`component_type ∈ {diversifier, risk_premium}`) — failing the book's worst regime is a
 crisis-diversifier's whole point; for any other component it gates when a worst-regime
-Sharpe is supplied (report-only when it is not, since Track-B sleeve series often carry
-no regime labels).
+Sharpe is supplied, and FAILS CLOSED when it is absent (unless an explicit human
+`regime_waiver_approved` is passed) — mirroring the Track-A gate's data-bug posture so a
+missing backstop is never a silent pass.
+
+ΔSR is measured on the SIMPLE budget-b blend `(1-b)*base + b*cand_vt` (NOT the
+allocator's combine() with turnover cost) — the v2 instrument reads the SIGNIFICANCE of
+the direction of the book-Sharpe change, for which the symmetric ~1bp rebalance cost is
+noise; the point estimate and the bootstrap use the identical definition.
 
 PURE: reads its arguments, mutates nothing (not the inputs, not retrain_config), no I/O.
 Reuses book_gate._vol_target_candidate / _as_daily_series / _series_sharpe and
@@ -143,6 +149,7 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
                      criteria: TrackBAppraisalCriteria,
                      candidate_risk_budget: Optional[float] = None,
                      worst_regime_sharpe: Optional[float] = None,
+                     regime_waiver_approved: bool = False,
                      n_boot: int = 2000,
                      block_len: Optional[float] = None,
                      seed: int = 0,
@@ -246,15 +253,26 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
         "max_dd_delta_report": (dd_delta, True),
         "t_alpha_hac_report": (t_alpha_hac, True),
     }
-    if not waived and worst_regime_sharpe is not None:
-        checks["worst_regime"] = (
-            float(worst_regime_sharpe),
-            float(worst_regime_sharpe) >= criteria.worst_regime_floor)
-    else:
-        # waived diversifier, or no regime data supplied → report-only.
+    if waived:
+        # Declared diversifier / risk premium → backstop waived (report-only); the
+        # whole point of the sleeve is to diverge from the book in a crisis.
         checks["worst_regime_report"] = (
             (float(worst_regime_sharpe) if worst_regime_sharpe is not None
              else float("nan")), True)
+    elif worst_regime_sharpe is not None:
+        checks["worst_regime"] = (
+            float(worst_regime_sharpe),
+            float(worst_regime_sharpe) >= criteria.worst_regime_floor)
+    elif regime_waiver_approved:
+        # Non-diversifier with NO regime data but an explicit human waiver → report-
+        # only WITH a mandatory human-review flag (mirrors the Track-A sign-off path).
+        checks["worst_regime_report"] = (float("nan"), True)
+        checks["requires_human_review"] = (True, False)
+    else:
+        # Non-diversifier, no regime data, no waiver → FAIL CLOSED (consistent with the
+        # Track-A significance gate's data-bug posture — a missing backstop is not a
+        # silent pass).
+        checks["worst_regime"] = (float("nan"), False)
 
     failed = [k for k, (_v, ok) in checks.items()
               if not ok and k not in INFORMATIONAL_KEYS]
@@ -267,8 +285,11 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
             "(> 10%) — the candidate's vol-targeting is unreliable")
     if not waived and worst_regime_sharpe is None:
         warnings.append(
-            "no worst_regime_sharpe supplied for a non-diversifier component — the "
-            "regime backstop is REPORT-ONLY (not gating)")
+            "no worst_regime_sharpe for a non-diversifier component — "
+            + ("WAIVED by explicit human sign-off (requires_human_review)"
+               if regime_waiver_approved else
+               "FAILING CLOSED (pass worst_regime_sharpe, declare it a "
+               "diversifier/risk_premium, or set regime_waiver_approved=True)"))
 
     return TrackBAppraisalResult(
         candidate_label=candidate_label, component_type=component_type,

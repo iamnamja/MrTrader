@@ -98,11 +98,18 @@ t-stat (mirrors `capm_alpha`'s `n<30` zero-fill).
   registry's **true trial count** tightens the prior toward zero (`SD/√(1+log N_trials)`) — this is
   the multiplicity defense that replaces the saturated DSR; backtest + live-paper combined as
   precision-weighted (HAC-SE) normal observations → closed-form `P(SR>0)`.
-- **Track-B v2** (`track_b_appraisal`): replace budget-dependent ΔSharpe≥0.10 with the
-  budget-invariant **appraisal ratio** (residual-α IR ≥ `RULERV2_TRACKB_MIN_IR` via
-  `multifactor_alpha` with factors=base-book) + block-bootstrap CI on ΔSR (P(ΔSR>0) ≥
-  `RULERV2_TRACKB_MIN_PDSR`); **waive worst-regime floor** for `component_type ∈
-  {diversifier, risk_premium}`. Reuse `book_gate._vol_target_candidate`/`combine` verbatim.
+- **Track-B v2** (`track_b_appraisal`, behind `TRACKB_MODE="ruler_v2"`): replace budget-
+  dependent ΔSharpe≥0.10 with the budget-invariant **appraisal ratio** (residual-α IR ≥
+  `RULERV2_TRACKB_MIN_IR` via `multifactor_alpha` with factors=base-book) + block-bootstrap
+  P(ΔSR>0) ≥ `RULERV2_TRACKB_MIN_PDSR`. ΔSR is measured on the **simple budget-`b` blend**
+  `(1-b)·base + b·cand_vt` (NOT the allocator's `combine()` — the v2 instrument reads the
+  SIGNIFICANCE of the direction of the book-Sharpe change, for which the symmetric ~1bp
+  rebalance cost is noise; point estimate + bootstrap share the identical definition).
+  Reuse `book_gate._vol_target_candidate`/`_series_sharpe` + the vectorized stationary
+  bootstrap. **Waive worst-regime floor** for `component_type ∈ {diversifier, risk_premium}`;
+  for any other component the floor gates when a worst-regime Sharpe is supplied and **fails
+  closed** when it is absent (unless `regime_waiver_approved`) — mirrors the Track-A data-bug
+  posture.
 - **Gate-amendment recording:** each threshold change is logged as a registry row
   (`family="ruler_v2_gate_amendment"`, exploratory, `params={const: old→new}`). The kill-ledger
   re-score writes R4-compliant re-test rows (`parent_id`=killed hypothesis) so a flip is a
@@ -116,13 +123,17 @@ dispatch, all DARK; 25 new tests + 89 legacy gate tests unchanged (R5); two inde
 deep-dives (round-2 CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck →
 made live-paper a STRUCTURAL gating criterion; + run_cpcv-population integration test) → SHIP.
 **Key design property: CAPITAL now requires a live-paper observation by construction** — a backtest
-alone can never reach capital (the posterior is `P(SR>0 | backtest AND live paper)`). Phases 3-5 pending.
+alone can never reach capital (the posterior is `P(SR>0 | backtest AND live paper)`).
+Phase 3 ✅ LANDED (2026-06-12, PR #473) — `track_b_appraisal.py` (budget-invariant appraisal IR +
+block-bootstrap P(ΔSR>0)) behind `TRACKB_MODE="ruler_v2"`, DARK; legacy `book_delta_gate` untouched;
+Opus deep-dive verified budget-invariance empirically + ruled out junk-sleeve gaming (2 MINOR fixed:
+non-diversifier missing-regime now fails closed; doc/code reconciled) → SHIP. Phase 5 pending.
 
 | Phase | Build | Depends | Tested by | Risk |
 |---|---|---|---|---|
 | **1** ✅ | **Pure inference core** (`inference.py`): hac_sharpe, stationary_bootstrap_sr, pbo_cscv, move multifactor_alpha. No wiring. | numpy/scipy only | known-answer fixtures (IID→Lo SE; AR(1)→HAC SE > IID; bootstrap 0.5 on noise→1.0 on drift; PBO 0.5 on noise, low on dominant, high on IS-selected) | **low** |
 | **2** ✅ | Persist `CPCVResult.oos_returns_dated` + `ruler_v2.py` + `bayes_sr.py` behind the flag; the dispatch branches. | 1 | flag coexistence (legacy tests unchanged); tier logic on synthetic results; structural live-paper requirement for CAPITAL | medium |
-| **3** | `track_b_appraisal.py` behind `TRACKB_MODE`. | 1 | budget-invariance property; diversifier-with-bad-regime passes | medium |
+| **3** ✅ | `track_b_appraisal.py` behind `TRACKB_MODE`. | 1 | budget-invariance property; diversifier-with-bad-regime passes | medium |
 | **4** | PBO sweep harness (Option A) — only when a config grid is on deck. | 1 | leak signature test | low (deferred) |
 | **5** | **Re-score the kill ledger** under Ruler v2 (extend `gate_calibration.py`, REPORT-ONLY). | 1-3 | OC-table; flips human-reviewed | medium |
 
