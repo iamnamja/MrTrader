@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-06-06
 **Capital:** $100k (paper)
-**Status:** 🎯 **ALPHA-v6 — FIX THE RULER + OPTIONS-AS-SIGNAL** (active, 2026-06-10). SSOT: **`docs/reference/NEXT_PHASE_BLUEPRINT_2026-06.md`**. A second 5-LLM quant review (2026-06-10) converged that the harness over-corrected into a **Type-II / false-negative machine**; Alpha-v6 fixes the *measurement* (gate power calibration, event-LEVEL inference, two-track acceptance) and aims the 4y options data at **signal-first** uses. It **sharpens, not reverses, Alpha-v4** (portfolio of uncorrelated premia, complete) — Alpha-v4 built the sleeves + allocator and remains the substrate. See the Alpha-v6 section directly below.
+**Status:** 🎯 **ALPHA-v7 — OPERATE A PREMIA BOOK** (active, 2026-06-12). SSOT: **`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`**. Alpha-v6 is COMPLETE — every pre-registered hypothesis (H1/H2/H3/H4a–e/P5) KILLED/DEMOTED/PARKED. A 4-LLM panel (2026-06-12) converged: the gate is a **Type-II machine on ≤4y data** (so the all-kill was partly geometry), standalone US-equity/free-data alpha is **genuinely exhausted**, and the move is to **re-charter from "find alpha" to operate a 3–5 sleeve premia book judged at the BOOK level (Track B), target book SR ~0.8–1.0.** Phases: A recovery re-tests (P5 L/S overlay + noise-pile + TSMOM audit, no new data) · B Ruler-v2 (retire path-t → HAC-SR+bootstrap+PBO; invert tiers; residual-α primary) · C trend expansion (futures/FX/crypto) · D live fidelity (replay-diff) · E index-VRP via ETP. Sharpens Alpha-v6's two-track + registry substrate. (Prior Alpha-v6 section below remains the executed record.)
 
 ---
 

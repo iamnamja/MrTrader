@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted (overnight) → live book = trend-only (40%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. trend weight reconciled 40%→25%. P4 H4a–H4e → ALL 5 KILL (options-as-signal equity edge dead); H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 confirmatory hypotheses adjudicated; **P5 trend-broadening → PARK** (broadened 0.30 vs simple 10-ETF 0.72/19y — simple sleeve wins). Live book = trend-only(25%)+cash, unchanged**)
+**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted (overnight) → live book = trend-only (40%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. trend weight reconciled 40%→25%. P4 H4a–H4e → ALL 5 KILL (options-as-signal equity edge dead); H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). **NEW DIRECTION: ALPHA-v7 — operate a premia book** (4-LLM panel synthesized → `docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`). Live book = trend-only(25%)+cash, unchanged**)
 
 ## 🧭 NOW (2026-06-12): H1 verdict in — PEAD is NOT an event-level edge → book = trend-plus-cash
 
