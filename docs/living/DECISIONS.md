@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-12 — Alpha-v6 P4a: options feature table + quality filter shipped; H4a–H4e pre-registered
+
+**Context**: With PEAD demoted (H1) the live book is trend-plus-cash, and the blueprint's next research thread is **P4 — options-as-signal**: do options-derived features carry a cross-sectional EQUITY edge, adjudicated as a weekly dollar-neutral L/S sleeve (information at equity cost, NOT an options trade)? The computed-greeks store (P2, 733/733, 112.8M rows) is the substrate; this PR builds the daily FEATURE layer on top of it and freezes the confirmatory hypotheses BEFORE any L/S run exists.
+
+**Decisions / what shipped**:
+1. **The daily options feature table** (`app/data/options_features.py` + `scripts/build_options_features.py` → `data/options_features.parquet`): one row per (underlying, date) from each name's greeks-store slice, carrying the five P4 features — `cpiv_matched_delta` (Cremers-Weinbaum), `skew_25d_put` (Xing-Zhang-Zhao), `term_slope_30_60`, `iv_rv_20d_ratio`, `opt_share_volume_ratio` (Roll-Schwartz-Subrahmanyam O/S) — plus `atm_iv_30d`, `implied_move_front`, `put_call_volume_ratio`, `opt_volume_z`, and coverage/quality columns. Frozen quality contract: a contract is valid only if `solver_status=="ok"` and not stale; a name-date with <6 valid contracts is dropped. PIT throughout (knowable_date = store's holiday-aware D+1 session; RV + opt_volume_z use strictly-prior windows).
+2. **The options-quality universe filter** (`app/data/options_quality.py`): the PIT coverage floor (≥6 valid contracts, non-NaN atm_iv, ≥100 traded contracts) deciding who is in the cross-sectional sort.
+3. **H4a–H4e PRE-REGISTERED** (`scripts/preregister_options_xs_features.py`, label=confirmatory, `preregistered_at=2026-06-12T12:00Z`, each ONE confirmatory shot R4): **H4a** `H4a-OPTIONS-CPIV-20260612` (CPIV → POSITIVE coeff); **H4b** `H4b-OPTIONS-SKEW-20260612` (skew → NEGATIVE); **H4c** `H4c-OPTIONS-OSRATIO-20260612` (put-heavy O/S → NEGATIVE); **H4d** `H4d-OPTIONS-TERMSLOPE-20260612` (term-slope → POSITIVE / backwardation→negative return); **H4e** `H4e-OPTIONS-IVRV-20260612` (IV/RV richness → NEGATIVE). **Frozen kill rule: simple decile sorts show nothing net of costs → CLOSE the line; do NOT escalate to ML combinations (NOT a revival of the dead XS-ML).** The line is a SIMPLE decile sort on purpose.
+
+**Process / rationale**: Built by Opus 4.8 → **independent Opus 4.8 adversarial deep-dive** → fix loop → **Opus 4.8 verification pass (SHIP)**. The deep-dive caught **2 BLOCKERs before any H4 run**: (B1) `knowable_date` was recomputed with a holiday-blind `BDay(1)` (landed on market holidays → a 1-trading-day-early PIT leak into the sort) — fixed by carrying the store's holiday-aware value through; (B2) RV was computed from the store's AS-TRADED `underlying_close`, so a split step (NVDA 10:1: RV 8.23 vs true 0.48) corrupted `iv_rv` for ~20 sessions per split — exactly the names H4e sorts on — fixed by using split-adjusted equity closes for RV (+ a split-jump guard on the fallback). Plus the subset-overwrite footgun in `assemble_final` (a single-name rebuild truncated the full table). Same class of split-adjustment landmine prior reviews caught in the greeks backfill and the event panel. 47 tests; flake8 clean.
+
+**Consequences**: P4a is the DATA LAYER only — **no H4 verdict yet**. The five confirmatory runs (R4, `run_at > 2026-06-12T12:00Z`) are the next P4 step and need ZERO live capital. This does not change the live book (still trend-plus-cash, PEAD→0 owner-gated). See ML_EXPERIMENT_LOG + OPTIONS_DATA §(feature table) + OPTIONS_PROGRAM.
+
+---
+
 ## 2026-06-12 — H1 VERDICT: PEAD DEMOTED at event level → live book = trend-plus-cash (#456)
 
 **Context**: The Alpha-v6 centerpiece. PEAD has been live (telemetry size) on an instrument P0 proved couldn't separate it from noise (8-fold path-t). H1 (`H1-PEAD-EVENTLEVEL-20260611`, pre-registered 2026-06-11T12:00Z) re-adjudicates the LIVE PEAD edge at the EVENT level — the right inference unit — on a 21,330-event / **9,774-qualified** R1K panel (2019→2026), with two-way (announce_date × firm) cluster-robust SEs (CGM, validated to the published Petersen 2009 pins).
