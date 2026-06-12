@@ -24,7 +24,7 @@ from __future__ import annotations
 import itertools
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -83,6 +83,14 @@ class CPCVResult:
     residual_beta: Optional[float] = None
     residual_sharpe: Optional[float] = None
     residual_n: int = 0
+    # Alpha-v7 Phase B (Ruler v2): the concatenated, date-ordered, date-deduped OOS
+    # book daily return series as (ISO-date, return) pairs — the SAME series the
+    # residual-alpha diagnostic builds, persisted so the Ruler-v2 gate can run
+    # inference (HAC-SR / bootstrap) ON THE OOS RETURNS rather than on the path-Sharpe
+    # distribution. PURE-ADDITIVE (default []): read ONLY by the GATE_MODE="ruler_v2"
+    # branch (ships dark); the significance / mean_sharpe gates never touch it, so
+    # legacy results and the recorded kill ledger are byte-for-byte unaffected.
+    oos_returns_dated: List[Tuple[str, float]] = field(default_factory=list)
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
@@ -503,6 +511,12 @@ class CPCVResult:
         # legacy `paper_gate` (relaxed-threshold) kwarg only applies to mean_sharpe
         # mode; significance mode uses `tier` ("paper"|"capital") instead.
         from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "ruler_v2":
+            # Alpha-v7 Phase B (ships DARK). Inference ON THE OOS RETURN SERIES.
+            from app.research import ruler_v2
+            return ruler_v2.gate_passed(
+                self, tier=tier, paper_confirmation=paper_confirmation,
+                regime_waiver_approved=regime_waiver_approved)
         if GATE_MODE == "significance":
             # Significance mode flips the t-stat WARN→BLOCK. The legacy `paper_gate`
             # kwarg is intentionally NOT honored here (it relaxed Sharpe/PF gates,
@@ -587,6 +601,11 @@ class CPCVResult:
                     regime_waiver_approved: bool = False) -> dict:
         # Phase-4: under significance mode, return the tier-aware significance detail.
         from app.ml.retrain_config import GATE_MODE
+        if GATE_MODE == "ruler_v2":
+            from app.research import ruler_v2
+            return ruler_v2.evaluate(
+                self, tier=tier,
+                regime_waiver_approved=regime_waiver_approved)
         if GATE_MODE == "significance":
             return self.significance_gate_detail(
                 tier=tier, paper_confirmation=paper_confirmation,
@@ -1295,6 +1314,23 @@ def run_cpcv(
         _ret_pairs = []
         for _ti, _pairs in evaluated_fold_returns.items():
             _ret_pairs.extend(_pairs or [])
+        # Alpha-v7 Phase B (Ruler v2): persist the date-ordered, date-deduped OOS book
+        # series (PURE-ADDITIVE; read only by GATE_MODE="ruler_v2", which ships dark).
+        # Built independently of SPY so it populates even when no market series is
+        # available for the residual-alpha diagnostic below.
+        if _ret_pairs:
+            _seen_d: set = set()
+            _dated: List[Tuple[str, float]] = []
+            for _d, _r in sorted(_ret_pairs, key=lambda p: p[0]):
+                _key = str(_d)
+                if _key in _seen_d:
+                    continue
+                _seen_d.add(_key)
+                try:
+                    _dated.append((_key, float(_r)))
+                except (TypeError, ValueError):
+                    continue
+            result.oos_returns_dated = _dated
         _spy = getattr(strategy, "spy_prices", None)
         if _ret_pairs and _spy is not None and len(_spy) > 1:
             _rb = _pd.Series(

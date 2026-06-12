@@ -395,7 +395,13 @@ below threshold. See HIGH-3."""
 #   "significance" (default, owner-approved): new two-tier gate below.
 #   "mean_sharpe"  (legacy): faithful reproduction of the 0.80/1.00 mean gate
 #                  with t-stat WARN-only — a true no-op vs pre-Phase-4 main.
-GATE_MODE: str = "significance"   # "significance" (new) | "mean_sharpe" (legacy)
+#   "ruler_v2"     (Alpha-v7 Phase B, SHIPS DARK — NOT flipped live): the inference
+#                  -on-the-OOS-series gate (app/research/ruler_v2.py). PAPER =
+#                  plausibility (no significance t); CAPITAL = Bayesian posterior
+#                  P(SR>0)≥0.95 + multi-factor residual-α + bootstrap + PBO + power
+#                  floor. See docs/reference/RULER_V2_DESIGN.md. The significance/
+#                  mean_sharpe branches are byte-for-byte untouched.
+GATE_MODE: str = "significance"   # "significance" | "mean_sharpe" (legacy) | "ruler_v2" (dark)
 
 # Two tiers:
 #   PAPER   — forward-validate, deploy to paper, NO real capital.
@@ -418,6 +424,28 @@ CAPITAL_GATE_MIN_N_FOLDS: int = 10         # power floor (N_eff=n_folds; 8 is to
 # and the Sharpe floor is the economic-materiality backstop, not the discriminator.
 CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.45
 CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR documented live-paper confirmation
+
+# ── Alpha-v7 Phase B: Ruler v2 constants (used ONLY when GATE_MODE="ruler_v2") ──
+# All DARK — read only inside app/research/ruler_v2.py, never by the significance/
+# mean_sharpe branches. Defaults are the RULER_V2_DESIGN.md §6 owner-decision
+# recommendations (OD-1…OD-9); each is an OPEN owner call before GATE_MODE is ever
+# flipped live (a consolidated sign-off list ships with the phase). Tunable.
+RULERV2_PAPER_MIN_SR: float = 0.30          # OD-2 PAPER plausibility floor (annualized point SR)
+RULERV2_PAPER_IMPLAUSIBLE_SR: float = 3.0   # PAPER implausibility CEILING — a backtest SR above
+#                                             this on a single sleeve is an overfit signature, reject
+RULERV2_MAX_PAPER_SLEEVES: int = 6          # OD-3 concurrent paper-sleeve cap (caller-supplied count)
+RULERV2_PRIOR_SR_SD: float = 0.30           # OD-4 prior SR ~ N(0, SD²); shrink by 1/√(1+log N_trials)
+RULERV2_MIN_DAILY_OBS: int = 504            # OD-6 CAPITAL power floor (~2y of daily OOS obs)
+RULERV2_MIN_N_FOLDS: int = 10               # CAPITAL power floor (N_eff = n_folds)
+RULERV2_CAPITAL_MIN_POSTERIOR: float = 0.95  # CAPITAL Bayesian posterior P(SR>0) gate
+RULERV2_BOOTSTRAP_MIN_PSR: float = 0.95     # CAPITAL stationary-bootstrap P(SR>0) gate
+RULERV2_PBO_MAX: float = 0.50               # CAPITAL PBO ceiling (gates only when M>1 configs)
+RULERV2_RESIDUAL_ALPHA_MIN_T: float = 2.0   # OD-8 CAPITAL primary: multi-factor residual-α t_HAC
+RULERV2_CATASTROPHIC_REGIME_SR: float = -0.5  # PAPER "not catastrophic" worst-regime floor (== legacy)
+# ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
+TRACKB_MODE: str = "book_delta"             # "book_delta" (legacy) | "ruler_v2" (dark; Phase 3)
+RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)
+RULERV2_TRACKB_MIN_PDSR: float = 0.85       # OD-5 block-bootstrap P(ΔSR>0)
 
 # ── Alpha-v6 Phase 0: Track B (book-delta) acceptance ─────────────────────────
 # PRE-REGISTERED criteria for the Track B gate (scripts/walkforward/book_gate.py;
