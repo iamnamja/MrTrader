@@ -166,6 +166,25 @@ def test_pbo_leak_signature_is_documented_false_negative():
     assert inf.pbo_cscv(leaked).pbo < 0.05
 
 
+def test_pbo_fails_closed_on_non_finite_cell():
+    rng = np.random.default_rng(13)
+    perf = rng.normal(0, 1.0, (10, 12))
+    perf[3, 5] = np.nan                            # e.g. a block with no trades
+    res = inf.pbo_cscv(perf)
+    assert res.gating is False and np.isnan(res.pbo)
+    assert "non-finite" in res.reason
+
+
+def test_pbo_tie_fair_rank_not_optimistically_biased():
+    # Discretized (tie-heavy) perf must not be biased DOWN by a `<=` rank. The
+    # mid-rank convention keeps a genuinely-overfit spike matrix high even when
+    # quantized.
+    S = 12
+    perf = np.round(np.eye(S) * 10.0)              # integer ties everywhere off-diag
+    res = inf.pbo_cscv(perf)
+    assert res.pbo > 0.8                           # still textbook overfit
+
+
 def test_pbo_single_config_undefined():
     res = inf.pbo_cscv(np.ones((1, 8)))
     assert res.gating is False and np.isnan(res.pbo)
@@ -208,4 +227,17 @@ def test_multifactor_alpha_reexport_identical():
                   index=idx)
     out = inf.multifactor_alpha(y, f, hac_lag=5)
     assert out["betas"]["SPY"] == pytest.approx(0.7, abs=0.05)
+    assert np.isfinite(out["t_alpha_hac"])
+
+
+def test_multifactor_alpha_does_not_raise_on_inf_factor():
+    # pandas .dropna() does NOT drop ±inf and lstsq raises on it — the finite-mask
+    # must keep the contract (fail to the zero-fill, never raise).
+    idx = pd.bdate_range("2023-01-01", periods=120)
+    rng = np.random.default_rng(14)
+    f = pd.DataFrame({"SPY": rng.normal(0, 0.01, 120)}, index=idx)
+    f.iloc[10, 0] = np.inf
+    y = pd.Series(0.0002 + 0.7 * f["SPY"].to_numpy(), index=idx)
+    out = inf.multifactor_alpha(y, f)              # must not raise
+    assert out["n"] == 119                         # the inf row dropped, rest kept
     assert np.isfinite(out["t_alpha_hac"])

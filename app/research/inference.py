@@ -245,6 +245,11 @@ def pbo_cscv(is_oos_perf, *, n_splits: Optional[int] = None,
         return PBOResult(float("nan"), 0, 0, 0.0, gating=False,
                          reason="is_oos_perf must be 2-D (configs x blocks)")
     M, S = P.shape
+    if not np.isfinite(P).all():
+        # A NaN/inf cell (e.g. a block with no trades) would silently corrupt the
+        # mean/argmax/rank into a finite, confidently-wrong gating PBO. Fail closed.
+        return PBOResult(float("nan"), M, 0, 0.0, gating=False,
+                         reason="non-finite performance cell")
     if M < 2:
         return PBOResult(float("nan"), M, 0, 0.0, gating=False,
                          reason="single config — PBO not applicable (no selection)")
@@ -277,8 +282,14 @@ def pbo_cscv(is_oos_perf, *, n_splits: Optional[int] = None,
         is_perf = P[:, list(is_idx)].mean(axis=1)
         oos_perf = P[:, oos_idx].mean(axis=1)
         n_star = int(np.argmax(is_perf))
-        # OOS relative rank of the IS-best config (1..M), as omega in (0,1).
-        rank = int((oos_perf <= oos_perf[n_star]).sum())
+        # OOS relative rank of the IS-best config (1..M), as omega in (0,1). Use a
+        # tie-fair MID-rank: strictly-worse count + (ties+1)/2. (A plain `<=` would
+        # award the IS-best the most favorable rank among ties, biasing PBO DOWN —
+        # the optimistic/unsafe direction for a promotion gate; equals `<=`-rank
+        # when there are no ties.)
+        better = int((oos_perf < oos_perf[n_star]).sum())
+        ties = int((oos_perf == oos_perf[n_star]).sum())     # >=1 (incl. itself)
+        rank = better + (ties + 1) / 2.0
         omega = min(max(rank / (M + 1.0), eps), 1.0 - eps)
         logits.append(float(np.log(omega / (1.0 - omega))))
         oos_losses.append(bool(oos_perf[n_star] < 0.0))
@@ -308,6 +319,14 @@ def multifactor_alpha(r_book: pd.Series, factors: pd.DataFrame,
     y = r_book.reindex(common).to_numpy(dtype=float)
     F = f.reindex(common).to_numpy(dtype=float)
     names = list(f.columns)
+    if F.ndim == 1:
+        F = F[:, None]
+    # finite-mask BOTH sides — pandas .dropna() does NOT drop ±inf, and an inf
+    # factor makes np.linalg.lstsq raise (SVD non-convergence), which would break
+    # the module's "never raise / fail to the zero-fill" contract.
+    if y.size and F.size:
+        keep = np.isfinite(y) & np.isfinite(F).all(axis=1)
+        y, F = y[keep], F[keep]
     n = len(y)
     k = F.shape[1] if F.ndim == 2 else 0
     _zero = {"n": n, "alpha_ann": 0.0, "alpha_bps_d": 0.0, "t_alpha_ols": 0.0,
