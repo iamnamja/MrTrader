@@ -13,7 +13,7 @@ What it sets (idempotent):
   * pm.trend_enabled        = false   (master flag; --enable flips it true to run)
   * pm.trend_shadow         = true    (dry-run: logs would-be orders, sends nothing;
                                         --arm flips it false to send real orders)
-  * pm.trend_allocation_pct = 0.40    (equal-capital 50/50 with PEAD under 80% gross)
+  * pm.trend_allocation_pct = 0.25    (sole live sleeve post-H1; Track-B 25% framing)
   * pm.pead_size_mult       = 1.0     (PEAD telemetry dial — was B4 ramp 3.0)
   * pm.pead_max_position_pct= 0.05    (PEAD telemetry dial — was B4 ramp 0.10)
 
@@ -33,7 +33,7 @@ from app.database.agent_config import get_agent_config, set_agent_config
 BASE = {
     "pm.trend_enabled": "false",
     "pm.trend_shadow": "true",
-    "pm.trend_allocation_pct": 0.40,
+    "pm.trend_allocation_pct": 0.25,
     "pm.pead_size_mult": 1.0,
     "pm.pead_max_position_pct": 0.05,
 }

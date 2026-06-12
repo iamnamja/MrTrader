@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted (overnight) → live book = trend-only (40%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. REMAINING owner item: reconcile trend weight 40%→25%; then the 5 H4 confirmatory runs**)
+**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted (overnight) → live book = trend-only (40%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. trend weight reconciled 40%→25%. NEXT: build+run the 5 H4 confirmatory L/S runs (zero capital) + H2/H3 research**)
 
 ## 🧭 NOW (2026-06-12): H1 verdict in — PEAD is NOT an event-level edge → book = trend-plus-cash
 
@@ -12,7 +12,7 @@
 
 **▶️ OWNER ACTIONS — status (live config verified 2026-06-12):**
 1. ✅ **DONE — live PEAD sleeve flipped OFF** (overnight; notify id 59). Mechanism: `pm.swing_selector` `'pead'`→`'ml_model'` (+ `pm.swing_ml_live_enabled='false'`) → the swing/PEAD proposing path runs the dormant dead-ML branch and fires nothing; PEAD no longer trades. `pm.pead_size_mult` stays 1.0 (moot — PEAD isn't the selector; the pead_tracker telemetry is retained). **Live book = trend-only (`trend_enabled='true'`, `trend_shadow='false'`, 40%) + cash.**
-2. ⏳ **OPEN — reconcile the live trend weight** (40% capital, `pm.trend_allocation_pct=0.4`) to the Track-B **25% risk** framing (#451). Now the sole sleeve, this is the remaining deliberate owner call (`pm.allocator_enabled='false'`).
+2. ✅ **DONE (2026-06-12) — live trend weight reconciled 40%→25%** (`pm.trend_allocation_pct` 0.4→**0.25**; Track-B 25% framing, #451). Trend is the sole live sleeve; the new 25% gross applies from Monday's first real rebalance. Schema default + `set_trend_config` + docstrings brought in line. (`pm.allocator_enabled='false'`.)
 3. ✅ **DONE — uvicorn restarted** (2026-06-12 07:52) → notify_watcher live (drained the queue incl. the P4a email), clean logs + FMP calendar (#445/#446), and the 15:55 ET NBBO snapshot logger (#455) active.
 4. **H2/H3 are NOT auto-run** — they were PEAD-improvement hypotheses; with PEAD demoted, whether to still run them as pure research (no live capital) is your call. The event-panel + CGM instrument is the standing tool for any future event hypothesis.
 

@@ -34,6 +34,8 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 **UPDATE 2026-06-12 — the owner action was EXECUTED (overnight; notify id 59 "PEAD flipped OFF live", 00:16:28).** The H1 DEMOTE was actioned by setting `pm.swing_selector` `'pead'`→`'ml_model'` (with `pm.swing_ml_live_enabled='false'`): the pre-market swing path now hits the dormant dead-ML branch and proposes nothing, so PEAD no longer trades live (`pm.pead_size_mult` left at 1.0 — moot, since PEAD isn't the active selector; the `pead_tracker` telemetry is retained). **Live book = trend-only (`pm.trend_enabled='true'` / `trend_shadow='false'` / 40%) + cash** — exactly the prescribed trend-plus-cash. Verified against live config 2026-06-12. The ONE remaining owner item from this decision is the SEPARATE trend-weight reconciliation (40%→25% risk framing); `pm.allocator_enabled` stays `'false'`.
 
+**UPDATE 2026-06-12 — trend weight reconciled 40%→25% (owner-approved).** With trend now the SOLE live sleeve, `pm.trend_allocation_pct` set 0.40→**0.25** (the Track-B 25% framing, #451) — a CAPITAL-gross fraction (the sleeve is internally vol-targeted, so this is a conservative reconciliation of the gross budget, not a precise risk-parity match). Live value set immediately (applies at Monday 6/15's first real rebalance); the schema default, `set_trend_config.py` BASE, and the sleeve docstrings were brought in line so nothing silently reverts to 40%. `pm.allocator_enabled` stays `'false'` (static budget). This closes the H1 live-book follow-up; the live book is now trend (25%) + cash.
+
 ---
 
 ## 2026-06-11 — H1 interpretation PRE-COMMITMENT (logged BEFORE the run; integrity guard)
