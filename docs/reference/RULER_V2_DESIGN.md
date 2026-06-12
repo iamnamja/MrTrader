@@ -110,9 +110,14 @@ t-stat (mirrors `capm_alpha`'s `n<30` zero-fill).
 
 ## 4. Phased build order
 
+**Status:** Phase 1 ✅ LANDED (2026-06-12, PR #471) — `app/research/inference.py` ships dark
+(no gate wiring); 22 known-answer tests; two independent Opus deep-dives (round 1: SE labeling +
+block-length; round 2: finite-mask `multifactor_alpha`, PBO fail-closed on non-finite, PBO tie-fair
+mid-rank) → SHIP. Phases 2-5 pending.
+
 | Phase | Build | Depends | Tested by | Risk |
 |---|---|---|---|---|
-| **1** | **Pure inference core** (`inference.py`): hac_sharpe, stationary_bootstrap_sr, pbo_cscv, move multifactor_alpha. No wiring. | numpy/scipy only | known-answer fixtures (IID→Lo SE; AR(1)→HAC SE > IID; bootstrap 0.5 on noise→1.0 on drift; PBO 0.5 on noise, low on dominant, high on IS-selected) | **low** |
+| **1** ✅ | **Pure inference core** (`inference.py`): hac_sharpe, stationary_bootstrap_sr, pbo_cscv, move multifactor_alpha. No wiring. | numpy/scipy only | known-answer fixtures (IID→Lo SE; AR(1)→HAC SE > IID; bootstrap 0.5 on noise→1.0 on drift; PBO 0.5 on noise, low on dominant, high on IS-selected) | **low** |
 | **2** | Persist `CPCVResult.oos_returns_dated` + `ruler_v2.py` + `bayes_sr.py` behind the flag; the dispatch branches. | 1 | flag coexistence (legacy tests unchanged); tier logic on synthetic results | medium |
 | **3** | `track_b_appraisal.py` behind `TRACKB_MODE`. | 1 | budget-invariance property; diversifier-with-bad-regime passes | medium |
 | **4** | PBO sweep harness (Option A) — only when a config grid is on deck. | 1 | leak signature test | low (deferred) |
