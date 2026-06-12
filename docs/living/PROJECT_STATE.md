@@ -4,7 +4,7 @@
 
 > **Update rule:** Human updates this at session boundaries. Keep it to one screen. This is NOT a planning doc (that's MASTER_BACKLOG.md) and NOT a history doc (that's ML_EXPERIMENT_LOG.md). It answers: "If I open the laptop cold, what do I need to know in 30 seconds?"
 
-**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78); live book = trend-plus-cash. P0+P1c+P2+P3-H1 all shipped (#454/#455/#456). OWNER: flip live PEAD→0 + reconcile trend weight + restart uvicorn**)
+**Last updated:** 2026-06-12 (**H1 RUN → PEAD DEMOTED at event level (p=0.78); live book = trend-plus-cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. NEXT: PEAD→0 live flip (owner) + restart uvicorn; then the 5 H4 confirmatory runs**)
 
 ## 🧭 NOW (2026-06-12): H1 verdict in — PEAD is NOT an event-level edge → book = trend-plus-cash
 
@@ -15,6 +15,8 @@
 2. **Reconcile the live trend weight** (40% capital) to the Track-B **25% risk** framing (#451) — now the sole sleeve, this matters more.
 3. **Restart uvicorn** to pick up #445/#446 (clean logs + FMP calendar) AND activate the new 15:55 ET NBBO snapshot logger (#455).
 4. **H2/H3 are NOT auto-run** — they were PEAD-improvement hypotheses; with PEAD demoted, whether to still run them as pure research (no live capital) is your call. The event-panel + CGM instrument is the standing tool for any future event hypothesis.
+
+**Also shipped 2026-06-12 — Alpha-v6 P4a (options-as-signal DATA LAYER, no verdict yet):** the daily options **feature table** (`app/data/options_features.py` + `scripts/build_options_features.py` → `data/options_features.parquet`: CPIV / 25Δ-skew / term-slope / IV-RV / O-S volume, PIT, holiday-aware knowable_date + split-adjusted RV) + the **options-quality universe filter** (`app/data/options_quality.py`), and **H4a–H4e PRE-REGISTERED** (`preregistered_at=2026-06-12T12:00Z`; kill = simple decile sorts net-of-costs show nothing → CLOSE, NOT an XS-ML revival). Built Opus 4.8 → independent Opus 4.8 deep-dive (**2 PIT/split BLOCKERs caught + fixed before any run**) → Opus verification = SHIP; 47 tests. The 5 confirmatory R4 L/S runs (zero live capital) are the next P4 step.
 
 **Also shipped this session (all CI-merged):** P0 stubs + H1/H2/H3 pre-registration (#454); both slow fuses (#455) — the **Alpaca NBBO logger** (Polygon serves no options NBBO → free Alpaca feed; day-1 captured) and the **computed-greeks store COMPLETE** (`data/options_greeks/`, 733/733, 112.8M rows). Process held throughout: Fable-5 build → independent Fable-5 adversarial review → fix loop; **3 BLOCKERs caught before merge/run** (event-regime gate units, yfinance split-adjustment, empty-pre crash).
 
