@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | **FMP** (Financial Modeling Prep) | **Starter $29/mo** | `fmp_api_key` | Earnings calendar/history (PEAD), fundamentals, analyst grades, insider (Form 4), **economic calendar** | ✅ working on `/stable/` |
 | **Finnhub** | **Free tier** | `finnhub_api_key` | Company news | ✅ news; ❌ economic calendar (premium-only) |
-| **Polygon** | **Options Developer $79/mo** | `polygon_api_key` | Options OHLCV flat files (4y store), contract reference, current snapshot (**OI + delayed only — NO NBBO/IV/greeks**), `adjusted=false` aggs, short interest/volume (FINRA), stock financials | ✅ working |
+| **Polygon ("Massive")** | **Options Developer — DOWNGRADED 2026-06-12** | `polygon_api_key` | Options OHLCV flat files (4y store, **owned locally — backfills now frozen**), contract reference, current snapshot (**OI + delayed only**), `adjusted=false` aggs, short interest/volume (FINRA), stock financials/news | ⬇️ downgraded; REST still 200 (news/snapshot/aggs/SI), bulk S3 flat-files dropped |
 | **Alpaca** | **Paper (free)** | `alpaca_*` | Order execution, account/positions, live bars, market clock/calendar, easy-to-borrow, **options snapshot NBBO** (free `indicative` feed → spread logger) | ✅ paper, $100k |
 | **yfinance** | Free (no key) | — | Daily + 5-min equity/ETF bars; TSMOM ETF prices; SPY; intraday daily-feature provider | ✅; survivorship + depth caveats |
 | **FRED** (St. Louis Fed) | Free | (public graph JSON) | Macro time series → `macro_calendar` context + regime features | ✅ |
@@ -38,7 +38,10 @@ Infra (not data feeds): **Redis** (queue/cache), **SQLite/Postgres** (app DB).
 - **API base: `https://finnhub.io/api/v1`.** Module: `app/news/sources/finnhub_source.py`. Key: `finnhub_api_key` (or `finhub_api_key`).
 - **Covered (free):** company news. **NOT covered (free):** `/calendar/economic` → `403 "You don't have access to this resource."` (premium-only). So Finnhub is **not** a working economic-calendar fallback on the free tier — we rely on FMP `/stable/` instead. Same disable-once-on-401/403 discipline.
 
-## Polygon — Options Developer $79/mo
+## Polygon ("Massive") — Options Developer DOWNGRADED 2026-06-12
+
+> **⚠️ DOWNGRADED 2026-06-12.** The $79/mo Options Developer plan (bulk **S3 flat-file** historical-options access — how the 4y store was built) was dropped after Alpha-v6 concluded options are not a tradeable edge (options-as-execution + options-as-signal H4a–e all KILLED) and the **full 4y store is owned locally** (`data/options_bars.parquet`, 1.2 GB, 2022-06→2026-06 + the derived greeks store + feature table). **Polygon = "Massive"** (rebrand; API host still `api.polygon.io`; not to be confused with FMP, which serves earnings/fundamentals, never options).
+> **Post-downgrade live check (2026-06-12):** the `polygon_api_key` still returns **200** on news (`/v2/reference/news`), options snapshot/contracts, stock aggs (`adjusted=false`), and short interest — so **nothing in the live system is broken** (the live news monitor degrades gracefully to empty even on a future 403). What's gone: **bulk S3 flat-file historical-options backfills** → the options store **freezes at 2026-06-08** (no new bars going forward). Lower tier likely carries rate limits. Re-subscribe + re-backfill later if a new options idea (e.g. dormant P6 index-VRP) ever needs current data.
 
 - **API: `https://api.polygon.io` + S3 flat files.** Modules: `app/data/options_provider.py`, `polygon_provider.py`, `polygon_financials.py`, `short_interest_provider.py`, `polygon_s3.py`.
 - **Covers:** historical options OHLCV via S3 flat files (`us_options_opra/day_aggs_v1` — the 4y local store, 2022-06→2026-06), contract reference (incl. expired → survivorship-safe), **current snapshot = OI + DELAYED OHLCV/last-trade only**, FINRA short interest + short volume, stock financials/news. Also `/v2/aggs/.../adjusted=false` (used by the greeks backfill for as-traded closes).

@@ -2,7 +2,7 @@
 
 **One-screen truth for the options program: architecture, confidence plan, phase status, and the per-strategy verdict table.** Append-as-you-go.
 
-**Started:** 2026-06-09 · **Data:** Polygon Options **Developer** ($79/mo) · **Status:** OPT-0..OPT-4 shipped. **Two verdicts in:** earnings IV-crush = KILL (single-name, cost-killed); index short-vol = KILL standalone but **VRP real + cost-robust** (PF 2.24 @1× / 1.75 @2×) just Sharpe-weak/under-powered. **Owner checkpoint:** refine index short-vol (regime overlay + weekly cadence) vs OPT-4b cross-sectional VRP vs reassess.
+**Started:** 2026-06-09 · **Data:** Polygon ("Massive") Options Developer — **DOWNGRADED 2026-06-12** (4y store owned locally; backfills frozen; see DATA_PROVIDERS) · **Status:** OPT-0..OPT-4 shipped. **Two verdicts in:** earnings IV-crush = KILL (single-name, cost-killed); index short-vol = KILL standalone but **VRP real + cost-robust** (PF 2.24 @1× / 1.75 @2×) just Sharpe-weak/under-powered. **Owner checkpoint:** refine index short-vol (regime overlay + weekly cadence) vs OPT-4b cross-sectional VRP vs reassess.
 
 ## Why
 The free-data 3rd-sleeve hunt is exhausted (reversal cost-dead, carry pre-cost-negative, estimate-revision data-blocked — see ML_EXPERIMENT_LOG Phase 4/4b/4c). Options unlock the **highest-ceiling** remaining edge: the **variance risk premium** (earnings IV-crush, cross-sectional VRP, systematic short-vol), plus options-data-as-signal and tail-hedging. Goal = a **resilient base** to explore MANY options strategies and validate each **with confidence**, honestly KEEP/KILL-ing like the prior nulls.
