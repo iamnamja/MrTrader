@@ -178,67 +178,9 @@ def build_factor_frame(etf_closes: Dict[str, pd.Series]) -> pd.DataFrame:
     return out.dropna()
 
 
-def multifactor_alpha(r_book: pd.Series, factors: pd.DataFrame,
-                      hac_lag: int = 5) -> dict:
-    """OLS r_book = alpha + B·factors with Newey-West HAC alpha t-stat — the
-    multi-factor generalization of attribution.capm_alpha (same Bartlett-kernel
-    sandwich), for the frozen P4 factor set (SPY / IWM-SPY / MTUM-SPY / VLUE-SPY /
-    VIXY). The hypothesis pass condition is a POSITIVE cost-net residual alpha; we
-    report alpha + both OLS and HAC t-stats (HAC is the honest one given weekly
-    overlap). Aligns book + factors on common dates, drops NaNs. Returns a
-    zero-filled dict if < 30 aligned obs.
-
-    Returns: n, alpha_ann, alpha_bps_d, t_alpha_ols, t_alpha_hac, betas (dict),
-    resid_sharpe (factor-hedged), r2, raw_sharpe."""
-    f = factors.dropna()
-    common = r_book.dropna().index.intersection(f.index)
-    y = r_book.reindex(common).to_numpy(dtype=float)
-    F = f.reindex(common).to_numpy(dtype=float)
-    names = list(f.columns)
-    n = len(y)
-    k = F.shape[1] if F.ndim == 2 else 0
-    if n < 30 or k == 0:
-        return {"n": n, "alpha_ann": 0.0, "alpha_bps_d": 0.0,
-                "t_alpha_ols": 0.0, "t_alpha_hac": 0.0, "betas": {},
-                "resid_sharpe": 0.0, "r2": 0.0, "raw_sharpe": 0.0}
-    X = np.column_stack([np.ones(n), F])  # [1, f1..fk]
-    try:
-        XtX_inv = np.linalg.inv(X.T @ X)
-    except np.linalg.LinAlgError:
-        # Degenerate/collinear factor design (e.g. a constant column) — the
-        # regression is ill-posed; report zero-filled rather than crash the run.
-        return {"n": n, "alpha_ann": 0.0, "alpha_bps_d": 0.0,
-                "t_alpha_ols": 0.0, "t_alpha_hac": 0.0, "betas": {},
-                "resid_sharpe": 0.0, "r2": 0.0, "raw_sharpe": 0.0}
-    coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-    alpha_d = float(coef[0])
-    betas = {names[j]: float(coef[1 + j]) for j in range(k)}
-    resid = y - X @ coef
-    dof = n - (k + 1)
-    s2 = float(resid @ resid) / dof if dof > 0 else 0.0
-    se_ols = float(np.sqrt(max(s2 * XtX_inv[0, 0], 0.0)))
-    t_ols = alpha_d / se_ols if se_ols > 0 else 0.0
-
-    # Newey-West HAC sandwich on the full [1, F] design.
-    Xr = X * resid[:, None]
-    S = Xr.T @ Xr
-    for L in range(1, hac_lag + 1):
-        w = 1.0 - L / (hac_lag + 1.0)
-        G = Xr[L:].T @ Xr[:-L]
-        S += w * (G + G.T)
-    cov_hac = XtX_inv @ S @ XtX_inv
-    se_hac = float(np.sqrt(max(cov_hac[0, 0], 0.0)))
-    t_hac = alpha_d / se_hac if se_hac > 0 else 0.0
-
-    ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = 1.0 - float(resid @ resid) / ss_tot if ss_tot > 0 else 0.0
-    raw_sharpe = float(y.mean() / y.std() * np.sqrt(ANN)) if y.std() > 0 else 0.0
-    hedged = y - (X[:, 1:] @ coef[1:])  # alpha + resid = factor-hedged stream
-    resid_sharpe = (float(hedged.mean() / hedged.std() * np.sqrt(ANN))
-                    if hedged.std() > 0 else 0.0)
-    return {"n": n, "alpha_ann": alpha_d * ANN, "alpha_bps_d": alpha_d * 1e4,
-            "t_alpha_ols": t_ols, "t_alpha_hac": t_hac, "betas": betas,
-            "resid_sharpe": resid_sharpe, "r2": r2, "raw_sharpe": raw_sharpe}
+# multifactor_alpha moved to the canonical inference core (Ruler v2); re-exported
+# below so existing callers (xs.multifactor_alpha) keep working.
+from app.research.inference import multifactor_alpha  # noqa: E402,F401
 
 
 def weekly_spread_panel(weekly: List[dict]) -> pd.DataFrame:
