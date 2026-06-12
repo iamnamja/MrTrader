@@ -109,3 +109,24 @@ def test_hard_contract_no_global_state_mutation():
     before = rc.GATE_MODE
     rs.rescore_result(_result(_SIG_PASS, oos_sr_ann=0.6), label="x")
     assert rc.GATE_MODE == before                    # re-score flips NOTHING
+
+
+def test_rescore_does_not_mutate_input_result():
+    # Both gates set requires_human_review_flag on the regime-waiver path — the
+    # re-score must operate on a copy and leave the caller's ledger object untouched.
+    res = _result(_SIG_PASS, oos_sr_ann=0.6, worst_regime=None)
+    res.regime_insufficient_obs = True
+    assert res.requires_human_review_flag is False
+    rs.rescore_result(res, label="x", regime_waiver_approved=True)
+    assert res.requires_human_review_flag is False   # NOT mutated by the re-score
+
+
+def test_significance_exception_becomes_error_sig_not_revived():
+    # A result whose significance scoring raises must NOT be silently FAIL (which could
+    # read as a spurious REVIVED) — it becomes ERROR_SIG with the error in notes.
+    res = _result(_SIG_PASS, oos_sr_ann=0.6)
+    res.path_sharpes = None                          # breaks significance_gate_passed
+    row = rs.rescore_result(res, label="boom")
+    assert row.paper_flip == rs.FLIP_ERROR_SIG
+    assert row.sig_paper_pass is None
+    assert "ERROR_SIG" in row.notes
