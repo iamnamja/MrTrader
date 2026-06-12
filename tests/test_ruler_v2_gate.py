@@ -11,6 +11,10 @@ inert at the default GATE_MODE (R5: zero diffs).
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -99,19 +103,35 @@ def test_capital_passes_with_live_paper_confirmation():
                                 n_trials=_REAL_TRIALS, live_paper=_LIVE_PAPER) is True
     d = ruler_v2.evaluate(res, tier="capital",
                           n_trials=_REAL_TRIALS, live_paper=_LIVE_PAPER)
+    assert d["live_paper_present"][1] is True
     assert d["posterior_p_sr_gt_0"][1] is True
     assert d["bootstrap_p_sr_gt_0"][1] is True
     assert d["power_floor"][1] is True
 
 
-def test_capital_backtest_alone_insufficient_by_design():
-    # The core safety property: even a 6-year, t>3 backtest with few trials does NOT
-    # reach CAPITAL on its own — the posterior needs live-paper evidence. This is the
+def test_capital_structurally_unreachable_on_backtest_alone():
+    # The core safety property, enforced STRUCTURALLY (not by threshold luck): with
+    # NO live-paper observation, CAPITAL fails on the `live_paper_present` criterion
+    # for EVERY draw — the posterior is P(SR>0 | backtest AND live paper). This is the
     # deliberate fix for "promoted to capital on a backtest alone".
-    res = _result(_strong(n=1500))
-    d = ruler_v2.evaluate(res, tier="capital", n_trials=_REAL_TRIALS)  # no live paper
-    assert d["posterior_p_sr_gt_0"][1] is False
+    for seed in range(25):
+        res = _result(_strong(n=1500, seed=seed))
+        d = ruler_v2.evaluate(res, tier="capital", n_trials=_REAL_TRIALS)  # no live
+        assert d["live_paper_present"] == (False, False)
+        assert ruler_v2.gate_passed(res, tier="capital", n_trials=_REAL_TRIALS) is False
+
+
+def test_live_paper_is_load_bearing_even_when_posterior_would_clear():
+    # seed=3's backtest-alone posterior clears 0.95 on its own — proving the
+    # live-paper requirement is STRUCTURAL: capital still fails without live paper
+    # (gated by live_paper_present), and passes once it is supplied.
+    res = _result(_strong(n=1500, seed=3))
+    bt_only = ruler_v2.evaluate(res, tier="capital", n_trials=_REAL_TRIALS)
+    assert bt_only["posterior_p_sr_gt_0"][1] is True        # threshold alone WOULD pass
+    assert bt_only["live_paper_present"][1] is False         # but the structural gate blocks
     assert ruler_v2.gate_passed(res, tier="capital", n_trials=_REAL_TRIALS) is False
+    assert ruler_v2.gate_passed(res, tier="capital",
+                                n_trials=_REAL_TRIALS, live_paper=_LIVE_PAPER) is True
 
 
 def test_paper_passes_without_significance_capital_fails():
@@ -201,6 +221,49 @@ def test_dark_branch_inert_unless_flag_set(monkeypatch):
         monkeypatch.setattr(rc, "GATE_MODE", mode)
         d = res.gate_detail(tier="paper")
         assert "point_sr_floor" not in d and "posterior_p_sr_gt_0" not in d
+
+
+def test_run_cpcv_populates_oos_returns_dated_sorted_deduped():
+    # M2 integration: the REAL producer (run_cpcv) must assemble oos_returns_dated
+    # sorted-by-date and deduped-keep-first, and _oos_return_array must round-trip it.
+    from scripts.walkforward.cpcv import run_cpcv
+
+    base = date(2024, 9, 30)
+    all_days = [base - timedelta(days=i) for i in range(300, 0, -1)]
+    all_days += [base + timedelta(days=i) for i in range(1, 600)]
+    strategy = SimpleNamespace(
+        model=SimpleNamespace(trained_through=base), model_type="intraday",
+        version=63, all_days_sorted=all_days, allow_in_sample=False)
+    boundaries = [
+        (date(2022, 1, 1), date(2024, 10, 15), date(2024, 10, 15), date(2025, 1, 15)),
+        (date(2022, 1, 1), date(2025, 1, 15), date(2025, 1, 15), date(2025, 4, 15)),
+        (date(2022, 1, 1), date(2025, 4, 15), date(2025, 4, 15), date(2025, 7, 15)),
+        (date(2022, 1, 1), date(2025, 7, 15), date(2025, 7, 15), date(2025, 10, 15)),
+        (date(2022, 1, 1), date(2025, 10, 15), date(2025, 10, 15), date(2026, 1, 15)),
+        (date(2022, 1, 1), date(2026, 1, 15), date(2026, 1, 15), date(2026, 4, 15)),
+    ]
+    # Deliberately UNSORTED dated returns, identical for every fold → exercises both
+    # the sort and the keep-first dedup (6 folds → only the 3 unique dates survive).
+    fold_result = SimpleNamespace(
+        sharpe=2.5, profit_factor=2.0, calmar_ratio=1.0, n_obs=80,
+        daily_returns_dated=[("2025-03-01", 0.010),
+                             ("2025-01-01", 0.020),
+                             ("2025-02-01", -0.010)])
+    strategy.run_fold = MagicMock(return_value=fold_result)
+
+    with patch("scripts.walkforward.engine.FoldEngine") as mock_engine_cls, \
+         patch("app.ml.retrain_config.assert_no_sacred_holdout"):
+        engine = MagicMock()
+        mock_engine_cls.return_value = engine
+        engine._build_trading_day_folds.return_value = boundaries
+        result = run_cpcv(strategy, purge_days=5, embargo_days=5, n_folds=6,
+                          n_paths=2, allow_sacred_holdout=True)
+
+    assert result.oos_returns_dated == [("2025-01-01", 0.020),
+                                        ("2025-02-01", -0.010),
+                                        ("2025-03-01", 0.010)]
+    arr = ruler_v2._oos_return_array(result)
+    assert np.allclose(arr, [0.020, -0.010, 0.010])
 
 
 def test_dispatch_routes_to_ruler_v2_when_flag_set(monkeypatch):

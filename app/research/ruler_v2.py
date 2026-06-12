@@ -16,11 +16,17 @@ Tier philosophy (the deliberate INVERSION of the legacy gate):
             motivated sleeve with a believable (not implausibly high) point SR and a
             non-catastrophic worst regime earns a paper slot. PF/Calmar are DEMOTED
             to report-only (off the AND) — they were the legacy Type-II machine.
-  CAPITAL = SIGNIFICANCE — Bayesian posterior P(SR>0) ≥ threshold (the multiplicity
-            defense that replaces the saturated DSR) AND multi-factor residual-α
-            t_HAC ≥ floor (primary) AND stationary-bootstrap P(SR>0) ≥ threshold AND
-            (PBO ≤ max, when >1 configs) AND a hard POWER FLOOR (n_obs, n_folds) that
-            fails closed regardless of the posterior.
+  CAPITAL = SIGNIFICANCE — REQUIRES a live-paper observation (the posterior is
+            P(SR>0 | backtest AND live paper); a backtest alone can NEVER reach
+            capital — structural, not threshold-dependent) AND Bayesian posterior
+            P(SR>0) ≥ threshold (the multiplicity defense that replaces the saturated
+            DSR) AND multi-factor residual-α t_HAC ≥ floor (primary) AND stationary-
+            bootstrap P(SR>0) ≥ threshold AND (PBO ≤ max, when >1 configs) AND a hard
+            POWER FLOOR (n_obs, n_folds) that fails closed regardless of the posterior.
+            Through the CPCVResult.gate_detail/gate_passed dispatch no live_paper is
+            supplied, so the CPCV entry point evaluates CAPITAL as backtest-only and
+            therefore always FAILS CLOSED there — live-paper-informed CAPITAL is an
+            explicit call into evaluate()/gate_passed() with live_paper=… (Phase D).
 
 Inputs the orchestrator reads off the result (duck-typed CPCVResult): the dated OOS
 book return series (`oos_returns_dated`, the Phase-2 additive field), `mean_sharpe`,
@@ -63,12 +69,17 @@ def _oos_return_array(result) -> np.ndarray:
     if not pairs:
         return np.empty(0, dtype=float)
     # Sort by date, dedupe keeping first (mirror run_cpcv's residual-alpha assembly).
+    # Sort/dedupe on str(date): for ISO 'YYYY-MM-DD' (what run_cpcv emits) lexical ==
+    # chronological, and str() also keeps datetime/Timestamp inputs chronological —
+    # so a stray non-string date can't silently misorder the series (the HAC/bootstrap
+    # stats are autocorrelation-sensitive, so order correctness is load-bearing).
     seen = set()
     ordered: List[float] = []
-    for d, r in sorted(pairs, key=lambda p: p[0]):
-        if d in seen:
+    for d, r in sorted(pairs, key=lambda p: str(p[0])):
+        key = str(d)
+        if key in seen:
             continue
-        seen.add(d)
+        seen.add(key)
         try:
             ordered.append(float(r))
         except (TypeError, ValueError):
@@ -176,6 +187,13 @@ def evaluate(result, *, tier: str = "paper",
         n_trials=nt, prior_sd=RULERV2_PRIOR_SR_SD,
         sr_live=lp_sr, se_live=lp_se)
     posterior_ok = bool(post.gating and post.p_sr_gt_0 >= RULERV2_CAPITAL_MIN_POSTERIOR)
+    # STRUCTURAL live-paper requirement — the design's CAPITAL evidence is
+    # P(SR>0 | backtest AND live paper). Without it, "capital unreachable on a
+    # backtest alone" would rest only on the 0.95 THRESHOLD, which a long/clean
+    # backtest (t≈3) clears on its own ~1-in-5 times — re-opening exactly the
+    # backtest-only-promotion hole this redesign closes. So make it a hard gating
+    # criterion: a CAPITAL verdict REQUIRES a live-paper observation in the posterior.
+    live_paper_ok = bool(post.used_live)
 
     # Multi-factor residual-α t_HAC (primary). Uses the already-computed diagnostic;
     # None (not computed / too few obs) fails closed.
@@ -187,6 +205,7 @@ def evaluate(result, *, tier: str = "paper",
     boot_ok = bool(boot.gating and boot.p_sr_gt_0 >= RULERV2_BOOTSTRAP_MIN_PSR)
 
     detail.update({
+        "live_paper_present": (post.used_live, live_paper_ok),
         "power_floor": ((n_obs, n_folds), power_ok),
         "posterior_p_sr_gt_0": (post.p_sr_gt_0, posterior_ok),
         "residual_alpha_t_hac": (ra_t, ra_ok),
