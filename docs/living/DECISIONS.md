@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-12 — P5 trend-broadening → PARK (the simple 10-ETF sleeve wins; complexity didn't earn it)
+
+**Context**: P5 (Track B) — broaden the validated TSMOM trend sleeve (the live book's sole sleeve, +0.71 Sharpe/19y) on the 19y window where t≥2 is reachable. Owner-approved spec: all three levers — more legs (16 ETFs: the 10-ETF core + HYG/LQD/SHY/SLV/VGK/EWJ), long-short, and a new 10% book-vol overlay. Pre-registered as ONE frozen spec (`P5-TRENDBROADEN-20260612`, `preregistered_at=2026-06-12T16:00Z`) — NOT a sweep (the OPT-5 trap). Built the book-vol overlay in `app/strategy/tsmom.py` (optional `book_vol_target`; the live sleeve runs `None` = byte-identical), 13 tests.
+
+**Result (the one confirmatory run, recorded R4, run_at 2026-06-12T19:04Z)** — broadened vs the 10-ETF live baseline on the identical 19y window:
+- **Broadened (16 ETF, L/S, 10% book-vol): Sharpe 0.30, t=1.31, maxDD −24.7%, Calmar 0.11.**
+- **Baseline (10 ETF live): Sharpe 0.72, t=3.18, maxDD −13.9%, Calmar 0.47.**
+- The broadened sleeve fails ALL THREE frozen pass conditions: not significant (t<2), lower Sharpe, deeper drawdown. Notable nuance: the long-short DID improve crisis behavior (2020 COVID +2.5% vs −6.2%; 2022 +8.1% vs +0.9%) — but the short-side bleed in a 19y bull + the added leverage swamped it on Sharpe/DD.
+
+**Decision (frozen rule: not-significant OR doesn't-beat-baseline → PARK)**: **PARK. The current 10-ETF, long-flat, per-instrument-vol-targeted sleeve STAYS — broadening is rejected.** No lever-hunting / universe sweep (the kill rule forbids it). "Complexity must earn it" confirmed again (echoes the Alpha-v4 regime-tilt allocator that also failed its margin). Independent Opus 4.8 deep-dive = **SAFE-TO-RECORD** (the PARK is over-determined; the new book-vol overlay is PIT-clean; baseline reproduces the validated +0.721/19y, proving the harness is sound).
+
+**Consequences**: **no live-book change** — trend-only (25%) + cash, the existing 10-ETF sleeve. The broadened-sleeve *capability* (book-vol overlay + long-short) is retained in `tsmom.py` (off by default) for any future use. The standalone long-short crisis-positivity is a real, logged observation — not pursued now (it didn't beat the simple sleeve on the book metrics that matter). See ML_EXPERIMENT_LOG + MASTER_BACKLOG 2026-06-12.
+
+---
+
 ## 2026-06-12 — H2 NOT_CONFIRMED (OPT-5 settled, stays parked); H3 BLOCKED (data-unavailable); event panel options-enriched
 
 **Context**: The two remaining 2026-06-11 pre-registered event hypotheses (PEAD-improvement; PEAD is demoted so these are pure research, no capital). Both adjudicate on the earnings-event panel — but its options-pre-event features were 100% empty (the H1-era panel was equity-only). Built the prerequisite **event-time options join** (`app/research/event_options_join.py` + `scripts/enrich_event_panel_options.py`): a PIT as-of join populating the panel's OPTION_COLUMNS (cpiv_pre, skew_25d_pre, reaction_ratio, iv_runup, opt_volume_z_pre, post_iv_retention, pre_event_implied_move) from the options feature table at the pre-event snapshot — the last chain knowable strictly BEFORE the announce day (gated on the holiday-aware `knowable_date`; UNK BMO/AMC → conservative). 46%→45% event coverage (options data starts 2022). 8 tests; independent Opus 4.8 deep-dive = **SAFE-TO-RECORD** (no look-ahead: the forward return starts at announce+1 open and excludes the announce-day gap, so reaction_ratio cannot mechanically correlate with the outcome).

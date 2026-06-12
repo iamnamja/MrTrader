@@ -27,7 +27,7 @@ data up to and including the decision day.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -51,6 +51,13 @@ class TSMOMConfig:
     vol_floor: float = 0.03                # floor on realized vol (avoid blow-up sizing)
     cost_bps: float = 2.0                  # one-way transaction cost (ETF spread+fee), bps
     ann: int = ANN
+    # Book-level vol targeting (Alpha-v6 P5 broadening). None = OFF (the live sleeve
+    # default — byte-identical to today). When set, an ex-ante overlay scales the
+    # whole book each rebalance so its TRAILING realized vol tracks this annualized
+    # target (PIT: the scale at t uses book returns through t only), capped at
+    # book_vol_max_leverage so a quiet regime can't over-lever.
+    book_vol_target: Optional[float] = None
+    book_vol_max_leverage: float = 2.0
 
 
 def _daily_returns(prices: pd.DataFrame) -> pd.DataFrame:
@@ -150,6 +157,20 @@ def tsmom_backtest(prices: pd.DataFrame, cfg: TSMOMConfig | None = None) -> TSMO
     n = len(target)
     is_rebal = (np.arange(n) % cfg.rebalance_days == 0)
     held = target.where(pd.Series(is_rebal, index=target.index), other=np.nan).ffill().fillna(0.0)
+
+    # Book-level vol-targeting overlay (P5): scale the whole book so its trailing
+    # realized vol tracks cfg.book_vol_target. PIT + non-circular: the scale at day t
+    # is built from the BASE (unscaled) book returns through t — held(t-1)·ret(t) and
+    # earlier — and multiplies held(t), which only EARNS on t+1 (via held.shift(1)
+    # below). Capped at book_vol_max_leverage so a calm regime can't over-lever.
+    if cfg.book_vol_target is not None:
+        base_book_ret = (held.shift(1) * rets).sum(axis=1)
+        book_vol = base_book_ret.rolling(
+            cfg.vol_lookback, min_periods=max(cfg.vol_lookback // 2, 10)
+        ).std() * np.sqrt(cfg.ann)
+        scale = (cfg.book_vol_target / book_vol).clip(
+            upper=cfg.book_vol_max_leverage).fillna(1.0)
+        held = held.mul(scale, axis=0)
 
     # Turnover at each rebalance = sum|w_t - w_{t-1}| (one-way). Cost charged same day.
     dw = held.diff().abs().sum(axis=1).fillna(held.abs().sum(axis=1))
