@@ -30,6 +30,48 @@ def _cfg(**kw):
     return TSMOMConfig(**base)
 
 
+# ── book-level vol targeting (P5 broadening) ─────────────────────────────────
+
+def test_book_vol_target_none_is_byte_identical_to_default():
+    # The live sleeve runs book_vol_target=None -> the overlay must be a no-op.
+    p = _prices({"A": lambda t: 100 * (1.0015 ** t),
+                 "B": lambda t: 100 * (1.0005 ** t)}, n=500)
+    base = tsmom_backtest(p, _cfg())                       # field defaults to None
+    explicit_off = tsmom_backtest(p, _cfg(book_vol_target=None))
+    assert base.returns.equals(explicit_off.returns)
+    assert base.sharpe == explicit_off.sharpe
+
+
+def test_book_vol_target_pulls_realized_vol_toward_target():
+    # A deliberately HIGH-vol book (per-instrument target 0.30, weights uncapped):
+    # the base book realizes well above 10%, so the 10% book-vol overlay scales it
+    # DOWN and lands much nearer 10%.
+    rng = np.random.default_rng(5)
+    n = 700
+    a = 100 * np.exp(np.cumsum(rng.normal(0.0006, 0.03, n)))   # ~48% ann vol, up-trend
+    b = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, n)))
+    p = _prices({"A": lambda t: a, "B": lambda t: b}, n=n)
+    hi = dict(target_vol=0.30, max_weight=1.0, max_gross=4.0)
+    off = tsmom_backtest(p, _cfg(**hi))
+    on = tsmom_backtest(p, _cfg(**hi, book_vol_target=0.10, book_vol_max_leverage=3.0))
+    assert off.ann_vol > 0.15                                   # base book is high-vol
+    assert on.ann_vol < off.ann_vol                             # overlay scaled it down
+    assert abs(on.ann_vol - 0.10) < abs(off.ann_vol - 0.10)     # nearer the target
+
+
+def test_book_vol_target_does_not_use_future_returns():
+    # Truncating the price history must not change the overlay scale on the shared
+    # earlier dates (PIT: the scale at t uses book returns through t only).
+    p = _prices({"A": lambda t: 100 * (1.0015 ** t),
+                 "B": lambda t: 100 * (0.9990 ** t)}, n=500)
+    cfg = _cfg(book_vol_target=0.10, allow_short=True, max_gross=2.0)
+    full = tsmom_backtest(p, cfg).returns
+    trunc = tsmom_backtest(p.iloc[:400], cfg).returns
+    common = full.index.intersection(trunc.index)[:-1]   # drop last (edge of trunc)
+    assert np.allclose(full.loc[common].to_numpy(),
+                       trunc.loc[common].to_numpy(), atol=1e-9)
+
+
 # ── PIT / no-look-ahead (the critical one) ────────────────────────────────────
 
 def test_weights_do_not_depend_on_future_prices():
