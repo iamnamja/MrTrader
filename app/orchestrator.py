@@ -124,6 +124,16 @@ class AgentOrchestrator:
             job_id="trend_rebalance_trigger", misfire_grace_time=1800,
         )
 
+        # Nightly options NBBO/spread logger at 15:55 ET (Alpha-v6 P1c slow fuse).
+        # Snapshots live bid/ask for the frozen panel just before the close — the
+        # only window where the chain's quotes reflect a real trading book. Misses
+        # cost one observation day (the spread fitter tolerates gaps), so a modest
+        # 180s grace is enough. Pure data logging: no orders, no agent state.
+        scheduler.schedule_daily_at_time(
+            self._trigger_options_nbbo_log, hour=15, minute=55,
+            job_id="options_nbbo_logger", misfire_grace_time=180,
+        )
+
     # ─── Agent runner ─────────────────────────────────────────────────────────
 
     async def _run_agent(self, name: str, agent) -> None:
@@ -291,6 +301,35 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Trend rebalance trigger failed: %s", exc)
             await self._log_error("trend_sleeve", str(exc))
+
+    async def _trigger_options_nbbo_log(self) -> None:
+        """Nightly options NBBO/spread snapshot (Alpha-v6 P1c — FUSE A).
+
+        Appends the frozen panel's live bid/ask spread observations to
+        data/options_spread_obs.parquet via scripts/log_options_nbbo.py. Blocking
+        HTTP + parquet work runs off the event loop. Failure is logged (and lands
+        in the error log) but never disturbs the trading agents — losing one
+        observation day only delays the spread-model calibration window.
+        """
+        logger.info("Orchestrator: running nightly options NBBO logging")
+        try:
+            from scripts.log_options_nbbo import run_nbbo_logging
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, run_nbbo_logging)
+            logger.info(
+                "Options NBBO logging done: status=%s rows=%s dropped=%s store_total=%s",
+                summary.get("status"), summary.get("rows_written"),
+                summary.get("rows_dropped_no_quote"), summary.get("store_rows_total"),
+            )
+            # "skipped" = market holiday (the 15:55 weekday schedule still fires on
+            # holidays; run_nbbo_logging's calendar gate skips them) — expected, not
+            # an error. Only a real zero-row run lands in the error log.
+            if summary.get("status") not in ("ok", "skipped"):
+                await self._log_error("options_nbbo_logger",
+                                      f"zero rows logged: {summary}")
+        except Exception as exc:
+            logger.error("Options NBBO logging failed: %s", exc)
+            await self._log_error("options_nbbo_logger", str(exc))
 
     async def _trigger_daily_summary(self) -> None:
         """Run post-market health check and store the daily session summary."""

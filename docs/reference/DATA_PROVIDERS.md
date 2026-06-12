@@ -12,8 +12,8 @@
 |---|---|---|---|---|
 | **FMP** (Financial Modeling Prep) | **Starter $29/mo** | `fmp_api_key` | Earnings calendar/history (PEAD), fundamentals, analyst grades, insider (Form 4), **economic calendar** | ✅ working on `/stable/` |
 | **Finnhub** | **Free tier** | `finnhub_api_key` | Company news | ✅ news; ❌ economic calendar (premium-only) |
-| **Polygon** | **Options Developer $79/mo** | `polygon_api_key` | Options OHLCV flat files (4y store), contract reference, current snapshot (IV/greeks/OI — live only), short interest/volume (FINRA), stock financials | ✅ working |
-| **Alpaca** | **Paper (free)** | `alpaca_*` | Order execution, account/positions, live bars, market clock/calendar, easy-to-borrow | ✅ paper, $100k |
+| **Polygon** | **Options Developer $79/mo** | `polygon_api_key` | Options OHLCV flat files (4y store), contract reference, current snapshot (**OI + delayed only — NO NBBO/IV/greeks**), `adjusted=false` aggs, short interest/volume (FINRA), stock financials | ✅ working |
+| **Alpaca** | **Paper (free)** | `alpaca_*` | Order execution, account/positions, live bars, market clock/calendar, easy-to-borrow, **options snapshot NBBO** (free `indicative` feed → spread logger) | ✅ paper, $100k |
 | **yfinance** | Free (no key) | — | Daily + 5-min equity/ETF bars; TSMOM ETF prices; SPY; intraday daily-feature provider | ✅; survivorship + depth caveats |
 | **FRED** (St. Louis Fed) | Free | (public graph JSON) | Macro time series → `macro_calendar` context + regime features | ✅ |
 | **Alpha Vantage** | Free (rate-limited) | `alphavantage_api_key` | Fundamentals fallback | ✅ fallback only |
@@ -41,12 +41,13 @@ Infra (not data feeds): **Redis** (queue/cache), **SQLite/Postgres** (app DB).
 ## Polygon — Options Developer $79/mo
 
 - **API: `https://api.polygon.io` + S3 flat files.** Modules: `app/data/options_provider.py`, `polygon_provider.py`, `polygon_financials.py`, `short_interest_provider.py`, `polygon_s3.py`.
-- **Covers:** historical options OHLCV via S3 flat files (`us_options_opra/day_aggs_v1` — the 4y local store, 2022-06→2026-06), contract reference (incl. expired → survivorship-safe), **current** snapshot with served IV/greeks/OI (live/validation only), FINRA short interest + short volume, stock financials/news.
-- **Hard limits (no paid tier fixes these on Developer):** **no historical IV / greeks / open interest / NBBO quotes** → we COMPUTE IV+greeks (BS/BjS/CRR); liquidity via volume/notional; marks off EOD close + stress the spread. Data starts ~mid-2022. See `docs/reference/OPTIONS_DATA.md`.
+- **Covers:** historical options OHLCV via S3 flat files (`us_options_opra/day_aggs_v1` — the 4y local store, 2022-06→2026-06), contract reference (incl. expired → survivorship-safe), **current snapshot = OI + DELAYED OHLCV/last-trade only**, FINRA short interest + short volume, stock financials/news. Also `/v2/aggs/.../adjusted=false` (used by the greeks backfill for as-traded closes).
+- **Hard limits (no paid tier fixes these on Developer):** **no historical IV / greeks / open interest / NBBO quotes** — AND the **current snapshot serves NO NBBO / no `last_quote` / no IV / empty greeks** either (verified 2026-06-11: `/v3/quotes/{ticker}` → **HTTP 403 NOT_AUTHORIZED**; snapshot `last_trade.timeframe="DELAYED"`). So we COMPUTE IV+greeks (BS/BjS/CRR → persisted `data/options_greeks/`); liquidity via volume/notional; and **live NBBO comes from Alpaca, not Polygon** (see below). Data starts ~mid-2022. See `docs/reference/OPTIONS_DATA.md`.
 
 ## Alpaca — Paper (free)
 
 - Module: `app/integrations/alpaca.py`. Mode **paper**, ~$100k. Used for order execution, account/positions (`get_account`), live bars (also via the Alpaca MCP), market clock/calendar (fail-closed for holidays), easy-to-borrow list. Live equity is the source of truth (the `config.initial_capital=100000` is just a constant; `risk.peak_equity` is a separate drawdown high-water mark).
+- **Options snapshot NBBO (free) — `app/data/alpaca_options.py`:** `GET data.alpaca.markets/v1beta1/options/snapshots/{underlying}` with `feed=indicative` (free tier) returns `latestQuote` **bid/ask** + sizes + `dailyBar` + IV — the live NBBO the Polygon plan does NOT serve. Used by the nightly NBBO logger (`scripts/log_options_nbbo.py`, P1c) for spread calibration. Caveat: `indicative` may be delayed/synthesized — fine for nightly spread *structure*, recorded per-row via the `feed` column. (Real-time OPRA = paid `feed=opra`.)
 
 ## yfinance — free
 

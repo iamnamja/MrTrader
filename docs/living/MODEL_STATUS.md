@@ -4,7 +4,13 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-08
+**Last updated:** 2026-06-11
+
+---
+
+## Alpha-v6 infra — slow fuses lit (P1c + P2) — 2026-06-11 (#455)
+- **P1c — nightly NBBO snapshot logger** (`scripts/log_options_nbbo.py`): 15:55 ET options-snapshot logger via **Alpaca** (`feed=indicative`, free) → `data/options_spread_obs.parquet`. The Polygon $79 plan serves no options NBBO. ⚠️ **The recurring schedule activates only after a uvicorn restart**; runnable manually meanwhile. Accumulating toward the calibrated spread table (~4-6 wks).
+- **P2 — computed-greeks backfill** (`scripts/backfill_computed_greeks.py`): one-time resumable pass over the 112.8M-bar store → `data/options_greeks/` (per-contract IV/delta/gamma/vega/theta, European-warm-start American refine, as-traded Polygon `adjusted=false` closes). STARTED 2026-06-11.
 
 ---
 
