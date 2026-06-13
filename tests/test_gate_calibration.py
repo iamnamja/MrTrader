@@ -610,7 +610,7 @@ class TestSmokeEndToEnd:
                               out_path=str(out))
         with open(path, encoding="utf-8") as f:
             payload = json.load(f)
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == 3
         assert payload["as_of"] == "2026-06-10"
         assert payload["smoke"] is True
         assert payload["gate_config"]["paper_min_tstat"] == cfg.paper_min_tstat

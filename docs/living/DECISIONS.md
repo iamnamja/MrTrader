@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-13 — Ruler-v2 R4 calibration → NOT CLEAN; DO NOT flip GATE_MODE (real Type-I leak at PAPER + a run artifact)
+
+**Context**: Before flipping `GATE_MODE="ruler_v2"` live, the owner-ratified checklist (RULER_V2_DESIGN.md §6, risk R4) requires the gate-calibration controls to pass BOTH ways through Ruler-v2 PAPER: real positives clear, true-nulls stay dead. Ran the decisive controls (tsmom_4y/tsmom_19y positives, random_balanced_seed_1..5 true-nulls, leaky_tplus1) via the new report-only R4 instrument in `gate_calibration.py` (artifact `logs/gate_calibration_20260613.json`). Verdict: **R4 NOT CLEAN.** Independent Opus review confirmed the read.
+
+**Decision**: **DO NOT flip `GATE_MODE` (or `TRACKB_MODE`) live.** Two structurally distinct problems, reported separately:
+- **(A) Positives failed Ruler-v2 PAPER on `regime_not_catastrophic` — a RUN ARTIFACT, not a gate flaw.** tsmom is a crisis-DIVERSIFIER whose worst-regime backstop failure is exactly the 2026-06-10 P0 finding (judge it on Track-B, which waives the regime floor for `risk_premium`/`diversifier`). R4 scored it through Track-A (component_type unset → no waiver; Ruler-v2 PAPER's −0.5 floor is identical to the legacy backstop, which PAPER never loosened for Track-A). Compounded by thin coverage (run warned "no stress-regime fold evaluated"), so the worst-regime values (−2.08 vs a +1.6 meanSR) are not gate-grade.
+- **(B) A TRUE null (random_balanced_seed_5) PASSED Ruler-v2 PAPER — a REAL Type-I leak.** PAPER is plausibility-only (no significance on the AND); the `RULERV2_PAPER_MIN_SR=0.30` floor sits only ~0.74σ above zero at n≈1500 (SR sampling SD ≈ √(252/1500) ≈ 0.41), so ~23% of zero-edge nulls clear it. Observed 1/5 (20%) = the expected rate, not bad luck. This is the Type-I risk the 2026-06-12 independent advisory flagged as the under-examined side of the redesign.
+
+**Rationale**: A flip cannot be justified while (B) — a confirmed gate weakness — is open AND (A) leaves the positives uncertified through the correct path. The validation gate did its job: it caught the problem before any live change. Live book unchanged (trend-only 25% + cash); no urgency (no candidate queued; dark-coexistence is the ratified default).
+
+**Consequences**: Pre-flip remediation (owner-ratified before any future flip; ranked): **(1)** re-run R4 with `component_type` set + diversifiers routed through Track-B; **(2)** require stress-regime fold coverage for a calibration to be admissible; **(3)** for the Type-I leak, add a LIGHT significance floor to PAPER (preferred — a HAC-SR p-floor on the pooled OOS series, not the saturated path-t) OR **(4)** raise `RULERV2_PAPER_MIN_SR` (blunter; trades Type-I for Type-II on genuine 0.4–0.7 edges). Prefer (3) over (4). The R4 instrument (report-only `rv2_*` columns + `ruler_v2_r4_summary` in `gate_calibration.py`) is retained as the permanent pre-flip gate. Ruler v2 stays DARK. See ML_EXPERIMENT_LOG / the artifact for the run record.
+
+---
+
 ## 2026-06-12 — P5 trend-broadening → PARK (the simple 10-ETF sleeve wins; complexity didn't earn it)
 
 **Context**: P5 (Track B) — broaden the validated TSMOM trend sleeve (the live book's sole sleeve, +0.71 Sharpe/19y) on the 19y window where t≥2 is reachable. Owner-approved spec: all three levers — more legs (16 ETFs: the 10-ETF core + HYG/LQD/SHY/SLV/VGK/EWJ), long-short, and a new 10% book-vol overlay. Pre-registered as ONE frozen spec (`P5-TRENDBROADEN-20260612`, `preregistered_at=2026-06-12T16:00Z`) — NOT a sweep (the OPT-5 trap). Built the book-vol overlay in `app/strategy/tsmom.py` (optional `book_vol_target`; the live sleeve runs `None` = byte-identical), 13 tests.

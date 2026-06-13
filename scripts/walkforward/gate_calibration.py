@@ -296,6 +296,15 @@ class CalibrationRow:
     # ControlSpec.kind ("series_tsmom"|"series_spy"|"series_xmom"|"event"|"pead")
     # so the PF-mapping artifact tag does not depend on control_id parsing.
     control_kind: str = ""
+    # Alpha-v7 R4: the Ruler-v2 verdict on the SAME result, REPORT-ONLY (computed via
+    # ruler_v2.evaluate, NOT the GATE_MODE dispatch, so the significance scoring + the
+    # pre-registered recalibration rule are untouched). The R4 check: positive controls
+    # should rv2_paper_pass=True; TRUE nulls should rv2_paper_pass=False. None if the
+    # result lacked oos_returns_dated (ruler_v2 inference couldn't run). capital is
+    # backtest-only here (no live paper) so it fails closed by construction.
+    rv2_paper_pass: Optional[bool] = None
+    rv2_capital_pass: Optional[bool] = None
+    rv2_paper_failed: List[str] = field(default_factory=list)
     # MAJOR-2: True when the control crashed (or NIT-8: its gate detail was
     # empty/divergent). run_failed rows are EXCLUDED from every aggregate and
     # from the recalibration rule, and force an INCOMPLETE verdict.
@@ -524,6 +533,34 @@ def recalibration_recommendation(rows: List[CalibrationRow],
                    "criterion (see failed_paper_criteria per row). Recommend NO change; "
                    "investigate the binding criterion instead."),
     )
+
+
+def ruler_v2_r4_summary(rows: List[CalibrationRow]) -> dict:
+    """Alpha-v7 R4: does Ruler-v2's PAPER plausibility tier clear real POSITIVES and
+    reject TRUE NULLS? REPORT-ONLY. Reads the rv2_paper_pass column (None rows — no
+    oos_returns_dated, or run_failed — are excluded). 'clean' iff every scored positive
+    control PASSES and every scored true-null FAILS Ruler-v2 PAPER. The owner-ratified
+    pre-flip gate: do not flip GATE_MODE live until this is clean on the real controls."""
+    scored = [r for r in rows if not r.run_failed and r.rv2_paper_pass is not None]
+    positives = [r for r in scored if r.declared_class == "positive_alpha"]
+    nulls = [r for r in scored if r.declared_class == "null"]
+    leaky = [r for r in scored if r.declared_class == "leaky"]
+    pos_pass = [r.control_id for r in positives if r.rv2_paper_pass]
+    pos_fail = [r.control_id for r in positives if not r.rv2_paper_pass]
+    null_pass = [r.control_id for r in nulls if r.rv2_paper_pass]   # BAD if non-empty
+    null_fail = [r.control_id for r in nulls if not r.rv2_paper_pass]
+    clean = (len(positives) > 0 and not pos_fail and len(nulls) > 0 and not null_pass)
+    return {
+        "clean": bool(clean),
+        "n_positives": len(positives), "positives_passed": pos_pass,
+        "positives_FAILED_should_pass": pos_fail,
+        "n_nulls": len(nulls), "nulls_failed_correctly": null_fail,
+        "nulls_PASSED_should_fail": null_pass,
+        "leaky": {r.control_id: r.rv2_paper_pass for r in leaky},
+        "verdict": ("R4 CLEAN - positives clear, nulls dead"
+                    if clean else
+                    "R4 NOT CLEAN - review positives_FAILED / nulls_PASSED"),
+    }
 
 
 def smoke_recommendation() -> RecalRecommendation:
@@ -970,6 +1007,19 @@ def _result_to_row(spec: ControlSpec, result, *, window_start, window_end,
     _, dsr_p = deflated_sharpe_ratio(result.mean_sharpe, N_TRIALS_TESTED,
                                      result._dsr_n_obs())
     failed = [k for k, (_v, ok) in paper_detail.items() if not ok]
+    # Alpha-v7 R4: Ruler-v2 verdict on the SAME result — REPORT-ONLY, computed
+    # EXPLICITLY (not via the GATE_MODE dispatch) so the significance scoring above and
+    # the pre-registered recalibration rule are untouched. None when the result has no
+    # oos_returns_dated (e.g. a smoke/legacy result) so it isn't silently scored.
+    rv2_paper_pass = rv2_capital_pass = None
+    rv2_paper_failed: List[str] = []
+    if getattr(result, "oos_returns_dated", None):
+        from app.research import ruler_v2 as _rv2
+        rv2_paper_pass = bool(_rv2.gate_passed(result, tier="paper"))
+        rv2_capital_pass = bool(_rv2.gate_passed(result, tier="capital"))
+        _rv2_detail = _rv2.evaluate(result, tier="paper")
+        rv2_paper_failed = [k for k, (_v, ok) in _rv2_detail.items()
+                            if not ok and k not in _rv2.INFORMATIONAL_KEYS]
     # BLOCKER-1: significance-core pass derived from the RECORDED detail.
     core_pass = significance_core_pass_from_detail(
         {k: (v, bool(ok)) for k, (v, ok) in paper_detail.items()})
@@ -1025,6 +1075,9 @@ def _result_to_row(spec: ControlSpec, result, *, window_start, window_end,
         residual_alpha_t=(None if result.residual_alpha_t_hac is None
                           else round(float(result.residual_alpha_t_hac), 4)),
         control_kind=spec.kind,
+        rv2_paper_pass=rv2_paper_pass,
+        rv2_capital_pass=rv2_capital_pass,
+        rv2_paper_failed=rv2_paper_failed,
         run_failed=run_failed,
         run_at=datetime.now().isoformat(timespec="seconds"),
         runtime_sec=round(runtime_sec, 1),
@@ -1323,6 +1376,18 @@ def build_oc_table(rows: List[CalibrationRow], *,
         if recommendation.verdict:
             lines.append(f"    VERDICT: {recommendation.verdict}")
         lines.append(f"    {recommendation.rationale}")
+    # Alpha-v7 R4: Ruler-v2 PAPER both-ways check (report-only; the pre-flip gate).
+    r4 = ruler_v2_r4_summary(rows)
+    lines.append(bar)
+    lines.append("  RULER-v2 R4 CHECK (report-only - the pre-flip gate for "
+                 "GATE_MODE='ruler_v2'):")
+    lines.append(f"    VERDICT: {r4['verdict']}")
+    lines.append(f"    positives PAPER-pass: {r4['positives_passed']}  "
+                 f"(should-pass that FAILED: {r4['positives_FAILED_should_pass']})")
+    lines.append(f"    true-nulls PAPER-fail: {r4['nulls_failed_correctly']}  "
+                 f"(should-fail that PASSED: {r4['nulls_PASSED_should_fail']})")
+    if r4["leaky"]:
+        lines.append(f"    leaky (expect fail/ceiling): {r4['leaky']}")
     lines.append(bar)
     return "\n".join(lines)
 
@@ -1330,7 +1395,9 @@ def build_oc_table(rows: List[CalibrationRow], *,
 # Schema v2: + significance_core_pass, residual_alpha_t, control_kind,
 # run_failed, run_at on rows; + verdict on the recommendation (BLOCKER-1 /
 # MAJOR-2 / MAJOR-3 / MAJOR-4).
-ARTIFACT_SCHEMA_VERSION = 2
+# Schema v3 (Alpha-v7 R4): + rv2_paper_pass / rv2_capital_pass / rv2_paper_failed
+# (report-only Ruler-v2 verdict per control; never feeds the recalibration rule).
+ARTIFACT_SCHEMA_VERSION = 3
 
 
 def default_artifact_path(as_of: _date, smoke: bool) -> str:
