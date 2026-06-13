@@ -431,10 +431,12 @@ CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR docum
 # recommendations (OD-1…OD-9); each is an OPEN owner call before GATE_MODE is ever
 # flipped live (a consolidated sign-off list ships with the phase). Tunable.
 # OD-2 PAPER plausibility floor (annualized point SR). 0.30 (NOT the legacy 0.35) is
-# DELIBERATE and coherent: the legacy PAPER_GATE_MIN_MEAN_SHARPE=0.35 is the mean of the
-# per-fold Sharpes, whereas this is the HAC point Sharpe of the CONCATENATED OOS series,
-# which runs a touch lower (it eats the cross-fold variance) — so 0.30 holds the
-# EFFECTIVE bar ~constant. Do not "fix" it back to 0.35. (Owner-ratified 2026-06-13.)
+# DELIBERATE: the legacy PAPER_GATE_MIN_MEAN_SHARPE=0.35 is the mean of the per-fold
+# Sharpes, whereas this is the HAC point Sharpe of the CONCATENATED OOS series, which
+# tends to run somewhat lower when fold means are dispersed (the pooled std absorbs
+# cross-fold variance the per-fold Sharpes don't see). The 0.05 gap is a judgment call,
+# not a precise equivalence — tunable. Do not reflexively "fix" it back to 0.35.
+# (Owner-ratified 2026-06-13.)
 RULERV2_PAPER_MIN_SR: float = 0.30
 RULERV2_PAPER_IMPLAUSIBLE_SR: float = 3.0   # PAPER implausibility CEILING — a backtest SR above
 #                                             this on a single sleeve is an overfit signature, reject
@@ -462,6 +464,10 @@ RULERV2_TRACKB_MIN_PDSR: float = 0.90
 # edge). The sleeve declares its harvested premium via component_type; the gate drops
 # that factor and residualizes against the rest. (Owner-ratified 2026-06-13: trend
 # EXCLUDES the TSMOM factor.) Resolved by ruler_v2.capital_factor_set().
+# NOTE: RULERV2_BASE_FACTORS is the DOCUMENTED reference universe, not the enforced
+# set — capital_factor_set() derives the actual factors from the live factor_panel's
+# columns (you residualize against whatever factors you actually have, minus the
+# harvested one); this tuple records the intended panel for the run-script that builds it.
 RULERV2_BASE_FACTORS: tuple = ("MKT", "SMB", "HML", "TSMOM")
 RULERV2_HARVESTED_FACTOR: dict = {
     "trend": "TSMOM",          # the live sleeve — must NOT be residualized against TSMOM
