@@ -430,7 +430,12 @@ CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR docum
 # mean_sharpe branches. Defaults are the RULER_V2_DESIGN.md §6 owner-decision
 # recommendations (OD-1…OD-9); each is an OPEN owner call before GATE_MODE is ever
 # flipped live (a consolidated sign-off list ships with the phase). Tunable.
-RULERV2_PAPER_MIN_SR: float = 0.30          # OD-2 PAPER plausibility floor (annualized point SR)
+# OD-2 PAPER plausibility floor (annualized point SR). 0.30 (NOT the legacy 0.35) is
+# DELIBERATE and coherent: the legacy PAPER_GATE_MIN_MEAN_SHARPE=0.35 is the mean of the
+# per-fold Sharpes, whereas this is the HAC point Sharpe of the CONCATENATED OOS series,
+# which runs a touch lower (it eats the cross-fold variance) — so 0.30 holds the
+# EFFECTIVE bar ~constant. Do not "fix" it back to 0.35. (Owner-ratified 2026-06-13.)
+RULERV2_PAPER_MIN_SR: float = 0.30
 RULERV2_PAPER_IMPLAUSIBLE_SR: float = 3.0   # PAPER implausibility CEILING — a backtest SR above
 #                                             this on a single sleeve is an overfit signature, reject
 RULERV2_MAX_PAPER_SLEEVES: int = 6          # OD-3 concurrent paper-sleeve cap (caller-supplied count)
@@ -445,7 +450,27 @@ RULERV2_CATASTROPHIC_REGIME_SR: float = -0.5  # PAPER "not catastrophic" worst-r
 # ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
 TRACKB_MODE: str = "book_delta"             # "book_delta" (legacy) | "ruler_v2" (dark; Phase 3)
 RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)
-RULERV2_TRACKB_MIN_PDSR: float = 0.85       # OD-5 block-bootstrap P(ΔSR>0)
+# OD-5 block-bootstrap P(ΔSR>0). Owner-ratified 2026-06-13: 0.85 → 0.90 — 0.85 was a weak
+# significance bar (~1-in-7 false adds); 0.90 aligns nearer the 0.95 used everywhere else
+# without demanding full 0.95 of a budget-bounded diversifier add.
+RULERV2_TRACKB_MIN_PDSR: float = 0.90
+
+# ── OD-9: factor set for the CAPITAL multi-factor residual-α (premia-book aware) ──
+# PRINCIPLE: residualize a sleeve against every priced premium EXCEPT the one it is
+# being PAID to harvest — otherwise you hedge out the very edge you're certifying (a
+# trend sleeve regressed on a trend factor shows ~0 alpha and the gate kills a real
+# edge). The sleeve declares its harvested premium via component_type; the gate drops
+# that factor and residualizes against the rest. (Owner-ratified 2026-06-13: trend
+# EXCLUDES the TSMOM factor.) Resolved by ruler_v2.capital_factor_set().
+RULERV2_BASE_FACTORS: tuple = ("MKT", "SMB", "HML", "TSMOM")
+RULERV2_HARVESTED_FACTOR: dict = {
+    "trend": "TSMOM",          # the live sleeve — must NOT be residualized against TSMOM
+    "momentum": "TSMOM",
+    "risk_premium": None,      # declared diversifiers/premia residualize against all base
+    "diversifier": None,
+    "alpha": None,             # a pure-alpha sleeve must beat ALL priced premia
+    "": None,
+}
 
 # ── Alpha-v6 Phase 0: Track B (book-delta) acceptance ─────────────────────────
 # PRE-REGISTERED criteria for the Track B gate (scripts/walkforward/book_gate.py;

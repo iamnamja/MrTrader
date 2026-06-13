@@ -214,6 +214,53 @@ def test_concurrent_paper_sleeve_cap():
 
 # ───────────────────────── backward-compat (R5) ─────────────────────────────
 
+def test_r7_prefers_registered_trial_count_over_default():
+    # R7: with no explicit n_trials, evaluate() uses result.n_trials_registered (the
+    # honest per-family count) — a smaller count → looser prior → higher posterior
+    # than the conservative N_TRIALS_TESTED=300 default.
+    res_default = _result(_strong(n=1500))                 # n_trials_registered=None → 300
+    res_reg = _result(_strong(n=1500))
+    res_reg.n_trials_registered = 5
+    p_default = ruler_v2.evaluate(res_default, tier="capital",
+                                  live_paper=_LIVE_PAPER)["posterior_p_sr_gt_0"][0]
+    p_reg = ruler_v2.evaluate(res_reg, tier="capital",
+                              live_paper=_LIVE_PAPER)["posterior_p_sr_gt_0"][0]
+    assert p_reg > p_default
+    # An explicit n_trials arg still overrides the registered count.
+    p_override = ruler_v2.evaluate(res_reg, tier="capital", n_trials=300,
+                                   live_paper=_LIVE_PAPER)["posterior_p_sr_gt_0"][0]
+    assert p_override == pytest.approx(p_default, abs=1e-9)
+
+
+def test_od9_capital_factor_set_excludes_harvested_premium():
+    avail = ["MKT", "SMB", "HML", "TSMOM"]
+    assert ruler_v2.capital_factor_set("trend", avail) == ["MKT", "SMB", "HML"]   # no TSMOM
+    assert ruler_v2.capital_factor_set("alpha", avail) == avail                   # keeps all
+    assert ruler_v2.capital_factor_set("diversifier", avail) == avail
+
+
+def test_od9_residual_alpha_t_not_hedged_out_for_trend():
+    # A pure-trend sleeve (its returns ARE the TSMOM premium). Residualizing it against
+    # TSMOM (component_type='alpha') hedges the edge to ~0; the OD-9 trend policy drops
+    # TSMOM and recovers the real alpha.
+    n = 1500
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2018-01-02", periods=n)
+    tsmom = 0.0007 + rng.normal(0, 0.008, n)
+    mkt = rng.normal(0, 0.009, n)
+    panel = pd.DataFrame({"MKT": mkt, "TSMOM": tsmom}, index=idx)
+    # The sleeve IS the trend premium (loads 1.0 on TSMOM) with NO independent alpha
+    # beyond it (zero-mean idiosyncratic noise → all of the book's drift is trend).
+    noise = rng.normal(0, 0.004, n)
+    noise -= noise.mean()
+    book = pd.Series(tsmom + noise, index=idx)
+    t_alpha = ruler_v2.residual_alpha_t(book, panel, component_type="alpha")
+    t_trend = ruler_v2.residual_alpha_t(book, panel, component_type="trend")
+    assert abs(t_alpha) < 1.0                              # TSMOM regressed out → ~0
+    assert t_trend > 2.0                                   # the real trend edge recovered
+    assert t_trend > t_alpha + 1.5                         # clear separation
+
+
 def test_dark_branch_inert_unless_flag_set(monkeypatch):
     # R5 backward-compat: the ruler_v2 branch must NOT activate under the legacy
     # modes — assert its signature keys are absent for BOTH non-dark modes (robust

@@ -45,6 +45,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
 from app.research import inference as inf
 from app.research import bayes_sr
@@ -58,6 +59,35 @@ INFORMATIONAL_KEYS = frozenset({
     "cost_stress_report",   # needs a 2× cost re-run — gates in a later phase
     "pbo_report",           # needs an N_configs×N_blocks matrix — non-gating for M=1
 })
+
+
+def capital_factor_set(component_type: str, available_factors) -> List[str]:
+    """OD-9: the factors the CAPITAL residual-α should residualize against for a sleeve
+    of `component_type`, given the `available_factors` columns — every base factor
+    EXCEPT the premium this sleeve is paid to harvest. PRINCIPLE: a trend sleeve must
+    NOT be residualized against the trend (TSMOM) factor, or you hedge out the very
+    edge you're certifying; a declared diversifier / pure-alpha sleeve residualizes
+    against ALL available base factors. The harvested-premium map lives in
+    retrain_config.RULERV2_HARVESTED_FACTOR (owner-ratified)."""
+    from app.ml.retrain_config import RULERV2_HARVESTED_FACTOR
+    harvested = RULERV2_HARVESTED_FACTOR.get((component_type or "").lower(), None)
+    avail = list(available_factors)
+    return [f for f in avail if f != harvested]
+
+
+def residual_alpha_t(book_returns: pd.Series, factor_panel: pd.DataFrame, *,
+                     component_type: str, hac_lag: int = 5) -> float:
+    """OD-9 CAPITAL residual-α t_HAC: multi-factor NW-HAC alpha of `book_returns` on
+    the harvested-premium-EXCLUDED factor set (per capital_factor_set). The premia-book
+    generalization of the SPY-only `capm_alpha` diagnostic — wire this into run_cpcv's
+    residual-alpha computation to populate CPCVResult.residual_alpha_t_hac under a
+    premia book. Returns 0.0 (the fail-closed value) when no usable factor remains."""
+    cols = [c for c in capital_factor_set(component_type, list(factor_panel.columns))
+            if c in factor_panel.columns]
+    if not cols:
+        return 0.0
+    return float(inf.multifactor_alpha(book_returns, factor_panel[cols],
+                                       hac_lag=hac_lag)["t_alpha_hac"])
 
 
 def _oos_return_array(result) -> np.ndarray:
@@ -128,7 +158,16 @@ def evaluate(result, *, tier: str = "paper",
 
     tier = tier.lower()
     capital = tier == "capital"
-    nt = int(n_trials) if n_trials is not None else int(N_TRIALS_TESTED)
+    # R7 trial-count resolution: explicit arg > the result's registered family count >
+    # the CONSERVATIVE N_TRIALS_TESTED fallback. Defaulting to 300 everywhere would
+    # re-import the saturated-DSR multiplicity pathology Ruler v2 exists to kill, so
+    # PREFER the registered per-family count when the run recorded one.
+    if n_trials is not None:
+        nt = int(n_trials)
+    elif getattr(result, "n_trials_registered", None) is not None:
+        nt = int(result.n_trials_registered)
+    else:
+        nt = int(N_TRIALS_TESTED)
 
     r = _oos_return_array(result)
     n_obs = int(r.size)
