@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-13 (later) — Ruler-v2 R4 remediation (1)+(2) → R4 now CLEAN on the decisive controls
+
+**Context**: The earlier R4 run (same day) was NOT CLEAN for two reasons (artifact A: diversifiers mis-routed through Track-A; real leak B: plausibility-only PAPER admitted a lucky null). Owner directed: "do 1 then 2." Implemented both as DARK ruler_v2 PAPER changes; independent Opus deep-dive = SHIP (Monte-Carlo-verified). Re-ran the decisive controls (artifact `logs/gate_calibration_20260613.json`).
+
+**Decision**: Both fixes ship (DARK); **R4 is now CLEAN on the decisive controls**:
+- **(1) Component-type regime waiver** — ruler_v2 PAPER waives the worst-regime backstop for declared diversifiers/risk-premia (`RULERV2_REGIME_WAIVED_TYPES`; carried by the new pure-additive `CPCVResult.component_type`). CAPITAL still needs explicit `regime_waiver_approved`. tsmom_4y/19y declared `risk_premium` → **both now PAPER-pass** (artifact A resolved: a Track-A mis-routing, not a gate flaw).
+- **(2) PAPER light significance floor** — ruler_v2 PAPER now also requires one-sided HAC-SR p < `RULERV2_PAPER_MAX_HAC_P=0.05` on the POOLED-OOS instrument (NOT the path-t). **All 5 true-nulls now PAPER-fail** including `random_balanced_seed_5` (the lucky null that previously PASSED) — leak B closed. MC: the 0.05 floor → ~5.7% null-pass (was ~23.4% plausibility-only).
+
+**R4 RULER-v2 CHECK verdict: CLEAN** — positives `['tsmom_4y','tsmom_19y']` pass; all 5 true-nulls fail; leaky rejected on the implausibility ceiling. PAPER is now "plausibility + a LIGHT significance floor," still far more lenient than CAPITAL (Bayesian posterior + live paper + residual-α + bootstrap).
+
+**Rationale**: The two fixes are orthogonal (a diversifier with a waived regime STILL must clear significance; a lucky null fails significance regardless of regime) and use the honest pooled-OOS HAC instrument, not the discredited path-t. Both DARK; legacy gates byte-for-byte untouched.
+
+**Consequences**: The owner-ratified pre-flip gate (R4 clean both ways) is now MET on the decisive control set (tsmom positives + true-nulls + leaky). REMAINING before a live flip: (a) optionally complete the FULL pre-registered control set (pead_baseline, xmom_12_1) so the recalibration rule evaluates (currently "INCOMPLETE - partial set"); (b) the live `TRACKB_MODE` then `GATE_MODE` flip is the owner's call. Ruler v2 still DARK; live book unchanged (trend-only 25% + cash).
+
+---
+
 ## 2026-06-13 — Ruler-v2 R4 calibration → NOT CLEAN; DO NOT flip GATE_MODE (real Type-I leak at PAPER + a run artifact)
 
 **Context**: Before flipping `GATE_MODE="ruler_v2"` live, the owner-ratified checklist (RULER_V2_DESIGN.md §6, risk R4) requires the gate-calibration controls to pass BOTH ways through Ruler-v2 PAPER: real positives clear, true-nulls stay dead. Ran the decisive controls (tsmom_4y/tsmom_19y positives, random_balanced_seed_1..5 true-nulls, leaky_tplus1) via the new report-only R4 instrument in `gate_calibration.py` (artifact `logs/gate_calibration_20260613.json`). Verdict: **R4 NOT CLEAN.** Independent Opus review confirmed the read.
