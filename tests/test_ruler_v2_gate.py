@@ -48,6 +48,15 @@ def _strong(n=560, seed=0):
     return 0.0009 + rng.normal(0, 0.010, n)     # ann SR ~1.4: plausible, significant
 
 
+def _exact(sr_ann, n, sd=0.01, seed=0):
+    """A series whose realized annualized Sharpe is EXACTLY sr_ann (standardized), so
+    significance-floor tests don't ride on SR sampling noise. t = sr_ann·√(n/252)."""
+    rng = np.random.default_rng(seed)
+    z = rng.normal(0, 1, n)
+    z = (z - z.mean()) / z.std()
+    return sd * (z + sr_ann / np.sqrt(252))
+
+
 # A concordant live-paper observation + the registry's TRUE (small) trial count.
 # CAPITAL is DELIBERATELY unreachable on backtest alone — the posterior is P(SR>0 |
 # backtest AND live paper); these are what a genuine capital candidate carries.
@@ -137,13 +146,51 @@ def test_live_paper_is_load_bearing_even_when_posterior_would_clear():
                                 n_trials=_REAL_TRIALS, live_paper=_LIVE_PAPER) is True
 
 
-def test_paper_passes_without_significance_capital_fails():
-    # A short, plausible-but-underpowered series: PAPER (plausibility) passes,
-    # CAPITAL fails the power floor (n_obs < RULERV2_MIN_DAILY_OBS=504).
-    res = _result(_strong(n=200))
+def test_paper_significant_but_short_passes_paper_fails_capital_on_power():
+    # A SIGNIFICANT but short series: PAPER passes (plausible + clears the light HAC
+    # significance floor), CAPITAL fails the power floor (n_obs < RULERV2_MIN_DAILY_OBS).
+    res = _result(_exact(2.0, n=300))                  # t≈2.18 (p≈0.015) — significant
     assert ruler_v2.gate_passed(res, tier="paper") is True
+    assert ruler_v2.evaluate(res, tier="paper")["hac_significance"][1] is True
     assert ruler_v2.gate_passed(res, tier="capital") is False
     assert ruler_v2.evaluate(res, tier="capital")["power_floor"][1] is False
+
+
+def test_R4_remediation2_paper_significance_floor_rejects_lucky_null():
+    # The seed_5 fix: a PLAUSIBLE point SR (0.40 > the 0.30 floor) that is NOT
+    # significant (t≈0.36, p≈0.36) must FAIL PAPER on the HAC significance floor —
+    # closing the plausibility-only Type-I leak R4 surfaced.
+    res = _result(_exact(0.40, n=200))
+    d = ruler_v2.evaluate(res, tier="paper")
+    assert d["point_sr_floor"][1] is True              # plausible (0.40 ≥ 0.30)…
+    assert d["hac_significance"][1] is False           # …but NOT significant → fails
+    assert ruler_v2.gate_passed(res, tier="paper") is False
+
+
+def test_R4_remediation1_regime_waived_for_declared_diversifier():
+    # A crisis-diversifier with a catastrophic worst regime (−1.5 < −0.5) but a strong,
+    # significant edge: PAPER WAIVES the regime floor for component_type=risk_premium
+    # (failing its worst regime is the sleeve's purpose) → passes, flagged for review.
+    res = _result(_strong(n=600), worst_regime=-1.5)
+    assert ruler_v2.gate_passed(res, tier="paper", component_type="risk_premium") is True
+    d = ruler_v2.evaluate(res, tier="paper", component_type="risk_premium")
+    assert d["regime_not_catastrophic"][1] is True     # waived
+    assert d["requires_human_review"][0] == "risk_premium"
+    # The SAME result declared "alpha" is held to the floor → fails on regime.
+    assert ruler_v2.gate_passed(res, tier="paper", component_type="alpha") is False
+    assert ruler_v2.evaluate(res, tier="paper",
+                             component_type="alpha")["regime_not_catastrophic"][1] is False
+
+
+def test_R4_remediation1_capital_diversifier_regime_needs_explicit_approval():
+    # At CAPITAL the component-type waiver does NOT auto-fire — a diversifier's regime
+    # is waived only with explicit regime_waiver_approved (real money sign-off).
+    res = _result(_strong(n=600), worst_regime=-1.5)
+    d = ruler_v2.evaluate(res, tier="capital", component_type="risk_premium")
+    assert d["regime_not_catastrophic"][1] is False    # not auto-waived at capital
+    d2 = ruler_v2.evaluate(res, tier="capital", component_type="risk_premium",
+                           regime_waiver_approved=True)
+    assert d2["regime_not_catastrophic"][1] is True    # waived with explicit approval
 
 
 def test_empty_oos_series_fails_closed_both_tiers():

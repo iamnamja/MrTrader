@@ -117,14 +117,23 @@ def _oos_return_array(result) -> np.ndarray:
     return np.asarray(ordered, dtype=float)
 
 
-def _regime_backstop(result, *, floor: float,
-                     regime_waiver_approved: bool) -> Tuple[float, bool, bool]:
-    """Worst-regime "not catastrophic" backstop with the event-sparsity waiver.
-    Returns (observed, ok, waived). Mirrors the significance backstop: None worst-
-    regime due to genuine event-sparsity (regime_insufficient_obs) is WAIVED on
-    paper / capital-with-approval (ok=True, waived=True, → human-review flag); None
-    for any other reason fails CLOSED."""
+def _regime_backstop(result, *, floor: float, regime_waiver_approved: bool,
+                     component_type: str = "") -> Tuple[float, bool, bool]:
+    """Worst-regime "not catastrophic" backstop. Returns (observed, ok, waived).
+
+    Two waivers (both → ok=True, waived=True, → human-review flag):
+      • COMPONENT-TYPE (R4): a declared crisis-diversifier / risk-premium
+        (component_type ∈ RULERV2_REGIME_WAIVED_TYPES) is exempt from the worst-regime
+        floor — failing its worst regime is the sleeve's PURPOSE (mirrors
+        track_b_appraisal + the 2026-06-10 P0 decision). The caller restricts this to
+        PAPER (or CAPITAL only with regime_waiver_approved) by passing component_type="".
+      • EVENT-SPARSITY: None worst-regime because every bucket was < REGIME_MIN_OBS
+        (regime_insufficient_obs) is waived on paper / capital-with-approval.
+    None worst-regime for any OTHER reason fails CLOSED (data-bug)."""
+    from app.ml.retrain_config import RULERV2_REGIME_WAIVED_TYPES
     wrs = getattr(result, "worst_regime_sharpe", None)
+    if (component_type or "").lower() in RULERV2_REGIME_WAIVED_TYPES:
+        return (float(wrs) if wrs is not None else float("nan")), True, True
     if wrs is not None:
         return float(wrs), float(wrs) >= floor, False
     insufficient = bool(getattr(result, "regime_insufficient_obs", False))
@@ -138,6 +147,7 @@ def evaluate(result, *, tier: str = "paper",
              pbo_perf=None,
              concurrent_paper_sleeves: int = 0,
              live_paper: Optional[dict] = None,
+             component_type: Optional[str] = None,
              regime_waiver_approved: bool = False) -> dict:
     """The Ruler-v2 per-criterion detail dict for `tier` ∈ {"paper","capital"}.
 
@@ -152,7 +162,8 @@ def evaluate(result, *, tier: str = "paper",
         RULERV2_MIN_DAILY_OBS, RULERV2_MIN_N_FOLDS, RULERV2_PRIOR_SR_SD,
         RULERV2_CAPITAL_MIN_POSTERIOR, RULERV2_BOOTSTRAP_MIN_PSR, RULERV2_PBO_MAX,
         RULERV2_RESIDUAL_ALPHA_MIN_T, RULERV2_CATASTROPHIC_REGIME_SR,
-        RULERV2_MAX_PAPER_SLEEVES,
+        RULERV2_MAX_PAPER_SLEEVES, RULERV2_PAPER_MAX_HAC_P,
+        RULERV2_REGIME_WAIVED_TYPES,
     )
     from scripts.walkforward.gates import MIN_ACTIVE_FOLDS_FOR_GATE
 
@@ -177,12 +188,22 @@ def evaluate(result, *, tier: str = "paper",
     n_paths = len(getattr(result, "path_sharpes", []) or [])
     enough_paths = n_paths >= MIN_ACTIVE_FOLDS_FOR_GATE
 
-    # ── PAPER = plausibility ──────────────────────────────────────────────────
+    # ── PAPER = plausibility + a LIGHT significance floor ─────────────────────
     sr_floor_ok = bool(hac.gating and point_sr >= RULERV2_PAPER_MIN_SR)
     ceiling_ok = bool(hac.gating and point_sr <= RULERV2_PAPER_IMPLAUSIBLE_SR)
+    # R4: one-sided HAC-SR significance floor — the honest pooled-OOS instrument (NOT
+    # the path-t). Closes the plausibility-only Type-I leak (a lucky null clearing the
+    # 0.30 floor). A degenerate series (hac.gating=False) fails closed.
+    hac_sig_ok = bool(hac.gating and hac.p_one_sided < RULERV2_PAPER_MAX_HAC_P)
+    # Component-type regime waiver (R4): declared diversifiers/risk-premia are exempt
+    # from the worst-regime floor in PAPER (and in CAPITAL only with explicit approval).
+    ct = (component_type if component_type is not None
+          else getattr(result, "component_type", "") or "")
+    eff_ct = ct if (not capital or regime_waiver_approved) else ""
     reg_obs, reg_ok, reg_waived = _regime_backstop(
         result, floor=RULERV2_CATASTROPHIC_REGIME_SR,
-        regime_waiver_approved=(True if not capital else regime_waiver_approved))
+        regime_waiver_approved=(True if not capital else regime_waiver_approved),
+        component_type=eff_ct)
     if reg_waived:
         try:
             result.requires_human_review_flag = True
@@ -195,6 +216,7 @@ def evaluate(result, *, tier: str = "paper",
         "n_paths": (n_paths, enough_paths),
         "point_sr_floor": (point_sr, sr_floor_ok),
         "implausibility_ceiling": (point_sr, ceiling_ok),
+        "hac_significance": (hac.p_one_sided, hac_sig_ok),
         "regime_not_catastrophic": (reg_obs, reg_ok),
         "concurrent_paper_sleeves": (concurrent_paper_sleeves, sleeve_ok),
         # report-only (off the AND):
@@ -204,8 +226,13 @@ def evaluate(result, *, tier: str = "paper",
         "cost_stress_report": ("not-wired (dark)", True),
     }
     if reg_waived:
-        detail["requires_human_review"] = (
-            bool(getattr(result, "regime_insufficient_obs", False)), False)
+        # Surfaced as a flag (ok=False so the reporter always lists it): the worst-
+        # regime backstop was waived — either component-type (diversifier/risk_premium)
+        # or event-sparsity. A PAPER pass under a waiver requires human review.
+        _waiver = (eff_ct.lower()
+                   if eff_ct.lower() in RULERV2_REGIME_WAIVED_TYPES
+                   else "event_sparsity")
+        detail["requires_human_review"] = (_waiver, False)
 
     if not capital:
         return detail

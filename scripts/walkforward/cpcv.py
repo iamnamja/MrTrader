@@ -99,6 +99,12 @@ class CPCVResult:
     # but defaulting 300 everywhere re-imports the saturated-DSR pathology, so prefer
     # the registered count. Read only by the GATE_MODE="ruler_v2" branch (dark).
     n_trials_registered: Optional[int] = None
+    # Alpha-v7 R4: the sleeve's declared component_type ("alpha" | "diversifier" |
+    # "risk_premium" | …). PURE-ADDITIVE (default ""). The run-script that knows the
+    # sleeve sets it; Ruler-v2 PAPER waives the worst-regime backstop for declared
+    # diversifiers/risk-premia (RULERV2_REGIME_WAIVED_TYPES) — a crisis diversifier
+    # failing its worst regime is its purpose. Read only by GATE_MODE="ruler_v2" (dark).
+    component_type: str = ""
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None
