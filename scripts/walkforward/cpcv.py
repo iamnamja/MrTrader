@@ -91,6 +91,14 @@ class CPCVResult:
     # branch (ships dark); the significance / mean_sharpe gates never touch it, so
     # legacy results and the recorded kill ledger are byte-for-byte unaffected.
     oos_returns_dated: List[Tuple[str, float]] = field(default_factory=list)
+    # Alpha-v7 Phase B (Ruler v2) R7: the registry's per-hypothesis-FAMILY trial count
+    # as-of this run, for the Bayesian-prior multiplicity shrinkage. PURE-ADDITIVE
+    # (default None). The run-script that knows the --hypothesis-id sets it from
+    # ResearchRegistry.trial_count(family=…); when None, ruler_v2 falls back to the
+    # CONSERVATIVE N_TRIALS_TESTED (300) — fail-safe (tighter prior, harder to pass),
+    # but defaulting 300 everywhere re-imports the saturated-DSR pathology, so prefer
+    # the registered count. Read only by the GATE_MODE="ruler_v2" branch (dark).
+    n_trials_registered: Optional[int] = None
     # C1: worst per-regime Sharpe across all paths/folds; None if not populated.
     # Mirrors WalkForwardReport.worst_regime_sharpe so regime gate parity is maintained.
     worst_regime_sharpe: Optional[float] = None

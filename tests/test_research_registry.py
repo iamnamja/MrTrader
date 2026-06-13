@@ -43,6 +43,18 @@ def _raw_insert(reg, hypothesis_id, **cols):
 
 # --------------------------------------------------------------------- basics
 
+def test_trial_count_by_family_and_total(reg):
+    # R7: the per-family trial count is the honest multiple-testing universe for the
+    # Ruler-v2 Bayesian prior — NOT the saturated global 300.
+    reg.register("H-P1", label="exploratory", family="pead")
+    reg.register("H-P2", label="exploratory", family="pead")
+    reg.register("H-O1", label="exploratory", family="options_xs")
+    assert reg.trial_count(family="pead") == 2
+    assert reg.trial_count(family="options_xs") == 1
+    assert reg.trial_count(family="nonexistent") == 0
+    assert reg.trial_count() == 3            # no filter → program-wide N_TRIALS
+
+
 def test_register_and_get_roundtrip(reg):
     row = reg.register(
         "HYP-1",

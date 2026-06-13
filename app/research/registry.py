@@ -480,6 +480,23 @@ class ResearchRegistry:
             ).fetchall()
         return [_decode_row(r) for r in rows]
 
+    def trial_count(self, *, label: str | None = None,
+                    family: str | None = None) -> int:
+        """The number of registered trials in a multiple-testing universe — the count
+        of experiment rows matching the filter (no filter → the program's true
+        N_TRIALS). This is the HONEST per-hypothesis trial count the Ruler-v2 Bayesian
+        prior should consume (design risk R7): a hypothesis is penalized for the shots
+        taken at ITS family, not the saturated global 300 that broke the DSR."""
+        clauses, args = [], []
+        for col, val in (("label", label), ("family", family)):
+            if val is not None:
+                clauses.append(f"{col}=?")
+                args.append(val)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with closing(self._conn()) as c:
+            return int(c.execute(
+                f"SELECT COUNT(*) FROM experiments{where}", args).fetchone()[0])
+
     def summary(self) -> dict[str, Any]:
         """Trial accounting: total rows + counts by label and by decision.
 

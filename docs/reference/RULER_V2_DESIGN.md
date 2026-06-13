@@ -157,20 +157,27 @@ OD-1…OD-9 sign-off are the owner's calls.**
 | R7 | Re-score double-counts the trial penalty | use `n_trials` as-of the original run, not current 300 |
 | R8 | PF/Calmar demotion leaks into legacy | demotion lives only inside the ruler_v2 branch; assert significance `gate_detail` unchanged |
 
-## 6. Open decisions (owner calls — recommended defaults; needed at Phase 2/3, NOT Phase 1)
+## 6. Open decisions — **OWNER-RATIFIED 2026-06-13** (independent Opus advisory)
 
-| ID | Decision | Default |
-|---|---|---|
-| OD-1 | `HAC_SR_LAG` | 10 |
-| OD-2 | `RULERV2_PAPER_MIN_SR` (plausibility floor) | 0.30 |
-| OD-3 | `RULERV2_MAX_PAPER_SLEEVES` (concurrent cap) | 6 |
-| OD-4 | `RULERV2_PRIOR_SR_SD` + trial-shrinkage form | 0.30, shrink by `1/√(1+log N_trials)` |
-| OD-5 | `RULERV2_TRACKB_MIN_IR` / `..._MIN_PDSR` | 0.20 / 0.85 |
-| OD-6 | `RULERV2_MIN_DAILY_OBS` (CAPITAL power floor) | 504 (~2y) |
-| OD-7 | PBO scope (standalone harness vs wire into run_cpcv) | standalone now; wire later |
-| OD-8 | `RESIDUAL_ALPHA_MIN_T` (CAPITAL primary) | 2.0 |
-| OD-9 | Factor set residualizing a *premia* book (a trend factor risks hedging out the edge) | P4 set; trend-factor TBD |
+| ID | Decision | Value | Status |
+|---|---|---|---|
+| OD-1 | `HAC_SR_LAG` | 10 | ✅ KEEP |
+| OD-2 | `RULERV2_PAPER_MIN_SR` (plausibility floor) | 0.30 | ✅ KEEP (coherent w/ legacy 0.35 — different statistic; documented in config) |
+| OD-3 | `RULERV2_MAX_PAPER_SLEEVES` | 6 | ✅ KEEP |
+| OD-4 | `RULERV2_PRIOR_SR_SD` + shrinkage | 0.30, `1/√(1+log N)` | ✅ KEEP value; **R7 FIXED** — the trial count now resolves explicit-arg → `CPCVResult.n_trials_registered` (registry per-family count) → conservative `N_TRIALS_TESTED` fallback, instead of defaulting to the saturated 300 |
+| OD-5 | `RULERV2_TRACKB_MIN_IR` / `..._MIN_PDSR` | 0.20 / **0.90** | ✅ IR kept; **PdSR 0.85→0.90** (0.85 was a weak ~1-in-7 bar) |
+| OD-6 | `RULERV2_MIN_DAILY_OBS` + `n_folds≥10` | 504 | ✅ KEEP |
+| OD-7 | PBO scope | standalone now | ✅ KEEP |
+| OD-8 | `RULERV2_RESIDUAL_ALPHA_MIN_T` | 2.0 | ✅ KEEP (don't raise — the prior already applies the multiplicity haircut) |
+| OD-9 | Factor set for a *premia* book | **excl. harvested premium** | ✅ DECIDED — `ruler_v2.capital_factor_set(component_type, factors)` residualizes against every base factor EXCEPT the one the sleeve harvests; **trend EXCLUDES the TSMOM factor**. Map in `retrain_config.RULERV2_HARVESTED_FACTOR`; multi-factor t via `ruler_v2.residual_alpha_t()` (wire into `run_cpcv` to replace SPY-only `capm_alpha` — live follow-up) |
 
-> **Phase 1 (the pure inference core) needs NO owner decision** — its few defaults (HAC lag 10,
-> 2000 bootstrap reps, T^(1/3) block fallback) are documented and tunable. The consequential
-> owner calls (prior SD, plausibility floor, sleeve cap, appraisal bars) are surfaced at Phase 2/3.
+> **R7 mechanics:** `ResearchRegistry.trial_count(family=…)` gives the honest per-family
+> multiple-testing universe; `CPCVResult.n_trials_registered` (pure-additive) carries it as-of
+> the run; `ruler_v2.evaluate` prefers it over the conservative 300 fallback. The default-300
+> path still fails SAFE (tighter prior), but every run that records a family count avoids
+> re-importing the saturated-DSR pathology.
+
+> **Go-live (owner-ratified order):** flip `TRACKB_MODE="ruler_v2"` first (lower blast radius),
+> `GATE_MODE="ruler_v2"` second — **only after** the R4 calibration controls pass BOTH ways
+> (positives clear, true-nulls/PEAD/H4 stay dead). Dark-coexistence-indefinitely is a legitimate
+> default while the live book is a single already-validated trend sleeve with no candidate queued.
