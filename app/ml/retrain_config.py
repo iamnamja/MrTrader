@@ -449,6 +449,24 @@ RULERV2_BOOTSTRAP_MIN_PSR: float = 0.95     # CAPITAL stationary-bootstrap P(SR>
 RULERV2_PBO_MAX: float = 0.50               # CAPITAL PBO ceiling (gates only when M>1 configs)
 RULERV2_RESIDUAL_ALPHA_MIN_T: float = 2.0   # OD-8 CAPITAL primary: multi-factor residual-α t_HAC
 RULERV2_CATASTROPHIC_REGIME_SR: float = -0.5  # PAPER "not catastrophic" worst-regime floor (== legacy)
+# ── Alpha-v7 R4 remediation (2026-06-13) ──────────────────────────────────────
+# (1) component_types whose worst-regime backstop is WAIVED in Ruler-v2 PAPER (a
+# crisis-diversifier failing its worst regime is its PURPOSE; mirrors
+# track_b_appraisal.WAIVED_REGIME_TYPES + the 2026-06-10 P0 decision "judge crisis-
+# diversifiers on book contribution, not the standalone worst-regime floor"). CAPITAL
+# still needs explicit regime_waiver_approved even for these.
+RULERV2_REGIME_WAIVED_TYPES: tuple = ("diversifier", "risk_premium")
+# (2) PAPER one-sided HAC-SR significance floor. R4 (2026-06-13) showed a plausibility-
+# ONLY PAPER tier is a Type-I sieve: the 0.30 point-SR floor sits ~0.74σ above zero at
+# n≈1500, so ~23% of TRUE zero-SR nulls clear it (a lucky null looks "plausible"). A
+# LIGHT significance floor on the POOLED-OOS HAC-SR (the honest Phase-1 instrument, NOT
+# the discredited 8-fold path-t) restores the calibrated ≤5% null-pass-rate: PAPER now
+# also requires one-sided HAC p < this. 0.05 ⇒ ~5% null-pass by construction (verified
+# ~5.7% by Monte Carlo; the old plausibility-only floor was ~23.4%); real edges clear
+# easily (a genuine trend sleeve's pooled-OOS HAC-t is comfortably significant → p≈0).
+# Still far more lenient than CAPITAL (Bayesian posterior ≥0.95 + live paper +
+# residual-α + bootstrap), preserving the two-tier split.
+RULERV2_PAPER_MAX_HAC_P: float = 0.05
 # ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
 TRACKB_MODE: str = "book_delta"             # "book_delta" (legacy) | "ruler_v2" (dark; Phase 3)
 RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)

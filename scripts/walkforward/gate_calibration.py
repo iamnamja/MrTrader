@@ -926,6 +926,11 @@ class ControlSpec:
     kind: str                       # "series_tsmom"|"series_spy"|"series_xmom"|"event"|"pead"
     seed: Optional[int] = None
     years: int = FULL_WINDOW_YEARS
+    # Alpha-v7 R4: the sleeve's component_type for the Ruler-v2 regime waiver. A crisis-
+    # diversifier (tsmom) declares "risk_premium" so Ruler-v2 PAPER waives its worst-
+    # regime floor (it fails its worst regime BY DESIGN); alpha/null controls stay
+    # subject to the floor. Default "" = no waiver.
+    component_type: str = ""
 
 
 def _build_controls() -> Dict[str, ControlSpec]:
@@ -933,11 +938,12 @@ def _build_controls() -> Dict[str, ControlSpec]:
     c["tsmom_4y"] = ControlSpec(
         "tsmom_4y", "positive_alpha", 0.71,
         "live trend sleeve, +0.71 standalone over 19y incl. every crisis; 4y window - "
-        "THE decisive Type-II control", "series_tsmom", years=FULL_WINDOW_YEARS)
+        "THE decisive Type-II control", "series_tsmom", years=FULL_WINDOW_YEARS,
+        component_type="risk_premium")   # R4: crisis-diversifier → regime waived in PAPER
     c["tsmom_19y"] = ControlSpec(
         "tsmom_19y", "positive_alpha", 0.71,
         "same sleeve, full 19y window - fully-powered should-pass anchor",
-        "series_tsmom", years=TSMOM_LONG_YEARS)
+        "series_tsmom", years=TSMOM_LONG_YEARS, component_type="risk_premium")
     c["xmom_12_1"] = ControlSpec(
         "xmom_12_1", "positive_alpha", 0.50,
         "Jegadeesh-Titman 12-1 XS momentum decile L/S; post-2010 attenuation expected",
@@ -1015,6 +1021,10 @@ def _result_to_row(spec: ControlSpec, result, *, window_start, window_end,
     rv2_paper_failed: List[str] = []
     if getattr(result, "oos_returns_dated", None):
         from app.research import ruler_v2 as _rv2
+        # R4: declare the sleeve's component_type so Ruler-v2 PAPER applies the
+        # diversifier regime waiver (a crisis-diversifier fails its worst regime by
+        # design). Pure-additive on the result; only the dark ruler_v2 path reads it.
+        result.component_type = spec.component_type
         rv2_paper_pass = bool(_rv2.gate_passed(result, tier="paper"))
         rv2_capital_pass = bool(_rv2.gate_passed(result, tier="capital"))
         _rv2_detail = _rv2.evaluate(result, tier="paper")

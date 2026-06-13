@@ -17,10 +17,11 @@ from scripts.walkforward import ruler_v2_rescore as rs
 from scripts.walkforward.cpcv import CPCVResult
 
 
-def _oos(sr_ann: float, n=600, sd=0.01, seed=0):
+def _oos(sr_ann: float, n=2500, sd=0.01, seed=0):
     """A dated OOS series whose realized annualized Sharpe is EXACTLY `sr_ann`
-    (standardized so the test verdicts don't ride on SR sampling noise, which is
-    ~±0.4 at n=600)."""
+    (standardized). n=2500 (~10y) so a passing SR (0.6) clears the PAPER HAC
+    significance floor (t = sr_ann·√(n/252); 0.6·√(2500/252) ≈ 1.9 → p ≈ 0.03 < 0.05)
+    while a 0.10 SR stays insignificant — the verdicts don't ride on sampling noise."""
     rng = np.random.default_rng(seed)
     z = rng.normal(0, 1, n)
     z = (z - z.mean()) / z.std()                      # mean 0, unit std
