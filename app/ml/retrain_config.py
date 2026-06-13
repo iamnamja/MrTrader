@@ -461,9 +461,11 @@ RULERV2_REGIME_WAIVED_TYPES: tuple = ("diversifier", "risk_premium")
 # n≈1500, so ~23% of TRUE zero-SR nulls clear it (a lucky null looks "plausible"). A
 # LIGHT significance floor on the POOLED-OOS HAC-SR (the honest Phase-1 instrument, NOT
 # the discredited 8-fold path-t) restores the calibrated ≤5% null-pass-rate: PAPER now
-# also requires one-sided HAC p < this. Real edges clear easily (tsmom t≈5.7 → p≈0);
-# 0.05 ⇒ ~5% null-pass by construction. Still far more lenient than CAPITAL (Bayesian
-# posterior ≥0.95 + live paper + residual-α + bootstrap), preserving the two-tier split.
+# also requires one-sided HAC p < this. 0.05 ⇒ ~5% null-pass by construction (verified
+# ~5.7% by Monte Carlo; the old plausibility-only floor was ~23.4%); real edges clear
+# easily (a genuine trend sleeve's pooled-OOS HAC-t is comfortably significant → p≈0).
+# Still far more lenient than CAPITAL (Bayesian posterior ≥0.95 + live paper +
+# residual-α + bootstrap), preserving the two-tier split.
 RULERV2_PAPER_MAX_HAC_P: float = 0.05
 # ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
 TRACKB_MODE: str = "book_delta"             # "book_delta" (legacy) | "ruler_v2" (dark; Phase 3)

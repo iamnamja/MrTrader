@@ -12,10 +12,14 @@ significance / mean_sharpe branches never call into this module, so the legacy
 test corpus + recorded kill ledger are byte-for-byte unaffected.
 
 Tier philosophy (the deliberate INVERSION of the legacy gate):
-  PAPER   = PLAUSIBILITY — no significance t. A pre-registered, economically-
-            motivated sleeve with a believable (not implausibly high) point SR and a
-            non-catastrophic worst regime earns a paper slot. PF/Calmar are DEMOTED
-            to report-only (off the AND) — they were the legacy Type-II machine.
+  PAPER   = PLAUSIBILITY + a LIGHT significance floor (R4 2026-06-13). A pre-registered,
+            economically-motivated sleeve with a believable (not implausibly high) point
+            SR, a non-catastrophic worst regime (WAIVED for declared diversifiers/risk-
+            premia), AND a one-sided HAC-SR p < RULERV2_PAPER_MAX_HAC_P on the POOLED OOS
+            series (the honest Phase-1 instrument, NOT the path-t) earns a paper slot.
+            The HAC floor closes the plausibility-only Type-I leak R4 found (a lucky null
+            clearing the 0.30 SR floor); it stays far more lenient than CAPITAL. PF/Calmar
+            are DEMOTED to report-only (off the AND) — they were the legacy Type-II machine.
   CAPITAL = SIGNIFICANCE — REQUIRES a live-paper observation (the posterior is
             P(SR>0 | backtest AND live paper); a backtest alone can NEVER reach
             capital — structural, not threshold-dependent) AND Bayesian posterior
@@ -133,6 +137,10 @@ def _regime_backstop(result, *, floor: float, regime_waiver_approved: bool,
     from app.ml.retrain_config import RULERV2_REGIME_WAIVED_TYPES
     wrs = getattr(result, "worst_regime_sharpe", None)
     if (component_type or "").lower() in RULERV2_REGIME_WAIVED_TYPES:
+        # Waiver deliberately PRECEDES the None/data-bug check: a declared diversifier's
+        # worst regime is irrelevant by design, so it's waived even on missing regime
+        # data (the requires_human_review flag + CAPITAL's explicit-approval gate are
+        # the backstops).
         return (float(wrs) if wrs is not None else float("nan")), True, True
     if wrs is not None:
         return float(wrs), float(wrs) >= floor, False
