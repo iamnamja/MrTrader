@@ -557,9 +557,9 @@ def ruler_v2_r4_summary(rows: List[CalibrationRow]) -> dict:
         "n_nulls": len(nulls), "nulls_failed_correctly": null_fail,
         "nulls_PASSED_should_fail": null_pass,
         "leaky": {r.control_id: r.rv2_paper_pass for r in leaky},
-        "verdict": ("R4 CLEAN — positives clear, nulls dead"
+        "verdict": ("R4 CLEAN - positives clear, nulls dead"
                     if clean else
-                    "R4 NOT CLEAN — review positives_FAILED / nulls_PASSED"),
+                    "R4 NOT CLEAN - review positives_FAILED / nulls_PASSED"),
     }
 
 
@@ -1379,7 +1379,7 @@ def build_oc_table(rows: List[CalibrationRow], *,
     # Alpha-v7 R4: Ruler-v2 PAPER both-ways check (report-only; the pre-flip gate).
     r4 = ruler_v2_r4_summary(rows)
     lines.append(bar)
-    lines.append("  RULER-v2 R4 CHECK (report-only — the pre-flip gate for "
+    lines.append("  RULER-v2 R4 CHECK (report-only - the pre-flip gate for "
                  "GATE_MODE='ruler_v2'):")
     lines.append(f"    VERDICT: {r4['verdict']}")
     lines.append(f"    positives PAPER-pass: {r4['positives_passed']}  "
