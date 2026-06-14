@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F3) — rates duration carry: NEAR-MISS (real robust orthogonal edge; pre-reg config fails → not promoted; owner-recommended re-registration)
+
+**Context**: F3 of the plan — `app/strategy/carry.py`, a duration-carry timer: size an IEF position by the 10y−3m term spread (yfinance ^TNX/^IRX; FRED's endpoint is network-blocked here). Declared `risk_premium`. FX/commodity carry deferred (no clean free data; "skip commodity" per the panel).
+
+**Verdict (pre-registered config FAILS both bars → NOT promoted)**: canonical (IEF, scale_pct=1.5, long-short, 1bp), 2007→2026 (~3661 pooled-OOS): point_SR +0.314 (clears 0.30), residual-α_t **+2.10** (first sleeve with genuine positive alpha vs SPY; beta −0.09), HAC p(1s) **0.0998** → Track-A FAIL (significance only). Track-B 7/8 PASS (appraisal_IR +0.386, corr **+0.010** orthogonal, ΔSR +0.084 additive) — fails ONLY **P(ΔSR>0) 0.886 < 0.90** (by 0.014). Misses both bars marginally.
+
+**The robustness finding (decision-relevant)**: a 12-config grid (etf∈{IEF,TLT} × scale∈{1.0,1.5,2.0} × long-short∈{T,F}) shows the carry edge is REAL and ROBUST — positive orthogonal residual-α in ALL 12 (resid-t +1.77…+2.70, corr ~0), and Track-B PASSES in 8/12 neighbors. The pre-registered IEF/1.5/long-short is one of the 4 that narrowly fails; long-flat and TLT variants mostly pass. So carry is a genuine orthogonal diversifier the canonical spec slightly under-captured — not noise that happened to land close.
+
+**Integrity / discipline**: Independent Opus adversarial review — HONEST, no bug. No look-ahead (shift(1) PIT confirmed line-by-line). NO unit bug (the feared ^TNX×10 vs ^IRX×1 mismatch is ABSENT — both quote in %, the spread is a true term spread, median +1.56%, 51% interior positions = genuine continuous curve timer, not saturated bond beta). Residual-α real (beta −0.09). Cost-insensitive (SR 0.41→0.38 from 1→5bp). **CRITICAL DISCIPLINE: the pre-registered config is the verdict (FAIL). I did NOT switch to a passing grid cell to claim a pass — that is exactly the goalpost-moving the research registry (R7) exists to prevent.**
+
+**Decision**: NOT promoted (the pre-registered config fails). BUT carry is the **strongest additive candidate of the F-series** and the robustness says the edge is real. **Owner-recommended next step**: authorize a FRESH, pre-registered carry confirmation — a single new canonical spec chosen on PRINCIPLE (e.g. long-flat to avoid the crisis-correlated short leg, sized to a modest budget), recorded with a new `hypothesis_id` + R7 cooling-off, run ONCE. This is the legitimate path from "robust near-miss" to a promotable sleeve; cherry-picking this grid is not.
+
+**Consequences**: live book unchanged. carry.py + the registry entry kept as tested infrastructure. Combined with the VIX governor (overlay, modest help), there are now TWO owner-facing items: the governor (adopt as overlay?) and carry (authorize a fresh pre-registration?). NEXT: F4 (options-conditioned events) assessment; then F5 synthesis.
+
+---
+
 ## 2026-06-14 (F2) — ETF relative-value: FAIL (genuinely orthogonal, but no standalone edge)
 
 **Context**: F2 of the plan — `app/strategy/etf_relative_value.py`, a slow dollar-neutral log-spread mean-reversion sleeve over 5 pre-registered economically-linked pairs (QQQ/SPY, IWM/SPY, HYG/IEF, TLT/IEF, EEM/EFA), canonical config (lookback 120, entry z 1.5, exit 0.5, 2bp/leg), equal-weight, declared `diversifier`. Chosen over more calendar premia precisely because it is MARKET-NEUTRAL (not timed beta), so it could in principle diversify the trend book where F1a could not.
