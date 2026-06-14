@@ -122,6 +122,44 @@ def build_etf_relative_value(*, prices: Optional[pd.DataFrame] = None, **cfg_kw)
                         f"entry/exit z={cfg.entry_z}/{cfg.exit_z}; dollar-neutral")
 
 
+def fetch_yield(ticker: str, *, start: date = date(2002, 1, 1),
+                end: Optional[date] = None) -> pd.Series:
+    """Deep daily yield series via yfinance (e.g. ^TNX 10y, ^IRX 13-week)."""
+    import yfinance as yf
+    df = yf.download(ticker, start=start.isoformat(), end=(end or _today()).isoformat(),
+                     progress=False, auto_adjust=True)
+    if df is None or df.empty:
+        raise RuntimeError(f"no data for {ticker}")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.columns = [str(c).lower() for c in df.columns]
+    return df["close"].dropna()
+
+
+@register_sleeve("rates_carry")
+def build_rates_carry(*, prices: Optional[pd.DataFrame] = None,
+                      y10: Optional[pd.Series] = None, y3m: Optional[pd.Series] = None,
+                      **cfg_kw) -> Sleeve:
+    """Rates duration-carry: size a duration-ETF position by the 10y−3m term spread.
+    Declared `risk_premium` (paid to bear duration/curve risk; crisis-correlated by
+    nature). One pre-registered config -> n_trials=1."""
+    from app.strategy.carry import RatesCarryConfig, rates_carry_backtest
+    cfg = RatesCarryConfig(**cfg_kw)
+    if prices is None:
+        prices = fetch_universe_closes([cfg.duration_etf, "SPY"])
+    if y10 is None:
+        y10 = fetch_yield("^TNX")
+    if y3m is None:
+        y3m = fetch_yield("^IRX")
+    res = rates_carry_backtest(prices, y10, y3m, cfg)
+    spy = prices["SPY"] if "SPY" in prices.columns else None
+    return Sleeve(label=res.label, component_type="risk_premium",
+                  returns=res.returns, spy_prices=spy,
+                  n_trials_registered=1, registration_id="F3-CARRY",
+                  notes=f"duration carry: {cfg.duration_etf} sized by (10y-3m)/{cfg.scale_pct}, "
+                        f"{'long-short' if cfg.long_short else 'long-flat'}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────────
 # Runner
 # ──────────────────────────────────────────────────────────────────────────────────
