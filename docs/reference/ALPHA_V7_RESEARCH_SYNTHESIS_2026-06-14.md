@@ -159,5 +159,31 @@ not more searching. **The next move: Phase F0 (Sleeve Lab), then F1.**
 
 ---
 
+## EXECUTION RESULTS — F0→F5 sweep completed 2026-06-14 (same day)
+
+The plan above was executed end-to-end the same day (each phase built, tested, independently
+Opus-reviewed, documented, and merged or explicitly deferred). Outcome:
+
+| Phase | Result | Detail |
+|---|---|---|
+| **F0** Sleeve Lab | ✅ **SHIPPED** (PR #484) | Uniform `Sleeve`→`evaluate_sleeve`(CPCV→Ruler-v2 A+B)→`SleeveReport` + registry + overlay path + `assemble_book`. **Permanent infra** — every sleeve below was a ~20-line declaration. |
+| **F1a** calendar/overnight premia | ❌ **FAIL** (#485) | turn-of-month + overnight: clear the plausibility floor but miss HAC significance AND fail Track-B (timed SPY beta the trend book already holds). |
+| **F1b** VIX-term crash governor | 🟡 **MODESTLY HELPS** (#486) | Overlay: maxDD −13.9→−12.1%, Calmar 0.469→0.501, Sharpe ~flat, COVID DD −10.7→−6.5%; ~0.5%/yr give-up. **Candidate — owner-gated** (re-times live exposure). |
+| **F1c** FOMC drift | ⏸ **DEFERRED** | Same additive-SPY-beta shape that failed Track-B + no clean historical FOMC date list (bug risk); low EV. |
+| **F2** ETF relative-value | ❌ **FAIL** (#487) | Genuinely orthogonal (corr −0.23) but ~zero standalone edge. **Learning: standalone return — not orthogonality — is the binding constraint.** |
+| **F3** rates carry | 🟠 **ROBUST NEAR-MISS** (#488) | point_SR +0.314, resid-α +2.10 (real orthogonal alpha), Track-B 7/8 — misses BOTH bars marginally (HAC p 0.0998; P(ΔSR>0) 0.886). Edge robust (8/12 configs pass Track-B). **Strongest additive candidate; owner-rec a fresh pre-registered confirmation.** |
+| **F4** options-conditioned events | ⏸ **DEFERRED** | Already killed in P4 (H4a–H4e ALL KILL + PEAD demoted) on the same underpowered 4y options data; negative-EV re-tread. |
+| **F5** book assembly | ⏸ **NOT TRIGGERED** | 0 sleeves passed the pre-registered gate. Illustrative owner-pending book computed (trend+carry+governor: maxDD −13.9→−10.9%, SR ~flat, corr trend~carry +0.029). |
+
+**Bottom line — the thesis held.** No *additive* sleeve cleared the pre-registered Ruler-v2 bar on
+free daily US data; the live 10-ETF trend sleeve remains the only standalone edge. The system has now
+*honestly* mapped the edge of its free-data envelope. Two items showed real signal and are **owner
+decisions**: (1) the VIX-term crash governor (overlay), and (2) a fresh pre-registered carry confirmation
+(the robust near-miss). If both stall, the next lever is the deliberate data-acquisition bet (Norgate
+futures / longer options history) this synthesis anticipated — not more searching. Full detail:
+`ML_EXPERIMENT_LOG.md` (F1a/F1b/F2/F3/wrap) + `DECISIONS.md` (2026-06-14 F0…wrap).
+
+---
+
 *Panel inputs (archived):* `docs/archive/llm-reviews/2026-06-14/` — `01_PROMPT.md`, `02_STATE_SNAPSHOT.md`,
 the data/gate docs, and `responses/` (Opus 4.8, ChatGPT, DeepSeek, Gemini, Grok).
