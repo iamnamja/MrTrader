@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F-series WRAP) — F4 deferred, F5 not-triggered; the F0→F5 sweep empirically confirms "trend is the only standalone edge"
+
+**F4 (options-conditioned event interaction) — DEFERRED (not built).** The thesis was already tested and KILLED in P4: H4a–H4e (all five options-conditioned event hypotheses) were ALL KILL, and PEAD was demoted at the event level (t=−0.77). The data is the same frozen 4y options store (2022–2026), which is underpowered by construction — it cannot clear the CAPITAL power floor or any deep-history significance bar (the whole reason the Ruler-v2 design uses options for *conditioning only*). The 2026-06-14 panel itself ranked F4 a long-shot. Re-running a continuous-interaction reformulation on already-killed, underpowered data is negative-EV re-treading. Deferred; revisit only if (a) a longer options history is acquired (paid feed) or (b) a fundamentally new event signal appears. Recorded, not silently dropped (mirrors the F1c discipline).
+
+**F5 (book assembly + live fidelity) — NOT TRIGGERED.** F5 is gated on "≥2 sleeves pass the pre-registered gate." ZERO sleeves passed: F1a calendar premia FAIL, F2 ETF relative-value FAIL, F3 carry NEAR-MISS-but-FAIL; the VIX governor HELPS but is an OVERLAY, not an additive sleeve. So the book-assembly trigger is not met. In lieu of a real book, an ILLUSTRATIVE owner-pending book was computed (2007→2026, NOT promoted): trend alone SR 0.723 / maxDD −13.9% / Calmar 0.469; trend+carry (naive vol-weight) SR 0.689 / maxDD −11.3% (corr trend~carry +0.029 — genuinely uncorrelated, but naive vol-weighting de-levers, understating the benefit); +governor overlay maxDD −10.9%. carry's low standalone SR caps the book-SR lift (modest — consistent with the panel's "book SR 0.7–0.9, not a home run"). Proper equal-risk re-levered book construction is the real F5 build, which only triggers once a sleeve passes.
+
+**Overall verdict of the F0→F5 execution**: the sweep empirically CONFIRMS the panel's central thesis — on free daily US data, the live 10-ETF trend sleeve is the only standalone edge. Every *additive* sleeve tested (calendar, overnight, relative-value, carry) failed the pre-registered Ruler-v2 gate. The two items that showed REAL signal: (1) the **VIX-term crash governor** (overlay — modest, robust tail protection, ~flat Sharpe) and (2) **rates carry** (a robust near-miss — genuine orthogonal positive alpha that narrowly missed both bars). Key empirical learnings recorded along the way: standalone return — not orthogonality — is the binding constraint (F2); and the additive-SPY-beta sleeve shape can't diversify a trend book that already holds SPY (F1a, F1c).
+
+**Consequences / owner decisions (both non-blocking, live book unchanged)**:
+1. **Adopt the VIX-term crash governor as a live book overlay?** (modest tail protection at ~0.5%/yr give-up; it re-times live exposure → owner call.)
+2. **Authorize a fresh pre-registered carry confirmation?** (the legitimate path from robust near-miss → promotable sleeve; a single principled spec with a new hypothesis_id + cooling-off, NOT a cherry-pick.)
+3. If both stall, the honest next lever (the panel's own conclusion) is a deliberate DATA buy — Norgate futures for cross-asset trend breadth, or a longer options history — not more searching on free daily data.
+
+**Permanent win regardless**: the F0 **Sleeve Lab** turned this entire sweep into uniform, hardened, ~20-line declarations with adversarial Opus review at each step and zero gate-wiring drift — exactly the future-proof substrate the owner prioritized. Every future idea now plugs in the same way.
+
+---
+
 ## 2026-06-14 (F3) — rates duration carry: NEAR-MISS (real robust orthogonal edge; pre-reg config fails → not promoted; owner-recommended re-registration)
 
 **Context**: F3 of the plan — `app/strategy/carry.py`, a duration-carry timer: size an IEF position by the 10y−3m term spread (yfinance ^TNX/^IRX; FRED's endpoint is network-blocked here). Declared `risk_premium`. FX/commodity carry deferred (no clean free data; "skip commodity" per the panel).
