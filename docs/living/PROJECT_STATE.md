@@ -6,7 +6,7 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## 🧭 NOW (2026-06-14): Alpha-v7 F0→F5 sweep COMPLETE — confirms "trend is the only standalone edge"; TWO owner decisions pending
+## 🧭 NOW (2026-06-14): Alpha-v7 F0→F5 sweep COMPLETE + owner acting — carry KILLED on confirmation; governor being wired live
 
 **Owner gave go-ahead to execute the full F0→F5 plan autonomously (Opus each step; document/email/merge; promote-to-live stays owner-gated). Done — every phase built/tested/Opus-reviewed/merged or explicitly deferred. Final scoreboard:**
 - **F0 Sleeve Lab — MERGED (#484):** the uniform, hardened pipeline + overlay path + registry. **Permanent infra** (made this whole sweep ~20-line declarations).
@@ -14,15 +14,17 @@
 - **F1b ⭐ VIX-term crash governor — MODESTLY HELPS (#486):** maxDD −13.9→−12.1%, Calmar 0.469→0.501, Sharpe flat, COVID DD −10.7→−6.5%; ~0.5%/yr give-up. Overlay candidate. NOT promoted.
 - **F1c FOMC drift — DEFERRED:** additive-SPY-beta shape + date-list bug risk.
 - **F2 ETF relative-value — FAIL (#487):** orthogonal (corr −0.23) but ~zero standalone edge. *Learning: standalone return, not orthogonality, is binding.*
-- **F3 ⭐ rates carry — NEAR-MISS (#488):** point_SR +0.314, resid-α +2.10 (real orthogonal alpha, corr +0.01), Track-B 7/8 — misses BOTH bars marginally (HAC p 0.0998; P(ΔSR>0) 0.886). Edge robust (8/12 configs pass Track-B). FAIL/NOT promoted; owner-rec fresh pre-registration.
+- **F3 rates carry — NEAR-MISS (#488) → CONFIRMATION KILLED (#491):** owner-authorized fresh pre-registered confirmation `F3-CARRY-CONFIRM-20260614` (long-flat IEF). Full-sample Track-B PASS (IR +0.434, P(ΔSR>0) 0.930) but Track-A still fails (HAC p 0.083) and the **pre-registered sub-period stability guard FAILED — H1 2007-2016 SR +0.689 vs H2 2017-2026 SR −0.098** (edge is a pre-2016 artifact, dead in the modern regime). **KILLED, line closed.** The stability guard caught a config-robust but time-unstable edge.
 - **F4 options-conditioned events — DEFERRED:** already killed in P4 (H4a–H4e ALL KILL + PEAD demoted) on the same underpowered 4y options data; negative-EV re-tread.
 - **F5 book assembly — NOT TRIGGERED:** 0 sleeves passed. Illustrative owner-pending book computed (trend+carry+governor: maxDD −13.9→−10.9%, SR ~flat, corr trend~carry +0.029).
 
-**Bottom line:** no additive sleeve cleared the pre-registered bar on free daily US data — the sweep empirically confirms the panel's thesis. The trend sleeve remains the only standalone edge. Two items showed real signal (governor + carry).
+**Bottom line:** no additive sleeve cleared the pre-registered bar on free daily US data — confirmed twice now (the carry confirmation's stability guard killed the last candidate). The trend sleeve remains the only standalone edge; the VIX governor (overlay) is the only surviving add.
 
-**⚠️ TWO OWNER DECISIONS PENDING (non-blocking):** (1) adopt the **VIX-term crash governor** as a live book overlay? (2) authorize a **fresh pre-registered carry confirmation** (the robust near-miss)? **If both stall → the honest next lever is a deliberate DATA buy (Norgate futures for cross-asset trend / longer options history), not more free-data searching.** Live book unchanged (trend-only 25% + cash).
+**OWNER DECISIONS — both actioned (2026-06-14):**
+- ✅ **#2 carry confirmation — DONE → KILLED** (edge doesn't persist post-2016; line closed).
+- 🔧 **#1 adopt the VIX-term crash governor as a live overlay — IN PROGRESS** (owner said yes; wiring it into live sizing now, flag-gated + tested + Opus-reviewed).
 
-**⚠️ TWO OWNER DECISIONS PENDING (non-blocking):** (1) adopt the **VIX-term crash governor** as a live book overlay (modest tail protection, ~flat Sharpe)? (2) authorize a **fresh pre-registered carry confirmation** (the robust near-miss)? Both are the only things that have shown real signal; everything else is report-only. Live book unchanged (trend-only 25% + cash).
+Once the governor is live, the next lever (if more alpha is wanted) is a deliberate DATA buy (Norgate futures / longer options history), not more free-data searching. Live book currently unchanged (trend-only 25% + cash) until the governor PR lands.
 
 ---
 

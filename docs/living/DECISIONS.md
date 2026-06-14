@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F3-CARRY-CONFIRM) — owner-authorized fresh carry confirmation → KILLED (edge is a pre-2016 artifact)
+
+**Context**: The owner authorized a fresh, pre-registered confirmation of the F3 rates-carry near-miss (the legitimate R7 path from "robust near-miss" → promotable, vs cherry-picking the grid). Registered `F3-CARRY-CONFIRM-20260614` (confirmatory, family carry) and froze the acceptance criteria via `preregister` BEFORE the run (run_at strictly after preregistered_at; registry decision recorded).
+
+**The pre-registered spec (chosen on economic principle, NOT grid-fit)**: long-flat IEF, scale_pct 1.5, 1bp. Long-flat because harvesting positive carry and standing aside on inversion IS the premium — going short duration on inversion is a crisis-correlated directional bet (the panel's warning). Deliberately NOT the highest-scoring grid cell (TLT/2.0/long-short). Honesty note recorded in the registry mechanism: the full-sample robustness grid had already been seen, so the confirmation's weight rests on (a) the principle-based spec and (b) a pre-registered **sub-period stability** criterion.
+
+**Verdict → KILL**: full-sample point_SR +0.342, residual-α +2.27, **Track-B PASS** (appraisal_IR +0.434, P(ΔSR>0) 0.930, corr +0.038 — long-flat clears the P(ΔSR>0) bar the long-short canonical missed at 0.886). BUT Track-A PAPER still FAILS on significance (HAC p 0.0833 > 0.05), and — decisively — the **stability guard FAILED: H1 (2007-2016) SR +0.689 vs H2 (2017-2026) SR −0.098.** The carry edge is concentrated entirely in the first decade and is negative in the modern regime. Pre-registered decision rule → KILL.
+
+**Why this matters**: the stability check (added precisely as the OOS-ish guard, since the full-sample grid was seen) did its job — it caught an edge that is robust across CONFIGS but not across TIME, which the full-sample near-miss masked. This is the R7 discipline working as designed: cherry-picking a passing grid cell, or promoting on the full-sample near-miss alone, would have shipped a dead-since-2016 sleeve.
+
+**Consequences**: **Owner-decision #2 resolved — the carry line is CLOSED** (not promoted; not re-tested). Across the entire F-series, NO additive sleeve survives; the VIX-term crash governor (overlay) is the only surviving candidate. Runner kept for audit: `scripts/run_carry_confirmation.py`. Live book unchanged. Remaining owner work: only item 1 (governor live wiring), which is in progress.
+
+---
+
 ## 2026-06-14 (F-series WRAP) — F4 deferred, F5 not-triggered; the F0→F5 sweep empirically confirms "trend is the only standalone edge"
 
 **F4 (options-conditioned event interaction) — DEFERRED (not built).** The thesis was already tested and KILLED in P4: H4a–H4e (all five options-conditioned event hypotheses) were ALL KILL, and PEAD was demoted at the event level (t=−0.77). The data is the same frozen 4y options store (2022–2026), which is underpowered by construction — it cannot clear the CAPITAL power floor or any deep-history significance bar (the whole reason the Ruler-v2 design uses options for *conditioning only*). The 2026-06-14 panel itself ranked F4 a long-shot. Re-running a continuous-interaction reformulation on already-killed, underpowered data is negative-EV re-treading. Deferred; revisit only if (a) a longer options history is acquired (paid feed) or (b) a fundamentally new event signal appears. Recorded, not silently dropped (mirrors the F1c discipline).
