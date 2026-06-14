@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-13 (full-set R4) — full control set run → NOT strictly clean (xmom fails, a documented correct-reject); DID NOT flip
+
+**Context**: Owner chose "complete the full control set, then flip." Ran the remaining controls (`pead_baseline`, `xmom_12_1`) into `logs/gate_calibration_20260613.json`. Result: tsmom_4y/19y PAPER-pass (diversifier waiver + significant), all 5 true-nulls PAPER-fail (incl. seed_5), leaky rejected — BUT **`xmom_12_1` (declared `positive_alpha`) FAILED Ruler-v2 PAPER**, so the strict R4 reads NOT CLEAN.
+
+**Decision**: **DID NOT flip `GATE_MODE`/`TRACKB_MODE`.** xmom's failure is, on the merits, a CORRECT rejection — xmom 12-1 cross-sectional momentum is genuinely insignificant in this window (meanSR 0.17, t 0.77), the LEGACY significance gate independently fails it too (`significance_core_pass=False`), and the project already ruled cross-sectional momentum dead (DECISIONS 2026-06-03; the control spec itself says "post-2010 attenuation expected"). So Ruler-v2 is behaving correctly, not committing a Type-II.
+
+**What I explicitly did NOT do (integrity)**: I drafted a refinement to `ruler_v2_r4_summary` that excluded significance-core-failing positives from the Type-II count (which would have made R4 read CLEAN). An independent Opus methodology review flagged it as **GOALPOST-MOVING**: it was a post-hoc carve-out added in the same step that declared victory, it uniquely targeted the one failing control, and — decisively — it used the discredited legacy path-t core to define "genuinely significant," which structurally blinds R4 to the exact regime-heterogeneous Type-II Ruler v2 exists to catch. **Reverted it.** A flip on a same-step redefinition is precisely the "silent goalpost move" RULER_V2_DESIGN.md §3 forbids.
+
+**Rationale**: The substantive gate behavior is correct on the full set, but turning "NOT CLEAN" into "CLEAN" requires a JUDGMENT CALL about xmom's classification that must not be made unilaterally right before a live flip. The honest state: R4 is clean on the real edges (tsmom) + nulls + leaky; the one blemish is a labeled-positive that is independently-documented-dead.
+
+**Consequences**: The flip is BACK to an explicit owner decision with these options: **(a)** accept xmom as a documented correct-rejection (footnote, strict R4 definition unchanged) and flip; **(b)** RECLASSIFY `xmom_12_1` from `positive_alpha` → `known_marginal` as a deliberate, dated, pre-stated registry/spec amendment (justified by the 2026-06-03 cross-sectional-momentum-dead decision) BEFORE re-reading the verdict, then flip; **(c)** hold dark. Ruler v2 stays DARK; live book unchanged (trend-only 25% + cash). The strict `ruler_v2_r4_summary` is unchanged on main (no carve-out shipped).
+
+---
+
 ## 2026-06-13 (later) — Ruler-v2 R4 remediation (1)+(2) → R4 now CLEAN on the decisive controls
 
 **Context**: The earlier R4 run (same day) was NOT CLEAN for two reasons (artifact A: diversifiers mis-routed through Track-A; real leak B: plausibility-only PAPER admitted a lucky null). Owner directed: "do 1 then 2." Implemented both as DARK ruler_v2 PAPER changes; independent Opus deep-dive = SHIP (Monte-Carlo-verified). Re-ran the decisive controls (artifact `logs/gate_calibration_20260613.json`).
