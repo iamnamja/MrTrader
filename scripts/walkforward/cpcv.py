@@ -706,8 +706,8 @@ class CPCVResult:
         if self.residual_alpha_t_hac is not None:
             _ra_flag = ("real-alpha" if self.residual_alpha_t_hac >= 2.0
                         else "weak" if self.residual_alpha_t_hac >= 1.0 else "BETA-DRIVEN")
-            print(f"  Residual-α t (HAC): {self.residual_alpha_t_hac:+.2f}  "
-                  f"β={self.residual_beta:+.2f}  hedged-Sharpe={self.residual_sharpe:+.3f}  "
+            print(f"  Residual-alpha t (HAC): {self.residual_alpha_t_hac:+.2f}  "
+                  f"beta={self.residual_beta:+.2f}  hedged-Sharpe={self.residual_sharpe:+.3f}  "
                   f"(n={self.residual_n}; diagnostic, not gating) [{_ra_flag}]")
         from app.ml.retrain_config import (
             DSR_SATURATION_P, SHARPE_IMPLAUSIBILITY_CEILING, MIN_DEPLOYMENT_PCT_WARN,
