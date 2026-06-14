@@ -1,6 +1,28 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-06-06
+**Last updated:** 2026-06-14
+
+---
+
+## 🎯 ACTIVE PLAN — Alpha-v7 next: Sleeve Lab + orthogonal deep-history premia (2026-06-14)
+
+**SSOT:** `docs/reference/ALPHA_V7_RESEARCH_SYNTHESIS_2026-06-14.md` (synthesis of the 5-LLM panel — Opus 4.8/ChatGPT/DeepSeek/Gemini/Grok; inputs archived `docs/archive/llm-reviews/2026-06-14/`). Supersedes the prior Alpha-v7 blueprint for *direction*. **Context:** Ruler v2 is LIVE (both gates); the honest candidate sweep found no new model (trend is the only edge). Panel consensus: build a 3–5 sleeve premia book around trend at a realistic **book SR 0.7–0.9** on **deep free history** (19y ETFs / FRED); frozen 4y options for *conditioning* only.
+
+| Phase | Item | Why | Effort | Status |
+|---|---|---|---|---|
+| **F0** | **Sleeve Lab** — unify the sleeve research→Ruler-v2(Track-A+B)→sleeve_allocator→report pipeline into ONE tested module + a sleeve registry; retire bespoke `run_*_cpcv` scripts. | The future-proof, hardened substrate that makes every future premia a small uniform declaration. | ~1–2wk | ⬜ NEXT |
+| **F1** | **Structural premia + crash governor** — turn-of-month / FOMC / overnight-gap sleeves + a VIX-term de-risking overlay (governor). | Most orthogonal-to-trend, most powered (high event count), cheapest, owned data, no spread wall. | ~1–2wk | ⬜ |
+| **F2** | **Slow ETF relative-value** — pre-registered log-spread mean-reversion across ~6–8 economically-linked ETF pairs; slow, vol-targeted. | Orthogonal (mean-reversion vs trend), deep-history; NOT the killed high-turnover reversal. | ~1wk | ⬜ |
+| **F3** | **Carry done right (small)** — rates/curve roll-down (FRED) + FX rate-diff; skip commodity (no clean futures). Judge on CRISIS correlation. | Real but crisis-correlated + likely overlaps TSMOM → small. | ~1–2wk | ⬜ |
+| **F4** | **Options-conditioned event interaction** — continuous, pre-registered interaction regression on the owned event panel × frozen options features (event_inference two-way CGM; NOT a threshold filter). | Long shot; uses owned data; weak priors. | ~1–2wk | ⬜ |
+| **F5** | **Book assembly + live fidelity** — sleeve_allocator book CPCV when ≥2 sleeves pass; replay-diff before scaling. | Turn passing sleeves into a book. | ongoing | ⬜ |
+| **Deferred** | cross-asset trend via **futures** (Norgate + futures acct) · aggregate **short-interest timing** (FINRA backfill) · index-**VRP ETP** (dangerous, last). | Data/infra-gated or dangerous — only when a precondition is met. | — | ⬜ |
+
+**Each sleeve:** ONE pre-registered design (no sweeps), CPCV on the deepest window, Track-B vs the *current* book, kill-fast if no value outside one crisis. Build → independent Opus deep-dive → tests → no-drift docs → merge.
+
+---
+
+**Prior — Last updated:** 2026-06-06
 **Capital:** $100k (paper)
 **Status:** 🎯 **ALPHA-v7 — OPERATE A PREMIA BOOK** (active, 2026-06-12). SSOT: **`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`**. Alpha-v6 is COMPLETE — every pre-registered hypothesis (H1/H2/H3/H4a–e/P5) KILLED/DEMOTED/PARKED. A 4-LLM panel (2026-06-12) converged: the gate is a **Type-II machine on ≤4y data** (so the all-kill was partly geometry), standalone US-equity/free-data alpha is **genuinely exhausted**, and the move is to **re-charter from "find alpha" to operate a 3–5 sleeve premia book judged at the BOOK level (Track B), target book SR ~0.8–1.0.** Phases: A recovery re-tests (P5 L/S overlay + noise-pile + TSMOM audit, no new data) · B Ruler-v2 (retire path-t → HAC-SR+bootstrap+PBO; invert tiers; residual-α primary) · C trend expansion (futures/FX/crypto) · D live fidelity (replay-diff) · E index-VRP via ETP. Sharpens Alpha-v6's two-track + registry substrate. (Prior Alpha-v6 section below remains the executed record.)
 
