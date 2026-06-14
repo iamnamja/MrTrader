@@ -6,15 +6,17 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## 🧭 NOW (2026-06-14, executing): Alpha-v7 F1 — ⭐ VIX-term crash governor MODESTLY HELPS (first positive; owner-gated candidate)
+## 🧭 NOW (2026-06-14, executing): Alpha-v7 F1+F2 done — governor is the ONLY candidate so far; additive sleeves all fail
 
-**Owner gave go-ahead to execute the full F0→F5 plan autonomously (Opus each step; document/email/merge; promote-to-live stays owner-gated).**
-- **F0 Sleeve Lab — MERGED (#484):** uniform `Sleeve`→`evaluate_sleeve` (CPCV→Ruler-v2 Track-A+B→`SleeveReport`) + registry + `assemble_book`. Report-only.
-- **F1a — turn_of_month + overnight: BOTH FAIL, MERGED (#485).** Clear the plausibility SR floor (0.320/0.344) but miss HAC significance (p 0.097/0.087) and decisively fail Track-B (overnight is timed SPY beta the book already holds). Opus-verified honest. No promotion.
-- **F1b — ⭐ VIX-term crash governor: MODESTLY HELPS (first positive).** Built the overlay eval path (`Overlay`/`evaluate_overlay` in `sleeve_lab.py`) + `app/strategy/crash_governor.py` (de-risk on VIX>VIX3M backwardation; PIT t→t+1). On the live trend book 2007→2026: maxDD −13.9%→−12.1%, Calmar 0.469→0.501, Sharpe flat (−0.003), **COVID DD −10.7%→−6.5%**; ~0.5%/yr give-up; de-risks 11% of days. Opus-verified HONEST + PIT + robust (36-cell grid). **It's a risk-manager, not a Sharpe-booster; the real cost is the give-up and the tail win is COVID-concentrated. → FIRST candidate for the owner: promotion re-times live exposure, so it's an OWNER decision. NOT promoted.**
-- **NEXT: F2** slow ETF relative-value. (F1c FOMC drift deferred-conditional on a clean date list.)
+**Owner gave go-ahead to execute the full F0→F5 plan autonomously (Opus each step; document/email/merge; promote-to-live stays owner-gated).** Scoreboard:
+- **F0 Sleeve Lab — MERGED (#484):** uniform `Sleeve`→`evaluate_sleeve` + overlay path + registry + `assemble_book`. Report-only.
+- **F1a turn_of_month + overnight — BOTH FAIL (#485):** miss HAC significance + don't diversify (timed SPY beta). No promotion.
+- **F1b ⭐ VIX-term crash governor — MODESTLY HELPS (#486):** on the live trend book 2007→2026, maxDD −13.9→−12.1%, Calmar 0.469→0.501, Sharpe flat, **COVID DD −10.7→−6.5%**; ~0.5%/yr give-up. Opus-verified honest+PIT+robust. **The ONE candidate so far — owner-gated (re-times live exposure). NOT promoted.**
+- **F1c FOMC drift — DEFERRED:** same additive-SPY-beta shape that failed Track-B + date-list bug risk; low EV (recorded, not silently dropped).
+- **F2 ETF relative-value — FAIL:** genuinely orthogonal (corr −0.23 — the diversification F1a lacked) but ~zero standalone edge (point_SR 0.026); every grid cell below the 0.30 floor net of cost. Opus-verified honest. No promotion. **Learning: standalone return — not orthogonality — is the binding constraint on free daily US data.**
+- **NEXT: F3** carry done right (rates/FX roll-down, small; judge on crisis correlation).
 
-**⚠️ OWNER DECISION PENDING (non-blocking): adopt the VIX-term crash governor as a live book overlay?** Modest but real tail protection at a small return cost. Everything else stays report-only. Live book unchanged (trend-only 25% + cash).
+**⚠️ OWNER DECISION PENDING (non-blocking): adopt the VIX-term crash governor as a live book overlay?** It's the only thing that's worked (modest tail protection, ~flat Sharpe). Everything else is report-only. Live book unchanged (trend-only 25% + cash).
 
 ---
 

@@ -4,6 +4,28 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F2) — ETF relative-value: FAIL (genuinely orthogonal, but no standalone edge)
+
+**Context**: F2 of the plan — `app/strategy/etf_relative_value.py`, a slow dollar-neutral log-spread mean-reversion sleeve over 5 pre-registered economically-linked pairs (QQQ/SPY, IWM/SPY, HYG/IEF, TLT/IEF, EEM/EFA), canonical config (lookback 120, entry z 1.5, exit 0.5, 2bp/leg), equal-weight, declared `diversifier`. Chosen over more calendar premia precisely because it is MARKET-NEUTRAL (not timed beta), so it could in principle diversify the trend book where F1a could not.
+
+**Verdict (FAIL, no promotion)**: deep history 2007→2026 (~3661 OOS): point_SR +0.026, mean_SR +0.110, path_t +0.62, HAC p(1s) 0.458 → PAPER FAIL (no standalone edge). Track-B FAIL: **corr −0.230** (it IS genuinely orthogonal — the diversification the calendar premia lacked) but standalone SR ≈ 0, so appraisal_IR +0.10 / ΔSR −0.011 / P(ΔSR>0) 0.46 — a zero-return diversifier contributes nothing to book SR.
+
+**Rationale / integrity**: Independent Opus adversarial review — HONEST, no bug. The spread SIGN is correct (long-spread when z below −entry = long the cheap leg, P&L +(rA−rB)), PIT clean (z lagged by shift(1)), cost fair (4bp/round-trip on liquid ETFs). A grid diagnostic (NOT used for selection — the canonical config is pre-registered) shows EVERY {lookback ∈ 60/120/250 × entry ∈ 1.0/1.5/2.0} cell stays below the 0.30 paper floor net of cost (best, L=60, net SR 0.19 — still a fail); per-pair only IWM/SPY (+0.22) and EEM/EFA (+0.20) are positive, so the equal-weight combine is not masking a hidden winner. The edge is genuinely weak/absent net of cost, not a wiring artifact.
+
+**Consequences**: Nothing promoted; live book unchanged. The sleeve + registry entry are kept as tested infrastructure; verdict recorded so it isn't blind-retested. KEY LEARNING: the binding constraint for an additive sleeve is **standalone return**, not orthogonality — F2 had the orthogonality (corr −0.23) the calendar premia lacked but still failed for lack of edge. This sharpens the remaining priors: free daily US data offers no easy standalone premium. NEXT: F3 (carry done right, small).
+
+---
+
+## 2026-06-14 (F1c) — FOMC pre-announcement drift: DEFERRED (not built)
+
+**Context**: F1c of the plan was a conditional ("only if a clean 2007–2026 FOMC date list is feasible without bug risk").
+
+**Decision (owner-discipline call): DEFER — do not build now.** Two reasons: (1) **Low EV** — FOMC pre-announcement drift is a long-SPY-in-a-window strategy, structurally the SAME additive-SPY-beta shape that just made turn-of-month and overnight FAIL Track-B (positive correlation with the trend book → won't diversify). (2) **Bug risk** — the repo has no clean in-repo FOMC date series before 2026 (`app/calendars/macro.py` holds only FOMC_2026); hand-assembling ~144 dates is error-prone and a wrong date silently biases the window. Building a low-EV, bug-prone sleeve violates the owner's "best, not fast / avoid bugs" mandate.
+
+**Consequences**: F1c skipped (recorded, not silently dropped). If a clean historical FOMC/event-date source is later wired (e.g. for F4's event panel), this can be revisited cheaply as a registry declaration. Net F1 result: the additive calendar premia (TOM, overnight) FAIL; the VIX-term crash governor (overlay) MODESTLY HELPS and is the one F1 candidate.
+
+---
+
 ## 2026-06-14 (F1b) — VIX-term crash governor: MODESTLY HELPS → first candidate overlay (owner-gated)
 
 **Context**: Built the overlay evaluation path the F0 review flagged as missing — `Overlay` / `evaluate_overlay` / `OverlayReport` in `sleeve_lab.py` (a book-MODIFYING signal judged book-WITH vs WITHOUT on tail metrics, not Track-A significance) — plus the first overlay, `app/strategy/crash_governor.py`: de-risk the book's exposure when the VIX term structure inverts (VIX > VIX3M = backwardation = acute stress), signal read at close t and applied to t+1 (PIT-safe via shift).
