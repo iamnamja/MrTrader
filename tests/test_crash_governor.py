@@ -204,3 +204,26 @@ def test_governor_helper_exception_fails_safe(monkeypatch):
     from app.live_trading.trend_sleeve import _crash_governor_multiplier
     _patch_governor(monkeypatch, raise_load=True)
     assert _crash_governor_multiplier(db=None) == 1.0     # any error -> 1.0, never raises
+
+
+def test_macro_refresh_timeout_does_not_block(monkeypatch):
+    """A hanging update_macro_history must NOT block the rebalance — the bounded refresh
+    returns within ~timeout, not the (much longer) fetch duration."""
+    import time
+    from app.live_trading.trend_sleeve import _refresh_macro_history_bounded
+    monkeypatch.setattr("app.data.macro_history.update_macro_history",
+                        lambda: time.sleep(5))      # simulate a network hang
+    t0 = time.monotonic()
+    _refresh_macro_history_bounded(timeout_s=0.2)   # must return ~immediately
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0, f"bounded refresh blocked for {elapsed:.1f}s (timeout not enforced)"
+
+
+def test_macro_refresh_swallows_errors(monkeypatch):
+    """update_macro_history raising must not propagate (best-effort)."""
+    from app.live_trading.trend_sleeve import _refresh_macro_history_bounded
+
+    def _boom():
+        raise RuntimeError("network down")
+    monkeypatch.setattr("app.data.macro_history.update_macro_history", _boom)
+    _refresh_macro_history_bounded(timeout_s=2.0)    # returns cleanly, no raise
