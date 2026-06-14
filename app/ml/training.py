@@ -2264,77 +2264,128 @@ class ModelTrainer:
         # inhomogeneous-row filtering to pick the correct feature_names list.
         _all_sym_names_by_len: Dict[int, List[str]] = {}
 
-        # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
-        with multiprocessing.Manager() as _mgr:
-            _progress_q = _mgr.Queue()
+        done = 0
+        total_rows = 0
+        n_syms = len(trading_symbols)
 
-            executor = ProcessPoolExecutor(max_workers=self.n_workers)
+        def _consume_result(symbol, result):
+            """Fold one symbol's worker output into the shared accumulators. Single source
+            of truth for both the parallel and serial execution paths (mutates the
+            enclosing lists/attrs; reads `done` for the checkpoint cadence)."""
             try:
-                futures = {
-                    executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
-                    for symbol, df in trading_symbols.items()
-                }
-                done = 0
-                total_rows = 0
-                for future in as_completed(futures):
-                    done += 1
-                    # Drain progress queue for logging every 50 completions
-                    while not _progress_q.empty():
-                        try:
-                            _, n_rows = _progress_q.get_nowait()
-                            total_rows += n_rows
-                        except Exception:
-                            break
-                    if done % 50 == 0 or done == len(futures):
-                        logger.info("  OK  %d / %d symbols  |  ~%dk rows", done, len(futures), total_rows // 1000)
-                    try:
-                        sym_X, sym_y, sym_meta, sym_cache, sym_names = future.result()
-                        X_rows.extend(sym_X)
-                        y_vals.extend(sym_y)
-                        meta_rows.extend(sym_meta)
-                        pending_cache.extend(sym_cache)
-                        if not self._last_feature_names and sym_names:
-                            self._last_feature_names = sym_names
-                        # Collect all (names, row_len) pairs so we can pick the right
-                        # feature_names after inhomogeneous-row filtering (see below).
-                        if sym_names and sym_X:
-                            _all_sym_names_by_len.setdefault(len(sym_X[0]), sym_names)
-                    except Exception as exc:
-                        logger.warning("Symbol %s failed: %s", futures[future], exc)
-                    else:
-                        _completed_symbols.add(futures[future])
+                sym_X, sym_y, sym_meta, sym_cache, sym_names = result
+                X_rows.extend(sym_X)
+                y_vals.extend(sym_y)
+                meta_rows.extend(sym_meta)
+                pending_cache.extend(sym_cache)
+                if not self._last_feature_names and sym_names:
+                    self._last_feature_names = sym_names
+                # Collect all (names, row_len) pairs so we can pick the right
+                # feature_names after inhomogeneous-row filtering (see below).
+                if sym_names and sym_X:
+                    _all_sym_names_by_len.setdefault(len(sym_X[0]), sym_names)
+            except Exception as exc:
+                logger.warning("Symbol %s failed: %s", symbol, exc)
+            else:
+                _completed_symbols.add(symbol)
 
-                    # Save checkpoint every 50 completions
-                    if done % 50 == 0:
-                        try:
-                            with open(_ckpt_path, "wb") as _f:
-                                _pickle.dump({
-                                    "X_rows": X_rows, "y_vals": y_vals, "meta_rows": meta_rows,
-                                    "pending_cache": pending_cache,
-                                    "completed_symbols": _completed_symbols,
-                                    "feature_names": self._last_feature_names,
-                                }, _f)
-                        except Exception as _exc:
-                            logger.debug("Checkpoint save failed: %s", _exc)
-            finally:
+        def _save_checkpoint():
+            """Persist the resume checkpoint. Called from the loop body every 50 iterations
+            (regardless of per-symbol success — matches the original cadence so a failed
+            boundary symbol can't skip a checkpoint)."""
+            try:
+                with open(_ckpt_path, "wb") as _f:
+                    _pickle.dump({
+                        "X_rows": X_rows, "y_vals": y_vals, "meta_rows": meta_rows,
+                        "pending_cache": pending_cache,
+                        "completed_symbols": _completed_symbols,
+                        "feature_names": self._last_feature_names,
+                    }, _f)
+            except Exception as _exc:
+                logger.debug("Checkpoint save failed: %s", _exc)
+
+        if self.n_workers and self.n_workers > 1:
+            # Parallel path — one subprocess per worker (production retrains use --workers 8).
+            # Manager queue required on Windows for cross-process passing to ProcessPoolExecutor
+            with multiprocessing.Manager() as _mgr:
+                _progress_q = _mgr.Queue()
+
+                executor = ProcessPoolExecutor(max_workers=self.n_workers)
                 try:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
-                procs = getattr(executor, "_processes", None) or {}
-                for p in list(procs.values()):
+                    futures = {
+                        executor.submit(_process_symbol_windows_worker, *_sym_args(symbol, df)): symbol
+                        for symbol, df in trading_symbols.items()
+                    }
+                    for future in as_completed(futures):
+                        done += 1
+                        # Drain progress queue for logging every 50 completions
+                        while not _progress_q.empty():
+                            try:
+                                _, n_rows = _progress_q.get_nowait()
+                                total_rows += n_rows
+                            except Exception:
+                                break
+                        if done % 50 == 0 or done == n_syms:
+                            logger.info("  OK  %d / %d symbols  |  ~%dk rows", done, n_syms, total_rows // 1000)
+                        try:
+                            _res = future.result()
+                        except Exception as exc:
+                            logger.warning("Symbol %s failed: %s", futures[future], exc)
+                            _res = None
+                        if _res is not None:
+                            _consume_result(futures[future], _res)
+                        # Save checkpoint every 50 completions (loop-body cadence, like
+                        # the original — runs even when the boundary symbol failed).
+                        if done % 50 == 0:
+                            _save_checkpoint()
+                finally:
                     try:
-                        if p.is_alive():
-                            p.terminate()
+                        executor.shutdown(wait=False, cancel_futures=True)
                     except Exception:
                         pass
-                for p in list(procs.values()):
+                    procs = getattr(executor, "_processes", None) or {}
+                    for p in list(procs.values()):
+                        try:
+                            if p.is_alive():
+                                p.terminate()
+                        except Exception:
+                            pass
+                    for p in list(procs.values()):
+                        try:
+                            p.join(timeout=2.0)
+                            if p.is_alive():
+                                p.kill()
+                        except Exception:
+                            pass
+        else:
+            # Serial in-process path (n_workers <= 1). Behaviour-identical to a 1-worker
+            # pool but WITHOUT spawning a subprocess + Manager — avoids the nested
+            # process-pool CPU oversubscription that occurs when a build runs INSIDE a
+            # pytest-xdist worker (the root cause of the test_build_train_matrix_is_non_empty
+            # CI timeout flake) and removes pointless IPC/Parquet overhead for 1-worker runs.
+            # Uses a plain in-process queue so _process_symbol_windows_worker's progress
+            # writes still have a sink.
+            import queue as _queue_mod
+            _progress_q = _queue_mod.Queue()
+            for symbol, df in trading_symbols.items():
+                try:
+                    _res = _process_symbol_windows_worker(*_sym_args(symbol, df))
+                except Exception as exc:
+                    logger.warning("Symbol %s failed: %s", symbol, exc)
+                    _res = None
+                done += 1
+                while not _progress_q.empty():
                     try:
-                        p.join(timeout=2.0)
-                        if p.is_alive():
-                            p.kill()
+                        _, n_rows = _progress_q.get_nowait()
+                        total_rows += n_rows
                     except Exception:
-                        pass
+                        break
+                if done % 50 == 0 or done == n_syms:
+                    logger.info("  OK  %d / %d symbols  |  ~%dk rows", done, n_syms, total_rows // 1000)
+                if _res is not None:
+                    _consume_result(symbol, _res)
+                if done % 50 == 0:
+                    _save_checkpoint()
 
         # Delete checkpoint on successful completion
         try:
