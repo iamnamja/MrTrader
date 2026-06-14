@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 — 5-LLM research panel synthesized → game plan: Sleeve Lab + orthogonal deep-history premia (Alpha-v7 next)
+
+**Context**: After the Ruler-v2 go-live + the honest candidate sweep (only trend survived), posted a research-request pack to 5 external quant LLMs (Opus 4.8, ChatGPT, DeepSeek, Gemini, Grok) asking for the best next steps to find alpha. All five returned. Synthesized into `docs/reference/ALPHA_V7_RESEARCH_SYNTHESIS_2026-06-14.md` (the new direction SSOT); inputs archived at `docs/archive/llm-reviews/2026-06-14/`.
+
+**Decision (owner, after deep read of all five)**:
+- **Accept the unanimous picture**: kills are honest, trend is the only edge, build a **3–5 sleeve risk-premia book around trend at a realistic book SR ~0.7–0.9** (not a home run), every new bet on **deep free history** (19y ETFs / decades of FRED), the 4y frozen options only for *conditioning*.
+- **Adjudicated divergences**: (1) power is binding ONLY for the retired path-t / 4y options — on 19y daily data it is NOT (the dead candidates died on zero edge, not power); so new bets must be deep-history AND mechanism-backed. (2) Carry deserves a *proper* retest (roll-down, not distribution-yield) but is crisis-correlated + likely overlaps TSMOM → medium priority, sized small. (3) Trend-breadth is largely SPENT (live universe already cross-asset; P5 broadening failed; real extension needs futures) → deferred.
+- **The future-proof investment (owner's emphasis on best-not-fast/hardened)**: build a **Sleeve Lab** FIRST — a uniform, tested sleeve research→Ruler-v2(Track-A+B)→sleeve_allocator→report pipeline + a sleeve registry, retiring the bespoke `run_*_cpcv` scripts. Makes every future premia idea a small, uniform, hardened declaration.
+- **Phased plan** (see SSOT): **F0** Sleeve Lab · **F1** structural/calendar/overnight premia + a VIX-term crash governor (highest-EV: most orthogonal, most powered, cheapest, owned data) · **F2** slow ETF relative-value · **F3** carry-done-right (small) · **F4** options-conditioned event interaction (long shot) · **F5** book assembly + live fidelity. Deferred/data-gated: cross-asset trend via futures (Norgate), aggregate short-interest timing (FINRA backfill), index-VRP ETP (dangerous, last).
+
+**Rationale**: on free daily US data the cross-sectional IC is ≈0, so breadth is the only lever and trend is the canonical breadth play; the highest-marginal-value work is the reusable Lab + the two cheapest *orthogonal* premia + a crash governor — not more gate machinery (the rigor is sufficient) and not more model variants on already-killed lines.
+
+**Consequences**: `MASTER_BACKLOG` updated with F0–F5 as THE active plan; the prior Alpha-v7 7-phase blueprint is superseded for direction by this synthesis. No live/code change yet — this is the plan; execution (starting F0) is the next session's work on owner go-ahead. Live book unchanged (trend-only 25% + cash). Honest expectation: likely a 2–3 sleeve book; if nothing new passes on free data, the decision becomes operational-excellence + a deliberate data buy (Norgate), not more searching.
+
+---
+
 ## 2026-06-13 (Track-B GO-LIVE) — wired the run_book_gate dispatcher + flipped TRACKB_MODE → ruler_v2
 
 **Context**: The GATE_MODE go-live audit (entry below) found that flipping `TRACKB_MODE` would be an INERT no-op — no runner dispatched on it (`run_book_gate.py` hardcoded `book_delta_gate`). This change wires the dispatcher and completes the Track-B side of the migration.
