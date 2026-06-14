@@ -401,7 +401,14 @@ below threshold. See HIGH-3."""
 #                  P(SR>0)≥0.95 + multi-factor residual-α + bootstrap + PBO + power
 #                  floor. See docs/reference/RULER_V2_DESIGN.md. The significance/
 #                  mean_sharpe branches are byte-for-byte untouched.
-GATE_MODE: str = "significance"   # "significance" | "mean_sharpe" (legacy) | "ruler_v2" (dark)
+GATE_MODE: str = "ruler_v2"   # "ruler_v2" (LIVE 2026-06-13) | "significance" (prior default, now legacy) | "mean_sharpe" (legacy)
+# ── 2026-06-13 GO-LIVE: GATE_MODE flipped significance → ruler_v2 (owner-approved,
+# AFTER TRACKB_MODE) after R4 came back CLEAN on the full control set (tsmom positives
+# clear via the diversifier waiver + significance; all true-nulls dead via the PAPER
+# HAC-significance floor; leaky rejected; xmom reclassified known_marginal as a logged
+# correct-reject). Full suite green under the flip except the calibration harness, now
+# decoupled from GATE_MODE. The "significance" branch is retained as legacy (callers can
+# still request it) exactly as "mean_sharpe" was kept when significance went live.
 
 # Two tiers:
 #   PAPER   — forward-validate, deploy to paper, NO real capital.
@@ -468,7 +475,15 @@ RULERV2_REGIME_WAIVED_TYPES: tuple = ("diversifier", "risk_premium")
 # residual-α + bootstrap), preserving the two-tier split.
 RULERV2_PAPER_MAX_HAC_P: float = 0.05
 # ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
-TRACKB_MODE: str = "book_delta"             # "book_delta" (legacy) | "ruler_v2" (dark; Phase 3)
+TRACKB_MODE: str = "book_delta"             # "book_delta" (live) | "ruler_v2" (gate logic built+tested, NOT yet wired)
+# ── 2026-06-13: TRACKB_MODE stays "book_delta". The Ruler-v2 Track-B GATE LOGIC
+# (track_b_appraisal.appraise_track_b) is built, tested, and live-ready, BUT no runner
+# dispatches on TRACKB_MODE yet — scripts/run_book_gate.py still hardcodes
+# book_delta_gate. Flipping the constant alone would be an INERT no-op (caught by the
+# go-live Opus audit). Wiring the run_book_gate dispatcher (+ adapting its report/
+# registry to the TrackBAppraisalResult shape) is the remaining Phase-3 step; flip this
+# to "ruler_v2" THEN, when a real diversifier candidate is actually queued. (GATE_MODE
+# — the Track-A go-live — IS live as of 2026-06-13.)
 RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)
 # OD-5 block-bootstrap P(ΔSR>0). Owner-ratified 2026-06-13: 0.85 → 0.90 — 0.85 was a weak
 # significance bar (~1-in-7 false adds); 0.90 aligns nearer the 0.95 used everywhere else

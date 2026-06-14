@@ -4,7 +4,12 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-13
+
+---
+
+## 🚦 GATE GO-LIVE — `GATE_MODE` = `ruler_v2` (2026-06-13, #479)
+The **production Track-A promotion gate is now Ruler v2** (`app/ml/retrain_config.py::GATE_MODE` flipped `significance`→`ruler_v2`). The NEXT retrain/promotion is gated by it: PAPER = plausibility + a light HAC-SR significance floor + diversifier regime waiver; CAPITAL = Bayesian posterior + structural live-paper + multi-factor residual-α + bootstrap + power floor. Flipped after the R4 calibration came back CLEAN on the full control set (Opus-audited; no live break; reversible). The `significance` gate is retained as legacy. **`TRACKB_MODE` stays `book_delta`** (the ruler_v2 Track-B gate is built/tested but its runner dispatcher isn't wired yet). **No model promotion is pending — live book unchanged (trend-only 25% + cash); the flip changes only future gate calls.** Spec: `docs/reference/RULER_V2_DESIGN.md`; details: DECISIONS 2026-06-13 (GO-LIVE) + PIPELINE_ARCHITECTURE §7.0.
 
 ---
 

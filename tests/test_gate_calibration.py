@@ -703,6 +703,14 @@ class _StubResult:
         return all(ok for k, (_v, ok) in self._detail.items()
                    if k != "requires_human_review")
 
+    # _result_to_row scores the significance columns via these DIRECTLY (decoupled
+    # from GATE_MODE, 2026-06-13); the stub represents a significance-mode result.
+    def significance_gate_detail(self, tier="paper", **kw):
+        return self.gate_detail(tier=tier)
+
+    def significance_gate_passed(self, tier="paper", **kw):
+        return self.gate_passed(tier=tier)
+
     def requires_human_review(self):
         return False
 

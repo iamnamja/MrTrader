@@ -945,8 +945,13 @@ def _build_controls() -> Dict[str, ControlSpec]:
         "same sleeve, full 19y window - fully-powered should-pass anchor",
         "series_tsmom", years=TSMOM_LONG_YEARS, component_type="risk_premium")
     c["xmom_12_1"] = ControlSpec(
-        "xmom_12_1", "positive_alpha", 0.50,
-        "Jegadeesh-Titman 12-1 XS momentum decile L/S; post-2010 attenuation expected",
+        "xmom_12_1", "known_marginal", 0.50,
+        "Jegadeesh-Titman 12-1 XS momentum decile L/S. RECLASSIFIED 2026-06-13 "
+        "positive_alpha->known_marginal (owner-approved): post-2010 it is attenuated to "
+        "insignificance (realized meanSR 0.17, t 0.77; BOTH the significance core AND "
+        "Ruler-v2 reject it), and cross-sectional momentum was ruled dead 2026-06-03 "
+        "(DECISIONS). It is no longer a clean should-pass positive; a gate rejecting it "
+        "is CORRECT, so it must not count as a Ruler-v2 Type-II in the R4 check.",
         "series_xmom", years=FULL_WINDOW_YEARS)
     c["pead_baseline"] = ControlSpec(
         "pead_baseline", "known_marginal", 0.578,
@@ -1007,9 +1012,14 @@ def _fetch_shared_event_data(as_of: _date, years: int = FULL_WINDOW_YEARS) -> di
 def _result_to_row(spec: ControlSpec, result, *, window_start, window_end,
                    runtime_sec: float, smoke: bool, notes: str) -> CalibrationRow:
     from scripts.walkforward.gates import deflated_sharpe_ratio, N_TRIALS_TESTED
-    paper_detail = result.gate_detail(tier="paper")        # significance detail
-    paper_pass = result.gate_passed(tier="paper")
-    capital_pass = result.gate_passed(tier="capital")
+    # Calibration ALWAYS scores the significance columns via the significance gate
+    # DIRECTLY (not result.gate_detail/gate_passed, which DISPATCH on GATE_MODE) — so
+    # the OC table's significance columns + the recalibration rule are correct
+    # regardless of the live GATE_MODE (incl. after the flip to "ruler_v2"). The
+    # Ruler-v2 columns are computed separately below, also directly.
+    paper_detail = result.significance_gate_detail(tier="paper")
+    paper_pass = result.significance_gate_passed(tier="paper")
+    capital_pass = result.significance_gate_passed(tier="capital")
     _, dsr_p = deflated_sharpe_ratio(result.mean_sharpe, N_TRIALS_TESTED,
                                      result._dsr_n_obs())
     failed = [k for k, (_v, ok) in paper_detail.items() if not ok]

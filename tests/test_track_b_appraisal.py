@@ -154,8 +154,12 @@ def test_bootstrap_reproducible_with_seed():
     assert a.delta_sr_ci_low == b.delta_sr_ci_low
 
 
-def test_legacy_trackb_mode_untouched():
+def test_legacy_book_delta_gate_retained():
+    # 2026-06-13: TRACKB_MODE flipped to "ruler_v2" (live). The legacy book_delta gate
+    # is RETAINED (importable + callable) for reproducibility, exactly as mean_sharpe
+    # was kept when significance went live. (The mode itself is no longer asserted to a
+    # default — that is now an owner-controlled live setting.)
     import app.ml.retrain_config as rc
-    assert rc.TRACKB_MODE == "book_delta"               # ruler_v2 ships dark
+    assert rc.TRACKB_MODE in ("ruler_v2", "book_delta")
     from scripts.walkforward.book_gate import book_delta_gate   # still importable
     assert callable(book_delta_gate)
