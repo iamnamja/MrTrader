@@ -4,13 +4,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-13 (Track-B GO-LIVE) — wired the run_book_gate dispatcher + flipped TRACKB_MODE → ruler_v2
+
+**Context**: The GATE_MODE go-live audit (entry below) found that flipping `TRACKB_MODE` would be an INERT no-op — no runner dispatched on it (`run_book_gate.py` hardcoded `book_delta_gate`). This change wires the dispatcher and completes the Track-B side of the migration.
+
+**Decision**: `run_book_gate._evaluate(base, candidate, *, mode, …)` now dispatches on `TRACKB_MODE` — `"ruler_v2"` → `track_b_appraisal.appraise_track_b` (trend candidate declared `component_type="risk_premium"` → worst-regime backstop waived; budget-invariant appraisal IR + block-bootstrap P(ΔSR>0)); `"book_delta"` → legacy `book_delta_gate` (retained + tested). Added an ASCII `format_report(TrackBAppraisalResult)`. **`TRACKB_MODE` flipped `book_delta` → `ruler_v2` (LIVE)** — now that a dispatcher actually reads it. A ruler_v2 result is recorded under its OWN hypothesis_id (`TRACKB-TSMOM-VS-PEAD-RULERV2-20260613`, parent = the book-delta row) so criteria + result describe the same gate.
+
+**End-to-end live run (manual, report-only)**: tsmom_trend vs the PEAD book, 1496-day overlap, budget 0.25 → **VERDICT: PASS** (appraisal IR +0.881 ≥0.20; P(ΔSR>0) 0.976 ≥0.90; corr 0.286 <0.30; standalone vol-targeted SR 0.93; tail-overlap 0.071; residual-α t_HAC +2.11; worst-regime waived). i.e. under the budget-invariant gate, trend genuinely diversifies the (now-demoted) PEAD book.
+
+**Rationale**: completes the audit's MAJOR-1. `run_book_gate` stays a MANUAL, report-only tool (`decision='park'`, owner-gated, no auto-promotion, no cron) — flipping the mode only changes which gate that manual tool applies. The only behavioral reader of `TRACKB_MODE` is this runner.
+
+**Consequences**: Track-B v2 is the live Track-B gate; `book_delta` retained as legacy. Track-B book inclusion remains owner-gated (the PASS above is report-only; PEAD-as-base is stale post-demotion — point the runner at the live book when a real diversifier decision is on deck). Independent Opus deep-dive on the wiring: SHIP (no CRITICAL; code correct, ASCII-safe, manual/report-only).
+
+---
+
 ## 2026-06-13 (GO-LIVE) — GATE_MODE flipped significance → ruler_v2 (Ruler v2 is now the production Track-A gate)
 
 **Context**: After the R4 remediation (diversifier regime waiver + PAPER HAC-significance floor) and reclassifying xmom_12_1 → known_marginal (a documented correct-reject), the full-control-set R4 came back **CLEAN under the strict definition** (no carve-out): significant positives tsmom_4y/19y pass Ruler-v2 PAPER, all 5 true-nulls fail, leaky rejected. Owner approved the flip (reclassify-then-flip).
 
 **Decision**: **`GATE_MODE` flipped `significance` → `ruler_v2` (LIVE).** Ruler v2 is now the production Track-A promotion gate; PAPER = plausibility + a light HAC-SR significance floor + diversifier regime waiver; CAPITAL = Bayesian posterior + structural live-paper + residual-α + bootstrap + power floor. The `significance` branch is RETAINED as legacy (reachable via `significance_gate_*` and explicit mode), exactly as `mean_sharpe` was kept when significance went live.
 
-**`TRACKB_MODE` stays `book_delta` (NOT flipped).** The go-live Opus audit found that flipping `TRACKB_MODE` would be an INERT no-op — no runner dispatches on it (`scripts/run_book_gate.py` hardcodes `book_delta_gate`). The Ruler-v2 Track-B gate logic (`appraise_track_b`) is built/tested/live-ready; wiring the runner dispatcher (+ adapting its report/registry to the `TrackBAppraisalResult` shape) is the remaining Phase-3 step. Flip `TRACKB_MODE` THEN, when a real diversifier candidate is queued.
+**`TRACKB_MODE` stayed `book_delta` at GATE_MODE go-live (NOT flipped then).** The go-live Opus audit found that flipping it would have been an INERT no-op — no runner dispatched on it. **→ SUPERSEDED same day: the run_book_gate dispatcher was wired and `TRACKB_MODE` flipped to `ruler_v2` — see the "Track-B GO-LIVE" entry above.**
 
 **Verification**: independent Opus go-live audit = the GATE_MODE flip is mechanically correct (all callers route to ruler_v2; legacy branch reachable), causes NO live break (every `gate_detail` consumer iterates generically; no significance-only key is indexed live), is cleanly reversible, and rests on a legitimately-CLEAN strict R4. `gate_calibration` was DECOUPLED from GATE_MODE (significance OC columns now via `significance_gate_*` directly) so the calibration/recalibration rule stays correct under the new default. Full suite under the flip: only the known pre-existing local-only NFP test fails (3398 passed).
 

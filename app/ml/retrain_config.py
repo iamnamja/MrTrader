@@ -475,15 +475,14 @@ RULERV2_REGIME_WAIVED_TYPES: tuple = ("diversifier", "risk_premium")
 # residual-α + bootstrap), preserving the two-tier split.
 RULERV2_PAPER_MAX_HAC_P: float = 0.05
 # ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
-TRACKB_MODE: str = "book_delta"             # "book_delta" (live) | "ruler_v2" (gate logic built+tested, NOT yet wired)
-# ── 2026-06-13: TRACKB_MODE stays "book_delta". The Ruler-v2 Track-B GATE LOGIC
-# (track_b_appraisal.appraise_track_b) is built, tested, and live-ready, BUT no runner
-# dispatches on TRACKB_MODE yet — scripts/run_book_gate.py still hardcodes
-# book_delta_gate. Flipping the constant alone would be an INERT no-op (caught by the
-# go-live Opus audit). Wiring the run_book_gate dispatcher (+ adapting its report/
-# registry to the TrackBAppraisalResult shape) is the remaining Phase-3 step; flip this
-# to "ruler_v2" THEN, when a real diversifier candidate is actually queued. (GATE_MODE
-# — the Track-A go-live — IS live as of 2026-06-13.)
+TRACKB_MODE: str = "ruler_v2"               # "ruler_v2" (LIVE 2026-06-13) | "book_delta" (legacy)
+# ── 2026-06-13: TRACKB_MODE flipped book_delta → ruler_v2 now that scripts/run_book_gate.py
+# DISPATCHES on it (the go-live audit found the earlier flip would have been inert — no
+# dispatcher existed). The runner now routes to track_b_appraisal.appraise_track_b under
+# "ruler_v2" (budget-invariant appraisal IR + block-bootstrap P(dSR>0)) and the legacy
+# book_delta_gate under "book_delta" (retained + still tested). run_book_gate stays a
+# manual, report-only tool (decision='park'); flipping the mode just changes which gate
+# it applies. Track-B inclusion remains owner-gated, never auto-promoted.
 RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)
 # OD-5 block-bootstrap P(ΔSR>0). Owner-ratified 2026-06-13: 0.85 → 0.90 — 0.85 was a weak
 # significance bar (~1-in-7 false adds); 0.90 aligns nearer the 0.95 used everywhere else
