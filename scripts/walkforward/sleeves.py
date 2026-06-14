@@ -135,8 +135,57 @@ def run_sleeves(names=None, *, with_track_b: bool = True) -> Dict[str, object]:
     return reports
 
 
+# ──────────────────────────────────────────────────────────────────────────────────
+# Overlays (F1b) — the VIX-term crash governor (book-modifying, not an additive sleeve)
+# ──────────────────────────────────────────────────────────────────────────────────
+def fetch_vix_term(*, start: date = date(2007, 1, 1),
+                   end: Optional[date] = None) -> tuple:
+    """Deep ^VIX / ^VIX3M daily closes via yfinance (^VIX3M ~ 2008+). Returns (vix, vix3m)
+    Series. Direct fetch (not the 2018+ macro_history cache) to reach the 2008 GFC."""
+    import yfinance as yf
+    end = (end or _today()).isoformat()
+    out = {}
+    for tic, key in (("^VIX", "vix"), ("^VIX3M", "vix3m")):
+        df = yf.download(tic, start=start.isoformat(), end=end, progress=False,
+                         auto_adjust=True)
+        if df is None or df.empty:
+            raise RuntimeError(f"no data for {tic}")
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [str(c).lower() for c in df.columns]
+        out[key] = df["close"].dropna()
+    return out["vix"], out["vix3m"]
+
+
+def build_vix_term_governor(*, vix=None, vix3m=None, **cfg_kw):
+    """The VIX term-structure crash governor as a sleeve_lab.Overlay (de-risk on
+    backwardation). Fetches ^VIX/^VIX3M unless provided (for offline tests)."""
+    from scripts.walkforward.sleeve_lab import Overlay
+    from app.strategy.crash_governor import VixTermGovernorConfig, vix_term_multiplier
+    if vix is None or vix3m is None:
+        vix, vix3m = fetch_vix_term()
+    mult = vix_term_multiplier(vix, vix3m, VixTermGovernorConfig(**cfg_kw))
+    return Overlay(label="vix_term_governor", multiplier=mult,
+                   notes="de-risk the book to derisk_to when VIX>VIX3M (backwardation)")
+
+
+def run_governor(*, derisk_to: float = 0.5) -> object:
+    """Evaluate the VIX-term governor on the LIVE trend book (with vs without). Report-only."""
+    from scripts.walkforward.sleeve_lab import evaluate_overlay, format_overlay_report
+    base = live_trend_book_returns()
+    print(f"[base] live trend book: {base.index[0].date()} -> {base.index[-1].date()} "
+          f"({len(base)} days)")
+    overlay = build_vix_term_governor(derisk_to=derisk_to)
+    rep = evaluate_overlay(overlay, base)
+    print(format_overlay_report(rep))
+    return rep
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "governor":
+        run_governor()
+        return 0
     run_sleeves(argv or None)
     return 0
 

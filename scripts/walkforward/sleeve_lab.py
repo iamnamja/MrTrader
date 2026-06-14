@@ -425,6 +425,175 @@ def assemble_book(sleeves: List[Sleeve], *, scheme: str = "vol",
 
 
 # ──────────────────────────────────────────────────────────────────────────────────
+# Overlays (F1b) — a book-MODIFYING signal (e.g. a crash governor), NOT an additive
+# sleeve. Evaluated book-WITH vs book-WITHOUT, on tail metrics, not Track-A significance.
+# ──────────────────────────────────────────────────────────────────────────────────
+# Default crisis windows for the with/without tail comparison (ISO date ranges).
+DEFAULT_CRISIS_WINDOWS = {
+    "GFC_2008": ("2008-09-01", "2009-03-31"),
+    "COVID_2020": ("2020-02-15", "2020-04-30"),
+    "BEAR_2022": ("2022-01-01", "2022-10-31"),
+}
+
+
+@dataclass
+class Overlay:
+    """A book-modifying exposure overlay. `multiplier` is the AS-APPLIED daily exposure
+    scalar (typically in [0, 1]) — i.e. already lagged by the builder so that
+    `multiplier[t]` is knowable before day t and scales the book's day-t return. The
+    builder owns the PIT lag (e.g. signal at close[t-1] -> multiplier[t])."""
+    label: str
+    multiplier: pd.Series
+    notes: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.label:
+            raise ValueError("Overlay.label must be non-empty")
+        m = _clean_return_series(self.multiplier, name=f"{self.label} multiplier")
+        if (m < 0).any():
+            raise ValueError(f"{self.label}: multiplier has negative exposure")
+        self.multiplier = m
+
+
+def _ann_stats(r: pd.Series, ann: int = 252) -> dict:
+    """Annualized Sharpe / return / vol / maxDD / Calmar for a daily return series."""
+    r = r.dropna()
+    if len(r) < 2:
+        return {"sharpe": 0.0, "ann_ret": 0.0, "ann_vol": 0.0, "max_dd": 0.0, "calmar": 0.0}
+    mu, sd = float(r.mean()), float(r.std())
+    sharpe = float(mu / sd * np.sqrt(ann)) if sd > 0 else 0.0
+    growth = float((1.0 + r).prod())
+    years = len(r) / ann
+    ann_ret = float(growth ** (1.0 / years) - 1.0) if years > 0 and growth > 0 else float("nan")
+    eq = (1.0 + r).cumprod()
+    max_dd = float((eq / eq.cummax() - 1.0).min())
+    calmar = float(ann_ret / abs(max_dd)) if (max_dd < 0 and np.isfinite(ann_ret)) else 0.0
+    return {"sharpe": sharpe, "ann_ret": ann_ret, "ann_vol": float(sd * np.sqrt(ann)),
+            "max_dd": max_dd, "calmar": calmar}
+
+
+@dataclass
+class OverlayReport:
+    label: str
+    n_days: int
+    window_start: str
+    window_end: str
+    mean_multiplier: float
+    derisk_fraction: float          # fraction of days with multiplier < 1
+    without: dict                   # base book stats
+    with_: dict                     # overlaid book stats
+    d_sharpe: float
+    d_max_dd: float                 # with - without; >0 => shallower drawdown (better)
+    d_calmar: float
+    d_ann_ret: float
+    crisis: dict                    # {window: {without_dd, with_dd, dd_improve}}
+    improves_tail: bool
+    sharpe_preserved: bool
+
+    @property
+    def verdict(self) -> str:
+        if self.improves_tail and self.sharpe_preserved:
+            return "HELPS (shallower tail, Sharpe preserved)"
+        if self.improves_tail and not self.sharpe_preserved:
+            return "TRADES RETURN FOR TAIL (Sharpe hit)"
+        return "NO TAIL BENEFIT"
+
+    def to_dict(self) -> dict:
+        return {
+            "label": self.label, "n_days": self.n_days,
+            "window_start": self.window_start, "window_end": self.window_end,
+            "mean_multiplier": self.mean_multiplier, "derisk_fraction": self.derisk_fraction,
+            "without": self.without, "with": self.with_,
+            "d_sharpe": self.d_sharpe, "d_max_dd": self.d_max_dd,
+            "d_calmar": self.d_calmar, "d_ann_ret": self.d_ann_ret,
+            "crisis": self.crisis, "improves_tail": self.improves_tail,
+            "sharpe_preserved": self.sharpe_preserved, "verdict": self.verdict,
+        }
+
+
+def evaluate_overlay(overlay: Overlay, base_book_returns: pd.Series, *,
+                     crisis_windows: Optional[dict] = None, toggle_cost_bps: float = 1.0,
+                     sharpe_tolerance: float = 0.05) -> OverlayReport:
+    """Evaluate a book-modifying overlay by comparing the book WITH vs WITHOUT it on the
+    governor-active (overlapping) window. The overlaid return is
+    `multiplier[t] * base[t]` minus a small toggle cost on |Δmultiplier| (changing
+    exposure trades notional). Reports Sharpe/Calmar/maxDD deltas + per-crisis drawdown.
+    A crash governor is judged on TAIL improvement with Sharpe roughly preserved — NOT on
+    standalone significance (which is why it is not a Sleeve)."""
+    base = _clean_return_series(base_book_returns, name="base_book_returns")
+    mult = overlay.multiplier
+    aligned = pd.concat([base.rename("base"), mult.rename("mult")], axis=1,
+                        join="inner").dropna()
+    if len(aligned) < 2:
+        raise ValueError(f"{overlay.label}: overlay and book share <2 common dates")
+    n_union = len(base)
+    if n_union and len(aligned) < 0.5 * n_union:
+        log.warning("[sleeve_lab] evaluate_overlay %s: governor-active window is %d/%d book "
+                    "days (%.0f%%) - the overlay's data is shorter than the book history.",
+                    overlay.label, len(aligned), n_union, 100.0 * len(aligned) / n_union)
+    b = aligned["base"]
+    m = aligned["mult"]
+    toggle_cost = m.diff().abs().fillna(0.0) * (toggle_cost_bps / 1e4)
+    overlaid = (m * b - toggle_cost).rename("with")
+
+    without = _ann_stats(b)
+    with_ = _ann_stats(overlaid)
+    # maxDD are negative; with - without > 0 means the overlaid book drew down LESS.
+    d_max_dd = with_["max_dd"] - without["max_dd"]
+    d_sharpe = with_["sharpe"] - without["sharpe"]
+
+    crisis = {}
+    for name, (lo, hi) in (crisis_windows or DEFAULT_CRISIS_WINDOWS).items():
+        seg = aligned.loc[(aligned.index >= pd.Timestamp(lo)) & (aligned.index <= pd.Timestamp(hi))]
+        if len(seg) < 5:
+            continue
+        sb = seg["base"]
+        sov = seg["mult"] * seg["base"]
+        wo_dd = _ann_stats(sb)["max_dd"]
+        wi_dd = _ann_stats(sov)["max_dd"]
+        crisis[name] = {"without_dd": wo_dd, "with_dd": wi_dd, "dd_improve": wi_dd - wo_dd}
+
+    improves_tail = (d_max_dd > 0) and (with_["calmar"] >= without["calmar"])
+    sharpe_preserved = d_sharpe >= -abs(sharpe_tolerance)
+
+    return OverlayReport(
+        label=overlay.label, n_days=len(aligned),
+        window_start=str(aligned.index[0].date()), window_end=str(aligned.index[-1].date()),
+        mean_multiplier=float(m.mean()), derisk_fraction=float((m < 1.0).mean()),
+        without=without, with_=with_,
+        d_sharpe=d_sharpe, d_max_dd=d_max_dd,
+        d_calmar=with_["calmar"] - without["calmar"], d_ann_ret=with_["ann_ret"] - without["ann_ret"],
+        crisis=crisis, improves_tail=improves_tail, sharpe_preserved=sharpe_preserved)
+
+
+def format_overlay_report(rep: OverlayReport) -> str:
+    """Console-safe with/without summary for an overlay (e.g. crash governor)."""
+    L = []
+    bar = "=" * 78
+    L.append(bar)
+    L.append(f"  OVERLAY: {rep.label}")
+    L.append(bar)
+    L.append(f"  window {rep.window_start} -> {rep.window_end}   n_days={rep.n_days}  "
+             f"mean_mult={_fmt(rep.mean_multiplier, 3)}  derisk_days={rep.derisk_fraction:.1%}")
+    L.append("  " + "-" * 74)
+    L.append(f"  {'metric':12} {'without':>12} {'with':>12} {'delta':>12}")
+    for k, lab in (("sharpe", "Sharpe"), ("ann_ret", "AnnRet"), ("ann_vol", "AnnVol"),
+                   ("max_dd", "MaxDD"), ("calmar", "Calmar")):
+        L.append(f"  {lab:12} {rep.without[k]:>12.3f} {rep.with_[k]:>12.3f} "
+                 f"{rep.with_[k]-rep.without[k]:>+12.3f}")
+    if rep.crisis:
+        L.append("  " + "-" * 74)
+        L.append("  crisis maxDD (without -> with, +improve):")
+        for name, c in rep.crisis.items():
+            L.append(f"    {name:12} {c['without_dd']:>+8.3f} -> {c['with_dd']:>+8.3f}  "
+                     f"(improve {c['dd_improve']:>+.3f})")
+    L.append("  " + "-" * 74)
+    L.append(f"  VERDICT: {rep.verdict}")
+    L.append(bar)
+    return "\n".join(L)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────
 # ASCII reporting (no non-ASCII glyphs — Windows cp1252 console safe)
 # ──────────────────────────────────────────────────────────────────────────────────
 def _fmt(x, nd=3) -> str:

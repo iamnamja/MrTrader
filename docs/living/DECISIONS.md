@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F1b) — VIX-term crash governor: MODESTLY HELPS → first candidate overlay (owner-gated)
+
+**Context**: Built the overlay evaluation path the F0 review flagged as missing — `Overlay` / `evaluate_overlay` / `OverlayReport` in `sleeve_lab.py` (a book-MODIFYING signal judged book-WITH vs WITHOUT on tail metrics, not Track-A significance) — plus the first overlay, `app/strategy/crash_governor.py`: de-risk the book's exposure when the VIX term structure inverts (VIX > VIX3M = backwardation = acute stress), signal read at close t and applied to t+1 (PIT-safe via shift).
+
+**Verdict (MODESTLY HELPS — first positive of the F-series; NOT promoted)**: canonical config (derisk_to=0.5, ratio_threshold=1.0, confirm_days=1) on the live 10-ETF TSMOM book, 2007→2026 (n=4891):
+- maxDD −13.9% → −12.1% (+1.8pp), Calmar 0.469 → 0.501 (+0.032), Sharpe 0.723 → 0.720 (−0.003), AnnVol 9.3%→8.7%, at a ~0.5%/yr return give-up. De-risks 11% of days (mean multiplier 0.944).
+- Crisis maxDD: COVID-2020 −10.7% → −6.5% (notably shallower), GFC-2008 +0.4pp, BEAR-2022 +1.3pp.
+
+**Rationale / integrity**: Independent Opus adversarial review — HONEST, no fix needed. PIT verified (removing the t+1 shift jumps Sharpe to 1.038, i.e. the lag strips exactly the future info; the surviving benefit is real because backwardation persists). No GFC data gap (^VIX3M back-stitches the VXV index to 2007; 146 real GFC obs, no forward-fill). Config canonical (1.0 = the contango/backwardation boundary; 0.5 a round default) not tuned; robust across a 36-cell grid (maxDD improves in nearly every threshold≥1.0 cell; only threshold 0.95 — de-risking in contango — fails). The trend book does NOT already neutralize these days (realized vol 9.6% on de-risk days vs 8.3% otherwise), so the benefit is genuine marginal protection, not double-counting.
+
+**Honest caveats (recorded)**: the real cost is the −0.5%/yr return give-up, not the negligible Sharpe change; and the headline tail benefit is event-concentrated (COVID drives most of it). It is a risk-manager, not a Sharpe-booster.
+
+**Consequences**: The governor is the **first candidate worth the owner's consideration** as a book overlay. **Promotion to live is the owner's decision** — it re-times live exposure (a live behavior change), so it is NOT auto-applied; recorded report-only. Live book unchanged (trend-only 25% + cash). The overlay eval path is now permanent Sleeve-Lab infrastructure (closes the F0 overlay gap). NEXT: F2 (slow ETF relative-value).
+
+---
+
 ## 2026-06-14 (F1a) — calendar/overnight premia: BOTH FAIL → not added to the book
 
 **Context**: First sleeves built as registry declarations through the F0 Sleeve Lab — `app/strategy/calendar_premia.py` (vectorized PIT-safe turn-of-month + overnight backtests) + `scripts/walkforward/sleeves.py` (the registry + runner). Run report-only through the Lab on deep history (2007→2026, ~3661 pooled-OOS obs), each declared `risk_premium`, with Track-B vs the live 10-ETF trend book.
