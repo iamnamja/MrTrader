@@ -78,13 +78,19 @@ class TestFomcGate:
 # ─── NFP gate ─────────────────────────────────────────────────────────────────
 
 class TestNfpGate:
+    # These tests exercise the hardcoded NFP first-Friday FALLBACK heuristic. The FMP
+    # primary path (tried first) short-circuits whenever a key is configured — which is why
+    # this test passed in CI (no key) but failed locally (key present → live FMP call).
+    # Stub requests.get to force the deterministic, hermetic fallback path either way.
     def test_nfp_first_friday_detected(self):
         pm = _fresh_pm()
         # Find the first Friday of April 2026
         d = date(2026, 4, 1)
         while d.weekday() != 4:
             d += timedelta(days=1)
-        events = pm._fetch_macro_events(d.isoformat())
+        with patch("app.agents.premarket.requests.get",
+                   side_effect=RuntimeError("no network in test")):
+            events = pm._fetch_macro_events(d.isoformat())
         assert "NFP" in events
 
     def test_non_first_friday_not_nfp(self):
@@ -94,7 +100,9 @@ class TestNfpGate:
         while d.weekday() != 4:
             d += timedelta(days=1)
         second_friday = d + timedelta(weeks=1)
-        events = pm._fetch_macro_events(second_friday.isoformat())
+        with patch("app.agents.premarket.requests.get",
+                   side_effect=RuntimeError("no network in test")):
+            events = pm._fetch_macro_events(second_friday.isoformat())
         assert "NFP" not in events
 
     def test_nfp_blocks_intraday_before_10am(self):
