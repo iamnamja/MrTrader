@@ -282,10 +282,10 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
     if vol_floor_bind_frac > 0.10:
         warnings.append(
             f"vol-target floor bound on {vol_floor_bind_frac:.0%} of days "
-            "(> 10%) — the candidate's vol-targeting is unreliable")
+            "(> 10%) - the candidate's vol-targeting is unreliable")
     if not waived and worst_regime_sharpe is None:
         warnings.append(
-            "no worst_regime_sharpe for a non-diversifier component — "
+            "no worst_regime_sharpe for a non-diversifier component - "
             + ("WAIVED by explicit human sign-off (requires_human_review)"
                if regime_waiver_approved else
                "FAILING CLOSED (pass worst_regime_sharpe, declare it a "
@@ -307,6 +307,48 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
         vol_floor_bind_frac=vol_floor_bind_frac,
         checks=checks, failed_criteria=failed, warnings=warnings, passed=passed,
         verdict=("PASS" if passed else "FAIL"), criteria=criteria)
+
+
+def format_report(result: "TrackBAppraisalResult") -> str:
+    """Human-readable Track-B v2 appraisal report (ASCII; mirrors book_gate.format_report
+    so the run_book_gate runner can print either gate's result)."""
+    r = result
+    bar = "=" * 78
+
+    def _mark(key):
+        ok = r.checks.get(key, (None, None))[1]
+        return "-" if ok is None else ("OK" if ok else "FAIL")
+
+    lines = [
+        bar,
+        f"  TRACK B v2 APPRAISAL - {r.candidate_label} ({r.component_type}) vs base book",
+        f"  window {r.window_start} -> {r.window_end} ({r.n_days} days)  "
+        f"risk_budget={r.risk_budget:.3f}",
+        bar,
+        f"  appraisal IR (residual-a IR)   {r.appraisal_ir:>+8.3f}   "
+        f"(gate >= {r.criteria.min_ir:.2f})  {_mark('appraisal_ir')}",
+        f"  P(dSR>0) block-bootstrap       {r.p_delta_sr_gt_0:>8.3f}   "
+        f"(gate >= {r.criteria.min_pdsr:.2f})  {_mark('p_delta_sr_gt_0')}",
+        f"  dSR point (at budget b)        {r.delta_sr_point:>+8.4f}   "
+        f"[95% CI {r.delta_sr_ci_low:+.3f}, {r.delta_sr_ci_high:+.3f}]",
+        f"  corr to book                   {r.corr_to_book:>+8.3f}   "
+        f"(gate < {r.criteria.max_corr:.2f})  {_mark('corr_to_book')}",
+        f"  standalone vol-targeted SR     {r.standalone_vt_sharpe:>+8.3f}   "
+        f"(gate > {r.criteria.min_standalone_sr:.2f})  {_mark('standalone_vt_sharpe')}",
+        f"  tail-overlap fraction          {r.tail_overlap_fraction:>8.3f}   "
+        f"(gate <= {r.criteria.max_tail_overlap:.2f})  {_mark('tail_overlap')}",
+        f"  residual-a t_HAC (report)      {r.t_alpha_hac:>+8.2f}",
+        f"  worst-regime Sharpe            "
+        f"{('waived' if r.regime_waived else format(r.worst_regime_sharpe, '+.3f') if r.worst_regime_sharpe is not None else 'n/a'):>8}"
+        f"   {_mark('worst_regime')}",
+        bar,
+        f"  VERDICT: {r.verdict}"
+        + (f"   (failed: {', '.join(r.failed_criteria)})" if r.failed_criteria else ""),
+    ]
+    for w in r.warnings:
+        lines.append(f"  ! {w}")
+    lines.append(bar)
+    return "\n".join(lines)
 
 
 def _max_dd(r: np.ndarray) -> float:
@@ -343,5 +385,5 @@ def _degenerate_reject(label, component_type, b, aligned, criteria):
         checks={"appraisal_ir": (0.0, False),
                 "p_delta_sr_gt_0": (0.0, False)},
         failed_criteria=["appraisal_ir", "p_delta_sr_gt_0"],
-        warnings=["candidate is a constant series (zero variance) — degenerate REJECT"],
+        warnings=["candidate is a constant series (zero variance) - degenerate REJECT"],
         passed=False, verdict="FAIL (degenerate)", criteria=criteria)

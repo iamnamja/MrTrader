@@ -154,6 +154,21 @@ def test_bootstrap_reproducible_with_seed():
     assert a.delta_sr_ci_low == b.delta_sr_ci_low
 
 
+def test_format_report_renders_ascii():
+    res = tba.appraise_track_b(_base(), _diversifier(), component_type="diversifier",
+                               criteria=CRIT, candidate_risk_budget=0.20, seed=0)
+    txt = tba.format_report(res)
+    txt.encode("ascii")                              # must be ASCII (Windows console)
+    assert "TRACK B v2 APPRAISAL" in txt
+    assert "appraisal IR" in txt and "P(dSR>0)" in txt
+    assert res.verdict in txt
+    # degenerate result also renders without raising
+    base = _base()
+    flat = pd.Series(np.full(len(base), 0.001), index=base.index)
+    tba.format_report(tba.appraise_track_b(base, flat, component_type="diversifier",
+                                           criteria=CRIT)).encode("ascii")
+
+
 def test_legacy_book_delta_gate_retained():
     # 2026-06-13: TRACKB_MODE flipped to "ruler_v2" (live). The legacy book_delta gate
     # is RETAINED (importable + callable) for reproducibility, exactly as mean_sharpe
