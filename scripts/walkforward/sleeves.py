@@ -101,6 +101,27 @@ def build_overnight(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                   notes="long close->open every day; flat intraday")
 
 
+@register_sleeve("etf_relative_value")
+def build_etf_relative_value(*, prices: Optional[pd.DataFrame] = None, **cfg_kw) -> Sleeve:
+    """Slow dollar-neutral ETF relative-value (spread mean-reversion) across the
+    pre-registered economically-linked pairs. Declared `diversifier` (market-neutral ->
+    orthogonal to the trend book). One pre-registered config -> n_trials=1."""
+    from app.strategy.etf_relative_value import (
+        RelativeValueConfig, relative_value_backtest,
+    )
+    cfg = RelativeValueConfig(**cfg_kw)
+    if prices is None:
+        symbols = sorted({s for pair in cfg.pairs for s in pair} | {"SPY"})
+        prices = fetch_universe_closes(symbols)
+    res = relative_value_backtest(prices, cfg)
+    spy = prices["SPY"] if "SPY" in prices.columns else None
+    return Sleeve(label="etf_relative_value", component_type="diversifier",
+                  returns=res.returns, spy_prices=spy,
+                  n_trials_registered=1, registration_id="F2-RV",
+                  notes=f"log-spread MR, {len(cfg.pairs)} pairs, L={cfg.lookback}, "
+                        f"entry/exit z={cfg.entry_z}/{cfg.exit_z}; dollar-neutral")
+
+
 # ──────────────────────────────────────────────────────────────────────────────────
 # Runner
 # ──────────────────────────────────────────────────────────────────────────────────
