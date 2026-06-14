@@ -183,6 +183,30 @@ def _truthy(val: Any) -> bool:
     return str(val).strip().lower() == "true"
 
 
+def _refresh_macro_history_bounded(timeout_s: float = 20.0) -> None:
+    """Best-effort macro refresh with a HARD wall-clock timeout, so a yfinance network
+    *hang* (not just an exception) can never block the weekly rebalance thread. Runs in a
+    daemon thread (won't block interpreter exit) and is joined for at most `timeout_s`; on
+    timeout/error we simply fall through to the cached parquet (the staleness guard then
+    decides). An orphaned hung fetch finishes or dies on its own and cannot stall the
+    rebalance."""
+    import threading
+
+    def _run():
+        try:
+            from app.data.macro_history import update_macro_history
+            update_macro_history()
+        except Exception as _exc:  # noqa: BLE001
+            log.debug("crash governor: macro refresh failed (using cache): %s", _exc)
+
+    t = threading.Thread(target=_run, name="crash-gov-macro-refresh", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        log.warning("crash governor: macro refresh exceeded %.0fs -> using cached macro data",
+                    timeout_s)
+
+
 def _crash_governor_multiplier(db) -> float:
     """Alpha-v7 F1b: VIX term-structure crash-governor exposure multiplier for the trend
     sleeve, in [derisk_to, 1.0]. De-risks the whole sleeve when the VIX term structure is
@@ -199,7 +223,7 @@ def _crash_governor_multiplier(db) -> float:
             return 1.0
         import pandas as pd
         from datetime import date as _date
-        from app.data.macro_history import load_macro_history, update_macro_history
+        from app.data.macro_history import load_macro_history
         from app.strategy.crash_governor import (
             VixTermGovernorConfig, live_governor_multiplier,
         )
@@ -208,11 +232,9 @@ def _crash_governor_multiplier(db) -> float:
             ratio_threshold=float(get_agent_config(db, "pm.crash_governor_ratio_threshold")),
             confirm_days=int(get_agent_config(db, "pm.crash_governor_confirm_days")),
         )
-        # Best-effort fresh tail (fetches only missing rows); falls through to cache on error.
-        try:
-            update_macro_history()
-        except Exception as _exc:  # noqa: BLE001
-            log.debug("crash governor: macro refresh failed (using cache): %s", _exc)
+        # Best-effort fresh tail, bounded by a hard timeout; falls through to cache on
+        # timeout/error (the staleness guard below then decides).
+        _refresh_macro_history_bounded()
         mh = load_macro_history()
         if mh is None or mh.empty or "vix" not in mh.columns or "vix3m" not in mh.columns:
             log.warning("crash governor: macro history unavailable -> mult=1.0 (fail-safe)")
@@ -391,7 +413,11 @@ def _sync_trend_trade(db, symbol: str, target_shares: int, price: float,
 
 
 def _audit(symbol: str, side: str, *, price: float, final_decision: str,
-           block_reason: Optional[str] = None) -> None:
+           block_reason: Optional[str] = None, size_mult: float = 1.0) -> None:
+    """Persist one trend decision row. `size_mult` is the applied exposure multiplier —
+    1.0 normally, or the crash-governor multiplier (<1.0) on a de-risk day — so the
+    decision_audit trail records WHY a given day's trend orders were sized down (the
+    queryable artifact for incident review; the run log carries the VIX/VIX3M detail)."""
     try:
         from app.database.decision_audit import write_decision
         write_decision(
@@ -399,7 +425,7 @@ def _audit(symbol: str, side: str, *, price: float, final_decision: str,
             strategy="trend",
             final_decision=final_decision,
             direction=("BUY" if side == "buy" else "SELL"),
-            size_multiplier=1.0,
+            size_multiplier=float(size_mult),
             price_at_decision=price,
             block_reason=block_reason,
         )
@@ -531,7 +557,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if shadow:
             for it in approved:
                 _audit(it["symbol"], it["side"], price=live.get(it["symbol"], 0.0),
-                       final_decision="enter", block_reason="shadow")
+                       final_decision="enter", block_reason="shadow", size_mult=gov_mult)
             log.info("trend SHADOW: would place %d order(s) (%d blocked) — none sent",
                      len(approved), len(blocked))
         else:
@@ -564,7 +590,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 except Exception:
                     db.rollback()
                     log.debug("trend: _sync_trend_trade/commit failed (swallowed)", exc_info=True)
-                _audit(sym, side, price=price, final_decision="enter")
+                _audit(sym, side, price=price, final_decision="enter", size_mult=gov_mult)
                 placed += 1
             log.info("trend LIVE: placed %d order(s) (%d blocked)", placed, len(blocked))
             summary["placed"] = placed

@@ -258,6 +258,9 @@ def test_run_crash_governor_halves_exposure(monkeypatch, _patch_env):
     summary = ts.run_trend_rebalance(db=object())
     assert summary["status"] == "ok"
     assert summary["crash_governor_mult"] == 0.5         # exposure dial halved (alloc *= 0.5)
+    # the de-risk multiplier is recorded on the per-order decision_audit rows (incident trail)
+    enter_audits = [a for a in audits if a.get("final_decision") == "enter"]
+    assert enter_audits and all(a.get("size_multiplier") == 0.5 for a in enter_audits)
 
 
 def test_run_crash_governor_inert_in_contango(monkeypatch, _patch_env):
