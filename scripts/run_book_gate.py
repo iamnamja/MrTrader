@@ -68,6 +68,14 @@ MECHANISM = (
     "(0.10 -> 0.25): does TSMOM (crisis-diversifier) improve the PEAD book "
     "at a 25% risk budget?"
 )
+# Ruler-v2 Track-B (appraisal IR + block-bootstrap P(dSR>0)) is a DIFFERENT gate than
+# the book-delta re-test, so it gets its own hypothesis_id (parent = the book-delta row).
+HYPOTHESIS_ID_RULERV2 = "TRACKB-TSMOM-VS-PEAD-RULERV2-20260613"
+MECHANISM_RULERV2 = (
+    "Track B v2 (Ruler-v2) appraisal RE-TEST: budget-invariant residual-alpha IR + "
+    "block-bootstrap P(dSR>0) — does TSMOM (risk_premium, regime-waived) improve the "
+    "PEAD book? Gate logic = scripts/walkforward/track_b_appraisal.appraise_track_b."
+)
 
 # --sweep budget grid: the transparency curve around the amended cap. Every
 # value is <= TRACKB_MAX_RISK_BUDGET (0.25) so the gate's input validation
@@ -94,38 +102,42 @@ def _to_jsonable(obj):
     return obj
 
 
-def _record_in_registry(result_dict: dict, criteria_dict: dict, run_at: str) -> None:
-    """Dogfood the research registry's RE-TEST path (R4): new hypothesis_id,
-    parent_id = the original first run, cooling_off_until = the amendment
-    registration instant (strictly before run_at). Best-effort; never crashes
-    the run. decision='park' regardless of PASS/FAIL: Track B inclusion is
-    owner-gated."""
+def _record_in_registry(result_dict: dict, criteria_dict: dict, run_at: str,
+                        *, mode: str = "book_delta") -> None:
+    """Dogfood the research registry's RE-TEST path (R4). Best-effort; never crashes the
+    run. decision='park' regardless of PASS/FAIL: Track B inclusion is owner-gated.
+
+    Under TRACKB_MODE="ruler_v2" the result is a DIFFERENT gate (appraisal IR + P(dSR>0))
+    than the legacy book-delta re-test, so it gets its OWN hypothesis_id (parent = the
+    book-delta row) — keeping criteria and result describing the SAME gate on each row
+    (avoids conflating the two gates' acceptance criteria on one ledger entry)."""
     from app.research.registry import RegistryIntegrityError, ResearchRegistry
+
+    if mode == "ruler_v2":
+        hid, mech = HYPOTHESIS_ID_RULERV2, MECHANISM_RULERV2
+    else:
+        hid, mech = HYPOTHESIS_ID, MECHANISM
 
     reg = ResearchRegistry()
     try:
         reg.register(
-            hypothesis_id=HYPOTHESIS_ID,
+            hypothesis_id=hid,
             family="trend",
             label="confirmatory",
-            mechanism=MECHANISM,
+            mechanism=mech,
             parent_id=PARENT_HYPOTHESIS_ID,
             cooling_off_until=COOLING_OFF_UNTIL,
         )
         reg.preregister(
-            HYPOTHESIS_ID,
-            acceptance_criteria=criteria_dict,
-            preregistered_at=PREREGISTERED_AT,
+            hid, acceptance_criteria=criteria_dict, preregistered_at=PREREGISTERED_AT,
         )
     except RegistryIntegrityError as exc:
         # Re-run: the row already exists (R1) or is already preregistered (R5).
         # Skip registration and try to record on the existing row.
         print(f"[registry] register/preregister skipped (existing row): {exc}")
 
-    row = reg.record_result(
-        HYPOTHESIS_ID, run_at=run_at, result=result_dict, decision="park"
-    )
-    print(f"[registry] recorded {HYPOTHESIS_ID} "
+    row = reg.record_result(hid, run_at=run_at, result=result_dict, decision="park")
+    print(f"[registry] recorded {hid} "
           f"(parent={row['parent_id']}, re-test accepted by R4) at {reg.db_path} "
           f"(run_at={row['run_at']}, decision={row['decision']})")
 
@@ -168,11 +180,10 @@ def _run_sweep(rets, mode) -> None:
     appraisal IR is budget-INVARIANT by design; the sweep shows the budget-dependent
     significance side). All budgets are <= the registered cap so input validation accepts them."""
     bar = "-" * 78
+    dlabel = "P(dSR>0)" if mode == "ruler_v2" else "dSharpe"
     print()
     print(f"  TRACK B BUDGET SWEEP (mode={mode}) - delta-metric + verdict vs risk budget")
     print(bar)
-    _, _, _, dlabel, _, _, _ = _evaluate(
-        rets["pead"], rets["trend"], mode=mode, candidate_risk_budget=SWEEP_BUDGETS[0])
     print(f"  {'budget':>8} | {dlabel:>9} | {'verdict':>7} | failed criteria")
     print(bar)
     for b in SWEEP_BUDGETS:
@@ -223,7 +234,8 @@ def main() -> int:
     # Registry recording is best-effort: a hiccup never crashes the gate run.
     run_at = datetime.now(timezone.utc).isoformat()
     try:
-        _record_in_registry(result_dict, _to_jsonable(criteria_dict), run_at)
+        _record_in_registry(result_dict, _to_jsonable(criteria_dict), run_at,
+                            mode=TRACKB_MODE)
     except Exception as exc:  # noqa: BLE001 - deliberate catch-all guard
         print(f"[registry] WARNING: recording failed (gate verdict unaffected): "
               f"{type(exc).__name__}: {exc}")
