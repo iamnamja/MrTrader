@@ -86,7 +86,8 @@ import app.analytics.drawdown_analyzer  # noqa: E402,F401
 
 
 # ── Phase-4 gate-mode default for the legacy test corpus ──────────────────────
-# The production default is GATE_MODE="significance" (the new two-tier gate). The
+# The production default is GATE_MODE="ruler_v2" (Alpha-v7, live 2026-06-13; was
+# "significance", retained as legacy). The
 # large pre-Phase-4 gate test corpus, however, asserts the LEGACY mean-Sharpe gate
 # semantics (avg_sharpe>=0.80, t-stat WARN-only, paper_gate relaxed thresholds,
 # WF promotion allowed). Those tests are exactly the "faithful legacy reproduction"

@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-13 (GO-LIVE) — GATE_MODE flipped significance → ruler_v2 (Ruler v2 is now the production Track-A gate)
+
+**Context**: After the R4 remediation (diversifier regime waiver + PAPER HAC-significance floor) and reclassifying xmom_12_1 → known_marginal (a documented correct-reject), the full-control-set R4 came back **CLEAN under the strict definition** (no carve-out): significant positives tsmom_4y/19y pass Ruler-v2 PAPER, all 5 true-nulls fail, leaky rejected. Owner approved the flip (reclassify-then-flip).
+
+**Decision**: **`GATE_MODE` flipped `significance` → `ruler_v2` (LIVE).** Ruler v2 is now the production Track-A promotion gate; PAPER = plausibility + a light HAC-SR significance floor + diversifier regime waiver; CAPITAL = Bayesian posterior + structural live-paper + residual-α + bootstrap + power floor. The `significance` branch is RETAINED as legacy (reachable via `significance_gate_*` and explicit mode), exactly as `mean_sharpe` was kept when significance went live.
+
+**`TRACKB_MODE` stays `book_delta` (NOT flipped).** The go-live Opus audit found that flipping `TRACKB_MODE` would be an INERT no-op — no runner dispatches on it (`scripts/run_book_gate.py` hardcodes `book_delta_gate`). The Ruler-v2 Track-B gate logic (`appraise_track_b`) is built/tested/live-ready; wiring the runner dispatcher (+ adapting its report/registry to the `TrackBAppraisalResult` shape) is the remaining Phase-3 step. Flip `TRACKB_MODE` THEN, when a real diversifier candidate is queued.
+
+**Verification**: independent Opus go-live audit = the GATE_MODE flip is mechanically correct (all callers route to ruler_v2; legacy branch reachable), causes NO live break (every `gate_detail` consumer iterates generically; no significance-only key is indexed live), is cleanly reversible, and rests on a legitimately-CLEAN strict R4. `gate_calibration` was DECOUPLED from GATE_MODE (significance OC columns now via `significance_gate_*` directly) so the calibration/recalibration rule stays correct under the new default. Full suite under the flip: only the known pre-existing local-only NFP test fails (3398 passed).
+
+**Rationale**: This is the analogue of the significance go-live — promote the validated gate, keep the prior as legacy. R4 (the pre-registered pre-flip gate) is clean; the xmom reclass is independently grounded (cross-sectional momentum dead, 2026-06-03); nothing is in flight (SWING/INTRADAY retrain disabled), so the flip affects only FUTURE gate calls.
+
+**Consequences**: The NEXT retrain/promotion is gated by Ruler v2. Live book unchanged (trend-only 25% + cash — no promotion pending). Reverting = set `GATE_MODE` back to `"significance"`. Remaining: wire the Track-B runner dispatcher before flipping `TRACKB_MODE`. See PIPELINE_ARCHITECTURE.md (gate inventory + changelog), MODEL_STATUS.md, PROJECT_STATE.md.
+
+---
+
 ## 2026-06-13 (full-set R4) — full control set run → NOT strictly clean (xmom fails, a documented correct-reject); DID NOT flip
 
 **Context**: Owner chose "complete the full control set, then flip." Ran the remaining controls (`pead_baseline`, `xmom_12_1`) into `logs/gate_calibration_20260613.json`. Result: tsmom_4y/19y PAPER-pass (diversifier waiver + significant), all 5 true-nulls PAPER-fail (incl. seed_5), leaky rejected — BUT **`xmom_12_1` (declared `positive_alpha`) FAILED Ruler-v2 PAPER**, so the strict R4 reads NOT CLEAN.
