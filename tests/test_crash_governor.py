@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.strategy.crash_governor import VixTermGovernorConfig, vix_term_multiplier
+from datetime import date, timedelta
+
+from app.strategy.crash_governor import (
+    VixTermGovernorConfig, vix_term_multiplier, live_governor_multiplier,
+)
 from scripts.walkforward.sleeve_lab import (
     Overlay, evaluate_overlay, format_overlay_report, OverlayReport,
 )
@@ -101,3 +105,102 @@ def test_evaluate_overlay_inert_when_always_full():
     assert abs(rep.d_sharpe) < 1e-9
     assert abs(rep.d_max_dd) < 1e-9
     assert rep.derisk_fraction == 0.0
+
+
+# ── live scalar multiplier (shared stress rule) ─────────────────────────────────────
+def _vix_series(ratios, start="2026-05-01"):
+    idx = pd.bdate_range(start, periods=len(ratios))
+    vix3m = pd.Series(20.0, index=idx)
+    vix = pd.Series([20.0 * r for r in ratios], index=idx)
+    return vix, vix3m
+
+
+def test_live_multiplier_derisks_on_latest_backwardation():
+    vix, vix3m = _vix_series([0.9, 0.95, 1.2])     # latest inverted
+    cfg = VixTermGovernorConfig(derisk_to=0.5, ratio_threshold=1.0, confirm_days=1)
+    assert live_governor_multiplier(vix, vix3m, cfg) == 0.5
+
+
+def test_live_multiplier_full_in_contango():
+    vix, vix3m = _vix_series([1.2, 1.1, 0.92])     # latest calm
+    cfg = VixTermGovernorConfig(derisk_to=0.5, confirm_days=1)
+    assert live_governor_multiplier(vix, vix3m, cfg) == 1.0
+
+
+def test_live_multiplier_confirm_days_needs_all_recent_inverted():
+    vix, vix3m = _vix_series([1.2, 0.95, 1.2])     # not 2 consecutive inverted at the tail
+    cfg = VixTermGovernorConfig(derisk_to=0.5, confirm_days=2)
+    assert live_governor_multiplier(vix, vix3m, cfg) == 1.0
+    vix2, vix3m2 = _vix_series([0.9, 1.2, 1.3])    # last 2 inverted
+    assert live_governor_multiplier(vix2, vix3m2, cfg) == 0.5
+
+
+def test_live_multiplier_insufficient_data_returns_none():
+    vix, vix3m = _vix_series([1.2])
+    cfg = VixTermGovernorConfig(confirm_days=3)
+    assert live_governor_multiplier(vix, vix3m, cfg) is None
+
+
+# ── live trend-sleeve helper: FAIL-SAFE to 1.0 ──────────────────────────────────────
+def _fake_macro_df(ratio, last_date, n=10):
+    idx = pd.bdate_range(end=pd.Timestamp(last_date), periods=n)
+    return pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in idx],
+        "vix": [20.0 * ratio] * n,
+        "vix3m": [20.0] * n,
+    })
+
+
+def _patch_governor(monkeypatch, *, flag="true", macro_df=None, raise_load=False):
+    cfg_vals = {
+        "pm.crash_governor_enabled": flag,
+        "pm.crash_governor_derisk_to": 0.5,
+        "pm.crash_governor_ratio_threshold": 1.0,
+        "pm.crash_governor_confirm_days": 1,
+    }
+    monkeypatch.setattr("app.database.agent_config.get_agent_config",
+                        lambda db, key: cfg_vals[key])
+    monkeypatch.setattr("app.data.macro_history.update_macro_history", lambda: None)
+
+    def _load():
+        if raise_load:
+            raise RuntimeError("boom")
+        return macro_df
+    monkeypatch.setattr("app.data.macro_history.load_macro_history", _load)
+
+
+def test_governor_helper_derisks_on_live_backwardation(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    _patch_governor(monkeypatch, macro_df=_fake_macro_df(1.2, date.today()))
+    assert _crash_governor_multiplier(db=None) == 0.5
+
+
+def test_governor_helper_full_in_contango(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    _patch_governor(monkeypatch, macro_df=_fake_macro_df(0.92, date.today()))
+    assert _crash_governor_multiplier(db=None) == 1.0
+
+
+def test_governor_helper_flag_off_returns_full(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    _patch_governor(monkeypatch, flag="false", macro_df=_fake_macro_df(1.2, date.today()))
+    assert _crash_governor_multiplier(db=None) == 1.0     # flag off -> no de-risk even in stress
+
+
+def test_governor_helper_stale_data_fails_safe(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    stale = _fake_macro_df(1.2, date.today() - timedelta(days=30))   # 30d old + inverted
+    _patch_governor(monkeypatch, macro_df=stale)
+    assert _crash_governor_multiplier(db=None) == 1.0     # stale -> fail-safe to 1.0
+
+
+def test_governor_helper_missing_data_fails_safe(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    _patch_governor(monkeypatch, macro_df=pd.DataFrame())   # empty
+    assert _crash_governor_multiplier(db=None) == 1.0
+
+
+def test_governor_helper_exception_fails_safe(monkeypatch):
+    from app.live_trading.trend_sleeve import _crash_governor_multiplier
+    _patch_governor(monkeypatch, raise_load=True)
+    assert _crash_governor_multiplier(db=None) == 1.0     # any error -> 1.0, never raises

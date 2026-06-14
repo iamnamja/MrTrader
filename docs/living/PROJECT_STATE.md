@@ -6,7 +6,14 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## 🧭 NOW (2026-06-14): Alpha-v7 F0→F5 sweep COMPLETE + owner acting — carry KILLED on confirmation; governor being wired live
+## 🧭 NOW (2026-06-14): Alpha-v7 F-series done + BOTH owner decisions actioned — carry KILLED; ⭐ VIX governor WIRED LIVE (needs orchestrator restart)
+
+**Owner actioned both pending decisions (2026-06-14):**
+- ✅ **Carry confirmation → KILLED** (`F3-CARRY-CONFIRM-20260614`): edge is a pre-2016 artifact (H1 SR +0.69 vs H2 −0.10); the pre-registered stability guard caught it. Line closed.
+- ⭐ **VIX-term crash governor → WIRED INTO THE LIVE TREND SLEEVE** (owner-approved). `app/live_trading/trend_sleeve.py`: `alloc *= _crash_governor_multiplier(db)` — de-risk to 0.5 on VIX>VIX3M backwardation. Flag `pm.crash_governor_enabled` ON by default, reversible live; FAIL-SAFE (any data problem → 1.0 = today's behavior); PIT-correct (settled closes); can only reduce exposure. Opus pre-merge review (1 HIGH PIT look-ahead found + fixed → SHIP). 50 tests. **⚠️ DEPLOY: the orchestrator/scheduler process must be RESTARTED to load the new code before the governor takes effect** (flags need no restart). Until then live behavior unchanged.
+- Plus **CI hardened** (#490): flaky training-test timeout (serial-path) + NFP test made hermetic → first 0-fail local suite.
+
+
 
 **Owner gave go-ahead to execute the full F0→F5 plan autonomously (Opus each step; document/email/merge; promote-to-live stays owner-gated). Done — every phase built/tested/Opus-reviewed/merged or explicitly deferred. Final scoreboard:**
 - **F0 Sleeve Lab — MERGED (#484):** the uniform, hardened pipeline + overlay path + registry. **Permanent infra** (made this whole sweep ~20-line declarations).

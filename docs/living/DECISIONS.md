@@ -4,6 +4,26 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F1b GO-LIVE) — VIX-term crash governor WIRED INTO THE LIVE TREND SLEEVE (owner-approved, flag ON, fail-safe)
+
+**Context**: The owner approved adopting the VIX-term crash governor (the one F-series candidate that helped) as a live book overlay. Wired it into the live trend-sleeve sizing path.
+
+**Decision / implementation**:
+- `app/live_trading/trend_sleeve.py::run_trend_rebalance` now scales the sleeve's effective budget: `alloc = effective_trend_allocation(db) * _crash_governor_multiplier(db)`. The multiplier ∈ [derisk_to, 1.0] — it can ONLY reduce exposure; the per-name (25%) and 80% gross caps still bind downstream.
+- `_crash_governor_multiplier` reuses the validated stress rule via a new shared `crash_governor.live_governor_multiplier` (single source of truth with the backtest `vix_term_multiplier`). De-risks to `derisk_to` when VIX>VIX3M (backwardation) on the last `confirm_days` SETTLED closes.
+- **Flags (agent_config, take effect with no restart):** `pm.crash_governor_enabled` default `"true"` (owner-approved ON; reversible to `"false"` live) + `pm.crash_governor_derisk_to=0.5`, `pm.crash_governor_ratio_threshold=1.0`, `pm.crash_governor_confirm_days=1` (the validated config).
+
+**Hardening (Opus pre-merge adversarial review — 1 HIGH found + fixed, then SHIP)**:
+- **FAIL-SAFE**: every failure path (flag off / config error / macro fetch or load error / missing or empty data / stale >7d / insufficient signal / any exception) returns exactly 1.0 (= today's behavior) and never raises into the rebalance. A VIX outage can NEVER flatten the book; the overlay is provably non-increasing on the budget.
+- **HIGH (fixed): PIT look-ahead.** The Mon 09:45 ET rebalance runs intraday and `update_macro_history()` fetches through today, so yfinance returned a PARTIAL unsettled VIX/VIX3M bar for today. Fixed by filtering to SETTLED closes strictly before today — the latest settled close governs the upcoming session, exactly matching the backtest's shift(1) (restores live-vs-backtest agreement; removes the same-day look-ahead).
+- Observability: the applied multiplier is in the rebalance summary; when active, a comprehensive log line records the multiplier + VIX/VIX3M ratio + settled close date. (decision_audit per-symbol integration + a yfinance hot-path timeout are noted MEDIUM/LOW follow-ups.)
+
+**Expected effect (from F1b backtest, 2007→2026)**: maxDD −13.9%→−12.1%, Calmar 0.469→0.501, COVID DD −10.7%→−6.5%, Sharpe ~flat (−0.003), at ~0.5%/yr return give-up; de-risks ~11% of days. A risk-manager, not a Sharpe-booster.
+
+**Consequences**: 50 tests (governor unit + fail-safe + live integration; 0-fail suite). **The trend sleeve is live (`pm.trend_shadow='false'`), so once DEPLOYED the governor scales REAL trend exposure.** ⚠️ **Deploy step (owner/ops): the orchestrator/scheduler process must be RESTARTED to load the new `trend_sleeve.py`/`crash_governor.py` code** (a code-deploy restart, not a uvicorn route restart; the flags themselves need no restart). Until that restart, live behavior is unchanged. Reversible anytime via `pm.crash_governor_enabled=false`. This resolves owner-decision #1.
+
+---
+
 ## 2026-06-14 (F3-CARRY-CONFIRM) — owner-authorized fresh carry confirmation → KILLED (edge is a pre-2016 artifact)
 
 **Context**: The owner authorized a fresh, pre-registered confirmation of the F3 rates-carry near-miss (the legitimate R7 path from "robust near-miss" → promotable, vs cherry-picking the grid). Registered `F3-CARRY-CONFIRM-20260614` (confirmatory, family carry) and froze the acceptance criteria via `preregister` BEFORE the run (run_at strictly after preregistered_at; registry decision recorded).

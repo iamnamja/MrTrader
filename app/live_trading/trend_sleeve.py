@@ -183,6 +183,84 @@ def _truthy(val: Any) -> bool:
     return str(val).strip().lower() == "true"
 
 
+def _crash_governor_multiplier(db) -> float:
+    """Alpha-v7 F1b: VIX term-structure crash-governor exposure multiplier for the trend
+    sleeve, in [derisk_to, 1.0]. De-risks the whole sleeve when the VIX term structure is
+    inverted (VIX > VIX3M = backwardation = acute stress).
+
+    FAIL-SAFE by design — returns 1.0 (no de-risk = exactly today's behavior) when the flag
+    is off, VIX/VIX3M is missing or stale, the signal is insufficient, or ANY error occurs.
+    A data outage can therefore NEVER flatten the book; the governor can only ever REDUCE
+    exposure (multiplier <= 1.0), and the downstream per-name + 80% gross caps still apply.
+    """
+    from app.database.agent_config import get_agent_config
+    try:
+        if not _truthy(get_agent_config(db, "pm.crash_governor_enabled")):
+            return 1.0
+        import pandas as pd
+        from datetime import date as _date
+        from app.data.macro_history import load_macro_history, update_macro_history
+        from app.strategy.crash_governor import (
+            VixTermGovernorConfig, live_governor_multiplier,
+        )
+        cfg = VixTermGovernorConfig(
+            derisk_to=float(get_agent_config(db, "pm.crash_governor_derisk_to")),
+            ratio_threshold=float(get_agent_config(db, "pm.crash_governor_ratio_threshold")),
+            confirm_days=int(get_agent_config(db, "pm.crash_governor_confirm_days")),
+        )
+        # Best-effort fresh tail (fetches only missing rows); falls through to cache on error.
+        try:
+            update_macro_history()
+        except Exception as _exc:  # noqa: BLE001
+            log.debug("crash governor: macro refresh failed (using cache): %s", _exc)
+        mh = load_macro_history()
+        if mh is None or mh.empty or "vix" not in mh.columns or "vix3m" not in mh.columns:
+            log.warning("crash governor: macro history unavailable -> mult=1.0 (fail-safe)")
+            return 1.0
+        # PIT: drop any not-yet-settled row dated TODAY. The Mon 09:45 ET rebalance runs
+        # DURING market hours and update_macro_history() fetches through today, so yfinance
+        # returns an intraday PARTIAL ^VIX/^VIX3M bar for today. Size only off SETTLED closes
+        # (strictly before today) — the latest settled close governs the upcoming session,
+        # exactly matching the backtest's shift(1). Without this the live signal would use
+        # today's unsettled VIX (a same-day look-ahead, and a live-vs-backtest mismatch).
+        _today_iso = _date.today().isoformat()
+        mh = mh[mh["date"].astype(str).str[:10] < _today_iso]
+        if mh.empty:
+            log.warning("crash governor: no settled macro rows before today -> 1.0 (fail-safe)")
+            return 1.0
+        # Staleness guard (on the latest SETTLED close): a wedged feed must not de-risk on
+        # stale data.
+        last_date = pd.Timestamp(str(mh["date"].iloc[-1])[:10])
+        if (pd.Timestamp(_date.today()) - last_date).days > 7:
+            log.warning("crash governor: macro history stale (last settled=%s) -> 1.0 (fail-safe)",
+                        last_date.date())
+            return 1.0
+        idx = pd.to_datetime(mh["date"])
+        n = max(1, cfg.confirm_days)
+        mult = live_governor_multiplier(
+            pd.Series(mh["vix"].to_numpy(), index=idx).tail(n + 5),
+            pd.Series(mh["vix3m"].to_numpy(), index=idx).tail(n + 5),
+            cfg,
+        )
+        if mult is None or not (0.0 <= mult <= 1.0):
+            log.warning("crash governor: insufficient/invalid signal -> mult=1.0 (fail-safe)")
+            return 1.0
+        if mult < 1.0:
+            # Comprehensive audit line (the live record of WHY exposure was cut on this date):
+            # the de-risk multiplier, the term-structure ratio, and the settled close used.
+            try:
+                ratio = float(mh["vix"].iloc[-1]) / float(mh["vix3m"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                ratio = float("nan")
+            log.info("crash governor ACTIVE: de-risking trend exposure x%.2f "
+                     "(VIX/VIX3M=%.3f backwardation, settled close %s)",
+                     mult, ratio, last_date.date())
+        return float(mult)
+    except Exception:  # noqa: BLE001
+        log.warning("crash governor failed -> mult=1.0 (fail-safe)", exc_info=True)
+        return 1.0
+
+
 def _fetch_prices(alpaca, universe: List[str]):
     """Return a (n_days, n_symbols) close-price DataFrame, or None on failure.
 
@@ -360,6 +438,13 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # behavior). Fail-closed to the static value on any error.
         from app.live_trading.sleeve_allocator_live import effective_trend_allocation
         alloc = effective_trend_allocation(db)
+        # Alpha-v7 F1b: VIX term-structure crash governor — scale the sleeve's exposure by
+        # [derisk_to, 1.0] (de-risk in backwardation). Fail-safe to 1.0 (= today's behavior);
+        # can only REDUCE exposure, never increase it. Applied to the scalar budget so it
+        # uniformly de-risks every target dollar; per-name + 80% gross caps still bind.
+        gov_mult = _crash_governor_multiplier(db)
+        alloc = alloc * gov_mult
+        summary["crash_governor_mult"] = gov_mult
         max_pos = float(get_agent_config(db, "pm.trend_max_position_pct"))
         universe = [s.strip().upper()
                     for s in str(get_agent_config(db, "pm.trend_universe")).split(",")
