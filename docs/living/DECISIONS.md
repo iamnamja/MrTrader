@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F0) — Sleeve Lab built: the uniform sleeve→Ruler-v2→report pipeline (Alpha-v7 F0)
+
+**Context**: Executing the game plan above. Every sleeve to date (PEAD, options-XS, index short-vol, trend-broaden) was a hand-written `run_*_cpcv.py` re-implementing the same plumbing — a fresh bug surface each time and a real risk of wiring the gate inconsistently as the book grows to 3–5 sleeves.
+
+**Decision**: Build `scripts/walkforward/sleeve_lab.py` — a `Sleeve` (validated declaration: label / component_type / PIT net returns / optional spy_prices + n_trials_registered) → `evaluate_sleeve()` that runs the IDENTICAL audited path every time (`SeriesReturnStrategy` → `run_cpcv` → Ruler-v2 Track-A PAPER+CAPITAL → optional Track-B `appraise_track_b` → uniform `SleeveReport`), a `@register_sleeve` registry, and `assemble_book()` (F5) over the proven `sleeve_allocator`. It **composes the existing proven pieces — no gate-semantics change — and is report-only** (promotion stays owner-gated). New sleeves register here instead of spawning new top-level scripts; the old `run_*_cpcv` scripts stay as frozen historical runners.
+
+**Adversarial Opus deep-dive — decisions taken**:
+- **`overlay` is fail-loud-EXCLUDED** from valid component types. An overlay (the planned VIX-term crash governor) MODIFIES the book rather than adding a return stream, so the additive Track-A significance + Track-B blend model is the wrong instrument and would emit a confidently-wrong verdict. Overlays get a dedicated book-with-vs-without evaluation path, landing with the F1 governor. Failing loud beats silently-wrong.
+- **Residual-α is SPY-CAPM-only on this path** (documented KNOWN LIMITATION). `result.residual_alpha_t_hac` is the single-factor SPY CAPM diagnostic (and only when spy_prices is given); the multi-factor harvested-premium-excluded residual-α (`ruler_v2.residual_alpha_t` / `RULERV2_HARVESTED_FACTOR`) is NOT yet wired into the sleeve path — deferred (needs a factor panel). Latent today because CAPITAL is structurally unreachable on a backtest alone (requires live-paper). `evaluate_sleeve` warns when spy_prices is absent.
+- **Loud hardening warnings**: thin pooled-OOS (< power floor), `n_folds` below the CAPITAL power floor (10) at the default geometry (FULL_N_FOLDS=8, kept for parity with the calibration controls — a capital-aspiring run must pass n_folds≥10), and `assemble_book` inner-join coverage loss (a short sleeve silently truncating the book window).
+- **C1 (Track-B worst-regime) confirmed NOT a bug**: the lab passes the candidate's standalone CPCV worst-regime to Track-B, which matches Track-B's documented contract (candidate regime safety backstop; book contribution is measured separately by appraisal-IR / P(ΔSR>0) / tail-overlap).
+
+**Consequences**: 20 offline tests. `PIPELINE_ARCHITECTURE` component map + changelog updated. Follow-ups tracked: overlay eval path (F1) and multi-factor residual-α wiring. NEXT: F1 sleeves built as registry declarations through the Lab. Live book unchanged.
+
+---
+
 ## 2026-06-14 — 5-LLM research panel synthesized → game plan: Sleeve Lab + orthogonal deep-history premia (Alpha-v7 next)
 
 **Context**: After the Ruler-v2 go-live + the honest candidate sweep (only trend survived), posted a research-request pack to 5 external quant LLMs (Opus 4.8, ChatGPT, DeepSeek, Gemini, Grok) asking for the best next steps to find alpha. All five returned. Synthesized into `docs/reference/ALPHA_V7_RESEARCH_SYNTHESIS_2026-06-14.md` (the new direction SSOT); inputs archived at `docs/archive/llm-reviews/2026-06-14/`.

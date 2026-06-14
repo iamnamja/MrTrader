@@ -10,7 +10,7 @@
 
 | Phase | Item | Why | Effort | Status |
 |---|---|---|---|---|
-| **F0** | **Sleeve Lab** — unify the sleeve research→Ruler-v2(Track-A+B)→sleeve_allocator→report pipeline into ONE tested module + a sleeve registry; retire bespoke `run_*_cpcv` scripts. | The future-proof, hardened substrate that makes every future premia a small uniform declaration. | ~1–2wk | ⬜ NEXT |
+| **F0** | **Sleeve Lab** — unify the sleeve research→Ruler-v2(Track-A+B)→sleeve_allocator→report pipeline into ONE tested module + a sleeve registry; retire bespoke `run_*_cpcv` scripts. | The future-proof, hardened substrate that makes every future premia a small uniform declaration. | ~1–2wk | 🟢 **CORE LANDED 2026-06-14** (`scripts/walkforward/sleeve_lab.py` — `Sleeve`/`evaluate_sleeve`/registry/`assemble_book`/`SleeveReport`; 20 tests; Opus deep-dive applied. Follow-ups: overlay eval path (lands with F1 governor) + multi-factor residual-α wiring.) |
 | **F1** | **Structural premia + crash governor** — turn-of-month / FOMC / overnight-gap sleeves + a VIX-term de-risking overlay (governor). | Most orthogonal-to-trend, most powered (high event count), cheapest, owned data, no spread wall. | ~1–2wk | ⬜ |
 | **F2** | **Slow ETF relative-value** — pre-registered log-spread mean-reversion across ~6–8 economically-linked ETF pairs; slow, vol-targeted. | Orthogonal (mean-reversion vs trend), deep-history; NOT the killed high-turnover reversal. | ~1wk | ⬜ |
 | **F3** | **Carry done right (small)** — rates/curve roll-down (FRED) + FX rate-diff; skip commodity (no clean futures). Judge on CRISIS correlation. | Real but crisis-correlated + likely overlaps TSMOM → small. | ~1–2wk | ⬜ |
