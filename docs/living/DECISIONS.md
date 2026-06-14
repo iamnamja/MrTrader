@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (F1a) — calendar/overnight premia: BOTH FAIL → not added to the book
+
+**Context**: First sleeves built as registry declarations through the F0 Sleeve Lab — `app/strategy/calendar_premia.py` (vectorized PIT-safe turn-of-month + overnight backtests) + `scripts/walkforward/sleeves.py` (the registry + runner). Run report-only through the Lab on deep history (2007→2026, ~3661 pooled-OOS obs), each declared `risk_premium`, with Track-B vs the live 10-ETF trend book.
+
+**Verdict (both FAIL, no promotion)**:
+- **turn_of_month_SPY**: point_SR +0.320, mean_SR +0.280, path_t +3.07, HAC p(1s) 0.097. PAPER FAIL (misses HAC significance). Track-B FAIL: appraisal_IR −0.026, ΔSR −0.058, P(ΔSR>0) 0.25.
+- **overnight_SPY**: point_SR +0.344, mean_SR +0.393, path_t +2.58, HAC p 0.087, residual-α_t −1.23. PAPER FAIL. Track-B FAIL: appraisal_IR +0.090, corr 0.33, P(ΔSR>0) 0.47.
+- Both **clear the plausibility floor (point_SR ≥0.30) but miss the light HAC significance bar (p>0.05)**, and **decisively fail Track-B** — neither diversifies the trend book (overnight is timed SPY beta the book already holds; TOM actively lowers book Sharpe).
+
+**Rationale / integrity**: Independent Opus adversarial review confirmed the FAIL is HONEST, not an artifact — PIT clean (the TOM calendar position is known ex-ante so it correctly needs no shift, unlike a price-derived weight; overnight = open[t]/close[t-1]−1), costs fair (TOM ~2bp/yr immaterial; overnight ~5%/yr but a physically-real daily round-trip), the residual-α sign correctly reads "diluted beta," and the Track-B fail is cost-independent + decisive. No goalpost-moving: the pre-registered canonical spec (one config each, n_trials=1) was judged as-is.
+
+**Consequences**: Nothing promoted; live book unchanged (trend-only 25% + cash). The two premia builders + the registry are kept as permanent, tested infrastructure and the verdict is recorded so these are never blind-retested. NEXT: F1b (overlay eval path + VIX-term crash governor). Honest read: the two cheapest calendar premia don't clear the bar — consistent with the panel's "trend is the only edge"; the crash governor (an overlay, not an additive sleeve) is the more promising F1 piece.
+
+---
+
 ## 2026-06-14 (F0) — Sleeve Lab built: the uniform sleeve→Ruler-v2→report pipeline (Alpha-v7 F0)
 
 **Context**: Executing the game plan above. Every sleeve to date (PEAD, options-XS, index short-vol, trend-broaden) was a hand-written `run_*_cpcv.py` re-implementing the same plumbing — a fresh bug surface each time and a real risk of wiring the gate inconsistently as the book grows to 3–5 sleeves.
