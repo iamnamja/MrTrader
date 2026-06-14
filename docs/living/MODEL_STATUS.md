@@ -4,7 +4,12 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-13
+**Last updated:** 2026-06-14
+
+---
+
+## 🚦 CRASH-GOVERNOR GO-LIVE — VIX-term overlay on the live trend sleeve (2026-06-14, F1b)
+The **VIX term-structure crash governor is wired into the live trend sleeve** (`app/live_trading/trend_sleeve.py`): the sleeve's budget is scaled by a multiplier ∈ [`pm.crash_governor_derisk_to`, 1.0] — de-risked to 0.5 when VIX>VIX3M (backwardation) on the last `confirm_days` settled closes, full otherwise. Flag `pm.crash_governor_enabled` is **ON by default** (owner-approved); reversible live via `=false`. **FAIL-SAFE**: missing/stale/error VIX-VIX3M → multiplier 1.0 (today's behavior); it can only REDUCE exposure, never increase, and the per-name + 80% gross caps still bind. PIT-correct (settled closes only, matching the backtest). Expected (2007→2026): maxDD −13.9%→−12.1%, COVID DD −10.7%→−6.5%, Sharpe ~flat. ⚠️ **Takes effect only after the orchestrator/scheduler process is RESTARTED to load the new code** (flags need no restart). Live book otherwise unchanged (trend-only 25% + cash). Details: DECISIONS 2026-06-14 (F1b GO-LIVE) + ML_EXPERIMENT_LOG (F1b).
 
 ---
 

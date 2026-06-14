@@ -395,6 +395,16 @@ a 30-min-late fire (TSMOM is slow → benign). Orders are placed directly via Al
 placed ETF), and excluded from the Trader's stop/target exit loop (the rebalancer is their
 sole manager).
 
+**VIX-term crash governor (Alpha-v7 F1b, 2026-06-14):** before order generation the sleeve's
+effective budget is scaled by `_crash_governor_multiplier(db)` ∈ [`pm.crash_governor_derisk_to`,
+1.0] — when the VIX term structure inverts (VIX > VIX3M on the last `pm.crash_governor_confirm_days`
+SETTLED closes), exposure is de-risked (default 0.5), else full. Flag `pm.crash_governor_enabled`
+defaults ON (owner-approved); reversible live. It is **fail-safe** (missing/stale/error VIX-VIX3M →
+multiplier 1.0 = pre-governor behavior) and can only ever REDUCE exposure — the per-name and 80%
+gross caps still bind. PIT-correct: it reads only settled closes (strictly before today), so the
+Monday 09:45 ET intraday VIX print is never used. The applied multiplier is in the rebalance summary
+(+ a detailed log line when active). Loading the code needs an orchestrator restart; the flags do not.
+
 **Why weekly:** `TSMOMConfig.rebalance_days=5` is the validated backtest cadence — the
 standalone +0.71 Sharpe (2007–26, all crises) was measured on a 5-day rebalance grid; the
 Monday wall-clock rebalance is its faithful live analog. **Why Monday:** a fixed weekday gives

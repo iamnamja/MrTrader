@@ -235,6 +235,43 @@ def test_run_shadow_places_no_orders(monkeypatch, _patch_env):
     assert len(shadow_audits) == len(summary["approved"])
 
 
+def _patch_macro_backwardation(monkeypatch, ratio):
+    """Force the crash governor's live VIX/VIX3M read to a fixed ratio (fresh data)."""
+    import pandas as pd
+    from datetime import date
+    idx = pd.bdate_range(end=pd.Timestamp(date.today()), periods=10)
+    mdf = pd.DataFrame({"date": [d.strftime("%Y-%m-%d") for d in idx],
+                        "vix": [20.0 * ratio] * 10, "vix3m": [20.0] * 10})
+    monkeypatch.setattr("app.data.macro_history.update_macro_history", lambda: None)
+    monkeypatch.setattr("app.data.macro_history.load_macro_history", lambda: mdf)
+
+
+def test_run_crash_governor_halves_exposure(monkeypatch, _patch_env):
+    """End-to-end: governor ON + VIX backwardation -> sleeve exposure scaled by derisk_to."""
+    cfg, audits = _patch_env
+    cfg.update({"pm.crash_governor_enabled": "true", "pm.crash_governor_derisk_to": 0.5,
+                "pm.crash_governor_ratio_threshold": 1.0, "pm.crash_governor_confirm_days": 1})
+    _patch_macro_backwardation(monkeypatch, ratio=1.2)   # VIX>VIX3M -> de-risk
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=object())
+    assert summary["status"] == "ok"
+    assert summary["crash_governor_mult"] == 0.5         # exposure dial halved (alloc *= 0.5)
+
+
+def test_run_crash_governor_inert_in_contango(monkeypatch, _patch_env):
+    cfg, audits = _patch_env
+    cfg.update({"pm.crash_governor_enabled": "true", "pm.crash_governor_derisk_to": 0.5,
+                "pm.crash_governor_ratio_threshold": 1.0, "pm.crash_governor_confirm_days": 1})
+    _patch_macro_backwardation(monkeypatch, ratio=0.92)  # contango -> full exposure
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=object())
+    assert summary["crash_governor_mult"] == 1.0
+
+
 def test_run_live_places_orders(monkeypatch, _patch_env):
     cfg, audits = _patch_env
     cfg["pm.trend_shadow"] = "false"
