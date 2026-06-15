@@ -18,7 +18,7 @@ import pandas as pd
 
 from scripts.walkforward.sleeve_lab import (
     Sleeve, register_sleeve, build_sleeve, list_sleeves,
-    evaluate_sleeve, format_sleeve_report, register_overlay,
+    evaluate_sleeve, format_sleeve_report, register_overlay, build_overlay,
 )
 
 # Live trend book (the current paper book) — the Track-B base. Mirrors TSMOMConfig defaults.
@@ -241,10 +241,75 @@ def run_governor(*, derisk_to: float = 0.5) -> object:
     return rep
 
 
+# ──────────────────────────────────────────────────────────────────────────────────
+# Overlays (G1) — credit / yield-curve de-risk overlays
+# ──────────────────────────────────────────────────────────────────────────────────
+@register_overlay("credit_governor")
+def build_credit_governor(*, hyg=None, ief=None, **cfg_kw):
+    """HYG/IEF credit-spread de-risk overlay (de-risk when HY underperforms = spreads widening).
+    Fetches HYG/IEF deep unless provided (offline tests)."""
+    from scripts.walkforward.sleeve_lab import Overlay
+    from app.strategy.credit_curve_governor import CreditGovernorConfig, credit_multiplier
+    if hyg is None or ief is None:
+        closes = fetch_universe_closes(["HYG", "IEF"])
+        hyg, ief = closes["HYG"], closes["IEF"]
+    mult = credit_multiplier(hyg, ief, CreditGovernorConfig(**cfg_kw))
+    return Overlay(label="credit_governor", multiplier=mult,
+                   notes="de-risk when HYG/IEF below its trailing MA (credit spreads widening)")
+
+
+@register_overlay("curve_governor")
+def build_curve_governor(*, y10=None, y3m=None, **cfg_kw):
+    """Yield-curve (10y-3m) inversion de-risk overlay. Fetches ^TNX/^IRX unless provided."""
+    from scripts.walkforward.sleeve_lab import Overlay
+    from app.strategy.credit_curve_governor import CurveGovernorConfig, curve_multiplier
+    if y10 is None or y3m is None:
+        y10, y3m = fetch_yield("^TNX"), fetch_yield("^IRX")
+    mult = curve_multiplier(y10, y3m, CurveGovernorConfig(**cfg_kw))
+    return Overlay(label="curve_governor", multiplier=mult,
+                   notes="de-risk when 10y-3m inverted (spread < threshold)")
+
+
+def run_credit_curve(*, n_boot: int = 0) -> dict:
+    """G1 confirmatory eval: credit + curve overlays, STANDALONE and MARGINAL to the live VIX
+    governor, on the live trend book; plus the both-halves stability guard. Report-only."""
+    from scripts.walkforward.sleeve_lab import (
+        evaluate_overlay, evaluate_overlay_marginal, format_overlay_report,
+    )
+    base = live_trend_book_returns()
+    gov = build_vix_term_governor()
+    print(f"[base] live trend book: {base.index[0].date()} -> {base.index[-1].date()} "
+          f"({len(base)} days)")
+    out = {}
+    for name in ("credit_governor", "curve_governor"):
+        ov = build_overlay(name)
+        standalone = evaluate_overlay(ov, base)
+        marginal = evaluate_overlay_marginal(ov, base, prior_overlays=[gov])
+        # both-halves stability on the MARGINAL d_max_dd (split the active window at midpoint)
+        mser = ov.multiplier
+        mid = mser.index[len(mser) // 2]
+        h1 = evaluate_overlay_marginal(
+            type(ov)(ov.label, mser[mser.index < mid]), base, prior_overlays=[gov])
+        h2 = evaluate_overlay_marginal(
+            type(ov)(ov.label, mser[mser.index >= mid]), base, prior_overlays=[gov])
+        print("\n[STANDALONE] " + name)
+        print(format_overlay_report(standalone))
+        print("\n[MARGINAL vs governor] " + name)
+        print(format_overlay_report(marginal))
+        print(f"  both-halves marginal d_max_dd: H1={h1.d_max_dd:+.4f} H2={h2.d_max_dd:+.4f} "
+              f"-> both_improve={h1.d_max_dd > 0 and h2.d_max_dd > 0}")
+        out[name] = {"standalone": standalone, "marginal": marginal,
+                     "h1_d_max_dd": h1.d_max_dd, "h2_d_max_dd": h2.d_max_dd}
+    return out
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "governor":
         run_governor()
+        return 0
+    if argv and argv[0] == "credit_curve":
+        run_credit_curve()
         return 0
     run_sleeves(argv or None)
     return 0
