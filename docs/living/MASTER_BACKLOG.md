@@ -4,7 +4,23 @@
 
 ---
 
-## 🎯 ACTIVE PLAN — Alpha-v7 next: Sleeve Lab + orthogonal deep-history premia (2026-06-14)
+## 🎯 ACTIVE PLAN — Alpha-v8 Research Program: Overlay & Timing track (2026-06-14)
+
+**SSOT:** [`docs/reference/ALPHA_V8_RESEARCH_PLAN.md`](../reference/ALPHA_V8_RESEARCH_PLAN.md) (Opus-architected). Three free-data angles, phased + exhaustively tested, executed sequentially. Driven by the F-series lesson: additive equity sleeves hit the IC≈0 / Track-B-correlation wall; **overlays** are what work (the VIX governor); power + a pre-registered both-halves stability guard are non-negotiable.
+
+| Phase | What | Status |
+|---|---|---|
+| **G0** | Shared infra: overlay **marginal-stacking** API (`compose_overlays`, `evaluate_overlay_marginal`) + overlay registry | ⬜ NEXT |
+| **G1** | **Credit/curve de-risk overlay** (HYG/IEF + ^TNX/^IRX; daily, deep, zero-friction) — highest EV; judged marginal to the VIX governor | ⬜ |
+| **G2** | **Short-interest de-risk overlay** (data layer exists; bi-monthly ~190 obs → depth go/no-go gate first) | ⬜ |
+| **G3** | **Additive long-flat timing sleeve** (full Track-A+B; corr<0.30 wall) — hardest, last | ⬜ |
+| **G4** | Owner-gated **live wiring** of any winner (compose multiplier stack, clamped, fail-safe) | ⬜ |
+
+Cross-cutting: pre-register every confirmatory run (R7) + mandatory both-halves stability guard + exhaustive tests + independent Opus adversarial deep-dive + fail-safe + one PR/sub-phase. **First actions: G0 → G1a.**
+
+---
+
+## 🎯 PRIOR PLAN — Alpha-v7: Sleeve Lab + orthogonal deep-history premia (2026-06-14) — COMPLETE (F0–F5 swept; governor live, carry killed)
 
 **SSOT:** `docs/reference/ALPHA_V7_RESEARCH_SYNTHESIS_2026-06-14.md` (synthesis of the 5-LLM panel — Opus 4.8/ChatGPT/DeepSeek/Gemini/Grok; inputs archived `docs/archive/llm-reviews/2026-06-14/`). Supersedes the prior Alpha-v7 blueprint for *direction*. **Context:** Ruler v2 is LIVE (both gates); the honest candidate sweep found no new model (trend is the only edge). Panel consensus: build a 3–5 sleeve premia book around trend at a realistic **book SR 0.7–0.9** on **deep free history** (19y ETFs / FRED); frozen 4y options for *conditioning* only.
 

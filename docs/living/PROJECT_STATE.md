@@ -6,7 +6,13 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## 🧭 NOW (2026-06-14): Alpha-v7 F-series done + BOTH owner decisions actioned — carry KILLED; ⭐ VIX governor WIRED LIVE (needs orchestrator restart)
+## 🧭 NOW (2026-06-14): Alpha-v8 Research Program planned (Overlay & Timing track) — executing G0 next
+
+**New research program set:** [`docs/reference/ALPHA_V8_RESEARCH_PLAN.md`](../reference/ALPHA_V8_RESEARCH_PLAN.md) (Opus-architected). Three free-data angles, phased + exhaustively tested sequentially: **G0** overlay marginal-stacking infra → **G1** credit/curve de-risk overlay (highest EV) → **G2** short-interest overlay (power-gated) → **G3** additive timing sleeve (hardest) → **G4** owner-gated live wiring. Built on the F-series lesson: overlays work, additive equity sleeves hit the corr/IC wall; pre-registered both-halves stability guard + Opus deep-dive are mandatory. **NEXT: G0** (marginal-stacking API). The VIX governor live + carry-kill + CI work (below) are DONE & verified.
+
+---
+
+## 🧭 PRIOR (2026-06-14): Alpha-v7 F-series done + BOTH owner decisions actioned — carry KILLED; ⭐ VIX governor WIRED LIVE (verified running)
 
 **Owner actioned both pending decisions (2026-06-14):**
 - ✅ **Carry confirmation → KILLED** (`F3-CARRY-CONFIRM-20260614`): edge is a pre-2016 artifact (H1 SR +0.69 vs H2 −0.10); the pre-registered stability guard caught it. Line closed.
