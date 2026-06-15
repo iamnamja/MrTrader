@@ -12,7 +12,7 @@
 |---|---|---|
 | **G0** | Shared infra: overlay **marginal-stacking** API (`compose_overlays`, `evaluate_overlay_marginal`) + overlay registry | 🟢 **DONE 2026-06-14** (Opus-reviewed; marginal math correct + PIT-safe; 11 tests) |
 | **G1** | **Credit/curve de-risk overlay** (HYG/IEF + ^TNX/^IRX; daily, deep, zero-friction) — highest EV; judged marginal to the VIX governor | 🟢 **DONE 2026-06-14:** curve KILLED (inert); credit-orig L60 KILLED (over-eager); **credit-SELECTIVE (L120/2%-band) = ⭐ promote_paper CANDIDATE** (marginal dSharpe +0.064, all-3-crises, both-halves stable; Opus-defensible w/ caveats; multiplicity-disclosed). → owner-gated G4 (flag OFF). |
-| **G2** | **Short-interest de-risk overlay** (data layer exists; bi-monthly ~190 obs → depth go/no-go gate first) | ⬜ |
+| **G2** | **Short-interest de-risk overlay** (data layer exists; bi-monthly ~190 obs → depth go/no-go gate first) | 🔴 **KILLED 2026-06-15** — depth gate passed (202 obs) but uniformly Sharpe-negative marginal to the governor across a 12-cell grid; COVID missed (bi-monthly+lag); RRT effect absent/reversed post-2017. Opus-verified honest (sign/PIT/aggregation OK). Line closed. (Per-name SI data layer stays reusable for a future XS factor.) |
 | **G3** | **Additive long-flat timing sleeve** (full Track-A+B; corr<0.30 wall) — hardest, last | ⬜ |
 | **G4** | Owner-gated **live wiring** of any winner (compose multiplier stack, clamped, fail-safe) | ⬜ |
 
