@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-15 (Alpha-v8 G2) — aggregate short-interest de-risk overlay: KILLED (RRT effect absent/reversed in this window)
+
+**Context**: G2 of the Alpha-v8 program. Built `app/strategy/short_interest_governor.py` (market-level aggregate short interest → PIT-safe trailing-z Short Interest Index → de-risk when shorts crowded; RRT thesis) on the existing `short_interest_provider` cache. Depth gate (G2a) PASSED — 202 bi-monthly settlement dates (2017-12-29→2026, survivorship-safe, PIT `knowable_date`) — but explicitly power-caveated (bi-monthly, no GFC, ~3 in-window crises). Pre-registered (R7) before the run.
+
+**Verdict (`G2-SHORTINT-OVERLAY`) → KILL** (marginal to the VIX governor): de-risks 49% of days at z>1; **uniformly Sharpe/Calmar-negative across a 12-cell grid** (no config improves_tail); **COVID dd_improve +0.000** (bi-monthly cadence + 10bd publication lag structurally can't react to a fast crash); BEAR-2022 only +0.006.
+
+**Integrity**: Independent Opus adversarial review — **KILL honest**. Sign correct (de-risk on HIGH SII, RRT-oriented; corr(SII, multiplier) −0.81), PIT clean (daily ffill uses only SII with knowable_date ≤ day; 0 lookahead mismatches), no aggregation bug. The decisive empirical finding: in the post-2017 window the de-risked (high-SII) days had **higher** market returns (SPY Sharpe 1.11 on high-SII days vs 0.59 on low) — i.e. the RRT aggregate-short-interest timing effect is **absent/reversed post-publication** (crowding decay), so de-risking the better half is uniformly Sharpe-negative. Unlike credit (G1), NO config rescues it.
+
+**Decision / consequences**: KILL — line closed; nothing promoted; nothing live. NO fresh re-spec warranted (uniform failure + structural power limits + COVID miss). **Footnote: only the market-TIMING overlay is killed** — the per-name short-interest data layer (`short_interest_provider`) is sound and remains reusable for a future cross-sectional SI factor (a different use). NEXT: G3 (additive long-flat timing sleeve). Alpha-v8 candidates so far: credit-selective (G1) only.
+
+---
+
 ## 2026-06-14 (Alpha-v8 G1) — credit/curve overlays: curve KILLED, credit-original KILLED, credit-SELECTIVE = first candidate (owner-gated)
 
 **Context**: First research phase of the Alpha-v8 overlay program. Built `app/strategy/credit_curve_governor.py` (credit = HYG/IEF below trailing MA; curve = 10y−3m inversion) and the G0 marginal-stacking API; evaluated each overlay MARGINAL to the live VIX governor (book×gov×candidate vs book×gov) on the live trend book, 2007→2026. Pre-registered (R7) before the run.

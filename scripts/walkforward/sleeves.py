@@ -303,6 +303,54 @@ def run_credit_curve(*, n_boot: int = 0) -> dict:
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────────
+# Overlays (G2) — aggregate short-interest de-risk overlay (slow, predictive)
+# ──────────────────────────────────────────────────────────────────────────────────
+@register_overlay("short_interest_governor")
+def build_short_interest_governor(*, store=None, **cfg_kw):
+    """Aggregate short-interest de-risk overlay (de-risk when the market-wide Short Interest
+    Index is crowded). Loads the cached short-interest parquet unless `store` is provided."""
+    from scripts.walkforward.sleeve_lab import Overlay
+    from app.strategy.short_interest_governor import ShortInterestGovernorConfig, si_multiplier
+    if store is None:
+        from app.data.short_interest_provider import load_short_interest
+        store = load_short_interest()
+    mult = si_multiplier(store, ShortInterestGovernorConfig(**cfg_kw))
+    return Overlay(label="short_interest_governor", multiplier=mult,
+                   notes="de-risk when aggregate Short Interest Index (RRT) is crowded")
+
+
+def run_short_interest(*, z_threshold: float = 1.0) -> dict:
+    """G2 confirmatory eval: aggregate-SI overlay, MARGINAL to the VIX governor AND to the full
+    {governor + credit-selective} stack, on the live trend book; + both-halves stability.
+    Report-only. POWER CAVEAT: SI data starts 2017-12-29 (no GFC; ~3 in-window crises)."""
+    from scripts.walkforward.sleeve_lab import evaluate_overlay_marginal, format_overlay_report
+    base = live_trend_book_returns()
+    gov = build_vix_term_governor()
+    credit = build_overlay("credit_governor")
+    si = build_overlay("short_interest_governor", z_threshold=z_threshold)
+    print(f"[base] live trend book {base.index[0].date()} -> {base.index[-1].date()}")
+    print(f"[si] overlay window {si.multiplier.index[0].date()} -> {si.multiplier.index[-1].date()} "
+          f"derisk_days={float((si.multiplier < 1.0).mean()):.1%}")
+    out = {}
+    for tag, prior in (("vs governor", [gov]), ("vs governor+credit", [gov, credit])):
+        rep = evaluate_overlay_marginal(si, base, prior_overlays=prior)
+        print(f"\n[MARGINAL {tag}] short_interest_governor")
+        print(format_overlay_report(rep))
+        out[tag] = rep
+    # both-halves on the marginal-vs-governor
+    mser = si.multiplier
+    mid = mser.index[len(mser) // 2]
+    h1 = evaluate_overlay_marginal(si.__class__("si", mser[mser.index < mid]), base,
+                                   prior_overlays=[gov])
+    h2 = evaluate_overlay_marginal(si.__class__("si", mser[mser.index >= mid]), base,
+                                   prior_overlays=[gov])
+    print(f"\n  both-halves marginal d_max_dd: H1={h1.d_max_dd:+.4f} H2={h2.d_max_dd:+.4f} "
+          f"-> both_improve={h1.d_max_dd > 0 and h2.d_max_dd > 0}")
+    out["both_halves"] = (h1.d_max_dd, h2.d_max_dd)
+    return out
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "governor":
@@ -310,6 +358,9 @@ def main(argv=None) -> int:
         return 0
     if argv and argv[0] == "credit_curve":
         run_credit_curve()
+        return 0
+    if argv and argv[0] == "short_interest":
+        run_short_interest()
         return 0
     run_sleeves(argv or None)
     return 0
