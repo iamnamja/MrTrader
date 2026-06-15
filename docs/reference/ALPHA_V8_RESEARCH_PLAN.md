@@ -168,3 +168,16 @@ multiplier recorded in `decision_audit`. Shadow-first; one overlay armed at a ti
   guard + Opus review are non-negotiable.
 
 **First actions:** G0 (marginal-stacking API) → G1a (deep credit/curve data audit) → G1b/G1c.
+
+---
+
+## EXECUTION RESULTS — G0→G3 completed 2026-06-14/15 (PRs #495–#497 + G3)
+
+| Phase | Result |
+|---|---|
+| **G0** marginal-stacking infra | ✅ SHIPPED (#495) — `compose_overlays`, `evaluate_overlay_marginal`, overlay registry. |
+| **G1** credit/curve overlay | 🟠 **CANDIDATE** (#496): curve KILLED (inert); credit-orig L60 KILLED (over-eager); **credit-SELECTIVE (L120/2%-band) = promote_paper** — marginal-to-governor dSharpe +0.064, all-3-crises, both-halves stable. Opus-defensible w/ 6 caveats (post-hoc/multiplicity; small tail-insurance effect; owner-gated paper only). **The one Alpha-v8 winner.** |
+| **G2** short-interest overlay | 🔴 KILLED (#497) — depth gate passed (202 obs) but uniformly Sharpe-negative marginal to the governor (12-cell grid); COVID un-catchable (bi-monthly+lag); RRT effect absent/reversed post-2017. Opus-verified honest. (Per-name SI data layer stays reusable.) |
+| **G3** additive credit-timing sleeve | 🟠 PARK — Track-A PAPER PASS (point_SR +0.913) but Track-B FAIL (corr 0.518 — largely SPY beta). Credit's productive form is the G1 overlay, not a sleeve. |
+
+**Bottom line**: Alpha-v8 yields **one modest tail-insurance overlay candidate (credit-selective, G1)** + clean leak-free negatives for short-interest (G2) and additive-timing (G3). The corr-to-trend-book / IC≈0 wall held a fourth time. **G4 (next)**: owner-gated live wiring of the credit-selective overlay (flag DEFAULT OFF). For genuinely *new* alpha, the next lever remains a deliberate data buy (futures), not more free-data search.

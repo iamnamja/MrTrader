@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-15 (Alpha-v8 G3) — additive credit-timing sleeve: PARK (real standalone edge, but the corr<0.30 wall) — and the program-level read
+
+**Context**: G3 of Alpha-v8 — the honest test of whether the credit signal (which worked as a G1 overlay) can be an ADDITIVE sleeve. Built `credit_timing_returns` (long-flat SPY timed by the credit signal); ran the full Sleeve Lab gate (Track-A + Track-B) vs the live trend book. Pre-registered (R7).
+
+**Verdict (`G3-CREDIT-TIMING`) → PARK**: **Track-A PAPER PASS** (point_SR +0.913, HAC p 0.0001 — a real standalone edge) but **Track-B FAIL** on the correlation wall (corr_to_book +0.518 ≥ 0.30; P(ΔSR>0) 0.873 < 0.90). The high SR is largely SPY beta (residual-α_t +1.50), so it cannot diversify a trend book that already holds SPY. Opus review: PARK honest, no look-ahead; the `diversifier` label is generous (directional beta, worst_regime −1.978) but it fails Track-B under either label. Not promoted (fails Track-B); not killed (real standalone merit). **The credit signal's productive form is the G1 overlay, not an additive sleeve.**
+
+**Program-level read (Alpha-v8 G0→G3 complete)**: G0 infra ✅; **G1 credit-selective overlay = the ONE candidate** (promote_paper, owner-gated); G2 short-interest overlay KILLED; G3 additive credit-timing sleeve PARKED. The whole series re-confirms the F-series thesis **a fourth time**: on free daily US data, additive equity signals hit the IC≈0 / corr-to-trend-book wall; the only thing that adds value is an **overlay** judged on book improvement. Net new from Alpha-v8: one modest tail-insurance overlay candidate (credit-selective), plus clean leak-free negatives that close the short-interest and additive-timing doors. The honest next lever for *new* alpha remains a deliberate data buy (futures), not more free-data search.
+
+**Consequences**: nothing live. NEXT: G4 — prepare the owner-gated live wiring of the G1 credit-selective overlay (flag DEFAULT OFF; live unchanged until the owner flips it).
+
+---
+
 ## 2026-06-15 (Alpha-v8 G2) — aggregate short-interest de-risk overlay: KILLED (RRT effect absent/reversed in this window)
 
 **Context**: G2 of the Alpha-v8 program. Built `app/strategy/short_interest_governor.py` (market-level aggregate short interest → PIT-safe trailing-z Short Interest Index → de-risk when shorts crowded; RRT thesis) on the existing `short_interest_provider` cache. Depth gate (G2a) PASSED — 202 bi-monthly settlement dates (2017-12-29→2026, survivorship-safe, PIT `knowable_date`) — but explicitly power-caveated (bi-monthly, no GFC, ~3 in-window crises). Pre-registered (R7) before the run.

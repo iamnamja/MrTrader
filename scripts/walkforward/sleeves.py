@@ -122,6 +122,22 @@ def build_etf_relative_value(*, prices: Optional[pd.DataFrame] = None, **cfg_kw)
                         f"entry/exit z={cfg.entry_z}/{cfg.exit_z}; dollar-neutral")
 
 
+@register_sleeve("credit_timing")
+def build_credit_timing_sleeve(*, prices: Optional[pd.DataFrame] = None, **cfg_kw) -> Sleeve:
+    """G3: ADDITIVE long-flat credit-timing equity sleeve (hold SPY when credit healthy, flat
+    when HY < trailing MA). Declared `diversifier` (goes flat in stress -> meant to diverge);
+    the corr<0.30 Track-B wall is the real test. One pre-registered config -> n_trials=1."""
+    from app.strategy.credit_curve_governor import CreditGovernorConfig, credit_timing_returns
+    cfg = CreditGovernorConfig(**cfg_kw)
+    if prices is None:
+        prices = fetch_universe_closes(["SPY", "HYG", "IEF"])
+    res = credit_timing_returns(prices["SPY"], prices["HYG"], prices["IEF"], cfg)
+    return Sleeve(label="credit_timing_SPY", component_type="diversifier",
+                  returns=res, spy_prices=prices["SPY"],
+                  n_trials_registered=1, registration_id="G3-CREDIT-TIMING",
+                  notes="long SPY when HY>=MA(120), flat when credit-stressed (long-flat)")
+
+
 def fetch_yield(ticker: str, *, start: date = date(2002, 1, 1),
                 end: Optional[date] = None) -> pd.Series:
     """Deep daily yield series via yfinance (e.g. ^TNX 10y, ^IRX 13-week)."""
