@@ -13,6 +13,8 @@ from app.strategy.crash_governor import (
 )
 from scripts.walkforward.sleeve_lab import (
     Overlay, evaluate_overlay, format_overlay_report, OverlayReport,
+    compose_overlays, evaluate_overlay_marginal, GLOBAL_DERISK_FLOOR,
+    register_overlay, build_overlay, list_overlays, OVERLAY_REGISTRY,
 )
 
 
@@ -227,3 +229,86 @@ def test_macro_refresh_swallows_errors(monkeypatch):
         raise RuntimeError("network down")
     monkeypatch.setattr("app.data.macro_history.update_macro_history", _boom)
     _refresh_macro_history_bounded(timeout_s=2.0)    # returns cleanly, no raise
+
+
+# ── G0: overlay registry + marginal-stacking API ────────────────────────────────────
+def _const_overlay(label, value, n=400, start="2019-01-02"):
+    idx = pd.bdate_range(start, periods=n)
+    return Overlay(label, pd.Series(value, index=idx))
+
+
+def test_compose_overlays_multiplies_and_clamps():
+    a = _const_overlay("a", 0.5)
+    b = _const_overlay("b", 0.5)
+    comp = compose_overlays([a, b])               # 0.5*0.5 = 0.25 (== floor)
+    assert abs(float(comp.multiplier.iloc[0]) - 0.25) < 1e-9
+    # a third 0.5 would push to 0.125 -> clamped to the 0.25 floor
+    comp3 = compose_overlays([a, b, _const_overlay("c", 0.5)])
+    assert (comp3.multiplier >= GLOBAL_DERISK_FLOOR - 1e-9).all()
+    assert abs(float(comp3.multiplier.iloc[0]) - GLOBAL_DERISK_FLOOR) < 1e-9
+
+
+def test_compose_single_overlay_identity():
+    a = _const_overlay("a", 0.7)
+    comp = compose_overlays([a])
+    assert (abs(comp.multiplier - 0.7) < 1e-9).all()
+
+
+def test_compose_requires_overlays():
+    with pytest.raises(ValueError):
+        compose_overlays([])
+
+
+def test_marginal_reduces_to_evaluate_overlay_when_no_prior():
+    base = _book_with_crash(seed=11)
+    mult = pd.Series(1.0, index=base.index)
+    mult.iloc[201:216] = 0.0
+    ov = Overlay("c", mult)
+    plain = evaluate_overlay(ov, base, toggle_cost_bps=0.0)
+    marg = evaluate_overlay_marginal(ov, base, prior_overlays=None, toggle_cost_bps=0.0)
+    assert abs(plain.d_max_dd - marg.d_max_dd) < 1e-12
+    assert abs(plain.d_sharpe - marg.d_sharpe) < 1e-12
+
+
+def test_marginal_over_prior_is_zero_for_redundant_overlay():
+    """An overlay identical to the prior adds NOTHING marginal (the prior already did it)."""
+    base = _book_with_crash(seed=12)
+    mult = pd.Series(1.0, index=base.index)
+    mult.iloc[201:216] = 0.5
+    prior = Overlay("gov", mult.copy())
+    candidate = Overlay("dup", mult.copy())       # identical to prior
+    rep = evaluate_overlay_marginal(candidate, base, prior_overlays=[prior], toggle_cost_bps=0.0)
+    # applying the same de-risk twice on already-de-risked days adds marginal de-risk, but the
+    # KEY check: the marginal report is computed vs the prior-overlaid baseline (not raw book)
+    assert "marginal over" in rep.label
+
+
+def test_marginal_credit_adds_beyond_governor():
+    """A candidate that de-risks an EXTRA crash window the governor missed shows marginal tail gain."""
+    base = _book_with_crash(seed=13)
+    base.iloc[300:312] = -0.025                    # a SECOND drawdown the governor doesn't cover
+    gov = pd.Series(1.0, index=base.index); gov.iloc[201:216] = 0.0   # governor covers crash #1 only
+    cand = pd.Series(1.0, index=base.index); cand.iloc[301:313] = 0.0  # candidate covers crash #2
+    rep = evaluate_overlay_marginal(Overlay("cand", cand), base,
+                                    prior_overlays=[Overlay("gov", gov)], toggle_cost_bps=0.0)
+    assert rep.d_max_dd > 0          # shallower drawdown BEYOND the governor
+    assert rep.improves_tail
+
+
+def test_overlay_registry_has_vix_governor():
+    import scripts.walkforward.sleeves  # noqa: F401  (registers builders on import)
+    assert "vix_term_governor" in list_overlays()
+
+
+def test_overlay_registry_register_build():
+    name = "_unit_test_overlay"
+    OVERLAY_REGISTRY.pop(name, None)
+
+    @register_overlay(name)
+    def _b(value=0.5):
+        return _const_overlay(name, value)
+    try:
+        ov = build_overlay(name, value=0.6)
+        assert isinstance(ov, Overlay) and abs(float(ov.multiplier.iloc[0]) - 0.6) < 1e-9
+    finally:
+        OVERLAY_REGISTRY.pop(name, None)

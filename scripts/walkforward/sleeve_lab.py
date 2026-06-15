@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -435,6 +435,10 @@ DEFAULT_CRISIS_WINDOWS = {
     "BEAR_2022": ("2022-01-01", "2022-10-31"),
 }
 
+# Composed overlays multiply multiplicatively; this floor bounds the TOTAL de-risk so an
+# unintended stack of overlays can't near-flatten the book (e.g. two 0.5 overlays -> 0.25).
+GLOBAL_DERISK_FLOOR = 0.25
+
 
 @dataclass
 class Overlay:
@@ -453,6 +457,59 @@ class Overlay:
         if (m < 0).any():
             raise ValueError(f"{self.label}: multiplier has negative exposure")
         self.multiplier = m
+
+
+# ── Overlay registry (mirror the sleeve registry) ──────────────────────────────────
+OVERLAY_REGISTRY: Dict[str, Callable[..., Overlay]] = {}
+
+
+def register_overlay(name: str) -> Callable[[Callable[..., Overlay]], Callable[..., Overlay]]:
+    """Decorator: register a builder `(...) -> Overlay` under `name`."""
+    def deco(fn: Callable[..., Overlay]) -> Callable[..., Overlay]:
+        key = name.lower()
+        if key in OVERLAY_REGISTRY:
+            raise ValueError(f"overlay {name!r} already registered")
+        OVERLAY_REGISTRY[key] = fn
+        return fn
+    return deco
+
+
+def build_overlay(name: str, **kwargs) -> Overlay:
+    key = (name or "").lower()
+    if key not in OVERLAY_REGISTRY:
+        raise KeyError(f"unknown overlay {name!r}; registered: {sorted(OVERLAY_REGISTRY)}")
+    ov = OVERLAY_REGISTRY[key](**kwargs)
+    if not isinstance(ov, Overlay):
+        raise TypeError(f"builder {name!r} returned {type(ov).__name__}, expected Overlay")
+    return ov
+
+
+def list_overlays() -> List[str]:
+    return sorted(OVERLAY_REGISTRY)
+
+
+def compose_overlays(overlays: List[Overlay], *, floor: float = GLOBAL_DERISK_FLOOR) -> Overlay:
+    """Compose overlays into ONE as-applied multiplier by multiplying their (date-aligned,
+    inner-join) multipliers elementwise, then clamping the PRODUCT to [floor, 1.0]. Overlays
+    de-risk multiplicatively, so the floor bounds the total de-risk (two 0.5s -> 0.25, not
+    lower). Warns loudly if the clamp ever binds (an unexpectedly deep stacked de-risk)."""
+    if not overlays:
+        raise ValueError("compose_overlays needs >=1 overlay")
+    if len(overlays) == 1:
+        raw = overlays[0].multiplier
+    else:
+        frame = pd.concat([o.multiplier.rename(o.label) for o in overlays], axis=1,
+                          join="inner").dropna()
+        if frame.empty:
+            raise ValueError("composed overlays share no common dates")
+        raw = frame.prod(axis=1)
+    prod = raw.clip(lower=floor, upper=1.0)
+    n_clamped = int((raw < floor).sum())
+    if n_clamped:
+        log.warning("[sleeve_lab] compose_overlays: floor %.2f clamped %d day(s) - the stacked "
+                    "de-risk hit the total bound; review the overlay set.", floor, n_clamped)
+    label = " x ".join(o.label for o in overlays)
+    return Overlay(label=label, multiplier=prod, notes="composed")
 
 
 def _ann_stats(r: pd.Series, ann: int = 252) -> dict:
@@ -511,26 +568,25 @@ class OverlayReport:
         }
 
 
-def evaluate_overlay(overlay: Overlay, base_book_returns: pd.Series, *,
-                     crisis_windows: Optional[dict] = None, toggle_cost_bps: float = 1.0,
-                     sharpe_tolerance: float = 0.05) -> OverlayReport:
-    """Evaluate a book-modifying overlay by comparing the book WITH vs WITHOUT it on the
-    governor-active (overlapping) window. The overlaid return is
-    `multiplier[t] * base[t]` minus a small toggle cost on |Δmultiplier| (changing
-    exposure trades notional). Reports Sharpe/Calmar/maxDD deltas + per-crisis drawdown.
-    A crash governor is judged on TAIL improvement with Sharpe roughly preserved — NOT on
-    standalone significance (which is why it is not a Sleeve)."""
-    base = _clean_return_series(base_book_returns, name="base_book_returns")
-    mult = overlay.multiplier
+def _overlay_report(label: str, without_returns: pd.Series, candidate_mult: pd.Series, *,
+                    crisis_windows: Optional[dict] = None, toggle_cost_bps: float = 1.0,
+                    sharpe_tolerance: float = 0.05, n_union: Optional[int] = None) -> OverlayReport:
+    """Core overlay comparison: WITHOUT = `without_returns` (the baseline book — raw, or already
+    prior-overlaid), WITH = `candidate_mult * without_returns` minus a toggle cost on the
+    candidate's |Δmultiplier|. Reports tail/Sharpe deltas + per-crisis drawdown. Single source
+    of truth for both evaluate_overlay (baseline=raw book) and evaluate_overlay_marginal
+    (baseline=prior-overlaid book)."""
+    base = _clean_return_series(without_returns, name="baseline_returns")
+    mult = candidate_mult
     aligned = pd.concat([base.rename("base"), mult.rename("mult")], axis=1,
                         join="inner").dropna()
     if len(aligned) < 2:
-        raise ValueError(f"{overlay.label}: overlay and book share <2 common dates")
-    n_union = len(base)
+        raise ValueError(f"{label}: overlay and baseline share <2 common dates")
+    n_union = len(base) if n_union is None else n_union
     if n_union and len(aligned) < 0.5 * n_union:
-        log.warning("[sleeve_lab] evaluate_overlay %s: governor-active window is %d/%d book "
-                    "days (%.0f%%) - the overlay's data is shorter than the book history.",
-                    overlay.label, len(aligned), n_union, 100.0 * len(aligned) / n_union)
+        log.warning("[sleeve_lab] overlay %s: active window is %d/%d book days (%.0f%%) - the "
+                    "overlay's data is shorter than the book history.",
+                    label, len(aligned), n_union, 100.0 * len(aligned) / n_union)
     b = aligned["base"]
     m = aligned["mult"]
     toggle_cost = m.diff().abs().fillna(0.0) * (toggle_cost_bps / 1e4)
@@ -557,13 +613,53 @@ def evaluate_overlay(overlay: Overlay, base_book_returns: pd.Series, *,
     sharpe_preserved = d_sharpe >= -abs(sharpe_tolerance)
 
     return OverlayReport(
-        label=overlay.label, n_days=len(aligned),
+        label=label, n_days=len(aligned),
         window_start=str(aligned.index[0].date()), window_end=str(aligned.index[-1].date()),
         mean_multiplier=float(m.mean()), derisk_fraction=float((m < 1.0).mean()),
         without=without, with_=with_,
         d_sharpe=d_sharpe, d_max_dd=d_max_dd,
         d_calmar=with_["calmar"] - without["calmar"], d_ann_ret=with_["ann_ret"] - without["ann_ret"],
         crisis=crisis, improves_tail=improves_tail, sharpe_preserved=sharpe_preserved)
+
+
+def evaluate_overlay(overlay: Overlay, base_book_returns: pd.Series, *,
+                     crisis_windows: Optional[dict] = None, toggle_cost_bps: float = 1.0,
+                     sharpe_tolerance: float = 0.05) -> OverlayReport:
+    """Evaluate a book-modifying overlay by comparing the book WITH vs WITHOUT it (the overlaid
+    return is `multiplier[t] * base[t]` minus a toggle cost). Judged on TAIL improvement with
+    Sharpe roughly preserved — NOT standalone significance (which is why it is not a Sleeve)."""
+    base = _clean_return_series(base_book_returns, name="base_book_returns")
+    return _overlay_report(overlay.label, base, overlay.multiplier, crisis_windows=crisis_windows,
+                           toggle_cost_bps=toggle_cost_bps, sharpe_tolerance=sharpe_tolerance,
+                           n_union=len(base))
+
+
+def evaluate_overlay_marginal(candidate: Overlay, base_book_returns: pd.Series, *,
+                              prior_overlays: Optional[List[Overlay]] = None,
+                              crisis_windows: Optional[dict] = None, toggle_cost_bps: float = 1.0,
+                              sharpe_tolerance: float = 0.05) -> OverlayReport:
+    """Evaluate `candidate`'s MARGINAL value on top of `prior_overlays` already applied to the
+    book: WITHOUT = book x compose(prior_overlays); WITH = WITHOUT x candidate. The deltas are
+    the candidate's contribution NET OF the prior stack (e.g. does a credit overlay add tail
+    protection BEYOND the VIX governor?). With no prior_overlays it reduces EXACTLY to
+    evaluate_overlay (candidate vs the raw book). The prior overlays' own toggle cost cancels in
+    the marginal delta (present in neither WITH nor WITHOUT), so only the candidate's incremental
+    toggle cost is charged. NOTE: only the DELTAS (d_*, crisis dd_improve) are decision-grade;
+    the absolute `without`/`with` levels are computed on the prior-overlaid baseline and omit the
+    prior's own toggle drag, so they are not the live stacked-book return."""
+    base = _clean_return_series(base_book_returns, name="base_book_returns")
+    if not prior_overlays:
+        return _overlay_report(candidate.label, base, candidate.multiplier,
+                               crisis_windows=crisis_windows, toggle_cost_bps=toggle_cost_bps,
+                               sharpe_tolerance=sharpe_tolerance, n_union=len(base))
+    prior = compose_overlays(list(prior_overlays))
+    aligned = pd.concat([base.rename("b"), prior.multiplier.rename("p")], axis=1,
+                        join="inner").dropna()
+    baseline_returns = (aligned["b"] * aligned["p"]).rename("baseline")
+    label = f"{candidate.label} | marginal over [{prior.label}]"
+    return _overlay_report(label, baseline_returns, candidate.multiplier,
+                           crisis_windows=crisis_windows, toggle_cost_bps=toggle_cost_bps,
+                           sharpe_tolerance=sharpe_tolerance, n_union=len(base))
 
 
 def format_overlay_report(rep: OverlayReport) -> str:
