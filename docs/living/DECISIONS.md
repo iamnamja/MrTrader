@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-14 (Alpha-v8 G1) — credit/curve overlays: curve KILLED, credit-original KILLED, credit-SELECTIVE = first candidate (owner-gated)
+
+**Context**: First research phase of the Alpha-v8 overlay program. Built `app/strategy/credit_curve_governor.py` (credit = HYG/IEF below trailing MA; curve = 10y−3m inversion) and the G0 marginal-stacking API; evaluated each overlay MARGINAL to the live VIX governor (book×gov×candidate vs book×gov) on the live trend book, 2007→2026. Pre-registered (R7) before the run.
+
+**Verdicts**:
+- **`G1-CURVE-OVERLAY` → KILL.** Curve inversion is inert/negative marginal to the governor (dMaxDD −0.000, dSharpe −0.017, both-halves fail) — too slow/lagged to be a tactical de-risk.
+- **`G1-CREDIT-OVERLAY` (pre-registered L60/band0) → KILL.** Fires ~37% of days (a slow trend filter, not a stress signal); shallows drawdowns but is Calmar/Sharpe-negative marginal to the governor (dCalmar −0.071). The pre-registered trigger was too eager.
+- **`G1B-CREDIT-SELECTIVE` (L120 / 2%-below-MA, ~18% of days) → promote_paper CANDIDATE** (parent = the killed L60). Marginal-to-governor **dSharpe +0.064, dCalmar +0.030**, all 3 crises improve, and the **pre-registered both-halves stability guard PASSES robustly** (H1 +0.069, H2 +0.047 — each half validates on different crises). This is the **first Alpha-v8 winner**.
+
+**Integrity / discipline**: the originally pre-registered config FAILED; the selective re-spec was found via a 12-cell diagnostic grid (MULTIPLICITY — disclosed). Promotion rests on (a) a principled trigger ("fire on >2% deterioration = stress, not every dip"), (b) the both-halves stability guard (the carry-killer; passes here on different crises per half), (c) 3-crisis breadth, (d) marginal-to-an-already-strong-governor (a high bar that nets out overlap). Independent Opus adversarial review: PIT-clean, genuinely non-redundant to the VIX governor, **promote_paper HONEST + DEFENSIBLE with 6 caveats** (post-hoc/multiplicity; small effect = tail insurance not return; lookback fit-sensitive; both-halves dSharpe supportive-not-gated; **owner-gated PAPER only — never capital**, overlays bypass Track-A significance by design; live must use the fail-safe `live_credit_multiplier`).
+
+**Decision / consequences**: NOTHING flipped live. The credit-selective overlay is recorded `promote_paper` = a candidate for **owner-gated G4 live wiring (flag default OFF)**. The canonical `CreditGovernorConfig` default is set to the selective config. Live book unchanged. Owner decides in the morning whether to wire it (it would stack multiplicatively with the VIX governor, clamped to the GLOBAL_DERISK_FLOOR). NEXT: G2 (short-interest overlay).
+
+---
+
 ## 2026-06-14 (F1b GO-LIVE) — VIX-term crash governor WIRED INTO THE LIVE TREND SLEEVE (owner-approved, flag ON, fail-safe)
 
 **Context**: The owner approved adopting the VIX-term crash governor (the one F-series candidate that helped) as a live book overlay. Wired it into the live trend-sleeve sizing path.
