@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-15 (Alpha-v8 G4) — credit-selective overlay WIRED into the live trend sleeve, flag DEFAULT OFF (owner decision pending)
+
+**Context**: G4 of Alpha-v8 — prepare the live wiring of the one winner (the G1 credit-selective overlay) so the owner can activate it with a single flag, WITHOUT flipping anything live autonomously.
+
+**Implementation** (mirrors the proven VIX-governor pattern): `app/live_trading/trend_sleeve.py::_credit_governor_multiplier` reads HYG/IEF from `macro_history`, uses `live_credit_multiplier` (validated config L120 / 2%-band / derisk_to 0.5). In `run_trend_rebalance` the overlays now COMPOSE multiplicatively: `overlay_mult = max(0.25, gov_mult × credit_mult)`; `alloc *= overlay_mult`. New `agent_config` flags `pm.credit_governor_*` with **`pm.credit_governor_enabled` DEFAULT "false"**.
+
+**Safety (Opus pre-merge review: SAFE)**: **flag DEFAULT OFF = zero live change** — credit_mult returns 1.0 before any data fetch, so `overlay_mult == gov_mult` and the live book is byte-identical to pre-G4. FAIL-SAFE (any error/missing/stale → 1.0), PIT-correct (settled closes), can ONLY reduce exposure; the 0.25 floor bounds the stacked de-risk; per-name + 80% gross caps still bind. No governor regression. A drift-guard test pins the live floor to the research `GLOBAL_DERISK_FLOOR`.
+
+**Decision / OWNER ACTION**: NOTHING flipped live. The credit overlay is merged but OFF. **To activate: review the G1 caveats (small tail-insurance effect; post-hoc/multiplicity; paper-only) then set `pm.credit_governor_enabled='true'`** (no restart for the flag; an orchestrator restart is only needed to load the new code). Recommendation: optionally run it in shadow/observation first; it stacks with the VIX governor (clamped) and is a modest tail hedge, not a return engine. This completes Alpha-v8 (G0→G4).
+
+---
+
 ## 2026-06-15 (Alpha-v8 G3) — additive credit-timing sleeve: PARK (real standalone edge, but the corr<0.30 wall) — and the program-level read
 
 **Context**: G3 of Alpha-v8 — the honest test of whether the credit signal (which worked as a G1 overlay) can be an ADDITIVE sleeve. Built `credit_timing_returns` (long-flat SPY timed by the credit signal); ran the full Sleeve Lab gate (Track-A + Track-B) vs the live trend book. Pre-registered (R7).

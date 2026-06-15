@@ -231,6 +231,67 @@ def test_macro_refresh_swallows_errors(monkeypatch):
     _refresh_macro_history_bounded(timeout_s=2.0)    # returns cleanly, no raise
 
 
+# ── G4: credit-governor live helper (flag DEFAULT OFF; fail-safe) ────────────────────
+def _credit_macro_df(stressed, last_date, n=200):
+    """Synthetic macro_history (hyg/ief) where the recent ratio is below/above its MA."""
+    idx = pd.bdate_range(end=pd.Timestamp(last_date), periods=n)
+    ief = pd.Series(100.0, index=idx)
+    if stressed:
+        hyg = pd.Series(list(np.linspace(120, 150, n - 30)) + list(np.linspace(150, 110, 30)),
+                        index=idx)           # HY breaks down at the tail -> below MA
+    else:
+        hyg = pd.Series(np.linspace(100, 150, n), index=idx)   # steady uptrend -> above MA
+    return pd.DataFrame({"date": [d.strftime("%Y-%m-%d") for d in idx],
+                         "hyg": hyg.to_numpy(), "ief": ief.to_numpy()})
+
+
+def _patch_credit(monkeypatch, *, flag="true", macro_df=None, lookback=60):
+    cfg_vals = {
+        "pm.credit_governor_enabled": flag,
+        "pm.credit_governor_derisk_to": 0.5,
+        "pm.credit_governor_lookback": lookback,
+        "pm.credit_governor_band": 0.0,
+    }
+    monkeypatch.setattr("app.database.agent_config.get_agent_config",
+                        lambda db, key: cfg_vals.get(key))
+    monkeypatch.setattr("app.data.macro_history.update_macro_history", lambda: None)
+    monkeypatch.setattr("app.data.macro_history.load_macro_history", lambda: macro_df)
+
+
+def test_credit_governor_flag_off_default(monkeypatch):
+    """pm.credit_governor_enabled defaults OFF -> 1.0 even with credit stress present."""
+    from app.live_trading.trend_sleeve import _credit_governor_multiplier
+    _patch_credit(monkeypatch, flag="false",
+                  macro_df=_credit_macro_df(True, date.today()))
+    assert _credit_governor_multiplier(db=None) == 1.0
+
+
+def test_credit_governor_derisks_when_enabled_and_stressed(monkeypatch):
+    from app.live_trading.trend_sleeve import _credit_governor_multiplier
+    _patch_credit(monkeypatch, macro_df=_credit_macro_df(True, date.today()))
+    assert _credit_governor_multiplier(db=None) == 0.5
+
+
+def test_credit_governor_full_when_healthy(monkeypatch):
+    from app.live_trading.trend_sleeve import _credit_governor_multiplier
+    _patch_credit(monkeypatch, macro_df=_credit_macro_df(False, date.today()))
+    assert _credit_governor_multiplier(db=None) == 1.0
+
+
+def test_overlay_derisk_floor_matches_research_constant():
+    """The live app-layer floor must not drift from the research GLOBAL_DERISK_FLOOR."""
+    from app.live_trading.trend_sleeve import _OVERLAY_DERISK_FLOOR
+    assert _OVERLAY_DERISK_FLOOR == GLOBAL_DERISK_FLOOR
+
+
+def test_credit_governor_stale_and_missing_fail_safe(monkeypatch):
+    from app.live_trading.trend_sleeve import _credit_governor_multiplier
+    _patch_credit(monkeypatch, macro_df=_credit_macro_df(True, date.today() - timedelta(days=30)))
+    assert _credit_governor_multiplier(db=None) == 1.0     # stale -> 1.0
+    _patch_credit(monkeypatch, macro_df=pd.DataFrame())    # missing cols
+    assert _credit_governor_multiplier(db=None) == 1.0
+
+
 # ── G0: overlay registry + marginal-stacking API ────────────────────────────────────
 def _const_overlay(label, value, n=400, start="2019-01-02"):
     idx = pd.bdate_range(start, periods=n)

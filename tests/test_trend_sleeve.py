@@ -263,6 +263,46 @@ def test_run_crash_governor_halves_exposure(monkeypatch, _patch_env):
     assert enter_audits and all(a.get("size_multiplier") == 0.5 for a in enter_audits)
 
 
+def test_run_overlays_compose_and_clamp(monkeypatch, _patch_env):
+    """Both overlays ON + both stressed -> exposure = max(floor, gov*credit) = max(0.25, 0.25)."""
+    import pandas as pd
+    from datetime import date
+    cfg, audits = _patch_env
+    cfg.update({"pm.crash_governor_enabled": "true", "pm.crash_governor_derisk_to": 0.5,
+                "pm.crash_governor_ratio_threshold": 1.0, "pm.crash_governor_confirm_days": 1,
+                "pm.credit_governor_enabled": "true", "pm.credit_governor_derisk_to": 0.5,
+                "pm.credit_governor_lookback": 60, "pm.credit_governor_band": 0.0})
+    idx = pd.bdate_range(end=pd.Timestamp(date.today()), periods=200)
+    mdf = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in idx],
+        "vix": [24.0] * 200, "vix3m": [20.0] * 200,                       # backwardation
+        "ief": [100.0] * 200,
+        "hyg": [170.0 - 0.3 * i for i in range(200)],    # HY steadily falling -> below its MA
+    })
+    monkeypatch.setattr("app.data.macro_history.update_macro_history", lambda: None)
+    monkeypatch.setattr("app.data.macro_history.load_macro_history", lambda: mdf)
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=object())
+    assert summary["crash_governor_mult"] == 0.5
+    assert summary["credit_governor_mult"] == 0.5
+    assert summary["overlay_mult"] == 0.25          # 0.5*0.5 clamped at the 0.25 floor
+
+
+def test_credit_governor_off_by_default_overlay_equals_gov(monkeypatch, _patch_env):
+    """With credit flag absent (default OFF), overlay_mult == the governor mult alone."""
+    cfg, audits = _patch_env
+    cfg.update({"pm.crash_governor_enabled": "true", "pm.crash_governor_derisk_to": 0.5,
+                "pm.crash_governor_ratio_threshold": 1.0, "pm.crash_governor_confirm_days": 1})
+    _patch_macro_backwardation(monkeypatch, ratio=1.2)   # only vix/vix3m; no hyg/ief
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+    summary = ts.run_trend_rebalance(db=object())
+    assert summary["credit_governor_mult"] == 1.0       # off -> inert
+    assert summary["overlay_mult"] == 0.5               # == governor alone
+
+
 def test_run_crash_governor_inert_in_contango(monkeypatch, _patch_env):
     cfg, audits = _patch_env
     cfg.update({"pm.crash_governor_enabled": "true", "pm.crash_governor_derisk_to": 0.5,
