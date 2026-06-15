@@ -405,6 +405,15 @@ gross caps still bind. PIT-correct: it reads only settled closes (strictly befor
 Monday 09:45 ET intraday VIX print is never used. The applied multiplier is in the rebalance summary
 (+ a detailed log line when active). Loading the code needs an orchestrator restart; the flags do not.
 
+**Credit overlay (Alpha-v8 G1/G4, 2026-06-15) — wired, flag DEFAULT OFF:** a second overlay,
+`_credit_governor_multiplier(db)` (HYG/IEF below its 120d MA by >2% = credit spreads widening →
+de-risk to 0.5), composes multiplicatively with the VIX governor: `overlay_mult = max(0.25,
+vix_gov × credit)` and `alloc *= overlay_mult` (the 0.25 floor bounds the stacked de-risk). Flag
+`pm.credit_governor_enabled` **defaults OFF** (owner-gated candidate) — so today it contributes 1.0
+and the live book is unchanged. Same fail-safe + PIT (settled closes) + can-only-reduce properties
+as the VIX governor. To activate: review the G1 caveats (small tail-insurance effect; multiplicity;
+paper-only), then set the flag true.
+
 **Why weekly:** `TSMOMConfig.rebalance_days=5` is the validated backtest cadence — the
 standalone +0.71 Sharpe (2007–26, all crises) was measured on a 5-day rebalance grid; the
 Monday wall-clock rebalance is its faithful live analog. **Why Monday:** a fixed weekday gives

@@ -283,6 +283,74 @@ def _crash_governor_multiplier(db) -> float:
         return 1.0
 
 
+# Compose floor for the stacked overlay multipliers (mirrors sleeve_lab.GLOBAL_DERISK_FLOOR;
+# duplicated as a local app-layer constant to avoid importing research code into the live path).
+_OVERLAY_DERISK_FLOOR = 0.25
+
+
+def _credit_governor_multiplier(db) -> float:
+    """Alpha-v8 G1: credit-spread de-risk multiplier for the trend sleeve, in [derisk_to, 1.0].
+    De-risks when the HYG/IEF ratio is >`band` below its `lookback`-day MA (credit spreads
+    widening). The validated G1 candidate (L120 / 2%-band / 0.5), evaluated marginal to the VIX
+    governor — a small tail-insurance overlay on a SLOWER credit axis than the governor.
+
+    Flag `pm.credit_governor_enabled` defaults OFF (this is an owner-gated CANDIDATE, not yet
+    approved like the VIX governor). FAIL-SAFE: flag off / missing / stale / error -> 1.0 (no
+    de-risk); can only REDUCE exposure. PIT: settled closes only (matches the backtest)."""
+    from app.database.agent_config import get_agent_config
+    try:
+        if not _truthy(get_agent_config(db, "pm.credit_governor_enabled")):
+            return 1.0
+        import pandas as pd
+        from datetime import date as _date
+        from app.data.macro_history import load_macro_history
+        from app.strategy.credit_curve_governor import (
+            CreditGovernorConfig, live_credit_multiplier,
+        )
+        cfg = CreditGovernorConfig(
+            lookback=int(get_agent_config(db, "pm.credit_governor_lookback")),
+            band=float(get_agent_config(db, "pm.credit_governor_band")),
+            derisk_to=float(get_agent_config(db, "pm.credit_governor_derisk_to")),
+        )
+        _refresh_macro_history_bounded()
+        mh = load_macro_history()
+        if mh is None or mh.empty or "hyg" not in mh.columns or "ief" not in mh.columns:
+            log.warning("credit governor: macro history unavailable -> mult=1.0 (fail-safe)")
+            return 1.0
+        # PIT: settled closes only (drop today's intraday partial bar), like the VIX governor.
+        _today_iso = _date.today().isoformat()
+        mh = mh[mh["date"].astype(str).str[:10] < _today_iso]
+        if mh.empty:
+            log.warning("credit governor: no settled macro rows before today -> 1.0 (fail-safe)")
+            return 1.0
+        last_date = pd.Timestamp(str(mh["date"].iloc[-1])[:10])
+        if (pd.Timestamp(_date.today()) - last_date).days > 7:
+            log.warning("credit governor: macro stale (last settled=%s) -> 1.0 (fail-safe)",
+                        last_date.date())
+            return 1.0
+        idx = pd.to_datetime(mh["date"])
+        need = cfg.lookback + max(0, cfg.confirm_days - 1) + 5
+        mult = live_credit_multiplier(
+            pd.Series(mh["hyg"].to_numpy(), index=idx).tail(need),
+            pd.Series(mh["ief"].to_numpy(), index=idx).tail(need),
+            cfg,
+        )
+        if mult is None or not (0.0 <= mult <= 1.0):
+            log.warning("credit governor: insufficient/invalid signal -> mult=1.0 (fail-safe)")
+            return 1.0
+        if mult < 1.0:
+            try:
+                ratio = float(mh["hyg"].iloc[-1]) / float(mh["ief"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                ratio = float("nan")
+            log.info("credit governor ACTIVE: de-risking trend exposure x%.2f "
+                     "(HYG/IEF=%.3f below trend, settled close %s)", mult, ratio, last_date.date())
+        return float(mult)
+    except Exception:  # noqa: BLE001
+        log.warning("credit governor failed -> mult=1.0 (fail-safe)", exc_info=True)
+        return 1.0
+
+
 def _fetch_prices(alpaca, universe: List[str]):
     """Return a (n_days, n_symbols) close-price DataFrame, or None on failure.
 
@@ -468,9 +536,17 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # [derisk_to, 1.0] (de-risk in backwardation). Fail-safe to 1.0 (= today's behavior);
         # can only REDUCE exposure, never increase it. Applied to the scalar budget so it
         # uniformly de-risks every target dollar; per-name + 80% gross caps still bind.
+        # Overlays COMPOSE multiplicatively, clamped to the floor so a stacked de-risk can't
+        # near-flatten the book. VIX governor (F1b, default ON) x credit governor (G1 candidate,
+        # default OFF). Each is fail-safe to 1.0; the product can only REDUCE exposure; per-name
+        # + 80% gross caps still bind downstream.
         gov_mult = _crash_governor_multiplier(db)
-        alloc = alloc * gov_mult
+        credit_mult = _credit_governor_multiplier(db)
+        overlay_mult = max(_OVERLAY_DERISK_FLOOR, gov_mult * credit_mult)
+        alloc = alloc * overlay_mult
         summary["crash_governor_mult"] = gov_mult
+        summary["credit_governor_mult"] = credit_mult
+        summary["overlay_mult"] = overlay_mult
         max_pos = float(get_agent_config(db, "pm.trend_max_position_pct"))
         universe = [s.strip().upper()
                     for s in str(get_agent_config(db, "pm.trend_universe")).split(",")
@@ -557,7 +633,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if shadow:
             for it in approved:
                 _audit(it["symbol"], it["side"], price=live.get(it["symbol"], 0.0),
-                       final_decision="enter", block_reason="shadow", size_mult=gov_mult)
+                       final_decision="enter", block_reason="shadow", size_mult=overlay_mult)
             log.info("trend SHADOW: would place %d order(s) (%d blocked) — none sent",
                      len(approved), len(blocked))
         else:
@@ -590,7 +666,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 except Exception:
                     db.rollback()
                     log.debug("trend: _sync_trend_trade/commit failed (swallowed)", exc_info=True)
-                _audit(sym, side, price=price, final_decision="enter", size_mult=gov_mult)
+                _audit(sym, side, price=price, final_decision="enter", size_mult=overlay_mult)
                 placed += 1
             log.info("trend LIVE: placed %d order(s) (%d blocked)", placed, len(blocked))
             summary["placed"] = placed
