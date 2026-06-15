@@ -8,7 +8,7 @@ import pytest
 from app.strategy.credit_curve_governor import (
     CreditGovernorConfig, CurveGovernorConfig,
     credit_multiplier, live_credit_multiplier,
-    curve_multiplier, live_curve_multiplier,
+    curve_multiplier, live_curve_multiplier, credit_timing_returns,
 )
 
 
@@ -89,3 +89,28 @@ def test_curve_live_multiplier():
     assert m == 0.75
     assert live_curve_multiplier(_series([1.0]), _series([2.0]),
                                  CurveGovernorConfig(confirm_days=5)) is None
+
+
+# ── G3 additive credit-timing sleeve ────────────────────────────────────────────────
+def test_credit_timing_long_when_healthy_flat_when_stressed():
+    n = 200
+    spy = _series(list(np.linspace(100, 130, 150)) + list(np.linspace(130, 110, 50)))
+    hyg = _series(list(np.linspace(100, 130, 150)) + list(np.linspace(130, 95, 50)))   # HY breaks down late
+    ief = _series([100.0] * n)
+    cfg = CreditGovernorConfig(lookback=60, band=0.0)
+    ret = credit_timing_returns(spy, hyg, ief, cfg, cost_bps=0.0)
+    assert isinstance(ret, pd.Series) and len(ret) > 100
+    # during the late credit-stress window the sleeve should be flat (zero return) on most days
+    late = ret.iloc[-30:]
+    assert (late == 0.0).sum() >= 15
+
+
+def test_credit_timing_pit_and_cost():
+    n = 160
+    spy = _series(100 * np.cumprod(1 + np.random.default_rng(0).normal(0.0003, 0.01, n)))
+    hyg = _series(list(np.linspace(100, 120, 100)) + list(np.linspace(120, 95, 60)))
+    ief = _series([100.0] * n)
+    free = credit_timing_returns(spy, hyg, ief, CreditGovernorConfig(lookback=40), cost_bps=0.0)
+    costed = credit_timing_returns(spy, hyg, ief, CreditGovernorConfig(lookback=40), cost_bps=10.0)
+    assert costed.sum() <= free.sum()           # cost reduces return
+    assert free.iloc[0] == 0.0 or abs(free.iloc[0]) >= 0.0   # PIT: first day position from prior

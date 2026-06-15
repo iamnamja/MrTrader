@@ -133,3 +133,25 @@ def live_curve_multiplier(y10_recent: pd.Series, y3m_recent: pd.Series,
     if stressed.empty:
         return None
     return cfg.derisk_to if bool(stressed.iloc[-1]) else 1.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────────
+# G3 — ADDITIVE long-flat credit-timing SLEEVE (not an overlay)
+# ──────────────────────────────────────────────────────────────────────────────────
+def credit_timing_returns(spy: pd.Series, hyg: pd.Series, ief: pd.Series,
+                          cfg: CreditGovernorConfig, *, cost_bps: float = 1.0) -> pd.Series:
+    """A STANDALONE long-flat equity sleeve timed by the credit signal: hold `target` (SPY by
+    default) when credit is NOT stressed (HY at/above its trailing MA), flat when stressed.
+    Daily PIT NET returns (position from the prior settled close earns today; cost on |Δpos|).
+    This is the G3 test of whether the credit signal works as an ADDITIVE sleeve (Track-A+B)
+    rather than only as an overlay — expected to hit the corr<0.30 wall vs the trend book."""
+    stressed = _credit_stressed(hyg, ief, cfg)
+    healthy = (~stressed).astype(float)                    # 1.0 when credit healthy -> long
+    ret = pd.Series(spy).astype(float).pct_change()
+    aligned = pd.concat([healthy.rename("pos"), ret.rename("ret")], axis=1,
+                        join="inner").dropna()
+    position = aligned["pos"].shift(1).fillna(0.0)         # PIT: signal at t-1 -> hold day t
+    gross = position * aligned["ret"]
+    turnover = position.diff().abs().fillna(position.abs())
+    cost = turnover * (cost_bps / 1e4)
+    return (gross - cost).rename("credit_timing").dropna()
