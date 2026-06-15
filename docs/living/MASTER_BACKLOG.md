@@ -10,8 +10,8 @@
 
 | Phase | What | Status |
 |---|---|---|
-| **G0** | Shared infra: overlay **marginal-stacking** API (`compose_overlays`, `evaluate_overlay_marginal`) + overlay registry | ⬜ NEXT |
-| **G1** | **Credit/curve de-risk overlay** (HYG/IEF + ^TNX/^IRX; daily, deep, zero-friction) — highest EV; judged marginal to the VIX governor | ⬜ |
+| **G0** | Shared infra: overlay **marginal-stacking** API (`compose_overlays`, `evaluate_overlay_marginal`) + overlay registry | 🟢 **DONE 2026-06-14** (Opus-reviewed; marginal math correct + PIT-safe; 11 tests) |
+| **G1** | **Credit/curve de-risk overlay** (HYG/IEF + ^TNX/^IRX; daily, deep, zero-friction) — highest EV; judged marginal to the VIX governor | 🟡 NEXT |
 | **G2** | **Short-interest de-risk overlay** (data layer exists; bi-monthly ~190 obs → depth go/no-go gate first) | ⬜ |
 | **G3** | **Additive long-flat timing sleeve** (full Track-A+B; corr<0.30 wall) — hardest, last | ⬜ |
 | **G4** | Owner-gated **live wiring** of any winner (compose multiplier stack, clamped, fail-safe) | ⬜ |

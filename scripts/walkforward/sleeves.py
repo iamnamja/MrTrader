@@ -18,7 +18,7 @@ import pandas as pd
 
 from scripts.walkforward.sleeve_lab import (
     Sleeve, register_sleeve, build_sleeve, list_sleeves,
-    evaluate_sleeve, format_sleeve_report,
+    evaluate_sleeve, format_sleeve_report, register_overlay,
 )
 
 # Live trend book (the current paper book) — the Track-B base. Mirrors TSMOMConfig defaults.
@@ -216,6 +216,7 @@ def fetch_vix_term(*, start: date = date(2007, 1, 1),
     return out["vix"], out["vix3m"]
 
 
+@register_overlay("vix_term_governor")
 def build_vix_term_governor(*, vix=None, vix3m=None, **cfg_kw):
     """The VIX term-structure crash governor as a sleeve_lab.Overlay (de-risk on
     backwardation). Fetches ^VIX/^VIX3M unless provided (for offline tests)."""
