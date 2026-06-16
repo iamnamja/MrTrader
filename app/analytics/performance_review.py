@@ -112,10 +112,14 @@ def get_performance_review(days: int = 30) -> Dict[str, Any]:
     avg_pnl = round(total_pnl / total_trades, 2) if total_trades else 0.0
     sharpe = _sharpe(pnls)
 
-    # Per-signal breakdown
+    # Per-strategy breakdown — key by STRATEGY SOURCE (selector: pead / quality_short /
+    # factor_portfolio / trend / ...), falling back to the signal MECHANISM (signal_type) for
+    # legacy untagged trades. Previously grouped only by signal_type, so PEAD (signal_type=
+    # 'ML_RANK') was merged into ML_RANK and never showed as its own strategy (matches the
+    # Analytics Signal-Attribution fix, 2026-06-16 UI audit).
     by_signal: Dict[str, Dict[str, Any]] = {}
     for t in trades:
-        sig = t.signal_type or "UNKNOWN"
+        sig = (getattr(t, "selector", None) or t.signal_type or "UNKNOWN")
         grp = by_signal.setdefault(sig, {"trades": 0, "wins": 0, "total_pnl": 0.0})
         grp["trades"] += 1
         pnl = float(t.pnl) if t.pnl is not None else 0.0
