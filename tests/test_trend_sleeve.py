@@ -457,10 +457,11 @@ def test_trend_config_keys_registered():
               "pm.trend_max_position_pct", "pm.trend_universe", "pm.trend_rebalance_weekday"):
         assert k in by_key, f"missing config key {k}"
     # shadow-safe defaults; allocation reconciled 40%->25% after the H1 DEMOTE
-    # made trend the sole live sleeve (Track-B 25% framing).
+    # made trend the sole live sleeve (Track-B 25% framing); then raised 0.25->0.50
+    # by the Alpha-v9 P1-2 Kelly/vol-target analysis (trend is the only live edge).
     assert _DEFAULTS["pm.trend_enabled"] == "false"
     assert _DEFAULTS["pm.trend_shadow"] == "true"
-    assert _DEFAULTS["pm.trend_allocation_pct"] == 0.25
+    assert _DEFAULTS["pm.trend_allocation_pct"] == 0.50
     assert _DEFAULTS["pm.trend_max_position_pct"] == 0.25
 
 

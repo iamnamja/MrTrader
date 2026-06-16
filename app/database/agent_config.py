@@ -300,11 +300,11 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "key": "pm.trend_allocation_pct",
-        "default": 0.25,
+        "default": 0.50,
         "type": "float",
         "min": 0.0,
         "max": 0.80,
-        "description": "Trend sleeve budget as a fraction of account value (caps total trend gross). Reconciled 2026-06-12 from 0.40 (the Alpha-v4 50/50-with-PEAD split) to 0.25 after the H1 DEMOTE made trend the SOLE live sleeve — the Track-B 25% risk-budget framing (#451). PEAD is off (pm.swing_selector='ml_model'), so the old 40%/PEAD-pairing no longer applies.",
+        "description": "Trend sleeve budget as a fraction of account value (caps total trend gross). Alpha-v9 P1-2 (2026-06-16): raised 0.25->0.50 after a Kelly/vol-target analysis (scripts/analyze_trend_allocation.py) on the real 19.4y book (100%-gross Sharpe 0.72, ann vol 9.34%): Kelly is not the binding constraint (full Kelly = 7.7x gross), so 0.25 (2.3% standalone vol) far under-deployed the only live edge; 0.50 targets ~4.7% standalone vol / ~-7% maxDD — deeply Kelly-haircut, VIX-governor-protected, under the 0.80 cap. Prior: reconciled 2026-06-12 from 0.40 to 0.25 (Track-B 25% risk-budget framing #451) after the H1 DEMOTE. Revisable as live-paper data accrues (P1-4). See DECISIONS 2026-06-16 (P1-2).",
         "group": "Portfolio Manager",
     },
     {
