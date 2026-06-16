@@ -4,6 +4,16 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P1-1) — explicit cash/T-bill sleeve; T-bills excluded from risk gross
+
+**Context**: With trend at 50%, ~half the book sat as zero-yield cash. P1-1 parks that idle capital in a T-bill ETF (SGOV/BIL) so it earns the risk-free rate.
+
+**Decision**: Built `app/live_trading/cash_sleeve.py` (+ `cash_tracker.py`), default OFF (pm.cash_enabled=false, pm.cash_shadow=true). It deploys idle SETTLED cash beyond a `pm.cash_buffer_pct` buffer into T-bills, and sells T-bills to refill the buffer when settled cash dips below it. Runs weekly 09:50 ET after trend. **Architectural decision: T-bills are cash-equivalents and are EXCLUDED from the 80% risk gross cap** — and from open-position counts, strategy-budget buckets, and sector concentration — across risk_manager, portfolio_manager, trend_sleeve, and risk_rules (keyed off the `CASH_ETFS` frozenset). Positions tagged selector/trade_type='cash' so the Trader exit loop and the startup reconciler never stop-loss them or adopt them as synthetic swing trades.
+
+**Rationale**: The 80% gross cap is a RISK limit; T-bills carry ~no risk (~0 beta/vol). If they counted toward risk gross (or position/budget/sector counts), deploying idle cash would mechanically starve trend/PEAD/swing — defeating the purpose. Sizing off settled cash (and `min(cash, buying_power)` to respect trend's just-placed orders) means the sleeve can never over-deploy. The buffer is the same-day liquidity cushion; T-bill sales settle T+1.
+
+**Consequences**: Report-only until the owner flips pm.cash_enabled=true → pm.cash_shadow=false (live-capital change, owner-gated). An Opus deep-dive returned DON'T-SHIP and found the gross-exclusion had been applied to only 2 of 6 position-counting gates (would silently starve the live book on enable), a Trader self-adoption path that would liquidate the buffer, and a SPY-anchored price-fetch bug that made the risk-off sell path silently no-op — all fixed, settlement race hardened, T+1 hole documented. 14 tests; full suite 3578 pass. Idle cash now earns the bill rate by construction; a formal "trend + T-bills" benchmark-comparison object is a deferred light follow-up. **Phase 1 buildable work complete** (P1-1/P1-2/P1-4 done; P1-3 verdict ~mid-July).
+
 ## 2026-06-16 (Alpha-v9 P1-4) — live-vs-sim back-validation = INTENDED-vs-ACTUAL, not an independent backtest
 
 **Context**: P1-4 requires a "live ≈ sim" tracking-error instrument so a sleeve can't graduate on research alone. The obvious design — reconstruct an independent backtest ("sim") and diff it against live — is what the first Opus deep-dive flagged as contaminated.

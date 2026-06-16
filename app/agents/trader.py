@@ -140,9 +140,15 @@ class Trader(BaseAgent):
             if p.get("symbol")
         }
 
+        from app.live_trading.cash_sleeve import CASH_ETFS
         for pos in raw_positions:
             symbol = pos.get("symbol")
             if not symbol:
+                continue
+            # P1-1: T-bill cash-sleeve ETFs are managed only by the weekly cash rebalancer.
+            # Never reconcile/adopt them here (adoption would attach a synthetic swing stop
+            # and the Trader would liquidate the cash buffer).
+            if symbol in CASH_ETFS:
                 continue
 
             qty = int(pos.get("quantity") or pos.get("qty", 0))
@@ -1960,7 +1966,9 @@ class Trader(BaseAgent):
         # rebalancer (app/live_trading/trend_sleeve.py) — never stop/target/trail
         # exit them here, or the synthetic stops the reconciler attaches would
         # liquidate the sleeve mid-week and fight the rebalancer.
-        if pos.get("trade_type") == "trend" or pos.get("selector") == "trend":
+        # Cash/T-bill sleeve positions (P1-1) are likewise managed only by the weekly
+        # cash rebalancer — never stop/target/trail a T-bill holding.
+        if pos.get("trade_type") in ("trend", "cash") or pos.get("selector") in ("trend", "cash"):
             return
         # Prefer live NBBO mid-quote over last minute bar — IEX minute bars can be
         # 10-30 min stale for low-volume names, causing stops/targets to miss.

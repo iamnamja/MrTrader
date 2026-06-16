@@ -332,6 +332,46 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Weekday for the weekly trend rebalance (0=Mon .. 4=Fri). Weekly cadence matches the validated sleeve.",
         "group": "Portfolio Manager",
     },
+    # ── Cash / T-bill sleeve — Alpha-v9 P1-1 (default OFF; deploy idle cash to T-bills) ─
+    {
+        "key": "pm.cash_enabled",
+        "default": "false",
+        "type": "str",
+        "description": "MASTER FLAG for the T-bill cash sleeve (P1-1). 'false' = code deployed but DORMANT (no orders). 'true' = weekly rebalance that parks idle settled cash (beyond the buffer) into a T-bill ETF so it earns the risk-free rate instead of zero. Safety default OFF.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.cash_shadow",
+        "default": "true",
+        "type": "str",
+        "description": "Cash sleeve dry-run (SAFETY DEFAULT ON): 'true' = compute + LOG the T-bill orders it would place (decision_audit block_reason='shadow') without sending. 'false' = send real orders. Independent of pm.cash_enabled.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.cash_buffer_pct",
+        "default": 0.02,
+        "type": "float",
+        "min": 0.0,
+        "max": 0.20,
+        "description": "Liquidity buffer kept as SETTLED CASH (fraction of NAV), never parked in T-bills, so other sleeves have same-day cash for intraday needs. The cash sleeve deploys (settled cash - buffer) into T-bills and SELLS T-bills to refill the buffer when settled cash dips below it (the risk-off path). 0.02 = 2% of NAV.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.cash_universe",
+        "default": "SGOV,BIL",
+        "type": "str",
+        "description": "Comma-separated T-bill ETF universe (first = primary buy target). Must be ultra-short Treasury/T-bill ETFs (SGOV, BIL, SHV, ...) — these are EXCLUDED from the 80% risk gross cap as cash-equivalents, so deploying them never starves trend/PEAD.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.cash_rebalance_weekday",
+        "default": 0,
+        "type": "int",
+        "min": 0,
+        "max": 4,
+        "description": "Weekday for the weekly cash rebalance (0=Mon .. 4=Fri). Runs AFTER the trend rebalance (09:50 ET) so the idle remainder is known.",
+        "group": "Portfolio Manager",
+    },
     # ── Regime-aware sleeve allocator — Alpha-v4 P3 (gate-controlled, default OFF) ─
     {
         "key": "pm.allocator_enabled",

@@ -4283,8 +4283,11 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         """
         deployed = {"swing": 0.0, "intraday": 0.0, "total": 0.0}
         try:
+            from app.live_trading.cash_sleeve import CASH_ETFS  # cash-equiv: not risk gross
             positions = self._alpaca.get_positions()  # list of position dicts
             for pos in positions:
+                if pos.get("symbol") in CASH_ETFS:
+                    continue  # P1-1 T-bill sleeve is cash, not deployed risk gross
                 market_val = abs(float(pos.get("market_value") or 0))
                 deployed["total"] += market_val
                 # Trade type tagged in metadata; default to swing for legacy positions

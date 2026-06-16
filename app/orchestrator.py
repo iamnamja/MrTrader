@@ -132,6 +132,13 @@ class AgentOrchestrator:
             job_id="trend_rebalance_trigger", misfire_grace_time=1800,
         )
 
+        # Cash/T-bill sleeve (P1-1) at 09:50 ET — AFTER trend (09:45) so the idle
+        # remainder is settled. Same weekly cadence; dormant unless pm.cash_enabled=true.
+        scheduler.schedule_daily_at_time(
+            self._trigger_cash_rebalance, hour=9, minute=50,
+            job_id="cash_rebalance_trigger", misfire_grace_time=1800,
+        )
+
         # Nightly options NBBO/spread logger at 15:55 ET (Alpha-v6 P1c slow fuse).
         # Snapshots live bid/ask for the frozen panel just before the close — the
         # only window where the chain's quotes reflect a real trading book. Misses
@@ -321,6 +328,58 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Trend rebalance trigger failed: %s", exc)
             await self._log_error("trend_sleeve", str(exc))
+
+    async def _trigger_cash_rebalance(self) -> None:
+        """Weekly cash/T-bill sleeve rebalance (P1-1). Fires daily (cron Mon–Fri); runs only
+        on pm.cash_rebalance_weekday AND when the market is open, AFTER the trend rebalance so
+        the idle remainder is settled. Dormant unless pm.cash_enabled=true; honours pm.cash_shadow.
+        """
+        from datetime import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except Exception:
+            _et = None
+
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            db = get_session()
+            try:
+                target_weekday = int(get_agent_config(db, "pm.cash_rebalance_weekday"))
+            finally:
+                db.close()
+        except Exception:
+            target_weekday = 0  # Monday default
+
+        today = _dt.now(_et).date() if _et else _dt.now().date()
+        if today.weekday() != target_weekday:
+            logger.debug("cash rebalance: not the configured weekday (%d != %d) — skip",
+                         today.weekday(), target_weekday)
+            return
+
+        try:
+            from app.integrations import get_alpaca_client
+            clock = get_alpaca_client().get_clock()
+        except Exception as exc:
+            logger.warning("cash rebalance: clock check failed — skipping (fail-closed): %s", exc)
+            return
+        if not clock or not clock.get("is_open"):
+            logger.info("cash rebalance: market not open today — skip (holiday/closed)")
+            return
+
+        logger.info("Orchestrator: triggering weekly cash rebalance")
+        try:
+            from app.live_trading import cash_sleeve, cash_tracker
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, cash_sleeve.run_cash_rebalance)
+            logger.info("Cash rebalance done: status=%s mode=%s action=%s approved=%d",
+                        summary.get("status"), summary.get("mode"),
+                        summary.get("action"), len(summary.get("approved", [])))
+            await loop.run_in_executor(None, cash_tracker.weekly_rollup)
+        except Exception as exc:
+            logger.error("Cash rebalance trigger failed: %s", exc)
+            await self._log_error("cash_sleeve", str(exc))
 
     async def _trigger_options_nbbo_log(self) -> None:
         """Nightly options NBBO/spread snapshot (Alpha-v6 P1c — FUSE A).

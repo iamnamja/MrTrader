@@ -711,8 +711,15 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
         }
         lookback_cutoff = datetime.utcnow() - timedelta(days=7)
 
+        from app.live_trading.cash_sleeve import CASH_ETFS
         for symbol, pos in alpaca_positions.items():
             if symbol in tracked_symbols:
+                continue
+            # T-bill cash-sleeve ETFs (P1-1) are managed by the weekly cash rebalancer.
+            # Never adopt them as synthetic SWING trades (which would attach 2%/6%
+            # stop/target and let the Trader liquidate the cash buffer).
+            if symbol in CASH_ETFS:
+                logger.info("UNTRACKED %s: T-bill cash-sleeve ETF — skipping synthetic adoption", symbol)
                 continue
 
             qty = int(float(pos.get("qty") or pos.get("quantity") or 0))

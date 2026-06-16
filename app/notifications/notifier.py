@@ -46,6 +46,7 @@ RATE_LIMITS: dict[str, int] = {
     "pead_weekly":       0,
     "trend_weekly":      0,   # trend_tracker.weekly_rollup (was dropped — unregistered)
     "trend_backval_weekly": 0,  # P1-4 live-vs-sim tracking-error report
+    "cash_weekly":       0,   # P1-1 cash/T-bill sleeve idle-capital utilization
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -280,6 +281,16 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Governor-active days", p.get("governor_days")),
             ("Total rebalance blocks", p.get("total_blocked")),
             ("Note", p.get("note", "")),
+        ])
+
+    elif event_type == "cash_weekly":
+        subj = f"[MrTrader] Cash/T-bill sleeve weekly — {p.get('week_ending', '?')}"
+        body = _section("Cash sleeve (idle-capital utilization)", [
+            ("Week ending", p.get("week_ending")),
+            ("Trading days", p.get("n_days")),
+            ("Latest T-bill deployed", p.get("latest_tbill_deployed")),
+            ("Avg T-bill deployed", p.get("avg_tbill_deployed")),
+            ("Latest settled cash", p.get("latest_cash_buffer")),
         ])
 
     else:
