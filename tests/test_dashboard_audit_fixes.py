@@ -134,6 +134,19 @@ class _FakeDB:
         pass
 
 
+def test_set_config_truncates_long_description(db_session):
+    # A new agent_config key whose schema description >255 chars would raise
+    # StringDataRightTruncation on INSERT into the varchar(255) column (this blocked
+    # ENABLING the cash sleeve). set_config must truncate description to the column limit.
+    from app.database.config_store import set_config
+    from app.database.models import Configuration
+    long_desc = "x" * 400
+    set_config(db_session, "agent.test.long_desc_key", "true", description=long_desc)
+    row = db_session.query(Configuration).filter_by(key="agent.test.long_desc_key").first()
+    assert row is not None
+    assert len(row.description) <= 255
+
+
 def test_agent_last_activity_shape():
     # idle-state endpoint: per-agent last timestamp + last swing proposal (powers the
     # 'idle since <ts>' labels so dormant RM/swing panels don't look broken).

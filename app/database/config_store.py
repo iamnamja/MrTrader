@@ -41,6 +41,10 @@ def set_config(db, key: str, value: Any, description: str = "") -> None:
     from datetime import datetime
 
     serialised = json.dumps(value)
+    # Configuration.description is varchar(255); some agent_config schema descriptions are
+    # longer, which would raise StringDataRightTruncation on INSERT of a NEW key (e.g.
+    # enabling the cash sleeve). Truncate to the column limit — description is UI help text.
+    description = (description or "")[:255]
     row = db.query(Configuration).filter_by(key=key).first()
     if row is None:
         row = Configuration(key=key, value=serialised, description=description)
