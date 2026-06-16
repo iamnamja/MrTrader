@@ -86,7 +86,7 @@ def test_report_gate_detail_low_deployment_does_not_block():
         )
         for i in range(2)
     ]
-    r = WalkForwardReport(model_type="swing", folds=folds)
+    r = WalkForwardReport(model_type="swing", folds=folds, is_true_walkforward=True)  # P0-3
     detail = r.gate_detail()
     assert "low_deployment_warning" in detail
     assert detail["low_deployment_warning"][1] is False  # triggered

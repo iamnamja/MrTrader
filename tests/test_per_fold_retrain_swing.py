@@ -204,12 +204,13 @@ def _passing_cpcv_result(is_true_wf: bool):
 def test_frozen_cannot_promote_when_required_report():
     from app.ml import retrain_config
 
-    # Default (flag False): frozen report passes its metric gates.
-    assert _passing_wf_report(is_true_wf=False).gate_passed() is True
+    # Alpha-v9 P0-3: the flag now defaults True → frozen report blocked, true-WF allowed.
+    assert _passing_wf_report(is_true_wf=False).gate_passed() is False  # frozen blocked
+    assert _passing_wf_report(is_true_wf=True).gate_passed() is True    # per-fold allowed
 
-    with patch.object(retrain_config, "REQUIRE_TRUE_WF_FOR_PROMOTION", True):
-        assert _passing_wf_report(is_true_wf=False).gate_passed() is False  # frozen blocked
-        assert _passing_wf_report(is_true_wf=True).gate_passed() is True    # per-fold allowed
+    # With the flag OFF (legacy), a frozen report passed its metric gates.
+    with patch.object(retrain_config, "REQUIRE_TRUE_WF_FOR_PROMOTION", False):
+        assert _passing_wf_report(is_true_wf=False).gate_passed() is True
 
 
 def test_cpcv_swing_gate_ok_reflects_failure():
@@ -239,11 +240,14 @@ def test_cpcv_swing_gate_ok_reflects_failure():
 def test_frozen_cannot_promote_when_required_cpcv():
     from app.ml import retrain_config
 
-    assert _passing_cpcv_result(is_true_wf=False).gate_passed() is True
+    # Alpha-v9 P0-3: the flag now defaults True → a frozen (non-true-WF) run cannot
+    # promote, a true-WF run can.
+    assert _passing_cpcv_result(is_true_wf=False).gate_passed() is False
+    assert _passing_cpcv_result(is_true_wf=True).gate_passed() is True
 
-    with patch.object(retrain_config, "REQUIRE_TRUE_WF_FOR_PROMOTION", True):
-        assert _passing_cpcv_result(is_true_wf=False).gate_passed() is False
-        assert _passing_cpcv_result(is_true_wf=True).gate_passed() is True
+    # With the flag OFF (legacy), a frozen run was promotable.
+    with patch.object(retrain_config, "REQUIRE_TRUE_WF_FOR_PROMOTION", False):
+        assert _passing_cpcv_result(is_true_wf=False).gate_passed() is True
 
 
 # ── 8. THE killer test: build_train_matrix_for_window has no label leak ───────

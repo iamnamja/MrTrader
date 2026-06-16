@@ -27,12 +27,17 @@ training window (genuinely out-of-sample). When False (default), the legacy
 frozen-model 'generalization test' runs (NOT out-of-sample, cannot promote).
 See docs/living/PIPELINE_ARCHITECTURE.md KL-10."""
 
-REQUIRE_TRUE_WF_FOR_PROMOTION: bool = False
+REQUIRE_TRUE_WF_FOR_PROMOTION: bool = True
 """When True, gate_passed() returns False for any run that is not a true
-per-fold walk-forward (is_true_walkforward=False), even if all metric thresholds
-pass. This makes frozen-mode runs report-only. Default False during Phase 1
-rollout (swing per-fold proving); flip to True in Phase 3 once swing per-fold
-is validated, so frozen runs can no longer promote project-wide."""
+walk-forward (is_true_walkforward=False), even if all metric thresholds pass —
+making frozen-mode TRAINED-model runs report-only.
+
+Alpha-v9 P0-3 (2026-06-16): flipped False→True. A run is "true WF" when it either
+(a) per-fold-retrains a TRAINED model, or (b) is RULES-BASED (no fitted model →
+out-of-sample by construction; see cpcv.run_cpcv `_rules_based`). So this gates
+TRAINED frozen runs WITHOUT blocking rules-based sleeves (carry/tsmom/calendar/
+overlays), exactly as intended — a TRAINED model can no longer reach live on a
+frozen generalization test."""
 
 PER_FOLD_SWING_HPO_TRIALS: int = 0
 """HPO trials for per-fold swing retraining. 0 = use frozen production

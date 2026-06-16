@@ -203,7 +203,7 @@ class TestGateLogic:
 
     def _report_with_sharpes(self, sharpes, pf=1.5, calmar=0.5):
         from scripts.walkforward_tier3 import FoldResult, WalkForwardReport
-        report = WalkForwardReport(model_type="swing")
+        report = WalkForwardReport(model_type="swing", is_true_walkforward=True)  # P0-3
         for i, sh in enumerate(sharpes, 1):
             f = FoldResult(
                 fold=i,

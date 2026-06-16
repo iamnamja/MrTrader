@@ -156,7 +156,8 @@ def _passing_wf_report(regime_sharpes):
             profit_factor=1.5, calmar_ratio=1.0, n_obs=250,
             regime_sharpes=dict(regime_sharpes),
         ))
-    return WalkForwardReport(model_type="test", folds=folds)
+    return WalkForwardReport(model_type="test", folds=folds,
+                             is_true_walkforward=True)  # P0-3: isolate the regime gate
 
 
 def test_wf_none_regime_fails_by_default():
@@ -199,6 +200,7 @@ def _passing_cpcv(worst_regime):
         path_calmars=[1.0] * 5,
         path_n_obs=[250] * 5,
         worst_regime_sharpe=worst_regime,
+        is_true_walkforward=True,  # P0-3: promotable run is true-WF; isolate the regime gate
     )
 
 

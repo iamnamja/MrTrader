@@ -166,9 +166,16 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 > **UPDATE (2026-05-31, Phase 1 landed):** the swing per-fold-retrain mechanism now exists
 > (`--per-fold-retrain`, swing only). Each fold trains a fresh model on its own `[tr_start, tr_end]`
 > window (in-memory, no re-fetch; date-spine clamped to `train_end` so no label leaks). The run is
-> flagged `is_true_walkforward=True`, and `REQUIRE_TRUE_WF_FOR_PROMOTION` (default False, flip True in
-> Phase 3) will make frozen runs report-only. Swing must now be re-run with `--per-fold-retrain` to
+> flagged `is_true_walkforward=True`, and `REQUIRE_TRUE_WF_FOR_PROMOTION` (**now True since Alpha-v9 P0-3,
+> 2026-06-16**) makes frozen runs non-promotable. Swing must now be re-run with `--per-fold-retrain` to
 > earn a promotion-grade number. Intraday per-fold is Phase 2. See PIPELINE_ARCHITECTURE.md KL-10b.
+>
+> **UPDATE (2026-06-16, Alpha-v9 P0-3):** `REQUIRE_TRUE_WF_FOR_PROMOTION` flipped False→True. A TRAINED
+> model can no longer reach live on a frozen-mode generalization test — it must per-fold-retrain. A run is
+> "true WF" when it per-fold-retrains a trained model OR is rules-based (no fitted model → OOS by
+> construction), so rules-based sleeves (carry/tsmom/calendar) are unaffected. A frozen run blocked SOLELY
+> by this requirement is `INCONCLUSIVE` (report-only), never RETIRE — the retrain cron will not roll back
+> the champion on it. Report-only today (retrain is disabled: `RETRAIN_WEEKDAY=-1`, `SWING_ENABLED=False`).
 >
 > **UPDATE (2026-05-31, Phase 2 landed):** intraday per-fold-retrain now exists too. `--per-fold-retrain`
 > trains a fresh intraday model per fold on its own `[tr_start, tr_end]` 5-min window (same-day label →

@@ -161,10 +161,21 @@ class FoldEngine:
                 trading_day_set=_trading_day_set,
             )
 
+        # A rules-based strategy (no fitted model) is out-of-sample by construction, so
+        # it satisfies true-WF even without per-fold retrain (mirrors run_cpcv; Alpha-v9
+        # P0-3). FoldEngine reports are sanity-only/never gated today, but keep the
+        # is_true_walkforward semantics consistent to avoid a latent trap.
+        from datetime import date as _date_cls
+        _declared_trained = getattr(self.strategy, "is_trained", None)
+        if _declared_trained is None:
+            _cutoff = getattr(getattr(self.strategy, "model", None), "trained_through", None)
+            _rules_based = (_cutoff == _date_cls.min)
+        else:
+            _rules_based = (_declared_trained is False)
         report = WalkForwardReport(
             model_type=getattr(self.strategy, "model_type", "unknown"),
             in_sample_override=allow_in_sample,
-            is_true_walkforward=_per_fold,
+            is_true_walkforward=bool(_per_fold or _rules_based),
         )
         report.data_span = (n_span, d0, d1, n_syms, src)
 
