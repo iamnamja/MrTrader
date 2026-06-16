@@ -42,7 +42,12 @@ def get_signal_attribution(days: int = 90) -> Dict[str, Any]:
 
     buckets: Dict[str, List[float]] = {}
     for t in trades:
-        key = t.signal_type or "UNKNOWN"
+        # Attribute by STRATEGY SOURCE first (selector: pead / quality_short / factor_portfolio
+        # / trend / cash / ...), falling back to the signal MECHANISM (signal_type) for legacy
+        # untagged trades. Previously this grouped only by signal_type, so PEAD trades — which
+        # are ML-scored (signal_type='ML_RANK') — were invisibly merged into the ML_RANK bucket
+        # and never showed as "pead" in Analytics (Alpha-v9 UI audit 2026-06-16).
+        key = (getattr(t, "selector", None) or t.signal_type or "UNKNOWN")
         buckets.setdefault(key, []).append(float(t.pnl) if t.pnl is not None else 0.0)
 
     result: Dict[str, Any] = {}

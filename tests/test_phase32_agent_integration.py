@@ -207,6 +207,8 @@ class TestTraderForceClose:
 
         mock_alpaca = MagicMock()
         mock_alpaca.get_latest_price.return_value = 151.0
+        # AAPL must be a REAL Alpaca position to be force-closed (phantom guard, 2026-06-16).
+        mock_alpaca.get_positions.return_value = [{"symbol": "AAPL"}]
 
         with patch.object(t, "_execute_exit", side_effect=fake_exit):
             with patch("app.integrations.get_alpaca_client", return_value=mock_alpaca):
