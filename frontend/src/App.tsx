@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, Component } from 'react'
+import { useEffect, useRef, useState, useCallback, Component, Fragment } from 'react'
 import type { ReactNode } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -4070,6 +4070,7 @@ function PeadPanel() {
   const [lvb, setLvb] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [days, setDays] = useState(30)
+  const [expandedDate, setExpandedDate] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -4156,9 +4157,15 @@ function PeadPanel() {
                     <th key={h} style={s.th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {rows.map(r => (
-                    <tr key={r.trade_date} style={{ borderBottom: `1px solid ${C.border}` }}>
-                      <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{r.trade_date}</td>
+                  {rows.map(r => {
+                    const isOpen = expandedDate === r.trade_date
+                    const daySignals = signals.filter(sg => (sg.proposed_at || '').slice(0, 10) === r.trade_date)
+                    return (
+                    <Fragment key={r.trade_date}>
+                    <tr onClick={() => setExpandedDate(isOpen ? null : r.trade_date)}
+                        style={{ borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
+                          background: isOpen ? C.surface2 : 'transparent' }}>
+                      <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{isOpen ? '▾ ' : '▸ '}{r.trade_date}</td>
                       <td style={s.td}>{r.n_signals ?? '—'}</td>
                       <td style={s.td}>{r.n_entered ?? '—'}</td>
                       <td style={s.td}>{r.n_filled ?? '—'}</td>
@@ -4174,7 +4181,59 @@ function PeadPanel() {
                         {(r.suppressed_opportunity ?? 0)}/{(r.suppressed_macro ?? 0)}/{(r.suppressed_rm ?? 0)}
                       </td>
                     </tr>
-                  ))}
+                    {isOpen && (
+                    <tr key={`${r.trade_date}-d`}>
+                      <td colSpan={10} style={{ background: C.surface2, padding: '10px 16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12, marginBottom: daySignals.length ? 10 : 0 }}>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Funnel</div>
+                            <div style={{ fontSize: 11 }}>Signals: <span style={{ color: C.text }}>{r.n_signals ?? 0}</span></div>
+                            <div style={{ fontSize: 11 }}>Entered: <span style={{ color: C.text }}>{r.n_entered ?? 0}</span></div>
+                            <div style={{ fontSize: 11 }}>Filled: <span style={{ color: C.text }}>{r.n_filled ?? 0}</span> ({r.fill_rate != null ? (r.fill_rate * 100).toFixed(0) + '%' : '—'})</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>P&amp;L</div>
+                            <div style={{ fontSize: 11 }}>Realized: <span style={{ color: clr(r.realized_pnl) }}>{r.realized_pnl != null ? fmt$(r.realized_pnl) : '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>Unrealized: <span style={{ color: clr(r.unrealized_pnl) }}>{r.unrealized_pnl != null ? fmt$(r.unrealized_pnl) : '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>Gross: <span style={{ color: C.text }}>{r.gross_deployed != null ? fmt$(r.gross_deployed) : '—'}</span></div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Suppressed</div>
+                            <div style={{ fontSize: 11 }}>Opportunity: <span style={{ color: C.text }}>{r.suppressed_opportunity ?? 0}</span></div>
+                            <div style={{ fontSize: 11 }}>Macro: <span style={{ color: C.text }}>{r.suppressed_macro ?? 0}</span></div>
+                            <div style={{ fontSize: 11 }}>Risk Mgr: <span style={{ color: C.text }}>{r.suppressed_rm ?? 0}</span></div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Regime</div>
+                            <div style={{ fontSize: 11 }}>VIX: <span style={{ color: C.text }}>{r.vix_level != null ? r.vix_level.toFixed(1) : '—'}</span></div>
+                            <div style={{ fontSize: 11 }}>VIX block: <span style={{ color: r.vix_block_fired ? C.red : C.text }}>{r.vix_block_fired ? 'fired' : 'no'}</span></div>
+                          </div>
+                        </div>
+                        {daySignals.length > 0 ? (
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, margin: '4px 0 6px' }}>Signals this day ({daySignals.length})</div>
+                            {daySignals.map((sg, i) => (
+                              <div key={i} style={{ fontSize: 11, display: 'flex', gap: 10, padding: '2px 0', flexWrap: 'wrap' }}>
+                                <span style={{ color: C.accent, minWidth: 50 }}>{sg.symbol}</span>
+                                <span style={{ color: C.muted }}>{sg.direction}</span>
+                                <span style={{ color: C.muted }}>ml={sg.ml_score != null ? Number(sg.ml_score).toFixed(2) : '—'}</span>
+                                <span style={{ color: C.muted }}>PM:{sg.pm_status ?? '—'}</span>
+                                <span style={{ color: C.muted }}>RM:{sg.rm_status ?? '—'}{sg.rm_reason ? `(${sg.rm_reason})` : ''}</span>
+                                <span style={{ color: C.muted }}>Trader:{sg.trader_status ?? '—'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, color: C.muted }}>
+                            No per-signal detail for this date (outside the recent signal window, or no signals generated).
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                    )}
+                    </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

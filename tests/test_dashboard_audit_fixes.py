@@ -147,6 +147,44 @@ def test_set_config_truncates_long_description(db_session):
     assert len(row.description) <= 255
 
 
+def test_performance_review_groups_by_selector():
+    # Performance tab "By Signal Type" must surface PEAD as its own strategy bucket
+    # (same selector-grouping fix as Analytics), not merge it into ML_RANK.
+    from datetime import datetime
+    from app.analytics import performance_review as pr
+
+    rows = [
+        SimpleNamespace(status="CLOSED", closed_at=datetime(2026, 6, 5), pnl=-115.79,
+                        selector="pead", signal_type="ML_RANK"),
+        SimpleNamespace(status="CLOSED", closed_at=datetime(2026, 6, 4), pnl=50.0,
+                        selector="", signal_type="ML_RANK"),
+    ]
+
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def order_by(self, *a, **k):
+            return self
+
+        def all(self):
+            return rows
+
+    class _DB:
+        def query(self, *a, **k):
+            return _Q()
+
+        def close(self):
+            pass
+
+    with patch("app.database.session.get_session", return_value=_DB()), \
+         patch.object(pr, "_spy_return", return_value=0.0):
+        out = pr.get_performance_review(days=30)
+    by_signal = out["by_signal"]
+    assert "pead" in by_signal and by_signal["pead"]["trades"] == 1
+    assert "ML_RANK" in by_signal and by_signal["ML_RANK"]["trades"] == 1
+
+
 def test_agent_last_activity_shape():
     # idle-state endpoint: per-agent last timestamp + last swing proposal (powers the
     # 'idle since <ts>' labels so dormant RM/swing panels don't look broken).

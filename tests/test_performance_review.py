@@ -7,10 +7,14 @@ from datetime import datetime, date
 
 class TestGetPerformanceReview:
 
-    def _make_trade(self, pnl: float, signal_type: str = "EMA_CROSSOVER"):
+    def _make_trade(self, pnl: float, signal_type: str = "EMA_CROSSOVER", selector: str = ""):
         t = MagicMock()
         t.pnl = pnl
         t.signal_type = signal_type
+        # Real trades default selector="" — set it so the by_signal grouping (which keys on
+        # selector, falling back to signal_type; 2026-06-16) doesn't pick up MagicMock's
+        # truthy auto-attribute.
+        t.selector = selector
         t.closed_at = datetime(2026, 4, 1)
         return t
 
