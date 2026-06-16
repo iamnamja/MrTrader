@@ -33,6 +33,7 @@ import pandas as pd
 from app.backtesting.strategy_simulator import SimResult, StrategySimulator
 from app.backtesting.metrics import Trade
 from app.data.options_provider import parse_occ
+from app.options.spread_model import CalibratedSpreadModel  # noqa: F401 (cost-model type)
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,40 @@ PROFIT_FACTOR_CAP = 99.0  # finite sentinel for an all-wins fold (inf would pois
 class OptionsSpreadCostModel:
     """One-way cost to open/close ONE option leg (per contract). No historical NBBO, so we
     charge a modeled half-spread as a % of premium × a stress multiplier, plus a flat
-    per-contract fee. `spread_mult` (1×/2×/3×) is the mandatory stress knob."""
+    per-contract fee. `spread_mult` (1×/2×/3×) is the mandatory stress knob.
+
+    Flat default (1% half-spread). The contract-context kwargs (moneyness/dte/contract_type)
+    are accepted but IGNORED here — they let the simulator pass the same call to a
+    CalibratedOptionsSpreadCostModel without branching at the call site."""
     spread_pct: float = 0.01        # half-spread as a fraction of premium (1% default)
     per_contract_fee: float = 0.65  # broker commission per contract
 
-    def entry_exit_cost(self, premium: float, spread_mult: float = 1.0) -> float:
+    def entry_exit_cost(self, premium: float, spread_mult: float = 1.0, *,
+                        moneyness: Optional[float] = None, dte: Optional[float] = None,
+                        contract_type: Optional[str] = None,
+                        underlying: Optional[str] = None) -> float:
         """Dollar cost for ONE contract at `premium` (per-share option price). The
         simulator scales by quantity. Held-to-expiry legs are charged no exit cost."""
         return abs(premium) * self.spread_pct * spread_mult * MULTIPLIER + self.per_contract_fee
+
+
+@dataclass
+class CalibratedOptionsSpreadCostModel:
+    """P2-4 — moneyness/DTE-aware cost model. Same premium-% × stress-mult structure as the flat
+    model, but the half-spread fraction is looked up PER CONTRACT from an empirical
+    `CalibratedSpreadModel` (calibrated from the live NBBO log) using the contract's underlying,
+    moneyness, DTE and call/put type. ALWAYS delegates to the model — when the simulator can't
+    supply context the model itself returns its CONSERVATIVE global (high), never an optimistic
+    flat number. The per-contract fee is unchanged."""
+    model: "CalibratedSpreadModel"
+    per_contract_fee: float = 0.65
+
+    def entry_exit_cost(self, premium: float, spread_mult: float = 1.0, *,
+                        moneyness: Optional[float] = None, dte: Optional[float] = None,
+                        contract_type: Optional[str] = None,
+                        underlying: Optional[str] = None) -> float:
+        half = self.model.half_spread_pct(moneyness, dte, contract_type, underlying)
+        return abs(premium) * half * spread_mult * MULTIPLIER + self.per_contract_fee
 
 
 # ── Position spec ──────────────────────────────────────────────────────────────
@@ -190,6 +217,23 @@ class OptionsSimulator:
                     days.add(dd)
         return sorted(days)
 
+    def _cost_context(self, contract: str, meta: Optional[dict], on_date: date
+                      ) -> Tuple[Optional[float], Optional[int], Optional[str], Optional[str]]:
+        """(moneyness, dte, contract_type, underlying) for the cost model — moneyness from the
+        underlying close on/before `on_date`, dte in calendar days to expiry. Returns Nones if
+        unknown (cost model then falls back), never raises."""
+        try:
+            if not meta:
+                return (None, None, None, None)
+            und = meta.get("underlying")
+            S = self._underlying_on_or_before(und, on_date)
+            strike = meta.get("strike")
+            moneyness = (float(strike) / float(S)) if (S and strike) else None
+            dte = (meta["expiration"] - on_date).days if meta.get("expiration") else None
+            return (moneyness, dte, meta.get("contract_type"), und)
+        except Exception:
+            return (None, None, None, None)
+
     def _price_position(self, pos: OptionPosition, spread_mult: float) -> Optional[dict]:
         legs = []
         entry_cost = exit_cost = 0.0
@@ -210,9 +254,18 @@ class OptionsSimulator:
                 exit_mark = entry_mark
             legs.append({"leg": leg, "entry_mark": entry_mark, "exit_mark": exit_mark,
                          "exit_eff": exit_eff})
-            entry_cost += self.cost_model.entry_exit_cost(entry_mark, spread_mult) * leg.qty
+            # Pass per-contract context (moneyness/DTE/type) so a calibrated cost model can
+            # price the spread realistically; the flat model ignores it. Computed at the
+            # relevant date (entry vs exit) since moneyness/DTE both move over the hold.
+            em, ed, ect, eund = self._cost_context(leg.contract, meta, pos.entry_date)
+            entry_cost += self.cost_model.entry_exit_cost(
+                entry_mark, spread_mult, moneyness=em, dte=ed, contract_type=ect,
+                underlying=eund) * leg.qty
             if not held_to_expiry:  # no exit cost when held to expiry/assignment
-                exit_cost += self.cost_model.entry_exit_cost(exit_mark, spread_mult) * leg.qty
+                xm, xd, xct, xund = self._cost_context(leg.contract, meta, exit_eff)
+                exit_cost += self.cost_model.entry_exit_cost(
+                    exit_mark, spread_mult, moneyness=xm, dte=xd, contract_type=xct,
+                    underlying=xund) * leg.qty
         exit_eff = max(x["exit_eff"] for x in legs)
         realized = sum(x["leg"].side * (x["exit_mark"] - x["entry_mark"]) * MULTIPLIER
                        * x["leg"].qty for x in legs)
