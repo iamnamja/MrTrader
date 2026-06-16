@@ -80,9 +80,14 @@ class OptionsPricingEngine(Protocol):
 # ─────────────────────────────────────────────────────────────────────────────
 @runtime_checkable
 class OptionsSpreadCostModel(Protocol):
-    def entry_exit_cost(self, premium: float, spread_mult: float = 1.0) -> float:
+    def entry_exit_cost(self, premium: float, spread_mult: float = 1.0, *,
+                        moneyness: Optional[float] = None, dte: Optional[float] = None,
+                        contract_type: Optional[str] = None,
+                        underlying: Optional[str] = None) -> float:
         """One-way cost for opening/closing a leg at `premium` (% of premium × mult
-        + per-contract fee). No exit cost when held to expiry/assignment."""
+        + per-contract fee). No exit cost when held to expiry/assignment. The optional
+        contract-context kwargs (moneyness/DTE/call-put/underlying) let a CALIBRATED model
+        price the spread per contract (P2-4); a flat model ignores them."""
         ...
 
 

@@ -226,8 +226,21 @@ Honest disagreement is signal. Don't paper over these.
 sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
 
 ### Phase 2 — Gate & cost-model refinement (enables the new engines) 🟡
-- **P2-4 — Premium-% IV-aware option cost model.** `[Ⓕ]` **Blocking** for any options/VRP backtest.
-  **Success:** option backtests cost spread as % of premium (IV-aware), not bps of notional.
+- **P2-4 — Premium-% option cost model. ✅ DONE 2026-06-16 → framework SHIPPED (calibration
+  PRELIMINARY).** `[Ⓕ]` Built `app/options/spread_model.py::CalibratedSpreadModel` — an empirical
+  spread surface calibrated from the live NBBO log (`data/options_spread_obs.parquet`): median
+  RELATIVE spread bucketed by **(underlying × moneyness × DTE × call/put)** with hierarchical
+  fallback (per-underlying → panel → marginals → a CONSERVATIVE p75 global for no-coverage
+  contracts), wired into the OPT-2 sim via `CalibratedOptionsSpreadCostModel` (charges half the
+  relative spread × premium; flat 1% model stays the default — calibrated is opt-in). Calibrated
+  on 209K obs: SPY ATM 30D ≈ 0.86% half-of-premium, deep-OTM ≈ 33% — so it correctly costs liquid
+  index VRP cheaply and single-name/OTM (the OPT-3 earnings kill) dear. **Success criterion met:**
+  cost is premium-% and moneyness/DTE/liquidity-aware. **Honest scope (2 Opus deep-dives, SHIP):**
+  (a) it's moneyness/DTE-aware, NOT IV-bucketed (the premium-% base gives IV-sensitivity; the feed's
+  IV is ~30% NaN); (b) the NBBO log spans only ~4 days (2026-06, calm tape) so the surface is
+  ANACHRONISTIC for multi-year history → `covers_date()` guard + it is **NOT wired into any live
+  VRP go/no-go**. Re-run `scripts/calibrate_option_spreads.py` as data accrues; a VRP verdict needs
+  a mature surface + live-paper validation. 16 tests; full suite 3603 pass.
 - **P2-5 — Adapter, not parallel-system, discipline.** `[ChatGPT 4.3]` New asset classes (crypto,
   futures) and structures (options) enter the **existing Sleeve Lab via adapters** — no bespoke
   evaluators. (Design detail in the architecture doc.)
