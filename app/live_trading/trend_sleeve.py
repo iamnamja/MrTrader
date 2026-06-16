@@ -581,6 +581,15 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         from app.strategy.tsmom import TSMOMConfig, tsmom_weights
         cfg = TSMOMConfig(universe=[c for c in universe if c in prices_df.columns])
         target_weights = tsmom_weights(prices_df, cfg).iloc[-1].to_dict()
+        # P1-4: the INTENDED book (fraction of NAV per name) the sleeve aimed to hold this
+        # week — inverse-vol target x effective alloc (post-governor), clipped to the per-name
+        # cap. Purely additive (a summary field); back_validation replays it on the SAME Alpaca
+        # prices/calendar as the actual book to isolate execution friction. Pre-rounding,
+        # pre-gross-cap (those deviations ARE the friction we measure).
+        summary["intended_weights"] = {
+            s: float(min(float(w) * float(alloc), max_pos))
+            for s, w in target_weights.items() if w and float(w) > 0
+        }
 
         # ── NAV (fail-closed; never size off a hardcoded fallback) ──
         try:

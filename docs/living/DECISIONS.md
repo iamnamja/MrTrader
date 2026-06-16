@@ -4,6 +4,16 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P1-4) — live-vs-sim back-validation = INTENDED-vs-ACTUAL, not an independent backtest
+
+**Context**: P1-4 requires a "live ≈ sim" tracking-error instrument so a sleeve can't graduate on research alone. The obvious design — reconstruct an independent backtest ("sim") and diff it against live — is what the first Opus deep-dive flagged as contaminated.
+
+**Decision**: Define the "sim" leg as the live sleeve's OWN intended book (the weights `run_trend_rebalance` computes: inverse-vol target × effective alloc × governor, clipped to the per-name cap), captured at each rebalance and replayed on the SAME Alpaca price panel and SAME calendar as the actual held book. The only thing that can differ between legs is execution friction. Built in `app/live_trading/back_validation.py` (report-only).
+
+**Rationale**: An independently-reconstructed backtest diverges from live for reasons that have nothing to do with execution: (1) it rebalances on a different calendar (the deep-history modular 5-day grid, not live Mondays), and (2) it uses split/dividend-ADJUSTED yfinance closes while live marks are Alpaca RAW — injecting spurious returns on every ex-div day (the trend book is bond-ETF-heavy → monthly distributions). Both confounds vanish when both legs share one price panel and one calendar; the residual is exactly the friction we want (whole-share rounding, 80% gross cap, per-name caps, PEAD crowding, partial/failed fills, timing).
+
+**Consequences**: Report-only; touches no order path. A daily EOD snapshot + weekly verdict email are wired into the orchestrator; verdict is PASS/WATCH/FAIL/BUILDING (corr≥0.90, TE≤2%/yr, drift≤1.5%/yr; flat windows pass on tight TE). Trend went live ~2026-06-15, so it reads BUILDING until ~15 trading days accrue (~early July). Two Opus deep-dives (the second caught a CRITICAL — shadow runs would record intent against an empty actual book → spurious FAIL; fixed to record only genuine LIVE rebalances). Also fixed a latent bug: `trend_weekly` emails were silently dropped (unregistered notifier event). 17 tests; full suite 3564 pass.
+
 ## 2026-06-16 (Alpha-v9 P1-2) — raise trend allocation 25% → 50%
 
 **Context**: `pm.trend_allocation_pct` was 0.25 — a leftover from the Track-B 25% risk-budget framing (#451) after the H1 DEMOTE made trend the sole live sleeve, not a number chosen by a sizing analysis. Trend is the only live edge, so its sizing matters.

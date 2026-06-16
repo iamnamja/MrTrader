@@ -44,6 +44,8 @@ RATE_LIMITS: dict[str, int] = {
     "training_complete": 0,
     "phase_complete":    0,
     "pead_weekly":       0,
+    "trend_weekly":      0,   # trend_tracker.weekly_rollup (was dropped — unregistered)
+    "trend_backval_weekly": 0,  # P1-4 live-vs-sim tracking-error report
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -249,6 +251,35 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("VIX blocks fired", p.get("vix_blocks_fired")),
             ("Suppressed (opp/macro/RM)", p.get("suppressed_breakdown")),
             ("Notes", p.get("notes", "")),
+        ])
+
+    elif event_type == "trend_weekly":
+        subj = f"[MrTrader] Trend weekly rollup — {p.get('week_ending', '?')}"
+        body = _section("Trend live-vs-backtest weekly rollup", [
+            ("Week ending", p.get("week_ending")),
+            ("Realized Sharpe (trend book)", p.get("realized_sharpe")),
+            ("Backtest expectation", p.get("backtest_sharpe", "+0.710")),
+            ("Trading days", p.get("n_days")),
+            ("Avg positions", p.get("avg_positions")),
+            ("Avg gross deployed", p.get("avg_gross_deployed")),
+            ("Cumulative P&L", p.get("cumulative_pnl")),
+        ])
+
+    elif event_type == "trend_backval_weekly":
+        _v = p.get("verdict", "?")
+        subj = f"[MrTrader] Trend back-validation (intended vs actual): {_v} — {p.get('window_end', '?')}"
+        body = _section(f"Trend back-validation (intended vs actual) — verdict: {_v}", [
+            ("Window", f"{p.get('window_start')} .. {p.get('window_end')}"),
+            ("Trading days", p.get("n_days")),
+            ("Intended-vs-actual correlation", p.get("corr")),
+            ("Annualized tracking error", p.get("tracking_error_ann")),
+            ("Annualized drift (actual - intended)", p.get("drift_ann")),
+            ("Execution drag (bps/day)", p.get("slippage_drag_bps_day")),
+            ("Actual cum return (NAV contrib)", p.get("actual_cum_return")),
+            ("Intended cum return (NAV contrib)", p.get("intended_cum_return")),
+            ("Governor-active days", p.get("governor_days")),
+            ("Total rebalance blocks", p.get("total_blocked")),
+            ("Note", p.get("note", "")),
         ])
 
     else:
