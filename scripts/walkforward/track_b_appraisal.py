@@ -60,6 +60,11 @@ WAIVED_REGIME_TYPES = frozenset({"diversifier", "risk_premium"})
 INFORMATIONAL_KEYS = frozenset({
     "calmar_delta_report", "max_dd_delta_report", "t_alpha_hac_report",
     "worst_regime_report", "requires_human_review",
+    # P0-2 (Ⓒ): for declared diversifiers/risk_premia the standalone-SR floor is
+    # report-only — the appraisal-IR already encodes "improves the book", and a
+    # genuine diversifier can have low/negative standalone Sharpe (that's WHY it
+    # diversifies). The implausibility CEILING stays gating (catches look-ahead).
+    "standalone_vt_sharpe_report",
 })
 
 
@@ -69,6 +74,7 @@ class TrackBAppraisalCriteria:
     bar). Load via from_retrain_config()."""
     min_ir: float
     min_pdsr: float
+    probation_min_pdsr: float    # P0-2 (Ⓓ): lowered P(ΔSR>0) bar for diversifier probation
     max_corr: float
     min_standalone_sr: float
     max_risk_budget: float
@@ -83,6 +89,7 @@ class TrackBAppraisalCriteria:
         return cls(
             min_ir=rc.RULERV2_TRACKB_MIN_IR,
             min_pdsr=rc.RULERV2_TRACKB_MIN_PDSR,
+            probation_min_pdsr=rc.RULERV2_TRACKB_PROBATION_MIN_PDSR,
             max_corr=rc.TRACKB_MAX_CORR,
             min_standalone_sr=rc.TRACKB_MIN_STANDALONE_SR,
             max_risk_budget=rc.TRACKB_MAX_RISK_BUDGET,
@@ -122,6 +129,11 @@ class TrackBAppraisalResult:
     block_len: float
     n_boot: int
     vol_floor_bind_frac: float
+    # P0-2: diversifier probation posture (Ⓒ standalone floor waived, Ⓓ lowered P(ΔSR>0)).
+    probation_applied: bool = False              # diversifier evaluated on the probation bar
+    standalone_floor_waived: bool = False        # standalone-SR floor was report-only
+    effective_min_pdsr: float = 0.0              # the P(ΔSR>0) bar actually applied
+    requires_live_paper_ratification: bool = False  # probation PASS -> PAPER only, live-paper req'd
     checks: Dict[str, tuple] = field(default_factory=dict)
     failed_criteria: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -150,6 +162,7 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
                      candidate_risk_budget: Optional[float] = None,
                      worst_regime_sharpe: Optional[float] = None,
                      regime_waiver_approved: bool = False,
+                     probation: bool = False,
                      n_boot: int = 2000,
                      block_len: Optional[float] = None,
                      seed: int = 0,
@@ -158,7 +171,13 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
 
     base_daily/candidate_daily: daily net returns (pd.DatetimeIndex required; the
     candidate's own costs already inside, as for every sleeve series here).
-    component_type: free-form; {diversifier, risk_premium} waive the worst-regime floor.
+    component_type: free-form; {diversifier, risk_premium} waive the worst-regime floor
+        AND (P0-2) the standalone-SR floor (it becomes report-only — the appraisal-IR
+        already encodes "improves the book").
+    probation: P0-2 (Ⓓ) — when True AND the candidate is a declared diversifier/
+        risk_premium, judge P(ΔSR>0) against the lowered `criteria.probation_min_pdsr`
+        (a PAPER-probation, small-size, live-paper-ratified admit) instead of the full
+        `criteria.min_pdsr`. No effect for `alpha` components (they keep the full bar).
     candidate_risk_budget: blend fraction b in (0, max_risk_budget]; default = max.
     worst_regime_sharpe: optional; gates (when not waived) or is report-only if absent.
     Raises TypeError on a non-DatetimeIndex; ValueError on an out-of-budget blend or
@@ -238,12 +257,18 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
 
     # Worst-regime backstop — waived for declared diversifiers / risk premia.
     waived = component_type.lower() in WAIVED_REGIME_TYPES
+    is_diversifier = waived  # same set drives the P0-2 standalone-floor + probation posture
+
+    # P0-2 (Ⓓ): a declared diversifier on the probation path is judged against the
+    # lowered P(ΔSR>0) bar; everyone else (and any alpha) keeps the full bar.
+    probation_applied = bool(is_diversifier and probation)
+    eff_min_pdsr = criteria.probation_min_pdsr if probation_applied else criteria.min_pdsr
 
     checks: Dict[str, tuple] = {
         "appraisal_ir": (appraisal_ir, appraisal_ir >= criteria.min_ir),
-        "p_delta_sr_gt_0": (p_dsr, p_dsr >= criteria.min_pdsr),
+        "p_delta_sr_gt_0": (p_dsr, p_dsr >= eff_min_pdsr),
         "corr_to_book": (corr, corr < criteria.max_corr),
-        "standalone_vt_sharpe": (standalone_sr, standalone_sr > criteria.min_standalone_sr),
+        # implausibility ceiling ALWAYS gates (catches look-ahead) — even for diversifiers.
         "standalone_sr_plausible": (
             standalone_sr, standalone_sr <= criteria.sharpe_implausibility_ceiling),
         "risk_budget": (b, b <= criteria.max_risk_budget + 1e-12),
@@ -253,6 +278,15 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
         "max_dd_delta_report": (dd_delta, True),
         "t_alpha_hac_report": (t_alpha_hac, True),
     }
+    # P0-2 (Ⓒ): standalone-SR FLOOR gates only for non-diversifiers. For declared
+    # diversifiers/risk_premia it is report-only — a genuine diversifier can have
+    # low/negative standalone Sharpe (that's why it diversifies); the appraisal-IR
+    # already certifies it improves the book.
+    if is_diversifier:
+        checks["standalone_vt_sharpe_report"] = (standalone_sr, True)
+    else:
+        checks["standalone_vt_sharpe"] = (
+            standalone_sr, standalone_sr > criteria.min_standalone_sr)
     if waived:
         # Declared diversifier / risk premium → backstop waived (report-only); the
         # whole point of the sleeve is to diverge from the book in a crisis.
@@ -305,8 +339,13 @@ def appraise_track_b(base_daily: pd.Series, candidate_daily: pd.Series, *,
                              if worst_regime_sharpe is not None else None),
         regime_waived=waived, block_len=blk, n_boot=int(n_boot),
         vol_floor_bind_frac=vol_floor_bind_frac,
+        probation_applied=probation_applied,
+        standalone_floor_waived=is_diversifier,
+        effective_min_pdsr=eff_min_pdsr,
+        requires_live_paper_ratification=bool(passed and probation_applied),
         checks=checks, failed_criteria=failed, warnings=warnings, passed=passed,
-        verdict=("PASS" if passed else "FAIL"), criteria=criteria)
+        verdict=(("PASS (probation)" if probation_applied else "PASS") if passed else "FAIL"),
+        criteria=criteria)
 
 
 def format_report(result: "TrackBAppraisalResult") -> str:
@@ -328,13 +367,16 @@ def format_report(result: "TrackBAppraisalResult") -> str:
         f"  appraisal IR (residual-a IR)   {r.appraisal_ir:>+8.3f}   "
         f"(gate >= {r.criteria.min_ir:.2f})  {_mark('appraisal_ir')}",
         f"  P(dSR>0) block-bootstrap       {r.p_delta_sr_gt_0:>8.3f}   "
-        f"(gate >= {r.criteria.min_pdsr:.2f})  {_mark('p_delta_sr_gt_0')}",
+        f"(gate >= {r.effective_min_pdsr:.2f}{' PROBATION' if r.probation_applied else ''})  "
+        f"{_mark('p_delta_sr_gt_0')}",
         f"  dSR point (at budget b)        {r.delta_sr_point:>+8.4f}   "
         f"[95% CI {r.delta_sr_ci_low:+.3f}, {r.delta_sr_ci_high:+.3f}]",
         f"  corr to book                   {r.corr_to_book:>+8.3f}   "
         f"(gate < {r.criteria.max_corr:.2f})  {_mark('corr_to_book')}",
-        f"  standalone vol-targeted SR     {r.standalone_vt_sharpe:>+8.3f}   "
-        f"(gate > {r.criteria.min_standalone_sr:.2f})  {_mark('standalone_vt_sharpe')}",
+        (f"  standalone vol-targeted SR     {r.standalone_vt_sharpe:>+8.3f}   "
+         f"(report-only for diversifier)" if r.standalone_floor_waived else
+         f"  standalone vol-targeted SR     {r.standalone_vt_sharpe:>+8.3f}   "
+         f"(gate > {r.criteria.min_standalone_sr:.2f})  {_mark('standalone_vt_sharpe')}"),
         f"  tail-overlap fraction          {r.tail_overlap_fraction:>8.3f}   "
         f"(gate <= {r.criteria.max_tail_overlap:.2f})  {_mark('tail_overlap')}",
         f"  residual-a t_HAC (report)      {r.t_alpha_hac:>+8.2f}",
@@ -343,7 +385,9 @@ def format_report(result: "TrackBAppraisalResult") -> str:
         f"   {_mark('worst_regime')}",
         bar,
         f"  VERDICT: {r.verdict}"
-        + (f"   (failed: {', '.join(r.failed_criteria)})" if r.failed_criteria else ""),
+        + (f"   (failed: {', '.join(r.failed_criteria)})" if r.failed_criteria else "")
+        + ("   [PAPER only — live-paper ratification required before any capital]"
+           if r.requires_live_paper_ratification else ""),
     ]
     for w in r.warnings:
         lines.append(f"  ! {w}")

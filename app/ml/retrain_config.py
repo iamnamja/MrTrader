@@ -488,6 +488,14 @@ RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ra
 # significance bar (~1-in-7 false adds); 0.90 aligns nearer the 0.95 used everywhere else
 # without demanding full 0.95 of a budget-bounded diversifier add.
 RULERV2_TRACKB_MIN_PDSR: float = 0.90
+# Alpha-v9 P0-2 (Ⓓ): a LOWER P(ΔSR>0) bar for DECLARED diversifiers/risk_premia admitted
+# on PAPER *probation* at small size (Track-B budget ≤ TRACKB_MAX_RISK_BUDGET) and gated by
+# mandatory live-paper ratification before any capital. Rationale (external review): the
+# loss is asymmetric — a false small-size diversifier add costs a few bps of drag, a
+# true-accept buys real book diversification — so the 0.90 bar is backwards for a
+# probationary diversifier. The live track record, not a one-shot offline p-value,
+# adjudicates. Applies ONLY to {diversifier, risk_premium}; `alpha` keeps the 0.90 bar.
+RULERV2_TRACKB_PROBATION_MIN_PDSR: float = 0.75
 
 # ── OD-9: factor set for the CAPITAL multi-factor residual-α (premia-book aware) ──
 # PRINCIPLE: residualize a sleeve against every priced premium EXCEPT the one it is

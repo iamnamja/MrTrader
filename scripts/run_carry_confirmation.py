@@ -58,14 +58,22 @@ def main() -> int:
     sleeve.registration_id = "F3-CARRY-CONFIRM-20260614"
 
     base = live_trend_book_returns()
-    rep = evaluate_sleeve(sleeve, base_book_returns=base)
+    # Carry is a declared risk_premium → evaluate Track-B on the probation path
+    # (Alpha-v9 P0-2: standalone-SR floor report-only, P(ΔSR>0) judged vs the lowered
+    # probation bar; a PASS is a PAPER-only, live-paper-ratified small-size admit).
+    rep = evaluate_sleeve(sleeve, base_book_returns=base, track_b_probation=True)
     print(format_sleeve_report(rep))
 
-    # Pre-registered sub-period stability (OOS-ish guard).
+    # POWERED sub-period stability (Alpha-v9 P0-2 Ⓑ): "stable" = the two half-Sharpes
+    # are not statistically distinguishable (bootstrap CI of SR(H1)-SR(H2) overlaps 0),
+    # NOT the old binary "positive in both halves" (which had ~24% FN on a true SR-0.5
+    # edge and killed this very sleeve).
+    from app.research.stability import stability_test
     r = sleeve.returns
-    h1, h2 = r[r.index < SPLIT], r[r.index >= SPLIT]
-    sr1, sr2 = _ann_sr(h1), _ann_sr(h2)
-    both_pos = (sr1 > 0) and (sr2 > 0)
+    stab = stability_test(r, split=SPLIT, n_boot=2000, seed=0)
+    sr1, sr2 = stab.sr_h1, stab.sr_h2
+    both_pos = stab.both_halves_positive       # report-only now (old criterion)
+    stable = stab.halves_indistinguishable     # the new powered stability verdict
     tb = rep.track_b
     print("\n" + "=" * 78)
     print("  F3-CARRY-CONFIRM-20260614 — pre-registered confirmation verdict")
@@ -78,14 +86,23 @@ def main() -> int:
           f"(IR={tb.appraisal_ir:+.3f}, dSR={tb.delta_sr_point:+.3f}, "
           f"P(dSR>0)={tb.p_delta_sr_gt_0:.3f}, corr={tb.corr_to_book:+.3f})")
     print(f"  Stability     : H1(2007-2016) SR={sr1:+.3f}  H2(2017-2026) SR={sr2:+.3f}  "
-          f"-> both_positive={both_pos}")
-    if rep.paper_passed and tb and tb.passed and both_pos:
-        decision = "promote_paper"
-    elif tb and tb.passed and both_pos:
+          f"dSR={stab.sr_diff:+.3f} CI[{stab.diff_ci_low:+.3f},{stab.diff_ci_high:+.3f}] "
+          f"-> stable={stable} (old both_positive={both_pos})")
+    tb_pass = bool(tb and tb.passed)
+    if rep.paper_passed and tb_pass and stable:
+        decision = "promote_paper"                 # full: standalone significance + book-delta
+    elif tb_pass and stable and getattr(tb, "probation_applied", False):
+        # Track-B book-delta admit of a stable, declared diversifier on the probation
+        # bar — PAPER only, small size, live-paper ratification required. Track-A
+        # standalone significance is NOT required (that's the whole point of Track-B).
+        decision = "promote_paper_probation"
+    elif tb_pass and stable:
         decision = "park"
     else:
         decision = "kill"
-    print(f"  DECISION (pre-registered rule): {decision.upper()}")
+    print(f"  DECISION (P0-2 rule): {decision.upper()}"
+          + ("  [PAPER only — live-paper ratification required]"
+             if decision == "promote_paper_probation" else ""))
     print("=" * 78)
     # Machine-readable line for record-result.
     print("\nRESULT_JSON " + str({
@@ -97,7 +114,12 @@ def main() -> int:
         "p_delta_sr_gt_0": round(tb.p_delta_sr_gt_0, 4) if tb else None,
         "corr_to_book": round(tb.corr_to_book, 4) if tb else None,
         "sr_half1_2007_2016": round(sr1, 4), "sr_half2_2017_2026": round(sr2, 4),
-        "both_halves_positive": both_pos, "decision": decision,
+        "sr_diff": round(stab.sr_diff, 4),
+        "sr_diff_ci": [round(stab.diff_ci_low, 4), round(stab.diff_ci_high, 4)],
+        "stable_powered": stable, "both_halves_positive": both_pos,
+        "track_b_probation_applied": bool(getattr(tb, "probation_applied", False)) if tb else False,
+        "effective_min_pdsr": round(tb.effective_min_pdsr, 3) if tb else None,
+        "decision": decision,
     }))
     return 0
 
