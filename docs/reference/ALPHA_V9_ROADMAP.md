@@ -156,13 +156,18 @@ Honest disagreement is signal. Don't paper over these.
   bug; the equity-ML kills do NOT re-open on pipeline-bug grounds, and P5 modeling work is justified.**
   *Finding for P5:* swing features are window-limited to ~63 bars (`momentum_252d_ex1m` is really ~42-bar) — the
   pipeline never sees true 12-month momentum. 2 Opus deep-dives, 12 tests.
-- **P0-2 — Fix the two diversifier-killing gate flaws.** `[Ⓑ Ⓒ Ⓓ]` (a) Replace the binary both-halves
-  guard (`scripts/walkforward/sleeves.py`) with a **powered stability test** (half-Sharpe homogeneity /
-  bootstrap-CI-overlaps-zero) + pooled-HAC significance, with mechanism-specific tests for episodic
-  strategies. (b) Drop/lower `standalone_vt_SR` for `{diversifier, risk_premium}`. (c) Add a
-  small-size-diversifier probation path with `P(ΔSR>0) ≥ 0.75` + mandatory live-paper ratification.
-  **Success:** re-run the carry F3 series through the new gate — if it now clears as a probationary
-  small-size diversifier, the old guard was the problem (as predicted).
+- **P0-2 — Fix the two diversifier-killing gate flaws. ✅ DONE 2026-06-16 → SUCCESS CRITERION MET.**
+  `[Ⓑ Ⓒ Ⓓ]` (a) New `app/research/stability.py::stability_test` — a powered stability test
+  (bootstrap CI of the half-Sharpe difference overlaps 0 = no break) replacing the binary both-halves
+  guard (sim: **22% FN on a true SR-0.5 edge → 3.8%**; real breaks still caught). (b) Track-B
+  `standalone_vt_SR` floor → report-only for `{diversifier, risk_premium}` (implausibility ceiling still
+  gates). (c) Probation path: `P(ΔSR>0) ≥ 0.75` (vs 0.90) for declared diversifiers → PAPER-only,
+  small-size, **live-paper-ratified** admit (CAPITAL still structurally requires live-paper, so probation
+  can't reach capital alone). **Result:** re-running carry F3 → **`PROMOTE_PAPER_PROBATION`** (Track-B
+  PASS-probation IR +0.434 / P(ΔSR>0) 0.930; powered-stable diff CI [−0.13,+1.64]; Track-A standalone
+  significance still fails — fine for a book-delta admit) — the old guard was the problem, as predicted.
+  2 Opus deep-dives (CRITICAL: `passed` must require pooled-significance so noise can't pass; HIGH:
+  `weakly_powered` flag). 11 tests; report-only (promotion owner-gated). **NEXT: P0-3.**
 - **P0-3 — Governance: flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True` for trained paths.** `[Ⓗ]` **Success:**
   no trained model can reach live without true per-fold-retrain WF; rules-based streams unaffected.
 

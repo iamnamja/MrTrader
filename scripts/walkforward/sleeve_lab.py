@@ -278,6 +278,7 @@ def evaluate_sleeve(
     total_years: Optional[int] = None,
     n_boot: int = 2000,
     seed: int = 0,
+    track_b_probation: bool = False,
 ) -> SleeveReport:
     """Run one sleeve through the uniform gate and return a SleeveReport.
 
@@ -369,6 +370,7 @@ def evaluate_sleeve(
             criteria=TrackBAppraisalCriteria.from_retrain_config(),
             worst_regime_sharpe=result.worst_regime_sharpe,
             regime_waiver_approved=regime_waiver_approved,
+            probation=track_b_probation,
             n_boot=n_boot, seed=seed, candidate_label=sleeve.label)
 
     return SleeveReport(
