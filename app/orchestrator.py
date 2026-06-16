@@ -64,8 +64,10 @@ class AgentOrchestrator:
         scheduler.start()
         self._schedule_jobs()
 
-        # Background monitor
-        asyncio.create_task(self._monitor_loop(), name="orchestrator_monitor")
+        # Background monitor — tracked in _tasks so stop() cancels it (else it
+        # leaks and lingers up to its 60s sleep after _running flips False).
+        self._tasks["_monitor"] = asyncio.create_task(
+            self._monitor_loop(), name="orchestrator_monitor")
         logger.info("Orchestrator started — %d agents running", len(self.agents))
 
     async def stop(self) -> None:
@@ -73,14 +75,20 @@ class AgentOrchestrator:
         logger.info("Stopping orchestrator…")
         self._running = False
         scheduler.stop()
-        for name, task in self._tasks.items():
+        # Cancel every tracked task (agents + the monitor loop) in PARALLEL and await
+        # them under a single bound — sequential 5s-per-task could blow the lifespan
+        # shutdown budget when several tasks are slow to honor cancellation.
+        tasks = list(self._tasks.values())
+        for task in tasks:
             task.cancel()
+        if tasks:
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=5.0)
+            except asyncio.TimeoutError:
                 pass
-            logger.info("Agent %s stopped", name)
         self._tasks.clear()
+        logger.info("Orchestrator stopped (%d task(s))", len(tasks))
 
     # ─── Scheduling ───────────────────────────────────────────────────────────
 

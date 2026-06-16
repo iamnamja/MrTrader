@@ -20,4 +20,6 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "==> Starting API server on http://0.0.0.0:8000 ..." -ForegroundColor Cyan
 Set-Location $root
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# --timeout-graceful-shutdown bounds uvicorn's wait for in-flight work on Ctrl+C;
+# the in-process lifespan watchdog (app/main.py) is the hard backstop against hangs.
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
