@@ -409,8 +409,12 @@ class RiskManager(BaseAgent):
             self._persist_peak_equity(current_equity)
 
         # ── Rule 0b: Gross exposure cap (80% of account) ─────────────────────
+        # T-bill cash-sleeve positions (P1-1) are cash-equivalents, NOT risk — exclude them
+        # so parking idle cash never inflates risk gross and starves trend/PEAD/swing.
+        from app.live_trading.cash_sleeve import CASH_ETFS
         total_deployed = sum(
-            abs(float(p.get("market_value") or 0)) for p in positions
+            abs(float(p.get("market_value") or 0))
+            for p in positions if p.get("symbol") not in CASH_ETFS
         )
         gross_pct = (total_deployed + trade_cost) / max(account_value, 1.0)
         if gross_pct > GROSS_EXPOSURE_CAP:
@@ -445,7 +449,8 @@ class RiskManager(BaseAgent):
         type_deployed = sum(
             abs(float(p.get("market_value") or 0))
             for p in positions
-            if _type_map.get(p.get("symbol"), "swing") == trade_type
+            if p.get("symbol") not in CASH_ETFS   # T-bills aren't a strategy budget
+            and _type_map.get(p.get("symbol"), "swing") == trade_type
         )
         type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
         if type_pct > budget_pct:
@@ -544,7 +549,10 @@ class RiskManager(BaseAgent):
             return False, reasoning
 
         # ── Rule 6: Open Positions ────────────────────────────────────────────
-        ok, msg = validate_open_positions(len(positions), self.limits)
+        # T-bill cash-sleeve holdings (P1-1) are not risk positions — don't let them
+        # consume MAX_OPEN_POSITIONS slots and block a legitimate entry.
+        _risk_pos_count = len([p for p in positions if p.get("symbol") not in CASH_ETFS])
+        ok, msg = validate_open_positions(_risk_pos_count, self.limits)
         reasoning["checks"].append({"rule": "open_positions", "ok": ok, "msg": msg})
         if not ok:
             reasoning["failed_rule"] = "open_positions"

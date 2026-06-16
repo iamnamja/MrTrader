@@ -474,9 +474,12 @@ def get_sector_exposure(
     sector_map: {symbol: sector_name}
     Returns: {sector_name: total_market_value}
     """
+    from app.live_trading.cash_sleeve import CASH_ETFS  # T-bills aren't a risk sector
     exposure: Dict[str, float] = {}
     for pos in positions:
         symbol = pos.get("symbol", "")
+        if symbol in CASH_ETFS:
+            continue  # P1-1 cash sleeve must not pollute the UNKNOWN sector bucket
         sector = sector_map.get(symbol, "UNKNOWN")
         exposure[sector] = exposure.get(sector, 0.0) + abs(float(pos.get("market_value", 0)))
     return exposure

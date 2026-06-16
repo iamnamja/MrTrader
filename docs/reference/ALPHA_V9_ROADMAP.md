@@ -183,9 +183,23 @@ Honest disagreement is signal. Don't paper over these.
   Phase 1.**
 
 ### Phase 1 — Harden & monetize what we already have 🟢👤
-- **P1-1 — Explicit cash/T-bill sleeve.** `[C8; ChatGPT]` Idle capital (~75% of book) into SGOV/BIL with
-  a defined risk-off liquidity policy; benchmark the whole book against **trend + T-bills**, not trend +
-  zero-yield cash. **Success:** a `cash_sleeve` return stream + live policy + the book benchmark switches.
+- **P1-1 — Explicit cash/T-bill sleeve. ✅ DONE 2026-06-16 → instrument SHIPPED (default OFF; owner-flip
+  to enable).** `[C8; ChatGPT]` Built `app/live_trading/cash_sleeve.py` + `cash_tracker.py`: parks idle
+  SETTLED cash (beyond a `pm.cash_buffer_pct` liquidity buffer) into a T-bill ETF (SGOV/BIL) so it earns the
+  risk-free rate instead of zero; sells T-bills to refill the buffer when cash dips below it (risk-off path).
+  Runs weekly at 09:50 ET (after trend 09:45). **Key architecture call:** T-bills are cash-equivalents, so
+  they're EXCLUDED from the 80% risk gross cap and from open-position / strategy-budget / sector counts
+  (otherwise parking cash would starve trend/PEAD/swing) — applied across risk_manager, portfolio_manager,
+  trend_sleeve, risk_rules. Positions tagged selector/trade_type='cash' so the Trader exit loop + startup
+  reconciler leave them alone (never stop-lossed or adopted as synthetic swing trades). Default OFF
+  (pm.cash_enabled=false, pm.cash_shadow=true). **1 Opus deep-dive — DON'T-SHIP → fixed:** found the
+  gross-exclusion was applied to only 2 of 6 position-counting gates (would silently starve the live book on
+  enable) + a Trader self-adoption path that would liquidate the buffer + a SPY-anchored price-fetch bug;
+  all resolved + the settlement-race hardened (size off min(cash, buying_power); T+1 liquidity documented).
+  14 tests; full suite 3578 pass. **Success: a `cash_sleeve` return stream (`cash_tracker`) + live liquidity
+  policy.** *(Scope note: idle cash now earns the bill rate by construction — a formal "trend + T-bills"
+  benchmark-comparison object in performance_monitor is deferred as a light follow-up.)* **Phase 1 buildable
+  work COMPLETE** (P1-2/P1-4 done, P1-1 done; P1-3 credit-overlay shadow verdict ~mid-July).
 - **P1-2 — Trend allocation decision.** `[§3; ClaudeMax]` 👤 Run a Kelly / book-vol-target analysis given
   the live governor; decide explicitly: raise above 25% (governor makes it defensible) or document this
   as a deliberately de-risked sandbox. **Success:** a one-line DECISIONS entry with the chosen target +

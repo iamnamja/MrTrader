@@ -618,9 +618,11 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
 
         # ── Gross cap (trend + PEAD <= 80%) ──
         try:
+            from app.live_trading.cash_sleeve import CASH_ETFS  # cash-equiv: not risk gross
             all_positions = alpaca.get_positions() or []
             total_gross = sum(abs(float(p.get("market_value") or 0.0))
-                              for p in all_positions)
+                              for p in all_positions
+                              if p.get("symbol") not in CASH_ETFS)
         except Exception as exc:
             log.warning("trend: gross-cap position fetch failed — fail-closed: %s", exc)
             summary["status"] = "failed"
