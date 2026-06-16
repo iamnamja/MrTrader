@@ -257,6 +257,7 @@ export interface MonitorHealth {
 
 export interface NisMacroEvent {
   event_type: string
+  event_name?: string | null
   event_time: string | null
   risk_level: string
   direction: string

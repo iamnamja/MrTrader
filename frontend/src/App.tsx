@@ -1792,7 +1792,15 @@ function MacroIntelPanel() {
                       <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
                         {fmtEventTime(e.event_time)}
                       </td>
-                      <td style={{ padding: '5px 8px', fontWeight: 600 }}>{e.event_type}</td>
+                      <td style={{ padding: '5px 8px', fontWeight: 600 }} title={e.event_name || e.event_type}>
+                        {e.event_name || e.event_type}
+                        {e.event_name && e.event_type && e.event_type !== 'OTHER_HIGH'
+                          && e.event_type !== e.event_name && (
+                          <span style={{ color: C.muted, marginLeft: 6, fontWeight: 400, fontSize: 11 }}>
+                            {e.event_type}
+                          </span>
+                        )}
+                      </td>
                       <td style={{ padding: '5px 8px', color: icColor }}>{ic || '—'}</td>
                       <td style={{ padding: '5px 8px', color: e.actual != null ? C.text : C.muted, fontWeight: e.actual != null ? 600 : 400 }}>
                         {fmtNum(e.actual)}

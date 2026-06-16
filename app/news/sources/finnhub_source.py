@@ -111,6 +111,13 @@ def _classify_event(event_name: str) -> Optional[str]:
     return None
 
 
+def event_uid(event_type: str, event_name: str, raw_time: str) -> str:
+    """Stable per-event id. Includes event_name so paired same-type releases at the
+    same timestamp (Retail Sales MoM vs Ex-Autos, multiple OTHER_HIGH at 08:30) get
+    DISTINCT ids — otherwise they collide and one starves the post-event refresh."""
+    return hashlib.sha256(f"{event_type}{event_name}{raw_time}".encode()).hexdigest()[:16]
+
+
 def fetch_economic_calendar(
     days_ahead: int = 3,
     min_impact: str = "medium",
@@ -169,7 +176,7 @@ def fetch_economic_calendar(
             if country not in ("", "US"):
                 continue
 
-        uid = hashlib.sha256(f"{event_type}{raw_time}".encode()).hexdigest()[:16]
+        uid = event_uid(event_type, event_name, raw_time)
         results.append({
             "id": uid,
             "event_type": event_type,

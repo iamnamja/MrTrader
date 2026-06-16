@@ -394,6 +394,14 @@ class PremarketIntelligence:
         """Return the NIS MacroContext for today, or None if NIS unavailable."""
         return self._nis_macro_context
 
+    def set_macro_context(self, ctx) -> None:
+        """Replace the live MacroContext mid-day (e.g. the PM post-event refresh once
+        a vendor ACTUAL lands). This is the object every live sizing/blocking gate AND
+        the /api/nis/macro panel read, so a rebuild that doesn't go through here would
+        update the DB snapshot/UI-fallback but NOT live trading or the live panel."""
+        if ctx is not None:
+            self._nis_macro_context = ctx
+
     @property
     def spy_premarket_pct(self) -> float:
         return self._spy_premarket_pct

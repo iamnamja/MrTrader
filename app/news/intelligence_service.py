@@ -93,6 +93,7 @@ class NewsIntelligenceService:
             time_str = evt_time.strftime("%H:%M UTC") if hasattr(evt_time, "strftime") else str(evt_time)[:16]
             signals.append(MacroEventSignal(
                 event_type=e["event_type"],
+                event_name=e.get("event_name", ""),
                 event_time=time_str,
                 risk_level=llm_result.get("risk_level", "LOW"),
                 direction=llm_result.get("direction", "NEUTRAL"),
