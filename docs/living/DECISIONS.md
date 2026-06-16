@@ -4,6 +4,283 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-15 (Alpha-v8 G4) — credit-selective overlay WIRED into the live trend sleeve, flag DEFAULT OFF (owner decision pending)
+
+**Context**: G4 of Alpha-v8 — prepare the live wiring of the one winner (the G1 credit-selective overlay) so the owner can activate it with a single flag, WITHOUT flipping anything live autonomously.
+
+**Implementation** (mirrors the proven VIX-governor pattern): `app/live_trading/trend_sleeve.py::_credit_governor_multiplier` reads HYG/IEF from `macro_history`, uses `live_credit_multiplier` (validated config L120 / 2%-band / derisk_to 0.5). In `run_trend_rebalance` the overlays now COMPOSE multiplicatively: `overlay_mult = max(0.25, gov_mult × credit_mult)`; `alloc *= overlay_mult`. New `agent_config` flags `pm.credit_governor_*` with **`pm.credit_governor_enabled` DEFAULT "false"**.
+
+**Safety (Opus pre-merge review: SAFE)**: **flag DEFAULT OFF = zero live change** — credit_mult returns 1.0 before any data fetch, so `overlay_mult == gov_mult` and the live book is byte-identical to pre-G4. FAIL-SAFE (any error/missing/stale → 1.0), PIT-correct (settled closes), can ONLY reduce exposure; the 0.25 floor bounds the stacked de-risk; per-name + 80% gross caps still bind. No governor regression. A drift-guard test pins the live floor to the research `GLOBAL_DERISK_FLOOR`.
+
+**Decision / OWNER ACTION**: NOTHING flipped live. The credit overlay is merged but OFF. **To activate: review the G1 caveats (small tail-insurance effect; post-hoc/multiplicity; paper-only) then set `pm.credit_governor_enabled='true'`** (no restart for the flag; an orchestrator restart is only needed to load the new code). Recommendation: optionally run it in shadow/observation first; it stacks with the VIX governor (clamped) and is a modest tail hedge, not a return engine. This completes Alpha-v8 (G0→G4).
+
+---
+
+## 2026-06-15 (Alpha-v8 G3) — additive credit-timing sleeve: PARK (real standalone edge, but the corr<0.30 wall) — and the program-level read
+
+**Context**: G3 of Alpha-v8 — the honest test of whether the credit signal (which worked as a G1 overlay) can be an ADDITIVE sleeve. Built `credit_timing_returns` (long-flat SPY timed by the credit signal); ran the full Sleeve Lab gate (Track-A + Track-B) vs the live trend book. Pre-registered (R7).
+
+**Verdict (`G3-CREDIT-TIMING`) → PARK**: **Track-A PAPER PASS** (point_SR +0.913, HAC p 0.0001 — a real standalone edge) but **Track-B FAIL** on the correlation wall (corr_to_book +0.518 ≥ 0.30; P(ΔSR>0) 0.873 < 0.90). The high SR is largely SPY beta (residual-α_t +1.50), so it cannot diversify a trend book that already holds SPY. Opus review: PARK honest, no look-ahead; the `diversifier` label is generous (directional beta, worst_regime −1.978) but it fails Track-B under either label. Not promoted (fails Track-B); not killed (real standalone merit). **The credit signal's productive form is the G1 overlay, not an additive sleeve.**
+
+**Program-level read (Alpha-v8 G0→G3 complete)**: G0 infra ✅; **G1 credit-selective overlay = the ONE candidate** (promote_paper, owner-gated); G2 short-interest overlay KILLED; G3 additive credit-timing sleeve PARKED. The whole series re-confirms the F-series thesis **a fourth time**: on free daily US data, additive equity signals hit the IC≈0 / corr-to-trend-book wall; the only thing that adds value is an **overlay** judged on book improvement. Net new from Alpha-v8: one modest tail-insurance overlay candidate (credit-selective), plus clean leak-free negatives that close the short-interest and additive-timing doors. The honest next lever for *new* alpha remains a deliberate data buy (futures), not more free-data search.
+
+**Consequences**: nothing live. NEXT: G4 — prepare the owner-gated live wiring of the G1 credit-selective overlay (flag DEFAULT OFF; live unchanged until the owner flips it).
+
+---
+
+## 2026-06-15 (Alpha-v8 G2) — aggregate short-interest de-risk overlay: KILLED (RRT effect absent/reversed in this window)
+
+**Context**: G2 of the Alpha-v8 program. Built `app/strategy/short_interest_governor.py` (market-level aggregate short interest → PIT-safe trailing-z Short Interest Index → de-risk when shorts crowded; RRT thesis) on the existing `short_interest_provider` cache. Depth gate (G2a) PASSED — 202 bi-monthly settlement dates (2017-12-29→2026, survivorship-safe, PIT `knowable_date`) — but explicitly power-caveated (bi-monthly, no GFC, ~3 in-window crises). Pre-registered (R7) before the run.
+
+**Verdict (`G2-SHORTINT-OVERLAY`) → KILL** (marginal to the VIX governor): de-risks 49% of days at z>1; **uniformly Sharpe/Calmar-negative across a 12-cell grid** (no config improves_tail); **COVID dd_improve +0.000** (bi-monthly cadence + 10bd publication lag structurally can't react to a fast crash); BEAR-2022 only +0.006.
+
+**Integrity**: Independent Opus adversarial review — **KILL honest**. Sign correct (de-risk on HIGH SII, RRT-oriented; corr(SII, multiplier) −0.81), PIT clean (daily ffill uses only SII with knowable_date ≤ day; 0 lookahead mismatches), no aggregation bug. The decisive empirical finding: in the post-2017 window the de-risked (high-SII) days had **higher** market returns (SPY Sharpe 1.11 on high-SII days vs 0.59 on low) — i.e. the RRT aggregate-short-interest timing effect is **absent/reversed post-publication** (crowding decay), so de-risking the better half is uniformly Sharpe-negative. Unlike credit (G1), NO config rescues it.
+
+**Decision / consequences**: KILL — line closed; nothing promoted; nothing live. NO fresh re-spec warranted (uniform failure + structural power limits + COVID miss). **Footnote: only the market-TIMING overlay is killed** — the per-name short-interest data layer (`short_interest_provider`) is sound and remains reusable for a future cross-sectional SI factor (a different use). NEXT: G3 (additive long-flat timing sleeve). Alpha-v8 candidates so far: credit-selective (G1) only.
+
+---
+
+## 2026-06-14 (Alpha-v8 G1) — credit/curve overlays: curve KILLED, credit-original KILLED, credit-SELECTIVE = first candidate (owner-gated)
+
+**Context**: First research phase of the Alpha-v8 overlay program. Built `app/strategy/credit_curve_governor.py` (credit = HYG/IEF below trailing MA; curve = 10y−3m inversion) and the G0 marginal-stacking API; evaluated each overlay MARGINAL to the live VIX governor (book×gov×candidate vs book×gov) on the live trend book, 2007→2026. Pre-registered (R7) before the run.
+
+**Verdicts**:
+- **`G1-CURVE-OVERLAY` → KILL.** Curve inversion is inert/negative marginal to the governor (dMaxDD −0.000, dSharpe −0.017, both-halves fail) — too slow/lagged to be a tactical de-risk.
+- **`G1-CREDIT-OVERLAY` (pre-registered L60/band0) → KILL.** Fires ~37% of days (a slow trend filter, not a stress signal); shallows drawdowns but is Calmar/Sharpe-negative marginal to the governor (dCalmar −0.071). The pre-registered trigger was too eager.
+- **`G1B-CREDIT-SELECTIVE` (L120 / 2%-below-MA, ~18% of days) → promote_paper CANDIDATE** (parent = the killed L60). Marginal-to-governor **dSharpe +0.064, dCalmar +0.030**, all 3 crises improve, and the **pre-registered both-halves stability guard PASSES robustly** (H1 +0.069, H2 +0.047 — each half validates on different crises). This is the **first Alpha-v8 winner**.
+
+**Integrity / discipline**: the originally pre-registered config FAILED; the selective re-spec was found via a 12-cell diagnostic grid (MULTIPLICITY — disclosed). Promotion rests on (a) a principled trigger ("fire on >2% deterioration = stress, not every dip"), (b) the both-halves stability guard (the carry-killer; passes here on different crises per half), (c) 3-crisis breadth, (d) marginal-to-an-already-strong-governor (a high bar that nets out overlap). Independent Opus adversarial review: PIT-clean, genuinely non-redundant to the VIX governor, **promote_paper HONEST + DEFENSIBLE with 6 caveats** (post-hoc/multiplicity; small effect = tail insurance not return; lookback fit-sensitive; both-halves dSharpe supportive-not-gated; **owner-gated PAPER only — never capital**, overlays bypass Track-A significance by design; live must use the fail-safe `live_credit_multiplier`).
+
+**Decision / consequences**: NOTHING flipped live. The credit-selective overlay is recorded `promote_paper` = a candidate for **owner-gated G4 live wiring (flag default OFF)**. The canonical `CreditGovernorConfig` default is set to the selective config. Live book unchanged. Owner decides in the morning whether to wire it (it would stack multiplicatively with the VIX governor, clamped to the GLOBAL_DERISK_FLOOR). NEXT: G2 (short-interest overlay).
+
+---
+
+## 2026-06-14 (F1b GO-LIVE) — VIX-term crash governor WIRED INTO THE LIVE TREND SLEEVE (owner-approved, flag ON, fail-safe)
+
+**Context**: The owner approved adopting the VIX-term crash governor (the one F-series candidate that helped) as a live book overlay. Wired it into the live trend-sleeve sizing path.
+
+**Decision / implementation**:
+- `app/live_trading/trend_sleeve.py::run_trend_rebalance` now scales the sleeve's effective budget: `alloc = effective_trend_allocation(db) * _crash_governor_multiplier(db)`. The multiplier ∈ [derisk_to, 1.0] — it can ONLY reduce exposure; the per-name (25%) and 80% gross caps still bind downstream.
+- `_crash_governor_multiplier` reuses the validated stress rule via a new shared `crash_governor.live_governor_multiplier` (single source of truth with the backtest `vix_term_multiplier`). De-risks to `derisk_to` when VIX>VIX3M (backwardation) on the last `confirm_days` SETTLED closes.
+- **Flags (agent_config, take effect with no restart):** `pm.crash_governor_enabled` default `"true"` (owner-approved ON; reversible to `"false"` live) + `pm.crash_governor_derisk_to=0.5`, `pm.crash_governor_ratio_threshold=1.0`, `pm.crash_governor_confirm_days=1` (the validated config).
+
+**Hardening (Opus pre-merge adversarial review — 1 HIGH found + fixed, then SHIP)**:
+- **FAIL-SAFE**: every failure path (flag off / config error / macro fetch or load error / missing or empty data / stale >7d / insufficient signal / any exception) returns exactly 1.0 (= today's behavior) and never raises into the rebalance. A VIX outage can NEVER flatten the book; the overlay is provably non-increasing on the budget.
+- **HIGH (fixed): PIT look-ahead.** The Mon 09:45 ET rebalance runs intraday and `update_macro_history()` fetches through today, so yfinance returned a PARTIAL unsettled VIX/VIX3M bar for today. Fixed by filtering to SETTLED closes strictly before today — the latest settled close governs the upcoming session, exactly matching the backtest's shift(1) (restores live-vs-backtest agreement; removes the same-day look-ahead).
+- Observability: the applied multiplier is in the rebalance summary; when active, a comprehensive log line records the multiplier + VIX/VIX3M ratio + settled close date. (decision_audit per-symbol integration + a yfinance hot-path timeout are noted MEDIUM/LOW follow-ups.)
+
+**Expected effect (from F1b backtest, 2007→2026)**: maxDD −13.9%→−12.1%, Calmar 0.469→0.501, COVID DD −10.7%→−6.5%, Sharpe ~flat (−0.003), at ~0.5%/yr return give-up; de-risks ~11% of days. A risk-manager, not a Sharpe-booster.
+
+**Consequences**: 50 tests (governor unit + fail-safe + live integration; 0-fail suite). **The trend sleeve is live (`pm.trend_shadow='false'`), so once DEPLOYED the governor scales REAL trend exposure.** ⚠️ **Deploy step (owner/ops): the orchestrator/scheduler process must be RESTARTED to load the new `trend_sleeve.py`/`crash_governor.py` code** (a code-deploy restart, not a uvicorn route restart; the flags themselves need no restart). Until that restart, live behavior is unchanged. Reversible anytime via `pm.crash_governor_enabled=false`. This resolves owner-decision #1.
+
+---
+
+## 2026-06-14 (F3-CARRY-CONFIRM) — owner-authorized fresh carry confirmation → KILLED (edge is a pre-2016 artifact)
+
+**Context**: The owner authorized a fresh, pre-registered confirmation of the F3 rates-carry near-miss (the legitimate R7 path from "robust near-miss" → promotable, vs cherry-picking the grid). Registered `F3-CARRY-CONFIRM-20260614` (confirmatory, family carry) and froze the acceptance criteria via `preregister` BEFORE the run (run_at strictly after preregistered_at; registry decision recorded).
+
+**The pre-registered spec (chosen on economic principle, NOT grid-fit)**: long-flat IEF, scale_pct 1.5, 1bp. Long-flat because harvesting positive carry and standing aside on inversion IS the premium — going short duration on inversion is a crisis-correlated directional bet (the panel's warning). Deliberately NOT the highest-scoring grid cell (TLT/2.0/long-short). Honesty note recorded in the registry mechanism: the full-sample robustness grid had already been seen, so the confirmation's weight rests on (a) the principle-based spec and (b) a pre-registered **sub-period stability** criterion.
+
+**Verdict → KILL**: full-sample point_SR +0.342, residual-α +2.27, **Track-B PASS** (appraisal_IR +0.434, P(ΔSR>0) 0.930, corr +0.038 — long-flat clears the P(ΔSR>0) bar the long-short canonical missed at 0.886). BUT Track-A PAPER still FAILS on significance (HAC p 0.0833 > 0.05), and — decisively — the **stability guard FAILED: H1 (2007-2016) SR +0.689 vs H2 (2017-2026) SR −0.098.** The carry edge is concentrated entirely in the first decade and is negative in the modern regime. Pre-registered decision rule → KILL.
+
+**Why this matters**: the stability check (added precisely as the OOS-ish guard, since the full-sample grid was seen) did its job — it caught an edge that is robust across CONFIGS but not across TIME, which the full-sample near-miss masked. This is the R7 discipline working as designed: cherry-picking a passing grid cell, or promoting on the full-sample near-miss alone, would have shipped a dead-since-2016 sleeve.
+
+**Consequences**: **Owner-decision #2 resolved — the carry line is CLOSED** (not promoted; not re-tested). Across the entire F-series, NO additive sleeve survives; the VIX-term crash governor (overlay) is the only surviving candidate. Runner kept for audit: `scripts/run_carry_confirmation.py`. Live book unchanged. Remaining owner work: only item 1 (governor live wiring), which is in progress.
+
+---
+
+## 2026-06-14 (F-series WRAP) — F4 deferred, F5 not-triggered; the F0→F5 sweep empirically confirms "trend is the only standalone edge"
+
+**F4 (options-conditioned event interaction) — DEFERRED (not built).** The thesis was already tested and KILLED in P4: H4a–H4e (all five options-conditioned event hypotheses) were ALL KILL, and PEAD was demoted at the event level (t=−0.77). The data is the same frozen 4y options store (2022–2026), which is underpowered by construction — it cannot clear the CAPITAL power floor or any deep-history significance bar (the whole reason the Ruler-v2 design uses options for *conditioning only*). The 2026-06-14 panel itself ranked F4 a long-shot. Re-running a continuous-interaction reformulation on already-killed, underpowered data is negative-EV re-treading. Deferred; revisit only if (a) a longer options history is acquired (paid feed) or (b) a fundamentally new event signal appears. Recorded, not silently dropped (mirrors the F1c discipline).
+
+**F5 (book assembly + live fidelity) — NOT TRIGGERED.** F5 is gated on "≥2 sleeves pass the pre-registered gate." ZERO sleeves passed: F1a calendar premia FAIL, F2 ETF relative-value FAIL, F3 carry NEAR-MISS-but-FAIL; the VIX governor HELPS but is an OVERLAY, not an additive sleeve. So the book-assembly trigger is not met. In lieu of a real book, an ILLUSTRATIVE owner-pending book was computed (2007→2026, NOT promoted): trend alone SR 0.723 / maxDD −13.9% / Calmar 0.469; trend+carry (naive vol-weight) SR 0.689 / maxDD −11.3% (corr trend~carry +0.029 — genuinely uncorrelated, but naive vol-weighting de-levers, understating the benefit); +governor overlay maxDD −10.9%. carry's low standalone SR caps the book-SR lift (modest — consistent with the panel's "book SR 0.7–0.9, not a home run"). Proper equal-risk re-levered book construction is the real F5 build, which only triggers once a sleeve passes.
+
+**Overall verdict of the F0→F5 execution**: the sweep empirically CONFIRMS the panel's central thesis — on free daily US data, the live 10-ETF trend sleeve is the only standalone edge. Every *additive* sleeve tested (calendar, overnight, relative-value, carry) failed the pre-registered Ruler-v2 gate. The two items that showed REAL signal: (1) the **VIX-term crash governor** (overlay — modest, robust tail protection, ~flat Sharpe) and (2) **rates carry** (a robust near-miss — genuine orthogonal positive alpha that narrowly missed both bars). Key empirical learnings recorded along the way: standalone return — not orthogonality — is the binding constraint (F2); and the additive-SPY-beta sleeve shape can't diversify a trend book that already holds SPY (F1a, F1c).
+
+**Consequences / owner decisions (both non-blocking, live book unchanged)**:
+1. **Adopt the VIX-term crash governor as a live book overlay?** (modest tail protection at ~0.5%/yr give-up; it re-times live exposure → owner call.)
+2. **Authorize a fresh pre-registered carry confirmation?** (the legitimate path from robust near-miss → promotable sleeve; a single principled spec with a new hypothesis_id + cooling-off, NOT a cherry-pick.)
+3. If both stall, the honest next lever (the panel's own conclusion) is a deliberate DATA buy — Norgate futures for cross-asset trend breadth, or a longer options history — not more searching on free daily data.
+
+**Permanent win regardless**: the F0 **Sleeve Lab** turned this entire sweep into uniform, hardened, ~20-line declarations with adversarial Opus review at each step and zero gate-wiring drift — exactly the future-proof substrate the owner prioritized. Every future idea now plugs in the same way.
+
+---
+
+## 2026-06-14 (F3) — rates duration carry: NEAR-MISS (real robust orthogonal edge; pre-reg config fails → not promoted; owner-recommended re-registration)
+
+**Context**: F3 of the plan — `app/strategy/carry.py`, a duration-carry timer: size an IEF position by the 10y−3m term spread (yfinance ^TNX/^IRX; FRED's endpoint is network-blocked here). Declared `risk_premium`. FX/commodity carry deferred (no clean free data; "skip commodity" per the panel).
+
+**Verdict (pre-registered config FAILS both bars → NOT promoted)**: canonical (IEF, scale_pct=1.5, long-short, 1bp), 2007→2026 (~3661 pooled-OOS): point_SR +0.314 (clears 0.30), residual-α_t **+2.10** (first sleeve with genuine positive alpha vs SPY; beta −0.09), HAC p(1s) **0.0998** → Track-A FAIL (significance only). Track-B 7/8 PASS (appraisal_IR +0.386, corr **+0.010** orthogonal, ΔSR +0.084 additive) — fails ONLY **P(ΔSR>0) 0.886 < 0.90** (by 0.014). Misses both bars marginally.
+
+**The robustness finding (decision-relevant)**: a 12-config grid (etf∈{IEF,TLT} × scale∈{1.0,1.5,2.0} × long-short∈{T,F}) shows the carry edge is REAL and ROBUST — positive orthogonal residual-α in ALL 12 (resid-t +1.77…+2.70, corr ~0), and Track-B PASSES in 8/12 neighbors. The pre-registered IEF/1.5/long-short is one of the 4 that narrowly fails; long-flat and TLT variants mostly pass. So carry is a genuine orthogonal diversifier the canonical spec slightly under-captured — not noise that happened to land close.
+
+**Integrity / discipline**: Independent Opus adversarial review — HONEST, no bug. No look-ahead (shift(1) PIT confirmed line-by-line). NO unit bug (the feared ^TNX×10 vs ^IRX×1 mismatch is ABSENT — both quote in %, the spread is a true term spread, median +1.56%, 51% interior positions = genuine continuous curve timer, not saturated bond beta). Residual-α real (beta −0.09). Cost-insensitive (SR 0.41→0.38 from 1→5bp). **CRITICAL DISCIPLINE: the pre-registered config is the verdict (FAIL). I did NOT switch to a passing grid cell to claim a pass — that is exactly the goalpost-moving the research registry (R7) exists to prevent.**
+
+**Decision**: NOT promoted (the pre-registered config fails). BUT carry is the **strongest additive candidate of the F-series** and the robustness says the edge is real. **Owner-recommended next step**: authorize a FRESH, pre-registered carry confirmation — a single new canonical spec chosen on PRINCIPLE (e.g. long-flat to avoid the crisis-correlated short leg, sized to a modest budget), recorded with a new `hypothesis_id` + R7 cooling-off, run ONCE. This is the legitimate path from "robust near-miss" to a promotable sleeve; cherry-picking this grid is not.
+
+**Consequences**: live book unchanged. carry.py + the registry entry kept as tested infrastructure. Combined with the VIX governor (overlay, modest help), there are now TWO owner-facing items: the governor (adopt as overlay?) and carry (authorize a fresh pre-registration?). NEXT: F4 (options-conditioned events) assessment; then F5 synthesis.
+
+---
+
+## 2026-06-14 (F2) — ETF relative-value: FAIL (genuinely orthogonal, but no standalone edge)
+
+**Context**: F2 of the plan — `app/strategy/etf_relative_value.py`, a slow dollar-neutral log-spread mean-reversion sleeve over 5 pre-registered economically-linked pairs (QQQ/SPY, IWM/SPY, HYG/IEF, TLT/IEF, EEM/EFA), canonical config (lookback 120, entry z 1.5, exit 0.5, 2bp/leg), equal-weight, declared `diversifier`. Chosen over more calendar premia precisely because it is MARKET-NEUTRAL (not timed beta), so it could in principle diversify the trend book where F1a could not.
+
+**Verdict (FAIL, no promotion)**: deep history 2007→2026 (~3661 OOS): point_SR +0.026, mean_SR +0.110, path_t +0.62, HAC p(1s) 0.458 → PAPER FAIL (no standalone edge). Track-B FAIL: **corr −0.230** (it IS genuinely orthogonal — the diversification the calendar premia lacked) but standalone SR ≈ 0, so appraisal_IR +0.10 / ΔSR −0.011 / P(ΔSR>0) 0.46 — a zero-return diversifier contributes nothing to book SR.
+
+**Rationale / integrity**: Independent Opus adversarial review — HONEST, no bug. The spread SIGN is correct (long-spread when z below −entry = long the cheap leg, P&L +(rA−rB)), PIT clean (z lagged by shift(1)), cost fair (4bp/round-trip on liquid ETFs). A grid diagnostic (NOT used for selection — the canonical config is pre-registered) shows EVERY {lookback ∈ 60/120/250 × entry ∈ 1.0/1.5/2.0} cell stays below the 0.30 paper floor net of cost (best, L=60, net SR 0.19 — still a fail); per-pair only IWM/SPY (+0.22) and EEM/EFA (+0.20) are positive, so the equal-weight combine is not masking a hidden winner. The edge is genuinely weak/absent net of cost, not a wiring artifact.
+
+**Consequences**: Nothing promoted; live book unchanged. The sleeve + registry entry are kept as tested infrastructure; verdict recorded so it isn't blind-retested. KEY LEARNING: the binding constraint for an additive sleeve is **standalone return**, not orthogonality — F2 had the orthogonality (corr −0.23) the calendar premia lacked but still failed for lack of edge. This sharpens the remaining priors: free daily US data offers no easy standalone premium. NEXT: F3 (carry done right, small).
+
+---
+
+## 2026-06-14 (F1c) — FOMC pre-announcement drift: DEFERRED (not built)
+
+**Context**: F1c of the plan was a conditional ("only if a clean 2007–2026 FOMC date list is feasible without bug risk").
+
+**Decision (owner-discipline call): DEFER — do not build now.** Two reasons: (1) **Low EV** — FOMC pre-announcement drift is a long-SPY-in-a-window strategy, structurally the SAME additive-SPY-beta shape that just made turn-of-month and overnight FAIL Track-B (positive correlation with the trend book → won't diversify). (2) **Bug risk** — the repo has no clean in-repo FOMC date series before 2026 (`app/calendars/macro.py` holds only FOMC_2026); hand-assembling ~144 dates is error-prone and a wrong date silently biases the window. Building a low-EV, bug-prone sleeve violates the owner's "best, not fast / avoid bugs" mandate.
+
+**Consequences**: F1c skipped (recorded, not silently dropped). If a clean historical FOMC/event-date source is later wired (e.g. for F4's event panel), this can be revisited cheaply as a registry declaration. Net F1 result: the additive calendar premia (TOM, overnight) FAIL; the VIX-term crash governor (overlay) MODESTLY HELPS and is the one F1 candidate.
+
+---
+
+## 2026-06-14 (F1b) — VIX-term crash governor: MODESTLY HELPS → first candidate overlay (owner-gated)
+
+**Context**: Built the overlay evaluation path the F0 review flagged as missing — `Overlay` / `evaluate_overlay` / `OverlayReport` in `sleeve_lab.py` (a book-MODIFYING signal judged book-WITH vs WITHOUT on tail metrics, not Track-A significance) — plus the first overlay, `app/strategy/crash_governor.py`: de-risk the book's exposure when the VIX term structure inverts (VIX > VIX3M = backwardation = acute stress), signal read at close t and applied to t+1 (PIT-safe via shift).
+
+**Verdict (MODESTLY HELPS — first positive of the F-series; NOT promoted)**: canonical config (derisk_to=0.5, ratio_threshold=1.0, confirm_days=1) on the live 10-ETF TSMOM book, 2007→2026 (n=4891):
+- maxDD −13.9% → −12.1% (+1.8pp), Calmar 0.469 → 0.501 (+0.032), Sharpe 0.723 → 0.720 (−0.003), AnnVol 9.3%→8.7%, at a ~0.5%/yr return give-up. De-risks 11% of days (mean multiplier 0.944).
+- Crisis maxDD: COVID-2020 −10.7% → −6.5% (notably shallower), GFC-2008 +0.4pp, BEAR-2022 +1.3pp.
+
+**Rationale / integrity**: Independent Opus adversarial review — HONEST, no fix needed. PIT verified (removing the t+1 shift jumps Sharpe to 1.038, i.e. the lag strips exactly the future info; the surviving benefit is real because backwardation persists). No GFC data gap (^VIX3M back-stitches the VXV index to 2007; 146 real GFC obs, no forward-fill). Config canonical (1.0 = the contango/backwardation boundary; 0.5 a round default) not tuned; robust across a 36-cell grid (maxDD improves in nearly every threshold≥1.0 cell; only threshold 0.95 — de-risking in contango — fails). The trend book does NOT already neutralize these days (realized vol 9.6% on de-risk days vs 8.3% otherwise), so the benefit is genuine marginal protection, not double-counting.
+
+**Honest caveats (recorded)**: the real cost is the −0.5%/yr return give-up, not the negligible Sharpe change; and the headline tail benefit is event-concentrated (COVID drives most of it). It is a risk-manager, not a Sharpe-booster.
+
+**Consequences**: The governor is the **first candidate worth the owner's consideration** as a book overlay. **Promotion to live is the owner's decision** — it re-times live exposure (a live behavior change), so it is NOT auto-applied; recorded report-only. Live book unchanged (trend-only 25% + cash). The overlay eval path is now permanent Sleeve-Lab infrastructure (closes the F0 overlay gap). NEXT: F2 (slow ETF relative-value).
+
+---
+
+## 2026-06-14 (F1a) — calendar/overnight premia: BOTH FAIL → not added to the book
+
+**Context**: First sleeves built as registry declarations through the F0 Sleeve Lab — `app/strategy/calendar_premia.py` (vectorized PIT-safe turn-of-month + overnight backtests) + `scripts/walkforward/sleeves.py` (the registry + runner). Run report-only through the Lab on deep history (2007→2026, ~3661 pooled-OOS obs), each declared `risk_premium`, with Track-B vs the live 10-ETF trend book.
+
+**Verdict (both FAIL, no promotion)**:
+- **turn_of_month_SPY**: point_SR +0.320, mean_SR +0.280, path_t +3.07, HAC p(1s) 0.097. PAPER FAIL (misses HAC significance). Track-B FAIL: appraisal_IR −0.026, ΔSR −0.058, P(ΔSR>0) 0.25.
+- **overnight_SPY**: point_SR +0.344, mean_SR +0.393, path_t +2.58, HAC p 0.087, residual-α_t −1.23. PAPER FAIL. Track-B FAIL: appraisal_IR +0.090, corr 0.33, P(ΔSR>0) 0.47.
+- Both **clear the plausibility floor (point_SR ≥0.30) but miss the light HAC significance bar (p>0.05)**, and **decisively fail Track-B** — neither diversifies the trend book (overnight is timed SPY beta the book already holds; TOM actively lowers book Sharpe).
+
+**Rationale / integrity**: Independent Opus adversarial review confirmed the FAIL is HONEST, not an artifact — PIT clean (the TOM calendar position is known ex-ante so it correctly needs no shift, unlike a price-derived weight; overnight = open[t]/close[t-1]−1), costs fair (TOM ~2bp/yr immaterial; overnight ~5%/yr but a physically-real daily round-trip), the residual-α sign correctly reads "diluted beta," and the Track-B fail is cost-independent + decisive. No goalpost-moving: the pre-registered canonical spec (one config each, n_trials=1) was judged as-is.
+
+**Consequences**: Nothing promoted; live book unchanged (trend-only 25% + cash). The two premia builders + the registry are kept as permanent, tested infrastructure and the verdict is recorded so these are never blind-retested. NEXT: F1b (overlay eval path + VIX-term crash governor). Honest read: the two cheapest calendar premia don't clear the bar — consistent with the panel's "trend is the only edge"; the crash governor (an overlay, not an additive sleeve) is the more promising F1 piece.
+
+---
+
+## 2026-06-14 (F0) — Sleeve Lab built: the uniform sleeve→Ruler-v2→report pipeline (Alpha-v7 F0)
+
+**Context**: Executing the game plan above. Every sleeve to date (PEAD, options-XS, index short-vol, trend-broaden) was a hand-written `run_*_cpcv.py` re-implementing the same plumbing — a fresh bug surface each time and a real risk of wiring the gate inconsistently as the book grows to 3–5 sleeves.
+
+**Decision**: Build `scripts/walkforward/sleeve_lab.py` — a `Sleeve` (validated declaration: label / component_type / PIT net returns / optional spy_prices + n_trials_registered) → `evaluate_sleeve()` that runs the IDENTICAL audited path every time (`SeriesReturnStrategy` → `run_cpcv` → Ruler-v2 Track-A PAPER+CAPITAL → optional Track-B `appraise_track_b` → uniform `SleeveReport`), a `@register_sleeve` registry, and `assemble_book()` (F5) over the proven `sleeve_allocator`. It **composes the existing proven pieces — no gate-semantics change — and is report-only** (promotion stays owner-gated). New sleeves register here instead of spawning new top-level scripts; the old `run_*_cpcv` scripts stay as frozen historical runners.
+
+**Adversarial Opus deep-dive — decisions taken**:
+- **`overlay` is fail-loud-EXCLUDED** from valid component types. An overlay (the planned VIX-term crash governor) MODIFIES the book rather than adding a return stream, so the additive Track-A significance + Track-B blend model is the wrong instrument and would emit a confidently-wrong verdict. Overlays get a dedicated book-with-vs-without evaluation path, landing with the F1 governor. Failing loud beats silently-wrong.
+- **Residual-α is SPY-CAPM-only on this path** (documented KNOWN LIMITATION). `result.residual_alpha_t_hac` is the single-factor SPY CAPM diagnostic (and only when spy_prices is given); the multi-factor harvested-premium-excluded residual-α (`ruler_v2.residual_alpha_t` / `RULERV2_HARVESTED_FACTOR`) is NOT yet wired into the sleeve path — deferred (needs a factor panel). Latent today because CAPITAL is structurally unreachable on a backtest alone (requires live-paper). `evaluate_sleeve` warns when spy_prices is absent.
+- **Loud hardening warnings**: thin pooled-OOS (< power floor), `n_folds` below the CAPITAL power floor (10) at the default geometry (FULL_N_FOLDS=8, kept for parity with the calibration controls — a capital-aspiring run must pass n_folds≥10), and `assemble_book` inner-join coverage loss (a short sleeve silently truncating the book window).
+- **C1 (Track-B worst-regime) confirmed NOT a bug**: the lab passes the candidate's standalone CPCV worst-regime to Track-B, which matches Track-B's documented contract (candidate regime safety backstop; book contribution is measured separately by appraisal-IR / P(ΔSR>0) / tail-overlap).
+
+**Consequences**: 20 offline tests. `PIPELINE_ARCHITECTURE` component map + changelog updated. Follow-ups tracked: overlay eval path (F1) and multi-factor residual-α wiring. NEXT: F1 sleeves built as registry declarations through the Lab. Live book unchanged.
+
+---
+
+## 2026-06-14 — 5-LLM research panel synthesized → game plan: Sleeve Lab + orthogonal deep-history premia (Alpha-v7 next)
+
+**Context**: After the Ruler-v2 go-live + the honest candidate sweep (only trend survived), posted a research-request pack to 5 external quant LLMs (Opus 4.8, ChatGPT, DeepSeek, Gemini, Grok) asking for the best next steps to find alpha. All five returned. Synthesized into `docs/reference/ALPHA_V7_RESEARCH_SYNTHESIS_2026-06-14.md` (the new direction SSOT); inputs archived at `docs/archive/llm-reviews/2026-06-14/`.
+
+**Decision (owner, after deep read of all five)**:
+- **Accept the unanimous picture**: kills are honest, trend is the only edge, build a **3–5 sleeve risk-premia book around trend at a realistic book SR ~0.7–0.9** (not a home run), every new bet on **deep free history** (19y ETFs / decades of FRED), the 4y frozen options only for *conditioning*.
+- **Adjudicated divergences**: (1) power is binding ONLY for the retired path-t / 4y options — on 19y daily data it is NOT (the dead candidates died on zero edge, not power); so new bets must be deep-history AND mechanism-backed. (2) Carry deserves a *proper* retest (roll-down, not distribution-yield) but is crisis-correlated + likely overlaps TSMOM → medium priority, sized small. (3) Trend-breadth is largely SPENT (live universe already cross-asset; P5 broadening failed; real extension needs futures) → deferred.
+- **The future-proof investment (owner's emphasis on best-not-fast/hardened)**: build a **Sleeve Lab** FIRST — a uniform, tested sleeve research→Ruler-v2(Track-A+B)→sleeve_allocator→report pipeline + a sleeve registry, retiring the bespoke `run_*_cpcv` scripts. Makes every future premia idea a small, uniform, hardened declaration.
+- **Phased plan** (see SSOT): **F0** Sleeve Lab · **F1** structural/calendar/overnight premia + a VIX-term crash governor (highest-EV: most orthogonal, most powered, cheapest, owned data) · **F2** slow ETF relative-value · **F3** carry-done-right (small) · **F4** options-conditioned event interaction (long shot) · **F5** book assembly + live fidelity. Deferred/data-gated: cross-asset trend via futures (Norgate), aggregate short-interest timing (FINRA backfill), index-VRP ETP (dangerous, last).
+
+**Rationale**: on free daily US data the cross-sectional IC is ≈0, so breadth is the only lever and trend is the canonical breadth play; the highest-marginal-value work is the reusable Lab + the two cheapest *orthogonal* premia + a crash governor — not more gate machinery (the rigor is sufficient) and not more model variants on already-killed lines.
+
+**Consequences**: `MASTER_BACKLOG` updated with F0–F5 as THE active plan; the prior Alpha-v7 7-phase blueprint is superseded for direction by this synthesis. No live/code change yet — this is the plan; execution (starting F0) is the next session's work on owner go-ahead. Live book unchanged (trend-only 25% + cash). Honest expectation: likely a 2–3 sleeve book; if nothing new passes on free data, the decision becomes operational-excellence + a deliberate data buy (Norgate), not more searching.
+
+---
+
+## 2026-06-13 (Track-B GO-LIVE) — wired the run_book_gate dispatcher + flipped TRACKB_MODE → ruler_v2
+
+**Context**: The GATE_MODE go-live audit (entry below) found that flipping `TRACKB_MODE` would be an INERT no-op — no runner dispatched on it (`run_book_gate.py` hardcoded `book_delta_gate`). This change wires the dispatcher and completes the Track-B side of the migration.
+
+**Decision**: `run_book_gate._evaluate(base, candidate, *, mode, …)` now dispatches on `TRACKB_MODE` — `"ruler_v2"` → `track_b_appraisal.appraise_track_b` (trend candidate declared `component_type="risk_premium"` → worst-regime backstop waived; budget-invariant appraisal IR + block-bootstrap P(ΔSR>0)); `"book_delta"` → legacy `book_delta_gate` (retained + tested). Added an ASCII `format_report(TrackBAppraisalResult)`. **`TRACKB_MODE` flipped `book_delta` → `ruler_v2` (LIVE)** — now that a dispatcher actually reads it. A ruler_v2 result is recorded under its OWN hypothesis_id (`TRACKB-TSMOM-VS-PEAD-RULERV2-20260613`, parent = the book-delta row) so criteria + result describe the same gate.
+
+**End-to-end live run (manual, report-only)**: tsmom_trend vs the PEAD book, 1496-day overlap, budget 0.25 → **VERDICT: PASS** (appraisal IR +0.881 ≥0.20; P(ΔSR>0) 0.976 ≥0.90; corr 0.286 <0.30; standalone vol-targeted SR 0.93; tail-overlap 0.071; residual-α t_HAC +2.11; worst-regime waived). i.e. under the budget-invariant gate, trend genuinely diversifies the (now-demoted) PEAD book.
+
+**Rationale**: completes the audit's MAJOR-1. `run_book_gate` stays a MANUAL, report-only tool (`decision='park'`, owner-gated, no auto-promotion, no cron) — flipping the mode only changes which gate that manual tool applies. The only behavioral reader of `TRACKB_MODE` is this runner.
+
+**Consequences**: Track-B v2 is the live Track-B gate; `book_delta` retained as legacy. Track-B book inclusion remains owner-gated (the PASS above is report-only; PEAD-as-base is stale post-demotion — point the runner at the live book when a real diversifier decision is on deck). Independent Opus deep-dive on the wiring: SHIP (no CRITICAL; code correct, ASCII-safe, manual/report-only).
+
+---
+
+## 2026-06-13 (GO-LIVE) — GATE_MODE flipped significance → ruler_v2 (Ruler v2 is now the production Track-A gate)
+
+**Context**: After the R4 remediation (diversifier regime waiver + PAPER HAC-significance floor) and reclassifying xmom_12_1 → known_marginal (a documented correct-reject), the full-control-set R4 came back **CLEAN under the strict definition** (no carve-out): significant positives tsmom_4y/19y pass Ruler-v2 PAPER, all 5 true-nulls fail, leaky rejected. Owner approved the flip (reclassify-then-flip).
+
+**Decision**: **`GATE_MODE` flipped `significance` → `ruler_v2` (LIVE).** Ruler v2 is now the production Track-A promotion gate; PAPER = plausibility + a light HAC-SR significance floor + diversifier regime waiver; CAPITAL = Bayesian posterior + structural live-paper + residual-α + bootstrap + power floor. The `significance` branch is RETAINED as legacy (reachable via `significance_gate_*` and explicit mode), exactly as `mean_sharpe` was kept when significance went live.
+
+**`TRACKB_MODE` stayed `book_delta` at GATE_MODE go-live (NOT flipped then).** The go-live Opus audit found that flipping it would have been an INERT no-op — no runner dispatched on it. **→ SUPERSEDED same day: the run_book_gate dispatcher was wired and `TRACKB_MODE` flipped to `ruler_v2` — see the "Track-B GO-LIVE" entry above.**
+
+**Verification**: independent Opus go-live audit = the GATE_MODE flip is mechanically correct (all callers route to ruler_v2; legacy branch reachable), causes NO live break (every `gate_detail` consumer iterates generically; no significance-only key is indexed live), is cleanly reversible, and rests on a legitimately-CLEAN strict R4. `gate_calibration` was DECOUPLED from GATE_MODE (significance OC columns now via `significance_gate_*` directly) so the calibration/recalibration rule stays correct under the new default. Full suite under the flip: only the known pre-existing local-only NFP test fails (3398 passed).
+
+**Rationale**: This is the analogue of the significance go-live — promote the validated gate, keep the prior as legacy. R4 (the pre-registered pre-flip gate) is clean; the xmom reclass is independently grounded (cross-sectional momentum dead, 2026-06-03); nothing is in flight (SWING/INTRADAY retrain disabled), so the flip affects only FUTURE gate calls.
+
+**Consequences**: The NEXT retrain/promotion is gated by Ruler v2. Live book unchanged (trend-only 25% + cash — no promotion pending). Reverting = set `GATE_MODE` back to `"significance"`. Remaining: wire the Track-B runner dispatcher before flipping `TRACKB_MODE`. See PIPELINE_ARCHITECTURE.md (gate inventory + changelog), MODEL_STATUS.md, PROJECT_STATE.md.
+
+---
+
+## 2026-06-13 (full-set R4) — full control set run → NOT strictly clean (xmom fails, a documented correct-reject); DID NOT flip
+
+**Context**: Owner chose "complete the full control set, then flip." Ran the remaining controls (`pead_baseline`, `xmom_12_1`) into `logs/gate_calibration_20260613.json`. Result: tsmom_4y/19y PAPER-pass (diversifier waiver + significant), all 5 true-nulls PAPER-fail (incl. seed_5), leaky rejected — BUT **`xmom_12_1` (declared `positive_alpha`) FAILED Ruler-v2 PAPER**, so the strict R4 reads NOT CLEAN.
+
+**Decision**: **DID NOT flip `GATE_MODE`/`TRACKB_MODE`.** xmom's failure is, on the merits, a CORRECT rejection — xmom 12-1 cross-sectional momentum is genuinely insignificant in this window (meanSR 0.17, t 0.77), the LEGACY significance gate independently fails it too (`significance_core_pass=False`), and the project already ruled cross-sectional momentum dead (DECISIONS 2026-06-03; the control spec itself says "post-2010 attenuation expected"). So Ruler-v2 is behaving correctly, not committing a Type-II.
+
+**What I explicitly did NOT do (integrity)**: I drafted a refinement to `ruler_v2_r4_summary` that excluded significance-core-failing positives from the Type-II count (which would have made R4 read CLEAN). An independent Opus methodology review flagged it as **GOALPOST-MOVING**: it was a post-hoc carve-out added in the same step that declared victory, it uniquely targeted the one failing control, and — decisively — it used the discredited legacy path-t core to define "genuinely significant," which structurally blinds R4 to the exact regime-heterogeneous Type-II Ruler v2 exists to catch. **Reverted it.** A flip on a same-step redefinition is precisely the "silent goalpost move" RULER_V2_DESIGN.md §3 forbids.
+
+**Rationale**: The substantive gate behavior is correct on the full set, but turning "NOT CLEAN" into "CLEAN" requires a JUDGMENT CALL about xmom's classification that must not be made unilaterally right before a live flip. The honest state: R4 is clean on the real edges (tsmom) + nulls + leaky; the one blemish is a labeled-positive that is independently-documented-dead.
+
+**Consequences**: The flip is BACK to an explicit owner decision with these options: **(a)** accept xmom as a documented correct-rejection (footnote, strict R4 definition unchanged) and flip; **(b)** RECLASSIFY `xmom_12_1` from `positive_alpha` → `known_marginal` as a deliberate, dated, pre-stated registry/spec amendment (justified by the 2026-06-03 cross-sectional-momentum-dead decision) BEFORE re-reading the verdict, then flip; **(c)** hold dark. Ruler v2 stays DARK; live book unchanged (trend-only 25% + cash). The strict `ruler_v2_r4_summary` is unchanged on main (no carve-out shipped).
+
+---
+
+## 2026-06-13 (later) — Ruler-v2 R4 remediation (1)+(2) → R4 now CLEAN on the decisive controls
+
+**Context**: The earlier R4 run (same day) was NOT CLEAN for two reasons (artifact A: diversifiers mis-routed through Track-A; real leak B: plausibility-only PAPER admitted a lucky null). Owner directed: "do 1 then 2." Implemented both as DARK ruler_v2 PAPER changes; independent Opus deep-dive = SHIP (Monte-Carlo-verified). Re-ran the decisive controls (artifact `logs/gate_calibration_20260613.json`).
+
+**Decision**: Both fixes ship (DARK); **R4 is now CLEAN on the decisive controls**:
+- **(1) Component-type regime waiver** — ruler_v2 PAPER waives the worst-regime backstop for declared diversifiers/risk-premia (`RULERV2_REGIME_WAIVED_TYPES`; carried by the new pure-additive `CPCVResult.component_type`). CAPITAL still needs explicit `regime_waiver_approved`. tsmom_4y/19y declared `risk_premium` → **both now PAPER-pass** (artifact A resolved: a Track-A mis-routing, not a gate flaw).
+- **(2) PAPER light significance floor** — ruler_v2 PAPER now also requires one-sided HAC-SR p < `RULERV2_PAPER_MAX_HAC_P=0.05` on the POOLED-OOS instrument (NOT the path-t). **All 5 true-nulls now PAPER-fail** including `random_balanced_seed_5` (the lucky null that previously PASSED) — leak B closed. MC: the 0.05 floor → ~5.7% null-pass (was ~23.4% plausibility-only).
+
+**R4 RULER-v2 CHECK verdict: CLEAN** — positives `['tsmom_4y','tsmom_19y']` pass; all 5 true-nulls fail; leaky rejected on the implausibility ceiling. PAPER is now "plausibility + a LIGHT significance floor," still far more lenient than CAPITAL (Bayesian posterior + live paper + residual-α + bootstrap).
+
+**Rationale**: The two fixes are orthogonal (a diversifier with a waived regime STILL must clear significance; a lucky null fails significance regardless of regime) and use the honest pooled-OOS HAC instrument, not the discredited path-t. Both DARK; legacy gates byte-for-byte untouched.
+
+**Consequences**: The owner-ratified pre-flip gate (R4 clean both ways) is now MET on the decisive control set (tsmom positives + true-nulls + leaky). REMAINING before a live flip: (a) optionally complete the FULL pre-registered control set (pead_baseline, xmom_12_1) so the recalibration rule evaluates (currently "INCOMPLETE - partial set"); (b) the live `TRACKB_MODE` then `GATE_MODE` flip is the owner's call. Ruler v2 still DARK; live book unchanged (trend-only 25% + cash).
+
+---
+
+## 2026-06-13 — Ruler-v2 R4 calibration → NOT CLEAN; DO NOT flip GATE_MODE (real Type-I leak at PAPER + a run artifact)
+
+**Context**: Before flipping `GATE_MODE="ruler_v2"` live, the owner-ratified checklist (RULER_V2_DESIGN.md §6, risk R4) requires the gate-calibration controls to pass BOTH ways through Ruler-v2 PAPER: real positives clear, true-nulls stay dead. Ran the decisive controls (tsmom_4y/tsmom_19y positives, random_balanced_seed_1..5 true-nulls, leaky_tplus1) via the new report-only R4 instrument in `gate_calibration.py` (artifact `logs/gate_calibration_20260613.json`). Verdict: **R4 NOT CLEAN.** Independent Opus review confirmed the read.
+
+**Decision**: **DO NOT flip `GATE_MODE` (or `TRACKB_MODE`) live.** Two structurally distinct problems, reported separately:
+- **(A) Positives failed Ruler-v2 PAPER on `regime_not_catastrophic` — a RUN ARTIFACT, not a gate flaw.** tsmom is a crisis-DIVERSIFIER whose worst-regime backstop failure is exactly the 2026-06-10 P0 finding (judge it on Track-B, which waives the regime floor for `risk_premium`/`diversifier`). R4 scored it through Track-A (component_type unset → no waiver; Ruler-v2 PAPER's −0.5 floor is identical to the legacy backstop, which PAPER never loosened for Track-A). Compounded by thin coverage (run warned "no stress-regime fold evaluated"), so the worst-regime values (−2.08 vs a +1.6 meanSR) are not gate-grade.
+- **(B) A TRUE null (random_balanced_seed_5) PASSED Ruler-v2 PAPER — a REAL Type-I leak.** PAPER is plausibility-only (no significance on the AND); the `RULERV2_PAPER_MIN_SR=0.30` floor sits only ~0.74σ above zero at n≈1500 (SR sampling SD ≈ √(252/1500) ≈ 0.41), so ~23% of zero-edge nulls clear it. Observed 1/5 (20%) = the expected rate, not bad luck. This is the Type-I risk the 2026-06-12 independent advisory flagged as the under-examined side of the redesign.
+
+**Rationale**: A flip cannot be justified while (B) — a confirmed gate weakness — is open AND (A) leaves the positives uncertified through the correct path. The validation gate did its job: it caught the problem before any live change. Live book unchanged (trend-only 25% + cash); no urgency (no candidate queued; dark-coexistence is the ratified default).
+
+**Consequences**: Pre-flip remediation (owner-ratified before any future flip; ranked): **(1)** re-run R4 with `component_type` set + diversifiers routed through Track-B; **(2)** require stress-regime fold coverage for a calibration to be admissible; **(3)** for the Type-I leak, add a LIGHT significance floor to PAPER (preferred — a HAC-SR p-floor on the pooled OOS series, not the saturated path-t) OR **(4)** raise `RULERV2_PAPER_MIN_SR` (blunter; trades Type-I for Type-II on genuine 0.4–0.7 edges). Prefer (3) over (4). The R4 instrument (report-only `rv2_*` columns + `ruler_v2_r4_summary` in `gate_calibration.py`) is retained as the permanent pre-flip gate. Ruler v2 stays DARK. See ML_EXPERIMENT_LOG / the artifact for the run record.
+
+---
+
 ## 2026-06-12 — P5 trend-broadening → PARK (the simple 10-ETF sleeve wins; complexity didn't earn it)
 
 **Context**: P5 (Track B) — broaden the validated TSMOM trend sleeve (the live book's sole sleeve, +0.71 Sharpe/19y) on the 19y window where t≥2 is reachable. Owner-approved spec: all three levers — more legs (16 ETFs: the 10-ETF core + HYG/LQD/SHY/SLV/VGK/EWJ), long-short, and a new 10% book-vol overlay. Pre-registered as ONE frozen spec (`P5-TRENDBROADEN-20260612`, `preregistered_at=2026-06-12T16:00Z`) — NOT a sweep (the OPT-5 trap). Built the book-vol overlay in `app/strategy/tsmom.py` (optional `book_vol_target`; the live sleeve runs `None` = byte-identical), 13 tests.

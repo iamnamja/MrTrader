@@ -4,7 +4,22 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-14
+
+---
+
+## 🚦 CREDIT OVERLAY — wired, flag OFF (Alpha-v8 G1/G4, 2026-06-15; OWNER DECISION PENDING)
+The Alpha-v8 **credit de-risk overlay** (HYG/IEF; de-risk when credit spreads widen) is wired into the live trend sleeve and composes multiplicatively with the VIX governor (`overlay_mult = max(0.25, vix × credit)`), BUT its flag **`pm.credit_governor_enabled` is DEFAULT "false" — it is OFF and changes nothing live.** It's the one Alpha-v8 research candidate (marginal-to-governor dSharpe +0.064, all-3-crises, both-halves stable; Opus-defensible) with caveats (small tail-insurance effect; post-hoc/multiplicity; paper-only). **To activate (owner): review the G1 caveats, then set `pm.credit_governor_enabled='true'`** (no restart for the flag; orchestrator restart only to load the new code). Fail-safe + can only reduce exposure. The OTHER Alpha-v8 angles were negatives (G2 short-interest KILLED, G3 additive-timing PARKED). Details: DECISIONS 2026-06-15 (G4) + `docs/reference/ALPHA_V8_RESEARCH_PLAN.md`.
+
+---
+
+## 🚦 CRASH-GOVERNOR GO-LIVE — VIX-term overlay on the live trend sleeve (2026-06-14, F1b)
+The **VIX term-structure crash governor is wired into the live trend sleeve** (`app/live_trading/trend_sleeve.py`): the sleeve's budget is scaled by a multiplier ∈ [`pm.crash_governor_derisk_to`, 1.0] — de-risked to 0.5 when VIX>VIX3M (backwardation) on the last `confirm_days` settled closes, full otherwise. Flag `pm.crash_governor_enabled` is **ON by default** (owner-approved); reversible live via `=false`. **FAIL-SAFE**: missing/stale/error VIX-VIX3M → multiplier 1.0 (today's behavior); it can only REDUCE exposure, never increase, and the per-name + 80% gross caps still bind. PIT-correct (settled closes only, matching the backtest). Expected (2007→2026): maxDD −13.9%→−12.1%, COVID DD −10.7%→−6.5%, Sharpe ~flat. ⚠️ **Takes effect only after the orchestrator/scheduler process is RESTARTED to load the new code** (flags need no restart). Live book otherwise unchanged (trend-only 25% + cash). Details: DECISIONS 2026-06-14 (F1b GO-LIVE) + ML_EXPERIMENT_LOG (F1b).
+
+---
+
+## 🚦 GATE GO-LIVE — `GATE_MODE` = `ruler_v2` (2026-06-13, #479)
+The **production Track-A promotion gate is now Ruler v2** (`app/ml/retrain_config.py::GATE_MODE` flipped `significance`→`ruler_v2`). The NEXT retrain/promotion is gated by it: PAPER = plausibility + a light HAC-SR significance floor + diversifier regime waiver; CAPITAL = Bayesian posterior + structural live-paper + multi-factor residual-α + bootstrap + power floor. Flipped after the R4 calibration came back CLEAN on the full control set (Opus-audited; no live break; reversible). The `significance` gate is retained as legacy. **`TRACKB_MODE` is also now `ruler_v2` (2026-06-13, #480)** — the run_book_gate dispatcher was wired (live tsmom-vs-PEAD appraisal → PASS); legacy `book_delta` retained; run_book_gate stays manual/report-only/owner-gated. **No model promotion is pending — live book unchanged (trend-only 25% + cash); the flip changes only future gate calls.** Spec: `docs/reference/RULER_V2_DESIGN.md`; details: DECISIONS 2026-06-13 (GO-LIVE) + PIPELINE_ARCHITECTURE §7.0.
 
 ---
 

@@ -395,7 +395,20 @@ below threshold. See HIGH-3."""
 #   "significance" (default, owner-approved): new two-tier gate below.
 #   "mean_sharpe"  (legacy): faithful reproduction of the 0.80/1.00 mean gate
 #                  with t-stat WARN-only — a true no-op vs pre-Phase-4 main.
-GATE_MODE: str = "significance"   # "significance" (new) | "mean_sharpe" (legacy)
+#   "ruler_v2"     (Alpha-v7 Phase B, SHIPS DARK — NOT flipped live): the inference
+#                  -on-the-OOS-series gate (app/research/ruler_v2.py). PAPER =
+#                  plausibility (no significance t); CAPITAL = Bayesian posterior
+#                  P(SR>0)≥0.95 + multi-factor residual-α + bootstrap + PBO + power
+#                  floor. See docs/reference/RULER_V2_DESIGN.md. The significance/
+#                  mean_sharpe branches are byte-for-byte untouched.
+GATE_MODE: str = "ruler_v2"   # "ruler_v2" (LIVE 2026-06-13) | "significance" (prior default, now legacy) | "mean_sharpe" (legacy)
+# ── 2026-06-13 GO-LIVE: GATE_MODE flipped significance → ruler_v2 (owner-approved,
+# AFTER TRACKB_MODE) after R4 came back CLEAN on the full control set (tsmom positives
+# clear via the diversifier waiver + significance; all true-nulls dead via the PAPER
+# HAC-significance floor; leaky rejected; xmom reclassified known_marginal as a logged
+# correct-reject). Full suite green under the flip except the calibration harness, now
+# decoupled from GATE_MODE. The "significance" branch is retained as legacy (callers can
+# still request it) exactly as "mean_sharpe" was kept when significance went live.
 
 # Two tiers:
 #   PAPER   — forward-validate, deploy to paper, NO real capital.
@@ -418,6 +431,84 @@ CAPITAL_GATE_MIN_N_FOLDS: int = 10         # power floor (N_eff=n_folds; 8 is to
 # and the Sharpe floor is the economic-materiality backstop, not the discriminator.
 CAPITAL_GATE_MIN_MEAN_SHARPE: float = 0.45
 CAPITAL_GATE_REQUIRE_PAPER_CONFIRMATION: bool = True  # OR-path: t>=2.5 OR documented live-paper confirmation
+
+# ── Alpha-v7 Phase B: Ruler v2 constants (used ONLY when GATE_MODE="ruler_v2") ──
+# All DARK — read only inside app/research/ruler_v2.py, never by the significance/
+# mean_sharpe branches. Defaults are the RULER_V2_DESIGN.md §6 owner-decision
+# recommendations (OD-1…OD-9); each is an OPEN owner call before GATE_MODE is ever
+# flipped live (a consolidated sign-off list ships with the phase). Tunable.
+# OD-2 PAPER plausibility floor (annualized point SR). 0.30 (NOT the legacy 0.35) is
+# DELIBERATE: the legacy PAPER_GATE_MIN_MEAN_SHARPE=0.35 is the mean of the per-fold
+# Sharpes, whereas this is the HAC point Sharpe of the CONCATENATED OOS series, which
+# tends to run somewhat lower when fold means are dispersed (the pooled std absorbs
+# cross-fold variance the per-fold Sharpes don't see). The 0.05 gap is a judgment call,
+# not a precise equivalence — tunable. Do not reflexively "fix" it back to 0.35.
+# (Owner-ratified 2026-06-13.)
+RULERV2_PAPER_MIN_SR: float = 0.30
+RULERV2_PAPER_IMPLAUSIBLE_SR: float = 3.0   # PAPER implausibility CEILING — a backtest SR above
+#                                             this on a single sleeve is an overfit signature, reject
+RULERV2_MAX_PAPER_SLEEVES: int = 6          # OD-3 concurrent paper-sleeve cap (caller-supplied count)
+RULERV2_PRIOR_SR_SD: float = 0.30           # OD-4 prior SR ~ N(0, SD²); shrink by 1/√(1+log N_trials)
+RULERV2_MIN_DAILY_OBS: int = 504            # OD-6 CAPITAL power floor (~2y of daily OOS obs)
+RULERV2_MIN_N_FOLDS: int = 10               # CAPITAL power floor (N_eff = n_folds)
+RULERV2_CAPITAL_MIN_POSTERIOR: float = 0.95  # CAPITAL Bayesian posterior P(SR>0) gate
+RULERV2_BOOTSTRAP_MIN_PSR: float = 0.95     # CAPITAL stationary-bootstrap P(SR>0) gate
+RULERV2_PBO_MAX: float = 0.50               # CAPITAL PBO ceiling (gates only when M>1 configs)
+RULERV2_RESIDUAL_ALPHA_MIN_T: float = 2.0   # OD-8 CAPITAL primary: multi-factor residual-α t_HAC
+RULERV2_CATASTROPHIC_REGIME_SR: float = -0.5  # PAPER "not catastrophic" worst-regime floor (== legacy)
+# ── Alpha-v7 R4 remediation (2026-06-13) ──────────────────────────────────────
+# (1) component_types whose worst-regime backstop is WAIVED in Ruler-v2 PAPER (a
+# crisis-diversifier failing its worst regime is its PURPOSE; mirrors
+# track_b_appraisal.WAIVED_REGIME_TYPES + the 2026-06-10 P0 decision "judge crisis-
+# diversifiers on book contribution, not the standalone worst-regime floor"). CAPITAL
+# still needs explicit regime_waiver_approved even for these.
+RULERV2_REGIME_WAIVED_TYPES: tuple = ("diversifier", "risk_premium")
+# (2) PAPER one-sided HAC-SR significance floor. R4 (2026-06-13) showed a plausibility-
+# ONLY PAPER tier is a Type-I sieve: the 0.30 point-SR floor sits ~0.74σ above zero at
+# n≈1500, so ~23% of TRUE zero-SR nulls clear it (a lucky null looks "plausible"). A
+# LIGHT significance floor on the POOLED-OOS HAC-SR (the honest Phase-1 instrument, NOT
+# the discredited 8-fold path-t) restores the calibrated ≤5% null-pass-rate: PAPER now
+# also requires one-sided HAC p < this. 0.05 ⇒ ~5% null-pass by construction (verified
+# ~5.7% by Monte Carlo; the old plausibility-only floor was ~23.4%); real edges clear
+# easily (a genuine trend sleeve's pooled-OOS HAC-t is comfortably significant → p≈0).
+# Still far more lenient than CAPITAL (Bayesian posterior ≥0.95 + live paper +
+# residual-α + bootstrap), preserving the two-tier split.
+RULERV2_PAPER_MAX_HAC_P: float = 0.05
+# ── Alpha-v7 Phase B: Track-B v2 (used ONLY when TRACKB_MODE="ruler_v2"; Phase 3) ──
+TRACKB_MODE: str = "ruler_v2"               # "ruler_v2" (LIVE 2026-06-13) | "book_delta" (legacy)
+# ── 2026-06-13: TRACKB_MODE flipped book_delta → ruler_v2 now that scripts/run_book_gate.py
+# DISPATCHES on it (the go-live audit found the earlier flip would have been inert — no
+# dispatcher existed). The runner now routes to track_b_appraisal.appraise_track_b under
+# "ruler_v2" (budget-invariant appraisal IR + block-bootstrap P(dSR>0)) and the legacy
+# book_delta_gate under "book_delta" (retained + still tested). run_book_gate stays a
+# manual, report-only tool (decision='park'); flipping the mode just changes which gate
+# it applies. Track-B inclusion remains owner-gated, never auto-promoted.
+RULERV2_TRACKB_MIN_IR: float = 0.20         # OD-5 budget-invariant appraisal ratio (residual-α IR)
+# OD-5 block-bootstrap P(ΔSR>0). Owner-ratified 2026-06-13: 0.85 → 0.90 — 0.85 was a weak
+# significance bar (~1-in-7 false adds); 0.90 aligns nearer the 0.95 used everywhere else
+# without demanding full 0.95 of a budget-bounded diversifier add.
+RULERV2_TRACKB_MIN_PDSR: float = 0.90
+
+# ── OD-9: factor set for the CAPITAL multi-factor residual-α (premia-book aware) ──
+# PRINCIPLE: residualize a sleeve against every priced premium EXCEPT the one it is
+# being PAID to harvest — otherwise you hedge out the very edge you're certifying (a
+# trend sleeve regressed on a trend factor shows ~0 alpha and the gate kills a real
+# edge). The sleeve declares its harvested premium via component_type; the gate drops
+# that factor and residualizes against the rest. (Owner-ratified 2026-06-13: trend
+# EXCLUDES the TSMOM factor.) Resolved by ruler_v2.capital_factor_set().
+# NOTE: RULERV2_BASE_FACTORS is the DOCUMENTED reference universe, not the enforced
+# set — capital_factor_set() derives the actual factors from the live factor_panel's
+# columns (you residualize against whatever factors you actually have, minus the
+# harvested one); this tuple records the intended panel for the run-script that builds it.
+RULERV2_BASE_FACTORS: tuple = ("MKT", "SMB", "HML", "TSMOM")
+RULERV2_HARVESTED_FACTOR: dict = {
+    "trend": "TSMOM",          # the live sleeve — must NOT be residualized against TSMOM
+    "momentum": "TSMOM",
+    "risk_premium": None,      # declared diversifiers/premia residualize against all base
+    "diversifier": None,
+    "alpha": None,             # a pure-alpha sleeve must beat ALL priced premia
+    "": None,
+}
 
 # ── Alpha-v6 Phase 0: Track B (book-delta) acceptance ─────────────────────────
 # PRE-REGISTERED criteria for the Track B gate (scripts/walkforward/book_gate.py;

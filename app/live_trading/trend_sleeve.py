@@ -183,6 +183,174 @@ def _truthy(val: Any) -> bool:
     return str(val).strip().lower() == "true"
 
 
+def _refresh_macro_history_bounded(timeout_s: float = 20.0) -> None:
+    """Best-effort macro refresh with a HARD wall-clock timeout, so a yfinance network
+    *hang* (not just an exception) can never block the weekly rebalance thread. Runs in a
+    daemon thread (won't block interpreter exit) and is joined for at most `timeout_s`; on
+    timeout/error we simply fall through to the cached parquet (the staleness guard then
+    decides). An orphaned hung fetch finishes or dies on its own and cannot stall the
+    rebalance."""
+    import threading
+
+    def _run():
+        try:
+            from app.data.macro_history import update_macro_history
+            update_macro_history()
+        except Exception as _exc:  # noqa: BLE001
+            log.debug("crash governor: macro refresh failed (using cache): %s", _exc)
+
+    t = threading.Thread(target=_run, name="crash-gov-macro-refresh", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        log.warning("crash governor: macro refresh exceeded %.0fs -> using cached macro data",
+                    timeout_s)
+
+
+def _crash_governor_multiplier(db) -> float:
+    """Alpha-v7 F1b: VIX term-structure crash-governor exposure multiplier for the trend
+    sleeve, in [derisk_to, 1.0]. De-risks the whole sleeve when the VIX term structure is
+    inverted (VIX > VIX3M = backwardation = acute stress).
+
+    FAIL-SAFE by design — returns 1.0 (no de-risk = exactly today's behavior) when the flag
+    is off, VIX/VIX3M is missing or stale, the signal is insufficient, or ANY error occurs.
+    A data outage can therefore NEVER flatten the book; the governor can only ever REDUCE
+    exposure (multiplier <= 1.0), and the downstream per-name + 80% gross caps still apply.
+    """
+    from app.database.agent_config import get_agent_config
+    try:
+        if not _truthy(get_agent_config(db, "pm.crash_governor_enabled")):
+            return 1.0
+        import pandas as pd
+        from datetime import date as _date
+        from app.data.macro_history import load_macro_history
+        from app.strategy.crash_governor import (
+            VixTermGovernorConfig, live_governor_multiplier,
+        )
+        cfg = VixTermGovernorConfig(
+            derisk_to=float(get_agent_config(db, "pm.crash_governor_derisk_to")),
+            ratio_threshold=float(get_agent_config(db, "pm.crash_governor_ratio_threshold")),
+            confirm_days=int(get_agent_config(db, "pm.crash_governor_confirm_days")),
+        )
+        # Best-effort fresh tail, bounded by a hard timeout; falls through to cache on
+        # timeout/error (the staleness guard below then decides).
+        _refresh_macro_history_bounded()
+        mh = load_macro_history()
+        if mh is None or mh.empty or "vix" not in mh.columns or "vix3m" not in mh.columns:
+            log.warning("crash governor: macro history unavailable -> mult=1.0 (fail-safe)")
+            return 1.0
+        # PIT: drop any not-yet-settled row dated TODAY. The Mon 09:45 ET rebalance runs
+        # DURING market hours and update_macro_history() fetches through today, so yfinance
+        # returns an intraday PARTIAL ^VIX/^VIX3M bar for today. Size only off SETTLED closes
+        # (strictly before today) — the latest settled close governs the upcoming session,
+        # exactly matching the backtest's shift(1). Without this the live signal would use
+        # today's unsettled VIX (a same-day look-ahead, and a live-vs-backtest mismatch).
+        _today_iso = _date.today().isoformat()
+        mh = mh[mh["date"].astype(str).str[:10] < _today_iso]
+        if mh.empty:
+            log.warning("crash governor: no settled macro rows before today -> 1.0 (fail-safe)")
+            return 1.0
+        # Staleness guard (on the latest SETTLED close): a wedged feed must not de-risk on
+        # stale data.
+        last_date = pd.Timestamp(str(mh["date"].iloc[-1])[:10])
+        if (pd.Timestamp(_date.today()) - last_date).days > 7:
+            log.warning("crash governor: macro history stale (last settled=%s) -> 1.0 (fail-safe)",
+                        last_date.date())
+            return 1.0
+        idx = pd.to_datetime(mh["date"])
+        n = max(1, cfg.confirm_days)
+        mult = live_governor_multiplier(
+            pd.Series(mh["vix"].to_numpy(), index=idx).tail(n + 5),
+            pd.Series(mh["vix3m"].to_numpy(), index=idx).tail(n + 5),
+            cfg,
+        )
+        if mult is None or not (0.0 <= mult <= 1.0):
+            log.warning("crash governor: insufficient/invalid signal -> mult=1.0 (fail-safe)")
+            return 1.0
+        if mult < 1.0:
+            # Comprehensive audit line (the live record of WHY exposure was cut on this date):
+            # the de-risk multiplier, the term-structure ratio, and the settled close used.
+            try:
+                ratio = float(mh["vix"].iloc[-1]) / float(mh["vix3m"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                ratio = float("nan")
+            log.info("crash governor ACTIVE: de-risking trend exposure x%.2f "
+                     "(VIX/VIX3M=%.3f backwardation, settled close %s)",
+                     mult, ratio, last_date.date())
+        return float(mult)
+    except Exception:  # noqa: BLE001
+        log.warning("crash governor failed -> mult=1.0 (fail-safe)", exc_info=True)
+        return 1.0
+
+
+# Compose floor for the stacked overlay multipliers (mirrors sleeve_lab.GLOBAL_DERISK_FLOOR;
+# duplicated as a local app-layer constant to avoid importing research code into the live path).
+_OVERLAY_DERISK_FLOOR = 0.25
+
+
+def _credit_governor_multiplier(db) -> float:
+    """Alpha-v8 G1: credit-spread de-risk multiplier for the trend sleeve, in [derisk_to, 1.0].
+    De-risks when the HYG/IEF ratio is >`band` below its `lookback`-day MA (credit spreads
+    widening). The validated G1 candidate (L120 / 2%-band / 0.5), evaluated marginal to the VIX
+    governor — a small tail-insurance overlay on a SLOWER credit axis than the governor.
+
+    Flag `pm.credit_governor_enabled` defaults OFF (this is an owner-gated CANDIDATE, not yet
+    approved like the VIX governor). FAIL-SAFE: flag off / missing / stale / error -> 1.0 (no
+    de-risk); can only REDUCE exposure. PIT: settled closes only (matches the backtest)."""
+    from app.database.agent_config import get_agent_config
+    try:
+        if not _truthy(get_agent_config(db, "pm.credit_governor_enabled")):
+            return 1.0
+        import pandas as pd
+        from datetime import date as _date
+        from app.data.macro_history import load_macro_history
+        from app.strategy.credit_curve_governor import (
+            CreditGovernorConfig, live_credit_multiplier,
+        )
+        cfg = CreditGovernorConfig(
+            lookback=int(get_agent_config(db, "pm.credit_governor_lookback")),
+            band=float(get_agent_config(db, "pm.credit_governor_band")),
+            derisk_to=float(get_agent_config(db, "pm.credit_governor_derisk_to")),
+        )
+        _refresh_macro_history_bounded()
+        mh = load_macro_history()
+        if mh is None or mh.empty or "hyg" not in mh.columns or "ief" not in mh.columns:
+            log.warning("credit governor: macro history unavailable -> mult=1.0 (fail-safe)")
+            return 1.0
+        # PIT: settled closes only (drop today's intraday partial bar), like the VIX governor.
+        _today_iso = _date.today().isoformat()
+        mh = mh[mh["date"].astype(str).str[:10] < _today_iso]
+        if mh.empty:
+            log.warning("credit governor: no settled macro rows before today -> 1.0 (fail-safe)")
+            return 1.0
+        last_date = pd.Timestamp(str(mh["date"].iloc[-1])[:10])
+        if (pd.Timestamp(_date.today()) - last_date).days > 7:
+            log.warning("credit governor: macro stale (last settled=%s) -> 1.0 (fail-safe)",
+                        last_date.date())
+            return 1.0
+        idx = pd.to_datetime(mh["date"])
+        need = cfg.lookback + max(0, cfg.confirm_days - 1) + 5
+        mult = live_credit_multiplier(
+            pd.Series(mh["hyg"].to_numpy(), index=idx).tail(need),
+            pd.Series(mh["ief"].to_numpy(), index=idx).tail(need),
+            cfg,
+        )
+        if mult is None or not (0.0 <= mult <= 1.0):
+            log.warning("credit governor: insufficient/invalid signal -> mult=1.0 (fail-safe)")
+            return 1.0
+        if mult < 1.0:
+            try:
+                ratio = float(mh["hyg"].iloc[-1]) / float(mh["ief"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                ratio = float("nan")
+            log.info("credit governor ACTIVE: de-risking trend exposure x%.2f "
+                     "(HYG/IEF=%.3f below trend, settled close %s)", mult, ratio, last_date.date())
+        return float(mult)
+    except Exception:  # noqa: BLE001
+        log.warning("credit governor failed -> mult=1.0 (fail-safe)", exc_info=True)
+        return 1.0
+
+
 def _fetch_prices(alpaca, universe: List[str]):
     """Return a (n_days, n_symbols) close-price DataFrame, or None on failure.
 
@@ -313,7 +481,11 @@ def _sync_trend_trade(db, symbol: str, target_shares: int, price: float,
 
 
 def _audit(symbol: str, side: str, *, price: float, final_decision: str,
-           block_reason: Optional[str] = None) -> None:
+           block_reason: Optional[str] = None, size_mult: float = 1.0) -> None:
+    """Persist one trend decision row. `size_mult` is the applied exposure multiplier —
+    1.0 normally, or the crash-governor multiplier (<1.0) on a de-risk day — so the
+    decision_audit trail records WHY a given day's trend orders were sized down (the
+    queryable artifact for incident review; the run log carries the VIX/VIX3M detail)."""
     try:
         from app.database.decision_audit import write_decision
         write_decision(
@@ -321,7 +493,7 @@ def _audit(symbol: str, side: str, *, price: float, final_decision: str,
             strategy="trend",
             final_decision=final_decision,
             direction=("BUY" if side == "buy" else "SELL"),
-            size_multiplier=1.0,
+            size_multiplier=float(size_mult),
             price_at_decision=price,
             block_reason=block_reason,
         )
@@ -360,6 +532,21 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # behavior). Fail-closed to the static value on any error.
         from app.live_trading.sleeve_allocator_live import effective_trend_allocation
         alloc = effective_trend_allocation(db)
+        # Alpha-v7 F1b: VIX term-structure crash governor — scale the sleeve's exposure by
+        # [derisk_to, 1.0] (de-risk in backwardation). Fail-safe to 1.0 (= today's behavior);
+        # can only REDUCE exposure, never increase it. Applied to the scalar budget so it
+        # uniformly de-risks every target dollar; per-name + 80% gross caps still bind.
+        # Overlays COMPOSE multiplicatively, clamped to the floor so a stacked de-risk can't
+        # near-flatten the book. VIX governor (F1b, default ON) x credit governor (G1 candidate,
+        # default OFF). Each is fail-safe to 1.0; the product can only REDUCE exposure; per-name
+        # + 80% gross caps still bind downstream.
+        gov_mult = _crash_governor_multiplier(db)
+        credit_mult = _credit_governor_multiplier(db)
+        overlay_mult = max(_OVERLAY_DERISK_FLOOR, gov_mult * credit_mult)
+        alloc = alloc * overlay_mult
+        summary["crash_governor_mult"] = gov_mult
+        summary["credit_governor_mult"] = credit_mult
+        summary["overlay_mult"] = overlay_mult
         max_pos = float(get_agent_config(db, "pm.trend_max_position_pct"))
         universe = [s.strip().upper()
                     for s in str(get_agent_config(db, "pm.trend_universe")).split(",")
@@ -446,7 +633,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if shadow:
             for it in approved:
                 _audit(it["symbol"], it["side"], price=live.get(it["symbol"], 0.0),
-                       final_decision="enter", block_reason="shadow")
+                       final_decision="enter", block_reason="shadow", size_mult=overlay_mult)
             log.info("trend SHADOW: would place %d order(s) (%d blocked) — none sent",
                      len(approved), len(blocked))
         else:
@@ -479,7 +666,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 except Exception:
                     db.rollback()
                     log.debug("trend: _sync_trend_trade/commit failed (swallowed)", exc_info=True)
-                _audit(sym, side, price=price, final_decision="enter")
+                _audit(sym, side, price=price, final_decision="enter", size_mult=overlay_mult)
                 placed += 1
             log.info("trend LIVE: placed %d order(s) (%d blocked)", placed, len(blocked))
             summary["placed"] = placed
