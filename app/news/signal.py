@@ -35,7 +35,7 @@ class MacroEventSignal:
     LLM-scored interpretation of a single economic calendar event.
     Replaces the binary FOMC/NFP block in premarket.py.
     """
-    event_type: str                      # "FOMC", "NFP", "CPI", etc.
+    event_type: str                      # canonical bucket: "FOMC", "NFP", "CPI", "OTHER_HIGH"
     event_time: str                      # "14:00 ET"
     risk_level: RiskLevel                # LOW / MEDIUM / HIGH
     direction: Direction                 # expected market direction post-event
@@ -51,6 +51,9 @@ class MacroEventSignal:
     actual: float | None = None          # Actual released value (None = not yet released)
     estimate: float | None = None        # Consensus estimate before release
     prior: float | None = None           # Prior period value
+    event_name: str = ""                 # raw vendor name (e.g. "Retail Sales Ex Autos MoM (May)");
+    #                                      surfaced in the UI so OTHER_HIGH rows aren't opaque and
+    #                                      same-type rows (Retail Sales MoM vs Ex-Autos) disambiguate
 
     @property
     def effective_sizing_factor(self) -> float:

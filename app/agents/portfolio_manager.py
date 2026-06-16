@@ -60,6 +60,36 @@ SPY_CAUTION_PCT = -0.75    # below this: raise min_confidence→0.65, size→50%
 SPY_CHASE_PCT = 2.0        # above this: raise min_confidence→0.65 (gap caution)
 SPY_ADAPTIVE_DELTA = 1.5   # adaptive re-scan if SPY moves this much from last scan
 
+
+def decide_post_event_refresh(
+    state: dict, evt_id: str, elapsed_min: float, actual_present: bool, delay_min: float,
+) -> tuple[bool, bool, bool]:
+    """Pure decision for the NIS post-event refresh (unit-tested in isolation).
+
+    Given the per-day refresh state ({event_id: actual_captured}), decide whether to
+    rebuild the macro context for this event right now. Returns
+    (should_refresh, captured_after, is_first_refresh):
+
+      • before +delay_min        -> (False, ...)                  not settled yet
+      • first time past +delay   -> (True, actual_present, True)  first post-release rebuild
+      • already done, actual was   captured -> (False, ...)       nothing left to do
+      • already done, actual NOT captured, now present -> (True, True, False)  lagging actual landed
+      • already done, actual NOT captured, still absent -> (False, ...)        keep waiting
+
+    This is what turns the old one-shot refresh into "retry until the actual lands"
+    while rebuilding at most twice per event.
+    """
+    if elapsed_min < delay_min:
+        return False, state.get(evt_id, False), False
+    if evt_id not in state:
+        return True, actual_present, True          # first refresh
+    if state[evt_id]:
+        return False, True, False                  # actual already captured
+    if actual_present:
+        return True, True, False                   # lagging actual now available
+    return False, False, False                     # still waiting on the actual
+
+
 # ── Phase 85: PM abstention gates ────────────────────────────────────────────
 # Gate 1A: skip scan if SPY first-hour (bars 0-11) high-low range < 0.45%
 SPY_MIN_FIRST_HOUR_RANGE = 0.0020
@@ -153,7 +183,10 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         # Adaptive intraday universe — top-N candidates from 9:45 scan reused for later windows
         self._morning_intraday_candidates: List[str] = []
         # NIS post-event refresh tracking: set of event IDs already refreshed today
-        self._nis_refreshed_event_ids: set = set()
+        # {event_id: actual_captured(bool)} — tracks the NIS post-event refresh per
+        # event: an entry means "refreshed at least once"; the bool is True once the
+        # vendor ACTUAL has been captured (so a lagging actual keeps retrying).
+        self._nis_event_refresh_state: dict = {}
         # SPY % at time of last intraday scan (for adaptive re-scan trigger)
         self._last_scan_spy_pct: float = 0.0
         # Monotonic timestamp of last adaptive re-scan (prevents back-to-back triggers)
@@ -372,7 +405,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     self._last_scan_spy_pct = 0.0
                     self._last_adaptive_scan_at = 0.0
                     self._last_intraday_features = {}
-                    self._nis_refreshed_event_ids = set()
+                    self._nis_event_refresh_state = {}
                     self._last_date = today
                     self._swing_proposals = []
                     self._last_review_minute = -1
@@ -810,12 +843,23 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
 
     async def _maybe_refresh_nis_post_event(self, now: datetime) -> None:
         """
-        Re-fetch NIS macro context 3 minutes after each calendar event releases.
+        Re-fetch NIS macro context after each calendar event releases, and KEEP
+        re-fetching until the vendor ACTUAL has actually landed.
 
-        Finnhub populates actuals within ~1-2 min of release. Waiting 3 min gives
-        it time to settle, then we invalidate the day cache and rebuild so the
-        updated risk level / sizing factor is visible to all downstream gates.
-        Each event fires exactly once per day (tracked by event ID).
+        Why two refreshes per event: the vendor (FMP) marks an event released on the
+        clock but populates `actual` with a variable lag (minutes to ~an hour). The
+        old code fired exactly once at +3min and then never retried, so any actual
+        that landed after that one shot was lost for the rest of the day (the bug
+        behind "Released but Actual = —"). Now:
+          • the FIRST refresh still fires at +DELAY (captures the post-release LLM
+            reassessment + any early actual), and
+          • if that refresh didn't yet have the actual, we retry every loop tick
+            (~60s) until it does — bounded by the calendar feed's own ~1h cutoff
+            (events older than 1h drop out of fetch_economic_calendar) and capped at
+            2 rebuilds per event, so there is no extra steady-state LLM cost.
+
+        State: self._nis_event_refresh_state = {event_id: actual_captured(bool)}.
+        Applies to ALL medium+-impact events (not just CPI/NFP/FOMC).
         """
         POST_EVENT_DELAY_MINUTES = 3
         try:
@@ -823,49 +867,67 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             from app.news.intelligence_service import nis
             from datetime import timezone
 
+            state = self._nis_event_refresh_state
+            now_utc = now.astimezone(timezone.utc)
             events = fetch_economic_calendar(days_ahead=0, min_impact="medium")
             for evt in events:
                 evt_id = evt.get("id")
-                if not evt_id or evt_id in self._nis_refreshed_event_ids:
-                    continue
                 evt_dt = evt.get("event_time")
-                if evt_dt is None:
+                if not evt_id or evt_dt is None:
                     continue
-                # Convert to ET for display, compare in UTC
-                now_utc = now.astimezone(timezone.utc)
                 elapsed_min = (now_utc - evt_dt).total_seconds() / 60
-                if POST_EVENT_DELAY_MINUTES <= elapsed_min < POST_EVENT_DELAY_MINUTES + 5:
-                    self._nis_refreshed_event_ids.add(evt_id)
-                    self.logger.info(
-                        "NIS post-event refresh triggered: %s released %.1f min ago — invalidating cache",
-                        evt.get("event_type"), elapsed_min,
+                if elapsed_min < POST_EVENT_DELAY_MINUTES:
+                    continue  # not released long enough to have settled
+
+                actual_present = evt.get("actual") is not None
+                should, captured, first_refresh = decide_post_event_refresh(
+                    state, evt_id, elapsed_min, actual_present, POST_EVENT_DELAY_MINUTES,
+                )
+                if not should:
+                    continue
+                state[evt_id] = captured  # mark captured once the actual is in
+                reason = "first post-release refresh" if first_refresh else "actual now available"
+                self.logger.info(
+                    "NIS post-event refresh (%s): %s released %.1f min ago, actual=%s — rebuilding",
+                    reason, evt.get("event_type"), elapsed_min, evt.get("actual"),
+                )
+                nis.invalidate_macro_cache()
+                ctx = await asyncio.to_thread(nis.get_macro_context)
+                # CRITICAL: push the rebuilt context into the LIVE singleton that every
+                # sizing/blocking gate AND the /api/nis/macro panel read. Without this the
+                # rebuild only updates the DB snapshot/UI-fallback, so neither live trading
+                # nor the panel ever sees the landed actual (the bug this fix exists for).
+                try:
+                    from app.agents.premarket import premarket_intel
+                    premarket_intel.set_macro_context(ctx)
+                except Exception:
+                    pass
+                # Persist updated snapshot for API and audit trail
+                try:
+                    from app.database.decision_audit import persist_nis_macro_snapshot
+                    await asyncio.to_thread(
+                        persist_nis_macro_snapshot, ctx,
+                        "post_event",
+                        evt.get("event_type"),
+                        evt.get("event_name"),
                     )
-                    nis.invalidate_macro_cache()
-                    ctx = await asyncio.to_thread(nis.get_macro_context)
-                    # Persist updated snapshot for API and audit trail
-                    try:
-                        from app.database.decision_audit import persist_nis_macro_snapshot
-                        await asyncio.to_thread(
-                            persist_nis_macro_snapshot, ctx,
-                            "post_event",
-                            evt.get("event_type"),
-                            evt.get("event_name"),
-                        )
-                    except Exception:
-                        pass
-                    await self.log_decision("NIS_POST_EVENT_REFRESH", reasoning={
-                        "event_type": evt.get("event_type"),
-                        "event_name": evt.get("event_name"),
-                        "elapsed_minutes": round(elapsed_min, 1),
-                        "new_risk": ctx.overall_risk,
-                        "new_sizing": ctx.global_sizing_factor,
-                        "block_entries": ctx.block_new_entries,
-                        "rationale": ctx.rationale,
-                    })
-                    self.logger.info(
-                        "NIS post-event refresh complete: risk=%s sizing=%.2f block=%s",
-                        ctx.overall_risk, ctx.global_sizing_factor, ctx.block_new_entries,
-                    )
+                except Exception:
+                    pass
+                await self.log_decision("NIS_POST_EVENT_REFRESH", reasoning={
+                    "event_type": evt.get("event_type"),
+                    "event_name": evt.get("event_name"),
+                    "elapsed_minutes": round(elapsed_min, 1),
+                    "actual_captured": captured,
+                    "trigger": reason,
+                    "new_risk": ctx.overall_risk,
+                    "new_sizing": ctx.global_sizing_factor,
+                    "block_entries": ctx.block_new_entries,
+                    "rationale": ctx.rationale,
+                })
+                self.logger.info(
+                    "NIS post-event refresh complete: risk=%s sizing=%.2f block=%s",
+                    ctx.overall_risk, ctx.global_sizing_factor, ctx.block_new_entries,
+                )
         except Exception as exc:
             self.logger.debug("NIS post-event refresh check failed (non-fatal): %s", exc)
 

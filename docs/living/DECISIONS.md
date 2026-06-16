@@ -4,6 +4,34 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 — NIS macro-event panel: surface the real vendor name + refresh until the actual lands
+
+**Context**: The macro-event panel showed opaque `OTHER_HIGH` rows (high-impact releases not in our keyword map) and indistinguishable duplicate `RETAIL_SALES` rows, and it displayed "Released" (a clock flag) with `Actual = —` for events whose vendor figure hadn't populated yet. Diagnosis: (a) the real vendor `event_name` was fetched from FMP/Finnhub but dropped before the UI; (b) the post-event refresh (`_maybe_refresh_nis_post_event`) fired exactly once in a narrow +3–8min window, so a vendor `actual` that lagged past ~8min was never captured; and (c) — found by the Opus adversarial review — even when it did rebuild, it wrote only to `nis._macro_cache` + the DB snapshot, never to `premarket_intel._nis_macro_context`, the singleton every live sizing/blocking gate AND the `/api/nis/macro` panel actually read.
+
+**Decision**:
+1. **Surface `event_name`** end-to-end (`MacroEventSignal` → live API → snapshot persister → frontend). The UI shows the real name as primary (disambiguating Retail Sales MoM vs Ex-Autos and naming OTHER_HIGH rows) with the canonical type as a muted tag.
+2. **Refresh until the actual lands**: replace the one-shot refresh with a per-event state machine (`decide_post_event_refresh`) that rebuilds once at +3min (preserving the post-release LLM reassessment) and again if/when the actual later appears — at most 2 rebuilds/event, bounded by the calendar feed's own ~1h cutoff, applying to ALL medium+-impact events.
+3. **Push the rebuilt context into the live singleton** (`premarket_intel.set_macro_context`) so the landed actual reaches both the panel and live sizing/blocking — not just the DB snapshot.
+4. **Make event ids unique per name** (`event_uid` includes `event_name`) so paired same-type same-time releases don't collide and starve each other's refresh.
+
+**Consequences**: The panel now shows real names and populates actuals as the vendor posts them (within the 1h window). **Runtime behavior change**: the live macro context (`overall_risk` / `global_sizing_factor` / `block_new_entries`) can now legitimately update intra-day after an event's actual lands — at most one such flip per event (cap = 2 rebuilds), which is the intended reaction to the released data. No extra steady-state LLM cost (rebuild only fires on the first refresh + the actual-landing). Not a WF/CPCV-pipeline change (PIPELINE_ARCHITECTURE untouched). 9 tests; Opus adversarial review (2 findings — C1 live-singleton, M1 id-collision — both fixed).
+
+## 2026-06-16 (Alpha-v9) — adopt the multi-engine premia-book direction after a 5-LLM external review
+
+**Context**: Alpha-v8 closed with one candidate (credit overlay, flag-off) and everything else killed — the 4th confirmation that free daily US equity *directional* alpha is mined out. We assembled a self-contained review pack (`docs/reference/prompts/20260616_Alpha_v8/`) and obtained 5 independent world-class-quant reviews (ChatGPT, Claude Max, DeepSeek, Gemini, Grok). Opus synthesized them with independent critical judgment into `ALPHA_V9_ROADMAP.md` + `ALPHA_V9_ARCHITECTURE.md`.
+
+**Decision**: Adopt **Alpha-v9 — a multi-engine premia book**. Concretely, in dependency order:
+1. **Validate the validator first** (P0-1): a positive-control harness must show the swing feature→label→CPCV pipeline reproduces a *known* anomaly (12-1 momentum / 1-month reversal / low-vol). The prior "all 23 early bugs inflated results → no real edge wrongly killed" claim is **downgraded to UNSAFE** — our own changelog has *deflationary* bugs (#PERFOLD2 empty-X-per-fold → mean Sharpe 0; #339/#342; `except: continue` window drops). Until the positive control passes, "IC≈0 / mined out" means "IC≈0 *or* a deflationary alignment bug."
+2. **Fix two gate flaws that quietly kill diversifiers** (P0-2): replace the binary both-halves guard (~24% false-negative on a true SR-0.5 edge) with a *powered* stability test; drop the Track-B `standalone_vt_SR>0.20` floor for `{diversifier, risk_premium}` and add a small-size probation path (`P(ΔSR>0)≥0.75` + live-paper ratification). Flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True` for trained paths (P0-3).
+3. **Run a second return engine paired with trend by skew** (P3-2): defined-risk index VRP (positive-skew trend ⊕ negative-skew VRP under the governor) — the most likely route from ~0.7 to ~1.0+ book Sharpe. Treated as a *research track*: premium-% cost model first, 4y frozen options exploratory-only, **live-paper ratification before any live size** (reconciles ClaudeMax "do now" with Gemini "options data too weak").
+4. **Point trend at crypto** (P3-1, Alpaca-executable), add an explicit **cash/T-bill sleeve** (P1-1), and **buy Norgate (~$270/yr)** to un-bias single-name/event kills (re-open PEAD + F2 on survivorship-free data) and unlock the carry premium (futures research → IBKR only if it passes).
+
+**Rationale**: Unanimous reviewer consensus that the *process* is fund-grade and the equity-directional verdict is honest, but that we mapped one quadrant and called it the world — vol/options-structures, crypto, and survivorship-free data are untouched and sit outside the "mined out" claim. The skew-pairing insight (diversification exists *between* a positive- and negative-skew engine, not between two equity sleeves) is the program's reason to exist. Rejected: per-regime separate models and RL (overfit at small N); inflating CPCV paths (fabricates significance); promoting options off the frozen backtest alone.
+
+**Consequences**: Alpha-v9 is the active program (MASTER_BACKLOG + PROJECT_STATE updated). Live book UNCHANGED until owner-gated steps (trend allocation, credit overlay, Norgate purchase, IBKR). The architecture doc reshapes the system into 5 layers (data lake/PIT → component declarations → one research harness → HRP allocator → deterministic idempotent executor) with adapters (not parallel systems) for crypto/futures/options and a manifest-only live runtime so dead strategies cannot wake from stale flags. Honest fallback if nothing survives beyond trend: run trend well + overlays + cash, excellently.
+
+---
+
 ## 2026-06-15 (Alpha-v8 G4) — credit-selective overlay WIRED into the live trend sleeve, flag DEFAULT OFF (owner decision pending)
 
 **Context**: G4 of Alpha-v8 — prepare the live wiring of the one winner (the G1 credit-selective overlay) so the owner can activate it with a single flag, WITHOUT flipping anything live autonomously.
