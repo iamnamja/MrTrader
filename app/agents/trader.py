@@ -2539,11 +2539,6 @@ class Trader(BaseAgent):
         Force-close all active intraday positions at 3:45 PM ET.
         Prevents overnight exposure from intraday trades.
         """
-        intraday_symbols = [
-            sym for sym, pos in self.active_positions.items()
-            if pos.get("trade_type") == "intraday"
-        ]
-
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
 
@@ -2553,6 +2548,28 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.warning("force_close: could not fetch Alpaca positions — assuming all real: %s", exc)
             alpaca_positions = None  # None = unknown; proceed conservatively
+
+        intraday_symbols = [
+            sym for sym, pos in self.active_positions.items()
+            if pos.get("trade_type") == "intraday"
+        ]
+        # PHANTOM GUARD: an in-memory intraday entry with NO real Alpaca position is a
+        # phantom (e.g. an order that never filled / stale state). The DB-sourced path below
+        # already ghost-checks against Alpaca; the in-memory list did NOT, so a phantom got
+        # `_execute_exit`-ed every cycle — logging a spurious "INTRADAY_FORCE_CLOSED" and
+        # even placing a real sell order (which could OPEN a short). Drop phantoms here.
+        # Tradeoff: in the rare window where a REAL just-filled position isn't yet visible in
+        # get_positions at 3:45pm we'd skip its force-close (overnight exposure) — recoverable
+        # at next-day startup reconciliation, whereas the phantom short was firing every cycle.
+        # Only drop when alpaca_positions is known (skip the guard on a failed fetch).
+        if alpaca_positions is not None:
+            _phantoms = [s for s in intraday_symbols if s not in alpaca_positions]
+            for s in _phantoms:
+                self.logger.warning(
+                    "force_close: %s is intraday in active_positions but NOT in Alpaca — "
+                    "dropping phantom (no exit order placed)", s)
+                self.active_positions.pop(s, None)
+            intraday_symbols = [s for s in intraday_symbols if s in alpaca_positions]
 
         # Also check DB for intraday trades not yet in in-memory state (e.g. set via manual DB update)
         stale_ghost_symbols: list = []

@@ -50,6 +50,36 @@ class _TokenBucket:
 
 _rate_limiter = _TokenBucket()
 
+try:
+    from requests.exceptions import ConnectionError as _ReqConnError, Timeout as _ReqTimeout
+    _TRANSIENT_ERRORS: tuple = (_ReqConnError, _ReqTimeout)
+except Exception:  # pragma: no cover
+    _TRANSIENT_ERRORS = ()
+
+
+def _retry_call(fn, *args, attempts: int = 3, backoff: float = 0.4, **kwargs):
+    """Call an idempotent Alpaca READ and retry on TRANSIENT connection errors.
+
+    Alpaca (like any pooled-HTTP REST API) periodically closes idle keep-alive sockets;
+    the next request on a stale socket raises requests ConnectionError (wrapping
+    RemoteDisconnected). A fresh connection on immediate retry almost always succeeds, so
+    these blips should not surface as errors or as fail-closed sleeve skips. Re-raises the
+    last error after `attempts` so a genuine outage still fails (and the caller's own
+    except/fail-closed path runs). Only for idempotent reads (account/positions/clock/price)."""
+    last = None
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except _TRANSIENT_ERRORS as e:
+            last = e
+            if i < attempts - 1:
+                logger.warning("Alpaca %s transient network error (attempt %d/%d): %s — retrying",
+                               getattr(fn, "__name__", "call"), i + 1, attempts, e)
+                time.sleep(backoff * (i + 1))
+                continue
+            raise
+    raise last  # pragma: no cover
+
 
 def _notify_circuit_breaker():
     """Inform the circuit breaker of a network error (best-effort, no circular import)."""
@@ -80,7 +110,7 @@ class AlpacaClient:
         """Get account information"""
         try:
             _rate_limiter.acquire()
-            account = self.trading_client.get_account()
+            account = _retry_call(self.trading_client.get_account)
             return {
                 "cash": float(account.cash),
                 "buying_power": float(account.buying_power),
@@ -101,7 +131,7 @@ class AlpacaClient:
         """Get all open positions"""
         try:
             _rate_limiter.acquire()
-            positions = self.trading_client.get_all_positions()
+            positions = _retry_call(self.trading_client.get_all_positions)
             result = []
             for pos in positions:
                 result.append({
@@ -318,7 +348,7 @@ class AlpacaClient:
                 )
 
             _rate_limiter.acquire()
-            bars = self.data_client.get_stock_bars(request)
+            bars = _retry_call(self.data_client.get_stock_bars, request)
 
             try:
                 symbol_bars = bars[symbol]
@@ -450,7 +480,7 @@ class AlpacaClient:
                 limit=1,
             )
             _rate_limiter.acquire()
-            bars = self.data_client.get_stock_bars(request)
+            bars = _retry_call(self.data_client.get_stock_bars, request)
 
             try:
                 symbol_bars = bars[symbol]
@@ -472,7 +502,7 @@ class AlpacaClient:
         """
         try:
             _rate_limiter.acquire()
-            clock = self.trading_client.get_clock()
+            clock = _retry_call(self.trading_client.get_clock)
             return {
                 "is_open": bool(clock.is_open),
                 "next_open": clock.next_open.isoformat() if clock.next_open else None,

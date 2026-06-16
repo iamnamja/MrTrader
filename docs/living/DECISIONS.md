@@ -4,6 +4,17 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 — dashboard UI audit + 3 fixes (Alpaca retry, force-close phantom, PEAD attribution)
+
+**Context**: Full audit of every dashboard tab (4 parallel code audits + live-DB ground-truthing). Most reported "issues" were EXPECTED behavior of running trend-only: the Signal Monitor `*` rows are documented strategy-level-skip placeholders; AAPL appears as a swing *candidate* the PM scored (not a position — 0 AAPL trades); the Performance tab is driven by CLOSED trades (≈0 now, so it legitimately reads flat); empty "Swing Proposals" + empty "Risk Manager" agent-event-log reflect swing being dormant (`pm.swing_selector='ml_model'`, the validated-null path → last swing proposal 2026-06-11) and the RM being idle since (trend bypasses the RM proposal flow), so its entries scroll off the last-100 window. **3 genuine bugs were found and fixed.**
+
+**Decision / fixes**:
+1. **Alpaca transient-connection retry** (`alpaca.py::_retry_call`): the live logs showed `RemoteDisconnected`/`ConnectionError` blips (stale keep-alive sockets) surfacing as ERRORs + fail-closed sleeve skips. Added a 3-attempt retry on `requests` ConnectionError/Timeout around the idempotent READS (account/positions/clock/price/bars) — **never** order placement. Transient blips now auto-recover; genuine outages still fail after retries.
+2. **Intraday force-close phantom guard** (`trader.py::_force_close_intraday`): a phantom AAPL in in-memory `active_positions` (no DB trade, not in Alpaca — confirmed live) was `_execute_exit`-ed every cycle, logging `INTRADAY_FORCE_CLOSED` and able to place a spurious SELL (opening a short). The in-memory symbol list now gets the same Alpaca ghost-check the DB path already had: phantoms are dropped from `active_positions` and skipped (no order). Skipped on a failed Alpaca fetch (conservative).
+3. **Signal-attribution by strategy SOURCE** (`signal_attribution.py`): Analytics grouped by `signal_type`, so PEAD (signal_type='ML_RANK') was invisibly merged into ML_RANK. Now keys by `selector` (falling back to signal_type for untagged legacy trades) → PEAD/quality_short/etc. show as their own buckets.
+
+**Consequences**: All report/observability + a live-safety improvement (no more spurious phantom sells). Opus deep-dive = SHIP (no CRITICAL/HIGH; 2 optional LOW follow-ups: wrap the remaining reads `get_quote`/`get_bars_batch`/`get_position` for symmetry; per-token retry accounting). 6 new tests + 1 pre-existing force-close test updated to the new (correct) contract; full suite 3584 pass. **Not fixed (expected behavior, noted for possible UX polish): RM/swing panels read empty when those agents are idle — could show "idle since X" instead of blank.**
+
 ## 2026-06-16 (Alpha-v9 P1-1) — explicit cash/T-bill sleeve; T-bills excluded from risk gross
 
 **Context**: With trend at 50%, ~half the book sat as zero-yield cash. P1-1 parks that idle capital in a T-bill ETF (SGOV/BIL) so it earns the risk-free rate.
