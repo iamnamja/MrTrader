@@ -400,6 +400,40 @@ async def get_trade_history(limit: int = 100, status: str = ""):
 
 # ─── Agent decisions ──────────────────────────────────────────────────────────
 
+@router.get("/agent-last-activity")
+async def get_agent_last_activity():
+    """Last decision timestamp per agent + last swing proposal time.
+
+    Powers the dashboard's idle-state labels: an agent can be legitimately IDLE (e.g. the
+    Risk Manager when only the trend sleeve is live, since trend bypasses the RM proposal
+    flow), in which case its entries fall outside the last-N `/decisions` window and the
+    panel would otherwise look blank/broken. This surfaces the true 'last active at' so the
+    UI can show 'idle since <ts>' instead of an empty panel."""
+    db = get_session()
+    try:
+        from sqlalchemy import func
+        agents = {
+            name: (ts.isoformat() if ts else None)
+            for name, ts in (
+                db.query(AgentDecision.agent_name, func.max(AgentDecision.timestamp))
+                .group_by(AgentDecision.agent_name).all()
+            )
+        }
+        last_swing = (
+            db.query(func.max(ProposalLog.proposed_at))
+            .filter(ProposalLog.strategy == "swing").scalar()
+        )
+        return {
+            "agents": agents,
+            "last_swing_proposal": last_swing.isoformat() if last_swing else None,
+        }
+    except Exception as exc:
+        logger.warning("agent-last-activity failed: %s", exc)
+        return {"agents": {}, "last_swing_proposal": None}
+    finally:
+        db.close()
+
+
 @router.get("/decisions", response_model=List[AgentDecisionResponse])
 async def get_agent_decisions(limit: int = 50):
     """Agent decision audit trail."""

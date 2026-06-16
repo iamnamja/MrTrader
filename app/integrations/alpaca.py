@@ -152,7 +152,7 @@ class AlpacaClient:
         """Get position for a specific symbol"""
         try:
             _rate_limiter.acquire()
-            position = self.trading_client.get_open_position(symbol)
+            position = _retry_call(self.trading_client.get_open_position, symbol)
             return {
                 "symbol": position.symbol,
                 "qty": int(position.qty),
@@ -422,7 +422,7 @@ class AlpacaClient:
                         limit=limit,
                     )
                 _rate_limiter.acquire()
-                bars_resp = self.data_client.get_stock_bars(request)
+                bars_resp = _retry_call(self.data_client.get_stock_bars, request)
                 for sym in chunk:
                     try:
                         sym_bars = bars_resp[sym]
@@ -456,7 +456,7 @@ class AlpacaClient:
         try:
             request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
             _rate_limiter.acquire()
-            quotes = self.data_client.get_stock_latest_quote(request)
+            quotes = _retry_call(self.data_client.get_stock_latest_quote, request)
             quote = quotes.get(symbol)
             if quote is None:
                 return None
