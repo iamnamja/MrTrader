@@ -29,6 +29,7 @@ def _cpcv_result(sharpes, pf=1.5, calmar=0.5):
     # Phase 2: passing regime value so the now-enforced regime gate is not the
     # blocker in these mean/p5/pct-positive gate tests.
     r.worst_regime_sharpe = 0.5
+    r.is_true_walkforward = True  # P0-3: promotable run is true-WF; isolate the metric gates
     return r
 
 

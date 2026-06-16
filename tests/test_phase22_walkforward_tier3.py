@@ -129,7 +129,7 @@ class TestWalkForwardReport:
 
     def test_gate_passes_when_avg_and_min_ok(self):
         from scripts.walkforward_tier3 import WalkForwardReport, SHARPE_GATE, MIN_FOLD_SHARPE
-        r = WalkForwardReport(model_type="swing")
+        r = WalkForwardReport(model_type="swing", is_true_walkforward=True)  # P0-3: promotable
         # Phase 1e: DSR gate requires high Sharpe + sufficient trades to be significant.
         # Use Sharpe=3.5 with 500 trades/fold so DSR p > 0.95 is satisfied.
         # Phase 2: folds carry no regime data → bypass the now-enforced regime gate

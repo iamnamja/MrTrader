@@ -41,7 +41,7 @@ def _fold(sharpe=0.9, regime_sharpes=None, regime_diversity_count=0):
 
 
 def _report(folds):
-    r = WalkForwardReport(model_type="swing")
+    r = WalkForwardReport(model_type="swing", is_true_walkforward=True)  # P0-3: isolate regime gate
     r.folds = folds
     return r
 

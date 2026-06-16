@@ -4,6 +4,16 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P0-3) — flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True`; Phase 0 complete
+
+**Context**: The promotion flag had been False during the per-fold-retrain rollout, meaning a TRAINED model could still reach live on a *frozen-mode* generalization test (one model fit through some cutoff, scored on later folds — not a true per-fold walk-forward). P0-3 is the governance close-out of Phase 0.
+
+**Decision**: Flip `REQUIRE_TRUE_WF_FOR_PROMOTION` False→True. A run is "true WF" iff it (a) per-fold-retrains a TRAINED model, OR (b) is RULES-BASED (no fitted model → out-of-sample by construction). `cpcv.run_cpcv` and `engine.FoldEngine` now both set `is_true_walkforward = per_fold OR rules_based`. A trained model can no longer promote without per-fold retrain; rules-based sleeves (carry/tsmom/calendar) are unaffected.
+
+**Rationale**: A frozen generalization test is not out-of-sample for a fitted model — it can overfit the full pre-cutoff window and "generalize" to adjacent folds. Only per-fold retrain (or having no fitted model at all) is genuinely OOS. Making `rules_based` count as true-WF is load-bearing: without it, flipping the flag would have wrongly blocked every sleeve promotion. The predicate is also fail-safe — a misconfigured trained run that fails to declare per-fold stays `False` (blocked), never silently promoted.
+
+**Consequences**: Report-only — retrain is currently DISABLED (`RETRAIN_WEEKDAY=-1`, `SWING_ENABLED=False`), so this changes no live behavior today; promotion stays owner-gated. **Opus deep-dive CRITICAL (C1):** under live `GATE_MODE`, a frozen run's `gate_outcome()` returned RETIRE, which would make `retrain_cron._restore_previous` roll back the freshly-trained champion. Fixed: a run blocked SOLELY by the true-WF requirement → `GateOutcome.INCONCLUSIVE` (report-only) under ANY gate mode, never RETIRE. 7 promotable-run test fixtures updated to declare `is_true_walkforward=True`; +5 P0-3 tests; full suite 3544 passed / 0 failures. **Phase 0 (validate-the-validator: P0-1 pipeline fidelity PASS, P0-2 gate-flaw fixes, P0-3 governance) is COMPLETE — next is Phase 1.** Files in the PIPELINE_ARCHITECTURE changelog (2026-06-16 P0-3).
+
 ## 2026-06-16 (Alpha-v9 P0-2) — fix the two diversifier-killing gate flaws (powered stability + diversifier-aware Track-B probation)
 
 **Context**: The external review showed Ruler-v2 was quietly killing genuine diversifiers. (Ⓑ) The binary both-halves stability guard (`SR(H1)>0 AND SR(H2)>0`) has no power accounting — ~22-24% false-negative on a true SR-0.5 edge; it killed carry. (Ⓒ) Track-B's `standalone_vt_SR>0.20` floor selects against diversifiers, which can have low/negative standalone Sharpe (the appraisal-IR already encodes "improves the book"). (Ⓓ) Track-B's `P(ΔSR>0)≥0.90` is too strict for a small-size diversifier given the asymmetric loss (a false small add costs bps; a true add buys diversification).

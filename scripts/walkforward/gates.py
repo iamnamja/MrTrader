@@ -531,8 +531,17 @@ class WalkForwardReport:
         caller must NOT retire/roll back a freshly trained model on this outcome.
         Under GATE_MODE='mean_sharpe' (legacy), the outcome maps directly from the
         boolean gate: PROMOTE on pass, RETIRE on a real legacy fail (unchanged).
+
+        Alpha-v9 P0-3: a FROZEN (non-true-WF) run blocked SOLELY by the
+        REQUIRE_TRUE_WF_FOR_PROMOTION requirement is REPORT-ONLY (INCONCLUSIVE) under
+        ANY gate mode — "not evaluable for live promotion", NOT a metric failure — so
+        the cron must NOT RETIRE / roll back the freshly trained champion on it. A
+        trained model can only promote via a true per-fold walk-forward; until the
+        retrain path runs per-fold it is simply not promotable, never auto-retired.
         """
-        from app.ml.retrain_config import GATE_MODE
+        from app.ml.retrain_config import GATE_MODE, REQUIRE_TRUE_WF_FOR_PROMOTION
+        if REQUIRE_TRUE_WF_FOR_PROMOTION and not getattr(self, "is_true_walkforward", False):
+            return GateOutcome.INCONCLUSIVE
         if GATE_MODE == "significance":
             # WF carries no path-Sharpe distribution → cannot earn promotion, but
             # this is "not evaluable", NOT a failure. CPCV is required for a verdict.

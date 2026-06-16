@@ -921,6 +921,21 @@ def run_cpcv(
     strategy._purge_days = purge_days
     strategy._embargo_days = _embargo
 
+    # Rules-based detection (Alpha-v4 P0.1 overlap-guard bypass + Alpha-v9 P0-3 true-WF):
+    # a strategy with NO fitted model (SeriesReturnStrategy / EventEdgeStrategy —
+    # is_trained=False or model.trained_through==date.min) uses the train window ONLY for
+    # PIT universe construction in run_fold, never for fitting, so it is OUT-OF-SAMPLE BY
+    # CONSTRUCTION (no in-sample leakage is possible). Such a run therefore SATISFIES the
+    # true-walk-forward promotion requirement even though it never per-fold-retrains —
+    # `REQUIRE_TRUE_WF_FOR_PROMOTION` must gate TRAINED frozen runs, not rules-based ones.
+    from datetime import date as _date_cls
+    _declared_trained = getattr(strategy, "is_trained", None)
+    if _declared_trained is None:
+        _model_cutoff = getattr(getattr(strategy, "model", None), "trained_through", None)
+        _rules_based = (_model_cutoff == _date_cls.min)
+    else:
+        _rules_based = (_declared_trained is False)
+
     # OOS-guard: every test fold must start strictly after the model's training cutoff.
     _allow_in_sample = getattr(strategy, "allow_in_sample", False)
     if not _per_fold:
@@ -947,7 +962,8 @@ def run_cpcv(
         n_folds=n_folds,
         n_paths=n_paths,
         in_sample_override=_allow_in_sample,
-        is_true_walkforward=_per_fold,
+        # Per-fold-retrained TRAINED model OR rules-based (OOS-by-construction) → true WF.
+        is_true_walkforward=bool(_per_fold or _rules_based),
     )
 
     # Alpha-v4 P0.1: decide whether the BUG-23 overlap guard applies.
@@ -960,14 +976,8 @@ def run_cpcv(
     # evaluations and biasing the surviving path distribution toward later (bull)
     # regimes. Detect rules-based and bypass the guard → full, unbiased coverage.
     # Resolution order: explicit strategy.is_trained flag, else derive from the
-    # model cutoff (date.min ⇒ rules-based). Default = treat as trained (guard ON).
-    from datetime import date as _date_cls
-    _declared_trained = getattr(strategy, "is_trained", None)
-    if _declared_trained is None:
-        _model_cutoff = getattr(getattr(strategy, "model", None), "trained_through", None)
-        _rules_based = (_model_cutoff == _date_cls.min)
-    else:
-        _rules_based = (_declared_trained is False)
+    # model cutoff (date.min ⇒ rules-based). `_rules_based` was resolved above (it also
+    # drives the true-WF promotion posture); reused here for the overlap-guard bypass.
     if _rules_based:
         logger.info(
             "CPCV: rules-based strategy (no model fit) — BUG-23 overlap guard "

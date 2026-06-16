@@ -18,7 +18,8 @@ from scripts.walkforward.gates import WalkForwardReport, FoldResult
 def _make_passing_report(in_sample_override: bool) -> WalkForwardReport:
     """Build a report with metrics that would normally pass all gates."""
     from scripts.walkforward.gates import FoldResult
-    r = WalkForwardReport(model_type="intraday", in_sample_override=in_sample_override)
+    r = WalkForwardReport(model_type="intraday", in_sample_override=in_sample_override,
+                          is_true_walkforward=True)  # P0-3: promotable run is true-WF
     for _ in range(3):
         r.folds.append(FoldResult(
             fold=1, train_start=date(2022, 1, 1), train_end=date(2023, 1, 1),

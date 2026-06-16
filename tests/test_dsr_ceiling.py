@@ -23,7 +23,8 @@ def _fold(sharpe: float, n_obs: int = 250) -> FoldResult:
 
 def _report(sharpe: float, n_folds: int = 2) -> WalkForwardReport:
     return WalkForwardReport(model_type="swing",
-                             folds=[_fold(sharpe) for _ in range(n_folds)])
+                             folds=[_fold(sharpe) for _ in range(n_folds)],
+                             is_true_walkforward=True)  # P0-3: promotable run is true-WF
 
 
 # ── WalkForwardReport ──────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ def _cpcv(sharpe: float) -> CPCVResult:
         path_n_obs=[250] * 10,
         # Phase 2: real regime value so the now-enforced regime gate isn't the blocker.
         worst_regime_sharpe=0.5,
+        is_true_walkforward=True,  # P0-3: promotable run is true-WF
     )
 
 

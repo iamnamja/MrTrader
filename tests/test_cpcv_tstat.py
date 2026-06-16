@@ -17,6 +17,7 @@ def _cpcv(path_sharpes, n_folds=6, require_tstat_gate=False, **kw):
         path_calmars=[1.0] * len(path_sharpes),
         path_n_obs=[250] * len(path_sharpes),
         worst_regime_sharpe=0.5,  # so regime gate isn't the blocker
+        is_true_walkforward=True,  # P0-3: a promotable run is true-WF; isolate the t-stat
         require_tstat_gate=require_tstat_gate,
         **kw,
     )

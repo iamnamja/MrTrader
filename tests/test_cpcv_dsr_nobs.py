@@ -67,4 +67,5 @@ def test_no_in_sample_override_allows_gate_pass():
     # Phase 2: real regime value so the now-enforced regime gate isn't the blocker
     # (this test verifies the in-sample-override path, not regime).
     r.worst_regime_sharpe = 0.5
+    r.is_true_walkforward = True  # P0-3: promotable run is true-WF; isolate the override path
     assert r.gate_passed() is True

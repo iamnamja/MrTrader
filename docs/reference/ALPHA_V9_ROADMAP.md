@@ -141,7 +141,7 @@ Honest disagreement is signal. Don't paper over these.
 > bets and let live evidence adjudicate. (ChatGPT's warning: a sophisticated machine with one live edge
 > becomes a false-positive pressure cooker. Stay disciplined.)
 
-### Phase 0 — Validate the validator *(do first; cheap; de-risks everything)* 🟢🟡
+### Phase 0 — Validate the validator *(do first; cheap; de-risks everything)* ✅ COMPLETE 2026-06-16
 - **P0-1 — Positive-control the feature→label pipeline. ✅ DONE 2026-06-16 → VERDICT: PASS (path is FAITHFUL).**
   `[Ⓐ; ClaudeMax]` Built `scripts/walkforward/positive_control.py` — pushes 12-1 momentum / short-reversal /
   low-vol through the **real** `build_train_matrix_for_window`+`engineer_features` (the seam the
@@ -168,8 +168,19 @@ Honest disagreement is signal. Don't paper over these.
   significance still fails — fine for a book-delta admit) — the old guard was the problem, as predicted.
   2 Opus deep-dives (CRITICAL: `passed` must require pooled-significance so noise can't pass; HIGH:
   `weakly_powered` flag). 11 tests; report-only (promotion owner-gated). **NEXT: P0-3.**
-- **P0-3 — Governance: flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True` for trained paths.** `[Ⓗ]` **Success:**
-  no trained model can reach live without true per-fold-retrain WF; rules-based streams unaffected.
+- **P0-3 — Governance: flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True` for trained paths. ✅ DONE 2026-06-16 →
+  SUCCESS CRITERION MET.** `[Ⓗ]` Flipped the flag False→True so a TRAINED model can no longer reach live on a
+  frozen-mode generalization test — it must per-fold-retrain. **Load-bearing fix:** made the true-WF predicate
+  correct + fail-safe — `cpcv.run_cpcv` and `engine.FoldEngine` set `is_true_walkforward = per_fold OR
+  rules_based` (rules-based = no fitted model → OOS by construction), so rules-based sleeves (carry/tsmom/
+  calendar) are unaffected; without this the flag would have wrongly blocked every sleeve. **Opus deep-dive
+  CRITICAL C1:** under live `GATE_MODE`, a frozen run's `gate_outcome()` returned RETIRE → `retrain_cron.
+  _restore_previous` would roll back the freshly-trained champion. Fixed in `gates.py::gate_outcome`: a run
+  blocked SOLELY by the true-WF requirement → `INCONCLUSIVE` (report-only) under ANY gate mode, never RETIRE.
+  C2: 7 promotable-run fixtures updated to declare `is_true_walkforward=True`. Retrain is currently DISABLED
+  (`RETRAIN_WEEKDAY=-1`, `SWING_ENABLED=False`) so C1 was latent, fixed for correctness regardless. 1 Opus
+  deep-dive (C1/C2/L1 resolved); +5 tests; full suite 3544 passed / 0 failures. **→ Phase 0 COMPLETE. NEXT:
+  Phase 1.**
 
 ### Phase 1 — Harden & monetize what we already have 🟢👤
 - **P1-1 — Explicit cash/T-bill sleeve.** `[C8; ChatGPT]` Idle capital (~75% of book) into SGOV/BIL with
