@@ -60,7 +60,7 @@ Write-Host "[4/4] Starting backend and frontend..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
-    "cd 'C:\Projects\MrTrader'; .\.venv\Scripts\Activate.ps1 2>`$null; .\venv\Scripts\Activate.ps1 2>`$null; Write-Host 'Backend starting...' -ForegroundColor Cyan; uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    "cd 'C:\Projects\MrTrader'; .\.venv\Scripts\Activate.ps1 2>`$null; .\venv\Scripts\Activate.ps1 2>`$null; Write-Host 'Backend starting...' -ForegroundColor Cyan; uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"
 ) -WindowStyle Normal
 
 Start-Sleep 3

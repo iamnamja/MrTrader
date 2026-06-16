@@ -177,6 +177,61 @@ def _git_info() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Graceful-shutdown hardening
+# ---------------------------------------------------------------------------
+# The orchestrator runs in-process and uses background worker pools (joblib/loky
+# reusable executor during retrain/feature work; ad-hoc ThreadPoolExecutors in the
+# PM). Those are NON-DAEMON, so on Ctrl+C the lifespan can finish but the interpreter
+# then blocks forever joining their threads/processes — requiring a force-kill. Two
+# defenses: (1) explicitly kill the worker pools on shutdown (root cause), and
+# (2) a daemon watchdog that os._exit(0)s if shutdown wedges anyway (hard guarantee).
+
+# Comfortably above the worst-case graceful sequence (notify ~5s + bounded
+# orchestrator.stop ~10s + parallel task cancels ~3s) so the watchdog only fires on a
+# genuine HANG, never on a slow-but-healthy shutdown.
+SHUTDOWN_WATCHDOG_SECONDS = float(os.environ.get("MRTRADER_SHUTDOWN_TIMEOUT", "30"))
+
+
+def _start_shutdown_watchdog(timeout_s: float = SHUTDOWN_WATCHDOG_SECONDS):
+    """Arm a daemon timer that force-exits the process if graceful shutdown wedges.
+
+    Daemon threads keep running while the main thread is blocked joining non-daemon
+    threads at interpreter exit, so this fires even in the exact hang we're guarding
+    against. Returns the Timer so a caller/test can cancel it. If shutdown completes
+    normally first, the process exits and this daemon dies with it (never fires)."""
+    import threading
+
+    def _force() -> None:
+        logging.getLogger("mrtrader.shutdown").error(
+            "Graceful shutdown exceeded %.0fs — forcing exit (os._exit). Lingering "
+            "non-daemon worker pool/thread suspected.", timeout_s)
+        os._exit(0)
+
+    t = threading.Timer(timeout_s, _force)
+    t.daemon = True
+    t.start()
+    return t
+
+
+def _kill_worker_pools() -> None:
+    """Tear down background worker pools that would otherwise block interpreter exit.
+    Best-effort and non-blocking; never raises.
+
+    NOTE: the PM's ad-hoc ThreadPoolExecutors (portfolio_manager.py) shut down with
+    wait=False but their non-daemon worker threads can still linger mid-task; those
+    are covered by the hard-exit watchdog rather than here (they're transient)."""
+    log = logging.getLogger("mrtrader.shutdown")
+    # joblib/loky reusable PROCESS pool (persists across calls — the lingering
+    # `python -c exec(...)` workers). kill_workers=True + wait=False = no block.
+    try:
+        from joblib.externals.loky import get_reusable_executor
+        get_reusable_executor().shutdown(wait=False, kill_workers=True)
+        log.info("Shutdown: killed loky reusable executor workers")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Lifespan — replaces deprecated @app.on_event("startup"/"shutdown").
 # Starlette guarantees exactly one entry and one exit per ASGI process.
 # ---------------------------------------------------------------------------
@@ -356,6 +411,13 @@ async def lifespan(app: FastAPI):
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     _log_shutdown.info("%s\n  MRTRADER SHUTDOWN  %s\n%s", "=" * 72, now_utc, "=" * 72)
 
+    # Arm the hard-exit watchdog FIRST so nothing below can wedge the process forever.
+    # NOT under tests: TestClient runs this lifespan-shutdown on every teardown, and an
+    # armed os._exit(0) timer would silently kill the pytest worker. Captured so we can
+    # cancel it once a clean shutdown finishes (no stray daemon timer in production).
+    from app.utils.runtime import is_test_mode
+    _watchdog = None if is_test_mode() else _start_shutdown_watchdog()
+
     # Stop notification watcher
     _nw = getattr(app.state, "notify_proc", None)
     if _nw and _nw.poll() is None:
@@ -366,16 +428,33 @@ async def lifespan(app: FastAPI):
             _nw.kill()
 
     from app.orchestrator import orchestrator
-    await orchestrator.stop()
+    try:
+        await asyncio.wait_for(orchestrator.stop(), timeout=10.0)
+    except asyncio.TimeoutError:
+        _log_shutdown.warning("orchestrator.stop() exceeded 10s — proceeding (watchdog armed)")
+    except Exception as exc:
+        _log_shutdown.warning("orchestrator.stop() error (proceeding): %s", exc)
 
-    for task_name in ("news_monitor_task", "warm_task", "market_task", "wf_recon_task"):
-        t = getattr(app.state, task_name, None)
-        if t and not t.done():
-            t.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(t), timeout=3.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+    # Kill lingering worker pools (loky) that would block the interpreter from exiting.
+    _kill_worker_pools()
+
+    # Cancel the remaining background tasks in PARALLEL (sequential 3s-each would risk
+    # exceeding the watchdog on a slow shutdown).
+    _bg = [getattr(app.state, n, None)
+           for n in ("news_monitor_task", "warm_task", "market_task", "wf_recon_task")]
+    _bg = [t for t in _bg if t and not t.done()]
+    for t in _bg:
+        t.cancel()
+    if _bg:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*_bg, return_exceptions=True), timeout=3.0)
+        except asyncio.TimeoutError:
+            pass
+
+    # Clean shutdown reached here — disarm the watchdog so no stray os._exit timer lingers.
+    if _watchdog is not None:
+        _watchdog.cancel()
 
 
 async def _schedule_wf_reconciliation() -> None:
@@ -580,4 +659,10 @@ if os.path.isdir(_REACT_DIST):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=settings.port, reload=settings.debug)
+    # timeout_graceful_shutdown bounds uvicorn's wait for in-flight requests/tasks;
+    # the lifespan watchdog (_start_shutdown_watchdog) is the hard backstop. When
+    # launching via the `uvicorn` CLI instead, pass --timeout-graceful-shutdown 15.
+    uvicorn.run(
+        app, host="0.0.0.0", port=settings.port, reload=settings.debug,
+        timeout_graceful_shutdown=int(SHUTDOWN_WATCHDOG_SECONDS),
+    )
