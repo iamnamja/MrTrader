@@ -11,14 +11,13 @@ events. Never logs the API key (it rides in the URL query string).
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
 
-from app.news.sources.finnhub_source import _classify_event
+from app.news.sources.finnhub_source import _classify_event, event_uid
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +121,7 @@ def fetch_economic_calendar(
         if country and country not in ("US", "UNITED STATES", ""):
             continue
 
-        uid = hashlib.sha256(f"{event_type}{raw_time}".encode()).hexdigest()[:16]
+        uid = event_uid(event_type, event_name, raw_time)
         results.append({
             "id": uid,
             "event_type": event_type,

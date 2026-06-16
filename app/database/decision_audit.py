@@ -145,6 +145,7 @@ def persist_nis_macro_snapshot(
         for e in getattr(macro_context, "events_today", []):
             events.append({
                 "event_type": getattr(e, "event_type", None),
+                "event_name": getattr(e, "event_name", ""),
                 "event_time": str(getattr(e, "event_time", None)),
                 "risk_level": getattr(e, "risk_level", None),
                 "direction": getattr(e, "direction", None),
