@@ -194,10 +194,22 @@ Honest disagreement is signal. Don't paper over these.
   overlay 4–8 weeks (daily multiplier log vs the VIX-only governor), then decide enable / park / kill
   **with a written false-positive budget.** **Success:** the flag flips with a decision memo, or it's
   killed — no permanent limbo.
-- **P1-4 — Live-fill back-validation as a first-class metric.** `[C10; ChatGPT, Grok]` Log expected-vs-
-  actual fill, intended-vs-actual exposure, overlay-mult-applied-vs-expected, missed trades, stale-data
-  events, daily per-sleeve attribution. **Success:** a weekly tracking-error report; a strategy can't
-  graduate on research alone — it must show live ≈ sim.
+- **P1-4 — Live-fill back-validation as a first-class metric. ✅ DONE 2026-06-16 → instrument SHIPPED
+  (BUILDING until ~3 weeks of live data).** `[C10; ChatGPT, Grok]` Built `app/live_trading/back_validation.py`
+  — a date-matched **intended-vs-actual** tracking-error instrument for the trend sleeve. **Methodology call
+  (Opus deep-dive):** an independently-reconstructed backtest "sim" was rejected as contaminated (it
+  rebalances on a different calendar and uses split/div-ADJUSTED yfinance closes vs Alpaca RAW marks — both
+  inject divergence unrelated to execution). Instead the sleeve's OWN intended weights (captured at rebalance,
+  post inverse-vol + alloc + governor) are replayed on the SAME Alpaca price panel + SAME calendar as the
+  actual held book, so the only thing that can differ is execution friction (whole-share rounding, 80% gross
+  cap, per-name caps, PEAD crowding, partial/failed fills, timing). Reports correlation / annualized tracking
+  error / drift / execution drag + a PASS/WATCH/FAIL/BUILDING verdict; daily EOD snapshot + weekly email wired
+  into the orchestrator. Also fixed a latent bug: `trend_weekly` emails were being dropped (unregistered
+  event). 2 Opus deep-dives (CRITICAL caught: shadow runs would record intent vs an empty book → spurious
+  FAIL; fixed — live-only). 17 tests; full suite 3564 pass; report-only. **Success criterion met: a weekly
+  live-vs-sim tracking-error report with a graduation verdict.** The trend sleeve went live ~2026-06-15, so
+  the verdict reads BUILDING until ~15 trading days accrue (~early July). **Phase 1 remaining: P1-1 (cash
+sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
 
 ### Phase 2 — Gate & cost-model refinement (enables the new engines) 🟡
 - **P2-4 — Premium-% IV-aware option cost model.** `[Ⓕ]` **Blocking** for any options/VRP backtest.

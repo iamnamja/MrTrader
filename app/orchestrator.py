@@ -306,6 +306,18 @@ class AgentOrchestrator:
                         len(summary.get("approved", [])), len(summary.get("blocked", [])))
             # Fold the weekly rollup into the rebalance day.
             await loop.run_in_executor(None, trend_tracker.weekly_rollup)
+            # P1-4: record the INTENDED book for this rebalance, then run the live-vs-sim
+            # back-validation report (report-only; emails its verdict once enough live history
+            # has accrued — BUILDING until then).
+            try:
+                from app.live_trading import back_validation
+                await loop.run_in_executor(
+                    None, lambda: back_validation.record_rebalance_intent(summary))
+                _bv = await loop.run_in_executor(None, back_validation.weekly_report)
+                logger.info("Back-validation weekly: verdict=%s n_days=%s",
+                            _bv.get("verdict"), _bv.get("n_days"))
+            except Exception as _bvexc:
+                logger.error("Back-validation weekly report failed (continuing): %s", _bvexc)
         except Exception as exc:
             logger.error("Trend rebalance trigger failed: %s", exc)
             await self._log_error("trend_sleeve", str(exc))
@@ -350,6 +362,13 @@ class AgentOrchestrator:
                 "Daily summary stored: P&L=%.2f status=%s",
                 summary["pnl_today"], summary["status"],
             )
+            # P1-4: capture the trend sleeve's EOD state for live-vs-sim back-validation
+            # (report-only; never raises; builds the daily tracking-error series).
+            try:
+                from app.live_trading import back_validation
+                await loop.run_in_executor(None, back_validation.record_daily_snapshot)
+            except Exception as _bvexc:
+                logger.error("Back-validation snapshot failed (continuing): %s", _bvexc)
         except Exception as exc:
             logger.error("Daily summary failed: %s", exc)
 
