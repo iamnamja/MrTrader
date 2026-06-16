@@ -4,6 +4,26 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P1-2) — raise trend allocation 25% → 50%
+
+**Context**: `pm.trend_allocation_pct` was 0.25 — a leftover from the Track-B 25% risk-budget framing (#451) after the H1 DEMOTE made trend the sole live sleeve, not a number chosen by a sizing analysis. Trend is the only live edge, so its sizing matters.
+
+**Decision**: Raise `pm.trend_allocation_pct` 0.25 → **0.50** (live DB value flipped + schema default updated). Owner-approved.
+
+**Rationale**: A Kelly/vol-target analysis (`scripts/analyze_trend_allocation.py`) on the real 19.4y trend book (100%-gross Sharpe 0.72, ann vol 9.34%, maxDD −13.9%) showed **Kelly is not the binding constraint** — full Kelly = 7.7× gross (774% of NAV), and even a heavy Sharpe haircut keeps it >400%. So 25% (just 2.3% standalone vol) far under-deployed the edge. The actionable lens is vol-target bounded by the 80% schema cap: 50% → ~4.7% standalone vol / ~−7% maxDD — a deliberate doubling that's still deeply Kelly-haircut (humble about the backtest Sharpe), protected on the downside by the live VIX crash-governor, and with headroom under the cap. 60%/80% were the lean-in options; 50% balances expressing the edge against forward-Sharpe uncertainty.
+
+**Consequences**: Live paper book change — trend gross budget doubles; takes effect at the next trend rebalance (no restart; config is read fresh). Per-name exposure stays bounded (sleeve max_weight 0.25 × 0.50 = 12.5% NAV; the RM `pm.trend_max_position_pct=0.25` cap doesn't bind). **Revisable** as live-paper data accrues — P1-4 (live-fill back-validation) makes the live track record the ultimate arbiter of whether the 0.72 backtest Sharpe holds forward.
+
+## 2026-06-16 (Alpha-v9 P1-3) — shadow the credit overlay before enable/park/kill
+
+**Context**: The Alpha-v8 G1 credit de-risk overlay (`pm.credit_governor_enabled`, default OFF) was built and validated (marginal-to-VIX-governor dSharpe +0.064) but never enabled — a small, post-hoc-flavored tail-insurance signal that shouldn't go live on backtest alone.
+
+**Decision**: Keep it OFF and **shadow** it for a few weeks, then decide enable / park / kill with a written false-positive budget. Owner-approved.
+
+**Rationale**: The overlay is a deterministic function of settled HYG/IEF closes, which `macro_history.parquet` accumulates daily — so `scripts/shadow_credit_governor.py` (report-only, touches no live code) can faithfully reconstruct what it would have done over any window. Validated on 2020→now: fires ~8% of days on real credit stress (COVID etc.), marginal +2.87% cum / Sharpe 1.090→1.165 / maxDD −8.7%→−7.6%. A forward shadow window (opened 2026-06-16) avoids enabling on backtest-only evidence.
+
+**Consequences**: No live change. Scheduled review ~2026-07-14 verdicts enable (owner-gated flag flip) / park (extend if it never fired) / kill (if it fired and dragged).
+
 ## 2026-06-16 (Alpha-v9 P0-3) — flip `REQUIRE_TRUE_WF_FOR_PROMOTION=True`; Phase 0 complete
 
 **Context**: The promotion flag had been False during the per-fold-retrain rollout, meaning a TRAINED model could still reach live on a *frozen-mode* generalization test (one model fit through some cutoff, scored on later folds — not a true per-fold walk-forward). P0-3 is the governance close-out of Phase 0.
