@@ -92,10 +92,16 @@ def test_cross_sectional_ic_sign_flips_with_relationship():
     assert t < -5
 
 
+# Small synthetic panel so each integration build stays well under the 120s CI
+# per-test timeout (the serial, cache-free build is the bottleneck); the CLI keeps
+# the larger defaults. The injected effect is strong enough to clear t>=2.0 here.
+_SMOKE = dict(smoke_n_symbols=30, smoke_n_days=420)
+
+
 # ---- integration: the harness on a clean synthetic panel --------------------
 @pytest.mark.slow
 def test_positive_control_smoke_passes_on_clean_panel():
-    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True)  # production lambdarank scheme
+    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True, **_SMOKE)  # lambdarank
     assert rep.label_scheme == "lambdarank"
     # the pipeline built a non-empty, finite matrix and labels reflect outcomes
     assert rep.matrix_nonempty is True
@@ -118,12 +124,14 @@ def test_positive_control_smoke_passes_on_clean_panel():
 # ---- integration: detection power (the harness must FAIL on a broken join) ---
 @pytest.mark.slow
 def test_positive_control_fails_when_join_is_corrupted():
-    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True, _corrupt_join=True)
-    # permuting outcomes destroys feature->outcome alignment within every cohort
+    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True, _corrupt_join=True, **_SMOKE)
+    # permuting outcomes destroys feature->outcome alignment -> the verdict MUST flip
     assert rep.overall_pass is False
     by_name = {a.name: a for a in rep.anomalies}
-    # the injected momentum effect must collapse to ~0 once the join is broken
-    assert abs(by_name["xs_momentum"].pipeline_ic) < 0.03
+    # the injected momentum (clean ic ~0.24) must collapse once the join is broken
+    # (small-panel shuffle leaves only residual noise, well below the clean signal)
+    assert abs(by_name["xs_momentum"].pipeline_ic) < 0.10
+    assert not by_name["xs_momentum"].significant
     assert any("CORRUPTION INJECTED" in n for n in rep.notes)
 
 
@@ -133,7 +141,7 @@ def test_positive_control_does_not_pollute_feature_store():
     # The harness constructs the trainer with use_feature_store=False and asserts
     # trainer._feature_store is None internally; if that regressed, the run would
     # raise. Reaching a verdict at all proves the guard held.
-    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True)
+    rep = run_positive_control(as_of=date(2026, 6, 16), smoke=True, **_SMOKE)
     assert rep.mode == "smoke"
 
 

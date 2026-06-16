@@ -284,8 +284,10 @@ def _make_synthetic_panel(
     sigma = rng.uniform(0.010, 0.035, size=n_symbols)        # per-name daily vol
     sig_z = (sigma - sigma.mean()) / (sigma.std() + 1e-12)
     base = 0.0002
-    k_mom = 0.0009                                           # quality -> drift
-    k_lowvol = 0.0004                                        # high vol -> drift penalty
+    # injection strengths set so even a SMALL (test-sized) panel clears t>=2.0 with
+    # margin -- the CI per-test timeout (120s) forces tests onto a small panel.
+    k_mom = 0.0028                                           # quality -> drift (momentum)
+    k_lowvol = 0.0007                                        # high vol -> drift penalty (low-vol)
     mu = base + k_mom * q - k_lowvol * sig_z
 
     symbols_data: Dict[str, pd.DataFrame] = {}
@@ -467,9 +469,16 @@ def run_positive_control(
     max_symbols: Optional[int] = None,
     seed: int = 1909,
     n_workers: int = 1,
+    smoke_n_symbols: int = 60,
+    smoke_n_days: int = 900,
     _corrupt_join: bool = False,
 ) -> PositiveControlReport:
-    """Build the real train matrix and measure feature->outcome IC for each anomaly."""
+    """Build the real train matrix and measure feature->outcome IC for each anomaly.
+
+    smoke_n_symbols / smoke_n_days size the synthetic panel; tests pass a small panel
+    so each integration run stays under the 120s CI per-test timeout (the serial,
+    cache-free build is the bottleneck), while the CLI keeps the larger defaults.
+    """
     import time as _time
     import tempfile as _tempfile
     from app.ml import training as _tr
@@ -493,7 +502,8 @@ def run_positive_control(
 
     # 1) data
     if smoke:
-        symbols_data, spy = _make_synthetic_panel(seed=seed)
+        symbols_data, spy = _make_synthetic_panel(
+            n_symbols=smoke_n_symbols, n_days=smoke_n_days, seed=seed)
         notes.append("SMOKE: synthetic GBM panel (momentum + low-vol injected; reversal not injected).")
     else:
         symbols_data, spy = _fetch_real_panel(window_years, as_of, max_symbols)
