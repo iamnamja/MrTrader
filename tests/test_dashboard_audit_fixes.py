@@ -134,6 +134,53 @@ class _FakeDB:
         pass
 
 
+def test_set_config_truncates_long_description(db_session):
+    # A new agent_config key whose schema description >255 chars would raise
+    # StringDataRightTruncation on INSERT into the varchar(255) column (this blocked
+    # ENABLING the cash sleeve). set_config must truncate description to the column limit.
+    from app.database.config_store import set_config
+    from app.database.models import Configuration
+    long_desc = "x" * 400
+    set_config(db_session, "agent.test.long_desc_key", "true", description=long_desc)
+    row = db_session.query(Configuration).filter_by(key="agent.test.long_desc_key").first()
+    assert row is not None
+    assert len(row.description) <= 255
+
+
+def test_agent_last_activity_shape():
+    # idle-state endpoint: per-agent last timestamp + last swing proposal (powers the
+    # 'idle since <ts>' labels so dormant RM/swing panels don't look broken).
+    import asyncio
+    from datetime import datetime
+
+    class _FakeQ:
+        def group_by(self, *a):
+            return self
+
+        def filter(self, *a):
+            return self
+
+        def all(self):
+            return [("risk_manager", datetime(2026, 6, 11, 13, 30)),
+                    ("trader", datetime(2026, 6, 16, 20, 0))]
+
+        def scalar(self):
+            return datetime(2026, 6, 11, 13, 30)
+
+    class _FakeDB:
+        def query(self, *a, **k):
+            return _FakeQ()
+
+        def close(self):
+            pass
+
+    from app.api import routes
+    with patch.object(routes, "get_session", return_value=_FakeDB()):
+        r = asyncio.run(routes.get_agent_last_activity())
+    assert r["agents"]["risk_manager"].startswith("2026-06-11")
+    assert r["last_swing_proposal"].startswith("2026-06-11")
+
+
 def test_signal_attribution_surfaces_pead_via_selector():
     from app.analytics.signal_attribution import get_signal_attribution
     rows = [

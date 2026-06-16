@@ -3354,10 +3354,11 @@ function ReasoningCard({ type, r }: { type: string; r: Record<string, unknown> }
   )
 }
 
-function AgentFeed({ name, events, onToggle }: {
+function AgentFeed({ name, events, onToggle, lastActivityAt }: {
   name: AgentName
   events: AgentEvent[]
   onToggle: (id: number) => void
+  lastActivityAt?: string | null
 }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -3372,8 +3373,17 @@ function AgentFeed({ name, events, onToggle }: {
       <div style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', flex: 1 }}>
         {events.length === 0 && (
           <div style={{ padding: 16, color: C.muted, fontSize: 12, textAlign: 'center' }}>
-            No decisions recorded yet.<br />
-            <span style={{ fontSize: 11 }}>Events appear here once the agent pipeline runs.</span>
+            {lastActivityAt ? (
+              <>
+                Idle — last activity {fmtTs(lastActivityAt)}.<br />
+                <span style={{ fontSize: 11 }}>No events in the recent window (agent is dormant, not broken).</span>
+              </>
+            ) : (
+              <>
+                No decisions recorded yet.<br />
+                <span style={{ fontSize: 11 }}>Events appear here once the agent pipeline runs.</span>
+              </>
+            )}
           </div>
         )}
         {events.map(ev => (
@@ -3534,6 +3544,7 @@ function PMProposalsTable() {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [batchFilter, setBatchFilter] = useState<string>('all')
   const [selectorFilter, setSelectorFilter] = useState<string>('all')
+  const [lastSwingAt, setLastSwingAt] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -3541,6 +3552,14 @@ function PMProposalsTable() {
       setProposals(data as SwingProposal[])
     }).catch(console.error).finally(() => setLoading(false))
   }, [days])
+
+  useEffect(() => {
+    // Last swing proposal ever — so an empty recent window reads "idle since <ts>"
+    // (swing is intentionally dormant under the trend-only book) rather than looking broken.
+    api.agentLastActivity()
+      .then((d: unknown) => setLastSwingAt((d as { last_swing_proposal: string | null })?.last_swing_proposal ?? null))
+      .catch(() => {})
+  }, [])
 
   const batches = Array.from(new Set(proposals.map(p => p.batch_id))).sort().reverse()
   const selectors = Array.from(new Set(proposals.map(p => (p.selector || '').trim()).filter(Boolean))).sort()
@@ -3598,7 +3617,11 @@ function PMProposalsTable() {
           </thead>
           <tbody>
             {filtered.length === 0 && !loading && (
-              <tr><td colSpan={17} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>No proposals found — PM hasn't written to swing_proposal_log yet today.</td></tr>
+              <tr><td colSpan={17} style={{ textAlign: 'center', color: C.muted, padding: 24 }}>
+                {lastSwingAt
+                  ? `Swing sleeve idle — last proposal ${fmtTs(lastSwingAt)} (swing is dormant under the trend-only book).`
+                  : 'No swing proposals on record yet.'}
+              </td></tr>
             )}
             {filtered.map(p => {
               const isExpanded = expandedId === p.id
@@ -3885,6 +3908,15 @@ function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [agentSubTab, setAgentSubTab] = useState<'decisions' | 'proposals' | 'intraday'>('proposals')
+  const [lastActivity, setLastActivity] = useState<Record<string, string | null>>({})
+
+  // Per-agent last-activity (an agent's events can fall outside the last-100 window when it's
+  // idle — e.g. RM when only trend is live — so the panel shows "idle since <ts>" not blank).
+  useEffect(() => {
+    api.agentLastActivity()
+      .then((d: unknown) => setLastActivity((d as { agents?: Record<string, string | null> })?.agents ?? {}))
+      .catch(() => {})
+  }, [])
 
   // Load historical decisions on mount — set loading false immediately so panel renders
   useEffect(() => {
@@ -3944,7 +3976,7 @@ function AgentsPanel({ liveEvents }: { liveEvents: AgentEvent[] }) {
       {agentSubTab === 'decisions' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {AGENT_NAMES.map(name => (
-            <AgentFeed key={name} name={name} events={forAgent(name)} onToggle={toggle} />
+            <AgentFeed key={name} name={name} events={forAgent(name)} onToggle={toggle} lastActivityAt={lastActivity[name]} />
           ))}
         </div>
       )}
