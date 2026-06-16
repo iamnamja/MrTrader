@@ -6,9 +6,21 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## 🧭 NOW (2026-06-14): Alpha-v8 Research Program planned (Overlay & Timing track) — executing G0 next
+## 🧭 NOW (2026-06-16): Alpha-v9 — external 5-LLM review synthesized → roadmap + architecture documented
 
-**New research program set:** [`docs/reference/ALPHA_V8_RESEARCH_PLAN.md`](../reference/ALPHA_V8_RESEARCH_PLAN.md) (Opus-architected). Three free-data angles, phased + exhaustively tested sequentially: **G0** overlay marginal-stacking infra → **G1** credit/curve de-risk overlay (highest EV) → **G2** short-interest overlay (power-gated) → **G3** additive timing sleeve (hardest) → **G4** owner-gated live wiring. Built on the F-series lesson: overlays work, additive equity sleeves hit the corr/IC wall; pre-registered both-halves stability guard + Opus deep-dive are mandatory. **NEXT: G0** (marginal-stacking API). The VIX governor live + carry-kill + CI work (below) are DONE & verified.
+**Alpha-v8 is COMPLETE** (G0–G4 merged #495–#499: credit-selective overlay = CANDIDATE flag-OFF; G2 short-interest KILLED; G3 PARK). We assembled an external review pack (`docs/reference/prompts/20260616_Alpha_v8/`) and got **5 independent world-class-quant reviews** (ChatGPT, Claude Max, DeepSeek, Gemini, Grok). Opus synthesized them into the **Alpha-v9 program**:
+- **SSOT roadmap:** [`docs/reference/ALPHA_V9_ROADMAP.md`](../reference/ALPHA_V9_ROADMAP.md) — critical synthesis (consensus, disagreements + my calls, the sharp critiques that change decisions).
+- **SSOT design:** [`docs/reference/ALPHA_V9_ARCHITECTURE.md`](../reference/ALPHA_V9_ARCHITECTURE.md) — multi-engine-book architecture + phased implementation plan.
+
+**Headline:** process is fund-grade; "free daily US **equity directional** alpha is mined out" is correct — but we mistook one quadrant for the whole map. **The prize:** (1) **validate the validator** (positive-control the feature→label pipeline — the "all early bugs inflated" claim is NOT safe; we had *deflationary* bugs too, e.g. #PERFOLD2 empty-X), (2) fix two gate flaws quietly killing diversifiers (unpowered both-halves guard ~24% FN @ SR-0.5; Track-B standalone-SR floor), (3) run a **second return engine — defined-risk VRP — paired with trend by skew** (positive-skew ⊕ negative-skew under the governor), (4) point trend at **crypto** (Alpaca-executable), (5) buy **Norgate (~$270/yr)** → un-bias event work + unlock **carry**. Quick wins: explicit **cash/T-bill sleeve** (~75% idle earns RFR), trend-allocation decision, credit-overlay live decision, live-fill back-validation.
+
+**NEXT (Phase 0, do first — cheap, de-risks everything):** P0-1 positive-control harness → P0-2 gate fixes → P0-3 `REQUIRE_TRUE_WF_FOR_PROMOTION=True`. Live book UNCHANGED (trend 25% + cash; VIX governor ON; credit overlay flag-OFF).
+
+---
+
+## 🧭 PRIOR (2026-06-14): Alpha-v8 Research Program (Overlay & Timing track) — COMPLETE — executing G0 next
+
+**New research program set:** [`docs/reference/ALPHA_V8_RESEARCH_PLAN.md`](../reference/ALPHA_V8_RESEARCH_PLAN.md) (Opus-architected). Three free-data angles, phased + exhaustively tested sequentially: **G0** overlay marginal-stacking infra → **G1** credit/curve de-risk overlay (highest EV) → **G2** short-interest overlay (power-gated) → **G3** additive timing sleeve (hardest) → **G4** owner-gated live wiring. Built on the F-series lesson: overlays work, additive equity sleeves hit the corr/IC wall; pre-registered both-halves stability guard + Opus deep-dive are mandatory. **All G0–G4 DONE & merged.** The VIX governor live + carry-kill + CI work (below) are DONE & verified.
 
 ---
 

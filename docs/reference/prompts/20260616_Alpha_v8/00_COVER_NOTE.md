@@ -35,3 +35,4 @@ running automated trading platforms. Specifically (detailed in `01_PROMPT.md`):
 - **Execution:** Alpaca (US equities/ETFs/options/crypto — **NO futures**). Live futures would need a second broker (e.g. IBKR).
 - **Discipline we already enforce:** pre-registration of hypotheses, CPCV with purge/embargo, transaction costs, a both-halves stability guard, and independent adversarial review. We are allergic to look-ahead and overfitting — please hold us to that standard and call out anything we've missed.
 - We have already concluded **free daily US equity data is largely mined out** for additive alpha. Tell us if you disagree and why, or where the remaining edge is.
+- **Output: Please create a downloadable link to a md file so that we can feed it back to our main llm in vsc code that's working on the app.

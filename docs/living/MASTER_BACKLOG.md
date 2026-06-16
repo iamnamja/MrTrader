@@ -1,10 +1,27 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-06-14
+**Last updated:** 2026-06-16
 
 ---
 
-## 🎯 ACTIVE PLAN — Alpha-v8 Research Program: Overlay & Timing track (2026-06-14)
+## 🎯 ACTIVE PLAN — Alpha-v9: multi-engine premia book (2026-06-16)
+
+**SSOT:** [`docs/reference/ALPHA_V9_ROADMAP.md`](../reference/ALPHA_V9_ROADMAP.md) (roadmap) + [`docs/reference/ALPHA_V9_ARCHITECTURE.md`](../reference/ALPHA_V9_ARCHITECTURE.md) (design/impl). Opus synthesis of 5 external world-class-quant reviews (`docs/reference/prompts/20260616_Alpha_v8/responses/`). Core reframe: stop hunting a 4th weak uncorrelated *equity* sleeve (the corr<0.30 wall, hit 4×); run a **second return engine in a different risk class (defined-risk VRP) paired with trend by skew**, point trend at **crypto**, and buy **Norgate** to un-bias event work + unlock carry — **after** proving the validator can detect a known edge.
+
+| Phase | What | Status |
+|---|---|---|
+| **P0** | **Validate the validator** — P0-1 positive-control the feature→label pipeline (12-1 mom / 1-mo reversal / low-vol → must reproduce published sign/magnitude, else "IC≈0" is a deflationary bug); P0-2 fix the two diversifier-killing gate flaws (unpowered both-halves guard → powered stability test; drop Track-B `standalone_vt_SR` floor for diversifiers + add small-size probation @ P(ΔSR>0)≥0.75); P0-3 `REQUIRE_TRUE_WF_FOR_PROMOTION=True` for trained paths | ⬜ NEXT (do first) |
+| **P1** | **Harden & monetize** — cash/T-bill sleeve (~75% idle); 👤 trend-allocation decision (Kelly/vol-target; 25% under-deploys the edge); 👤 credit-overlay live decision (shadow→enable/kill memo); live-fill back-validation as a first-class metric | ⬜ |
+| **P2** | **Cost model + adapters** — premium-% IV-aware option cost model (blocks phantom options edges); crypto + FINRA-short-volume data adapters | ⬜ |
+| **P3** | **New return engines on Alpaca** — crypto trend (P3-1); defined-risk VRP research track, live-paper-ratified (P3-2); overnight/intraday decomposition (P3-3); risk-premia composite — gate the basket (P3-4); FINRA daily short-volume overlay (P3-5) | ⬜ |
+| **P4** | **Strategic data bet** — 👤 buy Norgate → re-run PEAD + F2 on survivorship-free data (P4-1); futures trend+carry research (P4-2); 👤🔴 IBKR adapter ONLY if P4-2 passes (P4-3) | ⬜ |
+| **P5** | **Modeling reframe** (gated by P0-1) — predict vol/regime not return; meta-labeling for sizing; HRP allocator | ⬜ |
+
+**The single most important decision (👤):** the **trend ⊕ VRP** pairing — positive-skew (trend, long-crisis) ⊕ negative-skew (VRP, short-crisis) under the governor — the most likely route from ~0.7 to ~1.0+ book Sharpe. **DO-NOT list** (roadmap §6): no more daily-equity XGBoost sweeps, no intraday-ML revival, no PEAD threshold filters, no per-regime models, no RL, no path-inflated CPCV, no naked short vol, no IBKR before futures research passes.
+
+---
+
+## 🎯 PRIOR PLAN — Alpha-v8 Research Program: Overlay & Timing track (2026-06-14) — COMPLETE
 
 **SSOT:** [`docs/reference/ALPHA_V8_RESEARCH_PLAN.md`](../reference/ALPHA_V8_RESEARCH_PLAN.md) (Opus-architected). Three free-data angles, phased + exhaustively tested, executed sequentially. Driven by the F-series lesson: additive equity sleeves hit the IC≈0 / Track-B-correlation wall; **overlays** are what work (the VIX governor); power + a pre-registered both-halves stability guard are non-negotiable.
 
