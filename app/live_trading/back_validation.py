@@ -87,7 +87,7 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
     """
     try:
         from app.integrations import get_alpaca_client
-        from app.database.db import SessionLocal
+        from app.database.session import SessionLocal
         from app.live_trading import trend_sleeve as _ts
         from app.database.agent_config import get_agent_config
 
