@@ -47,6 +47,7 @@ RATE_LIMITS: dict[str, int] = {
     "trend_weekly":      0,   # trend_tracker.weekly_rollup (was dropped — unregistered)
     "trend_backval_weekly": 0,  # P1-4 live-vs-sim tracking-error report
     "cash_weekly":       0,   # P1-1 cash/T-bill sleeve idle-capital utilization
+    "options_spread_mature": 0,  # P2-4 NBBO spread surface crossed maturity (fires once)
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -291,6 +292,15 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Latest T-bill deployed", p.get("latest_tbill_deployed")),
             ("Avg T-bill deployed", p.get("avg_tbill_deployed")),
             ("Latest settled cash", p.get("latest_cash_buffer")),
+        ])
+
+    elif event_type == "options_spread_mature":
+        subj = "[MrTrader] Option spread surface is MATURE — VRP cost model ready to validate"
+        body = _section("Option spread cost surface matured (P2-4)", [
+            ("Distinct trading days", f"{p.get('n_days')} (>= {p.get('mature_min_days')})"),
+            ("Observations", p.get("n_obs")),
+            ("Window", p.get("window")),
+            ("Next", "Re-assess the Phase-3 VRP go/no-go on the matured surface + live-paper."),
         ])
 
     else:

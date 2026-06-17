@@ -122,6 +122,18 @@ def test_missing_context_returns_conservative_global():
     assert m.predict_full_spread_pct(float("nan"), 10, "call", "SPY") == pytest.approx(0.80)
 
 
+def test_n_days_counted_and_maturity_flag():
+    from app.options.spread_model import MATURE_MIN_DAYS
+    df = _obs([("SPY", "call", 1.0, 30, 0.02, "2026-06-11"),
+               ("SPY", "call", 1.0, 30, 0.03, "2026-06-12"),
+               ("SPY", "call", 1.0, 30, 0.04, "2026-06-12")])  # 2 distinct days
+    m = calibrate(df)
+    assert m.n_days == 2
+    assert m.is_mature is False
+    assert CalibratedSpreadModel(n_days=MATURE_MIN_DAYS).is_mature is True
+    assert CalibratedSpreadModel(n_days=MATURE_MIN_DAYS - 1).is_mature is False
+
+
 def test_covers_date_anachronism_guard():
     m = _model()
     assert m.covers_date(date(2026, 6, 12)) is True
