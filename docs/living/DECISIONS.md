@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P1-1) — cash/T-bill sleeve ENABLED LIVE (idle ~76% of NAV now earns RFR)
+
+**Context**: P1-1 shipped the cash sleeve dormant (`pm.cash_enabled='false'`, shadow on) pending an owner flip. The live paper book is trend (50%) + cash; with PEAD off and trend not fully deployed, a live shadow dry-run (2026-06-16) showed **$77,193 of NAV $101,232 (~76%) sitting as zero-yield settled cash** — ~$3.7k/yr of risk-free return left on the table at ~5%.
+
+**Decision**: Enabled the cash sleeve LIVE — `pm.cash_enabled='true'`, `pm.cash_shadow='false'` set in the live DB via a new reusable applier `scripts/set_cash_config.py --enable --arm` (mirrors `set_trend_config.py`; `--show`/`--dry-run` helpers; 6 tests). Baseline params written explicitly for an auditable live row: buffer 2% of NAV, universe `SGOV,BIL` (primary SGOV), weekday Mon. First live rebalance **Mon 2026-06-22 09:50 ET** (after trend; no restart — config read live). Pre-arm I ran the live shadow dry-run (forces shadow, restores flags) to confirm behavior: would deploy $75,168 → 747 SGOV.
+
+**Rationale**: The cash sleeve is far lower-risk than a return sleeve — it buys cash-equivalent T-bills with idle settled cash, is excluded from the 80% risk gross cap + all position/sector/budget counts (so it can never starve trend/PEAD), sizes off actual settled cash (can't over-deploy), is fail-closed, and was hardened by a build-time Opus "DON'T-SHIP → fixed" deep-dive. The owner explicitly approved the live flip. Going straight to `--enable --arm` after a successful live dry-run (rather than a shadow week first) is justified by that low risk profile + the dry-run confirmation.
+
+**Consequences**: The idle ~76% of the book now earns the risk-free rate weekly instead of zero. Live return sleeves are unchanged (trend + VIX governor; credit overlay still flag-off; PEAD off). Reversible anytime: `python -m scripts.set_cash_config` → baseline (dormant), or `--enable` → back to shadow. Not a WF/CPCV pipeline change → `PIPELINE_ARCHITECTURE.md` untouched. See MODEL_STATUS (cash go-live banner) + PROJECT_STATE.
+
+---
+
 ## 2026-06-16 (Alpha-v9 P3-1) — crypto trend: real low-corr stream, but PAPER-candidate (not capital)
 
 **Context**: P3-1 points the existing TSMOM engine at Alpaca spot crypto (BTC/ETH + liquid alts), long-flat, hard vol-targeted, evaluated through the Sleeve Lab. Falsifiable criterion: OOS Sharpe>0 AND corr-to-ETF-trend<0.6.

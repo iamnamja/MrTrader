@@ -4,7 +4,12 @@
 
 > **Update rule:** Updated by Claude as the final step of any retrain, promotion, or revert. Updated by human when manually changing the active paper-trade model. If this file and the DB disagree, trust the DB and update this file.
 
-**Last updated:** 2026-06-14
+**Last updated:** 2026-06-16
+
+---
+
+## 🚦 CASH / T-BILL SLEEVE — ENABLED LIVE (Alpha-v9 P1-1, 2026-06-16)
+The **cash sleeve is now LIVE** (`pm.cash_enabled='true'`, `pm.cash_shadow='false'` set in the live DB via `python -m scripts.set_cash_config --enable --arm`). On its weekly weekday (`pm.cash_rebalance_weekday=0` = Monday) at 09:50 ET (after the trend rebalance, market-open only) it parks idle SETTLED cash beyond a 2% NAV buffer (`pm.cash_buffer_pct=0.02`) into a T-bill ETF (`pm.cash_universe='SGOV,BIL'`, primary SGOV) so the idle book earns the risk-free rate instead of zero, and sells T-bills to refill the buffer when cash dips below it (risk-off). **No restart needed** (config read live). **First live rebalance: Mon 2026-06-22 09:50 ET.** A pre-arm live shadow dry-run (2026-06-16) showed NAV $101,232 with $77,193 (~76%) idle → would deploy $75,168 into 747 SGOV (≈$3.7k/yr RFR at ~5%). T-bills are cash-equivalents → EXCLUDED from the 80% risk gross cap + position/sector/strategy-budget counts (so parking cash never starves trend/PEAD); tagged `selector/trade_type='cash'` so the Trader exit loop + startup reconciler leave them alone. Fail-closed (account/price/clock failures → no action). Reverse with `python -m scripts.set_cash_config` (baseline) or `--enable` (back to shadow). Details: DECISIONS 2026-06-16 (P1-1 enable) + `app/live_trading/cash_sleeve.py`.
 
 ---
 
