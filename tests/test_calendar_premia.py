@@ -6,8 +6,9 @@ import pandas as pd
 import pytest
 
 from app.strategy.calendar_premia import (
-    TurnOfMonthConfig, OvernightConfig, CalendarPremiaResult,
+    TurnOfMonthConfig, OvernightConfig, IntradayConfig, CalendarPremiaResult,
     turn_of_month_window, turn_of_month_backtest, overnight_premium_backtest,
+    intraday_premium_backtest,
 )
 
 
@@ -91,6 +92,34 @@ def test_overnight_cost_is_round_trip():
     # round-trip = 2 * cost_bps -> 4bps/day drag
     drag = (free.returns - costed.returns.reindex(free.returns.index)).dropna()
     assert np.allclose(drag, 2.0 * 2.0 / 1e4)
+
+
+# ── intraday premium (open -> close) ─────────────────────────────────────────────────
+def test_intraday_matches_open_to_close():
+    bars = _bars(seed=1)
+    res = intraday_premium_backtest(bars, IntradayConfig(cost_bps=0.0))
+    expected = (bars["close"] / bars["open"] - 1.0)
+    pd.testing.assert_series_equal(
+        res.returns, expected.rename("intraday_SPY").loc[res.returns.index],
+        check_names=False)
+
+
+def test_intraday_cost_is_round_trip():
+    bars = _bars(seed=3)
+    free = intraday_premium_backtest(bars, IntradayConfig(cost_bps=0.0))
+    costed = intraday_premium_backtest(bars, IntradayConfig(cost_bps=2.0))
+    drag = (free.returns - costed.returns.reindex(free.returns.index)).dropna()
+    assert np.allclose(drag, 2.0 * 2.0 / 1e4)   # 2 sides/day
+
+
+def test_overnight_and_intraday_reconcile_to_close_to_close():
+    bars = _bars(seed=5)
+    on = overnight_premium_backtest(bars, OvernightConfig(cost_bps=0.0)).returns
+    idy = intraday_premium_backtest(bars, IntradayConfig(cost_bps=0.0)).returns
+    cc = (bars["close"] / bars["close"].shift(1) - 1.0)
+    recon = ((1 + on) * (1 + idy) - 1.0).dropna()
+    aligned = cc.reindex(recon.index)
+    assert np.allclose(recon.to_numpy(), aligned.to_numpy(), atol=1e-12)
 
 
 # ── validation ─────────────────────────────────────────────────────────────────────

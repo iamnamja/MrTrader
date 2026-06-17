@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P3-3) — overnight vs intraday: real premium, cost-killed → KILL (clean)
+
+**Context**: P3-3 asks whether the well-documented overnight (close→open) equity premium is *tradeable net of cost*. It's captured with daily MOC/MOO round-trips, so turnover — not signal — is the risk. The earlier F1-OVN tested only SPY at one cost and FAILED; P3-3 is the complete decomposition (both legs, a universe, a cost grid) with a pre-registered net-of-cost verdict.
+
+**Decision**: Built `app/research/overnight_intraday.py` (decomposition + equal-weight-universe legs + cost-grid sweep + frozen verdict `P3-3-OVERNIGHT-INTRADAY`), a symmetric `intraday_premium_backtest`, and `scripts/run_overnight_intraday.py`. Frozen criterion on the equal-weight liquid-ETF universe (SPY/QQQ/IWM/EFA/EEM/DIA, 2007→): overnight leg NET of a realistic 1.0bps/side (2bps/day) round-trip must show net Sharpe ≥0.30 AND net CAGR>0 AND beat intraday. **Verdict: KILL.** The overnight effect is genuinely real (overnight gross Sharpe +0.53 / CAGR +6.4% vs intraday +0.27 / +3.0%), but the cost cliff erases it (net Sharpe +0.53→+0.16 at 1bps→−0.22 at 2bps); at realistic cost the overnight net Sharpe is +0.16, below the 0.30 floor. No live change; report-only.
+
+**Rationale**: This is exactly the "kill cleanly" the roadmap asked for — the premium exists but doesn't survive realistic daily round-trip costs, and even gross (+0.53) it's an uncompelling, largely-beta stream. The Opus deep-dive's load-bearing check (OHLC adjustment-basis consistency) passed at machine epsilon (the two legs reconcile to close-to-close to 2.2e-16 over 4891 days), so the decomposition is valid and look-ahead-free. International ETFs (EFA/EEM) "overnight" partly reflects foreign-market hours — a different mechanism — but the verdict is robust (the US names SPY/QQQ/IWM/DIA are all real-but-cost-killed).
+
+**Consequences**: The overnight/intraday line is closed for a standalone sleeve. The decomposition tooling is retained — the overnight leg is a candidate *component* for the P3-4 risk-premia composite (where it's judged in a basket, not standalone). Not a WF/CPCV pipeline change → `PIPELINE_ARCHITECTURE.md` untouched. See ML_EXPERIMENT_LOG 2026-06-16 (P3-3) + ALPHA_V9_ROADMAP §P3-3.
+
+---
+
 ## 2026-06-16 (Alpha-v9 P1-1) — cash/T-bill sleeve ENABLED LIVE (idle ~76% of NAV now earns RFR)
 
 **Context**: P1-1 shipped the cash sleeve dormant (`pm.cash_enabled='false'`, shadow on) pending an owner flip. The live paper book is trend (50%) + cash; with PEAD off and trend not fully deployed, a live shadow dry-run (2026-06-16) showed **$77,193 of NAV $101,232 (~76%) sitting as zero-yield settled cash** — ~$3.7k/yr of risk-free return left on the table at ~5%.
