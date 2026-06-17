@@ -139,6 +139,15 @@ class AgentOrchestrator:
             job_id="cash_rebalance_trigger", misfire_grace_time=1800,
         )
 
+        # Crypto trend LIVE-PAPER tracker (P3-1) at 09:55 ET — report-only OOS recorder.
+        # Recomputes the rules-based crypto-trend book on live Alpaca closes weekly and
+        # freezes the forward out-of-sample slice. No orders, no capital. Crypto is 24/7
+        # so there is no market-open gate; weekly cadence, dormant unless enabled.
+        scheduler.schedule_daily_at_time(
+            self._trigger_crypto_paper_track, hour=9, minute=55,
+            job_id="crypto_paper_track_trigger", misfire_grace_time=1800,
+        )
+
         # Nightly options NBBO/spread logger at 15:55 ET (Alpha-v6 P1c slow fuse).
         # Snapshots live bid/ask for the frozen panel just before the close — the
         # only window where the chain's quotes reflect a real trading book. Misses
@@ -380,6 +389,49 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Cash rebalance trigger failed: %s", exc)
             await self._log_error("cash_sleeve", str(exc))
+
+    async def _trigger_crypto_paper_track(self) -> None:
+        """Weekly crypto trend LIVE-PAPER tracker (P3-1). Report-only: recomputes the
+        rules-based crypto-trend book on live Alpaca closes and freezes the forward OOS
+        slice. NO orders/capital, so NO market-open gate (crypto is 24/7). Fires daily,
+        runs only on pm.crypto_paper_rebalance_weekday; dormant unless pm.crypto_paper_enabled.
+        """
+        from datetime import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except Exception:
+            _et = None
+
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            db = get_session()
+            try:
+                target_weekday = int(get_agent_config(db, "pm.crypto_paper_rebalance_weekday"))
+            finally:
+                db.close()
+        except Exception:
+            target_weekday = 0  # Monday default
+
+        today = _dt.now(_et).date() if _et else _dt.now().date()
+        if today.weekday() != target_weekday:
+            logger.debug("crypto paper track: not the configured weekday (%d != %d) — skip",
+                         today.weekday(), target_weekday)
+            return
+
+        logger.info("Orchestrator: triggering weekly crypto live-paper track")
+        try:
+            from app.live_trading import crypto_paper_track
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, crypto_paper_track.run_crypto_paper_track)
+            logger.info("Crypto paper track done: status=%s n_oos=%s sharpe=%s (backtest %.2f)",
+                        summary.get("status"), summary.get("n_oos_days"),
+                        summary.get("oos_sharpe"), summary.get("backtest_sharpe"))
+            await loop.run_in_executor(None, crypto_paper_track.weekly_email, summary)
+        except Exception as exc:
+            logger.error("Crypto paper track trigger failed: %s", exc)
+            await self._log_error("crypto_paper_track", str(exc))
 
     async def _trigger_options_nbbo_log(self) -> None:
         """Nightly options NBBO/spread snapshot (Alpha-v6 P1c — FUSE A).

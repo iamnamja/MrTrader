@@ -261,6 +261,13 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   book, not vs trend alone).** 2 Opus deep-dives → fixed C1 (gate now annualizes 365 via `periods_per_year`
   — point_SR 0.80→0.96; equity sleeves unchanged at 252), M1 (drop the partial in-progress UTC bar — PIT),
   M3 (2× cost 50bps → Sharpe 0.557, robust). 7 tests; full suite 3611 pass; report-only, no live change.
+  **✅ LIVE-PAPER ENABLED 2026-06-16 (report-only, NO capital):** `app/live_trading/crypto_paper_track.py`
+  recomputes the rules-based crypto book on live Alpaca closes weekly and freezes the forward OOS slice
+  (inception 2026-06-16, never back-dated; Sharpe-to-date vs the 0.64 backtest) — the OOS record the short
+  backtest can't provide. NO orders/capital/risk-cap interaction (rules-based + PIT). `pm.crypto_paper_enabled`
+  (default on), orchestrator-wired 09:55 ET (24/7), `crypto_weekly` email, CLI `scripts/crypto_paper_report.py`.
+  ⚠️ scheduled job needs a uvicorn restart. 9 tests. Revisit for capital once the OOS sample is meaningful
+  (ideally as a multi-sleeve-book diversifier).
 - **P3-2 — Defined-risk index VRP (research track).** `[§3 disagreement; ClaudeMax lead, Gemini caution]`
   Sell ~10–20Δ SPY/QQQ put-spreads / short-wing condors (~30–45 DTE) **gated by the crash governor we
   already validated** (sell in VIX contango + elevated IV-rank; flat in backwardation). `component_type=

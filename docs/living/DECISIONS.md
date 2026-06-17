@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P3-1) — crypto trend ENABLED in live-paper (report-only OOS tracker; NO capital)
+
+**Context**: P3-1 found crypto-trend to be a real low-corr stream but a PAPER-CANDIDATE, not a capital allocation (Track-B vs the trend book FAILs; CAPITAL is power-floored by ~5y history). The honest next step is to accrue a forward OUT-OF-SAMPLE live-paper record so any future capital call rests on live data, not the short backtest. No live-execution crypto sleeve existed.
+
+**Decision**: Built a REPORT-ONLY live-paper tracker rather than a capital-deploying execution sleeve — faithful to the "no capital" verdict and far safer to run autonomously. `app/live_trading/crypto_paper_track.py` recomputes the rules-based crypto-trend book on live Alpaca closes weekly and freezes the forward OOS slice (from an inception date that starts the first time it runs — never back-dated into the backtest), reporting Sharpe-to-date vs the 0.64 backtest. Because the sleeve is rules-based + PIT, the recomputed forward slice is a genuine OOS record with NO orders, NO capital, NO risk-cap interaction. Config `pm.crypto_paper_enabled` (default **true** — enabled), weekday `pm.crypto_paper_rebalance_weekday` (default Mon). Wired into the orchestrator (09:55 ET, no market-open gate — crypto is 24/7) + a `crypto_weekly` email + CLI `scripts/crypto_paper_report.py`. **OOS clock started 2026-06-16** (first run). 9 tests; full cash/notifier/orchestrator/config suites 99 pass; app/ flake8 clean.
+
+**Rationale**: A pure paper-return tracker captures the entire scientific goal (does the edge hold out-of-sample on new live data?) without the complexity and risk of live crypto execution, and without the risk-integration decisions (gross-cap treatment, sizing) that should wait until the owner actually wants to deploy capital. It mirrors the established report-only-instrument pattern (back_validation, shadow_credit_governor, cash_tracker).
+
+**Consequences**: The crypto OOS record now accrues weekly; revisit for a capital decision once it has a meaningful sample (and ideally as a multi-sleeve-book diversifier, where its 0.18 corr helps the whole book — not vs trend alone). ⚠️ The new scheduled job takes effect only after a uvicorn/orchestrator RESTART (runnable manually meanwhile via the CLI; the OOS clock is already started). Report-only → not a WF/CPCV pipeline change (`PIPELINE_ARCHITECTURE.md` untouched). See ML_EXPERIMENT_LOG / MODEL_STATUS / PROJECT_STATE 2026-06-16 (P3-1 live-paper) + ALPHA_V9_ROADMAP §P3-1.
+
+---
+
 ## 2026-06-16 (Alpha-v9 P3-3) — overnight vs intraday: real premium, cost-killed → KILL (clean)
 
 **Context**: P3-3 asks whether the well-documented overnight (close→open) equity premium is *tradeable net of cost*. It's captured with daily MOC/MOO round-trips, so turnover — not signal — is the risk. The earlier F1-OVN tested only SPY at one cost and FAILED; P3-3 is the complete decomposition (both legs, a universe, a cost grid) with a pre-registered net-of-cost verdict.

@@ -372,6 +372,23 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Weekday for the weekly cash rebalance (0=Mon .. 4=Fri). Runs AFTER the trend rebalance (09:50 ET) so the idle remainder is known.",
         "group": "Portfolio Manager",
     },
+    # ── Crypto trend LIVE-PAPER tracker — Alpha-v9 P3-1 (report-only; NO capital) ─
+    {
+        "key": "pm.crypto_paper_enabled",
+        "default": "true",
+        "type": "str",
+        "description": "Crypto-trend LIVE-PAPER tracker (P3-1). 'true' = weekly, recompute the rules-based crypto-trend book on live Alpaca closes and freeze the forward out-of-sample slice (Sharpe-to-date vs the 0.64 backtest). REPORT-ONLY — no orders, no capital, no risk-cap interaction. 'false' = dormant.",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.crypto_paper_rebalance_weekday",
+        "default": 0,
+        "type": "int",
+        "min": 0,
+        "max": 6,
+        "description": "Weekday for the weekly crypto live-paper tracker (0=Mon .. 6=Sun). Crypto trades 24/7 so any day works; the tracker just recomputes + snapshots the OOS record.",
+        "group": "Portfolio Manager",
+    },
     # ── Regime-aware sleeve allocator — Alpha-v4 P3 (gate-controlled, default OFF) ─
     {
         "key": "pm.allocator_enabled",
