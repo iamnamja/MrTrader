@@ -4,6 +4,16 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-16 (Alpha-v9 P3-1) — crypto trend: real low-corr stream, but PAPER-candidate (not capital)
+
+**Context**: P3-1 points the existing TSMOM engine at Alpaca spot crypto (BTC/ETH + liquid alts), long-flat, hard vol-targeted, evaluated through the Sleeve Lab. Falsifiable criterion: OOS Sharpe>0 AND corr-to-ETF-trend<0.6.
+
+**Decision**: Built `app/data/alpaca_crypto_provider.py` + a pre-registered `crypto_trend` Sleeve (`scripts/walkforward/sleeves.py`; 10 Alpaca pairs, ann=365 + calendar lookbacks 30/90/180/365, long-flat, hard `book_vol_target=0.20`, 25bps cost, n_trials=1, registration_id=P3-1-CRYPTO-TREND). **Verdict: the falsifiable criterion is MET** — standalone Sharpe 0.64 (365-ann), corr-to-trend 0.18 → a real, lowly-correlated return stream. **But it is a PAPER-CANDIDATE, NOT a capital allocation:** the harder Track-B (book-delta vs the live trend book) FAILS (appraisal_IR −0.27, dSR −0.17 — it doesn't improve the trend-only book on a vol-matched basis), and CAPITAL is structurally unreachable (power floor: ~5y Alpaca history, n_folds<10, no live-paper). Next step is **live-paper observation** to accrue the OOS track record the short backtest can't provide; revisit as a multi-sleeve-book diversifier (its 0.18 corr helps the whole book, not vs trend alone). No live capital change.
+
+**Rationale**: The roadmap criterion (Sharpe>0, corr<0.6) tests "is it a real, lowly-correlated stream" (yes), while Track-B tests "does it earn its place in THIS book" (no, vs trend-only). Honest framing co-headlines both — calling it a KEEP on the weak Sharpe>0 bar while burying the Track-B FAIL would be dishonest. The 252→365 annualization (C1, below) does NOT change the verdict (hac_p is annualization-invariant; Track-B dSR/corr are clock-invariant).
+
+**Consequences**: Two Opus deep-dives (verdict SHIP after fixes). C1 (CRITICAL): the Ruler-v2 gate annualized the 365-day crypto series at 252 → understated SR + anti-conservative implausibility ceiling. Fixed by threading `periods_per_year` (default 252) through `Sleeve` → `evaluate_sleeve` → `ruler_v2.evaluate`/`gate_passed` → `hac_sharpe`/`stationary_bootstrap_sr`; crypto sets 365 (point_SR 0.80→0.96); **equity sleeves unchanged at 252 (backward-compat proven: hac_p annualization-invariant, 201 gate/inference tests pass)**. M1: drop the partial in-progress UTC bar (PIT). M3: 2× cost (50bps) → Sharpe 0.557 (robust). 7 tests; full suite 3611 pass; report-only. See ALPHA_V9_ROADMAP §P3-1 + ML_EXPERIMENT_LOG 2026-06-16 (P3-1).
+
 ## 2026-06-16 (Alpha-v9 P2-4) — calibrated option spread cost = empirical surface (premium-%, moneyness/DTE/underlying-aware)
 
 **Context**: Options/VRP backtests charged a FLAT 1%-of-premium half-spread. Flat-1% is right for liquid SPY ATM but wildly wrong for single-name/OTM (tens of %), which is why OPT-3 earnings-vol was cost-killed. P2-4 is the blocking prerequisite for the Phase-3 VRP engine: cost must be premium-% AND structure-aware.

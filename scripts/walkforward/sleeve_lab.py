@@ -91,6 +91,8 @@ class Sleeve:
     n_trials_registered: Optional[int] = None
     registration_id: Optional[str] = None
     notes: str = ""
+    periods_per_year: int = 252   # 365 for 24/7 markets (crypto) so the gate's annualized
+    #                               SR/bootstrap are on the right clock; 252 for equities.
 
     def __post_init__(self) -> None:
         if not self.label or not isinstance(self.label, str):
@@ -108,6 +110,7 @@ class Sleeve:
             self.n_trials_registered = int(self.n_trials_registered)
             if self.n_trials_registered < 1:
                 raise ValueError("Sleeve.n_trials_registered must be >= 1 when provided")
+        self.periods_per_year = int(self.periods_per_year)  # reaches np.sqrt() in the gate
 
     @property
     def regime_waived_by_type(self) -> bool:
@@ -340,18 +343,23 @@ def evaluate_sleeve(
                     sleeve.label)
 
     # ── Track-A: standalone PAPER + CAPITAL ──────────────────────────────────────
+    ppy = getattr(sleeve, "periods_per_year", 252)   # 365 for crypto so SR is on the right clock
     paper_detail = ruler_v2.evaluate(result, tier="paper",
                                      component_type=sleeve.component_type,
-                                     regime_waiver_approved=regime_waiver_approved)
+                                     regime_waiver_approved=regime_waiver_approved,
+                                     periods_per_year=ppy)
     paper_passed = ruler_v2.gate_passed(result, tier="paper",
                                         component_type=sleeve.component_type,
-                                        regime_waiver_approved=regime_waiver_approved)
+                                        regime_waiver_approved=regime_waiver_approved,
+                                        periods_per_year=ppy)
     capital_detail = ruler_v2.evaluate(result, tier="capital",
                                        component_type=sleeve.component_type,
-                                       regime_waiver_approved=regime_waiver_approved)
+                                       regime_waiver_approved=regime_waiver_approved,
+                                       periods_per_year=ppy)
     capital_passed = ruler_v2.gate_passed(result, tier="capital",
                                           component_type=sleeve.component_type,
-                                          regime_waiver_approved=regime_waiver_approved)
+                                          regime_waiver_approved=regime_waiver_approved,
+                                          periods_per_year=ppy)
 
     # ── Track-B: book-delta appraisal (optional) ─────────────────────────────────
     track_b = None
