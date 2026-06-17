@@ -406,6 +406,31 @@ class AgentOrchestrator:
             if summary.get("status") not in ("ok", "skipped"):
                 await self._log_error("options_nbbo_logger",
                                       f"zero rows logged: {summary}")
+            # P2-4: keep the spread COST SURFACE fresh as the NBBO log accrues, and flag when
+            # it matures enough for a VRP verdict. Re-runs the (cheap) calibration nightly and
+            # emails ONCE when the window crosses MATURE_MIN_DAYS. Report-only; never disturbs
+            # trading (the calibrated model is opt-in and not wired to any live verdict yet).
+            if summary.get("status") == "ok":
+                try:
+                    from app.options.spread_model import (
+                        calibrate_from_parquet, OBS_PARQUET, MODEL_PATH, MATURE_MIN_DAYS,
+                    )
+                    m = await loop.run_in_executor(
+                        None, lambda: calibrate_from_parquet(OBS_PARQUET))
+                    await loop.run_in_executor(None, lambda: m.save(MODEL_PATH))
+                    logger.info(
+                        "Spread surface recalibrated: n_obs=%s days=%s window=%s..%s -> %s",
+                        m.n_obs, m.n_days, m.calibrated_from, m.calibrated_through,
+                        "MATURE" if m.is_mature else "BUILDING")
+                    if m.is_mature:
+                        from app.notifications import notifier
+                        notifier.enqueue("options_spread_mature", {
+                            "n_obs": m.n_obs, "n_days": m.n_days,
+                            "window": f"{m.calibrated_from}..{m.calibrated_through}",
+                            "mature_min_days": MATURE_MIN_DAYS,
+                        }, dedup_key="options_spread_mature")  # fires once
+                except Exception as _cexc:
+                    logger.error("Spread recalibration failed (continuing): %s", _cexc)
         except Exception as exc:
             logger.error("Options NBBO logging failed: %s", exc)
             await self._log_error("options_nbbo_logger", str(exc))

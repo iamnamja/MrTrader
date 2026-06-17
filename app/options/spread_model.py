@@ -51,6 +51,9 @@ DTE_EDGES: Tuple[int, ...] = (7, 21, 45, 90)
 MIN_OBS = 30                 # min samples for a bucket/marginal to be trusted before fallback
 SPREAD_PCT_CAP = 2.0         # clip absurd relative spreads (illiquid quotes) before median
 DEFAULT_FULL_SPREAD = 0.04   # last-resort full relative spread if calibration is empty (=2% half)
+# distinct trading days before the surface is trustworthy for a verdict (~4 weeks; below this
+# the calibration is PRELIMINARY / anachronistic).
+MATURE_MIN_DAYS = 20
 
 
 def _bin_index(value: float, edges: Tuple) -> int:
@@ -92,6 +95,13 @@ class CalibratedSpreadModel:
     calibrated_from: Optional[str] = None            # min obs_date (anachronism guard)
     calibrated_through: Optional[str] = None          # max obs_date
     n_obs: int = 0
+    n_days: int = 0                                   # distinct trading days in the obs window
+
+    @property
+    def is_mature(self) -> bool:
+        """True once the obs window spans >= MATURE_MIN_DAYS distinct trading days — below
+        this the surface is PRELIMINARY and must not drive a VRP verdict (see module docstring)."""
+        return self.n_days >= MATURE_MIN_DAYS
 
     def covers_date(self, d) -> bool:
         """True iff `d` is inside the calibration window [calibrated_from, calibrated_through].
@@ -149,7 +159,7 @@ class CalibratedSpreadModel:
             "dte_marginal": self.dte_marginal, "dte_marginal_n": self.dte_marginal_n,
             "global_median": self.global_median, "conservative_global": self.conservative_global,
             "calibrated_from": self.calibrated_from, "calibrated_through": self.calibrated_through,
-            "n_obs": self.n_obs,
+            "n_obs": self.n_obs, "n_days": self.n_days,
             "moneyness_edges": list(MONEYNESS_EDGES), "dte_edges": list(DTE_EDGES),
             "min_obs": MIN_OBS, "schema": "p2-4-spread-v1",
         }
@@ -186,6 +196,7 @@ class CalibratedSpreadModel:
             calibrated_from=d.get("calibrated_from"),
             calibrated_through=d.get("calibrated_through"),
             n_obs=int(d.get("n_obs", 0)),
+            n_days=int(d.get("n_days", 0)),
         )
 
     def summary(self) -> str:
@@ -312,6 +323,7 @@ def calibrate(obs_df, *, as_of: Optional[date] = None) -> CalibratedSpreadModel:
         calibrated_through=(as_of.isoformat() if isinstance(as_of, date)
                             else (str(as_of) if as_of else _max_obs_date(df))),
         n_obs=len(full),
+        n_days=_n_distinct_days(df),
     )
     return model
 
@@ -328,6 +340,13 @@ def _min_obs_date(df) -> Optional[str]:
         return str(df["obs_date"].astype(str).str[:10].min())
     except Exception:
         return None
+
+
+def _n_distinct_days(df) -> int:
+    try:
+        return int(df["obs_date"].astype(str).str[:10].nunique())
+    except Exception:
+        return 0
 
 
 def calibrate_from_parquet(path: str | Path, *, as_of: Optional[date] = None
