@@ -13,6 +13,11 @@ The **cash sleeve is now LIVE** (`pm.cash_enabled='true'`, `pm.cash_shadow='fals
 
 ---
 
+## 🚦 CRYPTO TREND — LIVE-PAPER (report-only, NO capital) (Alpha-v9 P3-1, 2026-06-16)
+The P3-1 crypto-trend sleeve (PAPER-CANDIDATE) is now accruing a forward OUT-OF-SAMPLE live-paper record — **report-only, no orders, no capital, no risk-cap interaction.** `app/live_trading/crypto_paper_track.py` recomputes the rules-based crypto book on live Alpaca closes weekly and freezes the OOS slice from inception (started **2026-06-16**; never back-dated), reporting Sharpe-to-date vs the **0.64** backtest. `pm.crypto_paper_enabled='true'` (default on); orchestrator-wired 09:55 ET (crypto is 24/7, no market gate); `crypto_weekly` email; CLI `python -m scripts.crypto_paper_report`. ⚠️ The scheduled job takes effect only after a uvicorn/orchestrator RESTART (runnable manually meanwhile; the OOS clock is already started). Revisit for a CAPITAL decision once the OOS sample is meaningful — ideally as a multi-sleeve-book diversifier (its 0.18 corr-to-trend helps the whole book, not vs trend alone). Details: DECISIONS 2026-06-16 (P3-1 live-paper).
+
+---
+
 ## 🚦 CREDIT OVERLAY — wired, flag OFF (Alpha-v8 G1/G4, 2026-06-15; OWNER DECISION PENDING)
 The Alpha-v8 **credit de-risk overlay** (HYG/IEF; de-risk when credit spreads widen) is wired into the live trend sleeve and composes multiplicatively with the VIX governor (`overlay_mult = max(0.25, vix × credit)`), BUT its flag **`pm.credit_governor_enabled` is DEFAULT "false" — it is OFF and changes nothing live.** It's the one Alpha-v8 research candidate (marginal-to-governor dSharpe +0.064, all-3-crises, both-halves stable; Opus-defensible) with caveats (small tail-insurance effect; post-hoc/multiplicity; paper-only). **To activate (owner): review the G1 caveats, then set `pm.credit_governor_enabled='true'`** (no restart for the flag; orchestrator restart only to load the new code). Fail-safe + can only reduce exposure. The OTHER Alpha-v8 angles were negatives (G2 short-interest KILLED, G3 additive-timing PARKED). Details: DECISIONS 2026-06-15 (G4) + `docs/reference/ALPHA_V8_RESEARCH_PLAN.md`.
 

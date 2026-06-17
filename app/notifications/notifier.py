@@ -48,6 +48,7 @@ RATE_LIMITS: dict[str, int] = {
     "trend_backval_weekly": 0,  # P1-4 live-vs-sim tracking-error report
     "cash_weekly":       0,   # P1-1 cash/T-bill sleeve idle-capital utilization
     "options_spread_mature": 0,  # P2-4 NBBO spread surface crossed maturity (fires once)
+    "crypto_weekly":     0,   # P3-1 crypto trend live-paper OOS Sharpe-to-date
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -252,6 +253,18 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Avg fill rate", p.get("avg_fill_rate")),
             ("VIX blocks fired", p.get("vix_blocks_fired")),
             ("Suppressed (opp/macro/RM)", p.get("suppressed_breakdown")),
+            ("Notes", p.get("notes", "")),
+        ])
+
+    elif event_type == "crypto_weekly":
+        subj = f"[MrTrader] Crypto live-paper rollup — {p.get('week_ending', '?')}"
+        body = _section("Crypto trend live-paper OOS track (P3-1; report-only, no capital)", [
+            ("Week ending", p.get("week_ending")),
+            ("OOS inception", p.get("inception")),
+            ("OOS Sharpe-to-date (365-ann)", p.get("oos_sharpe")),
+            ("Backtest expectation", p.get("backtest_sharpe", "+0.64")),
+            ("OOS trading days", p.get("n_oos_days")),
+            ("OOS cumulative return", p.get("oos_cum")),
             ("Notes", p.get("notes", "")),
         ])
 
