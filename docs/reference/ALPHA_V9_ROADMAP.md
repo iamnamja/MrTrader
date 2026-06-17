@@ -293,10 +293,21 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   {carry returns, credit-timing returns, overnight, daily-short-volume}; run *that single stream* through
   the (fixed, P0-2) Track-B. **Success:** the composite clears bars no single component did → monetize the
   near-miss pile; if it fails, the components were secretly correlated (clean negative).
-- **P3-5 — Daily short-VOLUME (FINRA) overlay.** `[Ⓘ; ClaudeMax #5]` Replace the power-starved bi-monthly
-  short-interest (G2, ~190 obs, killed for *power*) with **FINRA daily off-exchange short-volume**
-  (~4000+ obs back to ~2009). Same idea, completely different power regime. **Success:** a clean
-  pre-registered test of the short-volume-ratio z-score (aggregate timing and/or XS) clears the gate.
+- **P3-5 — Daily short-VOLUME (FINRA) overlay. ✅ DONE 2026-06-17 → REAL signal, real-but-weak (not a
+  standalone edge).** `[Ⓘ; ClaudeMax #5]` Replaced the power-starved bi-monthly short-interest (G2, ~190
+  obs, killed for *power*) with **FINRA daily off-exchange short-volume** (`cdn.finra.org`; the CDN serves
+  ~2019-01-02→ = **1,875 days**, ~10× the power). Built `app/data/finra_short_volume.py` (downloads+caches
+  the daily CNMS files → distilled panel) + `app/research/short_volume.py` (frozen `P3-5-SHORTVOL-AGG`).
+  **Free-data test is AGGREGATE timing (market-wide short-vol ratio → SPY), NOT cross-sectional** — a
+  per-name L/S on free data is survivorship-biased (Norgate/P4-1 fixes that); the aggregate ratio is a
+  market-wide sum, bias-free. **The signal is genuinely real** (overlay net Sharpe 0.99 > buy-hold 0.92,
+  HAC p 0.001; informed-short tercile high −0.009% < low +0.096%; opposite −0.34; ex-COVID robust) **but
+  NOT a standalone edge:** residual alpha vs SPY is insignificant (+2.6%/yr, HAC t 0.95 — mostly timed beta
+  β0.83) and sub-period-UNSTABLE (H1 2019-22 −0.06 vs buy-hold; H2 2022-26 +0.23). Honesty: the first
+  pre-registered criterion was too lenient (mostly-long-SPY clears HAC in a bull market) → enriched the
+  verdict with the project's own rigor (Ruler-v2 residual-α + F3 sub-period guard) to set `standalone_edge=
+  False` WITHOUT overturning the frozen PASS. **→ route to the P3-4 composite (gate the basket) + a
+  cross-sectional test post-Norgate.** Powered short-volume data layer now owned. 14 tests; report-only.
 
 ### Phase 4 — The strategic data bet 🔵🔴👤
 - **P4-1 — Buy Norgate (~$270/yr) for research.** `[C3; all 5]` 👤 Immediate payoff: **survivorship-free
