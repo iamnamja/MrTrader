@@ -246,11 +246,21 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   evaluators. (Design detail in the architecture doc.)
 
 ### Phase 3 — New return engines on the *current* broker (Alpaca) 🟢🟡
-- **P3-1 — Crypto trend + cross-sectional momentum.** `[C6; all 5]` Point the existing TSMOM engine at
-  BTC/ETH + a liquid Alpaca alt basket (long-flat; spot shorting limited), **hard** vol-targeted (crypto
-  vol 3–5× equities). **Be honest about the short-history power floor** (Ⓖ — don't fake significance).
-  **Success (falsifiable):** OOS BTC/ETH TSMOM Sharpe > 0 *and* corr-to-ETF-trend < 0.6 → a real, lowly-
-  correlated new return stream. If Sharpe ≤ 0 or corr > 0.6, deprioritize.
+- **P3-1 — Crypto trend. ✅ DONE 2026-06-16 → criterion MET; PAPER-CANDIDATE (not a KEEP/capital).**
+  `[C6; all 5]` Built `app/data/alpaca_crypto_provider.py` + a `crypto_trend` Sleeve (TSMOM on 10 Alpaca
+  spot pairs BTC/ETH/SOL/LTC/BCH/AVAX/LINK/UNI/AAVE/DOGE, long-flat, **ann=365 + calendar lookbacks
+  30/90/180/365**, hard `book_vol_target=0.20`, conservative 25bps cost). Alpaca crypto history ~2021→
+  (~5y). **Standalone: Sharpe 0.64 (365-ann), annVol 18.7%, maxDD −28%, corr-to-ETF-trend 0.18 → the
+  pre-registered falsifiable criterion (Sharpe>0 AND corr<0.6) is MET — a real, lowly-correlated stream.**
+  Formal Sleeve Lab: **Track-A PAPER PASS** (point_SR 0.96 [365-clocked], hac_p 0.038, regime-waived
+  diversifier); **CAPITAL FAIL** (power floor — ~5y history, n_folds<10, no live-paper — honest, expected);
+  **Track-B vs the live trend book FAIL** (appraisal_IR −0.27, dSR −0.17 — it does NOT improve the
+  trend-only book on a vol-matched basis). **Honest verdict: a real low-corr stream, but it doesn't earn
+  capital in the current book → PAPER-candidate; run live-paper to accrue the OOS record the short
+  backtest can't provide; revisit as a multi-sleeve-book diversifier (where its 0.18 corr helps the whole
+  book, not vs trend alone).** 2 Opus deep-dives → fixed C1 (gate now annualizes 365 via `periods_per_year`
+  — point_SR 0.80→0.96; equity sleeves unchanged at 252), M1 (drop the partial in-progress UTC bar — PIT),
+  M3 (2× cost 50bps → Sharpe 0.557, robust). 7 tests; full suite 3611 pass; report-only, no live change.
 - **P3-2 — Defined-risk index VRP (research track).** `[§3 disagreement; ClaudeMax lead, Gemini caution]`
   Sell ~10–20Δ SPY/QQQ put-spreads / short-wing condors (~30–45 DTE) **gated by the crash governor we
   already validated** (sell in VIX contango + elevated IV-rank; flat in backwardation). `component_type=

@@ -156,7 +156,8 @@ def evaluate(result, *, tier: str = "paper",
              concurrent_paper_sleeves: int = 0,
              live_paper: Optional[dict] = None,
              component_type: Optional[str] = None,
-             regime_waiver_approved: bool = False) -> dict:
+             regime_waiver_approved: bool = False,
+             periods_per_year: int = 252) -> dict:
     """The Ruler-v2 per-criterion detail dict for `tier` ∈ {"paper","capital"}.
 
     Each value is (observed, ok). `n_trials` is the registry's TRUE trial count for
@@ -190,7 +191,9 @@ def evaluate(result, *, tier: str = "paper",
 
     r = _oos_return_array(result)
     n_obs = int(r.size)
-    hac = inf.hac_sharpe(r)
+    # periods_per_year=365 for 24/7 markets (crypto) so the annualized SR / bootstrap CI are
+    # on the right clock; 252 (default) for equities. hac_p is annualization-invariant.
+    hac = inf.hac_sharpe(r, annualize=periods_per_year)
     point_sr = hac.sr_ann if hac.gating else float("nan")
 
     n_paths = len(getattr(result, "path_sharpes", []) or [])
@@ -275,7 +278,7 @@ def evaluate(result, *, tier: str = "paper",
     ra_ok = bool(ra_t is not None and float(ra_t) >= RULERV2_RESIDUAL_ALPHA_MIN_T)
 
     # Stationary-bootstrap robustness twin.
-    boot = inf.stationary_bootstrap_sr(r)
+    boot = inf.stationary_bootstrap_sr(r, annualize=periods_per_year)
     boot_ok = bool(boot.gating and boot.p_sr_gt_0 >= RULERV2_BOOTSTRAP_MIN_PSR)
 
     detail.update({

@@ -20,6 +20,7 @@ from scripts.walkforward.sleeve_lab import (
     Sleeve, register_sleeve, build_sleeve, list_sleeves,
     evaluate_sleeve, format_sleeve_report, register_overlay, build_overlay,
 )
+from app.data.alpaca_crypto_provider import DEFAULT_CRYPTO_UNIVERSE, CRYPTO_HISTORY_START
 
 # Live trend book (the current paper book) — the Track-B base. Mirrors TSMOMConfig defaults.
 LIVE_TREND_UNIVERSE = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "UUP"]
@@ -70,9 +71,66 @@ def live_trend_book_returns(*, start: date = DEEP_HISTORY_START,
     return tsmom_backtest(closes, TSMOMConfig()).returns.dropna()
 
 
+# ── Crypto trend (P3-1) — TSMOM on Alpaca spot crypto ──────────────────────────────
+# ONE pre-registered config (registration_id=P3-1-CRYPTO-TREND, n_trials=1 — no sweeping):
+# crypto trades 365 days/yr so ann=365 + CALENDAR-day lookbacks (~1/3/6/12mo); long-flat
+# (Alpaca spot can't short); HARD book-level vol target so the wild crypto vol doesn't
+# dominate; conservative 25 bps one-way cost (Alpaca crypto spread+fee >> equity ETFs).
+def crypto_trend_config(**cfg_kw):
+    from app.strategy.tsmom import TSMOMConfig
+    base = dict(
+        universe=list(DEFAULT_CRYPTO_UNIVERSE),
+        lookbacks=(30, 90, 180, 365),   # calendar-day ~1/3/6/12mo (crypto 365-day year)
+        vol_lookback=90, target_vol=0.10, vol_floor=0.30,   # crypto vol floor >> equity 0.03
+        rebalance_days=7, max_weight=0.25, max_gross=1.0, allow_short=False,
+        cost_bps=25.0, ann=365, book_vol_target=0.20, book_vol_max_leverage=2.0,
+    )
+    base.update(cfg_kw)
+    return TSMOMConfig(**base)
+
+
+def fetch_crypto_universe_closes(symbols, *, start: date = CRYPTO_HISTORY_START,
+                                 end: Optional[date] = None) -> pd.DataFrame:
+    """Daily crypto close panel from Alpaca (columns = symbols with data)."""
+    from app.data.alpaca_crypto_provider import AlpacaCryptoProvider
+    closes = AlpacaCryptoProvider().get_daily_closes(list(symbols), start=start, end=end)
+    if closes is None or closes.empty:
+        raise RuntimeError("no crypto closes fetched from Alpaca")
+    return closes
+
+
+def crypto_trend_book_returns(*, start: date = CRYPTO_HISTORY_START,
+                              end: Optional[date] = None) -> pd.Series:
+    """The crypto TSMOM book's daily net returns (the P3-1 sleeve return stream)."""
+    from app.strategy.tsmom import tsmom_backtest
+    cfg = crypto_trend_config()
+    closes = fetch_crypto_universe_closes(cfg.universe, start=start, end=end)
+    return tsmom_backtest(closes, cfg).returns.dropna()
+
+
 # ──────────────────────────────────────────────────────────────────────────────────
 # Sleeve builders (registry)
 # ──────────────────────────────────────────────────────────────────────────────────
+@register_sleeve("crypto_trend")
+def build_crypto_trend(*, prices: Optional[pd.DataFrame] = None, **cfg_kw) -> Sleeve:
+    """TSMOM on the Alpaca spot-crypto basket (BTC/ETH + liquid alts), long-flat, HARD
+    book-vol-targeted, 365-day annualized. Declared `diversifier` — the P3-1 thesis is a
+    new, lowly-correlated (to ETF trend) return stream. ONE pre-registered config -> n_trials=1.
+    Honest power floor: Alpaca crypto history starts ~2021 (~5y), so CAPITAL is structurally
+    unreachable on backtest alone (n_folds) — PAPER + live-paper ratification only."""
+    from app.strategy.tsmom import tsmom_backtest
+    cfg = crypto_trend_config(**cfg_kw)
+    if prices is None:
+        prices = fetch_crypto_universe_closes(cfg.universe)
+    res = tsmom_backtest(prices, cfg)
+    return Sleeve(label="crypto_trend", component_type="diversifier",
+                  returns=res.returns.dropna(), spy_prices=None, periods_per_year=365,
+                  n_trials_registered=1, registration_id="P3-1-CRYPTO-TREND",
+                  notes=f"TSMOM on {len(cfg.universe)} Alpaca cryptos; calendar lookbacks "
+                        f"{cfg.lookbacks}; long-flat; hard book_vol_target={cfg.book_vol_target}; "
+                        f"ann=365; {cfg.cost_bps}bps 1-way")
+
+
 @register_sleeve("turn_of_month")
 def build_turn_of_month(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                         **cfg_kw) -> Sleeve:
