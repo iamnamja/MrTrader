@@ -17,6 +17,7 @@
 | **yfinance** | Free (no key) | — | Daily + 5-min equity/ETF bars; TSMOM ETF prices; SPY; intraday daily-feature provider | ✅; survivorship + depth caveats |
 | **FRED** (St. Louis Fed) | Free | (public graph JSON) | Macro time series → `macro_calendar` context + regime features | ✅ |
 | **Alpha Vantage** | Free (rate-limited) | `alphavantage_api_key` | Fundamentals fallback | ✅ fallback only |
+| **FINRA Reg SHO** (daily short-volume) | **Free (no key)** | — (public CDN) | Daily off-exchange short-VOLUME per NMS name → aggregate short-sell-pressure timing signal (P3-5) | ✅ CDN serves ~2019-01-02→ |
 
 Infra (not data feeds): **Redis** (queue/cache), **SQLite/Postgres** (app DB).
 
@@ -77,3 +78,10 @@ Infra (not data feeds): **Redis** (queue/cache), **SQLite/Postgres** (app DB).
 ## Free alternatives considered (if a vendor calendar ever lapses)
 
 Official release schedules — **free, authoritative, PIT-safe** (published a year ahead): Fed (FOMC dates), BLS (NFP/CPI/PPI), BEA (GDP/PCE), Census (retail sales). FRED `/releases/dates` also approximates a calendar from series we already pull. Avoid scraping (investing.com/forexfactory — fragile + ToS).
+
+## FINRA Reg SHO daily short-volume — Free (no key)
+
+- **Source:** `https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt` — the FREE consolidated (CNMS) daily short-sale-volume file. Pipe-delimited: `Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market`, ~8–12k NMS names/day. Module: `app/data/finra_short_volume.py` (downloads+caches incrementally → `data/finra_short_volume.parquet`: distilled daily aggregate short-vol ratio + per-symbol).
+- **Coverage gotcha:** the CDN serves **~2019-01-02 → present** (~1,875 trading days as of 2026-06-17). Pre-2019 dates return an S3 `AccessDenied` XML stub (handled → `None`); weekends/holidays 404. This is ~10× the power of the bi-monthly NYSE/Nasdaq short-INTEREST that the Alpha-v8 G2 overlay was killed on.
+- **Used for:** P3-5 aggregate short-sell-pressure timing signal (`app/research/short_volume.py`). Verdict 2026-06-17: signal real but a real-but-weak near-miss (not a standalone edge) → P3-4 composite component + post-Norgate XS. The aggregate ratio is survivorship-bias-free (a market-wide sum); per-name cross-sectional use needs survivorship-free names (Norgate).
+- **PIT:** the day-t ratio is knowable after t's close → a t+1 signal.

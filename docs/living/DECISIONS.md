@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-17 (Alpha-v9 P3-5) — FINRA daily short-volume: signal is REAL but a real-but-weak near-miss (not a standalone edge)
+
+**Context**: The Alpha-v8 G2 short-interest overlay was KILLED for **power** (bi-monthly, ~190 obs), not because it was wrong. P3-5 replaces it with **FINRA daily off-exchange short-volume** (free; `cdn.finra.org`, ~2019-01-02→ = 1,875 trading days, ~10× the power) — same economic idea (short-selling pressure), completely different power regime.
+
+**Decision**: Built `app/data/finra_short_volume.py` (downloads + caches the daily CNMS files → a distilled daily panel: aggregate market short-vol ratio + per-symbol) and `app/research/short_volume.py` (the aggregate-timing signal + a frozen pre-registered verdict `P3-5-SHORTVOL-AGG`). **Scoping call: the free-data test is AGGREGATE timing (market-wide short-vol ratio → time SPY), NOT cross-sectional** — a per-name long/short on free data is survivorship-biased (the contamination Norgate/P4-1 fixes); the aggregate ratio is a market-wide sum with no survivorship bias. **Result: the signal is genuinely REAL but NOT a standalone edge.** The pre-registered overlay PASSES its own test (net Sharpe 0.99 > buy-hold 0.92, HAC p 0.001) and the informed-short prior is confirmed (next-day SPY return by short-vol z tercile: high −0.009% < low +0.096%; the opposite direction is −0.34 Sharpe; robust ex-COVID). **But the deeper rigor disqualifies it as a standalone sleeve:** residual alpha vs SPY is insignificant (+2.6%/yr, HAC t 0.95) — it is mostly timed SPY beta (β 0.83) — and it is **not sub-period stable** (H1 2019-22 −0.06 vs buy-hold, H2 2022-26 +0.23). → **Route the signal to the P3-4 risk-premia composite (gate the basket) as a component, and to a cross-sectional test post-Norgate** (where informed-shorting is strongest and survivorship bias is fixed). No live change; report-only.
+
+**Rationale**: My first pre-registered criterion (Sharpe≥0.30 + HAC p<0.05 + beats buy-hold) was too lenient — anything mostly-long-SPY clears HAC significance in a bull market, so the test couldn't separate edge from timed beta. Rather than silently overturn the frozen PASS (goalpost-moving — the OPT-5/R4 trap the project explicitly avoids), I **enriched** the verdict with the project's own standard rigor — the Ruler-v2 residual-alpha (`multifactor_alpha` vs SPY) and the F3-carry sub-period stability guard — which decide an honest `standalone_edge` flag without changing the pre-registered output. The verdict co-headlines both, exactly as P3-1 (real low-corr stream, not capital) and P3-3 (real premium, cost-killed) did.
+
+**Consequences**: We now own a **powered** short-volume data layer (the G2 power problem is solved) and a confirmed-real-but-weak aggregate signal. The standalone-overlay line is closed; the signal lives on as a P3-4 component and a post-Norgate XS candidate. Not a WF/CPCV pipeline change → `PIPELINE_ARCHITECTURE.md` untouched. 14 tests; app/ flake8 clean. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-17 (P3-5) + ALPHA_V9_ROADMAP §P3-5 + DATA_PROVIDERS (FINRA).
+
+---
+
 ## 2026-06-16 (Alpha-v9 P3-1) — crypto trend ENABLED in live-paper (report-only OOS tracker; NO capital)
 
 **Context**: P3-1 found crypto-trend to be a real low-corr stream but a PAPER-CANDIDATE, not a capital allocation (Track-B vs the trend book FAILs; CAPITAL is power-floored by ~5y history). The honest next step is to accrue a forward OUT-OF-SAMPLE live-paper record so any future capital call rests on live data, not the short backtest. No live-execution crypto sleeve existed.
