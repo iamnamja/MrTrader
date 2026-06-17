@@ -269,10 +269,19 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   **exploratory-only**; anchor the prior on **published VRP literature**; **promote nothing from the
   historical backtest alone — require a live-paper track on Alpaca NBBO.** **Success:** live-paper VRP
   shows a real standalone Sharpe net of realistic costs over ≥1 quarter incl. ≥1 vol spike.
-- **P3-3 — Overnight vs intraday decomposition.** `[ClaudeMax #3; ChatGPT #8; Grok #3]` The equity risk
-  premium largely accrues overnight (close→open); tradeable with **MOC/MOO** orders — no tick data.
-  **Turnover is the whole risk** (daily → ~10%/yr cost drag). **Success:** a pre-registered net-of-cost
-  test where the overnight premium clears realistic round-trip costs; else kill cleanly.
+- **P3-3 — Overnight vs intraday decomposition. ✅ DONE 2026-06-16 → ❌ KILL (clean).** `[ClaudeMax #3;
+  ChatGPT #8; Grok #3]` The equity risk premium largely accrues overnight (close→open); tradeable with
+  **MOC/MOO** orders — no tick data. **Turnover is the whole risk.** Built `app/research/overnight_intraday.py`
+  (decomposition + equal-weight-universe legs + cost-grid sweep + frozen verdict `P3-3-OVERNIGHT-INTRADAY`),
+  a symmetric `intraday_premium_backtest`, `scripts/run_overnight_intraday.py`. **The overnight effect is
+  genuinely real** (equal-weight liquid-ETF universe SPY/QQQ/IWM/EFA/EEM/DIA, 2007→/4891d: overnight gross
+  Sharpe +0.53 / CAGR +6.4% vs intraday +0.27 / +3.0%) **but the daily-round-trip cost cliff erases it:**
+  net overnight Sharpe +0.53→+0.34 (0.5bps/side)→+0.16 (1bps)→−0.22 (2bps)→−1.35 (5bps). At the realistic
+  1bps/side the overnight net Sharpe is +0.16 < the 0.30 floor → **KILL** (turnover is the whole risk, as
+  predicted; even gross +0.53 is uncompelling + largely beta). Sharpens the prior F1-OVN single-SPY FAIL.
+  Opus deep-dive (SHIP, no bugs): OHLC adjustment-basis validated empirically (legs reconcile to
+  close-to-close at machine epsilon, no look-ahead). 11 P3-3 + 3 calendar-premia tests; report-only.
+  **The overnight leg is retained as a candidate component for the P3-4 risk-premia composite.**
 - **P3-4 — Risk-premia composite (gate the basket).** `[Ⓔ; ClaudeMax]` Equal-risk vol-targeted blend of
   {carry returns, credit-timing returns, overnight, daily-short-volume}; run *that single stream* through
   the (fixed, P0-2) Track-B. **Success:** the composite clears bars no single component did → monetize the

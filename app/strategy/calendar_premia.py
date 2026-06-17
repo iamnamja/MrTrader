@@ -143,3 +143,29 @@ def overnight_premium_backtest(bars: pd.DataFrame, cfg: OvernightConfig) -> Cale
     net = (overnight - round_trip).rename(f"overnight_{cfg.symbol}")
     position = pd.Series(1.0, index=df.index)          # always long overnight
     return CalendarPremiaResult.from_returns(f"overnight_{cfg.symbol}", net, position)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────
+# Intraday premium (open -> close) — the symmetric counterpart of the overnight leg
+# ──────────────────────────────────────────────────────────────────────────────────
+@dataclass
+class IntradayConfig:
+    symbol: str = "SPY"
+    cost_bps: float = 1.0        # per-SIDE cost; a daily open-buy + close-sell = 2 sides
+    ann: int = ANN
+
+
+def intraday_premium_backtest(bars: pd.DataFrame, cfg: IntradayConfig) -> CalendarPremiaResult:
+    """Long the intraday (open[t] -> close[t]) session every day, flat overnight. The
+    symmetric counterpart of overnight_premium_backtest: open[t] and close[t] are both
+    same-day (no shift needed), so it is PIT-safe by construction. Charges a full
+    round-trip (2 * cost_bps) PER DAY (buy at open, sell at close). Together the two legs
+    reconcile to the close-to-close return: (1+overnight)(1+intraday) = close[t]/close[t-1]."""
+    df = _require_cols(bars, ["open", "close"], "intraday_premium_backtest")
+    open_ = df["open"].astype(float)
+    close = df["close"].astype(float)
+    intraday = close / open_ - 1.0                    # open[t] -> close[t]; same-day, PIT-safe
+    round_trip = 2.0 * (cfg.cost_bps / 1e4)           # buy at open, sell at close daily
+    net = (intraday - round_trip).rename(f"intraday_{cfg.symbol}")
+    position = pd.Series(1.0, index=df.index)          # always long intraday
+    return CalendarPremiaResult.from_returns(f"intraday_{cfg.symbol}", net, position)
