@@ -314,11 +314,22 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   US equities** → re-run the contaminated kills (**PEAD, F2 stat-arb, any single-name/event work**) on
   clean data before declaring them dead (C4). **Success:** PEAD/F2 re-tested on survivorship-free data;
   each gets a *final* honest verdict (real, dead, or still underpowered).
-- **P4-2 — Futures trend + carry research.** `[C5; all 5]` Using Norgate continuous futures *with roll/
-  carry* (the lever untestable on free data; our yfinance POC's SR +0.14 was *not* evidence against carry
-  — just evidence you can't test it on dirty `=F` series). One pre-registered packet: trend-only,
-  carry-only, trend+carry, asset-class risk caps, Track-B vs ETF trend, crisis analysis. **Success:** a
-  pre-registered futures book clears the gate → *then and only then* P4-3.
+- **P4-2 — Futures trend + carry research. ✅ DONE 2026-06-18 → CARRY PASSES (real, modern, diversifying);
+  trend decayed; the TREND+CARRY book is the deployable result.** `[C5; all 5]` On the survivorship-free
+  Norgate mirror (73-market liquid universe): `app/research/futures_data.py` (correct difference-adjusted
+  returns `ΔCCB/unadj_prev` — 27/105 markets have negative back-adj close — winsorized; non-micro/non-STIR
+  filter), `futures_carry.py` (term-structure carry), sleeves `P4-2-FUT-TREND`/`P4-2-FUT-CARRY`,
+  `scripts/run_futures_research.py`. **CARRY: standalone Sharpe 0.67, positive in EVERY sub-period incl.
+  modern (2010-19 +1.00, post-2015 +0.84), economically-correct signs, cost-robust (0.65 @2×); official
+  Ruler-v2 Track-A PAPER-PASS (mean_sharpe 0.82, path_t 10.6, hac_p 0.0000); corr-to-live-trend 0.25;
+  Track-B dSR +0.17 (0.72→0.89)** — the program's strongest diversifier, a CAPITAL-candidate via live-paper.
+  **TREND alone: full-sample 0.83 but ENTIRELY pre-2010 (post-2015 +0.02) → fails the sub-period stability
+  guard → not standalone; the crisis-convex partner (corr-to-carry 0.10).** **TREND+CARRY equal-risk book:
+  Sharpe ~1.0, post-2015 +0.57, DD −29% (vs −39%/−50% alone)** — the canonical managed-futures result.
+  Deep-dive handled the difference-adjustment + CL-2020 negative-oil blowup (winsor) + carry PIT (expiry =
+  ex-ante schedule, not price look-ahead). 18 tests; report-only. **→ paper-deploy the trend+carry book to
+  accrue the live-paper record CAPITAL needs (mirrors the crypto live-paper pattern); P4-3 (IBKR execution)
+  only if the live-paper book holds.**
 - **P4-3 — IBKR adapter (only if P4-2 passes).** `[C5]` 👤🔴 Minimal futures-execution adapter + tiny-live
   execution validation. **Do not build before P4-2 passes.**
 
