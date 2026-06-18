@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-18 (Alpha-v9 P4-2) — futures CARRY is a real, modern, diversifying edge; trend has decayed
+
+**Context**: With the Norgate futures mirror local, P4-2 tests the two managed-futures factors free data couldn't: cross-asset TREND and CARRY, on a survivorship-free 73-market liquid universe (`app/research/futures_data.py` liquid filter; `futures_carry.py` term-structure carry; sleeves `P4-2-FUT-TREND` / `P4-2-FUT-CARRY`; `scripts/run_futures_research.py`).
+
+**Decision (verdicts):**
+- **CARRY = a real, MODERN, diversifying premium → CAPITAL-candidate (via live-paper).** Standalone Sharpe 0.67 and — unlike trend — **positive in EVERY sub-period including the modern regime** (2010-19 +1.00, post-2015 +0.84); economically-correct signs (NG deep contango, energy backwardated, grains contango); cost-robust (Sharpe 0.65 at 2× cost). Official Sleeve-Lab Ruler-v2 **Track-A PAPER-PASS** (mean_sharpe 0.82, path_t 10.6, hac_p 0.0000); CAPITAL-FAIL only on the structural blocks (needs live-paper + n_folds≥10), same path as crypto. **corr to live ETF-trend 0.25; Track-B dSR +0.17 (book Sharpe 0.72→0.89)** — the strongest diversification result the program has produced (vs crypto's −0.17).
+- **TREND alone = real historically but DECAYED → NOT a standalone modern edge.** Full-sample Sharpe 0.83 is *entirely* pre-2010 (1977-99 +1.33, 2000-09 +1.02) — modern era is flat (2010-19 −0.03, post-2015 +0.02); it fails the pre-registered sub-period stability guard. Its role is the **crisis-convex partner in a trend+carry book** (corr to carry only 0.10): the equal-risk **TREND+CARRY book is Sharpe ~1.0 with post-2015 +0.57 and shallower DD (−29% vs −39%/−50% alone)** — the canonical managed-futures result.
+
+**Rationale / deep-dive (what could distort the output):** (1) Norgate `&MKT_CCB` is **difference (Panama) back-adjusted** — 27/105 markets have negative back-adj close, so the correct return is `ΔCCB / unadj_prev` (not `pct_change(CCB)`); fed to the TSMOM engine via a synthetic positive price. (2) **Near-zero-denominator blowup** (CL on 2020-04-20 negative oil → a −306% raw day) is winsorized to ±50%/day. (3) **Carry PIT**: position = carry.shift(1); the expiry proxy (each contract's last trading date) is ex-ante-known *schedule* info, not price look-ahead (carry uses only day-t closes). (4) **Mild survivorship caveat**: the universe filter uses *current* liquidity (low risk for major futures; documented). (5) Config is the **already-validated live trend signal** with only sizing scaled for a many-market shortable book — no return-tuning. 18 tests (incl. negative-CCB sanity, winsor, carry sign convention/annualization, PIT). All report-only — no live change.
+
+**Consequences**: First genuinely new, deployable edge since trend. Next: **paper-deploy the futures trend+carry book** (carry as the engine, trend as the crisis hedge) to accrue the live-paper record CAPITAL needs — mirrors the crypto live-paper pattern. Not a WF/CPCV-pipeline or live-capital change yet. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-18 (P4-2) + ALPHA_V9_ROADMAP §P4-2 + DATA_PROVIDERS (Norgate).
+
+---
+
 ## 2026-06-17 (Alpha-v9 P4) — bought Norgate Futures + mirrored it to a local parquet store
 
 **Context**: P4-1/P4-2 need paid data (the unanimous #1 reviewer buy). Norgate sells per-asset packages; the relevant ones are **US Stocks** (survivorship-free equities → re-test PEAD/F2 kills, P4-1) and **Futures** (continuous + term structure → trend + carry, P4-2). Both together ≈ $1k/yr (US Stocks needs the **Platinum** tier — only Platinum/Diamond include delisted securities + historical index constituents; Silver/Gold are survivorship-biased and useless for backtesting).

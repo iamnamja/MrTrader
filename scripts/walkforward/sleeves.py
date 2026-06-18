@@ -131,6 +131,55 @@ def build_crypto_trend(*, prices: Optional[pd.DataFrame] = None, **cfg_kw) -> Sl
                         f"ann=365; {cfg.cost_bps}bps 1-way")
 
 
+# ── Futures (P4-2) — Norgate cross-asset trend + carry (reads the local parquet mirror) ──
+def futures_trend_config(universe):
+    """LIVE trend SIGNAL params (lookbacks/vol_lookback/target_vol/weekly), only the SIZING
+    scaled for a many-market SHORTABLE book (smaller per-name cap, higher gross cap, book-vol
+    target). No return-tuning — the signal is the already-validated live config."""
+    from app.strategy.tsmom import TSMOMConfig
+    return TSMOMConfig(universe=list(universe), lookbacks=(21, 63, 126, 252), vol_lookback=60,
+                       target_vol=0.10, rebalance_days=5, max_weight=0.10, max_gross=5.0,
+                       allow_short=True, vol_floor=0.03, cost_bps=3.0, ann=252,
+                       book_vol_target=0.12, book_vol_max_leverage=4.0)
+
+
+@register_sleeve("futures_trend")
+def build_futures_trend(*, prices: Optional[pd.DataFrame] = None, **cfg_kw) -> Sleeve:
+    """Cross-asset TSMOM on the liquid Norgate futures universe (~73 markets), long-short.
+    HONEST: a real historical edge that has DECAYED to ~flat in the modern regime (post-2015
+    Sharpe ~0.0); declared `diversifier`, ONE pre-registered config -> n_trials=1. Its value
+    is as the crisis-convex partner in a trend+carry book, not standalone."""
+    from app.strategy.tsmom import tsmom_backtest
+    from app.research import futures_data as fd
+    uni = fd.liquid_universe()
+    if prices is None:
+        prices = fd.synthetic_price_panel(uni)
+    res = tsmom_backtest(prices, futures_trend_config(uni))
+    return Sleeve(label="futures_trend", component_type="diversifier",
+                  returns=res.returns.dropna(), spy_prices=None, periods_per_year=252,
+                  n_trials_registered=1, registration_id="P4-2-FUT-TREND",
+                  notes=f"TSMOM on {len(uni)} Norgate futures; long-short; live signal params; "
+                        f"book_vol_target=0.12; difference-adj returns (ΔCCB/unadj, winsorized)")
+
+
+@register_sleeve("futures_carry")
+def build_futures_carry(**cfg_kw) -> Sleeve:
+    """Cross-sectional CARRY on the liquid Norgate futures universe (term-structure slope).
+    The robust, MODERN futures premium: standalone Sharpe ~0.67, positive in EVERY sub-period
+    (post-2015 ~0.84) where trend is flat; corr-to-live-trend ~0.25; Track-B dSR +0.17.
+    Declared `risk_premium`, ONE pre-registered config -> n_trials=1."""
+    from app.research import futures_data as fd, futures_carry as fc
+    uni = fd.liquid_universe()
+    rets = fd.returns_panel(uni)
+    carry = fc.carry_panel(uni)
+    r = fc.carry_backtest(rets, carry)
+    return Sleeve(label="futures_carry", component_type="risk_premium",
+                  returns=r.dropna(), spy_prices=None, periods_per_year=252,
+                  n_trials_registered=1, registration_id="P4-2-FUT-CARRY",
+                  notes=f"cross-sectional term-structure carry on {len(uni)} Norgate futures; "
+                        f"inverse-vol, book_vol_target=0.12, 3bps")
+
+
 @register_sleeve("turn_of_month")
 def build_turn_of_month(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                         **cfg_kw) -> Sleeve:
