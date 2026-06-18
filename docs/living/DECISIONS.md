@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-17 (Alpha-v9 P4) — bought Norgate Futures + mirrored it to a local parquet store
+
+**Context**: P4-1/P4-2 need paid data (the unanimous #1 reviewer buy). Norgate sells per-asset packages; the relevant ones are **US Stocks** (survivorship-free equities → re-test PEAD/F2 kills, P4-1) and **Futures** (continuous + term structure → trend + carry, P4-2). Both together ≈ $1k/yr (US Stocks needs the **Platinum** tier — only Platinum/Diamond include delisted securities + historical index constituents; Silver/Gold are survivorship-biased and useless for backtesting).
+
+**Decision**: Bought **Futures "Silver" only** (~$297/yr) — the higher-EV buy (it extends our one validated edge, trend, across 105 markets AND unlocks carry, the lever untestable on free data). **Deferred US Stocks Platinum** ($693/yr) on cost — it re-tests already-dead things (PEAD hedged Sharpe −0.37). Norgate is access-licensed (local NDU DB, proprietary, **not owned**), so I built `app/data/norgate_provider.py` to **mirror the futures data into our own parquet store** `data/norgate_futures/` (gitignored — licensed, never committed): both continuous series (back-adj + unadjusted) for all 105 markets + every individual contract (full term structure). **Mirrored 2026-06-17: 105 markets, 23,575 contracts, ~12.1M rows, 174 MB, ~94s.** `load_continuous()`/`load_contracts()` read parquet only → no NDU dependency for research re-runs.
+
+**Rationale**: Mirroring locally gives speed + reproducibility while subscribed and decouples research from NDU being up. The mirror is for use **while subscribed** (Norgate licenses access for the period + prohibits redistribution — hence gitignored); the DERIVED artifacts (signals, backtests, verdicts) are ours regardless, so the plan is a focused P4-2 sprint → freeze conclusions → let the sub lapse if desired. Futures-first matches the program thesis (trend is the only proven edge; carry is the untestable-on-free-data prize); equity-kill closure (P4-1) is lower-EV and deferrable.
+
+**Consequences**: We now hold a complete, survivorship-free futures dataset locally (30+ yr; GC to 1978, CL to 1983). Next: build **P4-2 (futures trend + carry)** off the parquet mirror. Not a WF/CPCV or live change. 8 provider tests; app/ flake8 clean. See DATA_PROVIDERS (Norgate section) + PROJECT_STATE + ALPHA_V9_ROADMAP §Phase 4.
+
+---
+
 ## 2026-06-17 (Alpha-v9 P3-5) — FINRA daily short-volume: signal is REAL but a real-but-weak near-miss (not a standalone edge)
 
 **Context**: The Alpha-v8 G2 short-interest overlay was KILLED for **power** (bi-monthly, ~190 obs), not because it was wrong. P3-5 replaces it with **FINRA daily off-exchange short-volume** (free; `cdn.finra.org`, ~2019-01-02→ = 1,875 trading days, ~10× the power) — same economic idea (short-selling pressure), completely different power regime.
