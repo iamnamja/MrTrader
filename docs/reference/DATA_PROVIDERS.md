@@ -18,6 +18,7 @@
 | **FRED** (St. Louis Fed) | Free | (public graph JSON) | Macro time series → `macro_calendar` context + regime features | ✅ |
 | **Alpha Vantage** | Free (rate-limited) | `alphavantage_api_key` | Fundamentals fallback | ✅ fallback only |
 | **FINRA Reg SHO** (daily short-volume) | **Free (no key)** | — (public CDN) | Daily off-exchange short-VOLUME per NMS name → aggregate short-sell-pressure timing signal (P3-5) | ✅ CDN serves ~2019-01-02→ |
+| **Norgate** (futures) | **Futures "Silver" ~$297/yr** (6-mo prepaid) | — (local NDU DB) | Survivorship-free futures: 105 markets, continuous (back-adj + unadj) + full term structure → P4-2 trend + carry | ✅ subscribed 2026-06-17; mirrored locally |
 
 Infra (not data feeds): **Redis** (queue/cache), **SQLite/Postgres** (app DB).
 
@@ -85,3 +86,11 @@ Official release schedules — **free, authoritative, PIT-safe** (published a ye
 - **Coverage gotcha:** the CDN serves **~2019-01-02 → present** (~1,875 trading days as of 2026-06-17). Pre-2019 dates return an S3 `AccessDenied` XML stub (handled → `None`); weekends/holidays 404. This is ~10× the power of the bi-monthly NYSE/Nasdaq short-INTEREST that the Alpha-v8 G2 overlay was killed on.
 - **Used for:** P3-5 aggregate short-sell-pressure timing signal (`app/research/short_volume.py`). Verdict 2026-06-17: signal real but a real-but-weak near-miss (not a standalone edge) → P3-4 composite component + post-Norgate XS. The aggregate ratio is survivorship-bias-free (a market-wide sum); per-name cross-sectional use needs survivorship-free names (Norgate).
 - **PIT:** the day-t ratio is knowable after t's close → a t+1 signal.
+
+## Norgate — Futures "Silver" (~$297/yr, 6-mo prepaid) — subscribed 2026-06-17
+
+- **Access model:** NOT an API/key. Norgate maintains a **local database** via the **Norgate Data Updater (NDU)** desktop app; the **`norgatedata`** Python package reads it. **NDU must be installed, signed in, synced, and RUNNING** for `norgatedata` to return data. License-gated: access requires an **active subscription** and the local DB is a proprietary, license-locked format (**not owned** — unlike the Polygon flat files; redistribution prohibited).
+- **What we have:** the **Futures** package — 105 markets, **survivorship-free**, 30+ yr individual-contract history + pre-built continuous contracts. Databases exposed: `Continuous Futures` (224 series = `&MKT` unadjusted + `&MKT_CCB` back-adjusted), `Futures` (27k individual contracts), plus Cash Commodities / Forex Spot / World Indices / Economic.
+- **LOCAL MIRROR (so we don't depend on NDU for every re-run):** `app/data/norgate_provider.py` mirrors the futures data into our OWN parquet store **`data/norgate_futures/`** (gitignored — licensed, never committed): `continuous/{MKT}.parquet` (both price types, long) + `contracts/{MKT}.parquet` (full term structure). **Mirrored 2026-06-17: 105 markets, 23,575 contracts, ~12.1M rows, 174 MB** (extract took ~94s). `load_continuous()` / `load_contracts()` read parquet only (no NDU). Re-run `extract_continuous()` + `extract_contracts()` (resume-safe) to refresh.
+- **License/retention:** the mirror is for our use **while subscribed** (speed + reproducibility). Retaining/using the raw mirror after the subscription lapses is governed by Norgate's license; the DERIVED research artifacts (signals, backtests, verdicts) are ours regardless. Plan: a focused P4-2 (trend + carry) research sprint, freeze conclusions, then the sub can lapse.
+- **Used for:** P4-2 futures trend + carry. (P4-1 survivorship-free US equities = a separate Norgate "US Stocks Platinum" package, NOT purchased — deferred for cost.)
