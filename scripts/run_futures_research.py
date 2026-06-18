@@ -84,6 +84,10 @@ def main() -> int:
     book = 0.5 * (jb["e"] / jb["e"].std()) + 0.5 * (jb["c"] / jb["c"].std())
     booksh = book.mean() / book.std() * np.sqrt(252)
     print(f"\nTRACK-B: live ETF-trend Sharpe {base:.2f} -> +carry {booksh:.2f}  dSR {booksh-base:+.2f}")
+    print("  [caveat] the combined + Track-B blends are vol-matched IN-SAMPLE (full-period std)")
+    print("  for a relative-Sharpe comparison; a PIT rolling-vol blend is modestly lower. Costs")
+    print("  are a flat 3bps/side (optimistic for the illiquid tail; carry is cost-robust, trend")
+    print("  is cost-sensitive — see DECISIONS 2026-06-18 hardening).")
 
     # official Sleeve-Lab Ruler-v2 Track-A
     print("\n-- official Sleeve-Lab Ruler-v2 (Track-A) --")

@@ -60,6 +60,44 @@ def test_true_returns_sane_when_ccb_goes_negative(mirror):
     assert np.allclose(r.to_numpy(), rets[-len(r):], atol=1e-9)
 
 
+def _write_market_raw(dirpath, market, ccb, ua, *, start="2005-01-03"):
+    """Write CCB + unadjusted arrays directly (to exercise the varying-denominator path)."""
+    n = len(ccb)
+    dates = pd.bdate_range(start, periods=n)
+    frames = []
+    for ptype, c in (("backadjusted", np.asarray(ccb, float)), ("unadjusted", np.asarray(ua, float))):
+        frames.append(pd.DataFrame({
+            "date": dates, "open": c, "high": c, "low": c, "close": c,
+            "volume": 10000.0, "open_interest": 10000.0, "delivery_month": 200503,
+            "price_type": ptype}))
+    pd.concat(frames, ignore_index=True).to_parquet(
+        os.path.join(dirpath, f"{market}.parquet"), index=False)
+
+
+def test_true_returns_uses_prior_unadjusted_denominator(mirror):
+    # VARYING unadjusted level: r_t must be ΔCCB_t / Unadj_{t-1} exactly (not Unadj_t, not
+    # a constant). A bug using the same-day denominator would NOT match.
+    ccb = [100.0, 101.0, 103.5, 102.0]
+    ua = [50.0, 60.0, 75.0, 40.0]
+    _write_market_raw(mirror, "VAR", ccb, ua)
+    r = fd.true_returns("VAR", cap=1.0)
+    expected = [(101.0 - 100.0) / 50.0, (103.5 - 101.0) / 60.0, (102.0 - 103.5) / 75.0]
+    assert np.allclose(r.to_numpy(), expected, atol=1e-12)
+
+
+def test_true_returns_drops_negative_denominator_day(mirror):
+    # CL-2020 pattern: prior UNADJUSTED price goes negative -> that return would be sign-
+    # flipped; the guard must DROP it (NaN), not book a fake gain inside the winsor band.
+    ccb = [100.0, 90.0, 81.0, 85.0]
+    ua = [20.0, -5.0, -8.0, 10.0]          # prior-day negative on the 3rd and 4th rows
+    _write_market_raw(mirror, "NEGD", ccb, ua)
+    r = fd.true_returns("NEGD", cap=1.0)
+    # row1 ok (prior ua=20>0); rows where prior ua<=0 are dropped -> no sign-flipped gain
+    assert r.iloc[0] == pytest.approx((90.0 - 100.0) / 20.0)
+    assert len(r) == 1                      # the two negative-prior-denominator days dropped
+    assert (r > 0).sum() == 0               # no spurious positive return
+
+
 def test_winsorization_caps_blowups(mirror):
     rets = np.r_[np.full(2999, 0.001), [5.0]]         # one absurd +500% day
     _write_market(mirror, "BLW", rets)
