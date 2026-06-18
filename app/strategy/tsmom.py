@@ -61,7 +61,13 @@ class TSMOMConfig:
 
 
 def _daily_returns(prices: pd.DataFrame) -> pd.DataFrame:
-    return prices.pct_change()
+    # Explicit + deprecation-proof equivalent of the old pct_change() default (fill_method=
+    # 'pad'): forward-fill within each instrument first (a non-trading day -> 0 return, the
+    # real move captured on the next trading day; leading pre-listing NaNs stay NaN -> no
+    # position), THEN diff with NO further fill. Pandas is deprecating the implicit pad
+    # default; bare fill_method=None would instead LOSE the post-gap move (NaN). Identical
+    # numerics to before — important: this engine also drives the LIVE equity-trend + crypto.
+    return prices.ffill().pct_change(fill_method=None)
 
 
 def tsmom_signals(prices: pd.DataFrame, cfg: TSMOMConfig) -> pd.DataFrame:

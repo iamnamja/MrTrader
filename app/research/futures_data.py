@@ -36,17 +36,54 @@ from app.data import norgate_provider as ng
 RETURN_CAP = 0.5            # winsorize daily returns to +/-50% (near-zero-denominator guard)
 MIN_DAYS = 2500            # ~10y of history for a robust walk-forward
 MIN_MED_VOL = 5000         # recent median daily contract volume
-MIN_ANN_VOL = 0.02         # exclude ultra-low-vol STIRs (3M SOFR/SONIA ~ <1% ann vol)
+VOL_FLOOR_EXCL = 0.005     # backstop: drop pathological near-zero-vol series
 ANN = 252
+
+# Short-term interest-rate (STIR) futures — a different instrument class (price ~100-yield,
+# tiny vol) that would lever up absurdly under inverse-vol sizing. Excluded by NAME (robust),
+# not by a raw vol threshold (which wrongly cut real low-vol BONDS like the 2-Year T-Note).
+_STIR_NAME_KEYS = ("sofr", "sonia", "euribor", "eurodollar", "fed fund", "federal funds",
+                   "bank bill", "short sterling", "90 day", "90-day", "3 month", "3-month",
+                   "1 month", "1-month", "overnight rate", "cash rate")
+
+
+def _market_names() -> Dict[str, str]:
+    """Per-market display names from the mirror metadata ({} if absent)."""
+    if not os.path.exists(ng.MARKETS_META):
+        return {}
+    try:
+        md = pd.read_parquet(ng.MARKETS_META)
+        return {str(r["market"]): str(r.get("name") or "") for _, r in md.iterrows()}
+    except Exception:
+        return {}
+
+
+def _is_stir(name: str) -> bool:
+    n = name.lower()
+    return any(k in n for k in _STIR_NAME_KEYS)
+
+
+def _is_micro_name(name: str) -> bool:
+    """Micro/mini DUPLICATE of a full-size contract — by name. 'micro' anywhere, or 'mini'
+    that is NOT 'e-mini' (E-mini ES/NQ/RTY are the STANDARD liquid contracts we KEEP)."""
+    n = name.lower()
+    return ("micro" in n) or ("mini" in n and "e-mini" not in n)
 
 
 def true_returns(market: str, *, cap: float = RETURN_CAP) -> pd.Series:
     """Correct daily futures return r_t = (CCB_t - CCB_{t-1}) / Unadj_{t-1}, winsorized to
-    +/- cap. Reads the local mirror (back-adjusted + unadjusted)."""
+    +/- cap. Reads the local mirror (back-adjusted + unadjusted).
+
+    NEGATIVE-DENOMINATOR GUARD (hardening 2026-06-18): when the prior UNADJUSTED price is
+    <= 0 (e.g. WTI/CL on 2020-04-21, prior actual price -37.63), dividing a real point move
+    by a negative level FLIPS the sign of the return — and the result lands INSIDE the +/-cap
+    band, so winsorization can't catch it. We therefore NaN-out (and drop) any day whose
+    prior unadjusted level is non-positive; those days are untradeable artifacts anyway."""
     cb = ng.load_continuous(market, price_type="backadjusted")["close"].astype(float)
     ua = ng.load_continuous(market, price_type="unadjusted")["close"].astype(float)
     df = pd.DataFrame({"cb": cb, "ua": ua}).dropna().sort_index()
-    r = df["cb"].diff() / df["ua"].shift(1)
+    den = df["ua"].shift(1)
+    r = df["cb"].diff() / den.where(den > 0)        # non-positive prior price -> NaN -> dropped
     r = r.replace([np.inf, -np.inf], np.nan).dropna()
     if cap is not None:
         r = r.clip(-abs(cap), abs(cap))
@@ -65,12 +102,27 @@ def _is_micro(market: str, all_markets: set) -> bool:
 
 
 def liquid_universe(*, min_days: int = MIN_DAYS, min_med_vol: float = MIN_MED_VOL,
-                    min_ann_vol: float = MIN_ANN_VOL, exclude_micros: bool = True) -> List[str]:
-    """Objective liquid, deep-history, non-micro, non-STIR futures universe (from the mirror)."""
+                    exclude_micros: bool = True, exclude_stirs: bool = True) -> List[str]:
+    """Objective liquid, deep-history, non-micro, non-STIR futures universe (from the mirror).
+
+    Micros/STIRs are classified by NAME (mirror metadata) when available — robust to ticker
+    quirks (M2K/MHI escape the 'M'-prefix heuristic; the old ann-vol STIR cut wrongly removed
+    real low-vol bonds like the 2-Year T-Note). Falls back to the 'M'-prefix heuristic for
+    micros if names are unavailable.
+
+    NOTE (known limitation — survivorship/selection): membership uses CURRENT (last-60d)
+    liquidity + full-history length, then is applied to all (incl. OOS) folds. For major
+    futures this bias is mild (they were liquid throughout) and the carry edge is independently
+    confirmed in the modern regime where the universe is legitimately liquid; see the
+    `as_of`-quantification in scripts/run_futures_research.py / DECISIONS 2026-06-18."""
     all_m = {f[:-8] for f in os.listdir(ng.CONTINUOUS_DIR) if f.endswith(".parquet")}
+    names = _market_names()
     keep = []
     for m in sorted(all_m):
-        if exclude_micros and _is_micro(m, all_m):
+        nm = names.get(m, "")
+        if exclude_micros and (_is_micro_name(nm) if nm else _is_micro(m, all_m)):
+            continue
+        if exclude_stirs and nm and _is_stir(nm):
             continue
         d = ng.load_continuous(m, price_type="unadjusted")
         if len(d) < min_days:
@@ -78,7 +130,7 @@ def liquid_universe(*, min_days: int = MIN_DAYS, min_med_vol: float = MIN_MED_VO
         med_vol = float(d.tail(60)["volume"].median()) if "volume" in d.columns else 0.0
         if med_vol < min_med_vol:
             continue
-        if _ann_vol(m) < min_ann_vol:
+        if _ann_vol(m) < VOL_FLOOR_EXCL:        # backstop only (STIRs handled by name)
             continue
         keep.append(m)
     return keep

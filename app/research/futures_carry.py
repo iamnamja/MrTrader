@@ -28,22 +28,46 @@ from app.data import norgate_provider as ng
 from app.research import futures_data as fd
 
 ANN = 252
+ROLL_BUFFER_DAYS = 5       # don't use a front contract within this many days of expiry (roll noise)
+MIN_DT_YEARS = 0.04        # need a real expiry gap (~2wk) between front/next
+CARRY_CLIP = 2.0           # winsorize absurd carry (illiquid stub contracts)
+MIN_XS_WIDTH = 5           # min markets with carry on a day to trade the cross-section
+STALE_LIMIT = 10           # max trading days to forward-fill a stale carry value (~2 weeks)
+
+# Futures month codes -> month number (the contract symbol encodes the SCHEDULED delivery
+# month, which is ex-ante known — used for the expiry instead of the realized last trade date,
+# which both leaked hindsight near rolls AND went stale at the data edge).
+_MONTH_CODE = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+               "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
+
+
+def _scheduled_expiry(contract: str):
+    """Parse 'ES-2026U' -> Timestamp(2026-09-15). Day-15 proxy: a constant within-month
+    offset cancels in the front/next gap. Returns NaT if unparseable."""
+    try:
+        tag = str(contract).rsplit("-", 1)[1]
+        yr, mc = int(tag[:4]), tag[4:5]
+        mo = _MONTH_CODE.get(mc.upper())
+        return pd.Timestamp(year=yr, month=mo, day=15) if mo else pd.NaT
+    except Exception:
+        return pd.NaT
 
 
 def carry_series(market: str) -> pd.Series:
-    """Daily annualized carry for one market from its term structure (nearest two contracts)."""
+    """Daily annualized carry from the term structure (nearest two LIVE contracts), using the
+    SCHEDULED (ex-ante) expiry from the contract code — not the realized last-trade date."""
     df = ng.load_contracts(market)[["date", "contract", "close"]].copy()
     df = df.dropna(subset=["close"])
-    df = df[df["close"] != 0.0]
+    df = df[df["close"] > 0.0]                              # >0 (negative close would flip sign)
     if df.empty:
         return pd.Series(dtype=float, name=market)
     df["date"] = pd.to_datetime(df["date"])
-    expiry = df.groupby("contract")["date"].transform("max")
-    df["expiry"] = expiry
-    df = df[df["expiry"] > df["date"]]                      # contract still live on that date
+    df["expiry"] = df["contract"].map(_scheduled_expiry)
+    df = df.dropna(subset=["expiry"])
+    # front must be > ROLL_BUFFER beyond t (scheduled, ex-ante) -> no hindsight, no stale edge
+    df = df[df["expiry"] > df["date"] + pd.Timedelta(days=ROLL_BUFFER_DAYS)]
     if df.empty:
         return pd.Series(dtype=float, name=market)
-    # rank contracts by expiry WITHIN each date; front=1, next=2
     df = df.sort_values(["date", "expiry"])
     df["rank"] = df.groupby("date")["expiry"].rank(method="first")
     front = df[df["rank"] == 1].set_index("date")
@@ -53,11 +77,10 @@ def carry_series(market: str) -> pd.Series:
     if j.empty:
         return pd.Series(dtype=float, name=market)
     dt_years = (j["expiry_n"] - j["expiry_f"]).dt.days / 365.25
-    dt_years = dt_years.where(dt_years > 0.02)              # need a real expiry gap (>~1wk)
+    dt_years = dt_years.where(dt_years > MIN_DT_YEARS)
     carry = (j["close_f"] - j["close_n"]) / j["close_n"] / dt_years
     carry = carry.replace([np.inf, -np.inf], np.nan).dropna()
-    # winsorize absurd values (illiquid stub contracts) to a sane annualized band
-    return carry.clip(-2.0, 2.0).sort_index().rename(market)
+    return carry.clip(-CARRY_CLIP, CARRY_CLIP).sort_index().rename(market)
 
 
 def carry_panel(markets: Optional[Sequence[str]] = None) -> pd.DataFrame:
@@ -86,6 +109,7 @@ class CarryConfig:
     cost_bps: float = 3.0
     book_vol_target: float = 0.12
     book_vol_max_leverage: float = 4.0
+    min_xs_width: int = MIN_XS_WIDTH    # min markets with carry on a day to trade the cross-section
     ann: int = ANN
 
 
@@ -95,11 +119,15 @@ def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
     z-score) × inverse-vol, clipped, gross-capped, book-vol-targeted; PIT (carry at t →
     position t+1); cost on |Δweight|. `returns` = winsorized true returns panel."""
     rets = returns.sort_index()
-    cz_raw = carry.reindex(rets.index).ffill()
+    cz_raw = carry.reindex(rets.index).ffill(limit=STALE_LIMIT)   # cap stale-carry contamination
     # cross-sectional z-score of carry each day (demean + standardize across markets)
     mu = cz_raw.mean(axis=1)
-    sd = cz_raw.std(axis=1).replace(0.0, np.nan)
+    sd = cz_raw.std(axis=1)
+    sd = sd.where(sd > 1e-8)                              # tolerance guard (std is never exactly 0)
     cz = cz_raw.sub(mu, axis=0).div(sd, axis=0).clip(-3, 3)
+    # don't trade a too-thin cross-section (a 1-2 market day = a bet on noise, not a factor)
+    n_valid = cz_raw.notna().sum(axis=1)
+    cz = cz.where(n_valid >= cfg.min_xs_width)
 
     # inverse-vol scaling per instrument (PIT trailing vol)
     inst_vol = (rets.rolling(cfg.vol_lookback, min_periods=cfg.vol_lookback).std()
@@ -123,6 +151,10 @@ def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
     blev = (cfg.book_vol_target / bvol).clip(upper=cfg.book_vol_max_leverage).shift(1)
     net_gross = gross_ret * blev.fillna(0.0)
 
-    turnover = w.diff().abs().sum(axis=1).fillna(0.0)
-    cost = turnover * (cfg.cost_bps / 1e4) * blev.fillna(0.0)
+    # cost on the ACTUAL traded (levered) weights W = w*blev, so daily re-leveraging turnover
+    # from the vol overlay is charged too (charging |Δw|*blev understates it by ~half).
+    blev_f = blev.fillna(0.0)
+    W = w.mul(blev_f, axis=0)
+    turnover = W.diff().abs().sum(axis=1).fillna(0.0)
+    cost = turnover * (cfg.cost_bps / 1e4)
     return (net_gross - cost).dropna().rename("futures_carry")

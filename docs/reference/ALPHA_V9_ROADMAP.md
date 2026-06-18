@@ -329,7 +329,13 @@ sleeve) + P1-3 (credit-overlay shadow verdict ~mid-July).**
   Deep-dive handled the difference-adjustment + CL-2020 negative-oil blowup (winsor) + carry PIT (expiry =
   ex-ante schedule, not price look-ahead). 18 tests; report-only. **→ paper-deploy the trend+carry book to
   accrue the live-paper record CAPITAL needs (mirrors the crypto live-paper pattern); P4-3 (IBKR execution)
-  only if the live-paper book holds.**
+  only if the live-paper book holds.** **HARDENED 2026-06-18** (4-agent adversarial Opus review): fixed a
+  negative-denominator sign-flip, carry expiry now from the scheduled contract code (resolved roll-time
+  hindsight + a 1-3mo recent-carry staleness bug), carry cross-section guards, the `pct_change` deprecation
+  (live trend unchanged), universe micros/STIRs by name (73→76 markets, real bonds kept). Survivorship flag
+  **quantified immaterial** (full 0.66 vs ≤2005-history 0.65). Verdict CONFIRMED (carry PAPER-PASS point_SR
+  0.81, post-2015 +0.89, Track-B +0.17); +6 real regression tests. **Full-book run: ADD CARRY to the live
+  ETF-trend book (0.72→0.89); do NOT add futures-trend (decayed + redundant, →0.57).**
 - **P4-3 — IBKR adapter (only if P4-2 passes).** `[C5]` 👤🔴 Minimal futures-execution adapter + tiny-live
   execution validation. **Do not build before P4-2 passes.**
 

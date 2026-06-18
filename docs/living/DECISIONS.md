@@ -4,6 +4,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-18 (Alpha-v9 P4-2 hardening) — futures process audited & hardened; carry edge SURVIVES; deploy carry, not futures-trend
+
+**Context**: Before relying on the P4-2 carry result, ran a 4-agent adversarial Opus review (look-ahead/PIT, data-integrity, backtest-math, tests/quality) over the whole futures pipeline. It found real bugs — none of which overturned the verdict, but several that had to be fixed to TRUST it.
+
+**Fixes shipped (all verified):**
+1. **Negative-denominator sign-flip** (`futures_data.true_returns`): when the prior UNADJUSTED price is ≤0 (CL 2020-04-21, −37.63), `ΔCCB/neg` flipped a real loss into a +23.5% *gain* INSIDE the winsor band (uncaught). Now NaN-guarded (`den.where(den>0)`). Same `close>0` guard added to `carry_series`.
+2. **Carry expiry from the contract code, not the realized last-trade date** (`carry_series`): the old `groupby max(date)` proxy leaked hindsight in front/next selection near rolls AND made the **recent quarter of carry go stale** (live contracts at the mirror edge collapsed to one expiry → dropped → ffill'd 1-3 months). Now parses the scheduled delivery month from `SYM-YYYYM` (ex-ante) + a 5-day roll buffer. **Carry coverage now extends to the data edge (2026-06-17), was silently stale.**
+3. **Carry cross-section guards**: the `std==0` degenerate guard was dead (float ε never hits 0) → thin/all-equal cross-sections traded *noise* at full conviction. Now `sd.where(sd>1e-8)` + a `min_xs_width=5` floor (flat below it) + a `ffill(limit=10)` staleness cap + cost charged on the actual levered weights (`Δ(w·blev)`, the old `|Δw|·blev` understated re-leveraging turnover ~2×).
+4. **`pct_change` deprecation** (`tsmom._daily_returns`): made the implicit `fill_method='pad'` explicit + future-proof (`ffill().pct_change(fill_method=None)`) — identical numerics (live ETF-trend unchanged at Sharpe 0.724, crypto unchanged), but no longer breaks on a pandas upgrade. (Bare `fill_method=None` would have WRONGLY lost post-gap moves.)
+5. **Universe** (`liquid_universe`): classify micros/STIRs by NAME (mirror metadata), not ticker-prefix/raw-vol. Fixes (a) micros escaping the `M`-prefix heuristic (M2K, MHI) and (b) the ann-vol STIR cut wrongly removing real low-vol BONDS (2-Year T-Note, Euro-Schatz, ASX 10-Year). E-minis (ES/NQ/RTY) correctly kept. Universe 73→**76**.
+
+**Survivorship/selection look-ahead (the one CRITICAL flag) — QUANTIFIED IMMATERIAL**: `liquid_universe` uses current-liquidity membership applied to all folds. Re-ran carry on the full 76 vs the 70 markets with history ≤2005: full Sharpe **0.66 vs 0.65**, post-2015 **0.89 vs 0.89** — only 6/76 markets are recent and removing them moves Sharpe 0.01. The modern-era result is survivorship-clean by construction (selected markets are liquid in that period); futures markets are long-lived so survivorship is mild. Documented as a known limitation, not fixed with a full PIT-universe (≈0.01 Sharpe at stake).
+
+**Verdict CONFIRMED post-hardening**: carry official Ruler-v2 **PAPER-PASS** (mean_sharpe 0.79, point_SR 0.81), standalone Sharpe 0.66, **post-2015 +0.89**, Track-B **dSR +0.17**, cost-robust — the edge held through every fix (the fixes removed staleness/sign-flips/noise-trading/hindsight, so we trust it MORE). +6 regression tests that actually catch the bugs (a real look-ahead guard with a time-varying signal — the old test used constant inputs and could not; varying-denominator return correctness; negative-denominator drop; degenerate cross-section). 22 futures tests; 224 tsmom/crypto/sleeve tests still green; app/ flake8 clean.
+
+**DEPLOYMENT REFINEMENT (full-book run)**: combining our LIVE ETF-trend book with the futures sleeves (2007-2026 overlap, vol-matched): ETF-trend-only Sharpe 0.72 → **+carry 0.89** (best) → +futures-trend **0.57** (WORSE) → all-3 0.78. **So add futures CARRY to the live book; do NOT add futures TREND** — it's decayed AND redundant with the trend we already run via ETFs (corr 0.44). The standalone "trend+carry book ~1.0" is good in isolation but, layered on our existing ETF trend, only the carry half adds value.
+
+**Consequences**: the futures process is now hardened and the carry edge is trustworthy. The deployable upgrade is **ETF-trend + futures-carry**. Next step unchanged: a report-only live-paper OOS tracker for the carry book to accrue the record CAPITAL needs. No live change. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-18 (P4-2 hardening) + ALPHA_V9_ROADMAP §P4-2.
+
+---
+
 ## 2026-06-18 (Alpha-v9 P4-2) — futures CARRY is a real, modern, diversifying edge; trend has decayed
 
 **Context**: With the Norgate futures mirror local, P4-2 tests the two managed-futures factors free data couldn't: cross-asset TREND and CARRY, on a survivorship-free 73-market liquid universe (`app/research/futures_data.py` liquid filter; `futures_carry.py` term-structure carry; sleeves `P4-2-FUT-TREND` / `P4-2-FUT-CARRY`; `scripts/run_futures_research.py`).
