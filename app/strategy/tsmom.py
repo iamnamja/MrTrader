@@ -58,6 +58,12 @@ class TSMOMConfig:
     # book_vol_max_leverage so a quiet regime can't over-lever.
     book_vol_target: Optional[float] = None
     book_vol_max_leverage: float = 2.0
+    # No-trade-band rebalancing (P4-2c): if set (weight units, e.g. 0.02 = 2% per instrument),
+    # recompute the target EVERY day but only TRADE an instrument when its target drifts more
+    # than the band from the currently-held weight (else hold). None = the classic calendar
+    # rebalance every `rebalance_days` (default — byte-identical to before; the live book uses
+    # this). Captures real signal shifts fast while skipping noise-churn.
+    rebalance_band: Optional[float] = None
 
 
 def _daily_returns(prices: pd.DataFrame) -> pd.DataFrame:
@@ -134,6 +140,21 @@ class TSMOMResult:
         }
 
 
+def _held_with_band(target: pd.DataFrame, band: float) -> pd.DataFrame:
+    """No-trade-band held weights: recompute target daily, but only move an instrument when
+    |target_t - held_{t-1}| > band; otherwise hold. PIT (held_t uses target_t + held_{t-1}
+    only). A stateful per-asset scan (NaN target -> 0)."""
+    tgt = target.to_numpy(dtype=float)
+    tgt = np.where(np.isfinite(tgt), tgt, 0.0)
+    held = np.empty_like(tgt)
+    prev = np.zeros(tgt.shape[1])
+    for t in range(tgt.shape[0]):
+        move = np.abs(tgt[t] - prev) > band
+        prev = np.where(move, tgt[t], prev)
+        held[t] = prev
+    return pd.DataFrame(held, index=target.index, columns=target.columns)
+
+
 def _equity_curve(returns: pd.Series) -> pd.Series:
     return (1.0 + returns.fillna(0.0)).cumprod()
 
@@ -157,12 +178,16 @@ def tsmom_backtest(prices: pd.DataFrame, cfg: TSMOMConfig | None = None) -> TSMO
     rets = _daily_returns(prices)
     target = tsmom_weights(prices, cfg)
 
-    # Hold target weights between rebalances: only rows at rebalance steps update;
-    # forward-fill the rest. Rebalance grid is anchored on the integer position so
-    # it is deterministic and independent of calendar gaps.
-    n = len(target)
-    is_rebal = (np.arange(n) % cfg.rebalance_days == 0)
-    held = target.where(pd.Series(is_rebal, index=target.index), other=np.nan).ffill().fillna(0.0)
+    # Rebalance mechanism: a no-trade band (recompute daily, trade only on material drift)
+    # if cfg.rebalance_band is set; otherwise the classic calendar grid (every rebalance_days,
+    # held between — deterministic on integer position, independent of calendar gaps).
+    if cfg.rebalance_band is not None:
+        held = _held_with_band(target, cfg.rebalance_band)
+    else:
+        n = len(target)
+        is_rebal = (np.arange(n) % cfg.rebalance_days == 0)
+        held = target.where(pd.Series(is_rebal, index=target.index),
+                            other=np.nan).ffill().fillna(0.0)
 
     # Book-level vol-targeting overlay (P5): scale the whole book so its trailing
     # realized vol tracks cfg.book_vol_target. PIT + non-circular: the scale at day t

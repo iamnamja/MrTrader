@@ -110,6 +110,7 @@ class CarryConfig:
     book_vol_target: float = 0.12
     book_vol_max_leverage: float = 4.0
     min_xs_width: int = MIN_XS_WIDTH    # min markets with carry on a day to trade the cross-section
+    rebalance_band: Optional[float] = None   # P4-2c: no-trade band (weight units); None = calendar
     ann: int = ANN
 
 
@@ -135,9 +136,15 @@ def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
     raw_w = cz * (cfg.target_vol / inst_vol)
     raw_w = raw_w.clip(-cfg.max_weight, cfg.max_weight)
 
-    # rebalance only every rebalance_days (hold between); PIT shift signal by 1 day
-    keep = (np.arange(len(raw_w)) % cfg.rebalance_days) == 0
-    w = raw_w.where(pd.Series(keep, index=raw_w.index), np.nan).ffill().shift(1)
+    # rebalance mechanism: no-trade band (recompute daily, trade on drift) if set, else the
+    # calendar grid (every rebalance_days, held between). PIT shift the signal by 1 day after.
+    if cfg.rebalance_band is not None:
+        from app.strategy.tsmom import _held_with_band
+        held = _held_with_band(raw_w, cfg.rebalance_band)
+    else:
+        keep = (np.arange(len(raw_w)) % cfg.rebalance_days) == 0
+        held = raw_w.where(pd.Series(keep, index=raw_w.index), np.nan).ffill()
+    w = held.shift(1)
 
     # gross cap
     gross = w.abs().sum(axis=1).replace(0.0, np.nan)

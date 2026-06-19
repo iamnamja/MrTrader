@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-19 (Alpha-v9 P4-2c) — rebalance-cadence study: keep WEEKLY for trend AND carry
+
+**Context**: "Why weekly, not daily? Wouldn't daily be more dynamic?" A quick full-sample check hinted carry might prefer daily (0.72 vs 0.66) — so ran a proper pre-registered, sub-period-robust study (registration_id `P4-2c-REBALANCE-CADENCE`) comparing weekly-calendar vs daily-calendar vs a no-trade BAND (recompute daily, trade only on >2% per-instrument drift). Built a backward-compatible `rebalance_band` option into both the TSMOM engine and the carry backtest (default None = the classic calendar rebalance — byte-identical; live ETF-trend unchanged at 0.724, 281 regression tests green).
+
+**Decision: keep WEEKLY for both sleeves.** Frozen criterion: adopt a faster cadence only if it beats weekly net Sharpe in the FULL sample AND post-2015 AND degrades no sub-period by >0.15.
+- **Trend**: weekly +0.83 vs daily +0.50 / band +0.52 — daily/band are far worse and turn the modern era NEGATIVE (whipsaw + turnover; banding barely cuts turnover because the per-instrument targets are jumpy). Fails (a) outright.
+- **Carry**: daily wins FULL-sample (+0.72 vs +0.66) BUT only via the early period — sub-periods [2000s/2010s/post-2015/2020s] weekly [0.70/0.97/**0.89**/**0.62**] vs daily [0.78/1.04/**0.79**/**0.44**]. In the deployment-relevant modern era WEEKLY BEATS DAILY (post-2015 0.89>0.79; 2020s 0.62>0.44), so the daily edge fails (b)+(c). The band variant underperforms (+0.45). Keep weekly.
+
+**Rationale**: rebalance frequency should match a signal's *speed + turnover*, not "more = better." Trend is slow and whipsaws → trading more chases noise that reverses, at high cost. Carry is smooth/persistent → freshness helps in calm regimes (the early-period daily edge) but in the modern, more-correlated regime the extra trading just adds cost/whipsaw and weekly is better. The full-sample daily-carry number was a non-robust artifact — exactly what the sub-period guard exists to catch (cf. the F3 carry pre-2016 artifact + the P3-5 in-sample-criterion lesson).
+
+**Consequences**: validates the existing weekly design and prevents a tempting-but-non-robust switch to daily carry. The `rebalance_band` primitive is now available + tested for future use (e.g. if a live cost-aware variant is ever wanted). Report-only; no live change. The deployment plan is unchanged: add CARRY (weekly) to the live ETF-trend book. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-19 (P4-2c).
+
+---
+
 ## 2026-06-18 (Alpha-v9 P4-2 hardening) — futures process audited & hardened; carry edge SURVIVES; deploy carry, not futures-trend
 
 **Context**: Before relying on the P4-2 carry result, ran a 4-agent adversarial Opus review (look-ahead/PIT, data-integrity, backtest-math, tests/quality) over the whole futures pipeline. It found real bugs — none of which overturned the verdict, but several that had to be fixed to TRUST it.
