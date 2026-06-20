@@ -226,6 +226,25 @@ def build_futures_book(**cfg_kw) -> Sleeve:
                         "significant diversifier to live trend (residual-alpha t~2.3)")
 
 
+@register_sleeve("vix_vrp")
+def build_vix_vrp(**cfg_kw) -> Sleeve:
+    """P3.1 — variance-risk-premium via the VIX-futures curve: short the front VIX future (owned
+    Norgate VX) when the curve is in CONTANGO (crash-governor gate: VIX<VIX3M), flat in
+    backwardation. Reverses the earlier VRP park (it was killed on short options data + an alpha
+    framing). Sharpe ~0.64, HAC-significant, positive every sub-period; SURVIVES Feb-2018 (−4.4%)
+    + COVID-2020 (−4.8%) thanks to the gate. Declared risk_premium; n_trials=1. A real, crash-
+    survivable premium but a MARGINAL diversifier (corr-to-trend ~0.46, residual-α t~1.5)."""
+    from app.research import futures_data as fd, vix_vrp as vv
+    vx = fd.true_returns("VX")
+    vix, vix3m = fetch_vix_term()
+    r = vv.vix_vrp_returns(vx, vix, vix3m, vv.VixVRPConfig(**cfg_kw))
+    return Sleeve(label="vix_vrp", component_type="risk_premium",
+                  returns=r.dropna(), spy_prices=None, periods_per_year=252,
+                  n_trials_registered=1, registration_id="P3-VIX-VRP",
+                  notes="short front VIX future in contango (gated by VIX<VIX3M), vol-targeted; "
+                        "VRP roll-down; survives Feb-2018 + COVID via the gate")
+
+
 @register_sleeve("turn_of_month")
 def build_turn_of_month(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                         **cfg_kw) -> Sleeve:
