@@ -177,9 +177,14 @@ judged on Track-B over the *combined* book:
 - **2.4 Live-paper the futures book on IBKR** → accrue the real-fill OOS record CAPITAL needs.
 
 ### Phase 3 — Re-test VRP properly (cheap first)
-- **3.1 VRP via the VIX-futures curve** — short vol (small, vega-sized) gated by our existing
-  crash-governor signal (contango = on, backwardation = flat); judged as a **risk premium on Track-B**,
-  not an alpha floor. Owned VIX futures / VXX-family. Must survive Feb-2018 + Mar-2020 stress.
+- **3.1 ✅ DONE 2026-06-20 — VRP via the VIX-futures curve → REAL premium, REVERSES the VRP park.**
+  `app/research/vix_vrp.py` + `vix_vrp` sleeve (P3-VIX-VRP): short the front VIX future (owned Norgate
+  VX) in CONTANGO (roll-down), flat in backwardation (crash-governor gate VIX<VIX3M); judged as a risk
+  premium. **Sharpe 0.64** (pre-2015 0.93, post-2015 0.53, 2020s 0.51), HAC p 0.0018, maxDD −18%;
+  Track-A PAPER-PASS (point_SR 0.47). **SURVIVED the stress test** (Feb-2018 −4.4%, COVID-2020 −4.8% —
+  the gate flips flat; naive short-vol loses 50-90%). Marginal diversifier (corr-to-trend 0.46,
+  residual-α t 1.46). Caveat: CPCV had no stress-regime fold → crash-survival is the manual event-study,
+  re-confirm live. The earlier VRP park is reversed → real, gated, PAPER-candidate (a 4th risk premium).
 - **3.2 Defined-risk index VRP (options)** — only after the forward NBBO log matures (~months);
   freeze one design (30-45 DTE put-spreads / condors) now; build a quote-based fill model.
 

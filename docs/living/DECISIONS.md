@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P3.1) — VRP via the VIX-futures curve: a real premium → REVERSES the earlier VRP park
+
+**Context**: The panel flagged the Alpha-v5 VRP park/kill as likely wrong — it was judged as an *alpha* (it's a risk premium) and tested on too-short options data. Claude's cheap owned-data re-test: short the front VIX future when the curve is in CONTANGO (roll-down capture), gated by our existing crash-governor signal; judged on Track-B as a risk premium.
+
+**Decision**: Built `app/research/vix_vrp.py` (contango gate + gated short-VIX-future returns) + registered the `vix_vrp` sleeve (P3-VIX-VRP) on owned Norgate VX. **The VRP is real and crash-survivable:**
+- **Sharpe 0.64** (pre-2015 0.93, post-2015 0.53, 2020s 0.51 — positive every sub-period), HAC p 0.0018, maxDD −18%, ann vol 14%. Official Ruler-v2 **Track-A PAPER-PASS** (point_SR 0.47).
+- **Survives the vol crashes (the make-or-break test):** Feb-2018 volmageddon **−4.4%**, COVID-2020 **−4.8%** — the contango gate flips to FLAT on backwardation, so the position is out of the way during the spikes (a naive short-vol loses 50-90% those days). The gate is load-bearing and works.
+- **Marginal diversifier:** corr-to-trend 0.46 (short-vol is risk-on-correlated), residual-α t 1.46 — a real premium but, like carry/xsmom, a "probably helps" diversifier, not a slam-dunk.
+
+**Rationale**: This confirms the panel was right — VRP was wrongly parked. Harvested via the VIX-futures roll-down (not short options on 4y data) and gated by the crash governor (not naively), and framed as a risk premium (not alpha), it is a real, significant, crash-survivable premium. **Caveat (honest):** the CPCV flagged "no stress-regime fold evaluated" — the cross-validation didn't include a crash window, so the stress-survival evidence is the manual Feb-2018/COVID check, not the CPCV; treat the gate's crash behavior as validated-by-event-study, to be re-confirmed live.
+
+**Consequences**: A FOURTH real risk-premium sleeve (trend, carry, xsmom, now VIX-VRP) — and a genuinely different one (short-vol, the opposite crash-convexity to trend). PAPER-candidate; not capital (still needs live-paper; for VRP the gate's crash behavior especially needs live confirmation). The VRP "parked" status is reversed → "real, gated, paper-candidate." 3 tests; 229 regression green; flake8 clean; report-only, no live change. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-20 (P3.1) + ALPHA_V10 §P3.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P1.4) — more free factors: basis-momentum + CoT both KILLED; the free zoo is exhausted at carry + XS-momentum
 
 **Context**: Continued the free-data factor search with the panel's two named candidates — basis-momentum (Boons & Prado-Tamoni, "the differentiated edge") and CFTC Commitment-of-Traders positioning ("genuinely different, free, you don't have it").
