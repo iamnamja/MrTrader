@@ -168,16 +168,20 @@ def build_futures_carry(**cfg_kw) -> Sleeve:
     The robust, MODERN futures premium: standalone Sharpe ~0.67, positive in EVERY sub-period
     (post-2015 ~0.84) where trend is flat; corr-to-live-trend ~0.25; Track-B dSR +0.17.
     Declared `risk_premium`, ONE pre-registered config -> n_trials=1."""
-    from app.research import futures_data as fd, futures_carry as fc
+    from app.research import futures_data as fd, futures_carry as fc, futures_roll as frl
     uni = fd.liquid_universe()
     rets = fd.returns_panel(uni)
     carry = fc.carry_panel(uni)
-    r = fc.carry_backtest(rets, carry)
+    # P0.2 honesty: include the roll TRANSACTION cost (3bps/side; round-trip per roll). The roll
+    # YIELD is already in the back-adjusted returns -> this does not double-count the premium.
+    roll_days = frl.roll_days_panel(uni, index=rets.index)
+    cfg = fc.CarryConfig(roll_cost_bps=3.0, **cfg_kw)
+    r = fc.carry_backtest(rets, carry, cfg, roll_days=roll_days)
     return Sleeve(label="futures_carry", component_type="risk_premium",
                   returns=r.dropna(), spy_prices=None, periods_per_year=252,
                   n_trials_registered=1, registration_id="P4-2-FUT-CARRY",
                   notes=f"cross-sectional term-structure carry on {len(uni)} Norgate futures; "
-                        f"inverse-vol, book_vol_target=0.12, 3bps")
+                        f"inverse-vol, book_vol_target=0.12, 3bps signal + 3bps/side roll")
 
 
 @register_sleeve("turn_of_month")

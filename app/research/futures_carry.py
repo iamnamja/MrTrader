@@ -111,11 +111,16 @@ class CarryConfig:
     book_vol_max_leverage: float = 4.0
     min_xs_width: int = MIN_XS_WIDTH    # min markets with carry on a day to trade the cross-section
     rebalance_band: Optional[float] = None   # P4-2c: no-trade band (weight units); None = calendar
+    roll_cost_bps: float = 0.0          # P0.2: per-side roll TRANSACTION cost (round-trip=2x on
+    #                                    each roll day, on |held weight|). NOT the roll yield (that
+    #                                    is already in the back-adjusted returns) -> no double-count.
+    #                                    Requires roll_days passed to carry_backtest. 0 = off.
     ann: int = ANN
 
 
 def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
-                   cfg: CarryConfig = CarryConfig()) -> pd.Series:
+                   cfg: CarryConfig = CarryConfig(),
+                   roll_days: Optional[pd.DataFrame] = None) -> pd.Series:
     """Cross-sectional carry book daily NET returns. weight_i ∝ (cross-sectional carry
     z-score) × inverse-vol, clipped, gross-capped, book-vol-targeted; PIT (carry at t →
     position t+1); cost on |Δweight|. `returns` = winsorized true returns panel."""
@@ -164,4 +169,13 @@ def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
     W = w.mul(blev_f, axis=0)
     turnover = W.diff().abs().sum(axis=1).fillna(0.0)
     cost = turnover * (cfg.cost_bps / 1e4)
+
+    # P0.2: roll TRANSACTION cost — on each roll day we close the expiring front + open the next
+    # (round-trip = 2x|W|), charged at roll_cost_bps. This is purely the contract-switch cost; the
+    # roll YIELD is already in the back-adjusted returns, so this does NOT double-count the premium.
+    if cfg.roll_cost_bps > 0 and roll_days is not None:
+        rd = roll_days.reindex(index=W.index, columns=W.columns).fillna(False)
+        roll_turnover = pd.Series((rd.to_numpy() * 2.0 * W.abs().to_numpy()).sum(axis=1),
+                                  index=W.index)
+        cost = cost + roll_turnover * (cfg.roll_cost_bps / 1e4)
     return (net_gross - cost).dropna().rename("futures_carry")

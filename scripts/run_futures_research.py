@@ -54,7 +54,11 @@ def main() -> int:
     carry = fc.carry_panel(uni)
 
     trend = tsmom_backtest(panel, futures_trend_config(uni)).returns.dropna()
-    carry_r = fc.carry_backtest(rets, carry)
+    # P0.2: carry net of the roll TRANSACTION cost (3bps/side; round-trip per roll), the honest
+    # number. (The roll yield is already in the back-adjusted returns -> not double-counted.)
+    from app.research import futures_roll as frl
+    roll_days = frl.roll_days_panel(uni, index=rets.index)
+    carry_r = fc.carry_backtest(rets, carry, fc.CarryConfig(roll_cost_bps=3.0), roll_days=roll_days)
 
     print("\n" + "=" * 74)
     print("P4-2 FUTURES TREND + CARRY")
@@ -78,16 +82,20 @@ def main() -> int:
     print(f"  carry ~ live ETF-trend   : {_corr(carry_r, etf)[0]:.3f}")
     print(f"  trend ~ live ETF-trend   : {_corr(trend, etf)[0]:.3f}")
 
-    # Track-B: does carry improve the live ETF-trend book? (50/50 vol-matched)
+    # Track-B (ROBUST, budget-invariant): residual alpha of carry vs the live ETF-trend book.
+    # NOTE (P0.2): the old in-sample 50/50 vol-matched dSR (+0.17) is methodology-fragile — it
+    # swings to ~0 under PIT rolling-vol matching. The residual-alpha IR is the gate's actual
+    # Track-B metric and does NOT depend on the vol-match convention.
+    from app.research.inference import multifactor_alpha
     jb = pd.concat([etf.rename("e"), carry_r.rename("c")], axis=1, join="inner").dropna()
-    base = jb["e"].mean() / jb["e"].std() * np.sqrt(252)
-    book = 0.5 * (jb["e"] / jb["e"].std()) + 0.5 * (jb["c"] / jb["c"].std())
-    booksh = book.mean() / book.std() * np.sqrt(252)
-    print(f"\nTRACK-B: live ETF-trend Sharpe {base:.2f} -> +carry {booksh:.2f}  dSR {booksh-base:+.2f}")
-    print("  [caveat] the combined + Track-B blends are vol-matched IN-SAMPLE (full-period std)")
-    print("  for a relative-Sharpe comparison; a PIT rolling-vol blend is modestly lower. Costs")
-    print("  are a flat 3bps/side (optimistic for the illiquid tail; carry is cost-robust, trend")
-    print("  is cost-sensitive — see DECISIONS 2026-06-18 hardening).")
+    a = multifactor_alpha(jb["c"], pd.DataFrame({"trend": jb["e"]}))
+    print("\nTRACK-B (residual-alpha of carry vs live ETF-trend, budget-invariant):")
+    print(f"  resid alpha {a.get('alpha_ann', float('nan')):+.2%}/yr  HAC t "
+          f"{a.get('t_alpha_hac', float('nan')):+.2f}  beta_trend "
+          f"{a.get('betas', {}).get('trend', float('nan')):.2f}  resid_sharpe "
+          f"{a.get('resid_sharpe', float('nan')):+.2f}")
+    print("  -> real but MARGINAL diversifier (t<2): a 'probably helps the book', not a slam-dunk.")
+    print("  (the in-sample 50/50 vol-matched dSR +0.17 was an artifact; PIT vol-match ~0.00.)")
 
     # official Sleeve-Lab Ruler-v2 Track-A
     print("\n-- official Sleeve-Lab Ruler-v2 (Track-A) --")
@@ -101,10 +109,12 @@ def main() -> int:
             print(f"  {name}: eval error {exc}")
 
     print("\n" + "-" * 74)
-    print("VERDICT: CARRY is a real, MODERN, diversifying premium (PAPER-PASS; post-2015 ~0.84;")
-    print("  corr-to-live-trend ~0.25; Track-B dSR +0.17) -> CAPITAL-candidate via live-paper.")
-    print("  TREND alone has DECAYED (post-2015 ~0.0) -> not standalone; it is the crisis-convex")
-    print("  partner in the TREND+CARRY book (Sharpe ~1.0, modern ~0.57, shallower DD).")
+    print("VERDICT (honest, post-P0.2): CARRY is a real, MODERN, SIGNIFICANT standalone premium")
+    print("  (~0.58 Sharpe after roll cost, HAC p~0.0001, post-2015 ~0.81) AND a real but MARGINAL")
+    print("  book diversifier (residual-alpha vs trend t~1.8, resid-Sharpe ~0.43; partly an")
+    print("  energy/VIX bet -> ex-energy ~0.54). -> PAPER-deploy to accrue a live record; the")
+    print("  diversification case is 'probably helps', not a slam-dunk. TREND alone DECAYED")
+    print("  (post-2015 ~0.0) -> not standalone; only carry's crisis-convex partner.")
     print("-" * 74)
     return 0
 

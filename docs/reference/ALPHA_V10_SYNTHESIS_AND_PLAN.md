@@ -107,10 +107,14 @@ Cross-cutting principles adopted from the panel (apply throughout):
 
 ### Phase 0 — Trust the numbers (FREE, days; BLOCKS any deploy/sizing change)
 - **0.1 ✅ Trend sub-period diagnostic** — DONE (Part III): live trend vindicated; futures-trend kill confirmed.
-- **0.2 Carry honesty pass.** Decompose roll cost (transaction-only, NO roll-yield double-count);
-  PIT roll simulation at contract granularity; per-market + per-sector attribution (drop top-3 /
-  ex-energy — is it a concentrated nat-gas/crude bet?); PIT Track-B. **Deliverable: the honest carry
-  Sharpe + a go/no-go.** Deploy-to-paper only if it survives dropping energy AND PIT Track-B > +0.10.
+- **0.2 ✅ DONE 2026-06-20 — carry honesty pass.** Added a TRANSACTION-only roll cost
+  (`app/research/futures_roll.py` + `CarryConfig.roll_cost_bps`, 3bps/side; round-trip per roll on
+  |held weight| — does NOT subtract the roll yield, no double-count) + switched Track-B to the
+  budget-invariant residual-alpha. **Honest carry Sharpe 0.66→0.58** (drag ~1.1%/yr; still HAC
+  p 0.0001, post-2015 0.81, Track-A PAPER-PASS point_SR 0.71). **Diversification REAL but MARGINAL:**
+  the old in-sample +0.17 dSR was a vol-match artifact (~0.00 under PIT); residual-α t~1.8 /
+  resid-Sharpe 0.43 → "probably helps," not a slam-dunk. Partly an energy/VIX bet (ex-energy ~0.54).
+  → carry stays a PAPER-candidate; measured paper-deploy, not urgent capital. See DECISIONS 2026-06-20 (P0.2).
 - **0.3 Ruler negative controls.** Push an anti-correlated zero-edge null through Track-B (must FAIL —
   tests the "diversifier waiver manufactures appraisal IR" leak) + 10k true-nulls through the full
   PAPER tier (pass-rate must be ≤5%). Add a minimum-standalone floor for declared diversifiers if the
