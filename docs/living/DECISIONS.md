@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 — Alpha-v10 direction set from the 2nd external 5-LLM panel
+
+**Context**: With equities + 4y options + survivorship-free Norgate futures all in hand, solicited a 2nd brutally-honest 5-LLM quant panel (full kit + raw responses in `docs/reference/prompts/20260619_LLM_Alpha_V9/`; synthesis in `docs/reference/ALPHA_V10_SYNTHESIS_AND_PLAN.md`). Each response was deep-read by a dedicated Opus reader; I synthesized + ran the panel's top diagnostic.
+
+**Decision**: Adopt the **Alpha-v10 plan** (SSOT doc above). Headline calls:
+- **Carry is NOT deployable until honestly costed.** Model roll mechanics as *transaction cost only* (commission + half-spread + slippage on the contract switch) — explicitly NOT subtracting the harvested roll yield (in commodities the roll yield IS the carry signal → double-count trap). The honest Sharpe (~0.55-0.60) must be *derived* + survive dropping energy + a PIT Track-B before any paper deploy.
+- **Kill in-sample vol-matching** in all decision claims → PIT rolling vol. Re-report carry dSR + re-verdict the credit overlay (the +0.064 likely evaporates).
+- **Relabel** trend/carry/cash as ARP (risk premia), not alpha; **size by drawdown/TE, freeze gross** (the Kelly 7.7× framing is retired).
+- **Highest-EV next work is FREE + EXECUTABLE, not a data buy:** mine the owned futures factor zoo (XS-momentum, basis-momentum, curve-spread carry, curve-momentum, value, skew) + a free CFTC CoT positioning factor; and build IBKR futures execution-truth (the real bottleneck). Norgate US Stocks ($693) is a deferred, bounded "close-the-equity-question" audit, not an alpha buy.
+- **The "trend contradiction" diagnostic was run (the panel's #1 ask): live ETF-trend is post-2015 +0.77 (2020s +1.05) → NOT a pre-2010 relic. The live book is VINDICATED; the futures-trend kill is confirmed.**
+
+**Rationale**: The panel was unanimous that we hold risk premia (not alpha), the book is a single bet, and carry is unproven on execution. The cheap, decision-gating work (carry honesty, ruler negative-controls, PIT-vol) comes first; new diversification comes from the free futures factor zoo; real-money viability comes from IBKR execution truth. This supersedes Alpha-v9's "next: live-paper tracker" with a more complete, panel-validated program. No live change yet.
+
+**Consequences**: Alpha-v10 is the active program. Live book unchanged (trend 50% + cash; crypto paper). Next: P0.2 carry honesty pass. See PROJECT_STATE 2026-06-20 + the SSOT plan.
+
+---
+
 ## 2026-06-19 (Alpha-v9 P4-2c) — rebalance-cadence study: keep WEEKLY for trend AND carry
 
 **Context**: "Why weekly, not daily? Wouldn't daily be more dynamic?" A quick full-sample check hinted carry might prefer daily (0.72 vs 0.66) — so ran a proper pre-registered, sub-period-robust study (registration_id `P4-2c-REBALANCE-CADENCE`) comparing weekly-calendar vs daily-calendar vs a no-trade BAND (recompute daily, trade only on >2% per-instrument drift). Built a backward-compatible `rebalance_band` option into both the TSMOM engine and the carry backtest (default None = the classic calendar rebalance — byte-identical; live ETF-trend unchanged at 0.724, 281 regression tests green).
