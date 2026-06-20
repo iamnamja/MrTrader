@@ -53,6 +53,22 @@ def test_skew_signal_sign():
     assert sig["A"].dropna().iloc[-1] < 0
 
 
+def test_futures_book_is_equal_weight_of_subsleeves(monkeypatch):
+    # P1.3: futures_book = 0.5*(carry + xsmom) of the two sub-sleeve return series (inner-joined).
+    import scripts.walkforward.sleeves as sl
+    from scripts.walkforward.sleeve_lab import Sleeve
+    idx = pd.bdate_range("2015-01-02", periods=100)
+    c = pd.Series(0.001, index=idx)
+    x = pd.Series(0.003, index=idx)
+    monkeypatch.setattr(sl, "build_futures_carry",
+                        lambda **k: Sleeve(label="c", component_type="risk_premium", returns=c))
+    monkeypatch.setattr(sl, "build_futures_xsmom",
+                        lambda **k: Sleeve(label="x", component_type="diversifier", returns=x))
+    book = sl.build_futures_book()
+    assert book.registration_id == "P1-3-FUT-BOOK"
+    assert np.allclose(book.returns.to_numpy(), 0.002)        # 0.5*(0.001+0.003)
+
+
 def test_xs_factor_backtest_aliases_carry_engine():
     from app.research import futures_carry as fc
     idx = pd.bdate_range("2015-01-02", periods=300)

@@ -207,6 +207,25 @@ def build_futures_xsmom(**cfg_kw) -> Sleeve:
                         f"book_vol_target=0.12, 3bps signal + 3bps/side roll")
 
 
+@register_sleeve("futures_book")
+def build_futures_book(**cfg_kw) -> Sleeve:
+    """P1.3 — the multi-factor CTA book: equal-weight(carry, XS-momentum). Both sub-sleeves are
+    already book-vol-targeted (~0.12) + honestly roll-costed, so a 50/50 average is the sane-scale
+    ensemble. The two individually-MARGINAL factors (residual-α t~1.7-1.8 vs trend) combine into a
+    book that is a SIGNIFICANT diversifier to the live ETF-trend book (residual-α t~2.3, resid-Sharpe
+    ~0.56, beta ~0.24): the composite clears a bar neither component did alone. Sharpe ~0.67
+    (post-2015 ~0.83), corr(carry,xsmom) ~0.42. Declared diversifier, n_trials=1."""
+    carry = build_futures_carry().returns
+    xsmom = build_futures_xsmom().returns
+    j = pd.concat([carry.rename("c"), xsmom.rename("x")], axis=1, join="inner").dropna()
+    r = (0.5 * j["c"] + 0.5 * j["x"]).rename("futures_book")
+    return Sleeve(label="futures_book", component_type="diversifier",
+                  returns=r, spy_prices=None, periods_per_year=252,
+                  n_trials_registered=1, registration_id="P1-3-FUT-BOOK",
+                  notes="equal-weight(futures_carry, futures_xsmom); both vol-targeted + roll-costed; "
+                        "significant diversifier to live trend (residual-alpha t~2.3)")
+
+
 @register_sleeve("turn_of_month")
 def build_turn_of_month(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                         **cfg_kw) -> Sleeve:

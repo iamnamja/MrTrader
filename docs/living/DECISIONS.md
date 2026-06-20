@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P1.3) — futures multi-factor book: a SIGNIFICANT diversifier (the second engine)
+
+**Context**: P0.2/P1.2 left two individually-MARGINAL futures factors (carry residual-α t~1.76, XS-momentum t~1.6). The "gate the basket" question: does combining them clear a bar neither did alone?
+
+**Decision**: Registered `futures_book` (P1-3-FUT-BOOK) = equal-weight(futures_carry, futures_xsmom). Both sub-sleeves are already book-vol-targeted (~0.12) + honestly roll-costed, so a 50/50 average is the sane-scale ensemble. **Result: YES — the composite is a significant diversifier.**
+- **Futures book Sharpe 0.67** (modern-robust: 2010s 0.92, post-2015 0.83, 2020s 0.65), corr(carry,xsmom) 0.42, ann vol ~0.11. Official Ruler-v2 **Track-A PAPER-PASS (mean_sharpe 0.84, point_SR 0.85)** — the strongest sleeve the program has produced.
+- **Track-B vs the live ETF-trend book: residual-α t = 2.29 (SIGNIFICANT, >1.96), resid-Sharpe 0.56, beta-to-trend 0.24** — vs carry-alone t 1.76. **Combining the two marginal factors produces a book whose diversification crosses conventional significance.**
+
+**Rationale**: This is the multi-factor benefit the roadmap + panel anticipated (critique Ⓔ "gate the basket"): two ~0.58-Sharpe, t~1.7 factors at corr 0.42 combine to a 0.67-Sharpe book that is a *significant* (t 2.29) addition to trend. It is the genuine "second engine" to pair with the live ETF-trend — materially stronger than carry alone as a book improvement.
+
+**Consequences**: The futures multi-factor book (carry + XS-momentum) is the lead candidate for the next live-paper deployment (still paper — needs the IBKR execution-truth build, P2, before capital). 6 tests; flake8 clean; report-only, no live change. **Phase-1 free-data factor mining is substantially complete** (carry + xsmom → a significant book); remaining P1: P1.1 CFTC CoT positioning factor + basis-momentum/calendar-spread (term-structure-heavy follow-ups). See ALPHA_V10_SYNTHESIS_AND_PLAN §P1.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P1.2) — futures factor zoo: XS-momentum is a new factor; curve-mom/value/skew killed
 
 **Context**: The panel's highest-EV FREE move was to mine the factor zoo on the futures data we already own. Key reuse: `carry_backtest` is a generic cross-sectional engine (it z-scores any signal panel), so a factor = a new signal panel run through it.
