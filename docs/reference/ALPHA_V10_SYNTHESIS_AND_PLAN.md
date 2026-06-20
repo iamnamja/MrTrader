@@ -115,10 +115,12 @@ Cross-cutting principles adopted from the panel (apply throughout):
   the old in-sample +0.17 dSR was a vol-match artifact (~0.00 under PIT); residual-α t~1.8 /
   resid-Sharpe 0.43 → "probably helps," not a slam-dunk. Partly an energy/VIX bet (ex-energy ~0.54).
   → carry stays a PAPER-candidate; measured paper-deploy, not urgent capital. See DECISIONS 2026-06-20 (P0.2).
-- **0.3 Ruler negative controls.** Push an anti-correlated zero-edge null through Track-B (must FAIL —
-  tests the "diversifier waiver manufactures appraisal IR" leak) + 10k true-nulls through the full
-  PAPER tier (pass-rate must be ≤5%). Add a minimum-standalone floor for declared diversifiers if the
-  null leaks. **Settles "is our ruler still leaky?"**
+- **0.3 ✅ DONE 2026-06-20 — ruler negative controls → CLEAN.** `app/research/ruler_controls.py` +
+  `scripts/run_ruler_controls.py`. True-null PAPER FP rate: floor-alone **23.6%** → JOINT with the HAC
+  floor **5.3%** (n=1500 & 3000) — the known point-SR-floor leak is closed to nominal. Anti-correlated
+  zero-edge null → Track-B residual-alpha pass-rate **5.7%** (~size) — not gamed by anti-correlation.
+  The gate's Type-I error is controlled on both tiers; PASS/FAIL is trustworthy at face value. (Also
+  retroactively validates the P0.2 switch to residual-alpha Track-B.) 3 tests. See DECISIONS 2026-06-20 (P0.3).
 - **0.4 PIT-vol migration + credit-overlay re-verdict.** Replace in-sample vol-matching in Track-B /
   combined-book; re-report carry dSR; **the +0.064 credit overlay likely evaporates → kill or keep on
   the honest number.**
