@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P0.2) — carry honesty pass: real but recalibrated down (Sharpe 0.58; diversification marginal)
+
+**Context**: The panel's loudest criticism was that carry's 0.66 Sharpe is a "phantom number" until roll mechanics are modeled, with an explicit double-count warning (in commodities the roll YIELD is the carry signal). P0.2 makes carry honest.
+
+**Decision**: Built `app/research/futures_roll.py` (per-market roll-day schedule from the scheduled-expiry front) + added `roll_cost_bps` to `CarryConfig` / `carry_backtest` (baked 3bps/side into the official `futures_carry` sleeve + the runner). **The roll cost is TRANSACTION-only** — a round-trip (2×|held weight|) on each roll day — and does NOT subtract the roll yield (already in the difference-back-adjusted returns), so it does not double-count the premium. Replaced the methodology-fragile in-sample 50/50 vol-matched Track-B with the budget-invariant **residual-alpha** metric.
+
+**Findings (honest, recalibrated):**
+- **Standalone Sharpe 0.66 → 0.58** at 3bps/side roll cost (drag ~1.1%/yr; 0.63 @1bps / 0.52 @5bps). Still HAC-significant (p 0.0001) + modern-robust (post-2015 0.81, 2020s 0.55). Official Ruler-v2 **Track-A PAPER-PASS** holds (point_SR 0.71).
+- **Diversification REAL but MARGINAL.** The old "+0.17 dSR" was an in-sample-vol-match artifact (collapses to ~0.00 under PIT rolling-vol — the panel was right). Robust residual-alpha Track-B: +5.4%/yr, **HAC t ~1.8 (not conventionally significant), resid-Sharpe 0.43, beta-to-trend 0.31** → "probably helps the book," not a slam-dunk.
+- **Partly an energy/VIX bet** (top contributors VX + energy) but survives their removal (ex-energy ~0.54).
+
+**Rationale**: Exactly the recalibration the panel demanded — roll-cost-done-right (transaction-only) avoids the double-count trap; residual-alpha Track-B avoids vol-match fragility. Carry remains a genuine, significant, modern standalone premium worth a live-paper record, but the book-improvement case is weaker than first reported → a measured paper-deploy, not an urgent capital add.
+
+**Consequences**: Carry stays a PAPER-candidate; honest Sharpe ~0.58 + marginal diversification are now the numbers of record. 11 new tests (roll schedule + roll-cost transaction-only/PIT); 187 regression tests green; flake8 clean. No live change. Next Phase-0: P0.3 ruler negative-controls + P0.4 PIT-vol migration + P0.5 family-level trial counting. See ALPHA_V10_SYNTHESIS_AND_PLAN §P0.
+
+---
+
 ## 2026-06-20 — Alpha-v10 direction set from the 2nd external 5-LLM panel
 
 **Context**: With equities + 4y options + survivorship-free Norgate futures all in hand, solicited a 2nd brutally-honest 5-LLM quant panel (full kit + raw responses in `docs/reference/prompts/20260619_LLM_Alpha_V9/`; synthesis in `docs/reference/ALPHA_V10_SYNTHESIS_AND_PLAN.md`). Each response was deep-read by a dedicated Opus reader; I synthesized + ran the panel's top diagnostic.

@@ -116,6 +116,28 @@ def test_carry_backtest_lag_prevents_lookahead(cmirror):
     assert abs(r.loc[idx[T]]) < 1e-9
 
 
+def test_roll_cost_is_off_by_default_and_only_subtracts(cmirror):
+    # roll_cost_bps=0 (default) -> identical to no roll_days; >0 with roll_days -> returns <= base
+    _write_two_contract_market(cmirror, "AAA", 110.0, 100.0)
+    _write_two_contract_market(cmirror, "BBB", 90.0, 100.0)
+    carry = fc.carry_panel(["AAA", "BBB"])
+    idx = carry.index
+    rets = pd.DataFrame({"AAA": 0.001, "BBB": -0.001}, index=idx)
+    base = fc.carry_backtest(rets, carry, fc.CarryConfig(min_xs_width=2))
+    # a roll day on AAA: charging roll cost can only REDUCE the return that day, never add
+    roll_days = pd.DataFrame(False, index=idx, columns=["AAA", "BBB"])
+    roll_days.iloc[95, 0] = True          # past the 60-day book-vol warmup (W non-zero there)
+    costed = fc.carry_backtest(rets, carry,
+                               fc.CarryConfig(min_xs_width=2, roll_cost_bps=3.0),
+                               roll_days=roll_days)
+    common = base.index.intersection(costed.index)
+    assert (costed.loc[common] <= base.loc[common] + 1e-12).all()      # cost only subtracts
+    assert costed.loc[common].sum() < base.loc[common].sum()           # the roll day cost it
+    # roll_cost_bps>0 but no roll_days -> no roll cost (identical to base)
+    nodays = fc.carry_backtest(rets, carry, fc.CarryConfig(min_xs_width=2, roll_cost_bps=3.0))
+    assert (nodays.loc[common] == base.loc[common]).all()
+
+
 def test_carry_backtest_flat_on_thin_cross_section(cmirror):
     """A cross-section thinner than min_xs_width trades NOTHING (no noise-betting)."""
     mkts = ["A", "B"]
