@@ -132,10 +132,15 @@ All on the owned Norgate mirror; each pre-registered, through the (PIT-vol, fami
 judged on Track-B over the *combined* book:
 - **1.1 CFTC Commitment-of-Traders loader** (free weekly) → **hedging-pressure / positioning** factor
   (commercial vs non-commercial net) — the one genuinely *new* signal we don't have.
-- **1.2 Futures factor sleeves** (~20-line declarations each): **XS-momentum (12-1, sector-neutral)**,
-  **basis-momentum** (Boons & Prado-Tamoni — our differentiated edge given full term structure),
-  **calendar/curve-spread carry** (isolate the premium from spot beta), **curve-momentum** (trend of
-  the carry signal), **futures value** (~5y reversal), **commodity skewness**.
+- **1.2 ✅ DONE 2026-06-20 — futures factor sleeves (first batch).** Reused `carry_backtest` as a
+  generic XS engine; `app/research/futures_factors.py` + `scripts/run_futures_factors.py`. Tested
+  xs-momentum / curve-momentum / value / skewness with honest 3bps/side roll cost. **Only
+  cross-sectional 12-1 MOMENTUM survives → `futures_xsmom` (P1-FUT-XSMOM): Sharpe 0.56, post-2015
+  0.58, corr-to-trend 0.12, Track-A PAPER-PASS (point_SR 0.72), residual-α t +1.60.** curve-momentum
+  (−0.24) / value-5y (−0.24) / skew (+0.03) KILLED at the pre-registered sign — NOT flipped (OPT-5
+  discipline). **Still TODO this phase: basis-momentum** (Boons & Prado-Tamoni — the differentiated
+  edge; needs the 2nd-nearby continuous return, more term-structure construction) and
+  **calendar/curve-spread carry**.
 - **1.3 Futures multi-factor book.** Equal-risk / HRP ensemble of carry + the survivors; Track-B vs
   the live book. **Target: a genuinely multi-factor CTA sleeve, not a single carry bet.**
 

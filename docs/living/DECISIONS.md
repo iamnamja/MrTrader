@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P1.2) — futures factor zoo: XS-momentum is a new factor; curve-mom/value/skew killed
+
+**Context**: The panel's highest-EV FREE move was to mine the factor zoo on the futures data we already own. Key reuse: `carry_backtest` is a generic cross-sectional engine (it z-scores any signal panel), so a factor = a new signal panel run through it.
+
+**Decision**: Built `app/research/futures_factors.py` (xs_momentum / curve_momentum / value / skewness signal fns + `xs_factor_backtest` alias) + `scripts/run_futures_factors.py`. Tested all four on the 76-market universe with honest 3bps/side roll cost, residual-alpha vs the (ETF-trend + carry) book. **Only cross-sectional 12-1 MOMENTUM survives** → registered as the `futures_xsmom` sleeve (P1-FUT-XSMOM):
+- **xs_mom: Sharpe 0.56**, modern-robust (10s 0.74, post-2015 0.58, 2020s 0.49), **corr-to-trend only 0.12** (it's RELATIVE momentum, distinct from absolute TSMOM), residual-α t +1.60 (marginal, like carry). Official Ruler-v2 **Track-A PAPER-PASS** (mean_sharpe 0.72, point_SR 0.72).
+- **curve_momentum (−0.24), value/5y-reversal (−0.24), skewness (+0.03): KILLED** at the economically-motivated sign. **Deliberately NOT sign-flipped** to chase the negative Sharpes (that's the OPT-5 trap the program reverts).
+
+**Rationale**: XS (relative) momentum is economically distinct from our absolute trend (corr 0.12) and is the standard second momentum factor in every managed-futures book; it clears Track-A and is modern-robust. The dead three are honest negatives — value/skew were the panel's "marginal" predictions; curve-momentum didn't pan out at this definition. No sign-flipping preserves pre-registration integrity.
+
+**Consequences**: We now have a third real futures factor (carry + XS-momentum) toward a multi-factor CTA book; both are PAPER-candidates (marginal residual-α). 5 tests; 233 regression green; flake8 clean; report-only. **Next: P1.1 CFTC CoT positioning factor + P1.3 the futures multi-factor ensemble (carry + xs_mom) → Track-B vs the live book.** See ALPHA_V10_SYNTHESIS_AND_PLAN §P1.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P0.3) — ruler negative controls: the gate is CLEAN (Type-I controlled)
 
 **Context**: The panel asked us to PROVE the Ruler-v2 gate isn't leaky (we've erred in both directions before): (A) the PAPER point-SR floor admits ~23% of zero-edge nulls alone; (B) could the "diversifier waiver" / vol-matched appraisal manufacture a Track-B PASS from pure anti-correlation?
