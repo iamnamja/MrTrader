@@ -130,8 +130,25 @@ Cross-cutting principles adopted from the panel (apply throughout):
 ### Phase 1 — Mine what we already own (FREE; the futures factor zoo + positioning)
 All on the owned Norgate mirror; each pre-registered, through the (PIT-vol, family-counted) gate,
 judged on Track-B over the *combined* book:
-- **1.1 CFTC Commitment-of-Traders loader** (free weekly) → **hedging-pressure / positioning** factor
-  (commercial vs non-commercial net) — the one genuinely *new* signal we don't have.
+- **1.1 ✅ TESTED 2026-06-20 → CoT hedging-pressure factor KILLED (full-sample flat).** Verified the
+  Socrata API (`publicreporting.cftc.gov/resource/6dca-aqww.json`; fields `noncomm_positions_long/
+  short_all`, `comm_positions_long/short_all`, `open_interest_all`) + mapped 37 markets. Net-spec/OI
+  signal, release-lagged (report+3d) PIT, long high net-spec (Basu-Miffre). **Full-sample Sharpe +0.06**
+  (doesn't clear the floor); perfectly orthogonal (corr 0.03/0.01 to carry/xsmom) but residual-α t 0.27.
+  KILL. **Revisit candidate (NOT acted on):** the recent sub-period improves (2010s 0.14 → post-2015
+  0.42 → 2020s 0.77) — possibly a regime-dependent / positioning-extreme signal worth a *conditioned*
+  re-test later; selecting on the recent window now would be cherry-picking.
+  **Preserved Norgate→CFTC code mapping (turnkey for a revisit):** ES 13874A · NQ 209742 · RTY 239742 ·
+  CL 067651 · BRN 06765T · NG 023651 · RB 111659 · HO 022651 · GC 088691 · SI 084691 · HG 085692 ·
+  ZN 043602 · ZF 044601 · ZT 042601 · ZB 020601 · UB 020604 · TN 043607 · 6E 099741 · 6J 097741 ·
+  6B 096742 · 6S 092741 · 6C 090741 · 6A 232741 · ZC 002602 · ZW 001602 · KE 001612 · MWE 001626 ·
+  ZS 005602 · ZM 026603 · ZL 007601 · SB 080732 · KC 083731 · CC 073732 · CT 033661 · LE 057642 ·
+  HE 054642 · VX 1170E1.
+- **1.4 ✅ DONE 2026-06-20 — basis-momentum KILLED.** 12m cumret(front − 2nd-nearby), long high. Built
+  the 2nd-nearby return (rank-2 contract's own pct_change, PIT). Sharpe −0.10, residual-α t 0.47 —
+  orthogonal (−0.20) but no edge; the academic "differentiated edge" didn't replicate. No sign-flip.
+  **NET P1: six free factors tested (xs-mom, curve-mom, value, skew, basis-mom, CoT) → only XS-momentum
+  survives. The free futures factor zoo is exhausted at carry + XS-momentum.** Next real progress = P2 IBKR.
 - **1.2 ✅ DONE 2026-06-20 — futures factor sleeves (first batch).** Reused `carry_backtest` as a
   generic XS engine; `app/research/futures_factors.py` + `scripts/run_futures_factors.py`. Tested
   xs-momentum / curve-momentum / value / skewness with honest 3bps/side roll cost. **Only
