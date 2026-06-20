@@ -184,6 +184,29 @@ def build_futures_carry(**cfg_kw) -> Sleeve:
                         f"inverse-vol, book_vol_target=0.12, 3bps signal + 3bps/side roll")
 
 
+@register_sleeve("futures_xsmom")
+def build_futures_xsmom(**cfg_kw) -> Sleeve:
+    """Cross-sectional 12-1 momentum on the liquid Norgate futures universe (long winners /
+    short losers) — the P1.2 factor-zoo survivor: Sharpe ~0.56, modern-robust (post-2015 ~0.58),
+    LOW corr-to-trend ~0.12 (it's RELATIVE momentum, distinct from the absolute TSMOM trend).
+    Same XS engine + honest 3bps/side roll cost as carry. Declared diversifier, n_trials=1.
+    (curve-momentum / value / skewness were tested + KILLED at the pre-registered sign.)"""
+    from app.research import (futures_data as fd, futures_carry as fc,
+                              futures_factors as ff, futures_roll as frl)
+    uni = fd.liquid_universe()
+    prices = fd.synthetic_price_panel(uni)
+    rets = fd.returns_panel(uni)
+    roll_days = frl.roll_days_panel(uni, index=rets.index)
+    signal = ff.xs_momentum_signal(prices)
+    cfg = fc.CarryConfig(roll_cost_bps=3.0, **cfg_kw)
+    r = ff.xs_factor_backtest(rets, signal, cfg, roll_days=roll_days)
+    return Sleeve(label="futures_xsmom", component_type="diversifier",
+                  returns=r.dropna(), spy_prices=None, periods_per_year=252,
+                  n_trials_registered=1, registration_id="P1-FUT-XSMOM",
+                  notes=f"cross-sectional 12-1 momentum on {len(uni)} Norgate futures; XS engine; "
+                        f"book_vol_target=0.12, 3bps signal + 3bps/side roll")
+
+
 @register_sleeve("turn_of_month")
 def build_turn_of_month(*, symbol: str = "SPY", bars: Optional[pd.DataFrame] = None,
                         **cfg_kw) -> Sleeve:
