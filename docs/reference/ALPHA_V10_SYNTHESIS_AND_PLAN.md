@@ -141,8 +141,13 @@ judged on Track-B over the *combined* book:
   discipline). **Still TODO this phase: basis-momentum** (Boons & Prado-Tamoni — the differentiated
   edge; needs the 2nd-nearby continuous return, more term-structure construction) and
   **calendar/curve-spread carry**.
-- **1.3 Futures multi-factor book.** Equal-risk / HRP ensemble of carry + the survivors; Track-B vs
-  the live book. **Target: a genuinely multi-factor CTA sleeve, not a single carry bet.**
+- **1.3 ✅ DONE 2026-06-20 — futures multi-factor book → SIGNIFICANT diversifier.** Registered
+  `futures_book` (P1-3-FUT-BOOK) = equal-weight(carry, xsmom) (both vol-targeted + roll-costed).
+  Book Sharpe 0.67 (post-2015 0.83); official Track-A **PAPER-PASS (point_SR 0.85** — strongest
+  sleeve yet). **Track-B vs the live ETF-trend book: residual-α t = 2.29 (SIGNIFICANT >1.96),
+  resid-Sharpe 0.56, beta 0.24** — vs carry-alone t 1.76. **"Gate the basket" works:** two marginal
+  factors combine into a book whose diversification crosses conventional significance → the genuine
+  "second engine" to pair with live trend (still paper; capital needs P2 IBKR execution-truth).
 
 ### Phase 2 — Make the futures book EXECUTABLE (the real bottleneck)
 - **2.1 Roll-cost model** baked into the futures engine (per-market transaction cost; from 0.2).
