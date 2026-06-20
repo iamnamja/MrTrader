@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P1.4) — more free factors: basis-momentum + CoT both KILLED; the free zoo is exhausted at carry + XS-momentum
+
+**Context**: Continued the free-data factor search with the panel's two named candidates — basis-momentum (Boons & Prado-Tamoni, "the differentiated edge") and CFTC Commitment-of-Traders positioning ("genuinely different, free, you don't have it").
+
+**Decision (both KILLED at the pre-registered sign):**
+- **Basis-momentum** (12m cumret of front − 2nd-nearby, long high). Built the 2nd-nearby return (rank-2 contract's own pct_change, PIT). **Sharpe −0.10** (post-2015 +0.04), residual-α vs the futures book t 0.47. Interestingly NEGATIVELY correlated to carry/xsmom (−0.20, so orthogonal) but no edge. The academic "differentiated edge" did not replicate on our universe/period. KILL (no sign-flip).
+- **CFTC CoT hedging-pressure** (long high net-non-commercial/OI, per Basu-Miffre). Verified the Socrata API (`publicreporting.cftc.gov/resource/6dca-aqww.json`) + mapped **37 of our markets** to CFTC contract codes; release-lagged (report+3d) PIT. **Full-sample Sharpe +0.06** → doesn't clear the PAPER floor. **It IS perfectly orthogonal** (corr 0.03 to carry / 0.01 to xsmom — exactly the panel's prediction) but residual-α vs the book t 0.27 (no edge). KILL. **Noted, NOT acted on:** the sub-period trend is *improving* (2010s 0.14 → post-2015 0.42 → 2020s 0.77) — a possible regime-dependent signal to REVISIT later, but selecting on the recent window would be the F3/daily-carry cherry-pick trap, so it stays killed at the full-sample standard. The Norgate→CFTC code mapping is preserved in ALPHA_V10_SYNTHESIS_AND_PLAN §P1 for a turnkey future revisit.
+
+**Rationale**: The recurring lesson holds — **orthogonality without standalone return doesn't help** (both factors are orthogonal-ish but residual-α t < 0.5). Six free futures factors have now been tested (xs-mom, curve-mom, value, skew, basis-mom, CoT); **only XS-momentum survived.** The free-data factor zoo is effectively exhausted at carry + XS-momentum.
+
+**Consequences**: The P1 product stands: the futures multi-factor book = carry + XS-momentum (P1.3, a significant diversifier). Further free mining has diminishing returns → the next real progress is **P2 (IBKR execution-truth)** to deploy what we have, empirically reinforcing the panel's "the app is ahead of the alpha." No new production modules for the dead factors (documented + mapping preserved); report-only, no live change. See ML_EXPERIMENT_LOG / PROJECT_STATE 2026-06-20 (P1.4) + ALPHA_V10 §P1.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P1.3) — futures multi-factor book: a SIGNIFICANT diversifier (the second engine)
 
 **Context**: P0.2/P1.2 left two individually-MARGINAL futures factors (carry residual-α t~1.76, XS-momentum t~1.6). The "gate the basket" question: does combining them clear a bar neither did alone?
