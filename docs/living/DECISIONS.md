@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-20 (Alpha-v10 P0.3) — ruler negative controls: the gate is CLEAN (Type-I controlled)
+
+**Context**: The panel asked us to PROVE the Ruler-v2 gate isn't leaky (we've erred in both directions before): (A) the PAPER point-SR floor admits ~23% of zero-edge nulls alone; (B) could the "diversifier waiver" / vol-matched appraisal manufacture a Track-B PASS from pure anti-correlation?
+
+**Decision**: Built `app/research/ruler_controls.py` (Monte-Carlo negative controls) + `scripts/run_ruler_controls.py`. **Result = CLEAN:**
+- **(A) True-null PAPER false-positive rate:** floor-alone **23.6%** (n=1500) — the known leak — but the JOINT (point-SR floor AND HAC p<0.05) is **5.3%** (n=1500) / **5.3%** (n=3000). The HAC-significance floor correctly closes the leak to the nominal ~5%.
+- **(B) Anti-correlated zero-edge null through Track-B:** residual-alpha pass-rate **5.7%** (~size). A stream with zero true alpha that is anti-correlated to the book does NOT pass more than nominal → the residual-alpha Track-B is not gamed by anti-correlation.
+
+**Rationale**: This empirically refutes the panel's "is your ruler leaky?" worry and retroactively validates the P0.2 switch from the vol-matched dSR (which the controls would NOT have cleared — it manufactures appraisal from anti-correlation) to the budget-invariant residual-alpha (Type-I-clean). The gate's Type-I error is controlled at ~5% on both tiers.
+
+**Consequences**: We can trust the gate's PASS/FAIL at face value (Type-I ~nominal). 3 tests; flake8 clean; report-only. Next Phase-0: P0.4 PIT-vol migration sweep (already largely done for carry in P0.2 — extend to any other decision claim) + P0.5 family-level trial counting. See ALPHA_V10_SYNTHESIS_AND_PLAN §P0.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P0.2) — carry honesty pass: real but recalibrated down (Sharpe 0.58; diversification marginal)
 
 **Context**: The panel's loudest criticism was that carry's 0.66 Sharpe is a "phantom number" until roll mechanics are modeled, with an explicit double-count warning (in commodities the roll YIELD is the carry signal). P0.2 makes carry honest.
