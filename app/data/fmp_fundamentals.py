@@ -70,6 +70,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -324,13 +325,55 @@ def load_fmp_fundamentals(force_reload: bool = False) -> pd.DataFrame:
     except Exception as exc:
         logger.warning("Failed to read %s: %s", FMP_PATH, exc)
         return pd.DataFrame(columns=_SCHEMA_COLUMNS)
-    # Normalise date columns to YYYY-MM-DD strings + sort
+    df = _apply_quality_guards(df)
+    _LOAD_CACHE[str(FMP_PATH)] = (mtime, df)
+    return df
+
+
+# Ratio columns whose denominator is revenue -- garbage when revenue < 0.
+_REVENUE_DERIVED = ("revenue", "profit_margin", "revenue_growth_yoy",
+                    "gross_margin", "operating_margin", "fcf_margin")
+
+
+def _apply_quality_guards(df: pd.DataFrame) -> pd.DataFrame:
+    """On-load data-quality guards (audit 2026-06-21). Pure (copies its input);
+    returns a cleaned, PIT-deterministic frame. Two defects this neutralises:
+
+    1. NEGATIVE revenue -- FMP maps a non-standard line item for some
+       REITs/MLPs/partnerships (BEP, GLP, SLG, NHI, ...) yielding NEGATIVE
+       "revenue", which poisons every X/revenue margin. revenue < 0 is never
+       valid -> NaN the field and its same-row derived ratios. (Genuine ZERO
+       revenue, e.g. pre-revenue biotech, is LEFT INTACT -- those rows already
+       carry NaN margins from backfill's div-by-zero guard. The YoY-base residual
+       is left to backfill -- a documented limitation.)
+    2. NON-DETERMINISTIC PIT pick -- a single filing date (as_of_date) can carry
+       MULTIPLE period_ends: usually a late filing bundling several DISTINCT
+       quarters (e.g. ADSK 2007-06-04 reports Q2+Q3+Q4), and occasionally FMP
+       returning two near-identical period_ends for the SAME quarter (e.g. ADI
+       Q4-2017 10-31 vs 10-28 with materially different revenue). The PIT
+       consumers (get_fundamentals_as_of, lookup_pit_from_index) take the LAST
+       row with as_of_date <= target, so the tie-break used to depend on
+       insertion order. We do NOT drop the bundled quarters (they are real
+       history / YoY bases) -- we SORT by (symbol, as_of_date, period_end) so the
+       deterministic LAST pick is always the latest period reported as-of that
+       filing.
+    """
+    df = df.copy()
+    # Normalise date columns to YYYY-MM-DD strings
     for col in ("as_of_date", "period_end"):
         if col in df.columns:
             df[col] = df[col].astype(str).str[:10]
-    if {"symbol", "as_of_date"}.issubset(df.columns):
-        df = df.sort_values(["symbol", "as_of_date"]).reset_index(drop=True)
-    _LOAD_CACHE[str(FMP_PATH)] = (mtime, df)
+
+    if "revenue" in df.columns:
+        bad_rev = pd.to_numeric(df["revenue"], errors="coerce") < 0
+        if bad_rev.any():
+            for col in _REVENUE_DERIVED:
+                if col in df.columns:
+                    df.loc[bad_rev, col] = np.nan
+
+    sort_keys = [c for c in ("symbol", "as_of_date", "period_end") if c in df.columns]
+    if sort_keys:
+        df = df.sort_values(sort_keys).reset_index(drop=True)
     return df
 
 
@@ -562,7 +605,10 @@ def build_fmp_lookup_index(df: Optional[pd.DataFrame] = None
     if df is None or df.empty:
         return out
     for sym, grp in df.groupby("symbol"):
-        grp_sorted = grp.sort_values("as_of_date")
+        # sort on period_end too so the LAST snapshot per as_of_date is the latest
+        # reported period (deterministic PIT pick; see _apply_quality_guards)
+        _keys = ["as_of_date"] + (["period_end"] if "period_end" in grp.columns else [])
+        grp_sorted = grp.sort_values(_keys)
         out[sym] = [
             (str(r["as_of_date"]), {
                 "profit_margin": float(r["profit_margin"]) if pd.notna(r["profit_margin"]) else 0.0,

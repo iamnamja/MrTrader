@@ -19,6 +19,9 @@
 
 **The single most important decision (👤):** the **trend ⊕ VRP** pairing — positive-skew (trend, long-crisis) ⊕ negative-skew (VRP, short-crisis) under the governor — the most likely route from ~0.7 to ~1.0+ book Sharpe. **DO-NOT list** (roadmap §6): no more daily-equity XGBoost sweeps, no intraday-ML revival, no PEAD threshold filters, no per-regime models, no RL, no path-inflated CPCV, no naked short vol, no IBKR before futures research passes.
 
+**Discovered tech-debt (data-quality audit 2026-06-21):**
+- 🔧 **`app/ml/factor_scorer.py` PIT look-ahead** — all 5 scorers resolve the as-of date column from `("date","report_date","filed_date")`, none of which exist in the FMP schema (`as_of_date`) → the PIT filter is silently skipped (returns the full unfiltered frame = look-ahead), and they bypass `load_fmp_fundamentals`'s new quality guards. The fundamentals-factor sleeve is **parked/unused** so no live result changes, but any past number from this path is look-ahead-contaminated. **Fix before any fundamentals-factor revival:** add `as_of_date` to the candidate columns + route through `load_fmp_fundamentals()`, then re-run. (See `docs/reference/DATA_QUALITY_AUDIT_2026-06-21.md`.)
+
 ---
 
 ## 🎯 PRIOR PLAN — Alpha-v8 Research Program: Overlay & Timing track (2026-06-14) — COMPLETE
