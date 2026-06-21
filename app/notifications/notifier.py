@@ -49,6 +49,7 @@ RATE_LIMITS: dict[str, int] = {
     "cash_weekly":       0,   # P1-1 cash/T-bill sleeve idle-capital utilization
     "options_spread_mature": 0,  # P2-4 NBBO spread surface crossed maturity (fires once)
     "crypto_weekly":     0,   # P3-1 crypto trend live-paper OOS Sharpe-to-date
+    "whole_book_gate_breach": 0,  # R0.5 whole-book risk gate WOULD-block (shadow) / blocked (enforce)
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -266,6 +267,17 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("OOS trading days", p.get("n_oos_days")),
             ("OOS cumulative return", p.get("oos_cum")),
             ("Notes", p.get("notes", "")),
+        ])
+
+    elif event_type == "whole_book_gate_breach":
+        _mode = p.get("mode", "shadow")
+        subj = (f"[MrTrader] Whole-book gate {'BLOCKED' if _mode == 'enforce' else 'would-block'} "
+                f"— {p.get('label', '?')}")
+        body = _section(f"R0.5 whole-book risk gate ({_mode})", [
+            ("Sleeve", p.get("label")),
+            ("Mode", _mode + ("" if _mode == "enforce" else " (shadow: not blocking)")),
+            ("Breaches", "; ".join(p.get("breaches", []) or [])),
+            ("Details", p.get("details", "")),
         ])
 
     elif event_type == "trend_weekly":

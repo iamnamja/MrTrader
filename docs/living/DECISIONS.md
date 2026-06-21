@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-21 (Alpha-v10 R0.4b/R0.5) — whole-book risk gate wired into the live trend rebalance (SHADOW; owner-approved)
+
+**Context**: With Min present, took the first step that touches the live order path. Min explicitly chose **shadow-first** for the whole-book risk gate (vs enforce-now or the big R0.2 daemon-decouple). First validated the R0 measurement layer on the LIVE Alpaca account (R0.4b, read-only). SSOT: `docs/reference/R0_FOUNDATION_2026-06-21.md`.
+
+**Decision**:
+- **R0.4b** — `scripts/run_book_state_report.py` produces the consolidated cross-venue risk surface from the read-only adapter; validated on the live account (NAV $101,409; gross 20.3% of NAV; net equity-beta 0.16× NAV; all positions mapped).
+- **R0.5 (shadow)** — `app/live_trading/whole_book_gate.py`: evaluates a PROPOSED book against risk-policy-v1 caps (gross-ex-cash, net equity beta, single/book notional, unmapped→fail-closed). **Wired into `trend_sleeve.run_trend_rebalance`** (the risk-bearing sleeve; cash-sleeve trades are cash-equivalent → gate-exempt). New flag `pm.whole_book_gate_mode` (default **shadow**): shadow LOGS + emails (`whole_book_gate_breach`) what it WOULD block but blocks nothing; enforce HOLDS on a breach (fail-closed); off = skip.
+
+**Rationale**: Shadow-first mirrors how every live change here has been introduced (measure before control) and — critically with a live rebalance the next morning — is **provably inert**: the deep-dive verified the wiring is double-wrapped fail-safe (the gate never raises; the sleeve call is its own try/except; no inputs mutated; no broker/API call — it runs on the in-memory positions+intents already fetched), so a totally broken gate cannot disrupt the rebalance. Enforce-facing hardening already applied from the review: missing/zero price → fail-closed breach (no hidden false-allow); an enforce-mode wiring failure fails CLOSED. The per-trade gross cap remains the real-time backstop.
+
+**Consequences**: The live trend rebalance now computes + logs the holistic whole-book risk verdict every run (shadow) — the first holistic risk visibility on the actual live order path (the prior gap: live sleeves bypassed the RiskManager). **Live trading behavior UNCHANGED** (gate logs only). 9 gate tests + 594 trend/gate/orchestrator tests green; full suite green. **Rollout**: run shadow through ≥1 week (incl. Mon 2026-06-22 trend rebalance + first cash deploy), confirm no spurious flags, then flip `pm.whole_book_gate_mode` → enforce (config set, no code change). Still deferred (owner-present): R0.2 daemon decouple; wiring reconciliation + kill-switch (not just the gate) into the live path; R1 IBKR.
+
+---
+
 ## 2026-06-21 (Alpha-v10 R0.3/R0.4) — the R0 measurement + safety foundation (shadow; read-only)
 
 **Context**: Built the Portfolio-Brain roadmap's R0 "Minimum-Viable-Safety" building blocks (the ~80%-of-safety substrate; the hard no-go gate before any IBKR dollar) — autonomously, while IBKR pends. All SHADOW / read-only (control nothing). Each: Opus design → adversarial deep-dive → fix → tests. SSOT: `docs/reference/R0_FOUNDATION_2026-06-21.md`. (The risky R0.2 daemon-decouple and the R0.5 live-path gate-wiring are deliberately deferred to owner-present.)
