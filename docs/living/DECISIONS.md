@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-21 (Alpha-v10) — data-quality audit: live/verdict data is CLEAN; fixed 2 FMP defects; found a parked-sleeve look-ahead
+
+**Context**: Owner asked for a full review of saved/downloaded history for outliers that "might have caused issues" — well-founded, since the 2026-06-18 carry hardening had already found a data artifact that flipped a sign (CL 2020-04-21 negative back-adjusted denominator). A single bad print can move a Sharpe enough to flip a keep/kill.
+
+**Decision**: Built a read-only sweep tool `scripts/audit_data_quality.py` (futures/macro/finra/fundamentals/equities) and ran it over every persisted dataset. **Headline: the data behind every LIVE position and recent keep/kill verdict is clean** — Norgate futures (0 dup/non-mono/OHLC viol; only CL has a negative unadj close, already guarded; winsor touches ~0% of days; all bad stale-runs are STIRs correctly excluded from `liquid_universe()`, and the one liquid offender HO is 1978–79 only), macro VIX curve (clean in-sample; only trailing-edge/holiday NaNs that self-heal on read), FINRA short-vol (pristine), and liquid ETF/large-cap prices (clean). **All defects found are in OFF-strategy data → no live verdict corrupted.**
+
+Fixed two real **FMP fundamentals** defects centrally in `load_fmp_fundamentals()` (new pure helper `_apply_quality_guards()` — corrects the on-disk parquet on read, no refetch, all consumers benefit), validated 42,009 rows in → 42,009 out (**zero data loss**):
+1. **Negative revenue (79 rows)** — FMP maps a non-standard line item for some REITs/MLPs (BEP/GLP/SLG/…) → negative "revenue" poisoning every X/revenue margin → NaN the field + same-row ratios. Genuine zero-revenue rows (581, pre-revenue biotech) **left intact** (already NaN margins).
+2. **Non-deterministic PIT pick (72 dup `(symbol, as_of_date)` rows)** — a filing date can bundle multiple period_ends (ADSK reports Q2+Q3+Q4 same day; ADI restated 10-31 vs 10-28, $1.54B vs $1.00B). The PIT consumers take the last row `as_of_date<=target`, so the tie-break was insertion-order-dependent → **sort by `(symbol, as_of_date, period_end)`, do NOT drop the bundled quarters** (they are real YoY bases). An earlier draft `drop_duplicates`'d and an adversarial Opus review caught it deleting 71 legitimate quarters → corrected to sort-don't-drop.
+
+**Rationale**: Proportionate to blast radius — fix the cheap, clearly-correct loader bugs (they touch PEAD=off + unused fundamentals factors, so no regression risk to live), and **document** the larger artifacts (equity-cache reverse-split jumps GPOR/CHRD; the sub-penny adj-OHLC rounding) rather than rebuild a cache that swing-ML=off and P4 will replace with survivorship-free Norgate.
+
+**Consequences**: Certainty that the futures book, VIX-VRP, live ETF-trend, and FINRA work rest on clean data. `scripts/audit_data_quality.py` is now a reusable pre-flight for future data buys (Norgate US Stocks P4, IBKR fills P2). **Follow-up discovered (NOT live, tracked in MASTER_BACKLOG):** `app/ml/factor_scorer.py` resolves its PIT date column from `("date","report_date","filed_date")` — none exist (schema = `as_of_date`) → the as-of filter is silently skipped (look-ahead) and it bypasses the new guards; the fundamentals-factor sleeve is parked so no live result changes, but past numbers from that path are look-ahead-contaminated and must be re-run after fixing. Full report: `docs/reference/DATA_QUALITY_AUDIT_2026-06-21.md`.
+
+---
+
 ## 2026-06-20 (Alpha-v10 P3.1) — VRP via the VIX-futures curve: a real premium → REVERSES the earlier VRP park
 
 **Context**: The panel flagged the Alpha-v5 VRP park/kill as likely wrong — it was judged as an *alpha* (it's a risk premium) and tested on too-short options data. Claude's cheap owned-data re-test: short the front VIX future when the curve is in CONTANGO (roll-down capture), gated by our existing crash-governor signal; judged on Track-B as a risk premium.
