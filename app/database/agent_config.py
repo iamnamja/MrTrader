@@ -231,6 +231,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.whole_book_gate_mode",
+        "default": "shadow",
+        "type": "str",
+        "description": "Alpha-v10 R0.5 whole-book risk gate mode. 'shadow' (default) = the gate computes the proposed-book risk-policy-v1 caps (gross-ex-cash, net equity beta, single/book notional) and LOGS + emails what it WOULD block, but does NOT block (the rebalance proceeds as today). 'enforce' = a cap breach HOLDS the rebalance (fail-closed; a missed rebalance, never a bad trade). 'off' = gate not evaluated. FAIL-SAFE: any gate error -> proceed (shadow). Flip to 'enforce' only after a clean shadow window.",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.crash_governor_enabled",
         "default": "true",
         "type": "str",

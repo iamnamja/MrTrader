@@ -47,12 +47,42 @@ fix/iterate → tests. These are the substrate the R0.5 whole-book risk gate and
 - Plus: gross/net/factors derive from one quantity (no desync); stale-price + unmapped flags;
   `settled_cash` no longer aliased to total cash; fractional-share `qty_tol`; factor-unit tags.
 
-## Not yet (R0.5 / R1, documented for the next builder)
-Per-venue cash reconciliation calls; thread-safe/persisted (Postgres `control_flags`) kill-switch
-for the concurrent order path; IBKR adapter + verify-on-connect of the futures specs; wiring the
-reconciliation + kill-switch to actually GATE the live order path (R0.5). The read-only modules are
-intentionally inert until then.
+## R0.4b — consolidated risk-surface report (read-only, validated on LIVE Alpaca)
+`scripts/run_book_state_report.py` runs the R0 measurement layer against the live broker account(s)
+and prints the consolidated book + netted factor exposures. **Validated on the live account
+2026-06-21:** NAV $101,409, gross $20,569 (20.3% of NAV; cap 80%), net equity-beta +$16.3k
+(0.16× NAV; cap 1.00), USD +$4.3k (UUP), all 5 trend ETFs mapped, zero unmapped/stale. Read-only —
+the adapter cannot trade.
+
+## R0.5 — the whole-book risk gate (SHADOW-first; wired into the live trend rebalance)
+`app/live_trading/whole_book_gate.py` evaluates a PROPOSED book against the risk-policy-v1 hard caps
+(gross-ex-cash, net equity beta, single-instrument & book notional, unmapped fail-closed) and returns
+an allow/block verdict. **Wired into `trend_sleeve.run_trend_rebalance` (the risk-bearing sleeve;
+cash-sleeve trades are cash-equivalent → gate-exempt by design).** Modes via
+`pm.whole_book_gate_mode` (default **`shadow`**):
+- **shadow** — computes the proposed-book caps, **LOGS + emails (`whole_book_gate_breach`) what it
+  WOULD block, but blocks nothing**; the rebalance proceeds exactly as today.
+- **enforce** — a breach HOLDS the rebalance (fail-closed: a missed rebalance, never a bad trade).
+- **off** — not evaluated.
+
+**Shadow safety (deep-dive-verified):** the wiring is double-wrapped fail-safe — `shadow_gate_from_
+intents` never raises (returns `allow=True, error` on any failure), the sleeve call is in its own
+try/except, no input is mutated, and no broker/API call is made (the gate runs on the in-memory
+positions + intents already fetched). **A totally broken gate is inert in shadow** — tomorrow's live
+rebalance is untouched. Enforce-facing hardening already applied: missing/zero price → fail-closed
+breach (no hidden false-allow); an enforce-mode gate wiring failure fails CLOSED (HOLD).
+
+**Rollout:** run in shadow through ≥1 week of live rebalances (incl. the Mon 2026-06-22 trend
+rebalance + first cash deploy), confirm it never spuriously flags, then flip `pm.whole_book_gate_mode`
+→ `enforce` (a config set, no code change).
+
+## Not yet (later R0.5 / R1, for the next builder)
+Per-venue cash reconciliation calls; thread-safe/persisted (Postgres `control_flags`) kill-switch for
+the concurrent order path; wiring the **reconciliation + kill-switch** (not just the risk gate) into
+the live path; IBKR adapter + verify-on-connect. The read-only book-state/reconciliation/kill-switch
+modules remain inert until then; only the whole-book gate is wired (shadow).
 
 ## Tests
 `tests/test_instrument_master_adapter.py` (7) · `tests/test_book_state_reconciliation_killswitch.py`
-(16). All green; flake8 `app/` clean. **Live book UNCHANGED.**
+(16) · `tests/test_whole_book_gate.py` (9). All green; flake8 `app/` clean. **Live book UNCHANGED
+(gate in shadow — logs only).**

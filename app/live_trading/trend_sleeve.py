@@ -640,6 +640,35 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             _audit(b["symbol"], b["side"], price=live.get(b["symbol"], 0.0),
                    final_decision="block", block_reason=b.get("block_reason"))
 
+        # ── R0.5 whole-book risk gate (shadow-first; observe-only unless mode=enforce) ──
+        # Read the mode FIRST (outside the gate try) so an ENFORCE-mode gate failure fails CLOSED
+        # (HOLD), while SHADOW mode is always inert — any failure leaves blocked_by_gate False so the
+        # rebalance proceeds exactly as before.
+        try:
+            gate_mode = (get_agent_config(db, "pm.whole_book_gate_mode") or "shadow")
+        except Exception:
+            gate_mode = "shadow"
+        blocked_by_gate = False
+        try:
+            from app.live_trading import whole_book_gate as wbg
+            from app.notifications import notifier as _notifier
+            gate_verdict = wbg.shadow_gate_from_intents(
+                all_positions, approved, live, nav, mode=gate_mode, label="trend",
+                notifier=_notifier)
+            summary["gate_mode"] = gate_mode
+            summary["gate_allow"] = bool(gate_verdict.allow)
+            summary["gate_breaches"] = list(gate_verdict.breaches)
+            blocked_by_gate = (gate_mode == "enforce" and not gate_verdict.allow)
+        except Exception:
+            log.debug("trend: whole-book gate wiring failed", exc_info=True)
+            blocked_by_gate = (gate_mode == "enforce")   # fail-CLOSED in enforce; inert in shadow
+        if blocked_by_gate:
+            log.warning("trend: whole-book gate (mode=%s) -> HOLD rebalance: %s",
+                        gate_mode, summary.get("gate_breaches"))
+            summary["status"] = "blocked"
+            summary["block_reason"] = "whole_book_gate"
+            return summary
+
         # ── Execute or shadow ──
         if shadow:
             for it in approved:
