@@ -167,7 +167,12 @@ judged on Track-B over the *combined* book:
   "second engine" to pair with live trend (still paper; capital needs P2 IBKR execution-truth).
 
 ### Phase 2 — Make the futures book EXECUTABLE (the real bottleneck)
-- **2.1 Roll-cost model** baked into the futures engine (per-market transaction cost; from 0.2).
+**📐 Turnkey design spec: [`docs/reference/P2_IBKR_EXECUTION_DESIGN.md`](P2_IBKR_EXECUTION_DESIGN.md)**
+(2026-06-21) — contract master + verify-on-connect, execution flow, idempotency / broker-as-truth /
+immutable snapshots / kill-switch, FastAPI decouple, replay parity, phased P2.1→P2.4 checklist.
+IBKR account applied 2026-06-21 (all permissions, margin; approval ~Mon). Adapter build starts on
+approval (paper) to verify against the live API.
+- **2.1 Roll-cost model** baked into the futures engine (per-market transaction cost; from 0.2). ✅ done in P0.2.
 - **2.2 IBKR paper account + futures execution adapter** (this is P4-3): contract master, roll
   calendar, margin-aware order preview, **broker-as-source-of-truth reconciliation**, idempotent
   orders (run-id keyed), immutable signal snapshots, kill switch, heartbeat/dead-man, replay/parity
