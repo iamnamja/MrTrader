@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-21 (Alpha-v10 R0.3/R0.4) — the R0 measurement + safety foundation (shadow; read-only)
+
+**Context**: Built the Portfolio-Brain roadmap's R0 "Minimum-Viable-Safety" building blocks (the ~80%-of-safety substrate; the hard no-go gate before any IBKR dollar) — autonomously, while IBKR pends. All SHADOW / read-only (control nothing). Each: Opus design → adversarial deep-dive → fix → tests. SSOT: `docs/reference/R0_FOUNDATION_2026-06-21.md`. (The risky R0.2 daemon-decouple and the R0.5 live-path gate-wiring are deliberately deferred to owner-present.)
+
+**Decision**: Landed five read-only modules — **R0.3:** the canonical instrument master (`app/live_trading/instrument_master.py`; live Alpaca ETFs+T-bills verified, IBKR futures placeholders flagged verify-on-connect) + the `BrokerAdapter` Protocol + a read-only `AlpacaReadOnlyAdapter` (`broker_adapter.py`) structurally incapable of trading (no order methods + a read-only client proxy). **R0.4:** the consolidated cross-venue `BookState` + netted factor-exposure view (`book_state.py`); reconciliation-before-trade keyed by `(venue, instrument_id)`, FAIL-CLOSED on any material break (`reconciliation.py`); and the cross-venue kill-switch state machine with auto-triggers capped at CANCEL_ONLY (`kill_switch_state.py`).
+
+**Rationale / deep-dive fixes** (the review found silent-wrong-number / false-OK bugs that become loss-vectors when wired — all fixed in shadow): reconciliation now keys by `(venue, instrument_id)` (an id-only key could drop a cross-venue position → false MATCH — the worst failure for the #1 safety gate); book-state factor exposure uses **full notional `qty·price·mult`** not broker market_value (IBKR reports futures MV as daily P&L ≈ 0 → would understate stacked beta to ~0); the kill-switch hard-caps AUTO escalation at CANCEL_ONLY (a flaky watchdog must never auto-liquidate); the read-only adapter holds its client behind a whitelisting proxy; gross/net/factors derive from one quantity (no desync); stale-price + unmapped-factor flags; factor-unit tags. 23 tests; flake8 clean; full suite green.
+
+**Consequences**: The measurement + reconciliation + kill-switch substrate exists (shadow, inert — nothing reads it on the order path). **Live book UNCHANGED.** Next (owner-present / IBKR): R0.2 decouple the daemon from FastAPI; R0.5 wire reconciliation + kill-switch + risk-policy v1 to GATE the live order path; then R1 (IBKR adapter + verify-on-connect + carry/xsmom tiny-live behind the gate, VRP dropped per GL-1, sized modestly per GL-0).
+
+---
+
 ## 2026-06-21 (Alpha-v10 GL-0/GL-1/R0.1) — the futures book is REAL (size modestly); the 4 premia are diversified; DROP VRP
 
 **Context**: While IBKR approval pends, executed the Go-Live plan's research gates + the R0 risk-policy artifact — the pieces that decide WHAT the brain trades and at what size. All report-only / pure-data (no live-code change). Each: Opus design → adversarial deep-dive → fix/iterate → tests. SSOT: `docs/reference/GL0_GL1_FINDINGS_2026-06-21.md`.
