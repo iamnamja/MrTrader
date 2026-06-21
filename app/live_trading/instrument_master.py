@@ -1,0 +1,102 @@
+"""
+instrument_master.py — Alpaca-v10 R0.3: the canonical INSTRUMENT MASTER (contract master).
+
+The single mapping between a venue-agnostic canonical instrument id and each venue's broker symbol +
+the static spec (asset class, multiplier, currency, cash-equivalent flag). Every position in the
+consolidated `BookState` is keyed by `instrument_id` so the brain speaks one language across Alpaca
+(equities/ETFs) and IBKR (futures). PURE data + lookups; controls nothing.
+
+R0.3 scope: the LIVE Alpaca universe (the 10 trend ETFs + the T-bill cash sleeve) is seeded with
+verified static values. A small representative IBKR futures set is seeded as PLACEHOLDERS — their
+multipliers/exchanges MUST be verified against `reqContractDetails` on connect in R1 (per
+P2_IBKR_EXECUTION_DESIGN.md "verify-on-connect"); they are marked `verified=False`.
+
+Fail-closed: an instrument with no master entry cannot be sized (the future risk gate treats it as
+LIQUIDATION_ONLY). `lookup` returns None on a miss so callers must handle it explicitly.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, Optional
+
+# asset-class constants (kept as plain strings for trivial JSON/DB round-tripping)
+ETF = "ETF"
+EQUITY = "EQUITY"
+FUTURE = "FUTURE"
+CASH_ETF = "CASH_ETF"          # T-bill ETF — a cash equivalent, excluded from risk gross
+CRYPTO = "CRYPTO"
+
+ALPACA = "ALPACA"
+IBKR = "IBKR"
+
+
+@dataclass(frozen=True)
+class CanonicalInstrument:
+    instrument_id: str                       # canonical, venue-agnostic (e.g. "SPY", "FUT.ES")
+    asset_class: str
+    currency: str = "USD"
+    multiplier: float = 1.0                  # contract multiplier (1.0 for equities/ETFs)
+    is_cash_equivalent: bool = False         # T-bills etc. — excluded from the risk gross cap
+    venue_symbols: Dict[str, str] = field(default_factory=dict)   # {venue: broker_symbol}
+    root: Optional[str] = None               # futures root (for the roll service); None for equities
+    verified: bool = True                    # False = static spec must be verify-on-connect (IBKR)
+
+    def broker_symbol(self, venue: str) -> Optional[str]:
+        return self.venue_symbols.get(venue)
+
+
+def _etf(sym: str, cash: bool = False) -> CanonicalInstrument:
+    return CanonicalInstrument(instrument_id=sym, asset_class=(CASH_ETF if cash else ETF),
+                               is_cash_equivalent=cash, venue_symbols={ALPACA: sym})
+
+
+def _fut(root: str, mult: float) -> CanonicalInstrument:
+    """IBKR futures PLACEHOLDER — multiplier/exchange must be verify-on-connect in R1."""
+    return CanonicalInstrument(instrument_id=f"FUT.{root}", asset_class=FUTURE, multiplier=mult,
+                               venue_symbols={IBKR: root}, root=root, verified=False)
+
+
+# --- the registry -------------------------------------------------------------------------------
+# LIVE Alpaca universe (verified static values).
+_TREND_ETFS = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "UUP"]
+_CASH_ETFS = ["SGOV", "BIL", "SHV"]
+
+# A small representative IBKR futures set (PLACEHOLDER multipliers — verify-on-connect in R1).
+# The full ~76-market universe is seeded in R1 once verified against the live API.
+_FUTURES = {"ES": 50.0, "NQ": 20.0, "RTY": 50.0, "CL": 1000.0, "GC": 100.0, "SI": 5000.0,
+            "HG": 25000.0, "ZN": 1000.0, "ZB": 1000.0, "ZF": 1000.0, "6E": 125000.0,
+            "6J": 12500000.0, "NG": 10000.0, "ZC": 50.0, "ZS": 50.0, "VX": 1000.0}
+
+_REGISTRY: Dict[str, CanonicalInstrument] = {}
+for _s in _TREND_ETFS:
+    _REGISTRY[_s] = _etf(_s)
+for _s in _CASH_ETFS:
+    _REGISTRY[_s] = _etf(_s, cash=True)
+for _root, _m in _FUTURES.items():
+    inst = _fut(_root, _m)
+    _REGISTRY[inst.instrument_id] = inst
+
+# reverse index: (venue, broker_symbol) -> instrument_id
+_BY_VENUE_SYMBOL: Dict[tuple, str] = {}
+for _iid, _inst in _REGISTRY.items():
+    for _venue, _bsym in _inst.venue_symbols.items():
+        _BY_VENUE_SYMBOL[(_venue, _bsym)] = _iid
+
+
+def get(instrument_id: str) -> Optional[CanonicalInstrument]:
+    """Canonical instrument by id, or None (fail-closed: callers must handle a miss)."""
+    return _REGISTRY.get(instrument_id)
+
+
+def lookup(venue: str, broker_symbol: str) -> Optional[str]:
+    """Map a venue's broker symbol to the canonical instrument_id, or None on a miss."""
+    return _BY_VENUE_SYMBOL.get((venue, broker_symbol))
+
+
+def all_instruments() -> Dict[str, CanonicalInstrument]:
+    return dict(_REGISTRY)
+
+
+def is_cash_equivalent(instrument_id: str) -> bool:
+    inst = _REGISTRY.get(instrument_id)
+    return bool(inst and inst.is_cash_equivalent)
