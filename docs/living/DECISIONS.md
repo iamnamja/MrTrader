@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Alpha-v10 panel) — 10-perspective review → "harden, don't hunt": the Phase H/D/R roadmap
+
+**Context**: While IBKR approval pends, ran a two-part LLM review — 4 repo-grounded Opus panelists + 1 adversarial red-team (internal) + 5 external world-class-quant reviews (ChatGPT/Claude/DeepSeek/Gemini/Grok), each told to be brutally honest and to *attack* the internal panel. Question: find an overlooked method, deepen swing, better-trade what we have, make the app stronger. SSOT: `docs/reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md`.
+
+**Decision** (strategic direction; no code in this entry):
+- **UNANIMOUS (10/10): stop hunting a 5th sleeve for 1–3 months.** Binding constraint = capital + a real *tiny-live* track record + not blowing up. Alpha-hunting is the comfortable avoidance of the uncomfortable correct work (deploying real capital safely).
+- **Adopt a three-phase plan: H (Harden) → D (Deploy) → R (Research).** Phase H = make the already-built safety layer *load-bearing* before any IBKR dollar (reconciliation-before-trade fail-closed; kill-switch wired; gate shadow→enforce; **pre-trade dollar-notional + futures-multiplier verify**; **out-of-band broker-only flatten**; **external dead-man watchdog**; per-order idempotency; broker-side limits). Phase D = step trend 4.7%→~6% **with a hard leverage cap**, verify cash→T-bills, pre-register the IBKR tiny-live launch → microscopic live. Phase R (post-harden, one at a time) = recover trend's convexity via long-short futures + a defensive-macro crisis overlay → commodity calendar-spread seasonality → VIX-gated stress reversal (contested) → G10 FX value (low-conviction).
+- **DON'T list (consensus guardrail):** no vol-to-8% (esp. pre-harden — the single most dangerous item); no swing-equity-ML revival / no Norgate buy *for* vol-managed momentum; don't touch the live TSMOM signal (skip-month) for marginal gains; no Constructor/covariance/HA/streaming-risk at $100k; don't re-add crypto-trend or options-dispersion as "diversifiers" (both short-convexity in a crisis); don't capitalize paper-futures Sharpe before real fills.
+
+**Rationale** (the critiques that move the plan): (1) the convexity gap is **half self-inflicted** — the live sleeve is *long-flat on an equity-heavy universe*, stripping trend's convex legs; the highest-EV "new" idea is recovering that via long-short futures, not a new family; positive-carry crash convexity is a *unicorn*. (2) The **#1 futures killer is contract-multiplier error** (~50× spread) — the internal panel underweighted it. (3) **Operator-capacity / behavioral risk is the dominant UNMODELED risk** (solo operator overrides under live P&L → backtest 0.72 plausibly → live ~0.4–0.5). (4) **Even N=26 is optimistic** (true search in the hundreds) → carry/xsmom less significant than deflated; "size modestly" reinforced. (5) **Possible era-overfit** (2006–2025 liquidity regime). (6) **"Risk premia not alpha" is partly a euphemism** → bucket robust premia (trend, carry) vs candidate anomalies (xsmom, VRP) at different risk budgets.
+
+**Consequences**: The active backlog becomes the **Phase-H safety checklist** (see `MASTER_BACKLOG.md`); the DON'T-list is a standing guardrail. Phase H maps onto the existing R0.5-enforce + R0 reconciliation/kill-switch wiring (already the named IBKR no-go gate) plus the futures-specific items the external panel added. Live book UNCHANGED by this decision. Full inputs archived under `docs/reference/prompts/20260622_LLM_Alpha_V10/` (prompt, internal panel, red-team, 5 responses, roadmap).
+
+---
+
 ## 2026-06-22 (Option A) — sector-ETF rotation swing sleeve: real standalone, but REDUNDANT to trend
 
 **Context**: Min wanted a swing strategy; the highest-prior path was to extend the one proven edge (trend/momentum) rather than revive a killed single-name signal. Option A = a **cross-sectional relative-strength rotation** across the 11 SPDR sector ETFs (distinct from the live sleeve's *absolute* per-asset TSMOM). Built + evaluated via the Phase A combined-book harness.

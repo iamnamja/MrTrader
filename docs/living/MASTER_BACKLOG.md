@@ -1,10 +1,49 @@
 # MrTrader — Master Backlog & Roadmap
 
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-22
 
 ---
 
-## 🎯 ACTIVE PLAN — Alpha-v9: multi-engine premia book (2026-06-16)
+## 🎯 ACTIVE PLAN — Alpha-v10 "harden, don't hunt" (2026-06-22, 10-LLM panel)
+
+**SSOT:** [`docs/reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md`](../reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md). 4 internal Opus panelists + red-team + 5 external reviews (ChatGPT/Claude/DeepSeek/Gemini/Grok), **unanimous: stop hunting a 5th sleeve for 1–3 months — the binding constraint is capital + a real *tiny-live* track record + not blowing up.** Three phases: **H (Harden) → D (Deploy) → R (Research).**
+
+### Phase H — make the safety layer LOAD-BEARING (the hard IBKR no-go gate; before any IBKR dollar)
+| # | Item | Status |
+|---|---|---|
+| **H10** | cash-ETF mapping SSOT (register all 8 `cash_sleeve.CASH_ETFS` in `instrument_master`/`book_state`) + fix the trend-allocation doc drift (0.25→0.50) | ⬜ FIRST (unblocks H2) |
+| **H3** | pre-trade order sanity: **dollar-notional cap + max-order-size** (Alpaca now), **futures-multiplier verify-on-connect** (at IBKR), fail-closed | ⬜ |
+| **H1** | **reconciliation-before-trade** (fail-closed, broker=truth) wired into EVERY live order path (wire the built-but-inert `reconciliation.py`) | ⬜ |
+| **H2** | wire the **kill-switch state machine**; flip `whole_book_gate_mode` shadow→enforce after H10 + a clean shadow week | ⬜ (owner-present) |
+| **H4** | **out-of-band broker-only flatten** (no DB/Redis/app dep), tested weekly on Alpaca paper | ⬜ |
+| **H5** | **external dead-man watchdog** (separate process; heartbeat → call/SMS, optional auto-flatten) | ⬜ |
+| **H6** | **per-order idempotency** (client order IDs) + transactional order log | ⬜ |
+| **H7** | **broker-side dollar limits** (IBKR precautionary settings) your code can't override | ⬜ (at IBKR) |
+| **H8** | tiered alerting (catastrophic→call/SMS, warning→push, info→digest) + reconciliation-break + "gate-didn't-run" alerts | ⬜ |
+| **H9** | wire the **drawdown de-gross ladder** into the live budget (2–3 steps, smoothed/broker-confirmed trigger, hysteresis) | ⬜ |
+
+### Phase D — DEPLOY (start the real clock; on IBKR approval)
+- D1 step trend ~4.7%→~6% vol **with a hard leverage cap (~1.3–1.5×)** — only after H done.
+- D2 verify cash sleeve draining idle cash to T-bills (free RFR).
+- D3 pre-register IBKR tiny-live launch (instruments, max contracts, margin reserve, rollback, 30-day probation) → IBKR paper → **microscopic** live (carry+xsmom, micro contracts).
+- D4 sleeve combine = inverse-vol + per-sleeve cap + **isolated margin pools**; never MVO; covariance only as live joint history accrues.
+- D5 bucket **robust premia (trend, carry)** vs **candidate anomalies (xsmom, VRP, new)** — smaller budget / higher discount for the latter.
+
+### Phase R — RESEARCH (ONLY after Phase H; time-boxed, pre-registered, ONE at a time)
+1. **Recover trend's convexity** — long-short futures incl. short-equity/long-bond-gold-USD legs + a declared defensive-macro **crisis overlay** (highest EV; barely "new").
+2. **Commodity calendar-spread / seasonal-storage premia** (most genuinely-distinct family on owned Norgate data).
+3. **VIX-gated stress reversal** (Nagel liquidity-provision; contested — pre-register, expect possible kill).
+4. **G10 FX value** as a hedge to FX carry (low-conviction; one clean test, expect park).
+
+### 🚫 DON'T list (standing guardrail — consensus)
+vol-to-8% (esp. pre-harden = most dangerous) · swing-equity-ML revival / Norgate buy *for* vol-managed momentum · touching the live TSMOM signal (skip-month) · Constructor/covariance/HA/streaming-risk at $100k · re-adding crypto-trend or options-dispersion as "diversifiers" (short-convexity in a crisis) · capitalizing paper-futures Sharpe before real fills · VIX-VRP back into the live book.
+
+### Meta-critiques to internalize
+Operator-capacity/behavioral risk is the dominant *unmodeled* risk (assume backtest 0.72 → live ~0.4–0.5) · true multiple-testing N is in the hundreds not 26 (mark carry/xsmom confidence down) · possible *era*-overfit (2006–2025 liquidity regime) · "risk premia not alpha" is partly a euphemism.
+
+---
+
+## 🎯 PRIOR PLAN — Alpha-v9: multi-engine premia book (2026-06-16)
 
 **SSOT:** [`docs/reference/ALPHA_V9_ROADMAP.md`](../reference/ALPHA_V9_ROADMAP.md) (roadmap) + [`docs/reference/ALPHA_V9_ARCHITECTURE.md`](../reference/ALPHA_V9_ARCHITECTURE.md) (design/impl). Opus synthesis of 5 external world-class-quant reviews (`docs/reference/prompts/20260616_Alpha_v8/responses/`). Core reframe: stop hunting a 4th weak uncorrelated *equity* sleeve (the corr<0.30 wall, hit 4×); run a **second return engine in a different risk class (defined-risk VRP) paired with trend by skew**, point trend at **crypto**, and buy **Norgate** to un-bias event work + unlock carry — **after** proving the validator can detect a known edge.
 
