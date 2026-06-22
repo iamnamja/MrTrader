@@ -10,7 +10,7 @@ GET /api/decision-audit/recent    — last N decision_audit rows
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query
@@ -35,6 +35,10 @@ def get_macro_context() -> Dict[str, Any]:
         from app.agents.premarket import premarket_intel
         ctx = premarket_intel.macro_context
         if ctx is not None:
+            try:
+                _is_today = ctx.as_of.date() == date.today() if hasattr(ctx.as_of, "date") else True
+            except Exception:
+                _is_today = True
             return {
                 "as_of": ctx.as_of.isoformat() if hasattr(ctx.as_of, "isoformat") else str(ctx.as_of),
                 "overall_risk": ctx.overall_risk,
@@ -42,6 +46,8 @@ def get_macro_context() -> Dict[str, Any]:
                 "global_sizing_factor": ctx.global_sizing_factor,
                 "rationale": ctx.rationale,
                 "source": "live",
+                "snapshot_date": date.today().isoformat(),
+                "is_today": _is_today,
                 "events_today": [
                     {
                         "event_type": e.event_type,
@@ -75,6 +81,7 @@ def get_macro_context() -> Dict[str, Any]:
                 "rationale": snap.rationale,
                 "source": "db_snapshot",
                 "snapshot_date": snap.snapshot_date.isoformat(),
+                "is_today": snap.snapshot_date == date.today(),
                 "events_today": snap.events_json or [],
             }
 

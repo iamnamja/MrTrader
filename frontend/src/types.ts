@@ -278,6 +278,8 @@ export interface NisMacroContext {
   global_sizing_factor: number
   rationale: string | null
   events_today: NisMacroEvent[]
+  snapshot_date?: string      // YYYY-MM-DD of the snapshot serving this context
+  is_today?: boolean          // false => stale (a prior day's snapshot, premarket not yet run)
 }
 
 export interface NisSignal {
