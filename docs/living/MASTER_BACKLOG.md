@@ -17,7 +17,7 @@
 | **H2** | wire the **kill-switch state machine**; flip `whole_book_gate_mode` shadow→enforce after H10 + a clean shadow week | ⬜ (owner-present) |
 | **H4** | **out-of-band broker-only flatten** (no DB/Redis/app dep), tested weekly on Alpaca paper | ✅ DONE 2026-06-22 (`scripts/emergency_flatten.py`, dry-run default; live dry-run validated) |
 | **H5** | **external dead-man watchdog** (separate process; heartbeat → call/SMS, optional auto-flatten) | ✅ DONE 2026-06-22 (durable heartbeat + `scripts/dead_man_watchdog.py`, alert-only default) |
-| **H6** | **per-order idempotency** (client order IDs) + transactional order log | ⬜ |
+| **H6** | **per-order idempotency** (client order IDs) + transactional order log | ✅ DONE 2026-06-22 (idempotent `place_market_order` on dup + centralized `order_ids.idempotency_key`; full per-order lifecycle log deferred to P2.3) |
 | **H7** | **broker-side dollar limits** (IBKR precautionary settings) your code can't override | ⬜ (at IBKR) |
 | **H8** | tiered alerting (catastrophic→call/SMS, warning→push, info→digest) + reconciliation-break + "gate-didn't-run" alerts | ⬜ |
 | **H9** | wire the **drawdown de-gross ladder** into the live budget (2–3 steps, smoothed/broker-confirmed trigger, hysteresis) | ⬜ |

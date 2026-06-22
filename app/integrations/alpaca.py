@@ -7,6 +7,7 @@ import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.common.exceptions import APIError
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -88,6 +89,14 @@ def _notify_circuit_breaker():
         circuit_breaker.record_network_error()
     except Exception:
         pass
+
+
+def _is_duplicate_client_order_id(err) -> bool:
+    """True if an Alpaca error indicates a DUPLICATE client_order_id — i.e. the order we're (re)trying
+    to place ALREADY exists (a prior attempt placed it). Conservative: only treat clear duplicate
+    messages as such (anything ambiguous falls through to a normal error -> raise)."""
+    msg = str(getattr(err, "message", "") or err).lower()
+    return "client_order_id" in msg and ("exist" in msg or "unique" in msg or "duplicate" in msg)
 
 
 class AlpacaClient:
@@ -220,7 +229,34 @@ class AlpacaClient:
                 "side": str(order.side),
                 "status": order.status,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
+                "idempotent_reuse": False,
             }
+        except APIError as e:
+            # H6 idempotency: a retry of an order we ALREADY placed (same client_order_id) is rejected
+            # by Alpaca as a duplicate — that's SUCCESS, not failure. Fetch the existing order and
+            # return it, so a crash-retry never double-fills AND never logs a spurious order_error or
+            # orphans the position. Not a network fault -> do NOT trip the circuit breaker.
+            if client_order_id and _is_duplicate_client_order_id(e):
+                try:
+                    existing = self.trading_client.get_order_by_client_id(client_order_id)
+                    logger.info("Idempotent order reuse: %s %s already placed (client_order_id=%s)",
+                                side, symbol, client_order_id)
+                    return {
+                        "order_id": str(existing.id),
+                        "symbol": existing.symbol,
+                        "qty": int(existing.qty),
+                        "side": str(existing.side),
+                        "status": existing.status,
+                        "created_at": (existing.created_at.isoformat()
+                                       if existing.created_at else None),
+                        "idempotent_reuse": True,
+                    }
+                except Exception as le:
+                    logger.error("dup client_order_id %s detected but lookup failed: %s",
+                                 client_order_id, le)
+            logger.error(f"Error placing market order: {e}")
+            _notify_circuit_breaker()
+            raise
         except Exception as e:
             logger.error(f"Error placing market order: {e}")
             _notify_circuit_breaker()

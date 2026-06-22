@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H6) — per-order idempotency: idempotent placement + centralized client_order_id
+
+**Context**: Both live sleeves ALREADY set deterministic `client_order_id`s (`trend-{YYYYMMDD}-{sym}`, `cash-{YYYYMMDD}-{sym}-{side}`), so Alpaca already prevents a double-FILL by rejecting a duplicate on a crash-retry. The gap: that duplicate rejection was caught by a generic `except` → logged as `order_error`, the order skipped, and the Trade row NOT recorded (→ a brief orphan the startup reconciler then had to adopt). Also on the critical path to IBKR (P2.3's futures order path needs idempotent placement).
+
+**Decision** (live-order-path change confined to the dup-retry case; normal placement unchanged):
+- `app/integrations/alpaca.py`: `place_market_order` is now **idempotent** — on an `APIError` that `_is_duplicate_client_order_id()` recognizes AND a `client_order_id` was provided, it fetches the existing order via `get_order_by_client_id` and returns it (`idempotent_reuse=True`) instead of erroring; it does NOT trip the circuit breaker (a dup is not a network fault). Conservative detector (matches `client_order_id` + exist/unique/duplicate only); a dup whose lookup fails falls through to raise + CB (fail-closed). Success returns gain `idempotent_reuse=False`.
+- `app/live_trading/order_ids.py`: `idempotency_key(sleeve, symbol, side=None, day=None)` centralizes the scheme (byte-for-byte the old inline strings); trend + cash now build their `client_order_id` via it (pure centralization, no behaviour change) and log when a reuse occurs (operator visibility into retries). P2.3 (IBKR) extends this with a run-id variant.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; cannot cause or mask a double-fill or a missed trade** — the one-key-per-intended-order invariant was verified for both sleeves (one delta per symbol/rebalance; buy XOR sell; day-scoped so the only same-key window is a same-day re-run = exactly the intended idempotency case). Circuit-breaker paths all correct; id scheme byte-for-byte (deploy-boundary safe). Two review fixes: the `idempotent_reuse` flag is now consumed (logged) not dead; added the dup-but-lookup-fails + qty-string + today-path tests. 9 idempotency tests; full suite green; flake8 clean.
+
+**Consequences**: a crash-retry within a day is now clean — no double-fill (already guaranteed by Alpaca dedup), AND no spurious `order_error`, AND the Trade row is recorded (closing the orphan window more cleanly). The normal (non-dup) placement path is unchanged. Establishes the idempotency-key pattern the IBKR order path (P2.3) will reuse. The heavier per-order lifecycle log (planned→sent→acked→filled) remains deferred to P2.3. Not a WF/CPCV pipeline file. Live trading behavior UNCHANGED except the dup-retry path (was: error+skip; now: success+record). DECISIONS 2026-06-22 (Phase H — H6).
+
+---
+
 ## 2026-06-22 (Phase H — H4 + H5) — emergency machinery: out-of-band flatten + external dead-man watchdog
 
 **Context**: The external panel was unanimous that these two are MANDATORY before any IBKR capital (and good to have now): an **out-of-band broker-only flatten** ("close everything now" that works even if the brain is wedged) and an **external dead-man watchdog** (alerts if the brain dies/hangs). Both were missing. The new `kill_switch_state.KillSwitch.heartbeat()` is in-memory (invisible to a separate process), so a durable heartbeat was needed.
