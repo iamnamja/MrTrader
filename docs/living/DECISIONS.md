@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase A) — unified combined-book multi-strategy walk-forward evaluator
+
+**Context**: "Do the backtester/WF let us test strategies TOGETHER holistically?" The pieces existed (assemble_book, Track-B marginal-contribution, GL-1 tail, P0.5 deflation) but not as one harness, and two capabilities were missing: a combined-book CPCV-as-a-unit and a return-level risk governor in the backtest. Phase A of the holistic-multistrat scope (`docs/reference/HOLISTIC_MULTISTRAT_STATE_AND_SCOPE_2026-06-22.md`).
+
+**Decision**: `app/research/multistrat_eval.py` (`run_multistrat_eval`) evaluates a SET of strategies AS ONE BOOK, reusing existing machinery:
+- assemble the book (`sleeve_allocator.build_book`, PIT inverse-vol/equal/regime) → the book is itself a return series;
+- **A2** run that series through the SAME CPCV the single-sleeve gate uses (`SeriesReturnStrategy`+`run_cpcv`) → book-level mean Sharpe / path-t / %positive / worst path + a **family-level deflated Sharpe** (P0.5 `family_trial_count()`);
+- **A3** optionally apply the risk-policy-v1 drawdown de-gross LADDER (PIT) and re-run WF (return-level governor; the notional/beta caps stay the live R0.5 gate);
+- **A4** per-sleeve standalone Sharpe + avg weight + **leave-one-out Track-B** (candidate vs the book of the others) + GL-1 cross-strategy tail;
+- **A5** the common-window book (CPCV verdict) AND a fold-in **union** book (each sleeve from its own start, weights renormalised over present sleeves) for ragged history.
+
+**Rationale**: Adding a strategy is now one call → its holistic effect under real WF rigor. Phase B (ERC/covariance sizing) and Phase C (research↔live replay parity) remain data-gated (= R2 / IBKR), keeping research and live consistent.
+
+**Consequences**: Report-only — no live trading path. Two deep-dive passes (1 self + 1 independent) confirmed the load-bearing properties: the governor + union book are strictly PIT (`.shift(1)`, trailing vols, no peek), the book return series feeds CPCV without double-shift, and the deflated-Sharpe call uses the correct (n_trials=family count, n_obs) arguments (higher-p = better). Fixes applied from the review: kwargs-collision guard, union cost parity (net-of-cost like the common book), warmup-row trim, strict governor-reduction test. `scripts/run_multistrat_eval.py` + 11 tests; full suite 3855 green; flake8 clean. Not a WF/CPCV pipeline file → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-22 (Alpha-v10 P0.5) — family-level trial counting: the program's true N_TRIALS is now auditable (25, not ~20)
 
 **Context**: The panel's family-level-trial-counting point — "rules-based sleeves are OOS-by-construction is false at the *family-selection* level; we've tried ~20 families, so the multiple-testing burden is real and uncounted." GL-0's empirical max-stat null covered the within-futures search, but its parametric Deflated-Sharpe cross-check used a hardcoded `N≈20` placeholder for the broader cross-asset burden.

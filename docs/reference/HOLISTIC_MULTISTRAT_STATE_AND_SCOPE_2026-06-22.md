@@ -42,10 +42,12 @@ combined-book walk-forward harness** with the live gate applied.
 
 ## Part 2 — Scope: what to build for "multi-strat eval done"
 
-### Phase A — Unified combined-book WF harness  ·  FREE / no live dependency / buildable NOW
-Assemble the existing pieces (assemble_book + Track-B + GL-1 + the gate + P0.5 deflation) into one
-entry point + report, and add the two genuinely-missing capabilities (combined-book CPCV + gate-in-
-backtest). This is the bulk of "research multi-strat eval."
+### Phase A — Unified combined-book WF harness  ·  ✅ DONE 2026-06-22 (`app/research/multistrat_eval.py`)
+Assembled the existing pieces (assemble_book + Track-B + GL-1 + P0.5 deflation) into one entry point
++ report, and added the two genuinely-missing capabilities (combined-book CPCV + the return-level
+governor). `run_multistrat_eval({label: returns}, spy=...)` → a `MultiStratReport`. Runner:
+`scripts/run_multistrat_eval.py`. Two deep-dive passes (1 self + 1 independent) — look-ahead-free +
+DSR-argument-correct confirmed; 11 tests; full suite green. (Below: how each sub-item landed.)
 
 - **A1 — `BookSpec` entry**: take a list of registered strategies + an allocation scheme → the
   combined daily book returns (reuse `assemble_book`/`build_book`).
