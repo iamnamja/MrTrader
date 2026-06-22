@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H8) — alerting/observability: severity tiers + critical channel + gate-error visibility
+
+**Context**: The breach alerts (reconciliation_break / whole_book_gate_breach / dead_man_alert) already email, but two gaps remained: (1) no triage — every alert looked the same; no "louder" path for catastrophic events; (2) the whole-book gate swallowed internal errors at `debug` and proceeded → **a wedged gate was invisible** (the reviewer's specific finding). The panel's H8 = "tiered alerting + gate-didn't-run alert."
+
+**Decision** (alerting/observability only — ZERO live-trading-behavior change):
+- `notifier.py`: a **severity tier** per event (`severity()` → CRITICAL/WARN/INFO via `_SEVERITY`; kill_switch/dead_man_alert/gate_error = CRITICAL, the shadow breaches = WARN, else INFO) — the email subject is prefixed (`[CRITICAL] `/`[WARN] `) for at-a-glance triage. A `_route_critical()` **louder channel** for CATASTROPHIC events: a generic webhook (`MRTRADER_CRITICAL_WEBHOOK`) fired **fire-and-forget on a daemon thread** (zero caller latency, never raises) — **no-op until a webhook is configured**, so tiered SMS/push is real the moment Min plugs in Pushover/Slack, with no provider dependency tonight.
+- `whole_book_gate.py`: the `shadow_gate_from_intents` exception path now logs at **WARNING** (was debug) and best-effort `notifier.enqueue("gate_error", ...)` (deduped) — so a gate that can't even evaluate is **visible**. It STILL returns `allow=True` (fail-safe unchanged — a gate bug must never halt trading, even in enforce); the alert is the only change.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; H8 changes no live trading behavior** (gate stays fail-safe-allow; alerts best-effort/swallowed; import-time + transaction semantics correct). One MINOR fixed: the webhook POST is now threaded (was a ≤3s blocking call the rare gate-error path could fire from the live rebalance loop). Two review-gap tests added (enqueue doesn't route on dedup-hit; a raising notifier can't break the gate). 10 tests; full suite 3930 green; flake8 clean.
+
+**Consequences**: catastrophic events (kill-switch, dead-man, gate-error) now triage-prefixed + immediately routable to a louder channel; a silently-wedged whole-book gate now alerts. Operator: set `MRTRADER_CRITICAL_WEBHOOK` to a Pushover/Slack/SMS-relay URL to enable the louder tier. Not a WF/CPCV pipeline file. DECISIONS 2026-06-22 (Phase H — H8).
+
+---
+
 ## 2026-06-22 (Phase H — H6) — per-order idempotency: idempotent placement + centralized client_order_id
 
 **Context**: Both live sleeves ALREADY set deterministic `client_order_id`s (`trend-{YYYYMMDD}-{sym}`, `cash-{YYYYMMDD}-{sym}-{side}`), so Alpaca already prevents a double-FILL by rejecting a duplicate on a crash-retry. The gap: that duplicate rejection was caught by a generic `except` → logged as `order_error`, the order skipped, and the Trade row NOT recorded (→ a brief orphan the startup reconciler then had to adopt). Also on the critical path to IBKR (P2.3's futures order path needs idempotent placement).
