@@ -379,6 +379,35 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "Weekday for the weekly cash rebalance (0=Mon .. 4=Fri). Runs AFTER the trend rebalance (09:50 ET) so the idle remainder is known.",
         "group": "Portfolio Manager",
     },
+    # ── IBKR connection — Alpha-v10 P2.2 (READ-ONLY adapter; futures venue, PAPER first) ─
+    {
+        "key": "ibkr.enabled",
+        "default": "false",
+        "type": "str",
+        "description": "Master flag for the IBKR connection. 'false' (default) = adapter never connects (fully inert). 'true' = the read-only adapter may connect to the running IB Gateway/TWS for verify-on-connect + cross-venue book-state. NO order capability exists yet (R1).",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.host",
+        "default": "127.0.0.1",
+        "type": "str",
+        "description": "IB Gateway/TWS API host. localhost (the adapter runs on the same machine; TWS API is set to 'allow localhost only').",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.port",
+        "default": 7497,
+        "type": "int",
+        "description": "IB Gateway/TWS API socket port. TWS paper=7497, IB Gateway paper=4002 (live: 7496/4001). Paper-only until R1 go-live.",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.client_id",
+        "default": 1,
+        "type": "int",
+        "description": "API client id the adapter uses to identify its connection (any int; distinct per concurrent client).",
+        "group": "IBKR",
+    },
     # ── Crypto trend LIVE-PAPER tracker — Alpha-v9 P3-1 (report-only; NO capital) ─
     {
         "key": "pm.crypto_paper_enabled",

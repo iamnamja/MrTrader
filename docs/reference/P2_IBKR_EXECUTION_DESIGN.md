@@ -80,6 +80,11 @@ target weights (futures_book) ──▶ target LOTS  ──▶ reconcile vs BROK
   idempotency + snapshot schema. *(Mock-testable pre-approval if we want a head start.)*
 - **P2.2** — `ib_insync` binding: connect/heartbeat, contract resolution + **verify-on-connect**,
   place/modify/cancel, positions/cash/margin pull, fills capture. *(Needs the live paper gateway.)*
+  ✅ **READ side DONE 2026-06-22** (`ibkr_adapter.IBKRReadOnlyAdapter`): connect (`readonly=True`) +
+  health + account + positions + **verify-on-connect** (`verify_contracts`), validated live vs TWS
+  paper (DUQ869409) — ALL 16 futures verified after correcting ZC/ZS mult 50→5000 and the FX/VIX
+  request symbols (6E→EUR/6J→JPY/VX→VIX). Order placement (place/modify/cancel) + fills capture remain
+  R1 (behind the whole-book gate + the live-paper soak).
 - **P2.3** — the execution + reconciliation workers + decouple from FastAPI + kill switch/dead-man.
 - **P2.4** — replay/parity tests + paper go-live (weekly futures-book rebalance on IBKR paper).
 
