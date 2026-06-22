@@ -100,6 +100,13 @@ class AgentOrchestrator:
             self._health_check, minutes=5, job_id="health_check"
         )
 
+        # Dead-man liveness heartbeat every 1 min (Alpha-v10 H5). Writes a durable timestamp file the
+        # EXTERNAL dead-man watchdog reads; if it goes stale the brain has died/hung. Additive + inert
+        # to trading (a file write); fail-safe (write_heartbeat never raises).
+        scheduler.schedule_every_n_minutes(
+            self._write_heartbeat, minutes=1, job_id="dead_man_heartbeat"
+        )
+
         # Daily portfolio selection trigger at 09:30 ET (agents also self-trigger,
         # but this gives an explicit external nudge)
         scheduler.schedule_daily_at_time(
@@ -507,6 +514,12 @@ class AgentOrchestrator:
                 logger.error("Back-validation snapshot failed (continuing): %s", _bvexc)
         except Exception as exc:
             logger.error("Daily summary failed: %s", exc)
+
+    async def _write_heartbeat(self) -> None:
+        """Dead-man liveness beat (H5): write the durable heartbeat the external watchdog reads.
+        Fail-safe — write_heartbeat never raises; a failed write just looks 'stale' to the watchdog."""
+        from app.live_trading.heartbeat import write_heartbeat
+        write_heartbeat()
 
     async def _health_check(self) -> None:
         """Verify DB, Redis, and Alpaca; pause trading if any critical service is down."""

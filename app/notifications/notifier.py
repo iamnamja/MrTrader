@@ -51,6 +51,7 @@ RATE_LIMITS: dict[str, int] = {
     "crypto_weekly":     0,   # P3-1 crypto trend live-paper OOS Sharpe-to-date
     "whole_book_gate_breach": 0,  # R0.5 whole-book risk gate WOULD-block (shadow) / blocked (enforce)
     "reconciliation_break": 0,    # H1 reconciliation-before-trade DB<->broker mismatch (shadow/enforce)
+    "dead_man_alert": 0,          # H5 external dead-man watchdog: brain heartbeat stale (app down/hung)
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -279,6 +280,19 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Mode", _mode + ("" if _mode == "enforce" else " (shadow: not blocking)")),
             ("Breaches", "; ".join(p.get("breaches", []) or [])),
             ("Details", p.get("details", "")),
+        ])
+
+    elif event_type == "dead_man_alert":
+        _age = p.get("age_seconds")
+        _age_s = f"{_age:.0f}s" if isinstance(_age, (int, float)) else "unknown (no heartbeat)"
+        subj = f"[MrTrader] DEAD-MAN: brain heartbeat STALE ({_age_s})"
+        body = _section("H5 dead-man watchdog — brain liveness lost", [
+            ("Heartbeat age", _age_s),
+            ("Stale threshold", f"{p.get('threshold_seconds', '?')}s"),
+            ("Auto-flatten", "ENABLED — flatten attempted" if p.get("auto_flatten")
+             else "disabled (alert-only)"),
+            ("Flatten result", p.get("flatten_result", "n/a")),
+            ("Action needed", "Check the brain/uvicorn process — it has stopped heartbeating."),
         ])
 
     elif event_type == "reconciliation_break":
