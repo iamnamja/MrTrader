@@ -275,7 +275,7 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "key": "pm.credit_governor_enabled",
         "default": "false",
         "type": "str",
-        "description": "Alpha-v8 G1 CREDIT de-risk overlay (HYG/IEF). 'false' (DEFAULT — owner-gated CANDIDATE, not yet approved) = off (multiplier 1.0). 'true' = de-risk the trend sleeve to credit_governor_derisk_to when HYG/IEF is >credit_governor_band below its credit_governor_lookback-day MA (credit spreads widening). Composes multiplicatively with the VIX governor (product clamped to a 0.25 floor). FAIL-SAFE: missing/stale/error -> 1.0; can only REDUCE exposure. CAVEATS: small tail-insurance effect (marginal dSharpe +0.064), post-hoc/multiplicity (see DECISIONS 2026-06-14 G1); review before enabling.",
+        "description": "Alpha-v8 G1 CREDIT de-risk overlay (HYG/IEF). 'false' (DEFAULT — owner-gated CANDIDATE, not yet approved) = off (multiplier 1.0). 'true' = de-risk the trend sleeve to credit_governor_derisk_to when HYG/IEF is >credit_governor_band below its credit_governor_lookback-day MA (credit spreads widening). Composes multiplicatively with the VIX governor (product clamped to a 0.25 floor). FAIL-SAFE: missing/stale/error -> 1.0; can only REDUCE exposure. CAVEATS: small tail-insurance effect (marginal dSharpe +0.064, PIT-CONFIRMED 2026-06-22 P0.4 — reproduces +0.0639, NOT a vol-match artifact, all-3-crises); binding caveat is multiplicity (post-hoc L=120/band=0.02 trigger — see DECISIONS 2026-06-14 G1 + 2026-06-22 P0.4); review before enabling.",
         "group": "Portfolio Manager",
     },
     {

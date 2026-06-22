@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Alpha-v10 P0.4) — credit de-risk overlay PIT re-verdict: PIT-robust, status unchanged
+
+**Context**: The Alpha-v10 5-LLM panel's action item (2) bundled the credit overlay with carry: "kill in-sample vol-matching → PIT rolling vol everywhere (the +0.17 carry dSR + the +0.064 credit overlay likely shrink)." P0.2 confirmed it for carry (in-sample +0.17 → ~0 under PIT). P0.4 tests the credit overlay.
+
+**Decision**: **The PIT-vol hypothesis is REFUTED for the credit overlay; status UNCHANGED (marginal tail-insurance CANDIDATE, flag OFF, `pm.credit_governor_enabled` default false).**
+- The credit overlay is a **scale-invariant time-varying de-risk multiplier** (`m[t]·base[t]`, Sharpe unchanged by a constant scale) measured against an **already-PIT** trend book (trailing signals/vol + `held.shift(1)`; `book_vol_target` off on the live book, PIT where used). So its dSharpe **never depended on vol-matching** — structurally unlike carry, whose +0.17 *was* a vol-normalization artifact.
+- Re-running the G1 confirmatory harness (`run_credit_curve`) on current data **reproduces the number**: marginal-vs-VIX-governor **dSharpe +0.0639** (≈ +0.064), **dCalmar +0.0298** (≈ +0.030), all-3-crises (GFC +0.019 / COVID +0.022 / BEAR +0.006), both-halves overall-dMaxDD positive (H1 +0.022, H2 +0.001). It did not shrink.
+
+**Rationale**: Not killed (a real, PIT-robust, all-3-crises tail hedge) and not promoted (the effect is small — +0.064 dSharpe, +0.001 overall dMaxDD — the overall-maxDD benefit is front-half-loaded, and the trigger is post-hoc). The binding caveat is **multiplicity** (L=120/band=0.02 is post-hoc; the pre-registered L=60/band=0 failed — see DECISIONS 2026-06-14 G1), **not vol**. An independent adversarial review upheld the no-vol-artifact claim on all axes (no residual look-ahead/in-sample dependency).
+
+**Consequences**: The PIT-vol concern is now closed; the panel's mis-attribution corrected. `curve_governor` unchanged (NO-TAIL-BENEFIT, marginal dSharpe −0.018, stays off). Reproducible via `scripts/run_credit_pit_reverdict.py`; verdict logic unit-tested (`tests/test_credit_pit_reverdict.py`, 5). Report-only — no live-path code change (the live book is unchanged: trend + cash, crypto paper). Full suite 3821 green; flake8 clean. SSOT `docs/reference/P0_4_CREDIT_PIT_REVERDICT_2026-06-22.md`; ML_EXPERIMENT_LOG 2026-06-22.
+
+---
+
 ## 2026-06-22 (Alpha-v10 R0.2 Phase 3) — observability bridge (daemon→web WS relay, default-off)
 
 **Context**: In subprocess mode the agents run in the daemon, but the dashboard's WebSocket clients connect to the web process, so daemon-generated agent-decision/trade/alert broadcasts never reach the dashboard (the underlying data is still written to Postgres; only the live push is lost). Built Phase 3 of the ADR with Min present.
