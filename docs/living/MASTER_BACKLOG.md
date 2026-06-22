@@ -15,8 +15,8 @@
 | **H3** | pre-trade order sanity: **dollar-notional cap + max-order-size** (Alpaca now), **futures-multiplier verify-on-connect** (at IBKR), fail-closed | ⬜ |
 | **H1** | **reconciliation-before-trade** (fail-closed, broker=truth) wired into EVERY live order path (wire the built-but-inert `reconciliation.py`) | 🔭 SHADOW DONE 2026-06-22 (wired into trend+cash; `pm.reconciliation_mode`; flip→enforce after a clean shadow week + pending_qty/cross-sleeve-status follow-ups) |
 | **H2** | wire the **kill-switch state machine**; flip `whole_book_gate_mode` shadow→enforce after H10 + a clean shadow week | ⬜ (owner-present) |
-| **H4** | **out-of-band broker-only flatten** (no DB/Redis/app dep), tested weekly on Alpaca paper | ⬜ |
-| **H5** | **external dead-man watchdog** (separate process; heartbeat → call/SMS, optional auto-flatten) | ⬜ |
+| **H4** | **out-of-band broker-only flatten** (no DB/Redis/app dep), tested weekly on Alpaca paper | ✅ DONE 2026-06-22 (`scripts/emergency_flatten.py`, dry-run default; live dry-run validated) |
+| **H5** | **external dead-man watchdog** (separate process; heartbeat → call/SMS, optional auto-flatten) | ✅ DONE 2026-06-22 (durable heartbeat + `scripts/dead_man_watchdog.py`, alert-only default) |
 | **H6** | **per-order idempotency** (client order IDs) + transactional order log | ⬜ |
 | **H7** | **broker-side dollar limits** (IBKR precautionary settings) your code can't override | ⬜ (at IBKR) |
 | **H8** | tiered alerting (catastrophic→call/SMS, warning→push, info→digest) + reconciliation-break + "gate-didn't-run" alerts | ⬜ |

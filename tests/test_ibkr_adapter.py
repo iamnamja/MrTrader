@@ -108,6 +108,20 @@ def test_get_positions_unknown_symbol_is_unmapped():
 
 
 # ── verify-on-connect ────────────────────────────────────────────────────────────
+def test_verify_works_with_no_current_event_loop():
+    # Regression: a worker/thread with no current event loop must NOT raise at the `from ib_insync
+    # import Future` in verify_contracts (Python 3.12 RuntimeError; CI shard-ordering surfaced it).
+    import asyncio
+    asyncio.set_event_loop(None)                       # simulate the loop-less worker
+    cd = {}
+    for iid, inst in im.futures_instruments().items():
+        cd[inst.broker_symbol(im.IBKR)] = [
+            _contract(inst.broker_symbol(im.IBKR), inst.multiplier, inst.exchange,
+                      tradingClass=inst.root)]
+    mm = IBKRReadOnlyAdapter(ib=FakeIB(cd_by_symbol=cd)).verify_contracts()
+    assert mm == []                                    # ran cleanly (the guard set a loop)
+
+
 def test_verify_clean_when_multipliers_match():
     # one entry per futures root, each matching the master multiplier/exchange, tradingClass==root
     cd = {}

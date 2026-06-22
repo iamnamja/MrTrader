@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H4 + H5) — emergency machinery: out-of-band flatten + external dead-man watchdog
+
+**Context**: The external panel was unanimous that these two are MANDATORY before any IBKR capital (and good to have now): an **out-of-band broker-only flatten** ("close everything now" that works even if the brain is wedged) and an **external dead-man watchdog** (alerts if the brain dies/hangs). Both were missing. The new `kill_switch_state.KillSwitch.heartbeat()` is in-memory (invisible to a separate process), so a durable heartbeat was needed.
+
+**Decision** (additive operator tooling; ZERO change to the live trading loop):
+- **H4 — `app/live_trading/emergency_flatten.py` (`flatten_alpaca`) + `scripts/emergency_flatten.py`.** Broker-only (no DB/Redis/orchestrator): cancel all open orders + liquidate all positions via Alpaca `close_all_positions(cancel_orders=True)`. **DRY-RUN by default**; `--execute` to act, `--kill` to also trip the kill-switch. Never raises (errors collected). Validated LIVE in dry-run against the paper account (listed 7 positions incl. $49k SGOV, liquidated nothing). IBKR flatten is R1 (TWS Read-Only API blocks orders until trading is enabled).
+- **H5 — durable heartbeat + watchdog.** `app/live_trading/heartbeat.py` (atomic tmp+`os.replace` write; fail-safe) written every 1 min by a new orchestrator job (`_write_heartbeat`, additive, file-write only). `scripts/dead_man_watchdog.py` is an EXTERNAL process that reads the heartbeat and ALERTS (`dead_man_alert` email) on a stale/missing beat; **auto-flatten is OPT-IN (`--auto-flatten`, default OFF)** per the panel ("alert loudly; auto-flatten only when very confident"). Alerts once per stale episode, re-arms on recovery.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; accidental-liquidation safety CONFIRMED** (liquidation reachable only via explicit `--execute`, or stale+`--auto-flatten`; no import side-effects); **the watchdog cannot miss a real death** (a dead/wedged scheduler stops the heartbeat → alert; the only "miss" is the watchdog process itself dying = operator's job). Three review fixes applied: **MINOR (the key one)** — Alpaca returns 207 multi-status, so a per-symbol failure no longer reports `ok=True` (failures surfaced in `errors`, `ok=False`); + `--once` cron caveat doc + atomicity comment. 13 tests (dry-run-doesn't-liquidate, execute-does, partial-failure-not-ok, never-raises, heartbeat roundtrip/age/missing/corrupt, watchdog stale/missing/re-arm/auto-flatten-gated, CLI dry-run default); full suite 3911 green; flake8 clean.
+
+**Consequences**: the brain now has a real "panic button" (the flatten) and a real liveness alarm (the watchdog) — both required before IBKR capital. **Live trading UNCHANGED** (the only live-path addition is a 1-min heartbeat file-write, inert to trading; takes effect next restart). Operator usage: `scripts/emergency_flatten.py` (dry-run safe; `--execute` to flatten), `scripts/dead_man_watchdog.py` (run as a separate always-on process; alert-only by default). Test the flatten weekly on paper (dry-run anytime; `--execute` liquidates the paper book, re-established by the next rebalance). Not a WF/CPCV pipeline file. DECISIONS 2026-06-22 (Phase H — H4/H5).
+
+---
+
 ## 2026-06-22 (Phase H — H1) — reconciliation-before-trade wired to the live order path (SHADOW)
 
 **Context**: The panel's unanimous **#1 safety gate**. `reconciliation.py` (the pure `reconcile()`, "the broker is reality; the DB is memory") existed but was **wired to nothing** — the live rebalance could trade off a stale DB even if the broker disagreed (uncommitted fill, manual close, partial fill: the "2 a.m. blow-up"). Hard no-go gate before any IBKR capital. Now that the IBKR read adapter exists (P2.2), reconciliation can see both venues.
