@@ -53,6 +53,24 @@ def web_boots_brain() -> bool:
     return get_daemon_mode() != DAEMON_MODE_SUBPROCESS
 
 
+# ─── Process role ─────────────────────────────────────────────────────────────
+# In subprocess mode BOTH the web and the daemon have web_boots_brain()==False, so
+# that flag cannot tell them apart. The daemon marks itself at startup; everything
+# else defaults to "not the daemon" (the web / in_process). Used by the observability
+# bridge: only the daemon PUBLISHES WS events to Redis; only the web RELAYS them.
+_IS_DAEMON_PROCESS = False
+
+
+def mark_as_daemon() -> None:
+    """Called once by app/tradingd.py at startup to tag this process as the daemon."""
+    global _IS_DAEMON_PROCESS
+    _IS_DAEMON_PROCESS = True
+
+
+def is_daemon_process() -> bool:
+    return _IS_DAEMON_PROCESS
+
+
 # ─── Process-shutdown hardening (shared by web + daemon) ──────────────────────
 
 def start_shutdown_watchdog(timeout_s: float = SHUTDOWN_WATCHDOG_SECONDS):

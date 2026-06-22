@@ -1,6 +1,6 @@
 # ADR R0.2 — Decouple the trading daemon from FastAPI (phased; default-off)
 
-**Status:** Phases 1-2 IMPLEMENTED (default-off); Phases 3-4 PROPOSED (owner-gated). **Date:** 2026-06-21 (P2: 2026-06-22).
+**Status:** Phases 1-3 IMPLEMENTED (default-off); Phase 4 PROPOSED (owner-gated). **Date:** 2026-06-21 (P2/P3: 2026-06-22).
 **Context:** Portfolio-Brain roadmap R0.2. Today the orchestrator + PM/RM/Trader agents + scheduler +
 news monitor all boot **inside the FastAPI `lifespan`** (`app/main.py:239-407`), so a web restart
 stops trading and trading load shares the web process. The roadmap + the external critics call this
@@ -80,8 +80,26 @@ advance), and (d) bridging the in-process **WebSocket broadcast** + **news-monit
   (≤ command latency, 3 s backstop) vs zero in in_process; (b) capital-ramp state is in-memory — full
   ramp bridging (go-live `start()` + `/live/status` display) is finished in R1 go-live; (c) the PM
   trigger bodies are duplicated route↔bridge (extract to public PM methods in a later pass).
-- **Phase 3 — observability bridge.** Agent-decision push + news watchlist + Trader mid-run cache via
-  Postgres/Redis so the dashboard stays live and news-exits fire in subprocess mode.
+- **Phase 3 — observability bridge. ✅ DONE 2026-06-22.** Investigation found only ONE of the three
+  listed items is a genuine cross-process gap; the other two are already self-contained in the brain
+  process and need NO bridge: the **news watchlist** is mutated only by the PM and read by the
+  co-located news_monitor (so news-exits already fire in the daemon), and the **Trader mid-run cache**
+  is rebuilt from the `trades` table on start (+ the startup reconciler in `prepare_trading_state`).
+  The real gap is the **WebSocket push**: agents broadcast in the daemon, but the dashboard's WS
+  clients connect to the web. Fix: `app/observability_bridge.py` (new, no FastAPI) — the daemon
+  PUBLISHES each WS event to the Redis pub/sub channel `ws_events` (`publish_ws_event`, gated on a new
+  `is_daemon_process()` flag set by `tradingd.mark_as_daemon()`), and the web runs a relay
+  (`ws_relay_loop`, launched in `main.py` only when `mode==subprocess`) that re-broadcasts to its local
+  WS manager. Pub/sub (not a list) → ephemeral, no backlog. in_process is byte-identical: `send_update`
+  calls `publish_ws_event` which returns immediately unless daemon, and the relay is never started.
+  No double-delivery (only the brain broadcasts; the web relays without re-publishing). Strict
+  `json.dumps` mirrors `send_json` so both modes serialize identically. Two deep-dive passes (1 self +
+  1 independent), no BLOCKER/MAJOR, full suite green, flake8 clean. Files: `app/observability_bridge.py`,
+  `app/api/websocket.py`, `app/trading_runtime.py`, `app/main.py`, `app/tradingd.py`;
+  `tests/test_observability_bridge.py` (12). **Known limitation (subprocess-only):** the orchestrator
+  *status* panel (`/api/orchestrator/status` running/agents fields) still reads the web's empty
+  orchestrator — a display-only gap, deferred (the underlying data is in Postgres). The underlying WS
+  data is always in Postgres too, so only the LIVE push (not correctness) is affected when degraded.
 - **Phase 4 — flip + harden.** Set `MRTRADER_DAEMON_MODE=subprocess` (web = read-only); add the
   external dead-man watchdog (R0.4 `kill_switch_state` persisted) + systemd units (Linux prod host).
   *This is the step that makes "web restart ≠ trading restart" real — the gate to live futures capital.*
