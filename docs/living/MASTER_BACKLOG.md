@@ -84,7 +84,7 @@ Cross-cutting: pre-register every confirmatory run (R7) + mandatory both-halves 
 
 **Reconciliations (contested points):** dispersion = **feature-first / trade-maybe-never** (Claude's cost-wall objection over Gemini/DeepSeek/Grok, on the app's own OPT-3 evidence); CPCV **demoted to robustness** for event strategies (kept primary for path-dependent trained models — not killed); DSR → **report-only** (DeepSeek's `N_eff=k(k−1)/2` fix rejected — wrong direction). **Corrections to reviewers:** forward sacred holdout EXISTS (`SACRED_HOLDOUT_START=2026-11-09`); quarter-level event bootstrap exists (`pead_significance.py` — day-level panel is the upgrade); `EventEdgeStrategy`/options adapter/allocator already built.
 
-**Cross-cutting:** two-track gate spec → `PIPELINE_ARCHITECTURE.md` §7.0-B (P0); research registry = the program's true N_TRIALS; StrategySpec replay-diff contract (4 boring weekly diffs → capital-eligible); per-phase NO-DRIFT doc obligations in blueprint §6.
+**Cross-cutting:** two-track gate spec → `PIPELINE_ARCHITECTURE.md` §7.0-B (P0); **research registry = the program's true N_TRIALS ✅ DONE 2026-06-22 (P0.5: `app/research/family_registry.py`, 25 families enumerated, feeds null_zoo DSR; SSOT `docs/reference/P0_5_FAMILY_REGISTRY_2026-06-22.md`)**; StrategySpec replay-diff contract (4 boring weekly diffs → capital-eligible); per-phase NO-DRIFT doc obligations in blueprint §6.
 
 **First move:** P0 — `scripts/walkforward/gate_calibration.py`, **TSMOM-on-4y positive control** (the cheapest experiment that can falsify the premise of the whole plan).
 

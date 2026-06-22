@@ -171,6 +171,8 @@ class NullZooResult:
     dsr_n10: float
     dsr_n20: float
     dsr_n30: float
+    n_families: int = 0          # P0.5: enumerated family-level trial count (registry)
+    dsr_family: float = 0.0      # P0.5: deflated Sharpe at the principled family count
     verdict: str = ""
     notes: List[str] = field(default_factory=list)
 
@@ -286,6 +288,11 @@ def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.Data
     dsr10 = deflated_sharpe(resid_real, 10, var_sr)
     dsr20 = deflated_sharpe(resid_real, 20, var_sr)
     dsr30 = deflated_sharpe(resid_real, 30, var_sr)
+    # P0.5: the principled parametric N — the ENUMERATED family-level trial count from the
+    # registry (auditable), replacing the prior hardcoded ~20. dsr10/30 stay as a sensitivity band.
+    from app.research.family_registry import family_trial_count
+    n_families = family_trial_count()
+    dsr_family = deflated_sharpe(resid_real, n_families, var_sr)
 
     # --- verdict ---
     # PRIMARY gate = the empirical max-stat nulls (the panel's requested "null replicates the
@@ -297,7 +304,7 @@ def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.Data
     basket_survives = (null_book_p < 0.05) and xsmom_survives
     verdict = ("BASKET_REAL" if basket_survives
                else "CARRY_ONLY" if carry_survives else "RESIDUE")
-    dsr_corroborates = dsr20 > 0.95
+    dsr_corroborates = dsr_family > 0.95
 
     notes = [
         f"null-books empirical p = {null_book_p:.3f} (bar t_obs = {bar:.2f}; "
@@ -306,12 +313,15 @@ def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.Data
         f"{'SURVIVES' if carry_survives else 'does NOT survive'}.",
         f"xs-momentum max-of-6 (distinct factors) null p = {xsmom_maxof6_p:.3f} -> xs-momentum "
         f"{'SURVIVES' if xsmom_survives else 'indistinguishable from best-of-6 noise'}.",
-        f"DSR(N=20) on residual = {dsr20:.3f} -> {'CORROBORATES' if dsr_corroborates else 'BORDERLINE (<0.95)'} "
-        f"the empirical verdict (parametric cross-check; the empirical max-stat null is the primary gate).",
+        f"DSR(N={n_families}, family-level) on residual = {dsr_family:.3f} -> "
+        f"{'CORROBORATES' if dsr_corroborates else 'BORDERLINE (<0.95)'} the empirical verdict "
+        f"(parametric cross-check; the empirical max-stat null is the primary gate). "
+        f"Sensitivity: DSR(N=10)={dsr10:.3f}, DSR(N=30)={dsr30:.3f}.",
         f"{n_degenerate}/{n_nulls} null draws degenerate (excluded).",
-        "SCOPE: the empirical nulls cover the FUTURES cross-sectional + 6-factor selection; the "
-        "broader ~20-family-across-asset-classes burden (not futures-reproducible) is represented "
-        "parametrically by DSR(N=20).",
+        f"SCOPE: the empirical nulls cover the FUTURES cross-sectional + 6-factor selection; the "
+        f"broader cross-asset burden is represented parametrically by DSR at the ENUMERATED "
+        f"family-level trial count N={n_families} (app/research/family_registry.py — P0.5; replaces "
+        f"the prior hardcoded ~20).",
     ]
 
     return NullZooResult(
@@ -327,6 +337,7 @@ def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.Data
         xsmom_maxof6_p=xsmom_maxof6_p,
         xsmom_maxof6_p95=float(np.percentile(x6_arr, 95)) if len(x6_arr) else float("nan"),
         dsr_n10=dsr10, dsr_n20=dsr20, dsr_n30=dsr30,
+        n_families=n_families, dsr_family=dsr_family,
         verdict=verdict, notes=notes)
 
 
