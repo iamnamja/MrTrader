@@ -197,6 +197,7 @@ class Trader(BaseAgent):
                         "bars_held":     bars_held,
                         "trade_id":      t.id,
                         "trade_type":    getattr(t, "trade_type", None) or "swing",
+                        "selector":      getattr(t, "selector", "") or "",
                         "entry_date":    entry_date,
                         "direction":     _rec_dir,
                         "proposal_uuid": getattr(t, "proposal_id", None),
@@ -247,6 +248,7 @@ class Trader(BaseAgent):
                     "bars_held":     existing_today.bars_held or 0,
                     "trade_id":      existing_today.id,
                     "trade_type":    getattr(existing_today, "trade_type", None) or "swing",
+                    "selector":      getattr(existing_today, "selector", "") or "",
                     "shares":        abs(qty),
                     "entry_date":    (
                         existing_today.created_at.date()
@@ -280,14 +282,17 @@ class Trader(BaseAgent):
                 )
                 trade_type_rec = rec_proposal.trade_type if rec_proposal else None
                 if not trade_type_rec:
-                    # Default to swing for unknown positions — never intraday.
-                    # Defaulting to intraday caused ghost positions (e.g. pre-existing
-                    # Alpaca paper account holdings) to be force-closed at 3:45 PM
-                    # every session, even though MrTrader never opened them.
-                    trade_type_rec = "swing"
+                    # No proposal record → classify the sleeve from the symbol (a trend ETF
+                    # orphaned by a crash between fill and DB commit must NOT become 'swing'
+                    # and get swing-managed/liquidated — it's rebalancer-owned). Never
+                    # intraday (defaulting to intraday once force-closed ghost holdings at
+                    # 3:45 PM). classify_sleeve returns trend/cash/swing; cash is already
+                    # skipped above, so this resolves to trend or swing here.
+                    from app.startup_reconciler import classify_sleeve
+                    trade_type_rec = classify_sleeve(symbol, db)
                     self.logger.warning(
-                        "Reconciliation: no proposal record for %s — defaulting trade_type=swing",
-                        symbol,
+                        "Reconciliation: no proposal record for %s — classified trade_type=%s",
+                        symbol, trade_type_rec,
                     )
 
                 # Detect short from Alpaca: negative qty indicates a short position
@@ -316,6 +321,12 @@ class Trader(BaseAgent):
                     stop = round(avg * 1.02, 2)   # 2% above entry for short stop
                     target = round(avg * 0.94, 2)  # 6% below entry for short target
 
+                # trend/cash orphans are rebalancer-managed → their stop/target are vestigial
+                # (the Trader never acts on them). Leave them unset, matching the reconciler.
+                if trade_type_rec in ("trend", "cash"):
+                    stop = None
+                    target = None
+
                 trade = Trade(
                     symbol=symbol,
                     direction=_syn_dir,
@@ -340,14 +351,17 @@ class Trader(BaseAgent):
                     "atr":           atr,
                     "bars_held":     0,
                     "trade_id":      trade.id,
-                    "trade_type":    "swing",
+                    "trade_type":    trade_type_rec,
+                    "selector":      trade_type_rec if trade_type_rec in ("trend", "cash") else "",
                     "entry_date":    datetime.now(ET).date(),
                     "direction":     _syn_dir,
                     "shares":        abs(qty),
                 }
                 self.logger.info(
-                    "Reconciled %s: created synthetic Trade id=%d stop=%.2f target=%.2f",
-                    symbol, trade.id, stop, target,
+                    "Reconciled %s: created synthetic Trade id=%d type=%s stop=%s target=%s",
+                    symbol, trade.id, trade_type_rec,
+                    f"{stop:.2f}" if stop is not None else "n/a",
+                    f"{target:.2f}" if target is not None else "n/a",
                 )
             except Exception as exc:
                 db.rollback()
@@ -622,6 +636,7 @@ class Trader(BaseAgent):
             "current_pnl_pct": pnl_pct,
             "bars_held": pos.get("bars_held", 0),
             "trade_type": pos.get("trade_type", "swing"),
+            "selector": pos.get("selector", ""),
             "direction": pos.get("direction", "BUY"),
         })
         self.logger.info("Sent reeval request to PM: %s (%s)", symbol, reason)
@@ -1590,6 +1605,7 @@ class Trader(BaseAgent):
                 "bars_held":     0,
                 "trade_id":      trade.id,
                 "trade_type":    trade_type,
+                "selector":      proposal.get("selector", "") or "",
                 "entry_date":    datetime.now(ET).date(),
                 "direction":     _pos_dir,
                 "proposal_uuid": proposal.get("proposal_uuid"),
