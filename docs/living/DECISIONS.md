@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (bugfix follow-up) — orphan-position sleeve classification + active_positions selector
+
+**Context**: Closing the two follow-ups flagged by the trend/cash sleeve-isolation review (the prior entry). **MAJOR (narrow race):** when a position exists on Alpaca with no DB Trade row (e.g. a crash between a trend order's fill and its per-order DB commit), both the reconciler and the trader adopted it with a hardcoded `trade_type="swing"` — re-opening the exact "trend leg gets swing-managed/liquidated" bug. **MINOR:** `active_positions` dicts didn't carry `selector`, so the trader's `_is_rebalancer_managed` predicate was `trade_type`-only at runtime (the `selector` clause was dead).
+
+**Decision**:
+- New `startup_reconciler.classify_sleeve(symbol, db_session)` (+ `_trend_universe` reading `pm.trend_universe`, frozen default fallback): classifies an untracked symbol as `cash` (CASH_ETFS), `trend` (trend universe), else `swing`. Exception-proof (never raises; defaults to swing).
+- Both synthetic-adopt sites use it instead of hardcoding swing: the reconciler placeholder Trade and the trader's reconcile fallback. trend/cash adopts get `trade_type`/`selector` set and their (vestigial) stop/target left **None** (rebalancer-managed; `_check_exit` skips them).
+- `selector` added to all `active_positions` builder dicts (db-reconcile, existing-today, synthetic, entry) so the dual-key predicate is genuinely live; `_send_reeval_request` now carries `selector` too (producer/sink symmetry).
+
+**Rationale**: An orphaned trend/cash leg is now classified to its real sleeve and left to its rebalancer, not swing-managed — closing the last path by which swing/ML logic could touch a sleeve position. A genuine swing position can only be misclassified if it's in the broad-ETF trend universe (which the swing ranker doesn't trade), and the failure direction is safe (left to the rebalancer).
+
+**Consequences**: trend/cash isolation is now fully closed across both adoption paths, both review sinks, and the audit. **A comprehensive independent bug-check of the whole change-set (this + the prior entry) returned SAFE TO DEPLOY — no BLOCKER/MAJOR.** Behavior change → effective on the next uvicorn restart. 12 tests (`tests/test_sleeve_position_isolation.py`); full suite 3833 green; flake8 clean. Not a WF/CPCV file → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-22 (bugfix) — trend/cash sleeve isolation: stop the PM swing-review from managing rebalancer-owned positions
 
 **Context**: Trend (TSMOM) and cash (T-bill) sleeve positions are meant to be managed EXCLUSIVELY by their weekly rebalancers (`trend_sleeve` / `cash_sleeve`); the trader's `_check_exit` already skips them. But the PM's 30-min swing-ML review built its work-list excluding only *intraday* (`signal_type != "intraday"`), so it **re-scored trend/cash positions with the swing model** and issued EXIT / EXTEND_TARGET via the trader message queue. Surfaced as recurring `write_target_stop REJECTED ... (likely corruption)` ERROR noise on EEM/IWM (long-held trend winners whose target sits >50% above entry → tripped the swing 50%-from-entry bound). **Forensics found it had already bitten: Trade #132 QQQ (trend) was force-closed with `exit_reason='pm_nis_exit'`** — the PM's NIS-news re-check exited a trend position, fighting the rebalancer.

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import inspect
+
 from app.agents.portfolio_manager import _is_swing_reviewable
 from app.agents.trader import _is_rebalancer_managed
-from app.startup_reconciler import audit_active_target_stops
+from app.startup_reconciler import audit_active_target_stops, classify_sleeve, _trend_universe
 
 
 def _trade(**kw):
@@ -80,3 +82,47 @@ def test_audit_still_flags_corrupt_swing_target():
                  entry_price=413.0, target_price=1993.0, stop_price=None, id=999)
     findings = audit_active_target_stops(_FakeDB([bad]))
     assert len(findings) == 1 and findings[0]["symbol"] == "AVGO"
+
+
+# ── classify_sleeve (orphan-adopt classification — the MAJOR follow-up) ────────
+_FAKE_TREND = frozenset({"SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "UUP"})
+
+
+def test_classify_cash_from_cash_etfs():
+    # cash is checked first (real CASH_ETFS), no DB/config needed
+    assert classify_sleeve("SGOV") == "cash"
+    assert classify_sleeve("bil") == "cash"          # case-insensitive
+
+
+def test_classify_trend_from_universe(monkeypatch):
+    monkeypatch.setattr("app.startup_reconciler._trend_universe", lambda db=None: _FAKE_TREND)
+    assert classify_sleeve("SPY") == "trend"
+    assert classify_sleeve("eem") == "trend"         # case-insensitive
+
+
+def test_classify_swing_default(monkeypatch):
+    monkeypatch.setattr("app.startup_reconciler._trend_universe", lambda db=None: _FAKE_TREND)
+    assert classify_sleeve("AAPL") == "swing"        # a real swing-ranker name
+    assert classify_sleeve("") == "swing"            # empty → swing (never raises)
+
+
+def test_trend_universe_falls_back_to_default_on_config_error(monkeypatch):
+    def _boom(db, key):
+        raise RuntimeError("db down")
+    monkeypatch.setattr("app.database.agent_config.get_agent_config", _boom)
+    univ = _trend_universe(db_session=object())       # passing a db avoids opening a session
+    assert "SPY" in univ and "UUP" in univ            # the hardcoded default
+
+
+# ── wiring: both synthetic-adopt sites use classify_sleeve (no more hardcoded swing) ──
+def test_reconciler_placeholder_uses_classify_sleeve():
+    import app.startup_reconciler as r
+    src = inspect.getsource(r.reconcile)
+    assert "classify_sleeve(" in src                  # orphan adopt classifies the sleeve
+
+
+def test_trader_synthetic_adopt_uses_classify_sleeve():
+    import app.agents.trader as t
+    # the reconcile path that builds synthetic positions must classify, not hardcode swing
+    src = inspect.getsource(t.Trader)
+    assert "classify_sleeve(" in src

@@ -123,6 +123,53 @@ TARGET_STOP_BOUNDS = {
 }
 
 
+# Default trend-sleeve universe (mirrors agent_config pm.trend_universe). Used as a fallback
+# if the live config can't be read when classifying an untracked position's sleeve.
+_TREND_UNIVERSE_DEFAULT = frozenset(
+    {"SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "UUP"})
+
+
+def _trend_universe(db_session=None) -> frozenset:
+    """Live trend-sleeve symbol universe from pm.trend_universe (fallback to the default)."""
+    try:
+        from app.database.agent_config import get_agent_config
+        from app.database.session import get_session
+        own = db_session is None
+        db = get_session() if own else db_session
+        try:
+            raw = get_agent_config(db, "pm.trend_universe")
+        finally:
+            if own:
+                db.close()
+        if raw:
+            syms = {s.strip().upper() for s in str(raw).split(",") if s.strip()}
+            if syms:
+                return frozenset(syms)
+    except Exception as exc:
+        logger.debug("classify_sleeve: trend-universe config read failed (%s) — using default", exc)
+    return _TREND_UNIVERSE_DEFAULT
+
+
+def classify_sleeve(symbol: str, db_session=None) -> str:
+    """Classify an UNTRACKED position's sleeve from its symbol: 'cash' (T-bill ETF), 'trend'
+    (TSMOM ETF universe), else 'swing'. Used when adopting an Alpaca position that has no DB
+    Trade row, so an orphaned trend/cash leg (e.g. a crash landing between a trend order's
+    fill and its per-order DB commit) is NOT mislabelled 'swing' and thus swing-managed/
+    liquidated. Deterministic; never raises (defaults to 'swing')."""
+    if not symbol:
+        return "swing"
+    sym = symbol.upper()
+    try:
+        from app.live_trading.cash_sleeve import CASH_ETFS
+        if sym in CASH_ETFS:
+            return "cash"
+    except Exception:  # noqa: BLE001
+        pass
+    if sym in _trend_universe(db_session):
+        return "trend"
+    return "swing"
+
+
 def validate_target_stop(
     entry_price: float,
     target_price: float | None,
@@ -850,13 +897,24 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 })
                 _syn_dir = "SELL_SHORT" if qty < 0 else "BUY"
                 _syn_short = _syn_dir == "SELL_SHORT"
-                # Short stop is above entry; short target is below entry
-                stop_price = round(avg * (1.02 if _syn_short else 0.98), 2) if avg > 0 else None
-                target_price = round(avg * (0.94 if _syn_short else 1.06), 2) if avg > 0 else None
+                # Classify the orphan's sleeve from its symbol so a trend/cash leg (e.g. a
+                # crash between a trend order's fill and its DB commit) is NOT adopted as a
+                # swing position and then swing-managed/liquidated. trend/cash are managed by
+                # their weekly rebalancers, so leave their (vestigial) target/stop unset.
+                _syn_sleeve = classify_sleeve(symbol, db_session)
+                _syn_is_sleeve = _syn_sleeve in ("trend", "cash")
+                if _syn_is_sleeve:
+                    stop_price = None
+                    target_price = None
+                else:
+                    # Short stop is above entry; short target is below entry
+                    stop_price = round(avg * (1.02 if _syn_short else 0.98), 2) if avg > 0 else None
+                    target_price = round(avg * (0.94 if _syn_short else 1.06), 2) if avg > 0 else None
                 placeholder = Trade(
                     symbol=symbol, direction=_syn_dir, entry_price=avg,
                     quantity=abs(qty), status="ACTIVE", signal_type="RECONCILED",
-                    trade_type="swing", stop_price=stop_price, target_price=target_price,
+                    trade_type=_syn_sleeve, selector=(_syn_sleeve if _syn_is_sleeve else ""),
+                    stop_price=stop_price, target_price=target_price,
                     highest_price=avg, bars_held=0,
                     created_at=datetime.utcnow(),
                 )
