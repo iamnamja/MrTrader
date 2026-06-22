@@ -15,14 +15,23 @@ excluding known-pending orders; cash within max($cash_abs, cash_bps * NAV).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from app.live_trading import instrument_master as im
 from app.live_trading.broker_adapter import CanonicalPosition
+
+log = logging.getLogger(__name__)
 
 MATCH = "MATCH"
 RESOLVED = "RESOLVED_WITHIN_TOLERANCE"
 FAIL_CLOSED = "FAIL_CLOSED"
+
+# Rollout modes (mirrors the whole-book gate). shadow = log/email only; enforce = HOLD fail-closed.
+SHADOW = "shadow"
+ENFORCE = "enforce"
+OFF = "off"
 
 
 @dataclass(frozen=True)
@@ -112,3 +121,106 @@ def reconcile(expected_qty: Dict[tuple, float],
     status = FAIL_CLOSED if (breaks or cash_break is not None) else MATCH
     return ReconciliationResult(status=status, position_breaks=breaks, cash_break=cash_break,
                                 notes=notes)
+
+
+# Statuses that represent a position the DB believes we hold-or-have-working. Mirrors
+# trend_sleeve._current_trend_positions so a just-placed order's PENDING_FILL row is NOT a false
+# orphan break the moment its (near-instant) market order fills.
+EXPECTED_STATUSES = ("ACTIVE", "PENDING_FILL")
+
+
+# ── live-path assembly + the shadow-first before-trade gate (Alpha-v10 H1) ─────────
+def db_expected_positions(db) -> Dict[tuple, float]:
+    """The DB's EXPECTED book = ACTIVE/PENDING_FILL Trade rows -> signed qty per (venue,
+    instrument_id). direction BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial lots add).
+    All current live positions are Alpaca-venue. Lazy import so this module stays import-light;
+    equality-filter per status (no in_()) so the query stays scoped SQL-side (not a full-table load)."""
+    from app.database.models import Trade
+    out: Dict[tuple, float] = {}
+    rows = []
+    for status in EXPECTED_STATUSES:
+        rows.extend(db.query(Trade).filter_by(status=status).all())
+    for t in rows:
+        sym = (t.symbol or "").upper()
+        if not sym:
+            continue
+        iid = im.lookup(im.ALPACA, sym) or sym
+        qty = float(t.quantity or 0)
+        signed = -qty if str(t.direction).upper() == "SELL_SHORT" else qty
+        k = _ckey(im.ALPACA, iid)
+        out[k] = out.get(k, 0.0) + signed
+    return out
+
+
+def alpaca_actual_positions(raw_positions) -> List[CanonicalPosition]:
+    """Broker truth -> canonical positions for the reconciler (only venue/instrument_id/quantity are
+    used by reconcile()). `raw_positions` are the Alpaca client position dicts already fetched by the
+    caller (no extra API call)."""
+    out: List[CanonicalPosition] = []
+    for p in raw_positions or []:
+        sym = (p.get("symbol") or "").upper()
+        if not sym:
+            continue
+        iid = im.lookup(im.ALPACA, sym) or sym
+        try:
+            qty = float(p.get("qty") or 0.0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        try:
+            price = float(p.get("current_price") or 0.0)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            mv = float(p.get("market_value") or (qty * price))
+        except (TypeError, ValueError):
+            mv = qty * price
+        out.append(CanonicalPosition(
+            instrument_id=iid, venue=im.ALPACA, broker_symbol=sym, asset_class=im.EQUITY,
+            quantity=qty, price=price, multiplier=1.0, currency="USD",
+            market_value=mv, notional=abs(qty) * price, mapped=im.lookup(im.ALPACA, sym) is not None))
+    return out
+
+
+def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[float] = None,
+                                  extra_actual: Optional[List[CanonicalPosition]] = None,
+                                  mode: str = SHADOW, label: str = "",
+                                  notifier=None) -> ReconciliationResult:
+    """FAIL-SAFE pre-trade reconciliation a sleeve calls BEFORE placing: builds DB-expected vs
+    broker-actual (whole book; `extra_actual` lets a caller add other-venue positions, e.g. IBKR),
+    reconciles, logs (+ emails on FAIL_CLOSED), returns the result. The CALLER acts on
+    `.ok_to_trade` only in ENFORCE mode.
+
+    NEVER raises into the rebalance. On an internal error it returns FAIL_CLOSED (+ an error note) —
+    a reconciliation that cannot even run means "I can't confirm the broker is reality", which must
+    HOLD in enforce (and is logged, harmlessly, in shadow). Cash is not yet modelled DB-side, so the
+    position book is the v1 check (the #1 phantom-position risk); the result carries the cash note."""
+    try:
+        expected = db_expected_positions(db)
+        actual = alpaca_actual_positions(raw_alpaca_positions)
+        if extra_actual:
+            actual = list(actual) + list(extra_actual)
+        result = reconcile(expected, actual, nav=nav)
+        if not result.ok_to_trade:
+            log.warning("[reconcile:%s mode=%s] WOULD-HOLD%s: status=%s breaks=%s %s",
+                        label, mode, ("" if mode == ENFORCE else " (shadow: not blocking)"),
+                        result.status,
+                        [(b.venue, b.instrument_id, b.expected_qty, b.actual_qty)
+                         for b in result.position_breaks],
+                        "; ".join(result.notes))
+            if notifier is not None:
+                try:
+                    notifier.enqueue("reconciliation_break", dedup_key=f"reconciliation_break:{label}:{result.status}", payload={
+                        "label": label, "mode": mode, "status": result.status,
+                        "position_breaks": [
+                            {"venue": b.venue, "instrument_id": b.instrument_id,
+                             "expected_qty": b.expected_qty, "actual_qty": b.actual_qty}
+                            for b in result.position_breaks],
+                        "cash_break": result.cash_break, "notes": result.notes})
+                except Exception:
+                    log.debug("reconcile: notify failed", exc_info=True)
+        else:
+            log.info("[reconcile:%s mode=%s] OK: %s", label, mode, "; ".join(result.notes))
+        return result
+    except Exception as exc:  # noqa: BLE001 — must never break a live rebalance; fail-CLOSED in enforce
+        log.warning("[reconcile:%s] error -> FAIL_CLOSED (fail-safe): %s", label, exc, exc_info=True)
+        return ReconciliationResult(status=FAIL_CLOSED, notes=[f"reconciliation error: {exc}"])

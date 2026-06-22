@@ -641,6 +641,35 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             _audit(b["symbol"], b["side"], price=live.get(b["symbol"], 0.0),
                    final_decision="block", block_reason=b.get("block_reason"))
 
+        # ── H1 reconciliation-before-trade (shadow-first; the broker is reality, the DB is memory) ──
+        # Runs BEFORE the risk gate: verify the DB book matches the broker before sizing/placing.
+        # Mode read first so an ENFORCE-mode wiring failure fails CLOSED (HOLD); shadow is always inert.
+        try:
+            recon_mode = str(get_agent_config(db, "pm.reconciliation_mode") or "shadow").strip().lower()
+        except Exception:
+            recon_mode = "shadow"
+        blocked_by_recon = False
+        if recon_mode != "off":
+            try:
+                from app.live_trading import reconciliation as _recon
+                from app.notifications import notifier as _rnotifier
+                recon_result = _recon.shadow_reconcile_before_trade(
+                    db, all_positions, nav=nav, mode=recon_mode, label="trend", notifier=_rnotifier)
+                summary["recon_mode"] = recon_mode
+                summary["recon_status"] = recon_result.status
+                summary["recon_breaks"] = [(b.venue, b.instrument_id, b.expected_qty, b.actual_qty)
+                                           for b in recon_result.position_breaks]
+                blocked_by_recon = (recon_mode == "enforce" and not recon_result.ok_to_trade)
+            except Exception:
+                log.debug("trend: reconciliation wiring failed", exc_info=True)
+                blocked_by_recon = (recon_mode == "enforce")   # fail-CLOSED in enforce; inert in shadow
+        if blocked_by_recon:
+            log.warning("trend: reconciliation (mode=%s) -> HOLD rebalance: %s",
+                        recon_mode, summary.get("recon_breaks"))
+            summary["status"] = "blocked"
+            summary["block_reason"] = "reconciliation"
+            return summary
+
         # ── R0.5 whole-book risk gate (shadow-first; observe-only unless mode=enforce) ──
         # Read the mode FIRST (outside the gate try) so an ENFORCE-mode gate failure fails CLOSED
         # (HOLD), while SHADOW mode is always inert — any failure leaves blocked_by_gate False so the

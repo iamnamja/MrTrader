@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H1) — reconciliation-before-trade wired to the live order path (SHADOW)
+
+**Context**: The panel's unanimous **#1 safety gate**. `reconciliation.py` (the pure `reconcile()`, "the broker is reality; the DB is memory") existed but was **wired to nothing** — the live rebalance could trade off a stale DB even if the broker disagreed (uncommitted fill, manual close, partial fill: the "2 a.m. blow-up"). Hard no-go gate before any IBKR capital. Now that the IBKR read adapter exists (P2.2), reconciliation can see both venues.
+
+**Decision** (shadow-first; mirrors the R0.5 whole-book gate; ZERO live-behavior change in shadow=default):
+- `reconciliation.py`: added `db_expected_positions(db)` (the DB's book = **ACTIVE + PENDING_FILL** Trade rows → signed qty: BUY +, SELL_SHORT −, summed per `(venue, instrument_id)`; PENDING_FILL included to match `_current_trend_positions` so a just-placed order isn't a false orphan), `alpaca_actual_positions(raw)` (broker truth → canonical), and the **fail-safe** `shadow_reconcile_before_trade(...)` wrapper — assembles → `reconcile()` → logs (+ emails `reconciliation_break`, deduped) → returns the result; **never raises** into the rebalance, returns **FAIL_CLOSED on internal error** ("can't confirm reality" → holds in enforce, logged in shadow).
+- Wired into **both** `trend_sleeve.run_trend_rebalance` (reuses the already-fetched positions) **and** `cash_sleeve.run_cash_rebalance` (also closes the panel's "cash bypasses the safety layer" gap), BEFORE the risk gate. `pm.reconciliation_mode` (default `shadow`) — `shadow` logs/emails what it WOULD hold but proceeds; `enforce` HOLDS fail-closed; `off` skips. Mode read OUTSIDE the wiring try (enforce wiring failure → fail-closed) and **normalized** (`.strip().lower()` so "Enforce" can't silently degrade to shadow). Whole-book: a break anywhere holds every sleeve in enforce (panel-intended).
+
+**Rationale / verification**: shadow is **provably inert** — `blocked_by_recon` can only be True when `mode=="enforce"`; the wrapper mutates no rebalance state. **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER; shadow zero-change CONFIRMED** in both sleeves. Three review fixes applied + tested: MAJOR (PENDING_FILL inclusion — removes the guaranteed just-placed-order false break), MINOR (mode normalization; notifier dedup). 18 tests (reconciliation assembly/fail-safe/sign/phantom/orphan/PENDING_FILL/cross-venue + sleeve-level shadow-proceeds/enforce-holds/uppercase-mode); full suite 3898 green; flake8 clean.
+
+**Consequences**: first reconciliation visibility on the live order path. **Live trading UNCHANGED** (shadow logs only). **Rollout: run shadow ≥1 week → review the `reconciliation_break` telemetry → fix any real DB↔broker modeling gaps it surfaces → THEN flip `pm.reconciliation_mode`→enforce** (config, owner-present). Known before-enforce follow-ups (documented; shadow will surface them): supply `pending_qty` from broker open orders for genuinely in-flight orders; reconcile cross-sleeve status leftovers (RECONCILE_GHOST etc.); cash-side check (DB-expected cash not yet modelled — position book is the v1 check); wire the IBKR read adapter's positions into `extra_actual` once event-loop/thread handling is settled. Not a WF/CPCV pipeline file. DECISIONS 2026-06-22 (Phase H — H1).
+
+---
+
 ## 2026-06-22 (P2.2) — IBKR read-only adapter + verify-on-connect (IBKR account approved; the futures substrate)
 
 **Context**: IBKR paper account approved (DUQ869409). Per the panel, "all hardening live BEFORE capital" requires the IBKR connection to exist so Phase H can be built/tested ON it — and the futures-specific Phase H items (multiplier verify, flatten, dead-man) literally can't be built blind. So the next step was the deferred P2.2 (the `ib_insync` binding) — built against the live paper gateway. Read-only only; no order capability (R1).

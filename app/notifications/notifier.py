@@ -50,6 +50,7 @@ RATE_LIMITS: dict[str, int] = {
     "options_spread_mature": 0,  # P2-4 NBBO spread surface crossed maturity (fires once)
     "crypto_weekly":     0,   # P3-1 crypto trend live-paper OOS Sharpe-to-date
     "whole_book_gate_breach": 0,  # R0.5 whole-book risk gate WOULD-block (shadow) / blocked (enforce)
+    "reconciliation_break": 0,    # H1 reconciliation-before-trade DB<->broker mismatch (shadow/enforce)
 }
 
 VALID_EVENTS = set(RATE_LIMITS)
@@ -278,6 +279,21 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Mode", _mode + ("" if _mode == "enforce" else " (shadow: not blocking)")),
             ("Breaches", "; ".join(p.get("breaches", []) or [])),
             ("Details", p.get("details", "")),
+        ])
+
+    elif event_type == "reconciliation_break":
+        _mode = p.get("mode", "shadow")
+        subj = (f"[MrTrader] Reconciliation {'HELD' if _mode == 'enforce' else 'would-hold'} "
+                f"(DB<->broker) — {p.get('label', '?')}")
+        _brks = p.get("position_breaks", []) or []
+        body = _section(f"H1 reconciliation-before-trade ({_mode}) — status {p.get('status', '?')}", [
+            ("Sleeve", p.get("label")),
+            ("Mode", _mode + ("" if _mode == "enforce" else " (shadow: not blocking)")),
+            ("Position breaks", "; ".join(
+                f"{b.get('venue')}:{b.get('instrument_id')} exp={b.get('expected_qty')} "
+                f"act={b.get('actual_qty')}" for b in _brks) or "none"),
+            ("Cash break", p.get("cash_break")),
+            ("Notes", "; ".join(p.get("notes", []) or [])),
         ])
 
     elif event_type == "trend_weekly":

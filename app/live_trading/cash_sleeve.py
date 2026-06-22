@@ -187,6 +187,33 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "nav_unavailable"
             return summary
 
+        # ── H1 reconciliation-before-trade (shadow-first; also closes the cash-bypass gap) ──
+        # The cash sleeve trades T-bills directly; reconcile the whole DB book vs broker reality
+        # before placing, same as trend. Mode read first -> enforce wiring failure fails CLOSED.
+        try:
+            recon_mode = str(get_agent_config(db, "pm.reconciliation_mode") or "shadow").strip().lower()
+        except Exception:
+            recon_mode = "shadow"
+        if recon_mode != "off":
+            blocked_by_recon = False
+            try:
+                from app.live_trading import reconciliation as _recon
+                from app.notifications import notifier as _rnotifier
+                raw_positions = alpaca.get_positions() or []
+                recon_result = _recon.shadow_reconcile_before_trade(
+                    db, raw_positions, nav=nav, mode=recon_mode, label="cash", notifier=_rnotifier)
+                summary["recon_mode"] = recon_mode
+                summary["recon_status"] = recon_result.status
+                blocked_by_recon = (recon_mode == "enforce" and not recon_result.ok_to_trade)
+            except Exception:
+                log.debug("cash: reconciliation wiring failed", exc_info=True)
+                blocked_by_recon = (recon_mode == "enforce")   # fail-CLOSED in enforce; inert in shadow
+            if blocked_by_recon:
+                log.warning("cash: reconciliation (mode=%s) -> HOLD rebalance", recon_mode)
+                summary["status"] = "blocked"
+                summary["block_reason"] = "reconciliation"
+                return summary
+
         buffer_pct = float(get_agent_config(db, "pm.cash_buffer_pct"))
         buffer = max(0.0, buffer_pct) * nav
         # Size off min(settled cash, buying power) so we never over-deploy on the trend

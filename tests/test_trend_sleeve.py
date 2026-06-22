@@ -347,6 +347,58 @@ def test_run_live_commits_per_order(monkeypatch, _patch_env):
         "(deferred post-loop commit would be 1)")
 
 
+# ── H1 reconciliation-before-trade wiring (shadow proceeds / enforce HOLDS) ──────
+def _patch_recon_break(monkeypatch):
+    from app.live_trading import reconciliation as rec
+    monkeypatch.setattr(
+        rec, "shadow_reconcile_before_trade",
+        lambda *a, **k: rec.ReconciliationResult(
+            status=rec.FAIL_CLOSED,
+            position_breaks=[rec.PositionBreak("SPY", "ALPACA", 100.0, 0.0, -100.0)]))
+    return rec
+
+
+def test_run_enforce_holds_on_reconciliation_break(monkeypatch, _patch_env):
+    cfg, audits = _patch_env
+    cfg["pm.reconciliation_mode"] = "enforce"
+    cfg["pm.trend_shadow"] = "false"          # live -> proves the HOLD precedes any order
+    _patch_recon_break(monkeypatch)
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "blocked" and summary["block_reason"] == "reconciliation"
+    assert fake.orders == []                  # nothing placed — held before execution
+
+
+def test_run_shadow_proceeds_despite_reconciliation_break(monkeypatch, _patch_env):
+    cfg, audits = _patch_env
+    cfg["pm.reconciliation_mode"] = "shadow"
+    rec = _patch_recon_break(monkeypatch)
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "ok"          # shadow: a break does NOT block
+    assert summary.get("recon_status") == rec.FAIL_CLOSED   # but it WAS observed
+
+
+def test_run_enforce_with_uppercase_mode_still_enforces(monkeypatch, _patch_env):
+    # mode string is normalized -> "Enforce" must NOT silently behave as shadow (safety footgun)
+    cfg, audits = _patch_env
+    cfg["pm.reconciliation_mode"] = "ENFORCE"
+    cfg["pm.trend_shadow"] = "false"
+    _patch_recon_break(monkeypatch)
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "blocked" and summary["block_reason"] == "reconciliation"
+
+
 def test_run_live_earlier_orders_committed_when_later_order_fails(monkeypatch, _patch_env):
     """F1 durability: a mid-loop order failure does not lose earlier orders' commits."""
     cfg, audits = _patch_env
