@@ -144,7 +144,9 @@ process was already running.
 **Tier 3 Sharpe:** +1.275 avg (3-fold walk-forward, gate > 0.80 ✅). Paper trading candidate.
 
 ### Position Review (every 30 min)
-- Rescore all open swing positions using same model
+- Rescore all open **swing** positions using same model (intraday + **trend/cash sleeve**
+  positions are EXCLUDED — managed exclusively by their weekly rebalancers; see DECISIONS
+  2026-06-22 "trend/cash sleeve isolation")
 - If score drops below MIN_CONFIDENCE: send EXIT request to Trader
 - If price near target: optionally send EXTEND_TARGET (extend by 1 ATR)
 - If earnings event coming: send EXIT or HOLD based on risk policy

@@ -60,6 +60,13 @@ _EXIT_REASON_MAP = {
 }
 
 
+def _is_rebalancer_managed(pos: dict) -> bool:
+    """True for trend (TSMOM) / cash (T-bill) sleeve positions — managed EXCLUSIVELY by the
+    weekly rebalancers, never by the trader's target/stop/trail or PM EXIT/EXTEND_TARGET."""
+    return (pos.get("trade_type") in ("trend", "cash")
+            or pos.get("selector") in ("trend", "cash"))
+
+
 def _normalise_exit_reason(reason: str) -> str:
     key = (reason or "").upper().strip()
     if key in _EXIT_REASON_MAP:
@@ -530,6 +537,17 @@ class Trader(BaseAgent):
 
             if symbol not in self.active_positions:
                 # PM may send requests for positions already closed — ignore
+                continue
+
+            # Defense-in-depth: trend/cash sleeve positions are managed EXCLUSIVELY by the
+            # weekly rebalancers (mirrors _check_exit). Never EXIT/EXTEND_TARGET them from the
+            # PM message path — doing so fights the rebalancer (it once force-closed a trend
+            # QQQ via pm_nis_exit). The PM no longer emits these, but guard the sink too.
+            _pos = self.active_positions.get(symbol, {})
+            if action in ("EXIT", "EXTEND_TARGET") and _is_rebalancer_managed(_pos):
+                self.logger.info(
+                    "%s: ignoring PM %s for %s/%s sleeve position (rebalancer-managed)",
+                    symbol, action, _pos.get("trade_type"), _pos.get("selector"))
                 continue
 
             if action == "EXIT":
@@ -1968,7 +1986,7 @@ class Trader(BaseAgent):
         # liquidate the sleeve mid-week and fight the rebalancer.
         # Cash/T-bill sleeve positions (P1-1) are likewise managed only by the weekly
         # cash rebalancer — never stop/target/trail a T-bill holding.
-        if pos.get("trade_type") in ("trend", "cash") or pos.get("selector") in ("trend", "cash"):
+        if _is_rebalancer_managed(pos):
             return
         # Prefer live NBBO mid-quote over last minute bar — IEX minute bars can be
         # 10-30 min stale for low-volume names, causing stops/targets to miss.
