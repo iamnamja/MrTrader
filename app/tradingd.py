@@ -104,7 +104,13 @@ async def _run() -> int:
     # ── Brain preamble + boot ──
     await prepare_trading_state(log)
     news_monitor_task = await start_trading_brain(log)
-    log.info("MrTrader trading daemon started successfully")
+
+    # ── R0.2 Phase 2: control bridge — drain web-issued control commands + sync the
+    # kill-switch from Postgres (the web is read-only in subprocess mode). ──
+    from app.control_bridge import consume_control_commands, state_sync_loop
+    consumer_task = asyncio.create_task(consume_control_commands(), name="control_consumer")
+    state_sync_task = asyncio.create_task(state_sync_loop(), name="state_sync")
+    log.info("MrTrader trading daemon started successfully (control bridge active)")
 
     # ── Serve until signalled ──
     loop = asyncio.get_running_loop()
@@ -118,6 +124,9 @@ async def _run() -> int:
     # ── Graceful shutdown (watchdog-guarded against a wedged worker pool) ──
     log.info("%s\n  MRTRADER TRADING DAEMON SHUTDOWN\n%s", bar, bar)
     watchdog = start_shutdown_watchdog()
+    for t in (consumer_task, state_sync_task):
+        t.cancel()
+    await asyncio.gather(consumer_task, state_sync_task, return_exceptions=True)
     await stop_trading_brain(news_monitor_task, log)
     watchdog.cancel()
     return 0
