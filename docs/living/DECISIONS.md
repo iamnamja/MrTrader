@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Alpha-v10 P0.5) — family-level trial counting: the program's true N_TRIALS is now auditable (25, not ~20)
+
+**Context**: The panel's family-level-trial-counting point — "rules-based sleeves are OOS-by-construction is false at the *family-selection* level; we've tried ~20 families, so the multiple-testing burden is real and uncounted." GL-0's empirical max-stat null covered the within-futures search, but its parametric Deflated-Sharpe cross-check used a hardcoded `N≈20` placeholder for the broader cross-asset burden.
+
+**Decision**:
+- `app/research/family_registry.py` enumerates **every distinct strategy FAMILY the program searched** (25 trial families; 27 registry entries with `cash_sleeve` + `futures_book` ensemble explicitly excluded for auditability), each with status (LIVE 3 / PAPER 5 / KILLED 14 / PARKED 3 / SCAFFOLD 2) + verdict + doc ref, plus a research degrees-of-freedom log (variants/reruns/post-hoc exclusions).
+- `family_trial_count()` (= 25) is now the principled N for `null_zoo`'s parametric DSR (`dsr_family`/`n_families` on `NullZooResult`); `dsr_n10/30` retained as a sensitivity band.
+
+**Rationale**: Family-level (not per-backtest, not per-variant) is the correct DSR granularity; within-family search is handled by the empirical max-stat null + the DOF log. The enumerated count (25) is HIGHER than the ~20 guess → the deflation is now slightly more conservative. `deflated_sharpe` is monotone-decreasing in N (verified), so the change can only make the cross-check harsher, never looser.
+
+**Consequences**: **GL-0 verdict UNCHANGED** — `verdict` (BASKET_REAL/CARRY_ONLY/RESIDUE) is decided only by the empirical max-stat p-values (the DSR is a notes-only cross-check, never a hard veto), so switching N 20→25 cannot flip it; the DSR stays borderline (<0.95), confirming "size modestly." An independent review verified the two load-bearing integrity properties (verdict independent of the DSR; deflation monotone in N) and no BLOCKER/MAJOR. Report-only — no live path. 11 tests (`tests/test_family_registry.py`); full suite 3843 green; flake8 clean. SSOT `docs/reference/P0_5_FAMILY_REGISTRY_2026-06-22.md`. **→ P0 (trust-the-numbers) is now complete.**
+
+---
+
 ## 2026-06-22 (bugfix follow-up) — orphan-position sleeve classification + active_positions selector
 
 **Context**: Closing the two follow-ups flagged by the trend/cash sleeve-isolation review (the prior entry). **MAJOR (narrow race):** when a position exists on Alpaca with no DB Trade row (e.g. a crash between a trend order's fill and its per-order DB commit), both the reconciler and the trader adopted it with a hardcoded `trade_type="swing"` — re-opening the exact "trend leg gets swing-managed/liquidated" bug. **MINOR:** `active_positions` dicts didn't carry `selector`, so the trader's `_is_rebalancer_managed` predicate was `trade_type`-only at runtime (the `selector` clause was dead).
