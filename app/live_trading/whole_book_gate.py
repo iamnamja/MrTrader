@@ -172,6 +172,16 @@ def shadow_gate_from_intents(current_positions_raw: List[dict], intents: List[di
             log.info("[whole-book-gate:%s mode=%s] OK: %s", label, mode, v.details)
         return v
     except Exception as exc:  # noqa: BLE001 — the gate must NEVER break a live rebalance
-        log.debug("[whole-book-gate:%s] evaluation error (fail-safe allow): %s", label, exc,
-                  exc_info=True)
+        # Fail-SAFE: the rebalance proceeds (the per-order + 80% gross caps still bind). But a gate
+        # that can't even EVALUATE used to be silent (debug) — H8 makes it visible so a wedged gate
+        # gets fixed instead of silently not running. Alert is best-effort; never re-raises.
+        log.warning("[whole-book-gate:%s] evaluation error (fail-safe allow): %s", label, exc,
+                    exc_info=True)
+        if notifier is not None:
+            try:
+                notifier.enqueue("gate_error", {
+                    "gate": "whole_book", "label": label, "mode": mode, "error": str(exc)},
+                    dedup_key=f"gate_error:whole_book:{label}")
+            except Exception:
+                log.debug("whole-book-gate: gate_error notify failed", exc_info=True)
         return WholeBookGateVerdict(allow=True, mode=mode, error=str(exc))

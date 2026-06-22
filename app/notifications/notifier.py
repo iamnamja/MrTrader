@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import smtplib
+import threading
 import sqlite3
 import ssl
 import time
@@ -52,7 +53,53 @@ RATE_LIMITS: dict[str, int] = {
     "whole_book_gate_breach": 0,  # R0.5 whole-book risk gate WOULD-block (shadow) / blocked (enforce)
     "reconciliation_break": 0,    # H1 reconciliation-before-trade DB<->broker mismatch (shadow/enforce)
     "dead_man_alert": 0,          # H5 external dead-man watchdog: brain heartbeat stale (app down/hung)
+    "gate_error": 0,              # H8: a safety gate (whole-book/recon) could not even EVALUATE
 }
+
+# ── Severity tiers (H8) — triage at a glance + route CATASTROPHIC events to a louder channel ──
+CATASTROPHIC = "CRITICAL"
+WARNING = "WARN"
+INFO = "INFO"
+# A safety control that FAILED or fired hard = CATASTROPHIC; a shadow "would-block" / DB<->broker
+# mismatch = WARNING; everything else (progress, weekly rollups, EOD) = INFO (no prefix).
+_SEVERITY: dict[str, str] = {
+    "kill_switch": CATASTROPHIC,
+    "dead_man_alert": CATASTROPHIC,
+    "gate_error": CATASTROPHIC,
+    "reconciliation_break": WARNING,
+    "whole_book_gate_breach": WARNING,
+}
+_SEVERITY_PREFIX = {CATASTROPHIC: "[CRITICAL] ", WARNING: "[WARN] ", INFO: ""}
+
+
+def severity(event_type: str) -> str:
+    """Severity tier for an event (default INFO)."""
+    return _SEVERITY.get(event_type, INFO)
+
+
+def _route_critical(event_type: str, payload: dict[str, Any]):
+    """Best-effort LOUDER channel for CATASTROPHIC events (SMS/push/Slack via a generic webhook).
+    No-op unless MRTRADER_CRITICAL_WEBHOOK is set — so 'tiered alerting' is real the moment a webhook
+    is configured, with zero dependency on a provider until then. FIRE-AND-FORGET on a daemon thread
+    so it adds ZERO latency to the caller (enqueue runs on the live rebalance path) and NEVER raises.
+    Returns the Thread (or None if no webhook configured) so callers/tests can join if needed."""
+    url = os.environ.get("MRTRADER_CRITICAL_WEBHOOK", "").strip()
+    if not url:
+        return None
+
+    def _post() -> None:
+        try:
+            import httpx
+            subj, _ = render(event_type, payload)
+            httpx.post(url, json={"event": event_type, "severity": CATASTROPHIC,
+                                  "subject": subj, "payload": payload}, timeout=3.0)
+        except Exception:
+            log.debug("notifier: critical webhook failed (swallowed)", exc_info=True)
+
+    t = threading.Thread(target=_post, name="critical-webhook", daemon=True)
+    t.start()
+    return t
+
 
 VALID_EVENTS = set(RATE_LIMITS)
 
@@ -102,10 +149,15 @@ def enqueue(event_type: str, payload: dict[str, Any], dedup_key: str | None = No
                 "VALUES (?, ?, ?, ?)",
                 (event_type, json.dumps(payload, default=str), dedup_key, time.time()),
             )
-            return cur.lastrowid
+            rid = cur.lastrowid
     except Exception:
         log.exception("notifier.enqueue failed (swallowed)")
         return None
+    # H8: catastrophic events ALSO fire the louder channel immediately (don't wait for the watcher
+    # poll). Outside the DB try so a webhook hiccup can't fail the enqueue. No-op if not configured.
+    if severity(event_type) == CATASTROPHIC:
+        _route_critical(event_type, payload)
+    return rid
 
 
 def send_now(event_type: str, payload: dict[str, Any]) -> bool:
@@ -358,9 +410,22 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Next", "Re-assess the Phase-3 VRP go/no-go on the matured surface + live-paper."),
         ])
 
+    elif event_type == "gate_error":
+        subj = f"[MrTrader] SAFETY GATE ERROR — {p.get('gate', '?')} could not evaluate"
+        body = _section("H8 — a safety gate failed to evaluate", [
+            ("Gate", p.get("gate")),
+            ("Sleeve", p.get("label")),
+            ("Mode", p.get("mode")),
+            ("Error", p.get("error")),
+            ("Effect", "Gate is fail-SAFE (rebalance proceeded under the per-order + gross caps); "
+                       "a persistent error means the holistic check is NOT running — investigate."),
+        ])
+
     else:
         subj = f"[MrTrader] {event_type}"
         body = f"<pre>{json.dumps(p, indent=2, default=str)}</pre>"
+
+    subj = _SEVERITY_PREFIX.get(severity(event_type), "") + subj   # H8: triage prefix
 
     html = f"""<!DOCTYPE html>
 <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
