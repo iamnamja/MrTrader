@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (P2.2) — IBKR read-only adapter + verify-on-connect (IBKR account approved; the futures substrate)
+
+**Context**: IBKR paper account approved (DUQ869409). Per the panel, "all hardening live BEFORE capital" requires the IBKR connection to exist so Phase H can be built/tested ON it — and the futures-specific Phase H items (multiplier verify, flatten, dead-man) literally can't be built blind. So the next step was the deferred P2.2 (the `ib_insync` binding) — built against the live paper gateway. Read-only only; no order capability (R1).
+
+**Decision** (zero live-trading-behavior change — purely additive, operator-invoked):
+- `app/live_trading/ibkr_adapter.py` — `IBKRReadOnlyAdapter` mirroring the read-only Alpaca adapter (BrokerAdapter Protocol: health/get_account/get_positions/normalize), connecting `readonly=True` to TWS/Gateway paper. **Read-only by three layers:** no order method on the class (compile-time guard) + TWS Read-Only API + ib_insync `readonly=True`.
+- **verify-on-connect** (`verify_contracts`): resolves every futures instrument via the live `reqContractDetails` and compares multiplier/exchange/currency to the static contract master — the panel's #1-futures-killer mitigation. Picks the contract whose `tradingClass == root` (disambiguates micro vs full, e.g. SIL-1000 vs SI-5000) and checks ALL matched expiries (no false-negative on a re-spec).
+- `instrument_master.py` — futures restructured to `{root: (mult, exchange, ibkr_symbol)}`; the live verify CORRECTED real spec errors: **ZC/ZS multiplier 50→5000** (broker truth), and the **FX/VIX request symbols differ from the root (6E→EUR, 6J→JPY, VX→VIX)**. The core book (ES/NQ/RTY/CL/NG/GC/SI/HG/ZN/ZB/ZF) matched. After fixes: **ALL 16 VERIFIED, 0 critical** against the live API.
+- `ibkr.*` config keys (host/port/client_id, `ibkr.enabled` default false = inert); `ib_insync==0.9.86` pinned in requirements; `scripts/run_ibkr_verify.py` (operator verify tool).
+
+**Rationale / verification**: connection + account ($100k NLV) + positions(flat) + verify-on-connect all validated LIVE against TWS paper. **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR**; could-verify-ever-miss-a-multiplier-error → NO (after the check-all-matched fix). Three review-driven hardening fixes applied + re-verified live: (1) verify checks all matched expiries; (2) `get_account` scoped to the single managed account; (3) the reads (account/positions/verify) **fail-closed** (raise) when not connected, so a half-connected session can't silently understate gross/NAV into the future book-state. 14 mocked unit tests (offline; inject a fake IB); full suite 3884 green; flake8 clean.
+
+**Consequences**: the IBKR read side is real + broker-confirmed — the substrate the futures half of Phase H (H1 reconciliation, H3 multiplier verify, H4 flatten, H5 dead-man) and the cross-venue book-state plug into. **Still NO order path / NO capital** (R1). Known follow-ups for the wiring step (documented, not bugs): ib_insync event-loop/thread handling when called off the main thread; the caller must gate auto-connect on `ibkr.enabled`; an attribute-fence over `_ib` before R1. Not a WF/CPCV pipeline file. Live book UNCHANGED. P2_IBKR_EXECUTION_DESIGN P2.2 ✅.
+
+---
+
 ## 2026-06-22 (Phase H — H10) — cash-ETF mapping is a SINGLE SOURCE OF TRUTH (the gate→enforce unblocker)
 
 **Context**: First Phase-H increment (Alpha-v10 "harden, don't hunt"). The whole-book risk gate (`whole_book_gate.py`, SHADOW) builds the proposed book from ALL Alpaca positions and treats any symbol that is NOT a registered cash-equivalent in `instrument_master` as risk gross AND — lacking a factor-map entry — as `unmapped` → a fail-closed breach. The tradeable cash universe `cash_sleeve.CASH_ETFS` had 8 tickers; `instrument_master` knew only 3 (SGOV/BIL/SHV). If `pm.cash_universe` were ever set to one of the other 5 (BILS/VGSH/GBIL/USFR/TBIL), **ENFORCE mode would fail-close the entire trend rebalance every week on a perfectly legal cash config** — so this is a hard prerequisite for the H2 gate→enforce flip.

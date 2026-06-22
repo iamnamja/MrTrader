@@ -14,6 +14,9 @@ redis==5.0.1
 
 # Market Data & Trading
 alpaca-py==0.43.2  # Modern Alpaca SDK (replaces alpaca-trade-api, no PyYAML issues on Windows)
+ib_insync==0.9.86  # IBKR futures venue (read-only adapter P2.2; connects to IB Gateway/TWS paper)
+eventkit==1.0.3    # ib_insync dependency (pinned for reproducible CI installs)
+nest_asyncio==1.6.0  # ib_insync dependency (pinned for reproducible CI installs)
 yfinance==1.2.2
 norgatedata==1.0.74  # P4 futures (reads the local NDU DB; needs an active Norgate subscription + NDU running)
 
