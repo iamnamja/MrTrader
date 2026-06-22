@@ -19,6 +19,12 @@
 
 **The single most important decision (👤):** the **trend ⊕ VRP** pairing — positive-skew (trend, long-crisis) ⊕ negative-skew (VRP, short-crisis) under the governor — the most likely route from ~0.7 to ~1.0+ book Sharpe. **DO-NOT list** (roadmap §6): no more daily-equity XGBoost sweeps, no intraday-ML revival, no PEAD threshold filters, no per-regime models, no RL, no path-inflated CPCV, no naked short vol, no IBKR before futures research passes.
 
+**📦 PARKED — Norgate-data justification accumulator (👤 owner data buy; revisit when the stack of reasons justifies the $693):**
+A single **Norgate US Stocks (Platinum, ~$693/yr)** purchase — delisting-inclusive / survivorship-bias-free — unlocks *all* of the following. Park until the accumulated value clears the cost; keep adding reasons here.
+- **Option B — single-stock momentum** on survivorship-free history (the bigger prize; P4 equity audit).
+- **Option A-v2 — thematic/country dual-momentum rotation** — the one rotation variant with a credible path to being non-redundant to trend (high-dispersion universe). Free phase **A2-0** (build the delisted-ETF roster + size the prize on biased survivor data) can be done anytime; the gated work needs Norgate. SCOPE: [`docs/reference/OPTION_A_V2_THEMATIC_ROTATION_SCOPE_2026-06-22.md`](../reference/OPTION_A_V2_THEMATIC_ROTATION_SCOPE_2026-06-22.md).
+- **Re-run PEAD + F2 (ETF relative-value)** on survivorship-free data (the original P4-1 reason).
+
 **Discovered tech-debt (data-quality audit 2026-06-21):**
 - 🔧 **`app/ml/factor_scorer.py` PIT look-ahead** — all 5 scorers resolve the as-of date column from `("date","report_date","filed_date")`, none of which exist in the FMP schema (`as_of_date`) → the PIT filter is silently skipped (returns the full unfiltered frame = look-ahead), and they bypass `load_fmp_fundamentals`'s new quality guards. The fundamentals-factor sleeve is **parked/unused** so no live result changes, but any past number from this path is look-ahead-contaminated. **Fix before any fundamentals-factor revival:** add `as_of_date` to the candidate columns + route through `load_fmp_fundamentals()`, then re-run. (See `docs/reference/DATA_QUALITY_AUDIT_2026-06-21.md`.)
 
