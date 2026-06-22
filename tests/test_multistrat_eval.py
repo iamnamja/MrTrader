@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import app.research.multistrat_eval as mse
+from app.research.family_registry import family_trial_count
 
 
 def _series(n=800, mu=0.0004, sd=0.01, seed=0, start="2018-01-01"):
@@ -116,7 +117,7 @@ def test_run_multistrat_eval_end_to_end():
     sleeves = {"a": _series(n=1500, seed=1), "b": _series(n=1500, seed=2)}
     rep = mse.run_multistrat_eval(sleeves, scheme="vol", apply_governor=True,
                                   run_tail=False, n_boot=80, cpcv_kw=_TINY_CPCV)
-    assert rep.n_days > 0 and rep.n_families == 25
+    assert rep.n_days > 0 and rep.n_families == family_trial_count()
     assert rep.book_raw is not None and rep.book_governed is not None   # governor ran
     assert len(rep.sleeves) == 2
     assert rep.union is not None and rep.union["n_days"] > 0
@@ -130,4 +131,4 @@ def test_cpcv_kw_reserved_keys_are_stripped_not_crashed():
     bad_kw = dict(_TINY_CPCV, n_families=999, label="oops")   # reserved keys present
     rep = mse.run_multistrat_eval(sleeves, scheme="vol", apply_governor=False,
                                   run_tail=False, n_boot=50, cpcv_kw=bad_kw)
-    assert rep.n_families == 25                          # the registry count, not the injected 999
+    assert rep.n_families == family_trial_count()        # the registry count, not the injected 999

@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Option A) — sector-ETF rotation swing sleeve: real standalone, but REDUNDANT to trend
+
+**Context**: Min wanted a swing strategy; the highest-prior path was to extend the one proven edge (trend/momentum) rather than revive a killed single-name signal. Option A = a **cross-sectional relative-strength rotation** across the 11 SPDR sector ETFs (distinct from the live sleeve's *absolute* per-asset TSMOM). Built + evaluated via the Phase A combined-book harness.
+
+**Decision** (report-only — no live path; nothing deployed):
+- `app/research/etf_rotation.py` (`rotation_backtest`) + `@register_sleeve("sector_rotation")`: each month rank by **12-1 momentum**, hold the **top-K=4** of 11 sectors, inverse-vol weighted (vol-floored), with an Antonacci **dual-momentum** cash filter. Config is **pre-registered/standard, NOT swept** (OPT-5 discipline). PIT (signal→`shift(1)` earn), turnover-costed.
+- **Verdict (18.5y, `scripts/run_sector_rotation_eval.py`):** STANDALONE is a **real edge** — CPCV mean Sharpe **0.86**, path-t 6.67, HAC p 0.0006 → **TRACK-A PAPER: PASS**. But **TRACK-B vs the live trend book FAILS** — **corr 0.51**, dSR +0.07, P(ΔSR>0) 0.875 (< bar), tail-overlap → **redundant; not book-additive.** → **status PARKED** (registered in `family_registry`, N_TRIALS 25→26).
+
+**Rationale**: This is exactly the null I flagged — relative sector momentum shares the broad equity-trend factor we already harvest, so it's a real standalone strategy but doesn't *add* on top of the live book. "Gate the marginal contribution, not the standalone" → PARKED, not deployed.
+
+**Consequences**: We now have a clean answer to "can I have a (single-asset-class) swing trade": yes, it's real, but it's the trend edge re-expressed — no diversification. A genuinely *additive* swing book would need a lower-correlation source (e.g. single-stock momentum on survivorship-free data = the Norgate-Platinum Option B, a *better* prior than the generic survivorship audit). Independent deep-dive: **no look-ahead** (price-perturbation injection proved the past is byte-invariant to the future); MAJOR zero-vol weight blow-up fixed (vol floor) + tests added. 9 tests; full suite 3864 green; flake8 clean. Not a WF/CPCV pipeline file → `PIPELINE_ARCHITECTURE.md` untouched.
+
+---
+
 ## 2026-06-22 (Phase A) — unified combined-book multi-strategy walk-forward evaluator
 
 **Context**: "Do the backtester/WF let us test strategies TOGETHER holistically?" The pieces existed (assemble_book, Track-B marginal-contribution, GL-1 tail, P0.5 deflation) but not as one harness, and two capabilities were missing: a combined-book CPCV-as-a-unit and a return-level risk governor in the backtest. Phase A of the holistic-multistrat scope (`docs/reference/HOLISTIC_MULTISTRAT_STATE_AND_SCOPE_2026-06-22.md`).
