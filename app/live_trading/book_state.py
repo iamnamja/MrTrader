@@ -50,8 +50,10 @@ _FACTOR_MAP: Dict[str, Dict[str, float]] = {
     "FUT.ZC": {COMMODITY: 1.0}, "FUT.ZS": {COMMODITY: 1.0},
     # vol (short the front VIX future = negative vol exposure; the SLEEVE applies the sign)
     "FUT.VX": {VOL: 1.0},
-    # T-bills: cash-equivalent, no factor exposure
-    "SGOV": {}, "BIL": {}, "SHV": {},
+    # T-bills: cash-equivalent, no factor exposure. Must cover ALL instrument_master cash-equivalents
+    # (Alpha-v10 H10) so a held cash ETF is never flagged `unmapped` (defense-in-depth — cash-equivs
+    # are already excluded from the risk gross before the factor-map lookup). Kept in sync via test.
+    "SGOV": {}, "BIL": {}, "SHV": {}, "BILS": {}, "VGSH": {}, "GBIL": {}, "USFR": {}, "TBIL": {},
 }
 
 

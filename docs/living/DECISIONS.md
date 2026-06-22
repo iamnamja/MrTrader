@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H10) — cash-ETF mapping is a SINGLE SOURCE OF TRUTH (the gate→enforce unblocker)
+
+**Context**: First Phase-H increment (Alpha-v10 "harden, don't hunt"). The whole-book risk gate (`whole_book_gate.py`, SHADOW) builds the proposed book from ALL Alpaca positions and treats any symbol that is NOT a registered cash-equivalent in `instrument_master` as risk gross AND — lacking a factor-map entry — as `unmapped` → a fail-closed breach. The tradeable cash universe `cash_sleeve.CASH_ETFS` had 8 tickers; `instrument_master` knew only 3 (SGOV/BIL/SHV). If `pm.cash_universe` were ever set to one of the other 5 (BILS/VGSH/GBIL/USFR/TBIL), **ENFORCE mode would fail-close the entire trend rebalance every week on a perfectly legal cash config** — so this is a hard prerequisite for the H2 gate→enforce flip.
+
+**Decision**:
+- `instrument_master.CASH_EQUIVALENT_ETFS` (the 8) is now the SINGLE SOURCE OF TRUTH; `cash_sleeve.CASH_ETFS = frozenset(CASH_EQUIVALENT_ETFS)` imports it → the trading universe and the instrument master can never drift (import is circular-safe: `instrument_master` is pure-stdlib).
+- `instrument_master` registry seeds all 8 as cash-equivalents (was 3); `book_state._FACTOR_MAP` gets the 5 missing as `{}` (defense-in-depth — cash-equivs are excluded before the factor lookup).
+- Fixed a stale doc-drift: `trend_sleeve.py` docstring `pm.trend_allocation_pct (0.25)` → (0.50) (the live default since Alpha-v9 P1-2).
+
+**Rationale / verification**: `cash_sleeve.CASH_ETFS` VALUE is byte-identical (same 8), so every LIVE consumer of the gross-cap exclusion (`risk_manager`, `trend_sleeve`, `portfolio_manager`, `trader`, `startup_reconciler` — all import `CASH_ETFS`) is unchanged → **ZERO live-behavior change**. The only semantic delta (instrument_master/book_state now recognizing 5 more cash ETFs) is confined to the SHADOW gate + report-only `book_state`. **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR — claim CONFIRMED, circular-import safe, blast-radius none; the regression test would have failed pre-fix.** 6 H10 tests + 1 review-driven robustness fix; full suite 3870 green; flake8 clean.
+
+**Consequences**: H10 done → the H2 gate→enforce flip is unblocked (still owner-present, after a clean shadow week). Not a WF/CPCV pipeline file → `PIPELINE_ARCHITECTURE.md` untouched. Live book UNCHANGED.
+
+---
+
 ## 2026-06-22 (Alpha-v10 panel) — 10-perspective review → "harden, don't hunt": the Phase H/D/R roadmap
 
 **Context**: While IBKR approval pends, ran a two-part LLM review — 4 repo-grounded Opus panelists + 1 adversarial red-team (internal) + 5 external world-class-quant reviews (ChatGPT/Claude/DeepSeek/Gemini/Grok), each told to be brutally honest and to *attack* the internal panel. Question: find an overlooked method, deepen swing, better-trade what we have, make the app stronger. SSOT: `docs/reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md`.

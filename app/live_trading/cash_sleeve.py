@@ -25,12 +25,17 @@ import logging
 from datetime import date as _date, datetime
 from typing import Any, Dict, List, Optional
 
+from app.live_trading.instrument_master import CASH_EQUIVALENT_ETFS
+
 log = logging.getLogger(__name__)
 
 # Known ultra-short Treasury / T-bill ETFs. The risk-gross exclusion (trend_sleeve +
 # risk_manager) keys off this set, so a cash position never counts against the 80% RISK cap.
 # Keep pm.cash_universe a subset of these.
-CASH_ETFS = frozenset({"SGOV", "BIL", "SHV", "BILS", "VGSH", "GBIL", "USFR", "TBIL"})
+# SINGLE SOURCE OF TRUTH: imported from instrument_master so the trading universe and the
+# instrument master (which the whole-book gate trusts) can never drift (Alpha-v10 H10). A drift
+# would fail-close the gate in ENFORCE mode on a legal cash config — see instrument_master.
+CASH_ETFS = frozenset(CASH_EQUIVALENT_ETFS)
 
 _MIN_NOTIONAL = 100.0   # skip dust rebalances below this $ (one T-bill ETF share ~$50-100)
 

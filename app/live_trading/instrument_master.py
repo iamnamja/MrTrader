@@ -56,10 +56,19 @@ def _fut(root: str, mult: float) -> CanonicalInstrument:
                                venue_symbols={IBKR: root}, root=root, verified=False)
 
 
+# The canonical cash-equivalent ETF universe (T-bill / ultra-short Treasury ETFs). SINGLE SOURCE OF
+# TRUTH for "what counts as cash" — `cash_sleeve.CASH_ETFS` imports this, so the trading universe and
+# the instrument master can NEVER drift. Why this matters (Alpha-v10 H10): the whole-book risk gate
+# treats any held symbol that is NOT a registered cash-equivalent as risk gross AND, lacking a factor
+# map, as `unmapped` -> a fail-closed breach. If `pm.cash_universe` were ever set to a cash ETF the
+# master didn't know (the two lists had drifted), ENFORCE mode would fail-close the entire trend
+# rebalance every week on a perfectly legal cash config. One list closes that landmine.
+CASH_EQUIVALENT_ETFS = ("SGOV", "BIL", "SHV", "BILS", "VGSH", "GBIL", "USFR", "TBIL")
+
 # --- the registry -------------------------------------------------------------------------------
 # LIVE Alpaca universe (verified static values).
 _TREND_ETFS = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "UUP"]
-_CASH_ETFS = ["SGOV", "BIL", "SHV"]
+_CASH_ETFS = list(CASH_EQUIVALENT_ETFS)
 
 # A small representative IBKR futures set (PLACEHOLDER multipliers — verify-on-connect in R1).
 # The full ~76-market universe is seeded in R1 once verified against the live API.
