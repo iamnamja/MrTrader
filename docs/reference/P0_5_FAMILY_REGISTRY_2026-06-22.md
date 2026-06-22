@@ -25,7 +25,10 @@ cross-asset burden the futures-only null can't see. P0.5 makes that count audita
 - **Wired into `null_zoo`** — the DSR cross-check now deflates at the enumerated count
   (`dsr_family`, `n_families` on `NullZooResult`); `dsr_n10/30` retained as a sensitivity band.
 
-## The count (25 trial families; 27 registry entries, 2 excluded for auditability)
+> **Live count grows as families are searched** — `family_registry.py` is the SSOT. Since this
+> snapshot, `sector_rotation` (Option A, 2026-06-22) was added → **N_TRIALS = 26**.
+
+## The count (25 trial families at P0.5; 27 registry entries, 2 excluded for auditability)
 By status: **LIVE 3 · PAPER-CANDIDATE 5 · KILLED 14 · PARKED 3 · SCAFFOLD 2** (excluded from the
 count: `cash_sleeve` = infra; `futures_book` = an ensemble of already-counted carry+xsmom).
 

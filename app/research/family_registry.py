@@ -68,6 +68,9 @@ FAMILIES: List[Family] = [
            "orthogonal but point_SR 0.026, p 0.46 -> zero edge", "DECISIONS 2026-06-14 F2"),
     Family("credit_timing", "Credit-timing (HYG/IEF on SPY)", "equity_etf", PARKED,
            "Track-A pass but corr 0.52 to beta -> not diversifying", "DECISIONS 2026-06-14 G3"),
+    Family("sector_rotation", "Sector-ETF relative-strength rotation", "equity_etf", PARKED,
+           "standalone PAPER-PASS (CPCV SR 0.86) but Track-B FAIL vs trend (corr 0.51) -> redundant",
+           "DECISIONS 2026-06-22 Option A"),
     # ── Futures ──
     Family("futures_trend", "Futures trend (cross-asset TSMOM)", "futures", KILLED,
            "real historically, DECAYED post-2015 (+0.02); redundant", "DECISIONS 2026-06-18 P4-2"),

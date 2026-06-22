@@ -226,6 +226,25 @@ def build_futures_book(**cfg_kw) -> Sleeve:
                         "significant diversifier to live trend (residual-alpha t~2.3)")
 
 
+@register_sleeve("sector_rotation")
+def build_sector_rotation(**cfg_kw) -> Sleeve:
+    """Option A — cross-sectional relative-strength ROTATION across the 11 SPDR sector ETFs: each
+    month rank by 12-1 momentum, hold the top-K (top third) inverse-vol weighted, with an Antonacci
+    DUAL-MOMENTUM filter (only hold a winner if its own absolute momentum > 0, else cash). Distinct
+    from the live trend sleeve (ABSOLUTE per-asset TSMOM) — this is RELATIVE rotation. Config is
+    pre-registered/standard (NOT swept). Declared diversifier; n_trials=1. Whether it EARNS a place
+    is the Track-B question (relative momentum is correlated to trend → redundancy is the null)."""
+    from app.research.etf_rotation import RotationConfig, rotation_backtest, SECTOR_ETFS
+    prices = fetch_universe_closes(SECTOR_ETFS)
+    spy = fetch_universe_closes(["SPY"])["SPY"]
+    r = rotation_backtest(prices, RotationConfig(**cfg_kw))
+    return Sleeve(label="sector_rotation", component_type="diversifier",
+                  returns=r.returns.dropna(), spy_prices=spy, periods_per_year=252,
+                  n_trials_registered=1, registration_id="OPTA-SECTOR-ROTATION",
+                  notes=f"cross-sectional 12-1 RS rotation, top-K=4 of {len(SECTOR_ETFS)} SPDR "
+                        f"sectors, monthly, inverse-vol, dual-momentum filter, 5bps/side")
+
+
 @register_sleeve("vix_vrp")
 def build_vix_vrp(**cfg_kw) -> Sleeve:
     """P3.1 — variance-risk-premium via the VIX-futures curve: short the front VIX future (owned
