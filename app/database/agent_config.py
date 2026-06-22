@@ -238,6 +238,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.reconciliation_mode",
+        "default": "shadow",
+        "type": "str",
+        "description": "Alpha-v10 H1 reconciliation-before-trade mode ('the broker is reality; the DB is memory'). Before any sleeve trades, the DB's EXPECTED book (active Trade rows) is compared to the broker's ACTUAL positions; an unexplained mismatch is a break. 'shadow' (default) = LOG + email what it WOULD hold, but proceed. 'enforce' = a break HOLDS the rebalance (fail-closed). 'off' = not evaluated. FAIL-SAFE: a reconciliation that can't even run -> FAIL_CLOSED (holds in enforce, logged in shadow). Flip to 'enforce' only after a clean shadow window.",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.crash_governor_enabled",
         "default": "true",
         "type": "str",

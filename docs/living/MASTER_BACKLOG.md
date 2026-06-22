@@ -13,7 +13,7 @@
 |---|---|---|
 | **H10** | cash-ETF mapping SSOT (register all 8 `cash_sleeve.CASH_ETFS` in `instrument_master`/`book_state`) + fix the trend-allocation doc drift (0.25→0.50) | ✅ DONE 2026-06-22 (zero live-change; unblocks H2) |
 | **H3** | pre-trade order sanity: **dollar-notional cap + max-order-size** (Alpaca now), **futures-multiplier verify-on-connect** (at IBKR), fail-closed | ⬜ |
-| **H1** | **reconciliation-before-trade** (fail-closed, broker=truth) wired into EVERY live order path (wire the built-but-inert `reconciliation.py`) | ⬜ |
+| **H1** | **reconciliation-before-trade** (fail-closed, broker=truth) wired into EVERY live order path (wire the built-but-inert `reconciliation.py`) | 🔭 SHADOW DONE 2026-06-22 (wired into trend+cash; `pm.reconciliation_mode`; flip→enforce after a clean shadow week + pending_qty/cross-sleeve-status follow-ups) |
 | **H2** | wire the **kill-switch state machine**; flip `whole_book_gate_mode` shadow→enforce after H10 + a clean shadow week | ⬜ (owner-present) |
 | **H4** | **out-of-band broker-only flatten** (no DB/Redis/app dep), tested weekly on Alpaca paper | ⬜ |
 | **H5** | **external dead-man watchdog** (separate process; heartbeat → call/SMS, optional auto-flatten) | ⬜ |
