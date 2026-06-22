@@ -352,6 +352,44 @@ def _credit_governor_multiplier(db) -> float:
         return 1.0
 
 
+def _drawdown_ladder_multiplier(db, nav: float) -> float:
+    """H9: de-gross the trend budget by the risk-policy-v1 drawdown ladder (drawdown-from-HWM ->
+    {-8%:0.75, -12%:0.50, -16%:0.25, -20%:0.00}). Drawdown = current NAV vs the account high-water
+    mark (`risk.peak_equity`, maintained by the RiskManager).
+
+    Flag `pm.drawdown_ladder_enabled` (default false) = SHADOW: compute + LOG the would-be de-gross,
+    apply NOTHING (return 1.0). FAIL-SAFE: if the HWM can't be read, NAV<=0, or NAV>=HWM, return 1.0
+    (no de-gross). Returned UN-floored by the caller so the -20% rung (0.0 = flat) is reachable."""
+    from app.database.agent_config import get_agent_config
+    try:
+        enabled = _truthy(get_agent_config(db, "pm.drawdown_ladder_enabled"))
+    except Exception:
+        enabled = False
+    try:
+        from app.database.config_store import get_config
+        peak = get_config(db, "risk.peak_equity")
+        peak = float(peak) if peak is not None else None
+    except Exception:
+        log.debug("drawdown ladder: peak-equity read failed -> mult=1.0", exc_info=True)
+        return 1.0
+    if not peak or peak <= 0 or not nav or nav <= 0:
+        return 1.0
+    drawdown = (nav / peak) - 1.0            # <= 0 in a drawdown; > 0 at a new high
+    if drawdown >= 0:
+        return 1.0
+    from app.live_trading.risk_policy import RISK_POLICY_V1
+    mult = float(RISK_POLICY_V1.ladder_multiplier(drawdown))
+    if mult >= 1.0:
+        return 1.0
+    if not enabled:
+        log.info("trend: drawdown ladder SHADOW — dd=%.1f%% from HWM would de-gross x%.2f "
+                 "(flag off; applying 1.0)", drawdown * 100, mult)
+        return 1.0
+    log.warning("trend: drawdown ladder ACTIVE — dd=%.1f%% from HWM -> de-gross x%.2f",
+                drawdown * 100, mult)
+    return mult
+
+
 def _fetch_prices(alpaca, universe: List[str]):
     """Return a (n_days, n_symbols) close-price DataFrame, or None on failure.
 
@@ -608,6 +646,21 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "nav_unavailable"
             return summary
 
+        # ── H9 drawdown de-gross ladder (needs NAV; applied UN-FLOORED so the -20% kill rung is
+        # reachable, unlike the 0.25-floored VIX/credit governors). Flag-gated (shadow-logs by
+        # default). Re-scale the intended-weights telemetry too so back-validation sees the real book.
+        ladder_mult = _drawdown_ladder_multiplier(db, nav)
+        summary["drawdown_ladder_mult"] = ladder_mult
+        # The budget actually applied to the book is the floored governor overlay TIMES the
+        # un-floored ladder. Audit rows must record this composite (not the pre-ladder overlay)
+        # so the incident-review trail reflects the real size cut on a de-gross day.
+        applied_mult = overlay_mult * ladder_mult if ladder_mult < 1.0 else overlay_mult
+        if ladder_mult < 1.0:
+            alloc = alloc * ladder_mult
+            summary["overlay_mult"] = overlay_mult * ladder_mult
+            summary["intended_weights"] = {
+                s: w * ladder_mult for s, w in summary.get("intended_weights", {}).items()}
+
         # ── Current trend positions + live prices ──
         current = _current_trend_positions(db, alpaca)
         size_syms = sorted(set(target_weights) | set(current))
@@ -703,7 +756,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if shadow:
             for it in approved:
                 _audit(it["symbol"], it["side"], price=live.get(it["symbol"], 0.0),
-                       final_decision="enter", block_reason="shadow", size_mult=overlay_mult)
+                       final_decision="enter", block_reason="shadow", size_mult=applied_mult)
             log.info("trend SHADOW: would place %d order(s) (%d blocked) — none sent",
                      len(approved), len(blocked))
         else:
@@ -740,7 +793,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 except Exception:
                     db.rollback()
                     log.debug("trend: _sync_trend_trade/commit failed (swallowed)", exc_info=True)
-                _audit(sym, side, price=price, final_decision="enter", size_mult=overlay_mult)
+                _audit(sym, side, price=price, final_decision="enter", size_mult=applied_mult)
                 placed += 1
             log.info("trend LIVE: placed %d order(s) (%d blocked)", placed, len(blocked))
             summary["placed"] = placed

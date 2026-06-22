@@ -245,6 +245,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.drawdown_ladder_enabled",
+        "default": "false",
+        "type": "str",
+        "description": "Alpha-v10 H9 drawdown de-gross ladder. When 'true', the live trend budget is scaled by risk-policy-v1's drawdown-from-high-water ladder (-8%->0.75, -12%->0.50, -16%->0.25, -20%->0.00 = flat) computed from the account NAV vs its high-water mark (risk.peak_equity). Composes with the VIX/credit governors but is NOT subject to the 0.25 overlay floor (its -20% rung is the kill line). 'false' (default) = SHADOW: logs the would-be de-gross, applies nothing. Fail-safe: if the HWM can't be read or NAV>=HWM, multiplier is 1.0 (no de-gross). Flip to 'true' (with the enforce flips) after a clean shadow window.",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.crash_governor_enabled",
         "default": "true",
         "type": "str",
