@@ -15,8 +15,9 @@ Safety model (deploys dormant + shadow-first):
   * pm.trend_enabled (default false)  — master flag; false = code present, no run.
   * pm.trend_shadow  (default true)   — true = compute + LOG would-be orders to
     decision_audit (block_reason="shadow") WITHOUT sending. Flip to false to arm.
-  * Capital: pm.trend_allocation_pct (0.25) of NAV gross — the SOLE live sleeve since
-    the H1 DEMOTE (PEAD off); Track-B 25% framing, under the global 80% gross cap.
+  * Capital: pm.trend_allocation_pct (0.50) of NAV gross — the SOLE live sleeve since
+    the H1 DEMOTE (PEAD off); raised 0.25->0.50 in Alpha-v9 P1-2 (2026-06-16) after a
+    Kelly/vol-target analysis (~4.7% standalone vol), under the global 80% gross cap.
     Per-ETF cap pm.trend_max_position_pct (0.25).
   * Fail-closed everywhere: kill-switch, data-fetch failure, NAV-fetch failure, or
     a missing core symbol -> NO orders.
@@ -74,7 +75,7 @@ def compute_trend_deltas(
     current_trend_positions: symbol -> signed shares currently held & tagged trend.
     prices:          symbol -> live price used for sizing (skip if <= 0).
     nav:             account equity.
-    trend_allocation_pct: sleeve budget as a fraction of NAV (e.g. 0.25).
+    trend_allocation_pct: sleeve budget as a fraction of NAV (e.g. 0.50).
     max_position_pct:     per-ETF ceiling as a fraction of NAV (e.g. 0.25).
 
     Returns a list of intent dicts {symbol, side, qty, target_shares,

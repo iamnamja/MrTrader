@@ -11,7 +11,7 @@
 ### Phase H — make the safety layer LOAD-BEARING (the hard IBKR no-go gate; before any IBKR dollar)
 | # | Item | Status |
 |---|---|---|
-| **H10** | cash-ETF mapping SSOT (register all 8 `cash_sleeve.CASH_ETFS` in `instrument_master`/`book_state`) + fix the trend-allocation doc drift (0.25→0.50) | ⬜ FIRST (unblocks H2) |
+| **H10** | cash-ETF mapping SSOT (register all 8 `cash_sleeve.CASH_ETFS` in `instrument_master`/`book_state`) + fix the trend-allocation doc drift (0.25→0.50) | ✅ DONE 2026-06-22 (zero live-change; unblocks H2) |
 | **H3** | pre-trade order sanity: **dollar-notional cap + max-order-size** (Alpaca now), **futures-multiplier verify-on-connect** (at IBKR), fail-closed | ⬜ |
 | **H1** | **reconciliation-before-trade** (fail-closed, broker=truth) wired into EVERY live order path (wire the built-but-inert `reconciliation.py`) | ⬜ |
 | **H2** | wire the **kill-switch state machine**; flip `whole_book_gate_mode` shadow→enforce after H10 + a clean shadow week | ⬜ (owner-present) |
