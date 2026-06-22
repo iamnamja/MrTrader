@@ -866,9 +866,15 @@ function Pill({ label, ok, warn }: { label: string; ok: boolean; warn?: boolean 
 // ── Macro Risk Banner ─────────────────────────────────────────────────────────
 function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
   if (!ctx) return null
-  const riskColor = ctx.overall_risk === 'HIGH' ? C.red : ctx.overall_risk === 'MEDIUM' ? C.yellow : C.green
+  // is_today omitted (older API) => assume current. Only false marks a stale snapshot
+  // (premarket hasn't run today, so /api/nis/macro is serving a prior day's snapshot).
+  const stale = ctx.is_today === false
+  // When stale, do NOT imply current risk/blocking — mute the banner and label the date.
+  const riskColor = stale ? C.muted
+    : ctx.overall_risk === 'HIGH' ? C.red : ctx.overall_risk === 'MEDIUM' ? C.yellow : C.green
   const sizeStr = ctx.global_sizing_factor !== 1.0 ? ` · sizing ${ctx.global_sizing_factor}×` : ''
   const blockStr = ctx.block_new_entries ? ' · NEW ENTRIES BLOCKED' : ''
+  const nEvents = ctx.events_today.length
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
@@ -876,15 +882,19 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
       background: `${riskColor}10`, border: `1px solid ${riskColor}40`,
     }}>
       <span style={{ fontWeight: 700, fontSize: 11, color: riskColor, whiteSpace: 'nowrap' }}>
-        NIS MACRO: {ctx.overall_risk}{blockStr}{sizeStr}
+        {stale
+          ? `NIS MACRO: no read today (last ${ctx.snapshot_date ?? 'n/a'}: ${ctx.overall_risk})`
+          : `NIS MACRO: ${ctx.overall_risk}${blockStr}${sizeStr}`}
       </span>
-      {ctx.rationale && (
+      {!stale && ctx.rationale && (
         <span style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {ctx.rationale}
         </span>
       )}
       <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-        {ctx.events_today.length} event{ctx.events_today.length !== 1 ? 's' : ''} today
+        {stale
+          ? `${nEvents} event${nEvents !== 1 ? 's' : ''} on ${ctx.snapshot_date ?? 'last read'}`
+          : `${nEvents} event${nEvents !== 1 ? 's' : ''} today`}
       </span>
     </div>
   )
@@ -1682,6 +1692,14 @@ function MacroIntelPanel() {
 
   return (
     <div>
+      {/* Stale notice: premarket hasn't run today, so this is a prior-day snapshot */}
+      {macro?.is_today === false && (
+        <div style={{ padding: '8px 14px', borderRadius: 6, marginBottom: 12, fontSize: 11,
+          background: `${C.yellow}14`, border: `1px solid ${C.yellow}40`, color: C.yellow }}>
+          No macro read for today yet (premarket runs ~09:00 ET) — showing the last snapshot
+          from {macro.snapshot_date ?? 'a prior day'}.
+        </div>
+      )}
       {/* [A] Banner */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap', padding: '14px 18px',
         background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 6, marginBottom: 16 }}>
@@ -4401,14 +4419,17 @@ export default function App() {
 
   // Initial load + polling
   useEffect(() => {
-    loadSummary()
-    loadDecisions()
-    // Fetch NIS macro context once on load (updated daily by premarket routine)
-    api.nisMacro().then((j: unknown) => {
+    // NIS macro context refreshes around the 09:00 ET premarket run and on snapshot
+    // rollover, so poll it (not just once on mount) — otherwise a long-open tab freezes
+    // the banner on a prior day's snapshot.
+    const loadMacro = () => api.nisMacro().then((j: unknown) => {
       const ctx = j as NisMacroContext & { status?: string }
       if (!ctx.status) setMacroCtx(ctx)
     }).catch(() => {})
-    const id = setInterval(() => { loadSummary(); loadDecisions() }, 10000)
+    loadSummary()
+    loadDecisions()
+    loadMacro()
+    const id = setInterval(() => { loadSummary(); loadDecisions(); loadMacro() }, 10000)
     return () => clearInterval(id)
   }, [loadSummary, loadDecisions])
 
