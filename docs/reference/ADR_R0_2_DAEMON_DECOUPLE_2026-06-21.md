@@ -1,6 +1,6 @@
 # ADR R0.2 — Decouple the trading daemon from FastAPI (phased; default-off)
 
-**Status:** PROPOSED (execution owner-gated — touches the live boot path). **Date:** 2026-06-21.
+**Status:** Phase 1 IMPLEMENTED (default-off, inert); Phases 2-4 PROPOSED (owner-gated). **Date:** 2026-06-21.
 **Context:** Portfolio-Brain roadmap R0.2. Today the orchestrator + PM/RM/Trader agents + scheduler +
 news monitor all boot **inside the FastAPI `lifespan`** (`app/main.py:239-407`), so a web restart
 stops trading and trading load shares the web process. The roadmap + the external critics call this
@@ -51,11 +51,17 @@ advance), and (d) bridging the in-process **WebSocket broadcast** + **news-monit
    Phase 3 (Redis pub-sub or DB-tail); acceptable degradation meanwhile (dashboard still reads DB).
 
 ## Phased plan (each phase independently shippable; default-off until the final flip)
-- **Phase 1 — capability, inert.** Add `MRTRADER_DAEMON_MODE` (default `in_process`) + a standalone
-  `mtrader-tradingd` entry point that runs `orchestrator.start()` + the scheduler with NO FastAPI.
-  In `main.py` lifespan, guard the orchestrator/news-monitor boot behind `mode != "subprocess"`.
-  **Default = byte-identical to today** (web boots everything; the daemon entry point is never run).
-  *Exit: default config unchanged; `python -m app.tradingd` can run the brain standalone in a dev box.*
+- **Phase 1 — capability, inert. ✅ DONE 2026-06-21.** Added `MRTRADER_DAEMON_MODE` (default
+  `in_process`) + a standalone daemon (`python -m app.tradingd`) that runs the brain (orchestrator +
+  agents + scheduler + news monitor) with NO FastAPI. The brain lifecycle + preamble (state restore /
+  reconcile / queue flush) + shutdown-hardening helpers moved to `app/trading_runtime.py` (imports no
+  FastAPI) so both boot paths share identical code; `main.py` lifespan boots the brain only when
+  `web_boots_brain()` (i.e. `mode != subprocess`). **Default = byte-identical to pre-R0.2** (web boots
+  everything; the daemon refuses to start unless `mode=subprocess`). **Mutual-exclusion interlock:**
+  the web boots the brain unless subprocess, and the daemon boots ONLY if subprocess → exactly one
+  process ever runs the brain (the "double-running agents" risk cannot occur). Files:
+  `app/trading_runtime.py`, `app/tradingd.py`, `app/main.py` (guards); `tests/test_trading_runtime.py`
+  (10). Full suite green; flake8 clean. **Inert: merging changes nothing until the env var is set.**
 - **Phase 2 — the IPC bridge.** Convert the web→agent control routes (kill-switch, pause/resume,
   manual triggers, capital advance) to Postgres/Redis-mediated commands the daemon consumes; the
   daemon polls `orchestrator_state` + drains `pm_commands`. *Exit: every control route works with the
@@ -67,10 +73,18 @@ advance), and (d) bridging the in-process **WebSocket broadcast** + **news-monit
   *This is the step that makes "web restart ≠ trading restart" real — the gate to live futures capital.*
 
 ## Recommendation
-Execute **Phase 1 in a dedicated step with the operator present** (so the boot-path restart is
-watched), **separate from the shadow-gate uvicorn restart** (don't compound two boot changes in one
-restart). Phases 2-4 follow incrementally, each behind the default-off flag, so the live book is
-never at risk from a half-built phase. The fallback (`in_process`) means we can stop after any phase.
+Phase 1 shipped **default-off and inert** — merging it changes nothing (the default `in_process` mode
+is byte-identical to today; the daemon refuses to run unless `mode=subprocess`), so no special restart
+was needed to land it. The **behavior-changing step is the flip to `subprocess`** (Phase 4): that is
+what must be done **operator-present**, after Phases 2-3 bridge the web's control + observability paths
+(otherwise the dashboard's kill-switch/pause/trigger routes go dark while the daemon owns the brain).
+Phases 2-4 follow incrementally, each behind the default-off flag, so the live book is never at risk
+from a half-built phase. The fallback (`in_process`) means we can stop after any phase.
+
+**How to use the daemon (dev / once Phase 4 lands):** run the web read-only with
+`MRTRADER_DAEMON_MODE=subprocess` in its environment, and start the brain separately with
+`MRTRADER_DAEMON_MODE=subprocess python -m app.tradingd`. In the default deployment neither env var is
+set and nothing changes.
 
 > Cross-refs: boundary inventory (this session); `PORTFOLIO_BRAIN_ROADMAP_2026-06-21.md` R0.2;
 > `R0_FOUNDATION_2026-06-21.md` (the read-only substrate the daemon will host).
