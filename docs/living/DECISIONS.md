@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Phase H — H9) — drawdown de-gross ladder wired into the live trend budget (SHADOW-default)
+
+**Context**: `RISK_POLICY_V1.drawdown_ladder` (the −8/−12/−16/−20% → ×0.75/0.50/0.25/0.00 rungs) existed as policy but was **never consumed** by the live order path — a drawdown could deepen with the trend book fully grossed. The panel's H9 = "automated de-gross ladder, owner-flips-to-enforce."
+
+**Decision** (position-sizing input; **ZERO live-behavior change while the flag is off, which is the default**):
+- `trend_sleeve._drawdown_ladder_multiplier(db, nav)`: reads the account high-water mark `risk.peak_equity` (maintained by the RiskManager in `config_store`), computes drawdown-from-HWM, and returns `RISK_POLICY_V1.ladder_multiplier(dd)`. It can **only reduce** (capped at ≤1.0) and **never raises** — every config read is wrapped and fails safe to 1.0 (missing/zero HWM, NAV≤0, NAV≥HWM all → 1.0).
+- Flag `pm.drawdown_ladder_enabled` (default **`false`** = SHADOW): computes + logs the would-be de-gross but applies **1.0**. When enabled, multiplies the trend `alloc` **UN-floored** (unlike the 0.25-floored VIX/credit governors) so the −20% kill rung (0.0) is reachable and **flattens** the held book — the laddered `alloc=0` flows into `compute_trend_deltas`, producing full-exit SELLs, not merely halting buys. Re-scales `intended_weights` + the `decision_audit` `size_mult` by the composite (floored-governor × ladder) so the incident trail reflects the real cut.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; default-off zero-live-change CONFIRMED; the kill rung provably SELLS to flat; the helper can never increase exposure or raise.** Two MINORs fixed: the audit `size_mult` omitted the ladder (now records the composite); a sleeve-level test now proves the −20% rung emits full-exit SELLs against a held SPY/QQQ book (the most important behavioral claim). 7 H9 tests; full suite green; flake8 clean.
+
+**Consequences**: a deepening drawdown will (once Min flips the flag after the clean shadow week) automatically de-gross then flatten the trend book. Operator: `pm.drawdown_ladder_enabled=true` to arm. Stacks on the floored governor overlay. Not a WF/CPCV pipeline file. DECISIONS 2026-06-22 (Phase H — H9).
+
+---
+
 ## 2026-06-22 (Phase H — H8) — alerting/observability: severity tiers + critical channel + gate-error visibility
 
 **Context**: The breach alerts (reconciliation_break / whole_book_gate_breach / dead_man_alert) already email, but two gaps remained: (1) no triage — every alert looked the same; no "louder" path for catastrophic events; (2) the whole-book gate swallowed internal errors at `debug` and proceeded → **a wedged gate was invisible** (the reviewer's specific finding). The panel's H8 = "tiered alerting + gate-didn't-run alert."

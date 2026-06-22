@@ -20,7 +20,7 @@
 | **H6** | **per-order idempotency** (client order IDs) + transactional order log | ✅ DONE 2026-06-22 (idempotent `place_market_order` on dup + centralized `order_ids.idempotency_key`; full per-order lifecycle log deferred to P2.3) |
 | **H7** | **broker-side dollar limits** (IBKR precautionary settings) your code can't override | ⬜ (at IBKR) |
 | **H8** | tiered alerting (catastrophic→call/SMS, warning→push, info→digest) + reconciliation-break + "gate-didn't-run" alerts | ✅ DONE 2026-06-22 (severity tiers + subject prefix + gate_error alert + env-gated critical webhook `MRTRADER_CRITICAL_WEBHOOK`; SMS/push = plug in a webhook) |
-| **H9** | wire the **drawdown de-gross ladder** into the live budget (2–3 steps, smoothed/broker-confirmed trigger, hysteresis) | ⬜ |
+| **H9** | wire the **drawdown de-gross ladder** into the live budget (2–3 steps, smoothed/broker-confirmed trigger, hysteresis) | ✅ DONE 2026-06-22 (`_drawdown_ladder_multiplier` on trend `alloc`, reads `risk.peak_equity` HWM, RISK_POLICY_V1 rungs −8/−12/−16/−20%→×0.75/0.50/0.25/0.00; SHADOW-default flag `pm.drawdown_ladder_enabled`; un-floored so −20% flattens; fail-safe to 1.0) |
 
 ### Phase D — DEPLOY (start the real clock; on IBKR approval)
 - D1 step trend ~4.7%→~6% vol **with a hard leverage cap (~1.3–1.5×)** — only after H done.
