@@ -186,49 +186,17 @@ def _git_info() -> tuple[str, str]:
 # defenses: (1) explicitly kill the worker pools on shutdown (root cause), and
 # (2) a daemon watchdog that os._exit(0)s if shutdown wedges anyway (hard guarantee).
 
-# Comfortably above the worst-case graceful sequence (notify ~5s + bounded
-# orchestrator.stop ~10s + parallel task cancels ~3s) so the watchdog only fires on a
-# genuine HANG, never on a slow-but-healthy shutdown.
-SHUTDOWN_WATCHDOG_SECONDS = float(os.environ.get("MRTRADER_SHUTDOWN_TIMEOUT", "30"))
-
-
-def _start_shutdown_watchdog(timeout_s: float = SHUTDOWN_WATCHDOG_SECONDS):
-    """Arm a daemon timer that force-exits the process if graceful shutdown wedges.
-
-    Daemon threads keep running while the main thread is blocked joining non-daemon
-    threads at interpreter exit, so this fires even in the exact hang we're guarding
-    against. Returns the Timer so a caller/test can cancel it. If shutdown completes
-    normally first, the process exits and this daemon dies with it (never fires)."""
-    import threading
-
-    def _force() -> None:
-        logging.getLogger("mrtrader.shutdown").error(
-            "Graceful shutdown exceeded %.0fs — forcing exit (os._exit). Lingering "
-            "non-daemon worker pool/thread suspected.", timeout_s)
-        os._exit(0)
-
-    t = threading.Timer(timeout_s, _force)
-    t.daemon = True
-    t.start()
-    return t
-
-
-def _kill_worker_pools() -> None:
-    """Tear down background worker pools that would otherwise block interpreter exit.
-    Best-effort and non-blocking; never raises.
-
-    NOTE: the PM's ad-hoc ThreadPoolExecutors (portfolio_manager.py) shut down with
-    wait=False but their non-daemon worker threads can still linger mid-task; those
-    are covered by the hard-exit watchdog rather than here (they're transient)."""
-    log = logging.getLogger("mrtrader.shutdown")
-    # joblib/loky reusable PROCESS pool (persists across calls — the lingering
-    # `python -c exec(...)` workers). kill_workers=True + wait=False = no block.
-    try:
-        from joblib.externals.loky import get_reusable_executor
-        get_reusable_executor().shutdown(wait=False, kill_workers=True)
-        log.info("Shutdown: killed loky reusable executor workers")
-    except Exception:
-        pass
+# The watchdog + worker-pool teardown now live in app.trading_runtime so the standalone
+# daemon (R0.2) shares them without importing the FastAPI stack. Re-exported here under
+# their original private names to keep the lifespan call sites unchanged.
+from app.trading_runtime import (  # noqa: E402
+    SHUTDOWN_WATCHDOG_SECONDS,
+    kill_worker_pools as _kill_worker_pools,
+    prepare_trading_state,
+    start_shutdown_watchdog as _start_shutdown_watchdog,
+    start_trading_brain,
+    web_boots_brain,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -286,90 +254,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Startup connectivity check failed: %s", e)
 
-    # ── 5. Restore persisted state ────────────────────────────────────────────
-    try:
-        from app.live_trading.kill_switch import kill_switch
-        from app.live_trading.capital_manager import capital_manager
-        kill_switch.load_state()
-        log.info("State restored (kill_switch=%s, capital_stage=%s)",
-                 kill_switch.is_active, capital_manager.current_stage.stage)
-    except Exception as e:
-        log.warning("State restore warning: %s", e)
-
-    # ── 6. Startup reconciliation (Alpaca vs DB) ──────────────────────────────
-    try:
-        from app.startup_reconciler import reconcile
-        from app.database.session import get_session
-        alpaca = get_alpaca_client()
-        db = get_session()
+    # ── 5-8. Trading-brain preamble + boot ────────────────────────────────────
+    # R0.2 daemon decouple: in the DEFAULT in_process mode the web boots the brain
+    # (state restore → reconciliation → queue flush → orchestrator/agents/news),
+    # byte-identical to pre-R0.2. In subprocess mode the standalone daemon
+    # (`python -m app.tradingd`) owns it and the web stays read-only — exactly one
+    # process ever runs the brain (no double-trading).
+    app.state.news_monitor_task = None
+    if web_boots_brain():
+        await prepare_trading_state(log)            # §5 state restore, §6 reconcile, §7 flush
         try:
-            await asyncio.to_thread(reconcile, alpaca, db)
-        finally:
-            db.close()
-    except Exception as e:
-        log.warning("Startup reconciliation skipped: %s", e)
-
-    # ── 7. Flush stale inter-agent queues ─────────────────────────────────────
-    try:
-        rq = get_redis_queue()
-        for qname in ["trade_proposals", "risk_approved", "exit_requests", "pm_commands"]:
-            n = rq.get_queue_length(qname)
-            if n > 0:
-                rq.clear_queue(qname)
-                log.warning("Startup: flushed %d stale message(s) from '%s'", n, qname)
-    except Exception as e:
-        log.warning("Startup queue flush failed (non-fatal): %s", e)
-
-    # ── 8. Orchestrator + agents ──────────────────────────────────────────────
-    try:
-        from app.agents.portfolio_manager import portfolio_manager
-        from app.agents.risk_manager import risk_manager
-        from app.agents.trader import trader
-        from app.orchestrator import orchestrator
-        from app.utils.constants import SECTOR_MAP
-
-        risk_manager.update_sector_map(SECTOR_MAP)
-        orchestrator.register_agent("portfolio_manager", portfolio_manager)
-        orchestrator.register_agent("risk_manager", risk_manager)
-        orchestrator.register_agent("trader", trader)
-        await orchestrator.start()
-
-        # Log active model versions (retry for connection pool warmup)
-        try:
-            from app.database.session import get_session
-            from app.database.models import ModelVersion
-            for _attempt in range(3):
-                db = get_session()
-                try:
-                    for name in ("swing", "intraday"):
-                        row = (
-                            db.query(ModelVersion)
-                            .filter_by(model_name=name, status="ACTIVE")
-                            .order_by(ModelVersion.version.desc())
-                            .first()
-                        )
-                        if row:
-                            log.info("Active model: %s v%d (path=%s)", name, row.version, row.model_path)
-                        else:
-                            if _attempt < 2:
-                                break
-                            log.warning("Active model: %s — NONE found in DB", name)
-                    else:
-                        break
-                finally:
-                    db.close()
-                await asyncio.sleep(0.5)
+            app.state.news_monitor_task = await start_trading_brain(log)   # §8
         except Exception as e:
-            log.warning("Could not log model versions: %s", e)
-
-        from app.agents.news_monitor import news_monitor
-        app.state.news_monitor_task = asyncio.create_task(
-            news_monitor.run(), name="news_monitor"
-        )
-        log.info("Orchestrator started (news monitor running)")
-    except Exception as e:
-        log.error("Orchestrator startup failed: %s", e)
-        raise
+            log.error("Orchestrator startup failed: %s", e)
+            raise
+    else:
+        log.warning("Trading brain NOT booted in-process — MRTRADER_DAEMON_MODE=subprocess; "
+                    "the standalone daemon owns trading and this web process is read-only.")
 
     # ── 9. Background warm-ups (non-blocking) ────────────────────────────────
     app.state.warm_task = asyncio.create_task(_warm_caches(), name="cache_warmup")
@@ -427,13 +328,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             _nw.kill()
 
-    from app.orchestrator import orchestrator
-    try:
-        await asyncio.wait_for(orchestrator.stop(), timeout=10.0)
-    except asyncio.TimeoutError:
-        _log_shutdown.warning("orchestrator.stop() exceeded 10s — proceeding (watchdog armed)")
-    except Exception as exc:
-        _log_shutdown.warning("orchestrator.stop() error (proceeding): %s", exc)
+    # R0.2: only the brain-owning process stops the orchestrator. In subprocess mode
+    # the web never started it (the daemon did), so it skips this.
+    if web_boots_brain():
+        from app.orchestrator import orchestrator
+        try:
+            await asyncio.wait_for(orchestrator.stop(), timeout=10.0)
+        except asyncio.TimeoutError:
+            _log_shutdown.warning("orchestrator.stop() exceeded 10s — proceeding (watchdog armed)")
+        except Exception as exc:
+            _log_shutdown.warning("orchestrator.stop() error (proceeding): %s", exc)
 
     # Kill lingering worker pools (loky) that would block the interpreter from exiting.
     _kill_worker_pools()

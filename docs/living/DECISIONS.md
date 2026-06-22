@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-21 (Alpha-v10 R0.2 Phase 1) — decouple the trading daemon from FastAPI (capability, default-off/inert)
+
+**Context**: R0.2 is the ADR-flagged "single largest, riskiest item" (touches the live boot path). With Min present and approving, built **Phase 1** of the phased plan in `docs/reference/ADR_R0_2_DAEMON_DECOUPLE_2026-06-21.md`. The boundary inventory had shown the codebase is already highly modular (singleton orchestrator/agents; kill-switch + capital-ramp already Postgres-persisted; inter-agent messaging already Redis), so a "run both in one process" fallback needs zero changes.
+
+**Decision**:
+- Added `MRTRADER_DAEMON_MODE` (default `in_process`) + `app/trading_runtime.py` (the brain lifecycle — preamble [state restore → reconcile → queue flush], `start_trading_brain`/`stop_trading_brain`, and the shutdown-hardening helpers — **imports no FastAPI**) + `app/tradingd.py` (standalone daemon, `python -m app.tradingd`).
+- `app/main.py` lifespan now boots the brain only when `web_boots_brain()` (mode ≠ subprocess) and skips `orchestrator.stop()` otherwise; the watchdog/`_kill_worker_pools` moved to `trading_runtime` and are **re-exported under their original private names** so `test_shutdown_hardening` imports are unchanged.
+- **Mutual-exclusion interlock**: the web boots the brain unless subprocess; the daemon REFUSES to start (exit 2) unless subprocess → exactly one process ever runs the brain (the ADR's "double-running agents" risk is structurally impossible).
+
+**Rationale**: Ship the capability **inert** — default `in_process` is byte-identical to pre-R0.2, and the daemon won't run in the default mode — so merging is safe with no behavior change and no special restart. The behavior-changing flip to `subprocess` is Phase 4 (operator-present), after Phases 2-3 bridge the web's control + observability paths.
+
+**Consequences**: We can now run the brain standalone in a dev box; the foundation for "a web restart no longer restarts trading" (the gate to live futures capital) is laid. Phase 1 is default-off, so the live book is UNCHANGED. Not a WF/CPCV pipeline file → `PIPELINE_ARCHITECTURE.md` intentionally untouched. 10 new tests (`tests/test_trading_runtime.py`); full suite 3778 green; flake8 clean. Phases 2-4 remain owner-gated.
+
+---
+
 ## 2026-06-21 (Alpha-v10 R0.4b/R0.5) — whole-book risk gate wired into the live trend rebalance (SHADOW; owner-approved)
 
 **Context**: With Min present, took the first step that touches the live order path. Min explicitly chose **shadow-first** for the whole-book risk gate (vs enforce-now or the big R0.2 daemon-decouple). First validated the R0 measurement layer on the LIVE Alpaca account (R0.4b, read-only). SSOT: `docs/reference/R0_FOUNDATION_2026-06-21.md`.
