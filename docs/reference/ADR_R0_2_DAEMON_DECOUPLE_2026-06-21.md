@@ -1,6 +1,6 @@
 # ADR R0.2 — Decouple the trading daemon from FastAPI (phased; default-off)
 
-**Status:** Phase 1 IMPLEMENTED (default-off, inert); Phases 2-4 PROPOSED (owner-gated). **Date:** 2026-06-21.
+**Status:** Phases 1-2 IMPLEMENTED (default-off); Phases 3-4 PROPOSED (owner-gated). **Date:** 2026-06-21 (P2: 2026-06-22).
 **Context:** Portfolio-Brain roadmap R0.2. Today the orchestrator + PM/RM/Trader agents + scheduler +
 news monitor all boot **inside the FastAPI `lifespan`** (`app/main.py:239-407`), so a web restart
 stops trading and trading load shares the web process. The roadmap + the external critics call this
@@ -62,10 +62,24 @@ advance), and (d) bridging the in-process **WebSocket broadcast** + **news-monit
   process ever runs the brain (the "double-running agents" risk cannot occur). Files:
   `app/trading_runtime.py`, `app/tradingd.py`, `app/main.py` (guards); `tests/test_trading_runtime.py`
   (10). Full suite green; flake8 clean. **Inert: merging changes nothing until the env var is set.**
-- **Phase 2 — the IPC bridge.** Convert the web→agent control routes (kill-switch, pause/resume,
-  manual triggers, capital advance) to Postgres/Redis-mediated commands the daemon consumes; the
-  daemon polls `orchestrator_state` + drains `pm_commands`. *Exit: every control route works with the
-  brain in a separate process.*
+- **Phase 2 — the IPC bridge. ✅ DONE 2026-06-22.** `app/control_bridge.py` (new, no FastAPI import):
+  a command bus over the existing Redis `pm_commands` queue + a daemon consumer + a Postgres
+  state-sync poll. The control routes are **mode-conditional** via `bridge_or_none()`: in_process they
+  run their direct path UNCHANGED (byte-identical); in subprocess they EMIT a command and DO NOT touch
+  the web's empty orchestrator. Bridged: pause/resume, manual triggers (cycle/swing/retrain/intraday),
+  job pause/resume, capital-advance. Kill-switch keeps closing positions from the web (Alpaca-reachable)
+  + persists to Postgres; the daemon picks up the halt via the **3 s `state_sync_loop` reload** plus an
+  **immediate `reload_state` command** on activate/reset (agents/sleeves read `kill_switch.is_active`
+  live, so a reload is honored). The daemon (`tradingd.py`) launches `consume_control_commands` +
+  `state_sync_loop`; long triggers run as tracked background tasks (a 7-min retrain never blocks a
+  pause/kill); the consumer never dies on a bad command and cancels in-flight triggers on shutdown.
+  Three deep-dive passes (1 self + 2 independent), full suite green, flake8 clean. Files:
+  `app/control_bridge.py`, `app/api/orchestrator_routes.py`, `app/api/routes.py`, `app/tradingd.py`;
+  `tests/test_control_bridge.py` (23). *Exit: every control route works with the brain in a separate
+  process.* **Known limitations (subprocess-only, documented):** (a) a bounded kill-propagation window
+  (≤ command latency, 3 s backstop) vs zero in in_process; (b) capital-ramp state is in-memory — full
+  ramp bridging (go-live `start()` + `/live/status` display) is finished in R1 go-live; (c) the PM
+  trigger bodies are duplicated route↔bridge (extract to public PM methods in a later pass).
 - **Phase 3 — observability bridge.** Agent-decision push + news watchlist + Trader mid-run cache via
   Postgres/Redis so the dashboard stays live and news-exits fire in subprocess mode.
 - **Phase 4 — flip + harden.** Set `MRTRADER_DAEMON_MODE=subprocess` (web = read-only); add the

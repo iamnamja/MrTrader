@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Alpha-v10 R0.2 Phase 2) — web↔daemon control bridge (mode-conditional, default-off)
+
+**Context**: Phase 1 shipped the daemon capability but left the FastAPI control routes (pause/resume, manual triggers, kill-switch, capital advance) calling the in-process orchestrator — which in subprocess mode is empty, so those controls would be dark. With Min present and asking for extra verification rigor, built Phase 2 of `docs/reference/ADR_R0_2_DAEMON_DECOUPLE_2026-06-21.md`.
+
+**Decision**:
+- `app/control_bridge.py` (new, no FastAPI import): a command bus over the existing Redis `pm_commands` queue (`emit_control_command`/`bridge_or_none`), a daemon `consume_control_commands` consumer, and a `state_sync_loop` that reloads the kill-switch from Postgres.
+- **Mode-conditional routes** (`bridge_or_none`): in_process runs the existing direct path UNCHANGED (byte-identical); subprocess EMITs a command and never touches the web's empty orchestrator. Bridged: pause/resume, triggers (cycle/swing/retrain/intraday), job pause/resume, capital-advance.
+- **Kill-switch**: the web route keeps closing positions (Alpaca-reachable) + persisting `active=True`; the daemon picks up the halt via a 3 s Postgres reload poll + an immediate `reload_state` command (agents/sleeves read `kill_switch.is_active` live → honored). Lazy per-route imports so a bridge-import error can never stop the app booting. Long triggers run as tracked background tasks (never block pause/kill); the consumer survives bad commands and cancels in-flight triggers on shutdown.
+
+**Rationale**: Same principle as Phase 1 — ship inert. Default in_process is byte-identical; the bridge/consumer/sync only activate in subprocess mode (Phase 4). **Verified to Min's bar:** three deep-dive passes (1 self + 2 independent fresh-context reviewers) — no BLOCKER, in_process byte-identical confirmed, fixes applied (lazy import, in-flight-task cleanup, pause visibility) and re-verified. Full suite 3801 green (twice); flake8 clean.
+
+**Consequences**: In subprocess mode every control route reaches the real brain. Live book UNCHANGED (default mode untouched). Known subprocess-only limitations documented (bounded kill window; capital-ramp in-memory state → full bridge in R1; PM-trigger duplication). Not a WF/CPCV pipeline file → `PIPELINE_ARCHITECTURE.md` intentionally untouched. 23 tests (`tests/test_control_bridge.py`). Phases 3-4 remain owner-gated.
+
+---
+
 ## 2026-06-21 (Alpha-v10 R0.2 Phase 1) — decouple the trading daemon from FastAPI (capability, default-off/inert)
 
 **Context**: R0.2 is the ADR-flagged "single largest, riskiest item" (touches the live boot path). With Min present and approving, built **Phase 1** of the phased plan in `docs/reference/ADR_R0_2_DAEMON_DECOUPLE_2026-06-21.md`. The boundary inventory had shown the codebase is already highly modular (singleton orchestrator/agents; kill-switch + capital-ramp already Postgres-persisted; inter-agent messaging already Redis), so a "run both in one process" fallback needs zero changes.

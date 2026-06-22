@@ -638,6 +638,10 @@ async def get_system_health():
 @router.post("/control/pause")
 async def pause_trading():
     """Pause all trading activity."""
+    from app.control_bridge import bridge_or_none, CMD_PAUSE
+    bridged = bridge_or_none(CMD_PAUSE)
+    if bridged is not None:
+        return bridged
     from app.orchestrator import orchestrator
     orchestrator.pause_trading()
     return {"status": "trading_paused"}
@@ -646,6 +650,10 @@ async def pause_trading():
 @router.post("/control/resume")
 async def resume_trading():
     """Resume trading after a pause."""
+    from app.control_bridge import bridge_or_none, CMD_RESUME
+    bridged = bridge_or_none(CMD_RESUME)
+    if bridged is not None:
+        return bridged
     from app.orchestrator import orchestrator
     orchestrator.resume_trading()
     return {"status": "trading_resumed"}
@@ -794,6 +802,12 @@ async def request_capital_increase():
     Attempt to advance to the next capital stage.
     Requires stage duration elapsed AND health thresholds met.
     """
+    from app.control_bridge import bridge_or_none, CMD_CAPITAL_ADVANCE
+    bridged = bridge_or_none(CMD_CAPITAL_ADVANCE)
+    if bridged is not None:
+        # subprocess: the daemon owns the authoritative (in-memory) capital_manager and
+        # evaluates can_advance there; the web cannot decide it from a stale stage.
+        return bridged
     from app.live_trading.capital_manager import capital_manager
     from app.live_trading.monitoring import monitor
 
@@ -829,7 +843,12 @@ async def request_capital_increase():
 async def activate_kill_switch(reason: str = "User triggered"):
     """Emergency: close all positions and halt new trades."""
     from app.live_trading.kill_switch import kill_switch
-    return kill_switch.activate(reason=reason)
+    result = kill_switch.activate(reason=reason)
+    # activate() closes positions (Alpaca, reachable here) AND persists active=True. In
+    # subprocess mode, tell the daemon to reload the flag NOW so it halts new trades
+    # immediately rather than at its next periodic poll (the poll is the backstop).
+    _notify_daemon_state_reload()
+    return result
 
 
 @router.post("/live/kill-switch/reset")
@@ -837,7 +856,22 @@ async def reset_kill_switch(reason: str = "Manual reset"):
     """Re-enable trading after reviewing the kill-switch event."""
     from app.live_trading.kill_switch import kill_switch
     kill_switch.reset(reason=reason)
+    _notify_daemon_state_reload()
     return {"status": "kill_switch_reset", "reason": reason}
+
+
+def _notify_daemon_state_reload() -> None:
+    """In subprocess mode, push a reload_state command so the daemon refreshes its
+    in-memory kill-switch from Postgres immediately. No-op in in_process mode (the web
+    owns the kill_switch singleton the agents already read). Never raises."""
+    try:
+        from app.trading_runtime import web_boots_brain
+        if web_boots_brain():
+            return
+        from app.control_bridge import emit_control_command, CMD_RELOAD_STATE
+        emit_control_command(CMD_RELOAD_STATE)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not notify daemon of kill-switch state change: %s", exc)
 
 
 @router.get("/health/heartbeat")

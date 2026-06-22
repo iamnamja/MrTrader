@@ -12,6 +12,9 @@ from fastapi import APIRouter, HTTPException
 
 from app.orchestrator import orchestrator
 from app.scheduler import scheduler
+# NOTE: app.control_bridge is imported LAZILY inside each control route (like routes.py),
+# never at module level — so a future bridge-import error can never stop the FastAPI app
+# from booting (trading must not be held hostage to the control-bridge module).
 
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 logger = logging.getLogger(__name__)
@@ -120,6 +123,11 @@ async def get_scheduled_jobs():
 @router.post("/pause-trading")
 async def pause_trading():
     """Emergency pause — stop portfolio selection and agent triggers."""
+    from app.control_bridge import bridge_or_none, CMD_PAUSE
+    bridged = bridge_or_none(CMD_PAUSE)
+    if bridged is not None:
+        _log("WARNING", "Trading pause forwarded to daemon")
+        return bridged
     orchestrator.pause_trading()
     _log("WARNING", "Trading paused by user")
     return {"status": "trading_paused"}
@@ -128,6 +136,11 @@ async def pause_trading():
 @router.post("/resume-trading")
 async def resume_trading():
     """Resume trading after an emergency pause."""
+    from app.control_bridge import bridge_or_none, CMD_RESUME
+    bridged = bridge_or_none(CMD_RESUME)
+    if bridged is not None:
+        _log("INFO", "Trading resume forwarded to daemon")
+        return bridged
     orchestrator.resume_trading()
     _log("INFO", "Trading resumed by user")
     return {"status": "trading_resumed"}
@@ -136,6 +149,10 @@ async def resume_trading():
 @router.post("/jobs/{job_id}/pause")
 async def pause_job(job_id: str):
     """Pause a scheduled job by ID."""
+    from app.control_bridge import bridge_or_none, CMD_JOB_PAUSE
+    bridged = bridge_or_none(CMD_JOB_PAUSE, {"job_id": job_id})
+    if bridged is not None:
+        return bridged
     try:
         scheduler.pause_job(job_id)
         _log("INFO", f"Job paused: {job_id}")
@@ -147,6 +164,10 @@ async def pause_job(job_id: str):
 @router.post("/jobs/{job_id}/resume")
 async def resume_job(job_id: str):
     """Resume a paused job by ID."""
+    from app.control_bridge import bridge_or_none, CMD_JOB_RESUME
+    bridged = bridge_or_none(CMD_JOB_RESUME, {"job_id": job_id})
+    if bridged is not None:
+        return bridged
     try:
         scheduler.resume_job(job_id)
         _log("INFO", f"Job resumed: {job_id}")
@@ -164,6 +185,11 @@ async def trigger_one_cycle():
     Useful for testing outside market hours.
     Returns immediately; the cycle runs in the background.
     """
+    from app.control_bridge import bridge_or_none, CMD_TRIGGER_CYCLE
+    bridged = bridge_or_none(CMD_TRIGGER_CYCLE)
+    if bridged is not None:
+        _log("INFO", "Manual cycle forwarded to daemon")
+        return bridged
     _log("INFO", "Manual cycle triggered by user")
 
     async def _run():
@@ -193,6 +219,11 @@ async def trigger_swing_analysis():
     even after the 09:45 ET cutoff. Use when the scheduled premarket run
     failed (e.g. scorer crash) and proposals need to be recovered mid-session.
     """
+    from app.control_bridge import bridge_or_none, CMD_TRIGGER_SWING
+    bridged = bridge_or_none(CMD_TRIGGER_SWING)
+    if bridged is not None:
+        _log("INFO", "Manual swing analysis forwarded to daemon")
+        return bridged
     _log("INFO", "Manual swing premarket analysis triggered by user")
 
     async def _run():
@@ -218,6 +249,11 @@ async def trigger_swing_analysis():
 @router.post("/trigger-retraining")
 async def trigger_retraining():
     """Manually kick off ML model retraining."""
+    from app.control_bridge import bridge_or_none, CMD_TRIGGER_RETRAIN
+    bridged = bridge_or_none(CMD_TRIGGER_RETRAIN)
+    if bridged is not None:
+        _log("INFO", "Manual retraining forwarded to daemon")
+        return bridged
     _log("INFO", "Manual model retraining triggered by user")
 
     async def _retrain():
@@ -279,6 +315,11 @@ async def trigger_intraday_scan():
     This rebuilds the morning candidates list and persists it to DB, fixing post-restart timeouts.
     Runs in the background — check logs for progress.
     """
+    from app.control_bridge import bridge_or_none, CMD_TRIGGER_INTRADAY
+    bridged = bridge_or_none(CMD_TRIGGER_INTRADAY)
+    if bridged is not None:
+        _log("INFO", "Manual intraday scan forwarded to daemon")
+        return bridged
     from datetime import datetime
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
