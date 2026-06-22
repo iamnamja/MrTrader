@@ -39,11 +39,20 @@ class WebSocketManager:
             self.disconnect(ws)
 
     async def send_update(self, update_type: str, data: dict) -> None:
-        await self.broadcast({
+        message = {
             "type": update_type,
             "data": data,
             "timestamp": datetime.utcnow().isoformat(),
-        })
+        }
+        await self.broadcast(message)
+        # R0.2 Phase 3: in subprocess mode this runs in the daemon (no local WS clients),
+        # so also publish to Redis for the web to relay. No-op in in_process / the web
+        # (publish_ws_event returns immediately unless this is the daemon process).
+        try:
+            from app.observability_bridge import publish_ws_event
+            publish_ws_event(message)
+        except Exception:  # noqa: BLE001 — a live-update relay must never break a broadcast
+            pass
 
 
 # Module-level singleton

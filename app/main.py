@@ -277,6 +277,19 @@ async def lifespan(app: FastAPI):
     app.state.market_task = asyncio.create_task(_refresh_market_data(), name="market_data")
     app.state.wf_recon_task = asyncio.create_task(_schedule_wf_reconciliation(), name="wf_reconciliation")
 
+    # ── 9b. Observability bridge (R0.2 Phase 3) ───────────────────────────────
+    # In subprocess mode the brain runs in the daemon (no WS clients); relay its
+    # agent-decision/trade/alert broadcasts from Redis to this web's WS clients. Not
+    # started in in_process mode (the local broadcast already reaches clients).
+    app.state.ws_relay_task = None
+    if not web_boots_brain():
+        try:
+            from app.observability_bridge import ws_relay_loop
+            app.state.ws_relay_task = asyncio.create_task(ws_relay_loop(), name="ws_relay")
+            log.info("Observability bridge: WS relay started (subprocess mode)")
+        except Exception as e:  # observability must never stop the web from booting
+            log.warning("WS relay failed to start (dashboard live-push degraded): %s", e)
+
     # ── 10. Notification watcher ──────────────────────────────────────────────
     # Test isolation: never spawn the live email drainer under pytest. The
     # TestClient runs this lifespan on every session that uses it, which would
@@ -345,7 +358,8 @@ async def lifespan(app: FastAPI):
     # Cancel the remaining background tasks in PARALLEL (sequential 3s-each would risk
     # exceeding the watchdog on a slow shutdown).
     _bg = [getattr(app.state, n, None)
-           for n in ("news_monitor_task", "warm_task", "market_task", "wf_recon_task")]
+           for n in ("news_monitor_task", "warm_task", "market_task", "wf_recon_task",
+                     "ws_relay_task")]
     _bg = [t for t in _bg if t and not t.done()]
     for t in _bg:
         t.cancel()

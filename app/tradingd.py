@@ -39,6 +39,7 @@ from app.config import settings  # noqa: E402
 from app.trading_runtime import (  # noqa: E402
     DAEMON_MODE_SUBPROCESS,
     get_daemon_mode,
+    mark_as_daemon,
     prepare_trading_state,
     start_shutdown_watchdog,
     start_trading_brain,
@@ -73,6 +74,9 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop: asyncio.Even
 
 async def _run() -> int:
     log = logging.getLogger("mrtrader.daemon")
+    # Tag this process as the daemon so the observability bridge PUBLISHES WS events to
+    # Redis (the web relays them); must be set before any agent broadcast.
+    mark_as_daemon()
     commit_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     bar = "=" * 72
     log.info("\n%s\n  MRTRADER TRADING DAEMON  %s\n  mode: %s  trading_mode: %s  python: %s\n%s",

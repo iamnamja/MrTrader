@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Alpha-v10 R0.2 Phase 3) — observability bridge (daemon→web WS relay, default-off)
+
+**Context**: In subprocess mode the agents run in the daemon, but the dashboard's WebSocket clients connect to the web process, so daemon-generated agent-decision/trade/alert broadcasts never reach the dashboard (the underlying data is still written to Postgres; only the live push is lost). Built Phase 3 of the ADR with Min present.
+
+**Decision**:
+- **Finding**: of the ADR's three P3 items, only the WS push is a real cross-process gap. The **news watchlist** (mutated only by the PM, read by the co-located news_monitor) and the **Trader mid-run cache** (rebuilt from the `trades` table on start + the startup reconciler) are self-contained in the brain process → no bridge needed; news-exits already fire in the daemon.
+- `app/observability_bridge.py` (new, no FastAPI): the daemon PUBLISHES each WS event to the Redis pub/sub channel `ws_events` (`publish_ws_event`, gated on `is_daemon_process()` set by `tradingd.mark_as_daemon()`); the web runs `ws_relay_loop` (launched in `main.py` only when `mode==subprocess`) that re-broadcasts to the local WS manager. Pub/sub (not a list) → ephemeral, no backlog. Strict `json.dumps` mirrors `send_json` for cross-mode parity.
+
+**Rationale**: Same principle as P1/P2 — default-off and in_process byte-identical (`publish_ws_event` no-ops unless daemon; relay never starts in in_process; no double-delivery). Verified with two deep-dive passes (1 self + 1 independent reviewer) — no BLOCKER/MAJOR; the one MINOR (serializer divergence) was converged to identical strict serialization. Full suite 3816 green; flake8 clean.
+
+**Consequences**: In subprocess mode the dashboard receives live agent/trade/alert pushes. Live book UNCHANGED. Known subprocess-only display gap: the orchestrator-status panel still reads the web's empty orchestrator (data is in Postgres; deferred). Not a WF/CPCV file → `PIPELINE_ARCHITECTURE.md` untouched. 12 tests (`tests/test_observability_bridge.py`). Phase 4 (the subprocess flip, operator-present) remains owner-gated.
+
+---
+
 ## 2026-06-22 (Alpha-v10 R0.2 Phase 2) — web↔daemon control bridge (mode-conditional, default-off)
 
 **Context**: Phase 1 shipped the daemon capability but left the FastAPI control routes (pause/resume, manual triggers, kill-switch, capital advance) calling the in-process orchestrator — which in subprocess mode is empty, so those controls would be dark. With Min present and asking for extra verification rigor, built Phase 2 of `docs/reference/ADR_R0_2_DAEMON_DECOUPLE_2026-06-21.md`.
