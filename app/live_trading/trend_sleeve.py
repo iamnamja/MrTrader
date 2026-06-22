@@ -32,7 +32,7 @@ is the defensive I/O orchestrator — it never raises into the scheduler.
 from __future__ import annotations
 
 import logging
-from datetime import date as _date, datetime
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
@@ -708,16 +708,20 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                      len(approved), len(blocked))
         else:
             placed = 0
-            stamp = _date.today().strftime("%Y%m%d")
+            from app.live_trading.order_ids import idempotency_key
             for it in approved:
                 sym, side, qty = it["symbol"], it["side"], it["qty"]
                 price = live.get(sym, 0.0)
                 try:
                     order = alpaca.place_market_order(
                         sym, int(qty), side,
-                        client_order_id=f"trend-{stamp}-{sym}",
+                        client_order_id=idempotency_key("trend", sym),
                     )
                     oid = order.get("order_id") if isinstance(order, dict) else None
+                    if isinstance(order, dict) and order.get("idempotent_reuse"):
+                        # H6: a retry caught the order Alpaca already had — no double-fill, and we
+                        # still record the Trade row below (closing the orphan window).
+                        log.info("trend: idempotent reuse %s %s (order already placed)", side, sym)
                 except Exception as exc:
                     log.error("trend: order failed %s %s x%d: %s", side, sym, qty, exc)
                     _audit(sym, side, price=price, final_decision="block",
