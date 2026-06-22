@@ -28,6 +28,18 @@ from app.live_trading.broker_adapter import AccountState, BrokerHealth, Canonica
 log = logging.getLogger(__name__)
 
 
+def _ensure_event_loop() -> None:
+    """ib_insync (via eventkit) calls asyncio.get_event_loop() at import/use; on Python 3.12 that
+    RAISES `RuntimeError: no current event loop` in any thread whose loop is missing/closed (e.g. a
+    scheduler worker, or a test worker a prior test left without a loop). Ensure one exists first so
+    the adapter is safe to use off the main async loop. Idempotent + harmless when a loop is present."""
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 @dataclass(frozen=True)
 class ContractMismatch:
     """A verify-on-connect discrepancy between our static spec and the live contract details."""
@@ -66,7 +78,8 @@ class IBKRReadOnlyAdapter:
     # ── connection ──────────────────────────────────────────────────────────────
     def _ensure_ib(self):
         if self._ib is None:
-            from ib_insync import IB  # lazy — only when actually connecting
+            _ensure_event_loop()       # ib_insync/eventkit need a current loop at import/use
+            from ib_insync import IB   # lazy — only when actually connecting
             self._ib = IB()
         return self._ib
 
@@ -175,6 +188,7 @@ class IBKRReadOnlyAdapter:
         spec. A multiplier mismatch (or a contract that won't resolve) is CRITICAL — the caller must
         block trading that instrument. Exchange/currency differences are WARN (IBKR aliases).
         Fail-closed if not connected."""
+        _ensure_event_loop()           # ib_insync/eventkit need a current loop (3.12: else RuntimeError)
         from ib_insync import Future
         self._require_connected()
         mismatches: List[ContractMismatch] = []
