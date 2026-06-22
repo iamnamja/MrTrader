@@ -112,6 +112,16 @@ def _confidence_scalar(prob: float) -> float:
     return float(np.clip(0.5 + 1.5 * (prob - lo) / max(hi - lo, 1e-6), 0.5, 2.0))
 
 
+def _is_swing_reviewable(t) -> bool:
+    """True if a held position belongs to the discretionary swing book the 30-min swing-ML
+    review manages. EXCLUDES intraday (its own loop) and trend/cash sleeve positions (managed
+    EXCLUSIVELY by the weekly rebalancers — re-scoring them with the swing model and issuing
+    EXIT/EXTEND_TARGET fights the rebalancer; mirrors trader._is_rebalancer_managed)."""
+    return (getattr(t, "signal_type", "") != "intraday"
+            and getattr(t, "trade_type", "") not in ("trend", "cash")
+            and getattr(t, "selector", "") not in ("trend", "cash"))
+
+
 def apply_pead_size_ramp(quantity: int, price: float, account_value: float,
                          size_mult: float, max_position_pct) -> int:
     """B4 aggressive paper-ramp sizing (pure/deterministic for testing).
@@ -3423,7 +3433,12 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         finally:
             db.close()
 
-        swing_trades = [t for t in active_trades if getattr(t, "signal_type", "") != "intraday"]
+        # The 30-min swing-ML review manages ONLY discretionary swing positions. Trend
+        # (TSMOM) and cash (T-bill) sleeve positions are managed EXCLUSIVELY by their weekly
+        # rebalancers — re-scoring them with the swing model and issuing EXIT/EXTEND_TARGET
+        # fights the rebalancer (it once force-closed a trend QQQ via pm_nis_exit). See
+        # _is_swing_reviewable (mirrors trader._is_rebalancer_managed).
+        swing_trades = [t for t in active_trades if _is_swing_reviewable(t)]
         if not swing_trades:
             # Still scan for new opportunities even with no open positions
             await self._scan_new_opportunities()
@@ -3784,6 +3799,14 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             # Intraday positions: don't re-score with swing model — just HOLD
             if trade_type == "intraday":
                 self.send_message(EXIT_REQUESTS_QUEUE, {"symbol": symbol, "action": "HOLD", "reason": "intraday_not_rescored"})
+                continue
+
+            # Trend/cash sleeve positions are rebalancer-managed — never re-score with the
+            # swing model here (defense-in-depth; the producer is already behind _check_exit's
+            # guard, but mirror the rule on the sink so no future caller can leak an EXIT).
+            if trade_type in ("trend", "cash") or msg.get("selector") in ("trend", "cash"):
+                self.send_message(EXIT_REQUESTS_QUEUE, {"symbol": symbol, "action": "HOLD",
+                                                        "reason": "rebalancer_managed_not_rescored"})
                 continue
 
             try:

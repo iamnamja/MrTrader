@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (bugfix) — trend/cash sleeve isolation: stop the PM swing-review from managing rebalancer-owned positions
+
+**Context**: Trend (TSMOM) and cash (T-bill) sleeve positions are meant to be managed EXCLUSIVELY by their weekly rebalancers (`trend_sleeve` / `cash_sleeve`); the trader's `_check_exit` already skips them. But the PM's 30-min swing-ML review built its work-list excluding only *intraday* (`signal_type != "intraday"`), so it **re-scored trend/cash positions with the swing model** and issued EXIT / EXTEND_TARGET via the trader message queue. Surfaced as recurring `write_target_stop REJECTED ... (likely corruption)` ERROR noise on EEM/IWM (long-held trend winners whose target sits >50% above entry → tripped the swing 50%-from-entry bound). **Forensics found it had already bitten: Trade #132 QQQ (trend) was force-closed with `exit_reason='pm_nis_exit'`** — the PM's NIS-news re-check exited a trend position, fighting the rebalancer.
+
+**Decision** (live trading-logic fix; default behavior change — needs a uvicorn restart to take effect):
+- **Source:** PM 30-min review now uses `_is_swing_reviewable(t)` (module-level), which excludes intraday AND trend/cash (by `trade_type` or `selector`). PEAD (selector='pead', trade_type='swing') and discretionary swing are unchanged — still reviewed.
+- **Sink (defense-in-depth):** trader's PM-message handler skips EXIT/EXTEND_TARGET for trend/cash via a new module-level `_is_rebalancer_managed(pos)` (also now used by `_check_exit`, refactored). `_handle_reeval_requests` likewise HOLDs trend/cash.
+- **Noise:** `audit_active_target_stops` skips trend/cash (their target/stop are vestigial — a long-held trend winner legitimately sits >50% above entry, no longer WARNed as "corruption").
+
+**Rationale**: Mirror the existing `_check_exit` guard at every place swing/ML/news logic could reach a sleeve position. An independent adversarial review confirmed no NEW leak, swing/PEAD/intraday behavior preserved, and the two intended sinks plugged.
+
+**Consequences**: trend/cash are now managed solely by their rebalancers across the PM/Trader runtime. Live book otherwise unchanged; **takes effect on the next uvicorn restart** (low urgency — the bug needs a trend position's swing score to degrade or a news flag). Not a WF/CPCV file → `PIPELINE_ARCHITECTURE.md` untouched; `SYSTEM_BEHAVIOR.md` Position-Review section updated. 6 tests (`tests/test_sleeve_position_isolation.py`); full suite 3827 green; flake8 clean.
+
+**Tracked follow-ups (pre-existing, NOT closed here)**: (1) **[MAJOR, narrow race]** the reconciler's synthetic adopt of an UNTRACKED Alpaca position hardcodes `trade_type="swing"` — if a crash lands between a trend order's fill and its DB commit, an orphaned trend leg is adopted as swing and becomes swing-managed. Fix needs the `trend-`/`cash-` `client_order_id` tag (or a Trade.selector lookup) to classify it — its own careful reconciler change. (2) **[MINOR]** `active_positions` dicts don't carry `selector`, so the trader-side predicate is `trade_type`-only at runtime (load-bearing for committed trend/cash rows, which always set `trade_type`); add `selector` to the builders for genuine dual-key symmetry.
+
+---
+
 ## 2026-06-22 (Alpha-v10 P0.4) — credit de-risk overlay PIT re-verdict: PIT-robust, status unchanged
 
 **Context**: The Alpha-v10 5-LLM panel's action item (2) bundled the credit overlay with carry: "kill in-sample vol-matching → PIT rolling vol everywhere (the +0.17 carry dSR + the +0.064 credit overlay likely shrink)." P0.2 confirmed it for carry (in-sample +0.17 → ~0 under PIT). P0.4 tests the credit overlay.

@@ -278,6 +278,13 @@ def audit_active_target_stops(db_session) -> list[dict]:
         entry = float(trade.entry_price or 0)
         if entry <= 0:
             continue
+        # Trend/cash sleeve positions are managed by the weekly rebalancers, NOT by
+        # target/stop exits (trader._check_exit skips them), so their target/stop are
+        # vestigial — a long-held trend winner legitimately sits >50% above entry. Don't
+        # audit them against the swing target/stop bounds (false "likely corruption" WARN).
+        if (getattr(trade, "trade_type", "") in ("trend", "cash")
+                or getattr(trade, "selector", "") in ("trend", "cash")):
+            continue
         direction = getattr(trade, "direction", "BUY") or "BUY"
         trade_type = getattr(trade, "trade_type", "swing") or "swing"
         ok, why = validate_target_stop(
