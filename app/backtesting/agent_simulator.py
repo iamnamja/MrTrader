@@ -2315,7 +2315,11 @@ class AgentSimulator:
             # Daily borrow cost for short positions (configurable annual rate, default 5%).
             # Use today's close as current notional (M6 fix: entry_price understates HTB tail risk).
             if is_short:
-                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 365
+                # Accrue per TRADING day: the loop runs only on trading days (~252/yr), so dividing
+                # the annual rate by 365 charged borrow on ~252 days = ~69% of the intended annual
+                # cost (a ~31% undercharge that flattered every short). /252 makes the per-trading-day
+                # accrual sum to the configured annual rate.
+                borrow_cost = today_close * pos.quantity * self.short_borrow_rate_annual / 252
                 portfolio.cash -= borrow_cost
                 portfolio.daily_pnl -= borrow_cost
 

@@ -50,19 +50,27 @@ class BacktestResult:
             return cls(model_type=model_type)
 
         total = len(trades)
+        # Break-even trades (pnl == 0) are NEITHER winners nor losers — classifying them as losers
+        # understated win_rate and inflated gross_loss (depressing profit_factor below its true value).
         winners = [t for t in trades if t.pnl > 0]
-        losers = [t for t in trades if t.pnl <= 0]
+        losers = [t for t in trades if t.pnl < 0]
         total_pnl = sum(t.pnl for t in trades)
         win_rate = len(winners) / total if total else 0.0
         avg_pnl_pct = sum(t.pnl_pct for t in trades) / total
         avg_hold = sum(t.hold_bars for t in trades) / total
 
-        # Sharpe (annualised, assuming daily returns for swing, intra-session for intraday)
+        # Sharpe annualised by the ACTUAL trade frequency (trades/year over the backtest span), NOT
+        # the sample size — `min(n, 252)` made the annualised Sharpe grow with the number of trades,
+        # so a low-edge model could clear the readiness Sharpe gate just by trading more/longer.
         returns = [t.pnl_pct for t in trades]
-        sharpe = _sharpe(returns)
+        sharpe = _sharpe(returns, trades_per_year=_trades_per_year(trades))
 
-        # Max drawdown on cumulative return curve (pct-based, capital-independent)
-        max_dd = _max_drawdown([t.pnl_pct for t in trades])
+        # Max drawdown on the cumulative return curve. Trades are ordered by EXIT date first (they
+        # were appended grouped by (window, symbol), which is not a realization sequence). NOTE: this
+        # still chains overlapping trades as if sequentially reinvested — a true concurrent-MTM
+        # drawdown comes from the AgentSimulator daily-equity path; this is the trade-list proxy.
+        _ordered = sorted(trades, key=lambda t: (_to_date(t.exit_date) or _to_date(t.entry_date)))
+        max_dd = _max_drawdown([t.pnl_pct for t in _ordered])
 
         # Profit factor
         gross_win = sum(t.pnl for t in winners) if winners else 0.0
@@ -98,19 +106,42 @@ class BacktestResult:
         }
 
 
-def _sharpe(returns: List[float], periods_per_year: int = 252) -> float:
-    """
-    Per-trade Sharpe: mean(returns) / std(returns) * sqrt(n_trades_per_year).
-    Annualised assuming ~100 trades/year for a swing strategy.
-    """
+def _to_date(d):
+    """Coerce a date/datetime (or None) to a date for span/ordering math."""
+    from datetime import datetime as _dtm
+    if d is None:
+        return None
+    return d.date() if isinstance(d, _dtm) else d
+
+
+def _trades_per_year(trades: List["Trade"]) -> float:
+    """Actual trade frequency = n_trades / years_covered (span from first entry to last exit).
+    Falls back to len(trades) when the span is degenerate (all same day) so the annualisation never
+    blows up or divides by zero."""
+    try:
+        entries = [_to_date(t.entry_date) for t in trades if _to_date(t.entry_date) is not None]
+        exits = [_to_date(t.exit_date) for t in trades if _to_date(t.exit_date) is not None]
+        if entries and exits:
+            span_days = (max(exits) - min(entries)).days
+            if span_days > 0:
+                return len(trades) / (span_days / 365.25)
+    except Exception:
+        pass
+    return float(len(trades))
+
+
+def _sharpe(returns: List[float], trades_per_year: float = None,
+            periods_per_year: int = 252) -> float:
+    """Per-trade Sharpe annualised by the ACTUAL trade frequency: mean/std * sqrt(trades_per_year).
+    `trades_per_year` is the realised frequency (n / years). When omitted, falls back to the legacy
+    min(n, 252) (kept only so direct callers without dates still work)."""
     if len(returns) < 2:
         return 0.0
     mean = sum(returns) / len(returns)
     variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
     std = math.sqrt(variance) if variance > 0 else 1e-9
-    # Scale by sqrt(trades/year) not sqrt(252) — each trade is not a daily return
-    trades_per_year = min(len(returns), periods_per_year)
-    return (mean / std) * math.sqrt(trades_per_year)
+    tpy = trades_per_year if trades_per_year is not None else min(len(returns), periods_per_year)
+    return (mean / std) * math.sqrt(max(tpy, 0.0))
 
 
 def _max_drawdown(pnl_pcts: List[float]) -> float:
