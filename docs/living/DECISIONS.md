@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-23 (Audit Wave 3a) — live agent-path state-corruption + P&L + premarket data-reference
+
+**Context**: Audit-found MAJORs in the live Trader/PM/Premarket agents: (a) a partial exit never decremented `pos["shares"]` → the no-position exit fallback computed the final leg on the FULL original qty AND re-added the partial P&L (double-count); (b) PM EXIT fell back to `entry_price` when no quote → booked a fabricated $0.00-P&L exit; (c) intraday market entry recorded the REQUESTED qty, not the filled qty (DB↔broker mismatch on a partial fill); (d) `_record_entry` looked up the pending row with a status filter → a concurrent reconcile that already promoted it to ACTIVE caused a DUPLICATE Trade row; (e) the 30-min pending rescore re-scored INTRADAY proposals with the SWING model → withdrew valid intraday entries ~30 min after each; (f) three premarket data-reference bugs (prior_close/`_fetch_spy_premarket`/today_open used the wrong daily bar pre-open → spurious AUTO_EXIT + mis-gated sizing).
+
+**Decision**:
+- Partial exit decrements `pos["shares"] = total - partial`; the full-exit now reads the **actual fill price** via `Trader._read_order_fill_price` (bounded off-loop poll) for P&L/exit_price → the PM-EXIT $0 fabrication is corrected and stop/target exits book the real fill.
+- Intraday market entry records the **actual filled_qty**.
+- `_record_entry` looks up by **id alone** (idempotent promote) + a reconciler-path symbol/ACTIVE guard → no duplicate ACTIVE row.
+- `_pending_approvals` stores `(time, trade_type)`; the rescore only re-scores **swing** pendings (non-swing still expire on staleness) → sleeve isolation.
+- Premarket: `_prior_session_close` (last completed daily bar strictly before today) + `_current_price` (live quote/last); the gap = (live − prior_close)/prior_close with a **guard that skips AUTO_EXIT/REEVAL when no real live price**.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; no exit can be skipped or double-counted; no AUTO_EXIT can mis-fire on bad data.** MINOR (reconciler adopt now debug-logged). 4 new tests + the `test_phase20` gap suite updated to the corrected contract; full suite 3988 green; flake8 clean. DECISIONS 2026-06-23 (Audit Wave 3a).
+
+**Consequences**: exit P&L is accurate, partial fills are tracked truthfully, no duplicate trade rows on a reconcile race, intraday proposals aren't killed by the swing model, and the premarket gap/AUTO_EXIT path uses correct data. Wave 3b (startup_reconciler ghost/partial-fill, capital_manager persist, pead_tracker P&L, routes go-live bridge, FRED, earnings, ml-model normalization) next.
+
+---
+
 ## 2026-06-22 (Audit Wave 2) — pause/resume lifecycle BLOCKER + intraday daily-loss hard stop
 
 **Context**: Audit-found BLOCKER #2: `orchestrator.pause_trading()` flipped each agent's `status` to "paused", but the agent loops were `while status == "running":` so they RETURNED → the asyncio tasks DIED; `resume_trading()` only flipped a flag on dead coroutines (no task recreation) → **trading never resumed without a full restart**. Worse, `_health_check` auto-paused on any Alpaca health blip → permanently killed the trader loop → the **3:45 pm intraday force-close stopped running** (overnight exposure). Plus a MAJOR: the 2% daily-loss hard stop read the **EOD-only** `RiskMetric` row → returned 0.0 intraday → the stop **could not fire during the session**.

@@ -235,21 +235,60 @@ class PremarketIntelligence:
 
     # ─── SPY Pre-market ───────────────────────────────────────────────────────
 
+    def _prior_session_close(self, bars) -> float:
+        """The most recent COMPLETED daily close strictly BEFORE today (ET).
+
+        Pre-open (when this runs, 09:00-09:29 ET) the daily frame's LAST row is yesterday's bar
+        (today's daily bar does not exist yet), so the old `iloc[-2]` referenced the day-BEFORE-
+        yesterday — an off-by-one that mis-based every gap/pre-market %. Selecting the last row whose
+        date < today is correct both pre-open (→ yesterday) and intraday (skips today's partial bar →
+        the genuine prior session). Returns 0.0 if no such bar exists."""
+        if bars is None or len(bars) == 0:
+            return 0.0
+        today_et = datetime.now(ET).date()
+        try:
+            for i in range(len(bars) - 1, -1, -1):
+                idx = bars.index[i]
+                d = idx.date() if hasattr(idx, "date") else None
+                if d is None or d < today_et:
+                    return float(bars["close"].iloc[i])
+        except Exception:
+            pass
+        return float(bars["close"].iloc[-1])
+
+    def _current_price(self, client, symbol: str) -> float:
+        """Best-effort live / pre-market price (quote mid → latest trade/minute close). 0.0 if none.
+        This is the 'now' side of a gap — NOT a stale completed daily bar."""
+        try:
+            q = client.get_quote(symbol)
+            if q and q.get("mid"):
+                return float(q["mid"])
+        except Exception:
+            pass
+        try:
+            p = client.get_latest_price(symbol)
+            if p:
+                return float(p)
+        except Exception:
+            pass
+        return 0.0
+
     def _fetch_spy_premarket(self) -> float:
         """
-        Return SPY pre-market % change vs prior close using Alpaca bars.
-        Positive = gap up, negative = gap down.
+        Return SPY pre-market % change = (live price - prior session close) / prior session close.
+        Positive = gap up, negative = gap down. Uses a LIVE price (not a completed daily bar) for the
+        'now' side and the genuine prior-session close for the base.
         """
         from app.integrations import get_alpaca_client
         client = get_alpaca_client()
         bars = client.get_bars("SPY", timeframe="1Day", limit=3)
-        if bars is None or len(bars) < 2:
-            return 0.0
-        prior_close = float(bars["close"].iloc[-2])
-        latest_close = float(bars["close"].iloc[-1])
+        prior_close = self._prior_session_close(bars)
         if prior_close <= 0:
             return 0.0
-        return (latest_close - prior_close) / prior_close
+        cur = self._current_price(client, "SPY")
+        if cur <= 0:
+            return 0.0
+        return (cur - prior_close) / prior_close
 
     # ─── Overnight Gap Analysis ───────────────────────────────────────────────
 
@@ -267,23 +306,16 @@ class PremarketIntelligence:
         for symbol in symbols:
             try:
                 bars = client.get_bars(symbol, timeframe="1Day", limit=3)
-                if bars is None or len(bars) < 2:
-                    continue
-                prior_close = float(bars["close"].iloc[-2])
-                # Phase 73: prefer actual today's open from 1-min bars; fall back gracefully
-                today_open = None
-                try:
-                    intraday = client.get_bars(symbol, timeframe="1Min", limit=5)
-                    if intraday is not None and not intraday.empty and "open" in intraday.columns:
-                        today_open = float(intraday["open"].iloc[0])
-                except Exception:
-                    pass
-                if today_open is None:
-                    today_open = float(
-                        bars["open"].iloc[-1] if "open" in bars.columns
-                        else bars["close"].iloc[-1]
-                    )
+                # Base = genuine prior-session close (last completed daily bar strictly before today).
+                prior_close = self._prior_session_close(bars)
                 if prior_close <= 0:
+                    continue
+                # 'Now' side = a LIVE price. Pre-open the session open doesn't exist yet, and the old
+                # `1Min tail(5).iloc[0]` was the open of a bar ~5 min ago (not the session open). A
+                # live quote/last trade is the correct pre-market reference. GUARD: never fire an
+                # AUTO_EXIT/REEVAL on a fabricated price — skip the symbol if no real price.
+                today_open = self._current_price(client, symbol)
+                if today_open <= 0:
                     continue
                 gap_pct = (today_open - prior_close) / prior_close
                 gaps[symbol] = {"gap_pct": round(gap_pct, 4)}

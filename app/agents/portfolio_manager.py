@@ -179,7 +179,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         self._weekly_report_generated_today: bool = False
         self._last_date: Optional[str] = None
         self._swing_proposals: List[Dict[str, Any]] = []  # cached from 08:00 analysis
-        self._pending_approvals: Dict[str, float] = {}   # symbol → monotonic time of proposal send (Phase 70)
+        self._pending_approvals: Dict[str, tuple] = {}   # symbol → (monotonic send time, trade_type) (Phase 70)
         self._last_review_minute: int = -1       # last minute a 30-min review ran
         self._last_heartbeat_hour: int = -1      # last hour a loop-alive log was emitted
         # Per-task stats: attempts, failures, last duration (ms), last run timestamp
@@ -2659,7 +2659,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         _send_ts = datetime.utcnow()
         for proposal in self._swing_proposals:
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
-            self._pending_approvals[proposal["symbol"]] = _time.monotonic()
+            self._pending_approvals[proposal["symbol"]] = (
+                _time.monotonic(), proposal.get("trade_type", "swing"))
             self.logger.info(
                 "Proposal sent: %s @ $%.2f (confidence=%.2f)",
                 proposal["symbol"], proposal["entry_price"], proposal["confidence"],
@@ -3362,7 +3363,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 self.logger.debug("NIS intraday overlay failed for %s (non-fatal): %s", symbol, _exc)
 
             self.send_message(TRADE_PROPOSALS_QUEUE, proposal)
-            self._pending_approvals[proposal["symbol"]] = _time.monotonic()
+            self._pending_approvals[proposal["symbol"]] = (
+                _time.monotonic(), proposal.get("trade_type", "intraday"))
             self._intraday_symbol_last_entry[symbol] = _time.monotonic()  # Phase 51 cooldown
             news_monitor.watch(symbol)  # Phase 53: start monitoring for news exits
             self.logger.info(
@@ -3901,12 +3903,20 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             pass
 
         to_withdraw = []
-        for symbol, sent_at in list(self._pending_approvals.items()):
+        for symbol, _entry in list(self._pending_approvals.items()):
+            sent_at, _ptype = _entry if isinstance(_entry, tuple) else (_entry, "swing")
             age_min = (now_mono - sent_at) / 60.0
 
             # Stale: over 30 min — aligned with Trader TTL (also 30 min)
             if age_min > INTRADAY_PROPOSAL_STALE_MIN:
                 to_withdraw.append((symbol, f"stale_{age_min:.0f}min"))
+                continue
+
+            # SLEEVE ISOLATION: only re-score SWING proposals with the swing daily-bar model.
+            # Re-scoring an INTRADAY (or trend/cash) pending with the swing model is meaningless
+            # (different feature space / horizon) and was WITHDRAWING valid intraday entries ~30 min
+            # after each one. Non-swing pendings only expire by the staleness check above.
+            if _ptype != "swing":
                 continue
 
             # Re-score with fresh daily bars

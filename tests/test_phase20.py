@@ -124,46 +124,43 @@ class TestNfpGate:
 # ─── Overnight gap analysis ───────────────────────────────────────────────────
 
 class TestOvernightGapAnalysis:
-    def _make_bars(self, prior_close: float, today_close: float) -> pd.DataFrame:
-        return pd.DataFrame({
-            "close": [prior_close * 0.98, prior_close, today_close],
-            "volume": [1_000_000, 1_000_000, 1_000_000],
-        })
+    def _make_bars(self, prior_close: float) -> pd.DataFrame:
+        # COMPLETED daily bars, both dated strictly BEFORE today (pre-open: today's daily bar does
+        # not exist yet). _prior_session_close returns the last (prior_close).
+        idx = pd.to_datetime([date.today() - timedelta(days=4), date.today() - timedelta(days=3)])
+        return pd.DataFrame({"close": [prior_close * 0.98, prior_close],
+                             "volume": [1_000_000, 1_000_000]}, index=idx)
+
+    def _client(self, prior_close: float, current: float) -> MagicMock:
+        # gap is now (live current price - prior session close) / prior close — the current price
+        # comes from a LIVE quote, not a (nonexistent pre-open) daily bar.
+        c = MagicMock()
+        c.get_bars.return_value = self._make_bars(prior_close)
+        c.get_quote.return_value = {"mid": current}
+        return c
 
     def test_small_gap_is_ok(self):
         pm = _fresh_pm()
-        bars = self._make_bars(100.0, 101.0)  # +1% gap
-        mock_client = MagicMock()
-        mock_client.get_bars.return_value = bars
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
+        with patch("app.integrations.get_alpaca_client", return_value=self._client(100.0, 101.0)):
             gaps = pm._check_overnight_gaps(["AAPL"])
         assert gaps["AAPL"]["action"] == "OK"
 
     def test_moderate_adverse_gap_triggers_reeval(self):
         pm = _fresh_pm()
-        bars = self._make_bars(100.0, 96.5)  # -3.5% gap
-        mock_client = MagicMock()
-        mock_client.get_bars.return_value = bars
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
+        with patch("app.integrations.get_alpaca_client", return_value=self._client(100.0, 96.5)):
             gaps = pm._check_overnight_gaps(["AAPL"])
         assert gaps["AAPL"]["action"] == "REEVAL"
 
     def test_large_adverse_gap_triggers_auto_exit(self):
         pm = _fresh_pm()
-        bars = self._make_bars(100.0, 94.0)  # -6% gap
-        mock_client = MagicMock()
-        mock_client.get_bars.return_value = bars
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
+        with patch("app.integrations.get_alpaca_client", return_value=self._client(100.0, 94.0)):
             gaps = pm._check_overnight_gaps(["TSLA"])
         assert gaps["TSLA"]["action"] == "AUTO_EXIT"
 
     def test_reeval_sends_to_queue(self):
         pm = _fresh_pm()
-        bars = self._make_bars(100.0, 96.5)  # -3.5%
-        mock_client = MagicMock()
-        mock_client.get_bars.return_value = bars
         send_fn = MagicMock()
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
+        with patch("app.integrations.get_alpaca_client", return_value=self._client(100.0, 96.5)):
             pm._check_overnight_gaps(["AAPL"], redis_send_fn=send_fn)
         send_fn.assert_called_once()
         args = send_fn.call_args[0]
@@ -172,16 +169,24 @@ class TestOvernightGapAnalysis:
 
     def test_exit_sends_to_trader_queue(self):
         pm = _fresh_pm()
-        bars = self._make_bars(100.0, 93.0)  # -7%
-        mock_client = MagicMock()
-        mock_client.get_bars.return_value = bars
         send_fn = MagicMock()
-        with patch("app.integrations.get_alpaca_client", return_value=mock_client):
+        with patch("app.integrations.get_alpaca_client", return_value=self._client(100.0, 93.0)):
             pm._check_overnight_gaps(["NVDA"], redis_send_fn=send_fn)
         send_fn.assert_called_once()
         args = send_fn.call_args[0]
         assert args[0] == "trader_exit_requests"
         assert args[1]["action"] == "EXIT"
+
+    def test_no_live_price_skips_symbol(self):
+        # GUARD: without a real current price, never fabricate a gap / fire AUTO_EXIT.
+        pm = _fresh_pm()
+        c = MagicMock()
+        c.get_bars.return_value = self._make_bars(100.0)
+        c.get_quote.return_value = None
+        c.get_latest_price.return_value = None
+        with patch("app.integrations.get_alpaca_client", return_value=c):
+            gaps = pm._check_overnight_gaps(["AAPL"])
+        assert "AAPL" not in gaps
 
     def test_empty_symbols_returns_empty(self):
         pm = _fresh_pm()
