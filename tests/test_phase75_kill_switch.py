@@ -149,21 +149,26 @@ class TestKillSwitchTrader:
 # ── KillSwitch.activate() cancels open orders ────────────────────────────────
 
 class TestKillSwitchCancelsOrders:
-    def test_activate_cancels_open_orders(self):
+    def test_activate_flattens_and_cancels_via_atomic_close_all(self):
+        # Wave-1: activate() now delegates flatten+cancel to the out-of-band primitive
+        # flatten_alpaca(execute=True) -> one atomic close_all_positions(cancel_orders=True), which
+        # both liquidates positions (covering shorts) AND cancels every open order. We assert the
+        # delegation happens with execute=True (the atomic cancel+flatten), rather than the old
+        # per-order cancel loop.
         from app.live_trading.kill_switch import KillSwitch
         ks = KillSwitch()
+        calls = {}
 
-        alpaca = MagicMock()
-        alpaca.get_positions.return_value = []
-        alpaca.cancel_order.return_value = True
+        def fake_flatten(*, execute, alpaca):
+            calls["execute"] = execute
+            return {"ok": True, "positions": [{"symbol": "AAPL"}], "errors": []}
 
-        open_orders = [{"order_id": "ORD1", "symbol": "AAPL", "qty": "10", "side": "buy", "status": "new"}]
-
-        with patch.object(ks, "_persist_state"), \
-             patch.object(ks, "_alpaca", return_value=alpaca), \
+        with patch.object(ks, "_persist_state", return_value=True), \
+             patch.object(ks, "_alpaca", return_value=MagicMock()), \
              patch.object(ks, "_audit"), \
-             patch("app.startup_reconciler._get_open_alpaca_orders", return_value=open_orders):
+             patch("app.live_trading.emergency_flatten.flatten_alpaca", fake_flatten):
             result = ks.activate("test")
 
-        assert "ORD1" in result["orders_cancelled"]
-        alpaca.cancel_order.assert_called_once_with("ORD1")
+        assert calls.get("execute") is True              # atomic cancel_orders=True flatten
+        assert result["flatten_ok"] is True
+        assert "AAPL" in result["positions_closed"]

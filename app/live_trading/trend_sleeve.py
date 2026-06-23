@@ -449,6 +449,10 @@ def _current_trend_positions(db, alpaca) -> Dict[str, int]:
     """Symbols tagged selector='trend' in the DB, sized from ACTUAL Alpaca shares
     (trust Alpaca for quantity = handles partial fills; trust DB for attribution)."""
     from app.database.models import Trade
+    # FAIL-CLOSED: distinguish 'genuinely flat' from 'could not determine'. If either the DB query
+    # or the broker read fails we must NOT return {} — an empty current book makes compute_trend_deltas
+    # issue a full fresh BUY for every name we already hold (a double-buy of the whole sleeve). Raise
+    # so the caller blocks the rebalance (positions_unavailable) instead of over-trading.
     try:
         rows = (
             db.query(Trade)
@@ -459,16 +463,16 @@ def _current_trend_positions(db, alpaca) -> Dict[str, int]:
         trend_syms = {r.symbol for r in rows}
     except Exception as exc:
         log.warning("trend: DB position query failed: %s", exc)
-        trend_syms = set()
+        raise RuntimeError(f"trend current-positions DB query failed: {exc}") from exc
 
     if not trend_syms:
-        return {}
+        return {}   # query SUCCEEDED and there are no trend rows -> genuinely flat
 
     try:
         positions = alpaca.get_positions() or []
     except Exception as exc:
         log.warning("trend: get_positions failed during reconcile: %s", exc)
-        return {}
+        raise RuntimeError(f"trend current-positions broker read failed: {exc}") from exc
 
     return {
         p["symbol"]: int(p.get("qty") or 0)
@@ -661,8 +665,16 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["intended_weights"] = {
                 s: w * ladder_mult for s, w in summary.get("intended_weights", {}).items()}
 
-        # ── Current trend positions + live prices ──
-        current = _current_trend_positions(db, alpaca)
+        # ── Current trend positions + live prices (fail-CLOSED if undeterminable) ──
+        try:
+            current = _current_trend_positions(db, alpaca)
+        except Exception as exc:
+            log.warning("trend: current positions unavailable — fail-closed (no rebalance): %s", exc)
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
+                   block_reason="positions_unavailable")
+            summary["status"] = "failed"
+            summary["block_reason"] = "positions_unavailable"
+            return summary
         size_syms = sorted(set(target_weights) | set(current))
         live = _live_prices(alpaca, size_syms, prices_df)
 
@@ -728,7 +740,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # (HOLD), while SHADOW mode is always inert — any failure leaves blocked_by_gate False so the
         # rebalance proceeds exactly as before.
         try:
-            gate_mode = (get_agent_config(db, "pm.whole_book_gate_mode") or "shadow")
+            gate_mode = str(get_agent_config(db, "pm.whole_book_gate_mode") or "shadow").strip().lower()
         except Exception:
             gate_mode = "shadow"
         blocked_by_gate = False

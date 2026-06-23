@@ -4,6 +4,28 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Audit Wave 1) — live order-path fail-OPEN + idempotency hardening (the "don't blow up" cluster)
+
+**Context**: A whole-app multi-agent adversarial bug audit (39 components, 122 candidates → **102 confirmed**: 2 BLOCKER / 40 MAJOR / 60 MINOR; report `docs/reference/APP_BUG_AUDIT_2026-06-22.md`, raw `tasks/wcht6web3.output`) surfaced a tight cluster of live-capital risks: fail-OPEN safety gates + missing idempotency on non-entry orders. Wave 1 fixes the highest-priority subset before the IBKR live flip.
+
+**Decision** (10 fixes; all turn "unknown/error state → fail-CLOSED" and "every order carries an idempotency key"):
+1. **BLOCKER** `alpaca.get_position(raise_on_error=)` distinguishes a CONFIRMED not-found (None) from an indeterminate error (raises); the trader's anti-duplicate entry guard now FAILS CLOSED (skips the entry) when it can't confirm the position is flat → no double-buy on a restart.
+2. `trend_sleeve._current_trend_positions` RAISES on DB/broker read failure (was `{}` → re-bought the whole sleeve); the rebalance fails closed (`positions_unavailable`).
+3. `kill_switch.activate()` flattens via the atomic `flatten_alpaca`/`close_all_positions(cancel_orders=True)` (covers SHORTS, no per-symbol double-fill) + a `_flattened` latch so a repeat activate doesn't re-sell (a failed flatten still retries).
+4. `kill_switch._persist_state()` retries + reads back to verify (CRITICAL on failure) → the 3 s state-sync can no longer un-arm a just-activated halt.
+5. `/control/kill-switch` delegates to the real `kill_switch.activate()`; `/control/close-position` is SHORT-aware (buy abs(qty)) — the old `sell` of a negative qty silently left every short OPEN.
+6. trend whole-book gate mode is `.strip().lower()`-normalized → `"Enforce"` no longer silently degrades to shadow (gate fail-open).
+7. exit orders (partial + full) carry a deterministic `exit_order_id(trade_id, phase)` (clock-independent) → a lost-response retry dedups (no double-sell) while distinct trades stay distinct.
+8. `place_limit_order` gets the duplicate-client_order_id idempotent-reuse branch (mirrors market) → no orphaned live limit order.
+9. `int(float(...))` + per-row guard for Alpaca qty parsing → a fractional/malformed position no longer crashes the whole positions fetch.
+10. notifier: CATASTROPHIC alerts get a much larger retry budget + `escalate_dropped_critical()` (webhook backstop + CRITICAL log, once) → a kill-switch/dead-man/gate-error email is never silently dropped.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; NO new fail-open, no dropped-order idempotency collision, no exit-path regression** (the central questions). 2 review MINORs fixed (exit key made clock-independent to close a midnight-retry re-sell window; `place_market_order` qty parsing aligned). 12 new tests + 3 updated to the new contracts; full suite green; flake8 clean.
+
+**Consequences**: the live order path now fails CLOSED on an unknown position/gate state and every order (entry, exit, limit, flatten) is idempotent — closing the double-buy / double-sell / can't-halt / shorts-not-flattened class. Behavior change: a rebalance/entry that genuinely can't confirm state now SKIPS (a missed cycle) instead of risking a bad trade. Remaining audit waves: W2 (pause/resume lifecycle BLOCKER + intraday daily-loss hard stop), W3 (state-corruption), W4 (research look-ahead/stats), W5 (cleanups). DECISIONS 2026-06-22 (Audit Wave 1).
+
+---
+
 ## 2026-06-22 (P2.3) — IBKR futures order-construction path, SHADOW-first + default-off (placement deferred to R1)
 
 **Context**: The read-only IBKR adapter (P2.2) + verify-on-connect landed; the next piece is the futures *order path*. But real placement is physically owner-gated (needs TWS Read-Only API OFF + owner-present + the live paper gateway) and can't be exercised or tested unattended. The panel's #1-futures-killer is a hand-entered contract multiplier.

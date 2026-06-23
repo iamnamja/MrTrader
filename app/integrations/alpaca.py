@@ -99,6 +99,21 @@ def _is_duplicate_client_order_id(err) -> bool:
     return "client_order_id" in msg and ("exist" in msg or "unique" in msg or "duplicate" in msg)
 
 
+def _is_position_not_found(err) -> bool:
+    """True if an Alpaca error means the position is CONFIRMED not to exist (the account is flat in
+    that symbol), as opposed to an indeterminate read failure (network/5xx/auth). Only a confirmed
+    not-found may be reported as None; an indeterminate failure must NOT be conflated with 'flat'
+    (that is the fail-OPEN that lets the entry guard double-buy). Conservative: anything that isn't a
+    clear 404/not-found is treated as indeterminate."""
+    code = getattr(err, "status_code", None)
+    if code is None:
+        code = getattr(err, "code", None)
+    if code in (404, "404", 40410000):  # alpaca "position does not exist" code
+        return True
+    msg = str(getattr(err, "message", "") or err).lower()
+    return "position does not exist" in msg or "position not found" in msg
+
+
 class AlpacaClient:
     """Alpaca API client wrapper for trading and market data"""
 
@@ -143,28 +158,42 @@ class AlpacaClient:
             positions = _retry_call(self.trading_client.get_all_positions)
             result = []
             for pos in positions:
-                result.append({
-                    "symbol": pos.symbol,
-                    "qty": int(pos.qty),
-                    "avg_entry_price": float(pos.avg_entry_price),
-                    "market_value": float(pos.market_value),
-                    "unrealized_pl": float(pos.unrealized_pl),
-                    "unrealized_plpc": float(pos.unrealized_plpc),
-                    "current_price": float(pos.current_price),
-                })
+                # Per-row guard: a single malformed/fractional position must not abort the whole
+                # fetch (which would break reconciliation/account snapshots). int(float(...)) handles
+                # Alpaca's decimal-string qty (e.g. fractional shares from a corporate action).
+                try:
+                    result.append({
+                        "symbol": pos.symbol,
+                        "qty": int(float(pos.qty)),
+                        "avg_entry_price": float(pos.avg_entry_price),
+                        "market_value": float(pos.market_value),
+                        "unrealized_pl": float(pos.unrealized_pl),
+                        "unrealized_plpc": float(pos.unrealized_plpc),
+                        "current_price": float(pos.current_price),
+                    })
+                except (TypeError, ValueError) as row_exc:
+                    logger.error("Skipping malformed position row %s: %s",
+                                 getattr(pos, "symbol", "?"), row_exc)
             return result
         except Exception as e:
             logger.error(f"Error fetching positions: {e}")
             raise
 
-    def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get position for a specific symbol"""
+    def get_position(self, symbol: str, *, raise_on_error: bool = False) -> Optional[Dict[str, Any]]:
+        """Get position for a specific symbol.
+
+        Returns None ONLY when the position is CONFIRMED not to exist (flat). On an indeterminate
+        read failure (network/5xx/auth), if `raise_on_error` is True the error is re-raised so the
+        caller can fail-CLOSED — the anti-duplicate entry guard must NEVER treat 'could not
+        determine' as 'flat' (that conflation is the double-buy BLOCKER). Legacy callers
+        (raise_on_error=False, default) log and return None to preserve prior behavior.
+        """
         try:
             _rate_limiter.acquire()
             position = _retry_call(self.trading_client.get_open_position, symbol)
             return {
                 "symbol": position.symbol,
-                "qty": int(position.qty),
+                "qty": int(float(position.qty)),
                 "avg_entry_price": float(position.avg_entry_price),
                 "market_value": float(position.market_value),
                 "unrealized_pl": float(position.unrealized_pl),
@@ -172,7 +201,13 @@ class AlpacaClient:
                 "current_price": float(position.current_price),
             }
         except Exception as e:
-            logger.debug(f"Position not found for {symbol}: {e}")
+            if _is_position_not_found(e):
+                logger.debug(f"Position not found for {symbol}: {e}")
+                return None
+            # Indeterminate failure — NOT a confirmed flat.
+            logger.warning(f"get_position({symbol}) indeterminate read error: {e}")
+            if raise_on_error:
+                raise
             return None
 
     def get_portfolio_history(
@@ -225,7 +260,7 @@ class AlpacaClient:
             return {
                 "order_id": str(order.id),
                 "symbol": order.symbol,
-                "qty": int(order.qty),
+                "qty": int(float(order.qty)),
                 "side": str(order.side),
                 "status": order.status,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
@@ -244,7 +279,7 @@ class AlpacaClient:
                     return {
                         "order_id": str(existing.id),
                         "symbol": existing.symbol,
-                        "qty": int(existing.qty),
+                        "qty": int(float(existing.qty)),
                         "side": str(existing.side),
                         "status": existing.status,
                         "created_at": (existing.created_at.isoformat()
@@ -290,14 +325,43 @@ class AlpacaClient:
             return {
                 "order_id": str(order.id),
                 "symbol": order.symbol,
-                "qty": int(order.qty),
+                "qty": int(float(order.qty)),
                 "side": str(order.side),
                 "limit_price": float(order.limit_price),
                 "status": order.status,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
+                "idempotent_reuse": False,
             }
+        except APIError as e:
+            # H6 idempotency (mirror place_market_order): a retry of a limit order we ALREADY placed
+            # (same client_order_id) is rejected as a duplicate — that is SUCCESS, not failure. Fetch
+            # and return the existing order so a lost-response retry never orphans a live limit order
+            # (booked as FAILED while resting at the broker). Not a network fault -> no circuit breaker.
+            if client_order_id and _is_duplicate_client_order_id(e):
+                try:
+                    existing = self.trading_client.get_order_by_client_id(client_order_id)
+                    logger.info("Idempotent limit-order reuse: %s %s already placed (client_order_id=%s)",
+                                side, symbol, client_order_id)
+                    return {
+                        "order_id": str(existing.id),
+                        "symbol": existing.symbol,
+                        "qty": int(float(existing.qty)),
+                        "side": str(existing.side),
+                        "limit_price": float(existing.limit_price) if existing.limit_price else limit_price,
+                        "status": existing.status,
+                        "created_at": (existing.created_at.isoformat()
+                                       if existing.created_at else None),
+                        "idempotent_reuse": True,
+                    }
+                except Exception as le:
+                    logger.error("dup client_order_id %s on limit order but lookup failed: %s",
+                                 client_order_id, le)
+            logger.error(f"Error placing limit order: {e}")
+            _notify_circuit_breaker()
+            raise
         except Exception as e:
             logger.error(f"Error placing limit order: {e}")
+            _notify_circuit_breaker()
             raise
 
     def cancel_order(self, order_id: str) -> bool:
@@ -317,8 +381,8 @@ class AlpacaClient:
             return {
                 "order_id": order.id,
                 "symbol": order.symbol,
-                "qty": int(order.qty),
-                "filled_qty": int(order.filled_qty) if order.filled_qty else 0,
+                "qty": int(float(order.qty)),
+                "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
                 "side": str(order.side),
                 "status": order.status,
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
