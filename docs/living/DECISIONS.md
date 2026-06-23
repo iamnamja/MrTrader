@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (Audit Wave 2) — pause/resume lifecycle BLOCKER + intraday daily-loss hard stop
+
+**Context**: Audit-found BLOCKER #2: `orchestrator.pause_trading()` flipped each agent's `status` to "paused", but the agent loops were `while status == "running":` so they RETURNED → the asyncio tasks DIED; `resume_trading()` only flipped a flag on dead coroutines (no task recreation) → **trading never resumed without a full restart**. Worse, `_health_check` auto-paused on any Alpaca health blip → permanently killed the trader loop → the **3:45 pm intraday force-close stopped running** (overnight exposure). Plus a MAJOR: the 2% daily-loss hard stop read the **EOD-only** `RiskMetric` row → returned 0.0 intraday → the stop **could not fire during the session**.
+
+**Decision**:
+- **Cooperative pause** (trader / risk_manager / portfolio_manager): loops now `while status != "stopped":` with a top guard `if status == "paused": await asyncio.sleep(1); continue` — a paused agent IDLES but stays ALIVE, so `resume_trading()` actually resumes it. Cancellation (shutdown) still ends the task cleanly.
+- **Auto-pause is reversible**: `orchestrator._auto_paused` flag; `pause_trading(auto=True)` (health-check) marks it, `_health_check` AUTO-RESUMES once all services (DB+Redis+Alpaca) are healthy again; a MANUAL pause (auto=False) clears the flag and is NEVER auto-resumed.
+- **Force-close survives pause**: the 3:45 pm intraday force-close moved into a shared `Trader._maybe_force_close_intraday(now)` called in BOTH the running and paused branches (re-arms on date change, never raises) → a pause can never leave intraday positions open overnight.
+- **Intraday daily-loss hard stop**: `risk_manager._get_daily_pnl(account)` now prefers the LIVE `equity - last_equity` from the Alpaca account (today's change incl. unrealized), falling back to the DB realized row → the 2% stop binds DURING the session.
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; the brain cannot now wedge, fail to shut down, or skip a safety stop; auto-resume requires DB+Redis+Alpaca all healthy (confirmed); daily-loss sign + fallback correct.** The deep-dive's MINOR-1 (manual pause across 3:45pm skips force-close) was then CLOSED by the shared force-close helper. 7 new tests; full suite 3983 green; flake8 clean. (Tracked, out-of-scope: `_health_check` only auto-pauses on Alpaca-down, not DB/Redis-down — pre-existing, ticket for later.)
+
+**Consequences**: pause/resume and the Alpaca-blip auto-pause are now reversible; the intraday force-close and the 2% daily-loss stop are load-bearing. DECISIONS 2026-06-22 (Audit Wave 2).
+
+---
+
 ## 2026-06-22 (Audit Wave 1) — live order-path fail-OPEN + idempotency hardening (the "don't blow up" cluster)
 
 **Context**: A whole-app multi-agent adversarial bug audit (39 components, 122 candidates → **102 confirmed**: 2 BLOCKER / 40 MAJOR / 60 MINOR; report `docs/reference/APP_BUG_AUDIT_2026-06-22.md`, raw `tasks/wcht6web3.output`) surfaced a tight cluster of live-capital risks: fail-OPEN safety gates + missing idempotency on non-entry orders. Wave 1 fixes the highest-priority subset before the IBKR live flip.
