@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-22 (P2.3) — IBKR futures order-construction path, SHADOW-first + default-off (placement deferred to R1)
+
+**Context**: The read-only IBKR adapter (P2.2) + verify-on-connect landed; the next piece is the futures *order path*. But real placement is physically owner-gated (needs TWS Read-Only API OFF + owner-present + the live paper gateway) and can't be exercised or tested unattended. The panel's #1-futures-killer is a hand-entered contract multiplier.
+
+**Decision** (ship the **order-construction half in SHADOW**, defer placement to R1 — the safe split):
+- `futures_sizing.py` (PURE): `target_lots()` sizes signed weights → integer lots with the multiplier sourced **only** from `instrument_master` (no caller parameter exists → a wrong multiplier is structurally impossible — the #1-killer guard), + dust/per-market/asset-class-notional caps; `futures_order_deltas()` diffs target vs broker lots (reductions-first, full-exit detection). Places nothing.
+- `order_ids.futures_run_id`/`futures_order_ref`: deterministic run-id orderRef (strategy+signal_date+rebalance_ts+config_hash+code_version) for R1 idempotency.
+- `futures_sleeve.run_futures_rebalance()` mirrors `trend_sleeve`: kill-switch → verify-on-connect (drop CRITICAL-mismatch instruments) → reconcile-before-trade → whole-book gate (`venue=IBKR`) → **log would-be orders + shadow audit rows, PLACE NOTHING.**
+- **Inert by FOUR layers**: `ibkr.enabled=false` (no connect), `ibkr.futures_enabled=false` (dormant), `ibkr.trading_mode=shadow` (compute+log only; `live` in P2.3 logs "no order path — R1" and still places nothing), and **no write API exists** (compile-time no-placement guard). Not scheduler-wired; no caller. Consumes an EXPLICIT STUB weight source (`ibkr.futures_target_weights_json`) — **NOT a live signal** (the runtime carry/xsmom weight path is R1).
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER; inert-by-default + cannot-place-even-if-flipped CONFIRMED on disk (dormant-before-connect, no Alpaca contact, no caller); sizing/delta/run-id math correct; gate symbol-domain wiring correct (all 16 futures roots factor-mapped, FX/VIX symbol round-trips verified).** One MAJOR fixed: the futures reconcile call dragged the whole Alpaca DB book in as phantom "missing" breaks → added an `expected={}` override to `shadow_reconcile_before_trade` so the futures path reconciles ONLY the IBKR slice. Two review-driven tests added (executor never touches an Alpaca client; reconcile is IBKR-scoped) + a gate-drop log. 31 tests; full suite green; flake8 clean.
+
+**Consequences**: the futures order path can be exercised end-to-end in shadow (target lots → deltas → gate/reconcile → would-be orders) without any capital risk. **Deferred to R1** (owner-gated): real placement, fills capture, margin preview, roll-order emission, the live signal path, the per-run snapshot table, scheduler wiring. Not a WF/CPCV pipeline file. DECISIONS 2026-06-22 (P2.3); P2_IBKR_EXECUTION_DESIGN §6 updated.
+
+---
+
 ## 2026-06-22 (Phase H — H9) — drawdown de-gross ladder wired into the live trend budget (SHADOW-default)
 
 **Context**: `RISK_POLICY_V1.drawdown_ladder` (the −8/−12/−16/−20% → ×0.75/0.50/0.25/0.00 rungs) existed as policy but was **never consumed** by the live order path — a drawdown could deepen with the trend book fully grossed. The panel's H9 = "automated de-gross ladder, owner-flips-to-enforce."

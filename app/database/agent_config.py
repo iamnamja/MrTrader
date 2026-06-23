@@ -422,6 +422,37 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "API client id the adapter uses to identify its connection (any int; distinct per concurrent client).",
         "group": "IBKR",
     },
+    # ── IBKR futures EXECUTOR — Alpha-v10 P2.3 (order-construction + SHADOW only; places nothing) ─
+    {
+        "key": "ibkr.futures_enabled",
+        "default": "false",
+        "type": "str",
+        "description": "Master flag for the IBKR futures rebalance executor (P2.3). 'false' (default) = DORMANT (no run). 'true' = run_futures_rebalance computes target lots/deltas + the safety machinery, but in P2.3 it ONLY shadow-logs would-be orders (no order path exists; real placement is R1). Requires ibkr.enabled=true to connect.",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.trading_mode",
+        "default": "shadow",
+        "type": "str",
+        "description": "IBKR futures executor mode. 'shadow' (default) = compute + log would-be orders, place NOTHING. 'live' = (R1) place real paper orders; in P2.3 it logs 'no order path — deferred to R1' and still places nothing. The live flip is owner-present (TWS Read-Only API off + the live-paper soak).",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.futures_rebalance_weekday",
+        "default": 0,
+        "type": "int",
+        "min": 0,
+        "max": 4,
+        "description": "Weekday for the (future) weekly IBKR futures rebalance (0=Mon .. 4=Fri). Unused in P2.3 (the executor is not scheduler-wired yet); reserved for R1.",
+        "group": "IBKR",
+    },
+    {
+        "key": "ibkr.futures_target_weights_json",
+        "default": "",
+        "type": "str",
+        "description": "EXPLICIT STUB target weights for the P2.3 shadow executor: a JSON object {instrument_id: signed_weight}, e.g. {\"FUT.ES\": 0.1, \"FUT.GC\": -0.05}. This is NOT a live signal — the runtime carry/xsmom weight path is R1. Empty (default) = no targets = no would-be orders.",
+        "group": "IBKR",
+    },
     # ── Crypto trend LIVE-PAPER tracker — Alpha-v9 P3-1 (report-only; NO capital) ─
     {
         "key": "pm.crypto_paper_enabled",

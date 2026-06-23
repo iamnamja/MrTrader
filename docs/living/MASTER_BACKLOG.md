@@ -28,6 +28,7 @@
 - D3 pre-register IBKR tiny-live launch (instruments, max contracts, margin reserve, rollback, 30-day probation) → IBKR paper → **microscopic** live (carry+xsmom, micro contracts).
 - D4 sleeve combine = inverse-vol + per-sleeve cap + **isolated margin pools**; never MVO; covariance only as live joint history accrues.
 - D5 bucket **robust premia (trend, carry)** vs **candidate anomalies (xsmom, VRP, new)** — smaller budget / higher discount for the latter.
+- **IBKR plumbing (the futures venue):** **P2.2 ✅** read-only adapter + verify-on-connect (DONE 2026-06-22, validated live). **P2.3 ✅** order-construction core + SHADOW executor (DONE 2026-06-22: `futures_sizing.target_lots`/`futures_order_deltas`, `order_ids.futures_run_id`, `futures_sleeve.run_futures_rebalance` — places NOTHING; inert by `ibkr.enabled`/`ibkr.futures_enabled`/`ibkr.trading_mode`=off + no write API). **R1 (owner-gated):** real placement, fills capture, margin preview, roll emission, the live carry/xsmom signal path, per-run snapshot table, scheduler wiring — needs TWS Read-Only API OFF + owner-present + the live-paper soak.
 
 ### Phase R — RESEARCH (ONLY after Phase H; time-boxed, pre-registered, ONE at a time)
 1. **Recover trend's convexity** — long-short futures incl. short-equity/long-bond-gold-USD legs + a declared defensive-macro **crisis overlay** (highest EV; barely "new").

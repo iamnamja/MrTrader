@@ -8,6 +8,7 @@ scheme, one place — so sleeves can't drift. P2.3 (IBKR) extends this with a ru
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import date as _date
 from typing import Optional
 
@@ -21,3 +22,20 @@ def idempotency_key(sleeve: str, symbol: str, *, side: Optional[str] = None,
     stamp = day or _date.today().strftime("%Y%m%d")
     base = f"{sleeve}-{stamp}-{symbol}"
     return f"{base}-{side}" if side else base
+
+
+# ── P2.3 (IBKR futures): run-id idempotency (orderRef) ────────────────────────
+def futures_run_id(strategy_id: str, signal_date: str, rebalance_ts: str,
+                   config_hash: str, code_version: str) -> str:
+    """A deterministic short id for one futures rebalance RUN (spec §3:
+    strategy_id + signal_date + rebalance_ts + config_hash + code_version). The same inputs always
+    hash to the same id, so a crash-retry of the SAME run reuses the SAME order refs (the broker
+    dedups → no double-send). Hashed (not concatenated) to stay within IBKR's `orderRef` length."""
+    raw = "|".join(str(x) for x in (strategy_id, signal_date, rebalance_ts, config_hash, code_version))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def futures_order_ref(run_id: str, instrument_id: str, side: str) -> str:
+    """`{run_id}-{instrument_id}-{side}` — the per-order IBKR `orderRef`. One intended order per
+    (run, instrument, side); stable across a retry of the same run."""
+    return f"{run_id}-{instrument_id}-{side}"
