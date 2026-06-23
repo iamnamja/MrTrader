@@ -36,6 +36,10 @@ class AgentOrchestrator:
         self.agent_status: Dict[str, str] = {}
         self._tasks: Dict[str, asyncio.Task] = {}
         self._running = False
+        # True when trading was paused AUTOMATICALLY by the health check (Alpaca down). Lets the
+        # health check auto-RESUME once Alpaca recovers — a transient blip must not permanently halt
+        # trading. A manual pause clears it so an operator pause is never auto-resumed.
+        self._auto_paused = False
 
     # ─── Registration ─────────────────────────────────────────────────────────
 
@@ -540,31 +544,45 @@ class AgentOrchestrator:
                 "Health check FAILED — DB=%s Redis=%s Alpaca=%s",
                 db_ok, redis_ok, alpaca_ok,
             )
-            if not alpaca_ok:
-                logger.critical("Alpaca unavailable — pausing trading")
-                self.pause_trading()
+            if not alpaca_ok and not self._auto_paused:
+                logger.critical("Alpaca unavailable — pausing trading (auto; will auto-resume on "
+                                "recovery)")
+                self.pause_trading(auto=True)
         else:
-            logger.debug("Health check OK")
+            # All services healthy. If we auto-paused on a prior Alpaca outage, auto-RESUME now so a
+            # transient blip can't permanently halt trading (the cooperative-pause loops are still
+            # alive). A MANUAL pause is never auto-resumed (it cleared _auto_paused).
+            if self._auto_paused:
+                logger.warning("Alpaca recovered — auto-resuming trading")
+                self.resume_trading()
+            else:
+                logger.debug("Health check OK")
 
     # ─── Emergency controls ───────────────────────────────────────────────────
 
-    def pause_trading(self) -> None:
-        """Pause portfolio selection and retraining triggers."""
+    def pause_trading(self, *, auto: bool = False) -> None:
+        """Pause portfolio selection + retraining triggers and the agent loops.
+
+        The agent loops are COOPERATIVE: setting status='paused' makes them idle but stay alive (the
+        task is not killed), so resume_trading() actually resumes them. `auto=True` (health-check
+        Alpaca-down) marks this as auto-paused so it can be auto-resumed on recovery; a manual pause
+        (auto=False) clears that flag so an operator pause is never auto-resumed."""
         scheduler.pause_job("portfolio_selection_trigger")
         scheduler.pause_job("model_retraining_trigger")
-        # Pause agent loops via their status flag
         for name, agent in self.agents.items():
-            if hasattr(agent, "status"):
+            if hasattr(agent, "status") and agent.status != "stopped":
                 agent.status = "paused"
-        logger.warning("TRADING PAUSED by orchestrator")
+        self._auto_paused = bool(auto)
+        logger.warning("TRADING PAUSED by orchestrator%s", " (auto)" if auto else "")
 
     def resume_trading(self) -> None:
-        """Resume paused triggers and agents."""
+        """Resume paused triggers and agents (and clear the auto-paused flag)."""
         scheduler.resume_job("portfolio_selection_trigger")
         scheduler.resume_job("model_retraining_trigger")
         for name, agent in self.agents.items():
             if hasattr(agent, "status") and agent.status == "paused":
                 agent.status = "running"
+        self._auto_paused = False
         logger.info("TRADING RESUMED by orchestrator")
 
     # ─── Monitor loop ─────────────────────────────────────────────────────────

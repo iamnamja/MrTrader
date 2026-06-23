@@ -434,8 +434,18 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.warning("Could not reload pending limits from DB: %s", exc)
 
-        while self.status == "running":
+        while self.status != "stopped":
             try:
+                # Cooperative pause: idle (stay ALIVE) while paused instead of returning. A returning
+                # loop used to end the asyncio task permanently — resume_trading() could not revive it,
+                # and a transient Alpaca-health auto-pause then killed the trader for good. Idling
+                # keeps the task alive so resume restores trading. The 3:45 pm intraday force-close
+                # is a PROTECTIVE routine that still runs while paused (a pause must never leave
+                # intraday positions open overnight).
+                if self.status == "paused":
+                    await self._maybe_force_close_intraday(datetime.now(ET))
+                    await asyncio.sleep(1)
+                    continue
                 now = datetime.now(ET)
                 today = now.strftime("%Y-%m-%d")
                 if today != self._last_date:
@@ -474,15 +484,8 @@ class Trader(BaseAgent):
                 # Drain PM exit/hold/extend requests (non-blocking)
                 await self._process_exit_requests()
 
-                # 3:45 PM ET: force-close all intraday positions
-                if (
-                    now.weekday() < 5
-                    and now.hour == INTRADAY_FORCE_CLOSE_HOUR
-                    and now.minute >= INTRADAY_FORCE_CLOSE_MINUTE
-                    and not self._force_closed_today
-                ):
-                    await self._force_close_intraday()
-                    self._force_closed_today = True
+                # 3:45 PM ET: force-close all intraday positions (also runs in the paused branch)
+                await self._maybe_force_close_intraday(now)
 
                 # Check VIX / market volatility in thread pool (yfinance is sync)
                 await asyncio.to_thread(circuit_breaker.check_market_volatility)
@@ -2583,6 +2586,26 @@ class Trader(BaseAgent):
             db.close()
 
     # ─── Intraday Force Close ─────────────────────────────────────────────────
+
+    async def _maybe_force_close_intraday(self, now) -> None:
+        """Run the 3:45 pm ET intraday force-close iff it's due and not yet done today.
+
+        Shared by the normal loop AND the paused-idle branch so a pause (manual or an Alpaca-health
+        auto-pause) can never leave intraday positions open overnight. Re-arms on a date change
+        (covers a pause held across midnight) and never raises into the loop."""
+        try:
+            today = now.strftime("%Y-%m-%d")
+            if today != getattr(self, "_fc_armed_date", None):
+                self._force_closed_today = False
+                self._fc_armed_date = today
+            if (now.weekday() < 5
+                    and now.hour == INTRADAY_FORCE_CLOSE_HOUR
+                    and now.minute >= INTRADAY_FORCE_CLOSE_MINUTE
+                    and not self._force_closed_today):
+                await self._force_close_intraday()
+                self._force_closed_today = True
+        except Exception as exc:
+            self.logger.error("intraday force-close (status=%s) failed: %s", self.status, exc)
 
     async def _force_close_intraday(self):
         """

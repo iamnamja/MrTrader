@@ -388,8 +388,13 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         except Exception as _rc_exc:
             self.logger.debug("Regime startup catchup failed (non-fatal): %s", _rc_exc)
 
-        while self.status == "running":
+        while self.status != "stopped":
             try:
+                # Cooperative pause: idle (stay ALIVE) while paused rather than returning (which
+                # ended the task permanently and made resume_trading() a no-op).
+                if self.status == "paused":
+                    await asyncio.sleep(1)
+                    continue
                 now = datetime.now(ET)
                 today = now.strftime("%Y-%m-%d")
 

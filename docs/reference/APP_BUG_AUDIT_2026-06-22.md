@@ -12,7 +12,8 @@ refute it.** Raw result: `tasks/wcht6web3.output` (run id `wf_c79f00ac-cd7`).
 
 ## Progress
 - ✅ **WAVE 1 DONE 2026-06-22** (PR pending merge): 10 fixes (BLOCKER #1 + 9 MAJOR) — live order-path fail-OPEN → fail-CLOSED + idempotency on every order. Opus deep-dive SAFE TO MERGE (no new fail-open / dropped-order collision / exit regression). 12 new tests; full suite green. See DECISIONS 2026-06-22 (Audit Wave 1).
-- ⏳ Waves 2–5 + re-audit: in progress (autonomous run).
+- ✅ **WAVE 2 DONE 2026-06-22** (PR pending merge): BLOCKER #2 (pause/resume permanently killed the agent loops + auto-pause irreversible) + the intraday 2% daily-loss hard stop. Cooperative pause (loops idle alive), auto-pause auto-resumes on Alpaca recovery, force-close runs even while paused, daily-loss uses live equity. Opus deep-dive SAFE TO MERGE; MINOR-1 closed. 7 new tests; full suite green. DECISIONS 2026-06-22 (Audit Wave 2).
+- ⏳ Waves 3–5 + re-audit: in progress (autonomous run).
 
 ## Triage → fix waves
 

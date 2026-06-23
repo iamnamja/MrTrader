@@ -73,8 +73,13 @@ class RiskManager(BaseAgent):
         # Restore open intraday position count from DB so the cap survives restarts
         self._load_intraday_count()
 
-        while self.status == "running":
+        while self.status != "stopped":
             try:
+                # Cooperative pause: idle (stay ALIVE) while paused rather than returning (which
+                # ended the task permanently and made resume_trading() a no-op).
+                if self.status == "paused":
+                    await asyncio.sleep(1)
+                    continue
                 proposal = await asyncio.to_thread(
                     self.get_message, TRADE_PROPOSALS_QUEUE, 3
                 )
@@ -534,7 +539,7 @@ class RiskManager(BaseAgent):
             return False, reasoning
 
         # ── Rule 4: Daily Loss ────────────────────────────────────────────────
-        daily_pnl = self._get_daily_pnl()
+        daily_pnl = self._get_daily_pnl(account)
         ok, msg = validate_daily_loss(daily_pnl, account_value, self.limits)
         reasoning["checks"].append({"rule": "daily_loss", "ok": ok, "msg": msg})
         if not ok:
@@ -879,8 +884,22 @@ class RiskManager(BaseAgent):
         positions = client.get_positions()
         return account, positions
 
-    def _get_daily_pnl(self) -> float:
-        """Return today's realized P&L from the database (0.0 if no record yet)."""
+    def _get_daily_pnl(self, account: dict | None = None) -> float:
+        """Return today's P&L for the daily-loss gate.
+
+        Prefer the LIVE intraday figure from Alpaca account equity (`equity - last_equity` = today's
+        change, including unrealized), so the 2% daily-loss HARD STOP actually binds DURING the
+        session. The DB RiskMetric.daily_pnl is written only at EOD (over CLOSED trades), so reading
+        it intraday returned 0.0 and the stop could never fire while the market was open. Falls back
+        to the DB realized figure if the live account read is unavailable."""
+        try:
+            acct = account if account is not None else self._fetch_account_state()[0]
+            eq = acct.get("equity") if acct else None
+            last_eq = acct.get("last_equity") if acct else None
+            if eq is not None and last_eq is not None and float(last_eq) > 0:
+                return float(eq) - float(last_eq)
+        except Exception as exc:
+            self.logger.debug("live daily-pnl read failed — falling back to DB: %s", exc)
         db = get_session()
         try:
             today = str(date.today())
