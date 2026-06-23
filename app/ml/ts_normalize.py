@@ -222,8 +222,14 @@ def _transform_single_row_per_symbol(
             X_norm[i] = _normalize_array(row[None], mean[None], std[None])[0]
             keep_mask[i] = True
 
-        buf = list(buf) + [(wid, row)]
-        state.history[sym] = buf[-(lookback + 1):]
+        # Dedupe by window id: the live PM scores the same symbol many times per cycle/day with
+        # wid=today (per-candidate + per-open-position reeval). Appending today's row on EVERY call
+        # collapsed the rolling buffer to repeated copies of today -> mean->today, std->0 -> features
+        # normalised to ~0 -> spurious holds / suppressed exits. Append only a genuinely-new window
+        # (training uses distinct per-window ids, so it is unaffected).
+        if not (buf and int(buf[-1][0]) == wid):
+            buf = list(buf) + [(wid, row)]
+            state.history[sym] = buf[-(lookback + 1):]
 
     return X_norm, keep_mask
 

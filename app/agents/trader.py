@@ -463,21 +463,23 @@ class Trader(BaseAgent):
                         break
                     symbol = proposal.get("symbol")
                     if symbol:
-                        # Discard stale proposals — approved more than 30 min ago
+                        # Discard stale proposals — approved more than 30 min ago. FAIL-CLOSED: a
+                        # proposal with a missing/unparseable approved_at is treated as STALE (was
+                        # silently passed through), so an undatable proposal can't fire on conditions
+                        # that are no longer valid.
                         approved_at_str = proposal.get("approved_at")
+                        _stale = True
                         if approved_at_str:
                             try:
                                 from datetime import timezone
                                 approved_at = datetime.fromisoformat(approved_at_str).replace(tzinfo=timezone.utc)
                                 age_minutes = (datetime.now(timezone.utc) - approved_at).total_seconds() / 60
-                                if age_minutes > 30:
-                                    self.logger.info(
-                                        "Discarding stale proposal for %s (approved %.0f min ago)",
-                                        symbol, age_minutes,
-                                    )
-                                    continue
+                                _stale = age_minutes > 30
                             except Exception:
-                                pass
+                                _stale = True
+                        if _stale:
+                            self.logger.info("Discarding stale/undatable proposal for %s", symbol)
+                            continue
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
 

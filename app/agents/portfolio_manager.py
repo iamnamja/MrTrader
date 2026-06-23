@@ -2262,7 +2262,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         from app.database.models import Trade as _Trade
         _hdb = _gs()
         try:
-            _held = {t.symbol for t in _hdb.query(_Trade).filter_by(status="ACTIVE").all()}
+            _held = {t.symbol for t in _hdb.query(_Trade)
+                     .filter(_Trade.status.in_(["ACTIVE", "PENDING_FILL"])).all()}
         finally:
             _hdb.close()
         if _held:
@@ -3747,7 +3748,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         from app.database.models import Trade
         db = get_session()
         try:
-            held = {t.symbol for t in db.query(Trade).filter_by(status="ACTIVE").all()}
+            held = {t.symbol for t in db.query(Trade)
+                    .filter(Trade.status.in_(["ACTIVE", "PENDING_FILL"])).all()}
         finally:
             db.close()
 
