@@ -357,7 +357,13 @@ class PortfolioSelectorModel:
             # Regression: use predict(), normalize scores to [0,1] for compatibility
             raw_scores = self.model.predict(X_scaled).astype(float)
             lo, hi = raw_scores.min(), raw_scores.max()
-            probabilities = (raw_scores - lo) / (hi - lo + 1e-9)
+            if hi - lo < 1e-6:
+                # Single-row (live reeval/rescore) or all-identical: min-max collapses to 0.0 for
+                # EVERY symbol, which the PM reads as score 0 -> spurious EXIT/withdraw. Sigmoid on the
+                # raw score returns a meaningful single-symbol value (mirrors the LambdaRank guard).
+                probabilities = 1.0 / (1.0 + np.exp(-raw_scores))
+            else:
+                probabilities = (raw_scores - lo) / (hi - lo + 1e-9)
             t = threshold if threshold is not None else 0.5
             predictions = (probabilities >= t).astype(int)
             return predictions, probabilities
@@ -1251,7 +1257,12 @@ class DoubleEnsembleModel:
         all_scores /= len(self._learners)
 
         lo, hi = all_scores.min(), all_scores.max()
-        probabilities = (all_scores - lo) / (hi - lo + 1e-9)
+        if hi - lo < 1e-6:
+            # Single-row / all-identical: min-max collapses to 0.0 -> spurious EXIT in live reeval.
+            # Sigmoid on the raw ensemble score returns a meaningful single-symbol value.
+            probabilities = 1.0 / (1.0 + np.exp(-all_scores))
+        else:
+            probabilities = (all_scores - lo) / (hi - lo + 1e-9)
         t = threshold if threshold is not None else self.predict_threshold
         predictions = (probabilities >= t).astype(int)
         return predictions, probabilities

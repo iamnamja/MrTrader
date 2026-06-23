@@ -110,8 +110,10 @@ def record_daily(
 
     daily_pnl = None
     pnl_supplied = realized_pnl is not None or unrealized_pnl is not None
-    if pnl_supplied:
-        daily_pnl = float(realized_pnl or 0.0) + float(unrealized_pnl or 0.0)
+    # daily_pnl is computed in the DB block below (it needs the prior day's unrealized LEVEL): the
+    # caller passes unrealized_pnl as the TOTAL open mark-to-market (a stock/level), so daily_pnl must
+    # use the CHANGE in unrealized, not the level — adding the level every day re-counts the same
+    # open gain and drifts cumulative_pnl + the realized-Sharpe series.
 
     def _i(x):
         return int(x) if x is not None else None
@@ -126,11 +128,15 @@ def record_daily(
             cumulative_pnl = None
             if pnl_supplied:
                 prior = c.execute(
-                    "SELECT cumulative_pnl FROM pead_daily "
+                    "SELECT cumulative_pnl, unrealized_pnl FROM pead_daily "
                     "WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
                     (td,),
                 ).fetchone()
                 prior_cum = float(prior[0]) if prior and prior[0] is not None else 0.0
+                prior_unreal = float(prior[1]) if prior and prior[1] is not None else 0.0
+                # realized (a daily flow) + the CHANGE in unrealized MTM (today's level minus
+                # yesterday's) — NOT the unrealized level.
+                daily_pnl = float(realized_pnl or 0.0) + (float(unrealized_pnl or 0.0) - prior_unreal)
                 cumulative_pnl = prior_cum + daily_pnl
 
             c.execute(

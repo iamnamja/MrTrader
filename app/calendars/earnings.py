@@ -49,11 +49,27 @@ class EarningsCalendar:
         # data_ok=False means both sources failed → fail-closed
         self._cache: Dict[str, Tuple[Optional[date], float, bool]] = {}
 
+    @staticmethod
+    def _trading_days_until(next_date: date) -> int:
+        """Number of TRADING (business) days from today up to `next_date`. The *_BLACKOUT_DAYS
+        thresholds are specified in trading days; using calendar days under-counted across weekends/
+        holidays (e.g. Fri→Tue is 4 calendar days but only 2 trading days), so a swing entry could be
+        opened that holds straight through the earnings print. Weekday-based (np.busday_count);
+        holidays in-window are a minor residual that only ever errs toward fewer days = more blocking
+        is NOT guaranteed, but the weekend fix is the dominant correction."""
+        import numpy as np
+        try:
+            return int(np.busday_count(date.today(), next_date))
+        except Exception:
+            return (next_date - date.today()).days
+
     def get_earnings_risk(self, symbol: str, trade_type: str = "swing") -> EarningsRisk:
         next_date, data_ok = self._get_next_earnings(symbol)
         days_until: Optional[int] = None
+        trading_days_until: Optional[int] = None
         if next_date is not None:
             days_until = (next_date - date.today()).days
+            trading_days_until = self._trading_days_until(next_date)
 
         # Data unavailable → fail-closed for swing, fail-open for intraday
         if not data_ok:
@@ -71,14 +87,15 @@ class EarningsCalendar:
         block_intraday = False
         exit_review = False
 
-        if days_until is not None:
-            block_swing = 0 <= days_until <= SWING_BLACKOUT_DAYS
-            block_intraday = 0 <= days_until <= INTRADAY_BLACKOUT_DAYS
-            exit_review = 0 <= days_until <= EXIT_REVIEW_DAYS
+        if trading_days_until is not None:
+            block_swing = 0 <= trading_days_until <= SWING_BLACKOUT_DAYS
+            block_intraday = 0 <= trading_days_until <= INTRADAY_BLACKOUT_DAYS
+            exit_review = 0 <= trading_days_until <= EXIT_REVIEW_DAYS
 
         reason = ""
         if block_swing or block_intraday:
-            reason = f"earnings_in_{days_until}d" if days_until is not None else "earnings_unknown"
+            reason = (f"earnings_in_{trading_days_until}td"
+                      if trading_days_until is not None else "earnings_unknown")
 
         return EarningsRisk(
             symbol=symbol,

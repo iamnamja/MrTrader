@@ -526,6 +526,14 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     ))
                     continue
 
+                # Still absent this run -> count it as another confirming detection. Pass A only
+                # iterates ACTIVE trades, so once a trade is promoted to PENDING here its count was
+                # frozen at 1 (< GHOST_MIN_DETECTIONS) forever -> the confirmed-close gate below was
+                # NEVER satisfiable and every genuinely-closed position timed out to UNRESOLVED
+                # (needing manual admin_force_close) instead of being CLOSED with its exit fill.
+                ghost.ghost_detection_count = (ghost.ghost_detection_count or 0) + 1
+                ghost.ghost_last_detected_at = now
+
                 first_seen = ghost.ghost_first_detected_at or now
                 elapsed = now - first_seen
                 count = ghost.ghost_detection_count or 0
@@ -696,7 +704,7 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             filled_qty = int(order_status.get("filled_qty") or 0)
             filled_price = order_status.get("filled_avg_price")
 
-            if status_str in ("filled", "partially_filled") and filled_qty > 0 and filled_price:
+            if status_str == "filled" and filled_qty > 0 and filled_price:
                 filled_price = float(filled_price)
                 intended_price = float(trade.entry_price or filled_price)
                 trade.status = "ACTIVE"
@@ -739,6 +747,21 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     },
                     timestamp=datetime.utcnow(),
                 ))
+
+            elif status_str == "partially_filled" and filled_qty > 0 and filled_price:
+                # Keep PENDING_FILL: the remaining open quantity is still live at the broker and will
+                # continue to fill. Promoting to ACTIVE here would set trade.quantity to ONLY the
+                # partial AND mark the broker order terminally FILLED, leaving the surplus shares
+                # untracked (later adopted as a new orphan). Record the partial progress; let the
+                # Trader keep polling the remainder.
+                filled_price = float(filled_price)
+                trade.entry_price = filled_price
+                trade.quantity = filled_qty
+                trade.highest_price = filled_price
+                logger.info(
+                    "PENDING_FILL Trade#%d %s PARTIALLY filled x%d @ $%.4f — keeping PENDING_FILL "
+                    "to track the remainder", trade.id, trade.symbol, filled_qty, filled_price,
+                )
 
             elif status_str in ("canceled", "expired", "rejected"):
                 trade.status = "CANCELLED"
