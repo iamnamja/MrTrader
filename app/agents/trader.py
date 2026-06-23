@@ -1279,9 +1279,13 @@ class Trader(BaseAgent):
             self._release_intraday_slot(trade_type)
             return
 
-        # Poll for actual fill price instead of using next-bar price (Phase 76)
+        # Poll for actual fill price AND filled qty instead of using next-bar price / requested
+        # shares (Phase 76). Recording the requested `shares` on a partial fill left the DB/position
+        # qty larger than the broker holds, corrupting every downstream P&L/sizing calc that trusts
+        # pos['shares'] — record the ACTUAL filled qty.
         order_id = order.get("order_id")
         filled_price = intended_price
+        filled_qty = shares
         for _attempt in range(6):
             import time as _t
             _t.sleep(1)
@@ -1289,9 +1293,15 @@ class Trader(BaseAgent):
                 _status = alpaca.get_order_status(order_id)
                 if _status and _status.get("filled_avg_price"):
                     filled_price = float(_status["filled_avg_price"])
+                    _fq = int(_status.get("filled_qty") or 0)
+                    if _fq > 0:
+                        filled_qty = _fq
                     break
             except Exception:
                 pass
+        if filled_qty != shares:
+            self.logger.warning("%s: market entry partial fill %d/%d — recording actual filled qty",
+                                symbol, filled_qty, shares)
 
         # Slippage is direction-aware: for shorts, a lower fill price is worse (less proceeds)
         # so slippage = intended - filled (positive = bad, negative = good, same sign as longs).
@@ -1304,7 +1314,7 @@ class Trader(BaseAgent):
             slippage_bps = 0.0
 
         await self._record_entry(
-            symbol, shares, filled_price, intended_price, slippage_bps,
+            symbol, filled_qty, filled_price, intended_price, slippage_bps,
             order_id, result, proposal, pending_trade_id=pending_trade_id,
         )
 
@@ -1513,9 +1523,21 @@ class Trader(BaseAgent):
         signal_type = "ML_RANK" if result.signal_type in ("NONE", None) else result.signal_type
         db = get_session()
         try:
-            # Update the existing PENDING_FILL record — don't create a duplicate
-            trade = db.query(Trade).filter_by(id=pending_trade_id, status="PENDING_FILL").first() \
-                if pending_trade_id else None
+            # Update the existing record — don't create a duplicate. Look up by id ALONE (NOT by
+            # status): if a concurrent mid-session/startup reconcile already promoted the PENDING_FILL
+            # row to ACTIVE, a status-filtered lookup returned None and we created a SECOND Trade row
+            # (the position double-counted in equity/exposure). Updating in place is idempotent.
+            trade = (db.query(Trade).filter_by(id=pending_trade_id).first()
+                     if pending_trade_id else None)
+            if trade is None and pending_trade_id is None:
+                # Reconciler/fallback path (no pending id): guard against creating a second ACTIVE
+                # row for a symbol we already track (one-position-per-(symbol,trade_type) invariant).
+                trade = (db.query(Trade)
+                         .filter_by(symbol=symbol, status="ACTIVE", trade_type=trade_type)
+                         .first())
+                if trade is not None:
+                    self.logger.debug("_record_entry: adopting existing ACTIVE %s/%s row %s "
+                                      "(no pending id)", symbol, trade_type, trade.id)
 
             if trade:
                 trade.entry_price = filled_price
@@ -2360,6 +2382,12 @@ class Trader(BaseAgent):
         finally:
             db.close()
 
+        # Decrement the in-memory remaining share count after a partial sell. Without this, the
+        # later full-exit "no Alpaca position" fallback uses pos['shares'] = the ORIGINAL full qty,
+        # over-sizing the final leg AND adding the partial pnl again -> double-counted P&L. The
+        # remaining position is total_qty - partial_qty.
+        pos["shares"] = max(0, int(total_qty - partial_qty))
+
         # Reg T / T+1: partial long-sale proceeds are unsettled until next business day
         if not _partial_is_short:
             from app.agents.compliance import compliance_tracker
@@ -2439,6 +2467,14 @@ class Trader(BaseAgent):
         if not order:
             self.logger.error("Exit order failed for %s", symbol)
             return
+
+        # Prefer the ACTUAL fill price (read back from the order) for P&L/exit_price over the
+        # caller's current_price — which can be a fabricated fallback (a PM EXIT with no quote used
+        # to fall back to entry_price, booking a false $0.00-P&L exit at entry). Best-effort short
+        # poll; falls back to current_price if the fill price can't be read.
+        _fill = await self._read_order_fill_price(alpaca, order.get("order_id"))
+        if _fill and _fill > 0:
+            current_price = _fill
 
         if pos.get("direction") == "SELL_SHORT":
             final_leg_pnl = (pos["entry_price"] - current_price) * qty
@@ -2586,6 +2622,23 @@ class Trader(BaseAgent):
             db.close()
 
     # ─── Intraday Force Close ─────────────────────────────────────────────────
+
+    async def _read_order_fill_price(self, alpaca, order_id, attempts: int = 4,
+                                     delay: float = 0.5):
+        """Best-effort read of an order's actual filled_avg_price (short poll, off the event loop).
+        Returns the fill price or None — used so exit P&L/exit_price reflect the real fill rather
+        than a caller-supplied (possibly fabricated) price. Never raises."""
+        if not order_id:
+            return None
+        for _ in range(attempts):
+            try:
+                st = await asyncio.to_thread(alpaca.get_order_status, order_id)
+                if st and st.get("filled_avg_price"):
+                    return float(st["filled_avg_price"])
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
+        return None
 
     async def _maybe_force_close_intraday(self, now) -> None:
         """Run the 3:45 pm ET intraday force-close iff it's due and not yet done today.
