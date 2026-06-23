@@ -183,6 +183,7 @@ def alpaca_actual_positions(raw_positions) -> List[CanonicalPosition]:
 
 def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[float] = None,
                                   extra_actual: Optional[List[CanonicalPosition]] = None,
+                                  expected: Optional[Dict[tuple, float]] = None,
                                   mode: str = SHADOW, label: str = "",
                                   notifier=None) -> ReconciliationResult:
     """FAIL-SAFE pre-trade reconciliation a sleeve calls BEFORE placing: builds DB-expected vs
@@ -190,12 +191,16 @@ def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[flo
     reconciles, logs (+ emails on FAIL_CLOSED), returns the result. The CALLER acts on
     `.ok_to_trade` only in ENFORCE mode.
 
+    `expected` overrides the DB-expected book (default: the whole Alpaca book via
+    `db_expected_positions`). A single-venue caller (e.g. the IBKR futures executor) passes a
+    venue-scoped expected map so it doesn't drag the *other* venue's book in as phantom breaks.
+
     NEVER raises into the rebalance. On an internal error it returns FAIL_CLOSED (+ an error note) —
     a reconciliation that cannot even run means "I can't confirm the broker is reality", which must
     HOLD in enforce (and is logged, harmlessly, in shadow). Cash is not yet modelled DB-side, so the
     position book is the v1 check (the #1 phantom-position risk); the result carries the cash note."""
     try:
-        expected = db_expected_positions(db)
+        expected = db_expected_positions(db) if expected is None else dict(expected)
         actual = alpaca_actual_positions(raw_alpaca_positions)
         if extra_actual:
             actual = list(actual) + list(extra_actual)

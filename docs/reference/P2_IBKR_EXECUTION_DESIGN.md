@@ -86,6 +86,22 @@ target weights (futures_book) ──▶ target LOTS  ──▶ reconcile vs BROK
   request symbols (6E→EUR/6J→JPY/VX→VIX). Order placement (place/modify/cancel) + fills capture remain
   R1 (behind the whole-book gate + the live-paper soak).
 - **P2.3** — the execution + reconciliation workers + decouple from FastAPI + kill switch/dead-man.
+  ✅ **ORDER-CONSTRUCTION CORE + SHADOW DONE 2026-06-22** (decouple was already done in R0.2 P1-P3;
+  kill-switch/dead-man in H4/H5). The shippable-tonight, provably-inert slice:
+  - `futures_sizing.py` — `target_lots()` (the multiplier sourced ONLY from `instrument_master`, no
+    caller param = the #1-killer guard) + per-market/asset-class notional caps + `futures_order_deltas()`
+    (reductions-first, full-exit detection). Pure; places nothing.
+  - `order_ids.futures_run_id`/`futures_order_ref` — deterministic run-id orderRef (spec §3).
+  - `futures_sleeve.run_futures_rebalance()` — mirrors `trend_sleeve`: kill-switch → verify-on-connect
+    (drop CRITICAL-mismatch instruments) → IBKR-scoped reconcile-before-trade (`expected={}`, does NOT
+    drag the Alpaca book in) → whole-book gate (`venue=IBKR`) → **LOG would-be orders + shadow audit
+    rows, PLACE NOTHING.** Inert by 4 layers: `ibkr.enabled=false`, `ibkr.futures_enabled=false`
+    (dormant), `ibkr.trading_mode=shadow`, and NO write API exists (compile-time guard). Not
+    scheduler-wired. Consumes an EXPLICIT STUB weight source (`ibkr.futures_target_weights_json`) —
+    **NOT a live signal**; the runtime carry/xsmom weight path is R1.
+  - **Deferred to R1** (owner-gated — needs TWS Read-Only API OFF + owner-present + the live paper
+    gateway): real order placement, fills capture, `whatIfOrder` margin preview, roll-order emission,
+    the live target-weights signal path, the immutable per-run snapshot table, and scheduler wiring.
 - **P2.4** — replay/parity tests + paper go-live (weekly futures-book rebalance on IBKR paper).
 
 ## What I need from you on approval
