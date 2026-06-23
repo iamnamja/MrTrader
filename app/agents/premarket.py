@@ -471,8 +471,11 @@ class PremarketIntelligence:
                     continue
                 h, m = map(int, evt.time_str.split(":"))
                 release_dt = now_et.replace(hour=h, minute=m, second=0, microsecond=0)
-                # Still within 5-min buffer after release
-                if now_et < release_dt.replace(minute=m + 5) if m <= 54 else release_dt:
+                # Still within the 5-min post-release buffer. Use a timedelta (NOT
+                # release_dt.replace(minute=m+5), which both raised for m>=55 and, via an
+                # operator-precedence bug `A if C else B`, returned the truthy release_dt for m>54 ->
+                # the block NEVER lifted all day for any event at minute 55-59).
+                if now_et < release_dt + timedelta(minutes=5):
                     return False  # at least one event not yet released
             return True  # all events have printed
         except Exception:

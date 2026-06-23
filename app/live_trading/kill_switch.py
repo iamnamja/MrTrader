@@ -80,7 +80,28 @@ class KillSwitch:
             finally:
                 db.close()
         except Exception as exc:
-            logger.warning("Could not restore kill switch state: %s", exc)
+            # FAIL-CLOSED on a read error: we cannot CONFIRM the persisted state, and a kill switch
+            # that was genuinely activated (persisted True) must not be silently dropped at boot
+            # (which would start trading ENABLED). Retry briefly; if still unreadable, HALT as a
+            # precaution and require an explicit operator reset after verifying.
+            for _attempt in range(3):
+                try:
+                    from app.database.config_store import get_config as _gc
+                    _db = get_session()
+                    try:
+                        _val = _gc(_db, _CFG_KS_ACTIVE)
+                    finally:
+                        _db.close()
+                    self._active = bool(_val) if isinstance(_val, bool) else False
+                    if self._active:
+                        logger.warning("Kill switch restored as ACTIVE from persisted state (retry)")
+                    return True
+                except Exception:
+                    time.sleep(0.2 * (_attempt + 1))
+            logger.critical("Kill switch state UNREADABLE at boot (%s) — HALTING as a precaution "
+                            "(fail-closed); reset manually after verifying the DB.", exc)
+            self._active = True
+            return False
         return False
 
     def _persist_state(self) -> bool:
