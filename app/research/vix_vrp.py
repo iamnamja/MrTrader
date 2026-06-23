@@ -30,6 +30,8 @@ class VixVRPConfig:
     vol_lookback: int = 60
     max_leverage: float = 3.0
     ann: int = 252
+    cost_bps: float = 5.0           # per-side cost on VIX-future turnover (wide bid/ask); charged on
+    #                                 gate flips (full -1<->0) AND daily re-leveraging, like carry
 
 
 def contango_gate(vix: pd.Series, vix3m: pd.Series) -> pd.Series:
@@ -47,4 +49,12 @@ def vix_vrp_returns(vx_returns: pd.Series, vix: pd.Series, vix3m: pd.Series,
     gross = (pos * vx_returns).dropna()
     bvol = gross.rolling(cfg.vol_lookback, min_periods=cfg.vol_lookback).std() * np.sqrt(cfg.ann)
     lev = (cfg.target_vol / bvol).clip(upper=cfg.max_leverage).shift(1)
-    return (gross * lev).dropna().rename("vix_vrp")
+    # Net of transaction cost: VIX futures have a wide bid/ask, and this strategy turns over on every
+    # gate flip (-1<->0) AND every day via the vol-target re-leveraging. Charging zero (the old code)
+    # over-stated the Sharpe vs the cost-charged carry/xsmom sleeves it's compared against at go-live.
+    levered = (pos * lev)
+    ret = (levered * vx_returns)
+    turnover = levered.diff().abs()
+    turnover = turnover.fillna(levered.abs())           # charge entry on the first active day too
+    cost = turnover * (cfg.cost_bps / 1e4)
+    return (ret - cost).dropna().rename("vix_vrp")

@@ -29,8 +29,9 @@ def test_short_in_contango_flat_in_backwardation_and_pit():
     # crucially day4 (after the spike) is FLAT (gate[day3]=False shifted) -> no continued bleed.
     # Assert the post-spike day is ~flat (gate correctly de-risked) and the series is finite.
     assert np.isfinite(r).all()
-    # the day AFTER the backwardation onset must be flat (no short into a known vol spike)
-    assert abs(r.loc[idx[4]]) < 1e-9
+    # the day AFTER the backwardation onset carries NO market exposure (no short into a known vol
+    # spike) — only the small one-off cost of FLATTENING the prior short (<= cost_bps), not a bleed.
+    assert abs(r.loc[idx[4]]) <= cfg.cost_bps / 1e4 + 1e-9
 
 
 def test_short_harvests_contango_rolldown():

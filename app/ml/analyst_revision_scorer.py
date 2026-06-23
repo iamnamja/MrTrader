@@ -52,7 +52,7 @@ class AnalystRevisionScorer:
         try:
             import pandas as pd
             ts = pd.Timestamp(day)
-            sub = vdf.loc[:ts]
+            sub = vdf[vdf.index < ts]   # strict PIT: prior day's VIX close (today's unknowable at open)
             if len(sub) == 0:
                 return None
             return float(sub["close"].iloc[-1])

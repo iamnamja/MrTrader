@@ -151,7 +151,11 @@ class PEADScorer:
             vix_df = symbols_data.get(key)
             if vix_df is not None and not vix_df.empty:
                 try:
-                    return float(vix_df.loc[:_ts].iloc[-1]["close"])
+                    # strict PIT: the PRIOR day's VIX close — day-T's close is not knowable at the
+                    # day-T open where the proposal fills (.loc[:_ts] was inclusive = look-ahead).
+                    _sub = vix_df[vix_df.index < _ts]
+                    if len(_sub):
+                        return float(_sub.iloc[-1]["close"])
                 except Exception:
                     pass
         return None
