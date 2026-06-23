@@ -547,10 +547,13 @@ def compute_v219_score(
         if not np.isnan(vr):
             raw_features["vol_regime"][sym] = -vr  # lower vol_ratio = better (invert)
 
-        # ix_momentum_vol = momentum × (1 - vol_ratio) — high momentum, low vol
+        # ix_momentum_vol = momentum × max(0, 1 - vol_ratio) — a high-momentum/low-vol BONUS that
+        # only ever down-weights (never SIGN-FLIPS) momentum. vol_regime = -vol_ratio, so for a
+        # currently-volatile name (vr>1) the un-clamped (1-vr) went NEGATIVE and inverted a strong
+        # up-trend's momentum. Clamp the multiplier at 0.
         mom = raw_features["momentum_252d_ex1m"].get(sym, float("nan"))
         if not np.isnan(mom) and sym in raw_features["vol_regime"]:
-            raw_features["ix_momentum_vol"][sym] = mom * (1.0 + raw_features["vol_regime"][sym])
+            raw_features["ix_momentum_vol"][sym] = mom * max(0.0, 1.0 + raw_features["vol_regime"][sym])
 
         # volume_trend
         df_sym = bars.get(sym)
@@ -1159,11 +1162,12 @@ def _compute_weighted_score(
             if not np.isnan(vr):
                 raw_features["vol_regime"][sym] = -vr
 
-        # ix_momentum_vol
+        # ix_momentum_vol — clamp the (1 - vol_ratio) multiplier at 0 so it down-weights, never
+        # sign-flips, momentum for currently-volatile names (see compute_v219_score).
         if "ix_momentum_vol" in raw_features:
             mom = raw_features.get("momentum_252d_ex1m", {}).get(sym, float("nan"))
             if not np.isnan(mom) and sym in raw_features.get("vol_regime", {}):
-                raw_features["ix_momentum_vol"][sym] = mom * (1.0 + raw_features["vol_regime"][sym])
+                raw_features["ix_momentum_vol"][sym] = mom * max(0.0, 1.0 + raw_features["vol_regime"][sym])
 
         # reversal_5d_vol_weighted
         if "reversal_5d_vol_weighted" in raw_features:

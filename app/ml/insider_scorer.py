@@ -79,7 +79,10 @@ class InsiderClusterScorer:
             vix_df = symbols_data.get(key)
             if vix_df is not None and not vix_df.empty:
                 try:
-                    return float(vix_df.loc[:_ts].iloc[-1]["close"])
+                    # strict PIT: prior day's VIX close (today's close isn't knowable at the open).
+                    _sub = vix_df[vix_df.index < _ts]
+                    if len(_sub):
+                        return float(_sub.iloc[-1]["close"])
                 except Exception:
                     pass
         return None

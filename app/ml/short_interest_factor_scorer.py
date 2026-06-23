@@ -53,7 +53,7 @@ class ShortInterestFactorScorer:
         if vdf is None or len(vdf) == 0:
             return None
         try:
-            sub = vdf.loc[:pd.Timestamp(day)]
+            sub = vdf[vdf.index < pd.Timestamp(day)]   # strict PIT: prior day's VIX close
             return float(sub["close"].iloc[-1]) if len(sub) else None
         except Exception:
             return None
