@@ -740,6 +740,14 @@ async def approve_and_go_live():
             detail={"message": "Go-live criteria not met", "metrics": metrics},
         )
 
+    # In subprocess mode the DAEMON owns the authoritative capital_manager/mode_manager — bridge the
+    # start+flip there (mirrors /live/increase-capital), else the web mutated its own empty singletons
+    # and the live brain never actually went live.
+    from app.control_bridge import bridge_or_none, CMD_GO_LIVE
+    bridged = bridge_or_none(CMD_GO_LIVE)
+    if bridged is not None:
+        return bridged
+
     capital_manager.start()
     mode_manager.switch_to_live()
 

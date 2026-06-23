@@ -124,6 +124,7 @@ async def prepare_trading_state(log: logging.Logger) -> None:
         from app.live_trading.kill_switch import kill_switch
         from app.live_trading.capital_manager import capital_manager
         kill_switch.load_state()
+        capital_manager.load_state()   # else a restart silently demotes the live book to Stage 1
         log.info("State restored (kill_switch=%s, capital_stage=%s)",
                  kill_switch.is_active, capital_manager.current_stage.stage)
     except Exception as e:

@@ -36,6 +36,7 @@ CMD_TRIGGER_SWING = "trigger_swing"
 CMD_TRIGGER_RETRAIN = "trigger_retrain"
 CMD_TRIGGER_INTRADAY = "trigger_intraday"
 CMD_CAPITAL_ADVANCE = "capital_advance"
+CMD_GO_LIVE = "go_live"                     # start the capital ramp + flip to live (daemon-owned)
 CMD_JOB_PAUSE = "job_pause"
 CMD_JOB_RESUME = "job_resume"
 CMD_RELOAD_STATE = "reload_state"          # tell the daemon to reload kill-switch now
@@ -44,7 +45,7 @@ CMD_RELOAD_STATE = "reload_state"          # tell the daemon to reload kill-swit
 # as background tasks (see _TRIGGER_HANDLERS) so it never blocks; the rest apply inline.
 _KNOWN_COMMANDS = {
     CMD_PAUSE, CMD_RESUME, CMD_TRIGGER_CYCLE, CMD_TRIGGER_SWING, CMD_TRIGGER_RETRAIN,
-    CMD_TRIGGER_INTRADAY, CMD_CAPITAL_ADVANCE, CMD_JOB_PAUSE, CMD_JOB_RESUME,
+    CMD_TRIGGER_INTRADAY, CMD_CAPITAL_ADVANCE, CMD_GO_LIVE, CMD_JOB_PAUSE, CMD_JOB_RESUME,
     CMD_RELOAD_STATE,
 }
 
@@ -186,6 +187,34 @@ async def _do_capital_advance() -> None:
         log.warning("capital_advance: audit write failed: %s", exc)
 
 
+async def _do_go_live() -> None:
+    # Runs in the daemon (which owns the authoritative capital_manager + mode_manager). The web's
+    # /approval/go-live re-verifies readiness, then bridges here so the DAEMON's singletons are the
+    # ones started/flipped — otherwise the web mutated its own (empty) singletons and the live brain
+    # never went live.
+    from app.live_trading.capital_manager import capital_manager
+    from app.trading_modes import mode_manager
+    capital_manager.start()
+    mode_manager.switch_to_live()
+    log.warning("go_live: capital ramp started (Stage %d) + mode -> live",
+                capital_manager.current_stage.stage)
+    try:
+        from app.database.session import get_session
+        from app.database.models import AuditLog
+        from datetime import datetime
+        db = get_session()
+        try:
+            db.add(AuditLog(action="GO_LIVE_ACTIVATED",
+                            details={"initial_capital": capital_manager.get_current_capital(),
+                                     "via": "control_bridge"},
+                            timestamp=datetime.utcnow()))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("go_live: audit write failed: %s", exc)
+
+
 async def _do_reload_state() -> None:
     await sync_persisted_state(log)
 
@@ -196,6 +225,7 @@ _INLINE_HANDLERS: Dict[str, Callable[..., Awaitable[None]]] = {
     CMD_JOB_PAUSE: _do_job_pause,
     CMD_JOB_RESUME: _do_job_resume,
     CMD_CAPITAL_ADVANCE: _do_capital_advance,
+    CMD_GO_LIVE: _do_go_live,
     CMD_RELOAD_STATE: _do_reload_state,
 }
 _TRIGGER_HANDLERS: Dict[str, Callable[[], Awaitable[None]]] = {

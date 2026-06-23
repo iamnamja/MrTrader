@@ -11,15 +11,33 @@ ET = ZoneInfo("America/New_York")
 
 # ─── Phase 58: Earnings Calendar ─────────────────────────────────────────────
 
+_FIXED_TODAY = date(2026, 6, 22)   # a Monday — pin so the trading-day blackout math is deterministic
+
+
 class TestEarningsCalendar:
+    @pytest.fixture(autouse=True)
+    def _pin_today(self, monkeypatch):
+        # The blackout gate now counts TRADING days, so the result depends on the weekday. Pin
+        # today() to a fixed Monday so these tests aren't weekday-flaky in CI.
+        from app.calendars import earnings as _em
+
+        class _D(date):
+            @classmethod
+            def today(cls):
+                return _FIXED_TODAY
+        monkeypatch.setattr(_em, "date", _D)
+
     def _make_calendar(self, days_until: int | None):
-        """Return an EarningsCalendar with a mocked _fetch that returns days_until from today."""
+        """EarningsCalendar with a mocked earnings date `days_until` CALENDAR days from the pinned
+        Monday today. For the offsets these tests use (0-5) starting on a Monday, calendar days equal
+        trading days within the week, so the trading-day blackout gate behaves as the names imply
+        while the calendar `days_until` field stays exact."""
         from app.calendars.earnings import EarningsCalendar
         cal = EarningsCalendar()
         if days_until is None:
             next_date = None
         else:
-            next_date = date.today() + timedelta(days=days_until)
+            next_date = _FIXED_TODAY + timedelta(days=days_until)
         # Phase 81: _fetch returns (date, data_ok) tuple; cache stores (date, monotonic, data_ok)
         cal._cache["TEST"] = (next_date, 1e18, True)
         return cal
@@ -29,7 +47,7 @@ class TestEarningsCalendar:
         cal = self._make_calendar(1)
         risk = cal.get_earnings_risk("TEST", "swing")
         assert risk.block_swing is True
-        assert "earnings_in_1d" in risk.reason
+        assert "earnings_in_1td" in risk.reason   # now reported in TRADING days
 
     def test_swing_blocked_on_earnings_day(self):
         cal = self._make_calendar(0)

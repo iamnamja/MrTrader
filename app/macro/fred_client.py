@@ -176,13 +176,17 @@ class FredClient:
                 "series_id": series_id,
                 "api_key": api_key,
                 "file_type": "json",
-                "sort_order": "asc",
-                "limit": 24,  # last 24 observations
+                # FRED applies `limit` AFTER sorting: asc+limit=24 returns the OLDEST 24 observations
+                # (e.g. 1947-era CPI) — a silent prod-only bug that fed 1960s macro values into the
+                # regime detector. Fetch the MOST RECENT 24 with desc, then reverse to ascending so
+                # the rest of the code (which expects oldest->newest) is unchanged.
+                "sort_order": "desc",
+                "limit": 24,
             })
             url = f"{_FRED_API}?{params}"
             with urllib.request.urlopen(url, timeout=10) as resp:
                 body = json.loads(resp.read())
-                return body.get("observations", [])
+                return list(reversed(body.get("observations", [])))
         except Exception as exc:
             logger.debug("FRED API error for %s: %s", series_id, exc)
             return None

@@ -57,6 +57,56 @@ class CapitalManager:
         self._stage_start: Optional[datetime] = None
         self._paused = False
 
+    # ── Persistence ────────────────────────────────────────────────────────────
+    # The ramp stage MUST survive a daemon restart, else every restart silently demotes a live book
+    # back to Stage 1 ($1,000) — contradicting trading_runtime's documented "restore capital state".
+
+    def _running_under_pytest(self) -> bool:
+        from app.utils.runtime import is_test_mode
+        return is_test_mode()
+
+    def save_state(self) -> None:
+        if self._running_under_pytest():
+            return
+        try:
+            from app.database.config_store import set_config
+            from app.database.session import get_session
+            db = get_session()
+            try:
+                set_config(db, _CFG_STAGE_INDEX, int(self._stage_index), "Capital ramp stage index")
+                set_config(db, _CFG_STAGE_START,
+                           self._stage_start.isoformat() if self._stage_start else "",
+                           "Capital ramp current-stage start time (ISO)")
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("Could not persist capital ramp state: %s", exc)
+
+    def load_state(self) -> bool:
+        """Restore the persisted ramp stage on startup. Returns True if state was read."""
+        try:
+            from app.database.config_store import get_config
+            from app.database.session import get_session
+            db = get_session()
+            try:
+                idx = get_config(db, _CFG_STAGE_INDEX)
+                start = get_config(db, _CFG_STAGE_START)
+            finally:
+                db.close()
+            if idx is not None:
+                self._stage_index = max(0, min(int(idx), len(self.STAGES) - 1))
+            if start:
+                try:
+                    self._stage_start = datetime.fromisoformat(str(start))
+                except (TypeError, ValueError):
+                    self._stage_start = None
+            logger.info("Capital ramp restored: Stage %d ($%s)",
+                        self.current_stage.stage, f"{self.current_stage.capital:,.0f}")
+            return True
+        except Exception as exc:
+            logger.warning("Could not restore capital ramp state: %s", exc)
+            return False
+
     # ── Read-only state ────────────────────────────────────────────────────────
 
     @property
@@ -88,6 +138,7 @@ class CapitalManager:
         """Call when live trading begins (after approval)."""
         self._stage_index = 0
         self._stage_start = datetime.utcnow()
+        self.save_state()
         logger.warning("Capital ramp started at Stage 1 ($1,000)")
 
     def can_advance(self, max_drawdown_pct: float, daily_loss_pct: float) -> bool:
@@ -107,6 +158,7 @@ class CapitalManager:
 
         self._stage_index += 1
         self._stage_start = datetime.utcnow()
+        self.save_state()
         new = self.current_stage
 
         logger.warning(
@@ -132,10 +184,12 @@ class CapitalManager:
 
     def pause(self):
         self._paused = True
+        self.save_state()
         logger.warning("Capital increases PAUSED")
 
     def resume(self):
         self._paused = False
+        self.save_state()
         logger.info("Capital increases RESUMED")
 
 

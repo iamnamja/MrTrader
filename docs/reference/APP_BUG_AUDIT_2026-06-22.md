@@ -14,7 +14,8 @@ refute it.** Raw result: `tasks/wcht6web3.output` (run id `wf_c79f00ac-cd7`).
 - ✅ **WAVE 1 DONE 2026-06-22** (PR pending merge): 10 fixes (BLOCKER #1 + 9 MAJOR) — live order-path fail-OPEN → fail-CLOSED + idempotency on every order. Opus deep-dive SAFE TO MERGE (no new fail-open / dropped-order collision / exit regression). 12 new tests; full suite green. See DECISIONS 2026-06-22 (Audit Wave 1).
 - ✅ **WAVE 2 DONE 2026-06-22** (PR pending merge): BLOCKER #2 (pause/resume permanently killed the agent loops + auto-pause irreversible) + the intraday 2% daily-loss hard stop. Cooperative pause (loops idle alive), auto-pause auto-resumes on Alpaca recovery, force-close runs even while paused, daily-loss uses live equity. Opus deep-dive SAFE TO MERGE; MINOR-1 closed. 7 new tests; full suite green. DECISIONS 2026-06-22 (Audit Wave 2).
 - ✅ **WAVE 3a DONE 2026-06-23** (PR pending merge): live agent-path state-corruption (6 fixes): partial-exit shares decrement, exit fill-price read (kills PM-EXIT $0 P&L), intraday filled_qty, _record_entry duplicate-ACTIVE, PM rescore sleeve isolation, premarket prior-close/current-price (+AUTO_EXIT guard). Opus deep-dive SAFE TO MERGE. 4 new tests + phase20 gap suite updated; full suite green.
-- ⏳ Wave 3b (reconciler/capital/tracker/routes/FRED/earnings/model) + Waves 4–5 + re-audit: in progress.
+- ✅ **WAVE 3b DONE 2026-06-23** (PR pending merge): runtime/data state-corruption (7 fixes): capital-ramp persistence, FRED most-recent obs, earnings trading-day blackout, single-row model sigmoid fallback, PEAD+trend daily-P&L delta, go-live cross-process bridge, ghost-state-machine close + partial-fill-at-restart. Opus deep-dive: all correct, no regression (caught a flaky-test MAJOR + the trend_tracker sibling → both fixed). 5 new tests; full suite 3993 green. **Wave 3 complete.**
+- ⏳ Waves 4–5 + re-audit: in progress (autonomous run).
 
 ## Triage → fix waves
 

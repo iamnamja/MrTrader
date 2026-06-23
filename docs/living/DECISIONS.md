@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-23 (Audit Wave 3b) — runtime/data state-corruption (capital persist, FRED, earnings, model, P&L, go-live, reconciler)
+
+**Context**: Audit-found MAJORs in the runtime/data layer: (a) the capital ramp stage was never persisted → a daemon restart silently demoted the live book to Stage 1; (b) the FRED API path fetched the OLDEST 24 observations (1960s macro values) when a FRED key is set → fed bad data to regime detection; (c) the earnings blackout counted CALENDAR days → a Fri→Tue print (2 trading days) wasn't blocked; (d) single-row model inference (live reeval) min-max-normalized to 0.0 → spurious EXIT (latent: active model is guarded LambdaRank); (e) PEAD daily-P&L summed the unrealized LEVEL each day → drifted cumulative P&L + the realized-Sharpe series (+ would misallocate if the vol/regime allocator armed); (f) `/approval/go-live` mutated only the WEB process's singletons in subprocess mode; (g) the ghost state-machine never reached CLOSED (count frozen at 1) → every ghost timed out to UNRESOLVED; (h) a partial fill at restart tracked only the partial.
+
+**Decision**:
+- `CapitalManager.save_state()/load_state()` (config_store-backed, pytest-guarded); `start/advance/pause/resume` persist; `prepare_trading_state` restores → a restart keeps the real stage.
+- FRED `_fetch_api` uses `sort_order=desc` + reverse → the most-recent 24.
+- Earnings blackout counts TRADING days (`np.busday_count`).
+- `PortfolioSelectorModel`(regression) + `DoubleEnsembleModel` use the LambdaRank sigmoid fallback for single-row/all-identical scores.
+- PEAD (and the latent-but-same-class trend_tracker) daily-P&L = realized + (unrealized_today − prior_unrealized).
+- `/approval/go-live` bridges `CMD_GO_LIVE` to the daemon (mirrors `CMD_CAPITAL_ADVANCE`); readiness still checked in the web first.
+- Reconciler Pass B increments the ghost detection count each still-absent run (so the ≥2-detection close gate is reachable → ghosts CLOSE with their exit fill instead of timing out); a partial fill at restart stays PENDING_FILL (remainder keeps being tracked) instead of being promoted to ACTIVE on the partial.
+
+**Rationale / verification**: **Independent Opus deep-dive: all 7 fixes CORRECT, no regression** (capital not wrong-stage, FRED order right, earnings not over-blocking, model multi-row unchanged, PEAD no longer double-counts, go-live byte-identical in_process + readiness-gated, ghost no premature close / partial-fill not orphaned). The deep-dive caught a MAJOR in the UPDATED test (`test_phase_58_59` was weekday-flaky) → fixed by pinning today to a Monday; and flagged the trend_tracker sibling → fixed too. 5 new tests + earnings suite hardened; full suite 3993 green; flake8 clean. DECISIONS 2026-06-23 (Audit Wave 3b). Wave 3 complete.
+
+---
+
 ## 2026-06-23 (Audit Wave 3a) — live agent-path state-corruption + P&L + premarket data-reference
 
 **Context**: Audit-found MAJORs in the live Trader/PM/Premarket agents: (a) a partial exit never decremented `pos["shares"]` → the no-position exit fallback computed the final leg on the FULL original qty AND re-added the partial P&L (double-count); (b) PM EXIT fell back to `entry_price` when no quote → booked a fabricated $0.00-P&L exit; (c) intraday market entry recorded the REQUESTED qty, not the filled qty (DB↔broker mismatch on a partial fill); (d) `_record_entry` looked up the pending row with a status filter → a concurrent reconcile that already promoted it to ACTIVE caused a DUPLICATE Trade row; (e) the 30-min pending rescore re-scored INTRADAY proposals with the SWING model → withdrew valid intraday entries ~30 min after each; (f) three premarket data-reference bugs (prior_close/`_fetch_spy_premarket`/today_open used the wrong daily bar pre-open → spurious AUTO_EXIT + mis-gated sizing).
