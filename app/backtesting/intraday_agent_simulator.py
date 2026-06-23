@@ -318,18 +318,21 @@ class IntradayAgentSimulator:
                 except Exception:
                     pass
 
-            # Phase 2c: cross-sectional dispersion gate
+            # Phase 2c: cross-sectional dispersion gate.
+            # LOOK-AHEAD FIX: _daily_dispersion[day] is the realized HOLDING-window return (bars
+            # 12->36), which is in the FUTURE relative to the bar-12 entry decision — gating today on
+            # it leaked the outcome (it skipped the very days whose realized dispersion was low). Gate
+            # instead on the PRIOR day's dispersion, which IS knowable at today's entry.
             if not skip_entries and self.use_dispersion_gate and _daily_dispersion:
-                today_disp = _daily_dispersion.get(day)
-                if today_disp is not None:
-                    past_days = sorted(d for d in _daily_dispersion if d < day)
-                    if len(past_days) >= 20:
-                        window = past_days[-60:]
-                        median_disp = float(np.median([_daily_dispersion[d] for d in window]))
-                        if median_disp > 0 and today_disp < self.dispersion_threshold * median_disp:
-                            skip_entries = True
-                            logger.debug("Dispersion gate on %s: %.4f < %.2f×%.4f",
-                                         day, today_disp, self.dispersion_threshold, median_disp)
+                past_days = sorted(d for d in _daily_dispersion if d < day)
+                if len(past_days) >= 20:
+                    gate_disp = _daily_dispersion[past_days[-1]]   # prior day = knowable at entry
+                    window = past_days[-60:]
+                    median_disp = float(np.median([_daily_dispersion[d] for d in window]))
+                    if median_disp > 0 and gate_disp < self.dispersion_threshold * median_disp:
+                        skip_entries = True
+                        logger.debug("Dispersion gate on %s: prior %.4f < %.2f×%.4f",
+                                     day, gate_disp, self.dispersion_threshold, median_disp)
 
             # WF-5a: macro event gate — block new entries on FOMC/NFP/CPI/GDP days
             if not skip_entries and self.macro_blocked_dates and day in self.macro_blocked_dates:
@@ -349,18 +352,18 @@ class IntradayAgentSimulator:
                     skip_entries = True
                     logger.debug("R5-A regime gate on %s: label=%s (VIX4 + SPY downtrend)", day, label)
 
-                # R5-B: tighter dispersion floor (40% of 60d median, vs existing 50%)
+                # R5-B: tighter dispersion floor (40% of 60d median, vs existing 50%).
+                # Same look-ahead fix as the Phase-2c gate: gate on the PRIOR day's dispersion.
                 if not skip_entries and _daily_dispersion:
-                    today_disp = _daily_dispersion.get(day)
-                    if today_disp is not None:
-                        past_days = sorted(d for d in _daily_dispersion if d < day)
-                        if len(past_days) >= 20:
-                            window = past_days[-60:]
-                            median_disp = float(np.median([_daily_dispersion[d] for d in window]))
-                            if median_disp > 0 and today_disp < self.r5b_dispersion_threshold * median_disp:
-                                skip_entries = True
-                                logger.debug("R5-B dispersion gate on %s: %.4f < %.2f×%.4f",
-                                             day, today_disp, self.r5b_dispersion_threshold, median_disp)
+                    past_days = sorted(d for d in _daily_dispersion if d < day)
+                    if len(past_days) >= 20:
+                        gate_disp = _daily_dispersion[past_days[-1]]
+                        window = past_days[-60:]
+                        median_disp = float(np.median([_daily_dispersion[d] for d in window]))
+                        if median_disp > 0 and gate_disp < self.r5b_dispersion_threshold * median_disp:
+                            skip_entries = True
+                            logger.debug("R5-B dispersion gate on %s: prior %.4f < %.2f×%.4f",
+                                         day, gate_disp, self.r5b_dispersion_threshold, median_disp)
 
                 # R5-C: VIX spike + SPY drawdown
                 if not skip_entries and _vix_closes is not None and _spy_daily_closes is not None:
