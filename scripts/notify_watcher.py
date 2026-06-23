@@ -183,6 +183,14 @@ def run_watcher() -> None:
                 except Exception as exc:
                     notifier.mark_failed(row_id, str(exc))
                     log.exception("send error id=%d type=%s", row_id, event_type)
+            # Escalate any CATASTROPHIC notification that has exhausted its SMTP retry budget —
+            # fire the webhook backstop + CRITICAL log instead of silently orphaning a safety alert.
+            try:
+                n_esc = notifier.escalate_dropped_critical()
+                if n_esc:
+                    log.critical("escalated %d permanently-dropped critical notification(s)", n_esc)
+            except Exception:
+                log.exception("escalation sweep error (continuing)")
         except Exception:
             log.exception("watcher loop error (continuing)")
 

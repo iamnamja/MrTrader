@@ -1005,7 +1005,7 @@ class Trader(BaseAgent):
         # the Alpaca position survived (e.g. after the DB was incorrectly closed by
         # a stale reconciler run).
         try:
-            _live_pos = alpaca.get_position(symbol)
+            _live_pos = alpaca.get_position(symbol, raise_on_error=True)
             if _live_pos:
                 _live_qty = abs(int(_live_pos.get("qty", 0) or 0))
                 if _live_qty > 0:
@@ -1017,7 +1017,17 @@ class Trader(BaseAgent):
                     self._release_intraday_slot(trade_type)
                     return
         except Exception as _lp_exc:
-            self.logger.debug("%s: live-position pre-entry check failed (non-fatal): %s", symbol, _lp_exc)
+            # Fail-CLOSED: we could NOT confirm the live position is flat. An unconfirmed read must
+            # never be treated as 'safe to buy' — on a restart where the broker position survived but
+            # active_positions was cleared, proceeding here would create a DUPLICATE live position
+            # (real capital). Skip this entry; it will be retried on the next cycle.
+            self.logger.warning(
+                "%s: cannot confirm live position pre-entry (%s) — skipping entry (fail-closed)",
+                symbol, _lp_exc,
+            )
+            self.approved_symbols.pop(symbol, None)
+            self._release_intraday_slot(trade_type)
+            return
 
         # Size the position
         account = alpaca.get_account()
@@ -2303,7 +2313,10 @@ class Trader(BaseAgent):
 
         _partial_is_short = pos.get("direction") == "SELL_SHORT"
         _partial_side = "buy" if _partial_is_short else "sell"
-        order = alpaca.place_market_order(symbol, partial_qty, _partial_side)
+        from app.live_trading.order_ids import exit_order_id
+        order = alpaca.place_market_order(
+            symbol, partial_qty, _partial_side,
+            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "partial"))
         if not order:
             self.logger.error("Partial exit order failed for %s", symbol)
             pos["_partial_exited"] = False
@@ -2416,7 +2429,10 @@ class Trader(BaseAgent):
 
         # Longs exit with "sell"; shorts cover with "buy"
         exit_side = "buy" if pos.get("direction") == "SELL_SHORT" else "sell"
-        order = alpaca.place_market_order(symbol, qty, exit_side)
+        from app.live_trading.order_ids import exit_order_id
+        order = alpaca.place_market_order(
+            symbol, qty, exit_side,
+            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "full"))
         if not order:
             self.logger.error("Exit order failed for %s", symbol)
             return

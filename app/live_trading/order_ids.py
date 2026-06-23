@@ -39,3 +39,18 @@ def futures_order_ref(run_id: str, instrument_id: str, side: str) -> str:
     """`{run_id}-{instrument_id}-{side}` — the per-order IBKR `orderRef`. One intended order per
     (run, instrument, side); stable across a retry of the same run."""
     return f"{run_id}-{instrument_id}-{side}"
+
+
+def exit_order_id(trade_id, symbol: str, phase: str) -> str:
+    """Deterministic client_order_id for an EXIT order (H6, exit side).
+
+    Keyed on the TRADE (NOT on the calendar day) so a lost-response retry of the SAME exit ALWAYS
+    reuses the SAME key and the broker dedups it (no double-sell / no accidental flip) — even if the
+    retry crosses midnight (a day-stamp would have produced a new key → a re-sell window). A
+    genuinely distinct exit — e.g. an intraday re-entry of the same symbol, which has a NEW trade_id
+    — gets a DISTINCT key and is not wrongly deduped to the prior exit. `phase` ('partial'/'full')
+    keeps a partial exit and the later full exit of the same trade from colliding. Hashed + short so
+    it stays well within the broker's client_order_id length limit."""
+    disc = str(trade_id) if trade_id else (symbol or "")
+    h = hashlib.sha1(disc.encode("utf-8")).hexdigest()[:10]
+    return f"x{str(phase)[:4]}-{h}"

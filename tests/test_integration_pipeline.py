@@ -153,24 +153,28 @@ class TestKillSwitchStateMachine:
         assert not ks.is_active
 
     def test_activate_closes_positions(self):
+        # Wave-1: activate() flattens via the atomic flatten_alpaca(execute=True)
+        # (close_all_positions(cancel_orders=True)) — covering shorts and avoiding the per-symbol
+        # double-fill race — instead of looping place_market_order per position.
         from app.live_trading.kill_switch import KillSwitch
         ks = KillSwitch()
-        mock_alpaca = MagicMock()
-        mock_alpaca.get_positions.return_value = [
-            {"symbol": "AAPL", "qty": 10},
-            {"symbol": "MSFT", "qty": 5},
-        ]
-        mock_alpaca.place_market_order.return_value = {"order_id": "x"}
+
+        def fake_flatten(*, execute, alpaca):
+            assert execute is True
+            return {"ok": True,
+                    "positions": [{"symbol": "AAPL"}, {"symbol": "MSFT"}], "errors": []}
+
         with (
             patch("app.live_trading.kill_switch.get_session") as mock_db,
-            patch.object(ks, "_persist_state"),
-            patch.object(ks, "_alpaca", return_value=mock_alpaca),
+            patch.object(ks, "_persist_state", return_value=True),
+            patch.object(ks, "_alpaca", return_value=MagicMock()),
+            patch("app.live_trading.emergency_flatten.flatten_alpaca", fake_flatten),
         ):
             mock_db.return_value = MagicMock()
             result = ks.activate("test")
         assert "AAPL" in result["positions_closed"]
         assert "MSFT" in result["positions_closed"]
-        assert mock_alpaca.place_market_order.call_count == 2
+        assert result["flatten_ok"] is True
 
 
 class TestCircuitBreakerIntegration:

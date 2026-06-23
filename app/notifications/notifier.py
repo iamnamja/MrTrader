@@ -77,6 +77,14 @@ def severity(event_type: str) -> str:
     return _SEVERITY.get(event_type, INFO)
 
 
+# CATASTROPHIC events get MANY more SMTP retries than the default cap, and when they finally exhaust
+# them they are ESCALATED (webhook + CRITICAL log) rather than silently orphaned — a kill-switch /
+# dead-man / gate-error email must never just vanish because Gmail had a transient outage.
+_CRITICAL_EVENTS: tuple = tuple(k for k, v in _SEVERITY.items() if v == CATASTROPHIC)
+_DEFAULT_MAX_ATTEMPTS = 5
+_CRITICAL_MAX_ATTEMPTS = 50
+
+
 def _route_critical(event_type: str, payload: dict[str, Any]):
     """Best-effort LOUDER channel for CATASTROPHIC events (SMS/push/Slack via a generic webhook).
     No-op unless MRTRADER_CRITICAL_WEBHOOK is set — so 'tiered alerting' is real the moment a webhook
@@ -173,14 +181,61 @@ def send_now(event_type: str, payload: dict[str, Any]) -> bool:
 # ── Watcher-side API ──────────────────────────────────────────────────────────
 
 def pending(limit: int = 20) -> list[tuple]:
+    """Unsent rows still within their retry budget. CATASTROPHIC events get a much larger budget
+    (_CRITICAL_MAX_ATTEMPTS) so a transient SMTP outage can't cap out a safety alert in ~25 s."""
     with _conn() as c:
+        if _CRITICAL_EVENTS:
+            placeholders = ",".join("?" * len(_CRITICAL_EVENTS))
+            return c.execute(
+                "SELECT id, event_type, payload, created_at, attempts "
+                "FROM notification_queue "
+                f"WHERE sent_at IS NULL AND (attempts < ? OR "
+                f"(event_type IN ({placeholders}) AND attempts < ?)) "
+                "ORDER BY id LIMIT ?",
+                (_DEFAULT_MAX_ATTEMPTS, *_CRITICAL_EVENTS, _CRITICAL_MAX_ATTEMPTS, limit),
+            ).fetchall()
         return c.execute(
             "SELECT id, event_type, payload, created_at, attempts "
             "FROM notification_queue "
-            "WHERE sent_at IS NULL AND attempts < 5 "
+            "WHERE sent_at IS NULL AND attempts < ? "
             "ORDER BY id LIMIT ?",
-            (limit,),
+            (_DEFAULT_MAX_ATTEMPTS, limit),
         ).fetchall()
+
+
+def escalate_dropped_critical() -> int:
+    """A CATASTROPHIC notification that exhausts its SMTP retry budget must NOT be silently orphaned
+    (the old `attempts < 5` cap dropped kill-switch/dead-man/gate-error emails forever after a ~25 s
+    Gmail outage). For each such row, fire the louder webhook backstop + log CRITICAL exactly once
+    (marked via the error column so we don't re-escalate every poll). Returns the count escalated."""
+    if not _CRITICAL_EVENTS:
+        return 0
+    placeholders = ",".join("?" * len(_CRITICAL_EVENTS))
+    n = 0
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, event_type, payload FROM notification_queue "
+            f"WHERE sent_at IS NULL AND attempts >= ? AND event_type IN ({placeholders}) "
+            "AND (error IS NULL OR error NOT LIKE '%ESCALATED%')",
+            (_CRITICAL_MAX_ATTEMPTS, *_CRITICAL_EVENTS),
+        ).fetchall()
+        for rid, et, payload_json in rows:
+            try:
+                payload = json.loads(payload_json)
+            except Exception:
+                payload = {}
+            log.critical("notifier: PERMANENTLY DROPPED critical notification id=%s event=%s after "
+                         "%d SMTP attempts — firing webhook backstop", rid, et, _CRITICAL_MAX_ATTEMPTS)
+            try:
+                _route_critical(et, payload)
+            except Exception:
+                log.debug("notifier: escalation webhook failed (swallowed)", exc_info=True)
+            c.execute(
+                "UPDATE notification_queue SET error = COALESCE(error, '') || '|ESCALATED' WHERE id=?",
+                (rid,),
+            )
+            n += 1
+    return n
 
 
 def last_sent_at(event_type: str) -> float | None:

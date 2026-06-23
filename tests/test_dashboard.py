@@ -255,10 +255,12 @@ class TestDashboardRoutes:
         with patch("app.live_trading.kill_switch.kill_switch") as mock_ks, \
              patch("app.api.routes._alpaca", return_value=self.alpaca):
             mock_ks.is_active = False
-            mock_ks.activate.return_value = {"status": "kill_switch_executed", "closed": ["AAPL"], "errors": []}
+            mock_ks.activate.return_value = {"status": "activated", "positions_closed": ["AAPL"],
+                                             "errors": [], "flatten_ok": True, "persisted": True}
             r = self.client.post("/api/dashboard/control/kill-switch")
         assert r.status_code == 200
         assert "AAPL" in r.json()["closed"]
+        mock_ks.activate.assert_called_once()    # route delegates to the real kill switch (true halt)
 
     def test_close_position_not_found(self):
         alpaca = _mock_alpaca()

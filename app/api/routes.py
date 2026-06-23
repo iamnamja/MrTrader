@@ -661,21 +661,18 @@ async def resume_trading():
 
 @router.post("/control/kill-switch")
 async def emergency_close_all():
-    """Emergency: close every open position immediately."""
+    """Emergency: trip the kill switch — flatten EVERY position, cancel open orders, halt trading.
+
+    Delegates to kill_switch.activate() (the real halt) instead of re-implementing close logic: it
+    flattens via one atomic close_all_positions (correctly covering SHORTS — the old per-symbol
+    `sell` of a negative qty silently left every short OPEN), cancels resting orders, and persists
+    the halt flag so the daemon syncs it. This is now a true halt, not just a (broken) close-all."""
     try:
-        alpaca = _alpaca()
-        positions = alpaca.get_positions()
-        closed = []
-        errors = []
-        for pos in positions:
-            sym = pos["symbol"]
-            qty = int(pos.get("quantity") or pos.get("qty", 0))
-            try:
-                alpaca.place_market_order(sym, qty, "sell")
-                closed.append(sym)
-            except Exception as exc:
-                errors.append({"symbol": sym, "error": str(exc)})
-        return {"status": "kill_switch_executed", "closed": closed, "errors": errors}
+        from app.live_trading.kill_switch import kill_switch
+        result = kill_switch.activate(reason="manual /control/kill-switch")
+        return {"status": "kill_switch_executed", "closed": result.get("positions_closed", []),
+                "errors": result.get("errors", []), "flatten_ok": result.get("flatten_ok"),
+                "persisted": result.get("persisted")}
     except Exception as exc:
         logger.error("Kill switch error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -683,15 +680,20 @@ async def emergency_close_all():
 
 @router.post("/control/close-position/{symbol}")
 async def close_position(symbol: str):
-    """Close a single position by symbol."""
+    """Close a single position by symbol (SHORT-aware)."""
     try:
         alpaca = _alpaca()
         position = alpaca.get_position(symbol.upper())
         if not position:
             raise HTTPException(status_code=404, detail=f"No open position for {symbol}")
         qty = int(position.get("quantity") or position.get("qty", 0))
-        alpaca.place_market_order(symbol.upper(), qty, "sell")
-        return {"status": "closed", "symbol": symbol.upper()}
+        if qty == 0:
+            raise HTTPException(status_code=404, detail=f"No open position for {symbol}")
+        # A short is held as a NEGATIVE qty — cover it with a BUY of abs(qty). The old
+        # unconditional `sell` of a negative qty was rejected by Alpaca, leaving the short OPEN.
+        side = "buy" if qty < 0 else "sell"
+        alpaca.place_market_order(symbol.upper(), abs(qty), side)
+        return {"status": "closed", "symbol": symbol.upper(), "side": side}
     except HTTPException:
         raise
     except Exception as exc:
