@@ -2337,7 +2337,16 @@ class Trader(BaseAgent):
         except Exception:
             pass
 
-        position = alpaca.get_position(symbol)
+        # Same fail-CLOSED contract as _execute_exit: an INDETERMINATE read must not consume the
+        # one-shot partial (the _partial_exited guard was already set), which would PERMANENTLY skip
+        # the partial for this position. Reset the guard and retry next cycle on a transient error;
+        # only a CONFIRMED-flat (None) returns silently.
+        try:
+            position = alpaca.get_position(symbol, raise_on_error=True)
+        except Exception as _pe:
+            pos["_partial_exited"] = False
+            self.logger.warning("%s: partial-exit deferred — could not confirm position (%s)", symbol, _pe)
+            return
         if not position:
             return
         raw_qty = int(position.get("qty", 0))
@@ -2429,7 +2438,18 @@ class Trader(BaseAgent):
     async def _execute_exit(self, symbol: str, current_price: float, reason: str, alpaca):
         """Place market order for exit and close the DB trade record."""
         pos = self.active_positions[symbol]
-        position = alpaca.get_position(symbol)
+        # FAIL-CLOSED: only the CONFIRMED-flat case (get_position returns None) may close the DB row +
+        # stop monitoring. An INDETERMINATE read (network/5xx/auth) must NOT be treated as 'flat' —
+        # otherwise a transient hiccup during a stop/target/force-close marks the trade closed while
+        # the real position is still open at the broker, leaving live capital unprotected (the
+        # stop/target is never enforced again until the next startup reconcile). raise_on_error=True
+        # surfaces the indeterminate case so we abort and retry next cycle (mirrors the entry guard).
+        try:
+            position = alpaca.get_position(symbol, raise_on_error=True)
+        except Exception as _pe:
+            self.logger.warning("%s: exit ABORTED — cannot confirm live position (%s); position stays "
+                                "monitored, will retry next cycle", symbol, _pe)
+            return
         if not position:
             self.logger.warning("Cannot exit %s — Alpaca position not found; marking DB trade closed", symbol)
             # Still close the DB record so it doesn't stay ACTIVE forever
