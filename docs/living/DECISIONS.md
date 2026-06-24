@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-24 (Audit Wave 5c) — live agents (Trader / RiskManager / PM / premarket) (re-audit #2, round 3)
+
+**Context**: re-audit #2 live-path majors in the agent loop:
+- **Trader intraday RM-slot leak**: discarding a stale/undatable approved proposal didn't release the RM intraday slot reserved at approval → slots leaked → eventually blocks all intraday entries. Now releases on discard (no-op for non-intraday; the RM counter floors at 0 so it can't over-release).
+- **RM daily-loss fails OPEN**: `_get_daily_pnl` returned a hard 0.0 when today's P&L couldn't be computed → the 2% hard stop evaluated against 0 (never fired). Now returns None when undeterminable and the gate FAILS CLOSED (rejects). Normal operation unaffected (a real Alpaca account always has last_equity → the live figure is used).
+- **RM peak-equity HWM** ratcheted on intraday UNREALIZED gains → permanently inflated the drawdown denominator. Now ratchets off SETTLED equity (last_equity), falling back to current on day 1.
+- **PM macro sizing was a no-op**: a high-impact-day `sizing_factor<1.0` was attached as metadata but never applied. Now it actually shrinks the order quantity.
+- **Premarket regime staleness haircut was dead**: age was ET-wall-clock minus a UTC-stored timestamp (off ~4-5h). Now computed in naive-UTC (handles naive + tz-aware snapshots); hour gate still ET.
+- **Trader intraday partial fill**: the unfilled remainder is now cancelled (was left to fill later as untracked shares).
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; the daily-loss fail-closed is NOT too aggressive (real accounts always have last_equity); the slot-release cannot over-release/go-negative.** 1 pre-existing MINOR noted (a FULLY-unfilled market order isn't cancelled — out of scope, tracked follow-up). 3 new tests + e2e/regime fixtures updated (added last_equity to mock accounts; mocked utcnow); full suite 4017 green; flake8 clean. DECISIONS 2026-06-24 (Wave 5c).
+
+**Consequences**: the 2% daily-loss stop and the drawdown gate are now load-bearing; intraday slots don't leak; macro de-risking actually de-risks; the regime staleness haircut fires. **Deferred (tracked, with reasons):** reconciliation pending-orders false-break (prerequisite for the enforce flip; intricate range/open-orders plumbing); FOMC-2026 hardcoded dates (need an authoritative Fed source — won't guess regulatory dates) + macro-calendar post-2026 no-op; trader limit re-quote double-position race + partial-P&L-on-restart; PM `_get_deployed_by_type` per-sleeve budget (dormant swing/intraday); the 2 backtest-simulator items; the research/stat + data-provider PIT items; the 61 MINORs.
+
+---
+
 ## 2026-06-24 (Audit Wave 5b) — broker client + reconciler ghost guard + go-live gate (re-audit #2, round 2)
 
 **Context**: re-audit #2 live-path majors in the broker/runtime/readiness layer:

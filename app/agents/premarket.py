@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -694,9 +694,16 @@ class PremarketIntelligence:
                 if row is None:
                     return None
 
+                # Age must compare like-for-like in UTC: snapshot_time is stored UTC (naive via the
+                # column default datetime.utcnow, or tz-aware UTC from regime_model). Subtracting it
+                # from ET wall-clock was off by the ET offset (~4-5h), making the staleness haircut
+                # effectively dead. Normalize both to naive-UTC.
+                _snap = row.snapshot_time
+                if _snap is not None and getattr(_snap, "tzinfo", None) is not None:
+                    _snap = _snap.astimezone(timezone.utc).replace(tzinfo=None)
                 age_hours = (
-                    (datetime.now(ET).replace(tzinfo=None) - row.snapshot_time).total_seconds() / 3600
-                    if row.snapshot_time else 99
+                    (datetime.utcnow() - _snap).total_seconds() / 3600
+                    if _snap else 99
                 )
                 result = {
                     "regime_score": row.regime_score,

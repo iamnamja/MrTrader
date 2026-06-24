@@ -101,7 +101,7 @@ def _make_alpaca(symbol: str = "TSLA", fill_price: float = 200.0):
     order_id = str(uuid.uuid4())  # UUID format matching real Alpaca order IDs
     alpaca = MagicMock()
     alpaca.get_account.return_value = {
-        "equity": 20_000.0, "portfolio_value": 20_000.0,
+        "equity": 20_000.0, "last_equity": 20_000.0, "portfolio_value": 20_000.0,
         "buying_power": 15_000.0, "cash": 15_000.0,
     }
     alpaca.get_positions.return_value = []
@@ -202,7 +202,7 @@ async def test_rm_approves_valid_proposal():
     ):
         mock_ks.is_active = False
         mock_ac.return_value.get_account.return_value = {
-            "equity": 20_000.0, "portfolio_value": 20_000.0,
+            "equity": 20_000.0, "last_equity": 20_000.0, "portfolio_value": 20_000.0,
             "buying_power": 15_000.0, "cash": 15_000.0,
         }
         mock_ac.return_value.get_positions.return_value = []
@@ -283,7 +283,7 @@ async def test_rm_rejects_over_position_limit():
 
     mock_ac = MagicMock()
     mock_ac.get_account.return_value = {
-        "equity": 20_000.0, "portfolio_value": 20_000.0,
+        "equity": 20_000.0, "last_equity": 20_000.0, "portfolio_value": 20_000.0,
         "buying_power": 15_000.0, "cash": 15_000.0,
     }
     # Simulate MAX_OPEN_POSITIONS live positions so RM's open_positions rule trips

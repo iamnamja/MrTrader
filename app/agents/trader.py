@@ -479,6 +479,10 @@ class Trader(BaseAgent):
                                 _stale = True
                         if _stale:
                             self.logger.info("Discarding stale/undatable proposal for %s", symbol)
+                            # Release the RM intraday slot reserved at approval — else discarding stale
+                            # intraday proposals leaks slots and eventually blocks all intraday
+                            # entries. No-op for non-intraday proposals.
+                            self._release_intraday_slot(proposal.get("trade_type", "swing"))
                             continue
                         self.approved_symbols[symbol] = proposal
                         self.logger.info("Queued approved symbol: %s", symbol)
@@ -1301,6 +1305,15 @@ class Trader(BaseAgent):
                     break
             except Exception:
                 pass
+        if filled_qty < shares:
+            # Cancel the unfilled remainder so it can't fill LATER as untracked extra shares
+            # (the DB/position records only filled_qty). Mirrors the limit-order partial handling.
+            try:
+                alpaca.cancel_order(order_id)
+                self.logger.warning("%s: market entry partial %d/%d — cancelled unfilled remainder",
+                                    symbol, filled_qty, shares)
+            except Exception as _ce:
+                self.logger.error("%s: failed to cancel partial-fill remainder: %s", symbol, _ce)
         if filled_qty != shares:
             self.logger.warning("%s: market entry partial fill %d/%d — recording actual filled qty",
                                 symbol, filled_qty, shares)
