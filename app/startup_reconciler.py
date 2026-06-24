@@ -367,29 +367,38 @@ def audit_active_target_stops(db_session) -> list[dict]:
 
 
 def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
-    """Return True if Alpaca's position snapshot is trustworthy.
+    """Return True if Alpaca's position snapshot is trustworthy enough to ghost-close on.
 
-    An empty snapshot is usually valid (no positions), but if the account
-    has equity well above cash it almost certainly still holds something —
-    the API returned a partial/error response.  In that case, skip ghost
-    marking for this run.
-    """
-    if alpaca_positions:
-        return True  # non-empty snapshot is always trusted
+    The account's implied held value (equity - cash) should be roughly accounted for by the
+    snapshot's summed market value. If the snapshot's MV is materially LESS than implied-held, the
+    API returned a partial/incomplete response — ghost-marking on it would wrongly close live
+    positions that are simply missing from this snapshot. Skip ghost marking that run. This covers
+    BOTH the empty-snapshot case (MV 0) and the previously-uncaught PARTIAL-snapshot case (the
+    documented guard was dead code). A genuine mass-close leaves equity≈cash → implied-held≈0 →
+    trusted → real ghosts still detected. Fail-safe: any account-read error → trust (prior behavior)."""
     try:
         acct = alpaca.trading_client.get_account()
         equity = float(getattr(acct, "equity", 0) or 0)
         cash = float(getattr(acct, "cash", 0) or 0)
-        if equity - cash > 1.0:
-            logger.warning(
-                "_is_broker_view_trusted: Alpaca returned 0 positions but "
-                "equity=%.2f cash=%.2f — API may be returning incomplete data; "
-                "skipping ghost marking this run",
-                equity, cash,
-            )
-            return False
     except Exception as exc:
         logger.debug("_is_broker_view_trusted account check failed: %s", exc)
+        return True
+    implied_held = equity - cash
+    if implied_held <= 1.0:
+        return True  # account is essentially all cash -> an empty/small snapshot is genuine
+    snapshot_mv = 0.0
+    for p in (alpaca_positions or {}).values():
+        try:
+            snapshot_mv += abs(float(p.get("market_value") or 0.0))
+        except (TypeError, ValueError):
+            pass
+    if snapshot_mv < 0.5 * implied_held:
+        logger.warning(
+            "_is_broker_view_trusted: snapshot MV %.2f << implied held %.2f (equity %.2f - cash "
+            "%.2f) — partial/incomplete position snapshot; skipping ghost marking this run",
+            snapshot_mv, implied_held, equity, cash,
+        )
+        return False
     return True
 
 

@@ -91,11 +91,36 @@ def _notify_circuit_breaker():
         pass
 
 
+def _err_text(err) -> str:
+    """Error message text, NEVER raising. Alpaca's APIError.message can be a property that parses the
+    JSON body and raises on a non-JSON body — getattr only swallows AttributeError, so a 5xx HTML
+    body would otherwise crash the classifier (and the except handler, bypassing circuit-breaker
+    notify in the order path)."""
+    try:
+        return str(getattr(err, "message", "") or err)
+    except Exception:
+        try:
+            return str(err)
+        except Exception:
+            return ""
+
+
+def _err_code(err):
+    """Error code/status, NEVER raising (same property-raises-on-non-JSON hazard as _err_text)."""
+    try:
+        c = getattr(err, "status_code", None)
+        if c is None:
+            c = getattr(err, "code", None)
+        return c
+    except Exception:
+        return None
+
+
 def _is_duplicate_client_order_id(err) -> bool:
     """True if an Alpaca error indicates a DUPLICATE client_order_id — i.e. the order we're (re)trying
     to place ALREADY exists (a prior attempt placed it). Conservative: only treat clear duplicate
     messages as such (anything ambiguous falls through to a normal error -> raise)."""
-    msg = str(getattr(err, "message", "") or err).lower()
+    msg = _err_text(err).lower()
     return "client_order_id" in msg and ("exist" in msg or "unique" in msg or "duplicate" in msg)
 
 
@@ -105,12 +130,10 @@ def _is_position_not_found(err) -> bool:
     not-found may be reported as None; an indeterminate failure must NOT be conflated with 'flat'
     (that is the fail-OPEN that lets the entry guard double-buy). Conservative: anything that isn't a
     clear 404/not-found is treated as indeterminate."""
-    code = getattr(err, "status_code", None)
-    if code is None:
-        code = getattr(err, "code", None)
+    code = _err_code(err)
     if code in (404, "404", 40410000):  # alpaca "position does not exist" code
         return True
-    msg = str(getattr(err, "message", "") or err).lower()
+    msg = _err_text(err).lower()
     return "position does not exist" in msg or "position not found" in msg
 
 
@@ -274,6 +297,18 @@ class AlpacaClient:
             if client_order_id and _is_duplicate_client_order_id(e):
                 try:
                     existing = self.trading_client.get_order_by_client_id(client_order_id)
+                    # Verify the existing order MATCHES what we intended before treating it as
+                    # success. A client_order_id collision with a different symbol/side would
+                    # otherwise record a PHANTOM fill for the wrong order — fail CLOSED instead.
+                    if (existing.symbol != symbol
+                            or side.lower() not in str(existing.side).lower()):
+                        logger.error("Idempotent reuse MISMATCH: existing %s %s vs requested %s %s "
+                                     "(coid=%s) — failing closed", existing.symbol, existing.side,
+                                     symbol, side, client_order_id)
+                        # fall through to the generic error path below (which notifies the circuit
+                        # breaker + re-raises) — fail-closed without double-notifying.
+                        raise RuntimeError(f"client_order_id {client_order_id} maps to a different "
+                                           f"order ({existing.symbol} {existing.side})")
                     logger.info("Idempotent order reuse: %s %s already placed (client_order_id=%s)",
                                 side, symbol, client_order_id)
                     return {
@@ -340,6 +375,14 @@ class AlpacaClient:
             if client_order_id and _is_duplicate_client_order_id(e):
                 try:
                     existing = self.trading_client.get_order_by_client_id(client_order_id)
+                    if (existing.symbol != symbol
+                            or side.lower() not in str(existing.side).lower()):
+                        logger.error("Idempotent limit reuse MISMATCH: existing %s %s vs requested "
+                                     "%s %s (coid=%s) — failing closed", existing.symbol,
+                                     existing.side, symbol, side, client_order_id)
+                        # fall through to the generic error path (notifies CB + re-raises) once.
+                        raise RuntimeError(f"client_order_id {client_order_id} maps to a different "
+                                           f"order ({existing.symbol} {existing.side})")
                     logger.info("Idempotent limit-order reuse: %s %s already placed (client_order_id=%s)",
                                 side, symbol, client_order_id)
                     return {
