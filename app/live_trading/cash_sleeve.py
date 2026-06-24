@@ -301,13 +301,40 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 order = alpaca.place_market_order(
                     sym, int(qty), side, client_order_id=idempotency_key("cash", sym, side=side))
                 oid = order.get("order_id") if isinstance(order, dict) else None
-                if isinstance(order, dict) and order.get("idempotent_reuse"):
-                    log.info("cash: idempotent reuse %s %s (order already placed)", side, sym)
             except Exception as exc:
                 log.error("cash: order failed %s %s x%d: %s", side, sym, qty, exc)
                 _audit(sym, side, price=price, final_decision="block", block_reason="order_error")
                 summary["blocked"].append({**it, "block_reason": "order_error"})
                 continue
+
+            # Idempotent-reuse: a same-day re-run (force=True / operator re-trigger / retry) collided
+            # with an already-placed order — the broker did NOT execute a SECOND trade. Do NOT record
+            # the freshly-computed target_shares (that would book shares never traded). Re-derive the
+            # ACTUAL held shares from the broker so the DB matches reality; on the risk-off SELL path
+            # surface the under-replenishment so it's visible, never silently swallowed.
+            if isinstance(order, dict) and order.get("idempotent_reuse"):
+                log.info("cash: idempotent reuse %s %s — re-deriving actual shares (no new fill)",
+                         side, sym)
+                _actual = None
+                try:
+                    _pos = alpaca.get_position(sym)
+                    if isinstance(_pos, dict):
+                        _actual = abs(int(_pos.get("qty") or 0))
+                except Exception:
+                    _actual = None
+                if _actual is not None:
+                    try:
+                        _sync_cash_trade(db, sym, _actual, price, oid)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                if side == "sell":
+                    # distinct key (buffer_shortfall is a float set on the risk-off sizing path)
+                    summary.setdefault("reuse_unfilled_sells", []).append(sym)
+                _audit(sym, side, price=price, final_decision="enter", block_reason="idempotent_reuse")
+                summary["approved"].append(it)
+                continue
+
             try:
                 _sync_cash_trade(db, sym, it["target_shares"], price, oid)
                 db.commit()
