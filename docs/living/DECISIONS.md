@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-24 (Audit Wave 5d, HOTFIX) — exit path BLOCKER: indeterminate broker read abandoned a live position
+
+**Context**: Re-audit #3 (0→1 BLOCKER) found that `Trader._execute_exit` (and `_execute_partial_exit`) read `alpaca.get_position(symbol)` with the DEFAULT `raise_on_error=False`. Since Wave 1, `get_position` returns None on BOTH a confirmed-flat AND an indeterminate read error (network/5xx/auth). So a transient broker hiccup DURING a stop-hit / target-hit / PM-EXIT / 3:45pm force-close took the `if not position:` branch → marked the trade `FORCE_CLOSED_NO_POSITION` and dropped it from `active_positions` WITHOUT placing an exit order → the real position stayed open at the broker, unmonitored, its stop/target never enforced again until the next startup reconcile. A canonical fail-OPEN on live capital. (The Wave-1 fix gave `get_position` the ability to distinguish error-from-flat and wired the ENTRY guard fail-closed, but the EXIT path was not updated — this closes that asymmetry.)
+
+**Decision**: both exit paths now call `get_position(symbol, raise_on_error=True)` and **only** treat a CONFIRMED None (flat) as "close the DB row". An indeterminate read raises → the exit is ABORTED, the position is NOT marked closed and NOT dropped, and it is retried on the next monitoring cycle (the stop/target keeps being enforced). `_execute_partial_exit` additionally resets its one-shot `_partial_exited` guard so the partial isn't permanently skipped.
+
+**Rationale / verification**: mirrors the Wave-1 entry-guard fail-closed pattern (already independently Opus-deep-dived as SAFE). A transient error now DELAYS an exit by one cycle (the loop re-runs `_check_exit` each iteration) rather than ABANDONING the position — strictly safer. 2 new tests; full suite 4019 green; flake8 clean. DECISIONS 2026-06-24 (Wave 5d).
+
+**Consequences**: a stop/target/force-close can no longer silently abandon a live position on a transient broker read. **0 BLOCKERs remain.** Re-audit #3 also confirmed 27 MAJOR (13 live-path: capital-ramp pause-persist, cash positions fail-open, emergency_flatten ok-when-open, IBKR multi-account NAV, PM deployed-by-type + intraday daily-loss-cap, EOD force-close price=0, macro-gate empty-200 fail-open, overnight-gap stale-quote, manual-pause→auto-pause conversion, web subprocess stale state; 14 non-live) + 67 MINOR — the next waves + a long tail (mostly parked/dead code).
+
+---
+
 ## 2026-06-24 (Audit Wave 5c) — live agents (Trader / RiskManager / PM / premarket) (re-audit #2, round 3)
 
 **Context**: re-audit #2 live-path majors in the agent loop:

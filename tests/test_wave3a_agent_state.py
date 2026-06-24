@@ -71,7 +71,7 @@ def test_partial_exit_decrements_pos_shares(monkeypatch):
     monkeypatch.setattr(t, "log_decision", _noop)
 
     alpaca = types.SimpleNamespace(
-        get_position=lambda s: {"qty": 100},
+        get_position=lambda s, **k: {"qty": 100},   # accepts raise_on_error kwarg (Wave 5d)
         place_market_order=lambda *a, **k: {"order_id": "x"})
 
     asyncio.run(t._execute_partial_exit("AAPL", 110.0, 2.0, alpaca))
