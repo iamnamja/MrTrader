@@ -288,12 +288,16 @@ class ReadinessChecker:
             if std_pnl < 1e-8:
                 return CheckResult("deflated_sharpe", False, 0.0, "PnL std≈0 — not enough return variation")
 
-            # Annualise: assume ~252 trading days/year, average hold ≈ 5 days → ~50 trades/year
-            # Use trade count per year as the annualisation factor
+            # Annualise by the true CALENDAR year: trades_per_year = n / (days_span / 365.25), the
+            # actual realised trade frequency. The old `/252` divided calendar days by 252, treating
+            # days_span as 252-day "years" -> it UNDER-counted trades/year and thus UNDER-stated the
+            # annualised Sharpe (an artificially strict gate). This is the correct annualization and
+            # matches metrics.py `_trades_per_year`; note it makes the DSR gate slightly EASIER to
+            # pass than the (mis-annualised) prior version, which is the intended correction.
             if closed:
                 first_trade = min(t.created_at for t in closed if t.created_at)
                 days_span = max((datetime.utcnow() - first_trade).days, 1)
-                trades_per_year = n / (days_span / 252)
+                trades_per_year = n / (days_span / 365.25)
             else:
                 trades_per_year = 50.0
 

@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-24 (Audit Wave 5b) — broker client + reconciler ghost guard + go-live gate (re-audit #2, round 2)
+
+**Context**: re-audit #2 live-path majors in the broker/runtime/readiness layer:
+- **Broker error classifiers could crash** on a non-JSON error body (Alpaca's `APIError.message`/`.code` are properties that parse JSON and raise) — a crash inside the order-path `except APIError` would bypass circuit-breaker notify. Added `_err_text`/`_err_code` (never-raise) and routed both classifiers through them.
+- **Idempotent-reuse returned the existing order as success without verifying it matched** the requested symbol/side → a client_order_id collision could book a PHANTOM fill. Now verifies symbol+side and FAILS CLOSED on a mismatch (market + limit).
+- **Reconciler `_is_broker_view_trusted` only caught the EMPTY-snapshot case** (the documented partial-snapshot guard was dead code) → a partial Alpaca snapshot could wrongly ghost-CLOSE live positions. Rewritten to an MV-completeness check: distrust (skip ghost marking) when the snapshot's market value is < 50% of the account's implied held value (equity − cash); a genuine mass-close (equity≈cash) still trusts so real ghosts are detected.
+- **Go-live readiness hardcoded $20k base capital** (system runs $100k) → inflated return% ~5× → could prematurely pass the live gate. Now uses `settings.initial_capital`.
+- **DSR readiness gate annualized by `/252`** on a calendar-day span (mis-annualised) → fixed to `/365.25` (the true trade frequency, consistent with metrics.py). NOTE: this is the *correct* math and makes the gate slightly EASIER than the mis-annualised prior version (the deep-dive flagged my first comment had the direction backwards — corrected).
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER; idempotent-reuse mismatch truly fails CLOSED (control-flow traced); the reconciler guard does NOT suppress legitimate ghost detection in normal operation.** Fixed the misleading DSR comment (MAJOR, doc-only) + the redundant double circuit-breaker notify (MINOR). 7 new tests + the reconciler-hardening suite updated to the MV-completeness contract; full suite 4014 green pre-final-edits + CI; flake8 clean. DECISIONS 2026-06-24 (Wave 5b).
+
+**Consequences**: the order path can't crash/bypass the breaker on a weird error body or book a phantom reuse fill; a partial broker snapshot can't ghost-close live positions; the go-live gate uses real capital + correct annualization. Remaining: 5c (agents/PM/RM), then iterate the re-audit to zero.
+
+---
+
 ## 2026-06-24 (Audit Wave 5a) — live trend/cash sleeves + allocator (re-audit #2 live-path majors, round 1)
 
 **Context**: A 2nd whole-app re-audit (0 BLOCKER / 32 MAJOR / 61 MINOR — a fresh adversarial pass) surfaced new live-path majors the first pass missed. Wave 5a clears the trend/cash/allocator ones:

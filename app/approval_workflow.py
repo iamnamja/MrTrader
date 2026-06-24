@@ -11,6 +11,7 @@ from sqlalchemy import desc
 
 from app.database.session import get_session
 from app.database.models import TradingSession, Trade, RiskMetric, AuditLog
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,8 @@ class ApprovalWorkflow:
 
         first_trade = min(t.created_at for t in trades)
         duration_days = max((datetime.utcnow() - first_trade).days, 1)
-        return self._build_metrics(trades, duration_days, 20_000.0, db, since=first_trade)
+        return self._build_metrics(trades, duration_days, float(settings.initial_capital), db,
+                                   since=first_trade)
 
     def _build_metrics(self, trades, duration_days, initial_capital, db, since) -> Dict[str, Any]:
         total_trades = len(trades)
@@ -175,7 +177,7 @@ class ApprovalWorkflow:
             "duration_days": 0, "total_trades": 0, "winning_trades": 0,
             "win_rate_pct": 0.0, "total_pnl": 0.0, "total_return_pct": 0.0,
             "max_drawdown_pct": 0.0, "sharpe_ratio": 0.0,
-            "trades_per_day": 0.0, "initial_capital": 20_000.0,
+            "trades_per_day": 0.0, "initial_capital": float(settings.initial_capital),
         }
 
     def _verify_criteria(self, metrics: Dict[str, Any]) -> Tuple[bool, Dict[str, bool]]:

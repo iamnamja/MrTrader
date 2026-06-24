@@ -82,11 +82,24 @@ class TestWriteExitPrice:
 # ── _is_broker_view_trusted ───────────────────────────────────────────────────
 
 class TestIsBrokerViewTrusted:
-    def test_non_empty_positions_always_trusted(self):
+    def test_non_empty_complete_snapshot_trusted(self):
+        # A non-empty snapshot whose market value accounts for the implied held value is trusted.
         alpaca = MagicMock()
-        result = _is_broker_view_trusted(alpaca, {"AAPL": {}})
-        assert result is True
-        alpaca.trading_client.get_account.assert_not_called()
+        acct = MagicMock()
+        acct.equity = "60000.00"
+        acct.cash = "10000.00"   # implied held = 50k
+        alpaca.trading_client.get_account.return_value = acct
+        assert _is_broker_view_trusted(alpaca, {"AAPL": {"market_value": 50000.0}}) is True
+
+    def test_non_empty_partial_snapshot_distrusted(self):
+        # A non-empty but INCOMPLETE snapshot (MV << implied held) is distrusted — don't ghost-close
+        # real positions that are simply missing from a partial API response.
+        alpaca = MagicMock()
+        acct = MagicMock()
+        acct.equity = "60000.00"
+        acct.cash = "10000.00"   # implied held = 50k
+        alpaca.trading_client.get_account.return_value = acct
+        assert _is_broker_view_trusted(alpaca, {"AAPL": {"market_value": 1000.0}}) is False
 
     def test_empty_positions_trusted_when_equity_equals_cash(self):
         alpaca = MagicMock()
