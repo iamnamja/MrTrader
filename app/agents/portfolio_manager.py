@@ -2651,7 +2651,12 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 self.logger.info("Macro gate: high-impact day — applying sizing_factor=%.2f to swing proposals",
                                  macro_ctx.sizing_factor)
                 for p in self._swing_proposals:
-                    p["macro_sizing_factor"] = macro_ctx.sizing_factor
+                    p["macro_sizing_factor"] = macro_ctx.sizing_factor   # keep for audit
+                    # ACTUALLY de-risk: shrink the order quantity. Setting only the metadata field was
+                    # a silent no-op — nothing downstream multiplied by it.
+                    _q = int(p.get("quantity") or 0)
+                    if _q > 0:
+                        p["quantity"] = max(1, int(_q * macro_ctx.sizing_factor))
         except Exception as exc:
             self.logger.debug("Macro calendar check failed: %s", exc)
 

@@ -190,6 +190,7 @@ class TestGetRegimeContext:
             patch("app.agents.premarket.datetime") as mock_dt,
         ):
             mock_dt.now.return_value = mock_now
+            mock_dt.utcnow.return_value = mock_now_naive   # age is now computed in naive-UTC
             result = pi.get_regime_context()
 
         # Score should be haircut by 20% when stale

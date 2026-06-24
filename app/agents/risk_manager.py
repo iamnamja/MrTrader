@@ -409,9 +409,16 @@ class RiskManager(BaseAgent):
                 raw_buying_power, buying_power,
             )
 
-        if self._peak_equity is None or current_equity > self._peak_equity:
-            self._peak_equity = current_equity
-            self._persist_peak_equity(current_equity)
+        # Ratchet the persisted high-water mark off SETTLED equity (prior-day close NLV =
+        # last_equity), NOT live intraday equity-with-unrealized — an intraday unrealized spike
+        # would otherwise permanently inflate the drawdown denominator (and survive restarts),
+        # making the drawdown gate spuriously tight after the spike mean-reverts. The drawdown gate
+        # (Rule 5) still measures CURRENT equity against this settled HWM.
+        _settled_eq = account.get("last_equity")
+        _hwm_basis = float(_settled_eq) if _settled_eq else current_equity
+        if self._peak_equity is None or _hwm_basis > self._peak_equity:
+            self._peak_equity = _hwm_basis
+            self._persist_peak_equity(_hwm_basis)
 
         # ── Rule 0b: Gross exposure cap (80% of account) ─────────────────────
         # T-bill cash-sleeve positions (P1-1) are cash-equivalents, NOT risk — exclude them
@@ -540,6 +547,13 @@ class RiskManager(BaseAgent):
 
         # ── Rule 4: Daily Loss ────────────────────────────────────────────────
         daily_pnl = self._get_daily_pnl(account)
+        if daily_pnl is None:
+            # FAIL CLOSED: we cannot determine today's P&L, so the 2% daily-loss hard stop cannot be
+            # evaluated — reject new entries rather than trade blind during market hours.
+            reasoning["checks"].append({"rule": "daily_loss", "ok": False,
+                                        "msg": "daily P&L unavailable — fail-closed"})
+            reasoning["failed_rule"] = "daily_loss_unavailable"
+            return False, reasoning
         ok, msg = validate_daily_loss(daily_pnl, account_value, self.limits)
         reasoning["checks"].append({"rule": "daily_loss", "ok": ok, "msg": msg})
         if not ok:
@@ -884,14 +898,14 @@ class RiskManager(BaseAgent):
         positions = client.get_positions()
         return account, positions
 
-    def _get_daily_pnl(self, account: dict | None = None) -> float:
-        """Return today's P&L for the daily-loss gate.
+    def _get_daily_pnl(self, account: dict | None = None):
+        """Return today's P&L for the daily-loss gate, or None if it CANNOT be determined.
 
         Prefer the LIVE intraday figure from Alpaca account equity (`equity - last_equity` = today's
-        change, including unrealized), so the 2% daily-loss HARD STOP actually binds DURING the
-        session. The DB RiskMetric.daily_pnl is written only at EOD (over CLOSED trades), so reading
-        it intraday returned 0.0 and the stop could never fire while the market was open. Falls back
-        to the DB realized figure if the live account read is unavailable."""
+        change, including unrealized), so the 2% daily-loss HARD STOP binds DURING the session. Else
+        use the DB RiskMetric row if one exists. If NEITHER is available, return None — the caller
+        FAILS CLOSED (rejects the entry) rather than evaluating the hard stop against a fabricated
+        0.0 (which would let an unbounded intraday loss keep adding new positions)."""
         try:
             acct = account if account is not None else self._fetch_account_state()[0]
             eq = acct.get("equity") if acct else None
@@ -904,9 +918,11 @@ class RiskManager(BaseAgent):
         try:
             today = str(date.today())
             metric = db.query(RiskMetric).filter_by(date=today).first()
-            return float(metric.daily_pnl) if metric and metric.daily_pnl is not None else 0.0
+            if metric and metric.daily_pnl is not None:
+                return float(metric.daily_pnl)
         finally:
             db.close()
+        return None   # undeterminable -> caller fails closed
 
     # ── Phase 82: Persist peak equity across restarts ─────────────────────────
 
