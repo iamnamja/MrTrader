@@ -72,11 +72,20 @@ def equal_capital_weights(returns: pd.DataFrame) -> pd.DataFrame:
 
 
 def vol_weights(returns: pd.DataFrame, cfg: AllocatorConfig) -> pd.DataFrame:
-    """Inverse-vol (risk-parity) weights summing to 1, PIT. Sleeves with NaN vol
-    (warmup) get weight 0 until enough history; rows renormalize over the rest."""
+    """Inverse-vol (risk-parity) weights summing to 1, PIT.
+
+    Warmup guard: the vol estimator needs MORE history (min_periods ~30) than the loader's
+    min_deployed-days gate, so a sleeve still in vol-warmup has NaN vol. The old code set that
+    sleeve's weight to 0 and handed the FULL budget to the other sleeve (doubling its exposure). On
+    any row where a sleeve's vol is still NaN, fall back to EQUAL weights for that row instead."""
     rv = _realized_vol(returns, cfg)
     inv = 1.0 / rv
     w = inv.div(inv.sum(axis=1), axis=0)
+    n = returns.shape[1]
+    if n > 0:
+        warmup_rows = rv.isna().any(axis=1)
+        if warmup_rows.any():
+            w.loc[warmup_rows, :] = 1.0 / n
     return w.fillna(0.0)
 
 

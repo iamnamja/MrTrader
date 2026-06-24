@@ -4,6 +4,19 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-24 (Audit Wave 5a) — live trend/cash sleeves + allocator (re-audit #2 live-path majors, round 1)
+
+**Context**: A 2nd whole-app re-audit (0 BLOCKER / 32 MAJOR / 61 MINOR — a fresh adversarial pass) surfaced new live-path majors the first pass missed. Wave 5a clears the trend/cash/allocator ones:
+- **TSMOM partial-bar look-ahead**: the Mon 09:45 ET trend rebalance pulled a STILL-FORMING daily bar for today, so `tsmom_weights(...).iloc[-1]` (signal + inverse-vol) was computed on an unsettled same-day price → same-day look-ahead + live-vs-backtest divergence. Now drops today's row before computing weights (fail-closed `no_settled_prices` if none remain), mirroring the VIX/credit-governor settled-close guard.
+- **Cash idempotent-reuse DB rewrite**: a same-day re-run (force/operator/retry) collided with an already-placed order (deduped → no new fill), but the code still wrote the freshly-computed `target_shares` → DB diverged from broker; risk-off buffer silently under-replenished. Now re-derives ACTUAL held shares from the broker on reuse (skips the write if undeterminable) + flags `reuse_unfilled_sells`.
+- **Allocator vol-warmup**: a sleeve with enough deployed days to pass the loader but still in vol-estimator warmup got NaN vol → weight 0 → the OTHER sleeve got the FULL 80% budget (doubled trend exposure). `vol_weights` now falls back to EQUAL weights on warmup rows. (Latent: allocator default-off.)
+
+**Rationale / verification**: **Independent Opus deep-dive: SAFE TO MERGE, no BLOCKER/MAJOR; the trend guard cannot over-drop/block live rebalances (verified across host-tz/stamp conventions); the cash reuse path cannot corrupt the DB.** 1 MINOR fixed (a `buffer_shortfall` float-vs-list key collision → distinct key). 3 new tests; full suite 4006 green; flake8 clean. DECISIONS 2026-06-24 (Wave 5a).
+
+**Consequences**: the live trend signal is now PIT-correct (settled closes only), the cash sleeve can't book untraded shares on a re-run, and the allocator won't concentrate during warmup. Remaining re-audit majors: broker/runtime/readiness (5b), agents/PM/RM (5c), then iterate the re-audit to zero.
+
+---
+
 ## 2026-06-23 (Audit Wave 3b) — runtime/data state-corruption (capital persist, FRED, earnings, model, P&L, go-live, reconciler)
 
 **Context**: Audit-found MAJORs in the runtime/data layer: (a) the capital ramp stage was never persisted → a daemon restart silently demoted the live book to Stage 1; (b) the FRED API path fetched the OLDEST 24 observations (1960s macro values) when a FRED key is set → fed bad data to regime detection; (c) the earnings blackout counted CALENDAR days → a Fri→Tue print (2 trading days) wasn't blocked; (d) single-row model inference (live reeval) min-max-normalized to 0.0 → spurious EXIT (latent: active model is guarded LambdaRank); (e) PEAD daily-P&L summed the unrealized LEVEL each day → drifted cumulative P&L + the realized-Sharpe series (+ would misallocate if the vol/regime allocator armed); (f) `/approval/go-live` mutated only the WEB process's singletons in subprocess mode; (g) the ghost state-machine never reached CLOSED (count frozen at 1) → every ghost timed out to UNRESOLVED; (h) a partial fill at restart tracked only the partial.

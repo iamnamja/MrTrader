@@ -620,6 +620,24 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "data_fetch_failed"
             return summary
 
+        # PIT: the Mon 09:45 ET rebalance runs DURING market hours, so the daily-bar provider returns
+        # a STILL-FORMING bar for today. Drop it so the TSMOM signal + inverse-vol size off the latest
+        # SETTLED close (matching the backtest's shift(1)); else the live decision uses an unsettled
+        # same-day price the backtest never sees — same-day look-ahead + live-vs-backtest divergence.
+        # Mirrors the VIX/credit-governor settled-close guard above.
+        try:
+            _today_iso = datetime.now().date().isoformat()
+            prices_df = prices_df.loc[prices_df.index.strftime("%Y-%m-%d") < _today_iso]
+        except Exception:
+            log.debug("trend: drop-today-bar guard failed (proceeding on full panel)", exc_info=True)
+        if prices_df is None or prices_df.empty:
+            log.warning("trend: no settled price rows before today — fail-closed")
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
+                   block_reason="no_settled_prices")
+            summary["status"] = "failed"
+            summary["block_reason"] = "no_settled_prices"
+            return summary
+
         # ── Target weights ──
         from app.strategy.tsmom import TSMOMConfig, tsmom_weights
         cfg = TSMOMConfig(universe=[c for c in universe if c in prices_df.columns])
