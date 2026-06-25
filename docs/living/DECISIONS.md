@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5h) — two control-integrity MAJORs: manual-pause override + stale /health
+
+**Context**: Re-audit #3 live MAJORs.
+- **Bug A (orchestrator)**: pause used a single `_auto_paused` flag. An operator MANUAL pause set it False; if Alpaca then went down, `_health_check` called `pause_trading(auto=True)` → flag True → on Alpaca recovery, auto-resume RESUMED the halt the operator deliberately requested. A control-integrity violation (the system overrides an operator stop).
+- **Bug B (web /health)**: the endpoint read `kill_switch.is_active` from the web-process in-memory singleton, which in SUBPROCESS mode is a different process from the trading engine → stale; it could display "trading" while the daemon had the kill switch active.
+
+**Decision**:
+- Bug A: added a separate `_manual_paused` latch. `pause_trading(auto=False)` sets `_manual_paused=True` (and `_auto_paused=False`); `auto=True` sets only `_auto_paused`. `resume_trading()` (the only lift) clears both. `_health_check` auto-pauses only from a fully-running state (`not _auto_paused and not _manual_paused`) and auto-resumes only `if _auto_paused and not _manual_paused`. An operator halt is now never converted to an auto-pause nor auto-resumed.
+- Bug B: `/health` LATCHES the kill-switch active from BOTH sources — `ks_active = kill_switch.is_active or <DB _CFG_KS_ACTIVE>` (read via get_config, not load_state, to avoid downgrading an in-memory-active switch). Never downgrades → never shows "trading" while a halt is in force; cross-process-correct.
+
+**Rationale / verification**: Opus deep-dive verified BOTH RESOLVED — all four Bug-A transitions correct (incl. the auto-paused-then-operator-manual-pause case: the `_auto_paused=False` flip on manual pause is the load-bearing line); no external reader of the flags; both flags co-initialized (no AttributeError path). Bug B cannot show phantom-active after a legitimate reset (reset persists a verified `False`; the `or` only ever ADDS active). 4 new tests; full suite 4045 green; flake8 clean.
+
+**Consequences**: an operator pause is now respected across an Alpaca blip; the /health kill-switch display is cross-process-correct (fail-safe latch). **Known follow-ups (LOW, documented):** (a) `/health` `@ttl_cache(10s)` means a kill-switch activation can take up to 10s to appear (display-only, not the control path); (b) `mode_manager.mode` in `/health` has the SAME subprocess-staleness class as the kill switch was — left unfixed (mode is rarely flipped at runtime, lower-stakes; candidate for a follow-up). **0 BLOCKERs remain.**
+
+---
+
 ## 2026-06-25 (Audit Wave 5g) — macro calendar UNAVAILABLE no longer fails OPEN
 
 **Context**: Re-audit #3 live MAJOR (deferred from Wave 5f). The economic-calendar chain collapsed "FMP unavailable" into "no events": `economic_calendar.fetch_economic_calendar` returned `[]` whenever FMP was unreachable (it fell back to Finnhub, whose free tier always returns `[]`), and `macro_classify([])` returns `block_new_entries=False, sizing=1.0` ("no high-impact events — trade freely"). So a transient FMP outage let the book trade into an unverified macro window — a fail-OPEN. (Distinct from a genuine quiet day, where FMP IS reachable and `[]` is authoritative.)

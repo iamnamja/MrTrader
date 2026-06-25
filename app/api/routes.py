@@ -595,15 +595,32 @@ async def get_health_alias():
     except asyncio.TimeoutError:
         redis_ok, alpaca_ok = False, False
     from app.trading_modes import mode_manager
-    from app.live_trading.kill_switch import kill_switch
+    from app.live_trading.kill_switch import kill_switch, _CFG_KS_ACTIVE
+    # Kill-switch state from the DB source of truth: in subprocess mode the trading engine runs in a
+    # SEPARATE process, so this web process's in-memory singleton can be stale-INACTIVE while the
+    # daemon has halted. LATCH active if EITHER the local singleton OR the DB-persisted flag says so —
+    # never downgrade (never display 'trading' while a halt is in force), and don't mutate the
+    # singleton (calling load_state() here could itself downgrade an in-memory-active switch).
+    ks_active = kill_switch.is_active
+    try:
+        from app.database.config_store import get_config
+        _db = get_session()
+        try:
+            _val = get_config(_db, _CFG_KS_ACTIVE)
+        finally:
+            _db.close()
+        if isinstance(_val, bool):
+            ks_active = ks_active or _val
+    except Exception:
+        pass
     status = "healthy" if all([db_ok, redis_ok]) else "degraded"
-    if kill_switch.is_active:
+    if ks_active:
         status = "halted"
     return {
         "status": status,
         "checks": {"database": db_ok, "redis": redis_ok, "alpaca": alpaca_ok},
         "trading_mode": mode_manager.mode.value,
-        "kill_switch_active": kill_switch.is_active,
+        "kill_switch_active": ks_active,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
