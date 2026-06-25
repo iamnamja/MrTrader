@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 
 _CFG_STAGE_INDEX = "capital_ramp.stage_index"
 _CFG_STAGE_START = "capital_ramp.stage_start"
+_CFG_PAUSED = "capital_ramp.paused"
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,10 @@ class CapitalManager:
                 set_config(db, _CFG_STAGE_START,
                            self._stage_start.isoformat() if self._stage_start else "",
                            "Capital ramp current-stage start time (ISO)")
+                # The PAUSE flag MUST survive a restart too — else an operator-paused ramp silently
+                # resumes deploying capital after a daemon bounce (can_advance() reads _paused).
+                set_config(db, _CFG_PAUSED, "1" if self._paused else "0",
+                           "Capital ramp paused (operator hold)")
             finally:
                 db.close()
         except Exception as exc:
@@ -91,6 +96,7 @@ class CapitalManager:
             try:
                 idx = get_config(db, _CFG_STAGE_INDEX)
                 start = get_config(db, _CFG_STAGE_START)
+                paused = get_config(db, _CFG_PAUSED)
             finally:
                 db.close()
             if idx is not None:
@@ -100,8 +106,11 @@ class CapitalManager:
                     self._stage_start = datetime.fromisoformat(str(start))
                 except (TypeError, ValueError):
                     self._stage_start = None
-            logger.info("Capital ramp restored: Stage %d ($%s)",
-                        self.current_stage.stage, f"{self.current_stage.capital:,.0f}")
+            if paused is not None:
+                self._paused = str(paused).strip() in ("1", "true", "True")
+            logger.info("Capital ramp restored: Stage %d ($%s)%s",
+                        self.current_stage.stage, f"{self.current_stage.capital:,.0f}",
+                        " [PAUSED]" if self._paused else "")
             return True
         except Exception as exc:
             logger.warning("Could not restore capital ramp state: %s", exc)

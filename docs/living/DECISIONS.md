@@ -4,6 +4,25 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-24 (Audit Wave 5e) — three live-path MAJORs: fail-OPEN on indeterminate state
+
+**Context**: Re-audit #3 live-path MAJORs, batch 1 of the remaining 13. Each was a fail-OPEN — treating an unknown/error state as the safe state.
+
+1. **Capital-ramp PAUSE not persisted** (`app/live_trading/capital_manager.py`): `save_state`/`load_state` persisted only `_stage_index` + `_stage_start`, never `_paused`. A daemon restart while paused re-initialised `_paused=False` → `can_advance()` could resume deploying capital, silently overriding an operator hold.
+2. **`_current_cash_positions` fails OPEN** (`app/live_trading/cash_sleeve.py`): returned `{}` on a DB/broker read error, indistinguishable from "genuinely flat". The rebalance then computed `target_shares = 0 + qty` → re-bought an already-held T-bill (deploy path) or skipped a risk-off sell (buffer under-replenished).
+3. **`emergency_flatten` reports ok=True without verifying** (`app/live_trading/emergency_flatten.py`): set `ok=True` whenever every `close_all_positions` response was 2xx — but a 2xx ACK is not a confirmed FILL (a halted/illiquid name can ack-then-linger). The kill-switch trusts `ok` to set `_flattened=True`, which then blocks a second flatten attempt → real positions left open & unmonitored.
+
+**Decision**:
+1. `save_state` writes `_CFG_PAUSED` ("1"/"0"); `load_state` restores `self._paused` (legacy-missing row → stays default `False` — never assume paused from a missing record).
+2. `_current_cash_positions` RAISES `_PositionsUnavailable` on an indeterminate read (returns `{}` ONLY when there are genuinely no cash trades); the rebalance catches it and fail-closes (`status="failed"`, `block_reason="positions_unavailable"`), holding the cycle.
+3. After all-2xx, `flatten_alpaca` re-reads `get_positions()` and only sets `ok=True` if the book is confirmed flat; lingering positions OR a failed verify → `ok=False` + loud error.
+
+**Rationale / verification**: independent Opus deep-dive could not refute any of the three — all confirmed correctly fail-closed, no other callers affected, no half-mutated state, no harmful retry loop in the kill-switch/watchdog consumers (the `get_positions` wrapper re-raises on error, so error-vs-flat is distinguished end-to-end). 5 new tests + 1 updated fixture (emergency fake now empties the book on a successful all-2xx close); full suite 4024 green; flake8 clean (CI args). Two MINOR notes, both pre-existing context not defects: (a) `capital_manager.pause()` has no operator trigger wired yet — Fix 1 is forward-looking infra; (b) the watchdog's double-flatten is a harmless no-op on an already-flat book.
+
+**Consequences**: 3 of the 13 remaining live-path MAJORs closed. Remaining live MAJORs (10): IBKR multi-account NAV last-row-wins; backtest readiness fails open on zero trades; PM per-sleeve deployed-capital (intraday never counted); intraday daily-loss-cap DateTime-vs-string + realized-only; EOD force-close price=0 corrupt P&L; macro gate fails OPEN on empty FMP 200; overnight-gap AUTO_EXIT on single stale quote; manual-pause→auto-pause conversion (orchestrator); web /health stale kill-switch/capital in subprocess; (the transient-get_position-disables-trailing/target item was largely closed by Wave 5d). **0 BLOCKERs remain.**
+
+---
+
 ## 2026-06-24 (Audit Wave 5d, HOTFIX) — exit path BLOCKER: indeterminate broker read abandoned a live position
 
 **Context**: Re-audit #3 (0→1 BLOCKER) found that `Trader._execute_exit` (and `_execute_partial_exit`) read `alpaca.get_position(symbol)` with the DEFAULT `raise_on_error=False`. Since Wave 1, `get_position` returns None on BOTH a confirmed-flat AND an indeterminate read error (network/5xx/auth). So a transient broker hiccup DURING a stop-hit / target-hit / PM-EXIT / 3:45pm force-close took the `if not position:` branch → marked the trade `FORCE_CLOSED_NO_POSITION` and dropped it from `active_positions` WITHOUT placing an exit order → the real position stayed open at the broker, unmonitored, its stop/target never enforced again until the next startup reconcile. A canonical fail-OPEN on live capital. (The Wave-1 fix gave `get_position` the ability to distinguish error-from-flat and wired the ENTRY guard fail-closed, but the EXIT path was not updated — this closes that asymmetry.)
