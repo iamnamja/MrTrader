@@ -66,7 +66,10 @@ class RiskManager(BaseAgent):
     async def run(self):
         """Continuously consume trade_proposals and validate them."""
         self.logger.info("Risk Manager started — listening on '%s'", TRADE_PROPOSALS_QUEUE)
-        self.status = "running"
+        # Preserve a STANDING pause across a crash-and-restart (see BaseAgent._activate_status) — RM
+        # is in the same _run_agent restart wrapper; a hard "running" would self-resume validation +
+        # approval emission during an operator halt.
+        self._activate_status()
 
         # Load persisted peak equity on startup so drawdown rule survives restarts
         self._load_peak_equity()

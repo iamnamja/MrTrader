@@ -376,7 +376,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
 
     async def run(self):
         self.logger.info("Portfolio Manager started")
-        self.status = "running"
+        # Preserve a STANDING pause across a crash-and-restart (see BaseAgent._activate_status).
+        self._activate_status()
         self._try_load_model()
         self._restore_daily_flags()
 

@@ -419,7 +419,8 @@ class Trader(BaseAgent):
     async def run(self):
         """Continuously consume approved trades and monitor market conditions."""
         self.logger.info("Trader Agent started")
-        self.status = "running"
+        # Preserve a STANDING pause across a crash-and-restart (see BaseAgent._activate_status).
+        self._activate_status()
 
         # Reconcile Alpaca positions with DB on startup (handles restarts mid-session)
         try:
