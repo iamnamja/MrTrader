@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 6a) — research sim: signal-mode shorts didn't reserve margin
+
+**Context**: Re-audit research-tier MAJOR (non-live; the live book doesn't short). In `AgentSimulator` SIGNAL mode, a short ENTRY did a net-zero cash hack (`cash += proceeds; cash -= notional`) and left `short_collateral` at 0, while `buying_power` returned raw `cash`. Because the reserve stayed 0, each short's proceeds effectively ADDED free buying power (phantom inflation) → the RM buying-power gate could let the short book stack unbounded shorts. REBALANCE mode already reserved collateral correctly.
+
+**Decision**: 3 coupled edits — signal-mode short ENTRY reserves `short_collateral += entry_notional`; `buying_power` returns `cash - short_collateral`; the signal-mode COVER (`_close_position`) pays the exit notional and releases the reserve. This makes SIGNAL match REBALANCE's bookkeeping.
+
+**Rationale / verification**: Opus deep-dive proved (algebra) round-trip cash = `(E-X)·Q - tx_entry - tx_exit` and the open-position equity contribution = `-tx_entry` under BOTH old and new — i.e. `equity_mtm`, `equity_decision`, `_effective_cash`, and realized P&L are IDENTICAL; only the short-side gate input changes. `short_collateral` nets to 0 with no leak (every signal close routes through `_close_position`; `max(0,…)` floor). Long-only books reserve nothing → byte-identical. **Honesty note (from the deep-dive):** this removes the *phantom-buying-power inflation*; it does NOT by itself bound aggregate short gross — per-name short size is bounded by `MAX_POSITION_SIZE_PCT` (`validate_position_size`). 4 tests; 375 simulator-area tests green; PIPELINE_ARCHITECTURE.md updated (mandatory).
+
+**Consequences**: signal-mode LONG/SHORT backtests that previously over-stacked shorts will change (lower leverage/Sharpe) → **affected L/S evals should be RE-RUN**; long-only swing WF/CPCV is unaffected. First of the research-tier wave (6a–6d). 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Audit Wave 5l) — two fail-OPEN gates: RM per-sleeve budget + reconciler short-book trust
 
 **Context**: Re-audit #4 final MAJORs.
