@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 6c) — research metric: training-time WF-CV folds weren't time-ordered
+
+**Context**: Re-audit research-tier MAJOR. `ModelTrainer._walk_forward_cv` (an expanding-window CV that reports `wf_auc` during training) split a symbol-major-concatenated `[X_train, X_test]` by row index, so folds weren't time-OOS (a fold's test rows could predate its train rows across symbols). **Important scope:** `wf_auc` is a REPORTED metric, NOT the live-promotion gate — the gate is the separate time-purged CPCV pipeline (already correct). So this was a trust-in-the-reported-number issue, not a gate decision issue.
+
+**Decision**: pass a per-row time key (`window_idx`, a monotonic index into the chronologically-sorted `all_dates`) and stable-sort rows by it before the expanding split (both the main and regime-split call sites); when the key is absent or length-mismatched, fall back to the old order with a LOUD "NOT time-OOS — use the CPCV pipeline for promotion" warning so the number is never silently trusted. Also aligned `meta_test` with `X_test` after ts-norm (a latent misalignment that became load-bearing once meta drives the dates).
+
+**Rationale / verification**: Opus deep-dive RESOLVED — `window_idx` is chronological (index into sorted `all_dates`); `meta_train`/`meta_test` are row-aligned with X through every mask/zip filter; the `len(meta)==len(X)` guard is a real backstop; `wf_auc` confirmed absent from all `gate_passed()` paths. The deep-dive caught that the first cut left the regime-split call site unconverted (warned but still leaked) → fixed by threading `meta_test` into `_train_regime_split`. 3 tests; 89 training-area tests green; PIPELINE_ARCHITECTURE.md updated.
+
+**Consequences**: the reported `wf_auc` is now a genuine time-OOS metric (or loudly flagged when it can't be). No live/gate behavior changed. Third of the research-tier wave (6a–6d). 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Audit Wave 6b) — research sim: intraday simulator never populated positions (dead caps)
 
 **Context**: Re-audit research-tier MAJOR (non-live). `IntradayAgentSimulator._process_day` created open positions only in a LOCAL `window_entered` dict; `portfolio.positions` was never populated. So `validate_open_positions` (MAX_OPEN) and `validate_portfolio_heat` — both read via `_rm_validate` — were DEAD (a window could open unlimited concurrent positions), and the deployment metric (sampled EOD from `position_market_value` on a same-day-in/out book) was always 0.
