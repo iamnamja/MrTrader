@@ -34,6 +34,23 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Daily bars are stored split/dividend-ADJUSTED (provider auto_adjust). A new split/dividend
+# re-scales the provider's ENTIRE back-history, but this cache is append-only — so a blind merge
+# mixes adjustment bases (drift in returns/vol/momentum). If the OVERLAP between cached and freshly
+# fetched bars shows close prices differing by more than this fraction, a re-adjustment has occurred
+# and the cached history is on a STALE basis. A normal same-basis update overlaps at ~0% diff; a
+# split shows ~50–100%; a small regular dividend back-adjusts recent overlap dates by well under 1%.
+_DAILY_READJUST_TOL = 0.01  # 1% median overlap diff → treat as a re-adjustment
+
+
+def _close_col(df: "pd.DataFrame"):
+    """Case/name-tolerant close-column lookup for the drift check."""
+    for c in ("close", "Close", "adj_close", "Adj Close", "adjclose"):
+        if c in df.columns:
+            return c
+    return None
+
+
 _DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "cache"
 
 
@@ -137,9 +154,15 @@ class DataCache:
                 existing = None
 
         if existing is not None and not existing.empty:
-            combined = pd.concat([existing, new_bars])
-            combined = combined[~combined.index.duplicated(keep="last")]
-            combined = combined.sort_index()
+            existing = self._discard_if_readjusted(symbol, existing, new_bars)
+            if existing is not None:
+                combined = pd.concat([existing, new_bars])
+                combined = combined[~combined.index.duplicated(keep="last")]
+                combined = combined.sort_index()
+            else:
+                # stale adjustment basis detected — keep ONLY the freshly-adjusted bars; the
+                # missing-range re-fetch rebuilds the older portion on the current basis.
+                combined = new_bars.sort_index()
         else:
             combined = new_bars.sort_index()
 
@@ -148,6 +171,36 @@ class DataCache:
             self._mem[mem_key] = combined
         except Exception as exc:
             logger.warning("Cache write failed for %s: %s", symbol, exc)
+
+    @staticmethod
+    def _discard_if_readjusted(symbol, existing, new_bars):
+        """Return `existing` unchanged when the cached bars share the freshly-fetched adjustment
+        basis, else None when a split/dividend RE-ADJUSTMENT is detected on the overlap (so the
+        caller drops the stale-basis history). See _DAILY_READJUST_TOL."""
+        try:
+            ccol_e, ccol_n = _close_col(existing), _close_col(new_bars)
+            if not ccol_e or not ccol_n:
+                return existing
+            overlap = existing.index.intersection(new_bars.index)
+            if len(overlap) < 3:
+                return existing                      # too little overlap to judge
+            e = existing.loc[overlap, ccol_e].astype(float)
+            n = new_bars.loc[overlap, ccol_n].astype(float)
+            denom = n.abs().where(n.abs() > 0)
+            rel = ((e - n).abs() / denom).dropna()
+            if len(rel) == 0:
+                return existing
+            med = float(rel.median())
+            if med > _DAILY_READJUST_TOL:
+                logger.warning(
+                    "daily cache %s: RE-ADJUSTMENT detected (overlap median Δ=%.2f%% > %.2f%%) — "
+                    "discarding stale-basis history; the older range will re-fetch on the current "
+                    "adjustment basis", symbol, med * 100, _DAILY_READJUST_TOL * 100)
+                return None
+            return existing
+        except Exception as exc:
+            logger.debug("re-adjustment check failed for %s (%s) — keeping existing", symbol, exc)
+            return existing
 
     def missing_daily_range(
         self, symbol: str, start: date, end: date
