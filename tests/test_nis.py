@@ -179,8 +179,12 @@ class TestNewsIntelligenceService:
                 # Test _build_macro_context fail path directly
                 pass
 
-        # Test that _build_macro_context returns neutral when llm_scorer returns None
+        # Test that _build_macro_context returns neutral when llm_scorer returns None. The calendar
+        # must be REACHABLE (FMP returns [] = genuine no-events, not None=unavailable) so we actually
+        # reach macro_classify — an UNAVAILABLE calendar now takes the conservative branch (Wave 5g),
+        # which is a different code path tested in test_wave5g_macro_unavailable.py.
         with patch("app.news.llm_scorer.macro_classify", return_value=None), \
+             patch("app.news.sources.fmp_source.fetch_economic_calendar", return_value=[]), \
              patch("app.news.sources.finnhub_source.fetch_economic_calendar", return_value=[]):
             ctx = svc._build_macro_context()
             assert ctx.overall_risk == "LOW"
