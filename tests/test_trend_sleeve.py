@@ -185,7 +185,7 @@ class _FakeAlpaca:
     def get_quote(self, sym):
         return None
 
-    def place_market_order(self, sym, qty, side, client_order_id=None):
+    def place_market_order(self, sym, qty, side, client_order_id=None, est_price=None):
         self.orders.append({"symbol": sym, "qty": qty, "side": side,
                             "client_order_id": client_order_id})
         return {"order_id": f"oid-{sym}"}
@@ -407,11 +407,11 @@ def test_run_live_earlier_orders_committed_when_later_order_fails(monkeypatch, _
     _orig = fake.place_market_order
     _n = {"i": 0}
 
-    def _flaky(sym, qty, side, client_order_id=None):
+    def _flaky(sym, qty, side, client_order_id=None, est_price=None):
         _n["i"] += 1
         if _n["i"] == 2:
             raise RuntimeError("alpaca transient")
-        return _orig(sym, qty, side, client_order_id=client_order_id)
+        return _orig(sym, qty, side, client_order_id=client_order_id, est_price=est_price)
 
     fake.place_market_order = _flaky
     monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)

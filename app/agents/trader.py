@@ -1331,7 +1331,7 @@ class Trader(BaseAgent):
         try:
             order = alpaca.place_market_order(
                 symbol, shares, "sell" if is_short else "buy",
-                client_order_id=proposal_uuid,
+                client_order_id=proposal_uuid, est_price=intended_price,
             )
         except Exception as exc:
             self.logger.error("Market order failed for %s: %s", symbol, exc)
@@ -2482,7 +2482,8 @@ class Trader(BaseAgent):
         from app.live_trading.order_ids import exit_order_id
         order = alpaca.place_market_order(
             symbol, partial_qty, _partial_side,
-            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "partial"))
+            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "partial"),
+            est_price=current_price)
         if not order:
             self.logger.error("Partial exit order failed for %s", symbol)
             pos["_partial_exited"] = False
@@ -2615,7 +2616,8 @@ class Trader(BaseAgent):
         from app.live_trading.order_ids import exit_order_id
         order = alpaca.place_market_order(
             symbol, qty, exit_side,
-            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "full"))
+            client_order_id=exit_order_id(pos.get("trade_id"), symbol, "full"),
+            est_price=current_price)
         if not order:
             self.logger.error("Exit order failed for %s", symbol)
             return
@@ -2795,9 +2797,14 @@ class Trader(BaseAgent):
         lost response, the order may already be resting at the broker under this client_order_id; a
         single retry with the SAME id hits place_limit_order's idempotent-reuse path and returns the
         existing order (no untracked live duplicate). Re-raises only if it genuinely cannot place."""
+        from app.integrations.alpaca import OrderSanityError
         try:
             return alpaca.place_limit_order(symbol, shares, side, limit,
                                             client_order_id=client_order_id)
+        except OrderSanityError:
+            # H3 rejection is DETERMINISTIC (pure arithmetic, precedes submit) — a retry would
+            # re-raise identically and never placed anything to recover. Propagate, don't retry.
+            raise
         except Exception as first:
             self.logger.warning("%s: limit place failed (%s) — retrying idempotently (coid=%s) to "
                                 "recover any resting order", symbol, first, client_order_id)
