@@ -222,10 +222,11 @@ INTRADAY_ENABLED: bool = False
 # macro step-down actually reaches sizing — not just the dashboard. The hardcoded ±window
 # BLOCK (app/calendars/macro.py → RM Rule 0 / PM proposal gates) remains the deterministic
 # floor ABOVE this and is untouched. Sizing only ever SHRINKS exposure (factor clamped to
-# [0.5, 1.0]); it can never raise size vs today's contract. Default OFF — flipping it on is a
-# paper-first behavioral change. Honored by PortfolioManager._apply_macro_sizing (F12a) and,
-# for the exit side, the tighten_exits hook (F12b).
-UNIFIED_MACRO_SIZING: bool = False
+# [0.5, 1.0]); it can never raise size vs today's contract. Honored by
+# PortfolioManager._apply_macro_sizing (F12a).
+# ENABLED 2026-06-25 (paper-first, owner-approved) — the graded macro factor now drives
+# per-symbol entry sizing. Set False to revert (+ uvicorn restart).
+UNIFIED_MACRO_SIZING: bool = True
 
 # ── Macro Intel Phase 3 F12b: macro-driven exit tightening (paper-first, default OFF) ────
 # When True, on a DIGESTED ADVERSE macro read (NIS MacroContext.tighten_exits — all high-impact
@@ -233,8 +234,10 @@ UNIFIED_MACRO_SIZING: bool = False
 # regime-shift tightening path). It NEVER force-liquidates, NEVER blocks new entries, and only
 # moves a stop TIGHTER (idempotent; fires at most once per ET day). Independent of
 # UNIFIED_MACRO_SIZING so the entry-sizing and exit-tightening behaviors can be evaluated
-# separately. Default OFF. Honored by app/agents/trader.py _apply_macro_exit_tightening (F12b).
-MACRO_TIGHTEN_EXITS: bool = False
+# separately. Honored by app/agents/trader.py _apply_macro_exit_tightening (F12b).
+# ENABLED 2026-06-25 (paper-first, owner-approved) — a digested-adverse macro day now tightens
+# open swing stops (never liquidates, never blocks). Set False to revert (+ uvicorn restart).
+MACRO_TIGHTEN_EXITS: bool = True
 
 INTRADAY_RETRAIN: dict = dict(
     days=730,

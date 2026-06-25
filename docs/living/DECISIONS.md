@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel) — ENABLED both F12 flags (paper)
+
+**Decision**: flipped `UNIFIED_MACRO_SIZING` and `MACRO_TIGHTEN_EXITS` False→True in `retrain_config.py` (owner-approved, paper-first). The graded NIS macro factor now drives per-symbol ENTRY sizing (F12a), and a digested-adverse macro day now tightens open swing stops (F12b, never liquidate / never block). Takes effect on the next uvicorn restart.
+
+**Why now**: the full F12a/F12b implementations passed Opus adversarial deep-dives with both invariants verified (entry sizing only ever SHRINKS, clamped [0.5,1.0]; exit tightening only ever moves a stop TIGHTER, never liquidates/blocks; the deterministic ±window BLOCK stays the floor). Account is Alpaca paper. Both are independently revertible (set False + restart).
+
+**Verification**: full suite re-run with both flags ON (defaults flipped) — green; all F12 tests monkeypatch the flag explicitly so they're default-agnostic. PIPELINE_ARCHITECTURE flag table + PROJECT_STATE updated.
+
+**Consequences**: live paper book now exercises the macro entry-sizing + exit-tightening paths. Watch the dashboard / `decision_audit` (`nis_macro_sizing_factor`) + `MACRO_STOP_TIGHTENED` decisions over the next macro-event day; revert either flag if behavior looks off.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 3 F12b) — macro-driven exit tightening on a digested-adverse read (flagged, paper-first)
 
 **Context**: F12a unified the ENTRY side onto the graded macro factor. Spec A5 also calls for the EXIT side: "a digested adverse read may set a NEW `tighten_exits` flag consumed ONLY by exit-review (tighten stops) — never force-liquidate, never part of the entry-block contract." This is the final Macro Intel slice.
