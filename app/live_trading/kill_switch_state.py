@@ -66,6 +66,7 @@ class KillSwitch:
         self._state = state
         self._events: List[KillEvent] = []
         self._last_heartbeat: float = clock()
+        self._beat_count: int = 0   # live-loop beats since init (the import-time stamp is NOT a beat)
         self._clock = clock
 
     @property
@@ -108,6 +109,7 @@ class KillSwitch:
     # --- auto safety triggers (escalate to HALT_NEW_RISK only; never auto-flatten) ---
     def heartbeat(self) -> None:
         self._last_heartbeat = self._clock()
+        self._beat_count += 1
 
     def dead_man_check(self, *, max_stale_sec: float) -> bool:
         """If the heartbeat is stale, AUTO-escalate to HALT_NEW_RISK (not flatten). Returns True if
@@ -120,3 +122,46 @@ class KillSwitch:
     def on_reconciliation_fail(self) -> bool:
         """A reconciliation FAIL_CLOSED auto-escalates to HALT_NEW_RISK."""
         return self.set_state(HALT_NEW_RISK, reason="reconciliation FAIL_CLOSED", actor="reconciler")
+
+
+# ── Alpha-v10 H2: the live daemon's in-memory singleton + the shadow-first consult ────────
+# The state machine lives in the daemon process (where the sleeves/RM run). The existing
+# app/live_trading/kill_switch.py binary flag remains the persistent cross-process emergency halt
+# (checked first at every gate); this singleton is the richer escalation layer fed by auto-triggers.
+kill_switch_sm = KillSwitch()
+
+# Generous internal dead-man threshold — the daemon refreshes the SM heartbeat every ~60s, so this
+# only escalates if the heartbeat loop has been dead for >5 min (the EXTERNAL watchdog, H5, is the
+# primary dead-man; this is a belt-and-suspenders in-process backstop).
+_SM_DEAD_MAN_STALE_SEC = 300.0
+
+
+def evaluate_new_risk(mode: str, *, label: str = "", logger=None) -> dict:
+    """Consult the singleton state machine for a NEW-RISK (risk-INCREASING / entry) order, per `mode`:
+      'off'     -> not consulted (allow).
+      'shadow'  -> run the dead-man check, read can_increase_risk(); LOG what it WOULD block; allow.
+      'enforce' -> block (allow=False) when the machine forbids new risk.
+    FAIL-SAFE: any error -> allow (a state-machine bug must never halt live trading; the binary
+    kill_switch.is_active, checked separately upstream, remains the hard stop). Returns
+    {mode, state, allow, would_block}. Does NOT gate risk-REDUCING orders (exits stay allowed)."""
+    try:
+        m = (mode or "shadow").strip().lower()
+        if m == "off":
+            return {"mode": "off", "state": kill_switch_sm.state, "allow": True, "would_block": False}
+        # Only run the in-process dead-man if a LIVE loop has actually fed a heartbeat (the daemon's
+        # heartbeat job). A standalone tool/process that reaches a gate without that job must NOT
+        # dead-man-escalate off the stale import-time stamp — _beat_count==0 means "no liveness
+        # signal to judge", so we skip the check there.
+        if kill_switch_sm._beat_count > 0:
+            kill_switch_sm.dead_man_check(max_stale_sec=_SM_DEAD_MAN_STALE_SEC)
+        would_block = not kill_switch_sm.can_increase_risk()
+        if would_block and logger is not None:
+            logger.warning("[kill_switch_sm:%s mode=%s] %s new-risk: state=%s",
+                           label, m, "BLOCK" if m == "enforce" else "WOULD-BLOCK (shadow)",
+                           kill_switch_sm.state)
+        return {"mode": m, "state": kill_switch_sm.state,
+                "allow": (not would_block) if m == "enforce" else True,
+                "would_block": would_block}
+    except Exception:
+        return {"mode": (mode or "shadow").strip().lower(), "state": "UNKNOWN",
+                "allow": True, "would_block": False}

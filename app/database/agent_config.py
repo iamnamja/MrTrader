@@ -245,6 +245,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.kill_switch_sm_mode",
+        "default": "shadow",
+        "type": "str",
+        "description": "Alpha-v10 H2 cross-venue kill-switch STATE MACHINE mode (the richer escalation layer above the binary kill_switch.is_active, which is always checked first as the hard cross-process stop). The in-memory machine auto-escalates to HALT_NEW_RISK on a real reconciliation FAIL_CLOSED (only when reconciliation is in ENFORCE) or a stale-heartbeat dead-man; auto can never flatten (CANCEL_ONLY ceiling), and de-escalation is human-only. 'shadow' (default) = the entry gates (trend/cash/RM) LOG what the machine WOULD block but proceed (no live change). 'enforce' = the gates BLOCK new-risk orders when the machine forbids them (exits/reductions still allowed). 'off' = not consulted. FAIL-SAFE: any state-machine error -> allow. Flip to 'enforce' only after a clean shadow window (owner-present).",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.drawdown_ladder_enabled",
         "default": "false",
         "type": "str",

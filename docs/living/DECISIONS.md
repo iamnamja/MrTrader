@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Alpha-v10 H2 code-half) — wire the kill-switch state machine (shadow-first)
+
+**Context**: The R0.4 cross-venue kill-switch STATE MACHINE (`kill_switch_state.py` — 6 states, auto-triggers capped at CANCEL_ONLY, manual-only de-escalation) was built but inert/unwired. H2 wires it shadow-first so it's observable + fed by its auto-triggers, ready for an owner-present enforce flip; the binary `kill_switch.is_active` remains the hard cross-process stop (checked first).
+
+**Decision**: module singleton `kill_switch_sm` (the daemon's in-memory escalation layer) + `evaluate_new_risk(mode, label, logger)` consult helper (off→allow; shadow→log+allow; enforce→block when `can_increase_risk()` is False; FAIL-SAFE: any error→allow). New flag `pm.kill_switch_sm_mode` (default **shadow**). Auto-triggers fed: a reconciliation FAIL_CLOSED escalates the SM to HALT_NEW_RISK **only when reconciliation is in ENFORCE** (so a shadow false-break can't latch it during the soak); the daemon heartbeat job refreshes the SM heartbeat. The 3 entry gates (trend, cash, RM) consult the SM after the binary check — shadow logs `kill_switch_sm_state`, enforce blocks new-risk (RM rejects the new-entry proposal; the sleeves skip the rebalance).
+
+**Rationale / verification**: Opus adversarial deep-dive SHIP-ABLE (no BLOCKER/HIGH). Verified: **shadow = zero live change** (allow is unconditionally True in shadow at all 3 gates — only a log + a summary key); **fail-safe** at every site (helper, config read, recon/heartbeat feeds never raise/block); recon-feed correctly ENFORCE-gated (no escalation while recon is shadow); the global singleton is daemon-local + test-isolated (autouse reset). Applied the findings: closed the standalone-process dead-man footgun (`evaluate_new_risk` runs the dead-man only after a real live-loop heartbeat — `_beat_count>0`); corrected the cash comment (coarse enforce-block also skips the reduce-only buffer-replenish sell → reduce-only is the enforce-time refinement); normalized the exception-path mode. 8 new tests; existing SM tests green.
+
+**Consequences**: the state machine is now observable on the live path (shadow) and ready for the owner-present `pm.kill_switch_sm_mode`→enforce flip after a clean window (alongside the reconciliation/whole-book-gate enforce flips, ~06-29+). The reduce-only refinement (let HALT_NEW_RISK pass protective exits at the sleeves) is the documented enforce-time follow-up — safe to defer (shadow blocks nothing; skip-rebalance is conservative). No live behavior change. Not a PIPELINE-rule file → no PIPELINE_ARCHITECTURE update.
+
+---
+
 ## 2026-06-25 (Alpha-v10 H3) — pre-trade per-order fat-finger backstop (fail-closed)
 
 **Context**: Phase-H safety brick before any IBKR dollar. Nothing rejected an absurdly-large SINGLE live order (a bug / fat-finger / runaway sizing) before it hit the broker — the whole-book gate is portfolio-level and shadow-first (logs, doesn't block); there was no per-order, fail-closed sanity check at the order chokepoint.

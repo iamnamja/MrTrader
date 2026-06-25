@@ -176,6 +176,24 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "kill_switch"
             return summary
 
+        # ── H2: kill-switch state machine (shadow-first; same flag/contract as trend) ──
+        # NOTE for the eventual enforce flip: coarsely blocking the WHOLE cash rebalance also skips
+        # the buffer-replenish branch (a reduce-only T-bill SELL that raises liquidity) — so a
+        # reduce-only refinement is the right enforce-time follow-up. Harmless in shadow (logs only),
+        # and no worse than the binary-kill / recon-enforce gates above which already block this path.
+        from app.database.agent_config import get_agent_config as _gac
+        from app.live_trading.kill_switch_state import evaluate_new_risk
+        try:
+            _ksm_mode = str(_gac(db, "pm.kill_switch_sm_mode") or "shadow").strip().lower()
+        except Exception:
+            _ksm_mode = "shadow"
+        _ksm = evaluate_new_risk(_ksm_mode, label="cash", logger=log)
+        summary["kill_switch_sm_state"] = _ksm["state"]
+        if not _ksm["allow"]:
+            summary["status"] = "blocked"
+            summary["block_reason"] = "kill_switch_sm"
+            return summary
+
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
         try:

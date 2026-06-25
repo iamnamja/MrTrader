@@ -102,6 +102,29 @@ class RiskManager(BaseAgent):
                                                   "message": "Kill switch is active"}, db_proposal)
                     continue
 
+                # H2: kill-switch state machine (shadow-first). A proposal is a NEW-RISK entry, so an
+                # escalated state (recon-break / dead-man HALT_NEW_RISK) gates it. 'shadow' (default)
+                # logs only; 'enforce' rejects. FAIL-SAFE: any error -> allow (binary switch above is
+                # the hard stop).
+                try:
+                    from app.database.agent_config import get_agent_config
+                    _kdb = get_session()
+                    try:
+                        _ksm_mode = str(get_agent_config(_kdb, "pm.kill_switch_sm_mode")
+                                        or "shadow").strip().lower()
+                    finally:
+                        _kdb.close()
+                except Exception:
+                    _ksm_mode = "shadow"
+                from app.live_trading.kill_switch_state import evaluate_new_risk
+                _ksm = evaluate_new_risk(_ksm_mode, label="risk_manager", logger=self.logger)
+                if not _ksm["allow"]:
+                    db_proposal = await asyncio.to_thread(self._persist_proposal, proposal)
+                    await self._reject(proposal, {"failed_rule": "kill_switch_sm",
+                                                  "message": f"kill-switch SM state {_ksm['state']}"},
+                                       db_proposal)
+                    continue
+
                 self.logger.info(
                     "Received proposal: %s %s x%s @ $%s from %s",
                     proposal.get("symbol"),

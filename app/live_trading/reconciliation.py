@@ -236,6 +236,15 @@ def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[flo
         if extra_actual:
             actual = list(actual) + list(extra_actual)
         result = reconcile(expected, actual, nav=nav, pending_qty=pending)
+        # H2: a reconciliation break that is being ACTED ON (enforce) auto-escalates the kill-switch
+        # state machine to HALT_NEW_RISK. Gated on ENFORCE (not shadow) so a shadow false-break can't
+        # latch the machine during the soak; never raises into the rebalance.
+        if mode == ENFORCE and not result.ok_to_trade:
+            try:
+                from app.live_trading.kill_switch_state import kill_switch_sm
+                kill_switch_sm.on_reconciliation_fail()
+            except Exception:
+                log.debug("reconcile: kill_switch_sm feed failed", exc_info=True)
         if not result.ok_to_trade:
             log.warning("[reconcile:%s mode=%s] WOULD-HOLD%s: status=%s breaks=%s %s",
                         label, mode, ("" if mode == ENFORCE else " (shadow: not blocking)"),

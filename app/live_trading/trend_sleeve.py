@@ -607,6 +607,23 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "kill_switch"
             return summary
 
+        # ── H2: kill-switch state machine (shadow-first) ──
+        # An escalated state (e.g. recon-break / dead-man HALT_NEW_RISK) gates the new-risk rebalance.
+        # 'shadow' (default) logs only; 'enforce' skips the rebalance (conservative — held positions
+        # keep their stops; a skipped weekly rebalance is safe). FAIL-SAFE: allow on any error.
+        from app.database.agent_config import get_agent_config as _gac
+        from app.live_trading.kill_switch_state import evaluate_new_risk
+        try:
+            _ksm_mode = str(_gac(db, "pm.kill_switch_sm_mode") or "shadow").strip().lower()
+        except Exception:
+            _ksm_mode = "shadow"
+        _ksm = evaluate_new_risk(_ksm_mode, label="trend", logger=log)
+        summary["kill_switch_sm_state"] = _ksm["state"]
+        if not _ksm["allow"]:
+            summary["status"] = "blocked"
+            summary["block_reason"] = "kill_switch_sm"
+            return summary
+
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
 
