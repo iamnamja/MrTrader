@@ -16,10 +16,11 @@ import scripts.dead_man_watchdog as wd
 
 # ── H4 emergency flatten ──────────────────────────────────────────────────────
 class _FakeTradingClient:
-    def __init__(self, *, raise_close=False, close_responses=None):
+    def __init__(self, *, raise_close=False, close_responses=None, on_close=None):
         self.closed = False
         self.cancel_orders_flag = None
         self._raise_close = raise_close
+        self._on_close = on_close
         # alpaca-py returns per-symbol responses with an HTTP `status`; default = all-2xx
         self._close_responses = (close_responses if close_responses is not None
                                  else [{"symbol": "SPY", "status": 200}])
@@ -32,6 +33,11 @@ class _FakeTradingClient:
             raise RuntimeError("broker rejected")
         self.closed = True
         self.cancel_orders_flag = cancel_orders
+        # a real broker empties the book on a successful all-2xx liquidation; reflect that so the
+        # post-flatten verification (Wave 5e) sees a flat book unless a symbol failed
+        if self._on_close is not None and all(
+                200 <= int(r.get("status", 0)) < 300 for r in self._close_responses):
+            self._on_close()
         return self._close_responses
 
 
@@ -41,8 +47,9 @@ class _FakeAlpaca:
         self._positions = positions if positions is not None else [
             {"symbol": "SPY", "qty": "10", "market_value": "1000"}]
         self._raise_positions = raise_positions
-        self.trading_client = _FakeTradingClient(raise_close=raise_close,
-                                                 close_responses=close_responses)
+        self.trading_client = _FakeTradingClient(
+            raise_close=raise_close, close_responses=close_responses,
+            on_close=lambda: self._positions.clear())
 
     def get_positions(self):
         if self._raise_positions:

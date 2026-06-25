@@ -60,8 +60,17 @@ def cash_universe(db) -> List[str]:
     return syms or ["SGOV"]
 
 
+class _PositionsUnavailable(RuntimeError):
+    """Raised when current cash positions cannot be determined (read error). The caller must
+    fail CLOSED — an empty {} here is indistinguishable from 'truly flat' and would make the
+    rebalance re-buy an already-held T-bill (target_shares = 0 + qty) or skip a risk-off sell."""
+
+
 def _current_cash_positions(db, alpaca) -> Dict[str, int]:
-    """Symbols tagged selector='cash' in the DB, sized from ACTUAL Alpaca shares."""
+    """Symbols tagged selector='cash' in the DB, sized from ACTUAL Alpaca shares.
+
+    Raises _PositionsUnavailable on an indeterminate read (DB or broker error) so the caller
+    fail-closes; returns {} ONLY when there are genuinely no cash positions."""
     from app.database.models import Trade
     try:
         rows = (db.query(Trade)
@@ -69,15 +78,13 @@ def _current_cash_positions(db, alpaca) -> Dict[str, int]:
                         Trade.status.in_(["ACTIVE", "PENDING_FILL"])).all())
         cash_syms = {r.symbol for r in rows}
     except Exception as exc:
-        log.warning("cash: DB position query failed: %s", exc)
-        cash_syms = set()
+        raise _PositionsUnavailable(f"DB position query failed: {exc}") from exc
     if not cash_syms:
         return {}
     try:
         positions = alpaca.get_positions() or []
     except Exception as exc:
-        log.warning("cash: get_positions failed: %s", exc)
-        return {}
+        raise _PositionsUnavailable(f"get_positions failed: {exc}") from exc
     return {p["symbol"]: int(p.get("qty") or 0)
             for p in positions if p.get("symbol") in cash_syms}
 
@@ -231,7 +238,15 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         from app.live_trading.trend_sleeve import _live_prices
         prices_df = _cash_fallback_prices(alpaca, universe)   # NOT _fetch_prices (SPY-gated)
         live = _live_prices(alpaca, universe, prices_df)
-        current = _current_cash_positions(db, alpaca)
+        try:
+            current = _current_cash_positions(db, alpaca)
+        except _PositionsUnavailable as exc:
+            # Fail CLOSED: without a confirmed position map we could re-buy a held T-bill or
+            # under-replenish the buffer. Skip this cycle; positions stay as-is, retry next run.
+            log.warning("cash: positions unavailable — HOLD rebalance (%s)", exc)
+            summary["status"] = "failed"
+            summary["block_reason"] = "positions_unavailable"
+            return summary
 
         intents: List[Dict[str, Any]] = []
         if deployable > _MIN_NOTIONAL:

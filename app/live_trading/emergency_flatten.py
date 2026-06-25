@@ -92,9 +92,27 @@ def flatten_alpaca(*, execute: bool = False, alpaca: Optional[Any] = None) -> Di
             log.error("EMERGENCY FLATTEN partial: %d position(s) failed to liquidate: %s",
                       len(failed), failed)
         else:
-            report["ok"] = True
-            log.warning("EMERGENCY FLATTEN executed on Alpaca: %d position(s) liquidated, "
-                        "orders cancelled", len(report["positions"]))
+            # All responses were 2xx — but a 2xx ACK is not a confirmed FILL (a halted/illiquid
+            # name can ack then linger). Re-read the book and only claim ok if it is actually flat;
+            # never report a successful flatten the kill-switch will trust without verifying.
+            try:
+                remaining = alpaca.get_positions() or []
+            except Exception as ve:  # noqa: BLE001
+                report["errors"].append(f"post-flatten verify failed: {ve}")
+                report["ok"] = False
+                log.error("EMERGENCY FLATTEN: could not verify flat book after 2xx acks: %s", ve)
+            else:
+                still_open = [{"symbol": p.get("symbol"), "qty": p.get("qty")}
+                              for p in remaining if p.get("symbol")]
+                if still_open:
+                    report["errors"].append(f"positions STILL OPEN after flatten: {still_open}")
+                    report["ok"] = False
+                    log.error("EMERGENCY FLATTEN incomplete: %d position(s) still open after 2xx "
+                              "acks: %s", len(still_open), still_open)
+                else:
+                    report["ok"] = True
+                    log.warning("EMERGENCY FLATTEN executed on Alpaca: %d position(s) liquidated, "
+                                "orders cancelled, book verified flat", len(report["positions"]))
     except Exception as e:  # noqa: BLE001
         report["errors"].append(f"close_all_positions: {e}")
         log.error("EMERGENCY FLATTEN failed on Alpaca: %s", e)
