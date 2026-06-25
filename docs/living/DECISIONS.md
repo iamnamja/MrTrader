@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5l) — two fail-OPEN gates: RM per-sleeve budget + reconciler short-book trust
+
+**Context**: Re-audit #4 final MAJORs.
+1. **RM per-sleeve budget cap** (`risk_manager._validate_trade` Rule 0c): resolved each position's trade_type from the DB and, on a DB error, defaulted `_type_map = {}` → every position read as 'swing' → for an INTRADAY proposal `type_deployed` read ~0 → the cap PASSED (fail-OPEN). The PM-side equivalent was hardened in Wave 5f; the RM side was not.
+2. **Reconciler `_is_broker_view_trusted`**: used `implied_held = equity - cash` to decide whether to trust a position snapshot for ghost-closing. For a SHORT book that's ≈0 (short-sale proceeds inflate cash, position MV is negative) → `implied_held <= 1.0` trusted an empty/partial snapshot unconditionally → a real short could be ghost-CLOSED on an API hiccup.
+
+**Decision**:
+1. Extracted the budget logic into `RiskManager._strategy_budget_ok(...)` (behavior-preserving) and made the DB-read error FAIL CLOSED — reject with `failed_rule="strategy_budget_unavailable"` rather than default-to-swing. Mirrors the PM-side fail-closed.
+2. `_is_broker_view_trusted` now computes expected exposure as the broker GROSS = `|long_market_value| + |short_market_value|` (account aggregates, computed broker-side from ALL positions, so reliable even when `get_positions` is partial), falling back to `equity - cash` only when the broker omits the MV breakdown. A defensive `_mv()` coerces a missing/malformed attr to 0.
+
+**Rationale / verification**: Opus deep-dive on BOTH (incl. a line-by-line diff of the RM extraction) returned RESOLVED with no new issues — the refactor's success/over-cap paths are character-identical to the original; the reconciler short case now distrusts an empty snapshot while the long-book and genuine-mass-close cases are unchanged. 6 new tests + 4 existing reconciler/integration mocks updated to set the new account MV fields; full suite 4069 green; flake8 clean.
+
+**Consequences**: the RM per-sleeve cap no longer fails open on a transient DB read (the gross-exposure cap already bounded total exposure; this restores sleeve isolation), and a short position can no longer be ghost-closed on a partial/empty snapshot. **This completes the re-audit #4 MAJOR backlog.** 0 BLOCKERs remain.
+
+---
+
 ## 2026-06-25 (Audit Wave 5k) — re-quote/escalation limit orders lacked an idempotency key (orphan)
 
 **Context**: Re-audit #4 MAJOR. Entry limit placements pass a `client_order_id`, but the re-quote and escalation REPLACEMENTS placed a fresh limit (after cancelling the old order) with NO key. A lost-response retry then left an untracked live order resting at the broker — an orphan with no stop/target/force-close until the next startup reconcile.

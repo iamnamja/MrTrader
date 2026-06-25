@@ -369,13 +369,20 @@ def audit_active_target_stops(db_session) -> list[dict]:
 def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
     """Return True if Alpaca's position snapshot is trustworthy enough to ghost-close on.
 
-    The account's implied held value (equity - cash) should be roughly accounted for by the
-    snapshot's summed market value. If the snapshot's MV is materially LESS than implied-held, the
-    API returned a partial/incomplete response — ghost-marking on it would wrongly close live
-    positions that are simply missing from this snapshot. Skip ghost marking that run. This covers
-    BOTH the empty-snapshot case (MV 0) and the previously-uncaught PARTIAL-snapshot case (the
-    documented guard was dead code). A genuine mass-close leaves equity≈cash → implied-held≈0 →
-    trusted → real ghosts still detected. Fail-safe: any account-read error → trust (prior behavior)."""
+    The account's implied held value should be roughly accounted for by the snapshot's summed market
+    value. If the snapshot's MV is materially LESS than implied-held, the API returned a
+    partial/incomplete response — ghost-marking on it would wrongly close live positions that are
+    simply missing from this snapshot. Skip ghost marking that run. This covers BOTH the
+    empty-snapshot case (MV 0) and the PARTIAL-snapshot case. A genuine mass-close leaves no
+    long/short exposure → implied-held≈0 → trusted → real ghosts still detected. Fail-safe: any
+    account-read error → trust (prior behavior).
+
+    Expected exposure is the broker's own GROSS = |long_market_value| + |short_market_value|, NOT
+    equity - cash: a SHORT book inflates cash with short-sale proceeds and carries negative position
+    MV, so equity - cash ≈ 0 even with a large open short — which would have made implied-held≈0 →
+    'trusted' → a real short ghost-closed on an empty/partial snapshot. The account aggregates are
+    computed broker-side from ALL positions, so they're a reliable cross-check even when get_positions
+    returns a partial list. Falls back to equity - cash if the broker omits the MV breakdown."""
     try:
         acct = alpaca.trading_client.get_account()
         equity = float(getattr(acct, "equity", 0) or 0)
@@ -383,9 +390,17 @@ def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
     except Exception as exc:
         logger.debug("_is_broker_view_trusted account check failed: %s", exc)
         return True
-    implied_held = equity - cash
+
+    def _mv(name: str) -> float:
+        # Defensive: a missing/malformed MV attr must not crash the trust check (would fail-open).
+        try:
+            return abs(float(getattr(acct, name, 0) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    gross = _mv("long_market_value") + _mv("short_market_value")
+    implied_held = gross if gross > 0 else max(0.0, equity - cash)
     if implied_held <= 1.0:
-        return True  # account is essentially all cash -> an empty/small snapshot is genuine
+        return True  # no long/short exposure -> an empty/small snapshot is genuine
     snapshot_mv = 0.0
     for p in (alpaca_positions or {}).values():
         try:

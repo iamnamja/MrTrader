@@ -83,38 +83,46 @@ class TestWriteExitPrice:
 
 class TestIsBrokerViewTrusted:
     def test_non_empty_complete_snapshot_trusted(self):
-        # A non-empty snapshot whose market value accounts for the implied held value is trusted.
+        # A non-empty snapshot whose market value accounts for the broker GROSS is trusted.
         alpaca = MagicMock()
         acct = MagicMock()
         acct.equity = "60000.00"
-        acct.cash = "10000.00"   # implied held = 50k
+        acct.cash = "10000.00"
+        acct.long_market_value = "50000.00"   # gross = 50k (Wave 5l reads long/short MV)
+        acct.short_market_value = "0.0"
         alpaca.trading_client.get_account.return_value = acct
         assert _is_broker_view_trusted(alpaca, {"AAPL": {"market_value": 50000.0}}) is True
 
     def test_non_empty_partial_snapshot_distrusted(self):
-        # A non-empty but INCOMPLETE snapshot (MV << implied held) is distrusted — don't ghost-close
+        # A non-empty but INCOMPLETE snapshot (MV << gross) is distrusted — don't ghost-close
         # real positions that are simply missing from a partial API response.
         alpaca = MagicMock()
         acct = MagicMock()
         acct.equity = "60000.00"
-        acct.cash = "10000.00"   # implied held = 50k
+        acct.cash = "10000.00"
+        acct.long_market_value = "50000.00"
+        acct.short_market_value = "0.0"
         alpaca.trading_client.get_account.return_value = acct
         assert _is_broker_view_trusted(alpaca, {"AAPL": {"market_value": 1000.0}}) is False
 
-    def test_empty_positions_trusted_when_equity_equals_cash(self):
+    def test_empty_positions_trusted_when_no_exposure(self):
         alpaca = MagicMock()
         acct = MagicMock()
         acct.equity = "10000.00"
         acct.cash = "10000.00"
+        acct.long_market_value = "0.0"        # no exposure -> empty snapshot is genuine
+        acct.short_market_value = "0.0"
         alpaca.trading_client.get_account.return_value = acct
         result = _is_broker_view_trusted(alpaca, {})
         assert result is True
 
-    def test_empty_positions_distrusted_when_equity_above_cash(self):
+    def test_empty_positions_distrusted_when_exposure_present(self):
         alpaca = MagicMock()
         acct = MagicMock()
         acct.equity = "10500.00"
         acct.cash = "10000.00"
+        acct.long_market_value = "500.00"     # 500 of long exposure but an EMPTY snapshot
+        acct.short_market_value = "0.0"
         alpaca.trading_client.get_account.return_value = acct
         result = _is_broker_view_trusted(alpaca, {})
         assert result is False
