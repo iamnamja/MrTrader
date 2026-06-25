@@ -299,6 +299,56 @@ class RiskManager(BaseAgent):
 
     # ─── Validation Engine ────────────────────────────────────────────────────
 
+    def _strategy_budget_ok(self, trade_type, positions, account_value, trade_cost,
+                            reasoning) -> bool:
+        """Per-sleeve (swing/intraday) budget cap. Returns False (and records the failure in
+        `reasoning`) if the proposal would breach the sleeve budget OR if the sleeve attribution
+        can't be determined.
+
+        Alpaca positions carry no trade_type, so it's resolved from the DB. FAIL CLOSED on a read
+        error: without the per-symbol map we can't attribute deployed capital to a sleeve, so we
+        cannot honour the cap — rejecting beats defaulting every position to 'swing' (which makes the
+        intraday budget read ~0 and lets an over-budget intraday entry through). Mirrors the PM-side
+        fail-closed (Wave 5f)."""
+        from app.live_trading.cash_sleeve import CASH_ETFS
+        budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
+        try:
+            from app.database.models import Trade as _BudgetTrade
+            _bdb = get_session()
+            try:
+                _type_map = {
+                    t.symbol: (t.trade_type or "swing")
+                    for t in _bdb.query(_BudgetTrade)
+                    .filter(_BudgetTrade.status.in_(("ACTIVE", "PENDING_FILL")))
+                    .all()
+                }
+            finally:
+                _bdb.close()
+        except Exception as _bexc:
+            self.logger.warning("strategy-budget: trade_type map unavailable — rejecting (%s)", _bexc)
+            reasoning["failed_rule"] = "strategy_budget_unavailable"
+            reasoning["checks"].append({"rule": "strategy_budget_cap", "ok": False,
+                                        "msg": "deployed-by-type unavailable (fail-closed)"})
+            return False
+        type_deployed = sum(
+            abs(float(p.get("market_value") or 0))
+            for p in positions
+            if p.get("symbol") not in CASH_ETFS   # T-bills aren't a strategy budget
+            and _type_map.get(p.get("symbol"), "swing") == trade_type
+        )
+        type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
+        if type_pct > budget_pct:
+            msg = (f"{trade_type} budget cap: adding ${trade_cost:,.0f} would use "
+                   f"{type_pct:.1%} of account (limit {budget_pct:.0%})")
+            reasoning["failed_rule"] = "strategy_budget_cap"
+            reasoning["checks"].append({"rule": "strategy_budget_cap", "ok": False, "msg": msg})
+            return False
+        reasoning["checks"].append({
+            "rule": "strategy_budget_cap", "ok": True,
+            "msg": f"{trade_type} deployed={type_pct:.1%} (limit {budget_pct:.0%})"
+        })
+        return True
+
     async def _validate_trade(
         self, proposal: Dict[str, Any]
     ) -> Tuple[bool, Dict[str, Any]]:
@@ -445,39 +495,8 @@ class RiskManager(BaseAgent):
 
         # ── Rule 0c: Strategy budget cap ─────────────────────────────────────
         trade_type = proposal.get("trade_type", "swing")
-        budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
-        # Alpaca positions don't carry trade_type — resolve from DB
-        try:
-            from app.database.models import Trade as _BudgetTrade
-            _bdb = get_session()
-            try:
-                _type_map = {
-                    t.symbol: (t.trade_type or "swing")
-                    for t in _bdb.query(_BudgetTrade)
-                    .filter(_BudgetTrade.status.in_(("ACTIVE", "PENDING_FILL")))
-                    .all()
-                }
-            finally:
-                _bdb.close()
-        except Exception:
-            _type_map = {}
-        type_deployed = sum(
-            abs(float(p.get("market_value") or 0))
-            for p in positions
-            if p.get("symbol") not in CASH_ETFS   # T-bills aren't a strategy budget
-            and _type_map.get(p.get("symbol"), "swing") == trade_type
-        )
-        type_pct = (type_deployed + trade_cost) / max(account_value, 1.0)
-        if type_pct > budget_pct:
-            msg = (f"{trade_type} budget cap: adding ${trade_cost:,.0f} would use "
-                   f"{type_pct:.1%} of account (limit {budget_pct:.0%})")
-            reasoning["failed_rule"] = "strategy_budget_cap"
-            reasoning["checks"].append({"rule": "strategy_budget_cap", "ok": False, "msg": msg})
+        if not self._strategy_budget_ok(trade_type, positions, account_value, trade_cost, reasoning):
             return False, reasoning
-        reasoning["checks"].append({
-            "rule": "strategy_budget_cap", "ok": True,
-            "msg": f"{trade_type} deployed={type_pct:.1%} (limit {budget_pct:.0%})"
-        })
 
         # ── Rule 1: Buying Power ──────────────────────────────────────────────
         ok, msg = validate_buying_power(

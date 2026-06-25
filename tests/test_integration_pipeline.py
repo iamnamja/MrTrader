@@ -241,6 +241,10 @@ class TestStartupReconciler:
         # Alpaca has OTHER but not GHOST — ghost detection should fire.
         mock_alpaca = MagicMock()
         mock_alpaca.get_positions.return_value = [{"symbol": "OTHER", "qty": "10", "avg_entry_price": "100"}]
+        # explicit account so _is_broker_view_trusted (Wave 5l reads gross MV) trusts the snapshot
+        _acct = mock_alpaca.trading_client.get_account.return_value
+        _acct.equity = "0"; _acct.cash = "0"
+        _acct.long_market_value = "0"; _acct.short_market_value = "0"
         with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
             result = reconcile(mock_alpaca, db_session)
         assert len(result["ghost_positions"]) == 1
@@ -270,6 +274,10 @@ class TestStartupReconciler:
         db_session.commit()
         mock_alpaca = MagicMock()
         mock_alpaca.get_positions.return_value = []
+        # genuine external close -> no broker exposure -> empty snapshot is trusted (Wave 5l)
+        _acct = mock_alpaca.trading_client.get_account.return_value
+        _acct.equity = "0"; _acct.cash = "0"
+        _acct.long_market_value = "0"; _acct.short_market_value = "0"
         with patch("app.startup_reconciler._get_open_alpaca_orders", return_value=[]):
             result = reconcile(mock_alpaca, db_session)
         assert len(result["ghost_positions"]) == 1
