@@ -1746,6 +1746,8 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                             sym, _news_sig.sizing_multiplier, old_qty,
                             proposal["quantity"], _news_sig.rationale,
                         )
+                # F12a (flagged): fold the graded NIS macro factor into qty for BOTH long & short entries
+                self._apply_macro_sizing(proposal, _macro_ctx, sym)
                 proposal["news_signal"] = {
                     "action_policy": _news_sig.action_policy,
                     "sizing_multiplier": _news_sig.sizing_multiplier,
@@ -2566,6 +2568,52 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         "gate1c_meltup",
     })
 
+    def _apply_macro_sizing(self, proposal: Dict[str, Any], macro_ctx, symbol: str) -> None:
+        """F12a: fold the GRADED NIS macro `global_sizing_factor` into per-symbol order quantity.
+
+        Applied AFTER the per-symbol news multiplier, only when UNIFIED_MACRO_SIZING is on (default
+        OFF → no live change). The hardcoded ±window BLOCK stays the deterministic floor above this;
+        this only ever SHRINKS exposure (factor clamped to [0.5, 1.0]) — never raises it. Records
+        `macro_sizing_factor` on the proposal for audit/UI even when the flag is off or factor==1.0.
+        Fails silently — never blocks trading."""
+        try:
+            from app.ml.retrain_config import UNIFIED_MACRO_SIZING
+            factor = float(getattr(macro_ctx, "global_sizing_factor", 1.0) or 1.0)
+            factor = min(1.0, max(0.5, factor))
+            # distinct key from the send-time deterministic calendar factor (`macro_sizing_factor`)
+            # so the two never collide / clobber each other's audit value
+            proposal["nis_macro_sizing_factor"] = factor  # always record (audit), even if not applied
+            if not UNIFIED_MACRO_SIZING or factor >= 1.0:
+                return
+            old_q = int(proposal.get("quantity") or 0)
+            if old_q <= 0:
+                return
+            proposal["quantity"] = max(1, int(old_q * factor))
+            self.logger.info(
+                "NIS macro sizing %s: %.2f× (%d→%d) [unified]",
+                symbol, factor, old_q, proposal["quantity"],
+            )
+        except Exception as exc:
+            self.logger.debug("macro sizing apply failed for %s (non-fatal): %s", symbol, exc)
+
+    def _apply_calendar_sizing(self, proposals, calendar_sizing_factor: float) -> None:
+        """Apply the DETERMINISTIC macro-calendar sizing factor to swing order quantity at send time.
+
+        When UNIFIED_MACRO_SIZING is ON, the GRADED NIS factor (already applied per-symbol at build
+        via _apply_macro_sizing) is the sizing authority — so this only RECORDS the calendar factor
+        and SKIPS the quantity shrink, avoiding a silent double-shrink. Flag OFF → applies the
+        calendar shrink (unchanged legacy behavior). The calendar BLOCK gate (caller-side) remains
+        the floor either way. Distinct key (`macro_sizing_factor`) from the NIS build-time key
+        (`nis_macro_sizing_factor`) so neither clobbers the other's audit value."""
+        from app.ml.retrain_config import UNIFIED_MACRO_SIZING
+        for p in proposals:
+            p["macro_sizing_factor"] = calendar_sizing_factor   # keep for audit
+            if UNIFIED_MACRO_SIZING:
+                continue   # graded NIS sizing already applied at build — do not double-shrink
+            _q = int(p.get("quantity") or 0)
+            if _q > 0:
+                p["quantity"] = max(1, int(_q * calendar_sizing_factor))
+
     def _write_skip_audit(
         self,
         strategy: str,
@@ -2670,15 +2718,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 self._swing_proposals = []
                 return
             if macro_ctx.sizing_factor < 1.0:
-                self.logger.info("Macro gate: high-impact day — applying sizing_factor=%.2f to swing proposals",
+                self.logger.info("Macro gate: high-impact day — calendar sizing_factor=%.2f",
                                  macro_ctx.sizing_factor)
-                for p in self._swing_proposals:
-                    p["macro_sizing_factor"] = macro_ctx.sizing_factor   # keep for audit
-                    # ACTUALLY de-risk: shrink the order quantity. Setting only the metadata field was
-                    # a silent no-op — nothing downstream multiplied by it.
-                    _q = int(p.get("quantity") or 0)
-                    if _q > 0:
-                        p["quantity"] = max(1, int(_q * macro_ctx.sizing_factor))
+                self._apply_calendar_sizing(self._swing_proposals, macro_ctx.sizing_factor)
         except Exception as exc:
             self.logger.debug("Macro calendar check failed: %s", exc)
 
@@ -3380,6 +3422,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                         symbol, _news_sig.sizing_multiplier, old_qty,
                         proposal["quantity"], _news_sig.rationale,
                     )
+                self._apply_macro_sizing(proposal, _macro_ctx, symbol)   # F12a (flagged)
                 proposal["news_signal"] = {
                     "action_policy": _news_sig.action_policy,
                     "direction_score": _news_sig.direction_score,
@@ -4185,6 +4228,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                         symbol, news_sig.sizing_multiplier, old_qty,
                         proposal["quantity"], news_sig.rationale,
                     )
+                self._apply_macro_sizing(proposal, macro_ctx, symbol)   # F12a (flagged)
                 proposal["news_signal"] = {
                     "action_policy": news_sig.action_policy,
                     "direction_score": news_sig.direction_score,
