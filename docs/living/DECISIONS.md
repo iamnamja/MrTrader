@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 2b) — macro risk steps DOWN after benign releases (+ deterministic floor)
+
+**Context**: Macro risk stayed HIGH/0.85 all day even after all events released benign — because the LLM prompt baked in "HIGH but outcome known → 0.85, block=false" (no step-down) and never reasoned about surprise DIRECTION. This feeds the LIVE macro gate (Trader/premarket `block_new_entries` + `global_sizing_factor`), so the fix had to step down WITHOUT ever weakening the gate.
+
+**Decision**:
+- **Prompt rewrite** (`macro_classify`): each event line now carries the polarity-aware read (Cooler/Hotter/risk-on/off via `classify_outcome`); the sticky "0.85 forever" guidance is DELETED; new guidance — all high-impact released + net benign → LOW/1.0/no-block; released + material adverse → MEDIUM/size-down; unreleased high-impact → HIGH/block. Emits `net_market_lean`.
+- **Deterministic floor + clamp** (`macro_polarity.aggregate_day` + `clamp_to_floor`): a day-level floor from per-event polarity — unreleased high-impact → HIGH/block/≤0.75; released-adverse → MEDIUM/≤0.85; all-benign → LOW/1.0. `_build_macro_context` CLAMPS the LLM result to the floor (`risk=max`, `block=OR`, `sizing=min`) — the floor only RAISES risk/block and LOWERS sizing; the LLM drives the step-DOWN when the floor permits. LLM unavailable OR raising → the deterministic floor (not flat neutral).
+
+**Rationale / verification**: Opus deep-dive — the gate is provably NEVER less conservative than before in every failure mode (LLM down → floor ≥ old neutral; LLM wrong/under-cautious → clamp ratchets up real hazards; calendar lag → unreleased→HIGH/block conservative-long; calendar unavailable → unchanged Wave-5g MEDIUM/0.5/block), while a genuinely benign all-released day now reaches LOW/1.0. It caught one LOW gap — a RAISE (vs clean None) in `macro_classify` fell to flat neutral, discarding the floor — now closed (a raise routes to the floor). 12 new tests; full suite 4119 green; flake8 clean.
+
+**Consequences**: macro risk now reflects CURRENT forward risk (steps down once benign outcomes are digested) instead of staying HIGH all day, with a deterministic safety floor that can't be talked below. Fixes the operator's #1. Phase 3 (SIZE-DOWN macro reactivity) is the last slice. 0 BLOCKERs. **Activating in the running daemon needs a uvicorn restart** (NIS prompt/logic change).
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 2a) — polarity-aware macro outcomes (fix the Beat/Miss bug)
 
 **Context**: The event table labeled outcomes by `sign(actual − estimate)` (higher = green "Beat") — earnings framing applied blindly to macro. For lower-is-better prints it inverted the meaning: PCE 0.4<0.5 (cooler inflation = good) and Jobless Claims 215<225 (fewer = good) showed as red "Miss".
