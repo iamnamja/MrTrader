@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 3 F12a) — unify PM entry sizing onto the graded NIS macro factor (flagged, paper-first)
+
+**Context**: The macro step-down (Phase 2b) reached the dashboard but NOT actual sizing — the per-symbol NIS path multiplied quantity only by the per-symbol NEWS factor; the graded macro `global_sizing_factor` was never applied to NIS-path entries (F10 documented this). Spec A5: "unify swing/intraday sizing onto the graded NIS `global_sizing_factor` (keep the hardcoded BLOCK as the floor)." This touches the LIVE order-sizing path, so it ships behind a default-OFF flag, paper-first.
+
+**Decision**: new `UNIFIED_MACRO_SIZING: bool = False` (`retrain_config.py`). When ON, `PortfolioManager._apply_macro_sizing` folds the clamped [0.5,1.0] NIS macro factor into per-symbol quantity at the 3 proposal-build sites (after the news multiplier; applied to BOTH long and short swing entries + intraday). The deterministic ±window BLOCK stays the floor above it; sizing only ever SHRINKS exposure, never raises it. Flag OFF = byte-identical legacy behavior.
+
+**Avoiding double-shrink**: the swing send-time deterministic-calendar shrink was extracted into `_apply_calendar_sizing`. When `UNIFIED_MACRO_SIZING` is ON, the graded NIS factor (applied at build) is the sizing authority — the calendar path RECORDS its factor but skips the quantity shrink (no `news×NIS×calendar` triple/double-count). Distinct audit keys: `nis_macro_sizing_factor` (NIS, build) vs `macro_sizing_factor` (calendar, send) — neither clobbers the other.
+
+**Rationale / verification**: Opus adversarial deep-dive caught a BLOCKER (the send-time path clobbered the shared `macro_sizing_factor` key AND compounded the shrink the moment the flag flipped on — biting the swing path on any macro-event day) and a MEDIUM (shorts excluded from the fold). Both fixed (distinct keys + flag-gated calendar skip + call moved out of the long-only branch); a re-review confirmed RESOLVED, default-OFF byte-identical, never-raise-exposure intact, no new bugs. 10 tests incl. a build+send contract test (flag-off = calendar shrink; flag-on = single NIS shrink, no double-count); full suite green.
+
+**Consequences**: when enabled (operator decision, paper-first), the macro step-down finally reaches position sizing on a single graded path; the F10 dashboard "combined exposure" becomes real. F12b (tighten_exits on the exit side) is the remaining slice. Behavioral, flagged-off — no live change until the flag is flipped + a uvicorn restart.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 3 F11) — idempotent PM skip-audit (no duplicate rows on re-trigger)
 
 **Context**: Each PM run that abstains writes a `pm_skip` decision_audit row. A re-triggered run (manual re-run, or an adaptive re-scan) for the same standing condition wrote a fresh duplicate row every time, piling up identical abstention records. Phase 0 already collapsed per-proposal spam to one `symbol='*'` row; F11 makes the write itself idempotent across repeats.

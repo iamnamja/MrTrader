@@ -216,6 +216,17 @@ SWING_GATE = dict(
 # -2.80, t=-6.85; MODEL_STATUS.md). Set True to resume scanning AND retraining.
 INTRADAY_ENABLED: bool = False
 
+# ── Macro Intel Phase 3 F12: unified macro sizing (paper-first, default OFF) ──────
+# When True, PM folds the GRADED NIS Tier-1 macro `global_sizing_factor` into per-symbol
+# order quantity in the proposal-build paths (after the per-symbol news multiplier), so the
+# macro step-down actually reaches sizing — not just the dashboard. The hardcoded ±window
+# BLOCK (app/calendars/macro.py → RM Rule 0 / PM proposal gates) remains the deterministic
+# floor ABOVE this and is untouched. Sizing only ever SHRINKS exposure (factor clamped to
+# [0.5, 1.0]); it can never raise size vs today's contract. Default OFF — flipping it on is a
+# paper-first behavioral change. Honored by PortfolioManager._apply_macro_sizing (F12a) and,
+# for the exit side, the tighten_exits hook (F12b).
+UNIFIED_MACRO_SIZING: bool = False
+
 INTRADAY_RETRAIN: dict = dict(
     days=730,
     n_workers=MAX_WORKERS,
