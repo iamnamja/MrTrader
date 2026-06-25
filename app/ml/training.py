@@ -857,6 +857,9 @@ class ModelTrainer:
                 if not np.all(_keep_test):
                     X_test = X_test[_keep_test]
                     y_test = y_test[_keep_test]
+                    # keep meta_test ROW-ALIGNED with X_test (it was previously left unfiltered —
+                    # latent, but now load-bearing: the WF-CV builds per-row dates from meta).
+                    meta_test = [m for m, k in zip(meta_test, _keep_test) if k]
         else:
             from app.ml.ts_normalize import TSNormalizerState as _TSState
             self._ts_norm_state = _TSState()
@@ -988,6 +991,7 @@ class ModelTrainer:
                 spw=spw,
                 years=years,
                 vix_threshold=float(_CFG_REGIME_SPLIT_VIX_THRESHOLD),
+                meta_test=meta_test,
             )
 
         # Carve an internal validation slice from the NEWEST 20% of training windows.
@@ -1040,13 +1044,24 @@ class ModelTrainer:
         if shap_top:
             metrics["shap_top_features"] = shap_top
 
-        # Optional walk-forward CV
+        # Optional walk-forward CV. Pass a per-row TIME ORDER (window_idx is a monotonic index into
+        # all_dates) so the expanding-window folds are genuinely time-OOS. Without it the rows are
+        # symbol-major-concatenated and the "walk-forward" folds leak across time (KL — was a
+        # research-METRIC leak only; the live-promotion gate is the separate time-purged CPCV path).
         if self.walk_forward_folds > 0:
+            _wf_row_order = None
+            try:
+                _wf_meta = list(meta_train) + list(meta_test)
+                if len(_wf_meta) == (len(X_train) + len(X_test)):
+                    _wf_row_order = np.array([int(m["window_idx"]) for m in _wf_meta])
+            except Exception:
+                _wf_row_order = None
             wf_metrics = self._walk_forward_cv(
                 np.vstack([X_train, X_test]),
                 np.concatenate([y_train, y_test]),
                 feature_names,
                 n_folds=self.walk_forward_folds,
+                row_order=_wf_row_order,
             )
             metrics.update(wf_metrics)
 
@@ -1117,6 +1132,7 @@ class ModelTrainer:
         spw: Optional[float],
         years: int,
         vix_threshold: float,
+        meta_test: Optional[List[dict]] = None,
     ) -> int:
         """
         Option B: train two regime-specialized swing models sharing one version.
@@ -1190,11 +1206,19 @@ class ModelTrainer:
         # Walk-forward over the unified set (single-model proxy — full per-regime
         # WF would require splitting in the WF loop too; deferred to the gate run).
         if self.walk_forward_folds > 0:
+            _wf_row_order = None
+            try:
+                _wf_meta = list(meta_train) + list(meta_test or [])
+                if len(_wf_meta) == (len(X_train) + len(X_test)):
+                    _wf_row_order = np.array([int(m["window_idx"]) for m in _wf_meta])
+            except Exception:
+                _wf_row_order = None
             wf_metrics = self._walk_forward_cv(
                 np.vstack([X_train, X_test]),
                 np.concatenate([y_train, y_test]),
                 feature_names,
                 n_folds=self.walk_forward_folds,
+                row_order=_wf_row_order,
             )
             metrics.update(wf_metrics)
 
@@ -2912,12 +2936,18 @@ class ModelTrainer:
         y: np.ndarray,
         feature_names: List[str],
         n_folds: int = 5,
+        row_order: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Expanding-window walk-forward cross-validation.
         Fold k trains on the first k/(n_folds+1) fraction of samples and
         tests on the next 1/(n_folds+1) fraction.
         Returns mean and std AUC across folds.
+
+        `row_order` (per-row time key, e.g. window_idx) makes the folds genuinely TIME-OOS: rows are
+        stable-sorted by it before the expanding split, so fold k trains on the EARLIEST windows and
+        tests on the NEXT. Without it (None or length mismatch) the rows are in symbol-major order and
+        the folds leak across time — we then emit a loud warning so `wf_auc` is not trusted as OOS.
         """
         from sklearn.metrics import roc_auc_score
         from xgboost import XGBClassifier
@@ -2927,6 +2957,16 @@ class ModelTrainer:
         if fold_size < 50:
             logger.warning("Walk-forward CV skipped — too few samples per fold (%d)", fold_size)
             return {}
+
+        if row_order is not None and len(row_order) == n:
+            # stable sort by the time key → expanding-window folds are genuinely out-of-sample in time
+            _order = np.argsort(row_order, kind="stable")
+            X, y = X[_order], y[_order]
+        else:
+            logger.warning("Walk-forward CV: no per-row time order (row_order=%s, n=%d) — folds are "
+                           "NOT time-OOS; wf_auc is a same-period metric, NOT a generalization gate "
+                           "(use the CPCV pipeline for promotion)",
+                           None if row_order is None else len(row_order), n)
 
         is_regression = self.label_scheme in ("return_regression", "path_quality")
 
