@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5g) — macro calendar UNAVAILABLE no longer fails OPEN
+
+**Context**: Re-audit #3 live MAJOR (deferred from Wave 5f). The economic-calendar chain collapsed "FMP unavailable" into "no events": `economic_calendar.fetch_economic_calendar` returned `[]` whenever FMP was unreachable (it fell back to Finnhub, whose free tier always returns `[]`), and `macro_classify([])` returns `block_new_entries=False, sizing=1.0` ("no high-impact events — trade freely"). So a transient FMP outage let the book trade into an unverified macro window — a fail-OPEN. (Distinct from a genuine quiet day, where FMP IS reachable and `[]` is authoritative.)
+
+**Decision**:
+1. `economic_calendar.fetch_economic_calendar` now returns `Optional[list]`: a reachable FMP's result as-is (`[]` = real no-events day); `None` only when BOTH FMP and Finnhub are unavailable (state unknown).
+2. `NIS._build_macro_context` treats `None` as a **conservative degraded context** — `overall_risk="MEDIUM"`, `global_sizing_factor=0.5`, and (default) `block_new_entries=True` — instead of passing it to `macro_classify`. Policy knobs `MACRO_UNAVAILABLE_SIZING`/`MACRO_UNAVAILABLE_BLOCK` (intelligence_service.py).
+3. The post-event-refresh loop (portfolio_manager) guards `for evt in (events or [])` against the new `None`.
+
+**Rationale / verification**: deep-dive confirmed the None-propagation is clean (both callers tolerate None; `macro_classify` never receives None; the `[]` quiet-day path is unchanged; types valid) but found the NIS `global_sizing_factor` is wired into **intraday** sizing only, NOT swing — so size-down alone would leave the swing fail-open largely intact. The fix therefore defaults to **fail-CLOSED block**: the trader gates BOTH swing and intraday entries on `premarket.is_swing_blocked()/is_intraday_blocked()` (which read this NIS block flag), so blocking is the only stance protecting both books. Zero operational cost now (swing/intraday are dormant; the live trend+cash sleeves don't pass through this gate; blocking affects new entries only). 6 new tests; full suite 4041 green; flake8 clean.
+
+**Consequences**: the macro fail-OPEN is closed for the live entry gate. **Known limitations** (documented, not yet addressed): (a) NIS `global_sizing_factor` is still not wired into the swing `size_position` path — a separate pre-existing gap (block, not size, protects swing here); (b) an outage that develops AFTER the ~09:00 macro-context cache build is not re-evaluated mid-session (the day-cache only refreshes at 09:00 + on calendar-driven post-event triggers); (c) a conservative context cached at 09:00 stays for the day even if the calendar recovers (fail-SAFE direction). **0 BLOCKERs remain.**
+
+---
+
 ## 2026-06-25 (Audit Wave 5f) — four live-path MAJORs (batch 2); 1 false-positive killed; 1 deferred
 
 **Context**: Re-audit #3 live MAJORs, batch 2. Six candidates were investigated; **#3 (intraday daily-loss-cap str-vs-date + realized-only) was a FALSE POSITIVE** — `RiskMetric.date` is a `String(10)` column so `str(date.today())` matches correctly, and `_get_daily_pnl` already uses live equity (`equity - last_equity`, incl. unrealized) as its primary (Wave 5c), so realized-only does not apply. **#2 (macro empty-200 fail-open) deferred to Wave 5g** — an empty FMP calendar is often a *legitimate* no-events day; the real fail-open is treating FMP *unavailable* (None) as "no events", an NIS-chain policy fix that deserves its own PR.
