@@ -91,6 +91,52 @@ def get_macro_context() -> Dict[str, Any]:
         return {"status": "error", "detail": str(exc)}
 
 
+@router.get("/macro-history")
+def get_macro_history(
+    days: int = Query(default=1, ge=1, le=14),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Return the timestamped NIS macro re-assessment lineage (newest-first) for the last N ET days.
+
+    Backs the 'Today's NIS Assessment' history: each premarket + post-event re-evaluation is its own
+    `nis_macro_history` row (already persisted by persist_nis_macro_snapshot), so this replays how
+    risk/sizing/block evolved through the day (was → is → new) with the trigger that caused each
+    change. Read-only; never affects trading."""
+    try:
+        from app.database.models import NisMacroHistory
+        # snapshot_date is written as the UTC date (persist_nis_macro_snapshot), so filter on the same
+        # basis. During US trading hours UTC-date == ET-date, so "today" matches the operator's view;
+        # this just avoids a 1-day boundary mismatch overnight.
+        start_date = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+        with get_session() as db:
+            rows = (db.query(NisMacroHistory)
+                    .filter(NisMacroHistory.snapshot_date >= start_date)
+                    .order_by(NisMacroHistory.as_of.desc())
+                    .limit(limit)
+                    .all())
+            return {
+                "count": len(rows),
+                "history": [
+                    {
+                        "as_of": r.as_of.isoformat() if r.as_of else None,
+                        "snapshot_date": r.snapshot_date.isoformat() if r.snapshot_date else None,
+                        "trigger_source": r.trigger_source,
+                        "trigger_event_type": r.trigger_event_type,
+                        "trigger_event_name": r.trigger_event_name,
+                        "overall_risk": r.overall_risk,
+                        "block_new_entries": r.block_new_entries,
+                        "global_sizing_factor": r.global_sizing_factor,
+                        "rationale": r.rationale,
+                        "n_events": len(r.events_json or []),
+                    }
+                    for r in rows
+                ],
+            }
+    except Exception as exc:
+        logger.warning("GET /api/nis/macro-history failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
+
 # ── NIS: Cached Stock Signals ─────────────────────────────────────────────────
 
 @router.get("/signals")
