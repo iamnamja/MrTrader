@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 — Phantom intraday position purge + AAPL DB cleanup
+
+**Context**: The Overview "Recent Decisions" panel showed `trader INTRADAY_FORCE_CLOSED AAPL` ~30×/day at all hours, despite no AAPL position (none in `trades`, none in the 7 open trend/cash positions) and intraday being disabled. Root cause: a phantom AAPL lived in the prior process's in-memory `active_positions` (trade_type=intraday) — an intraday entry that created in-memory state but whose order never filled / DB row was never committed — and got "force-closed" every cycle (spurious log + a real sell could OPEN a short). The existing force-close phantom guard only dropped phantoms when the Alpaca `get_positions()` fetch SUCCEEDED. The most recent uvicorn restart already cleared the live symptom (active_positions rebuilt from DB → no AAPL; 0 firings since).
+
+**Decision**:
+- **Hardening** — new `Trader._purge_phantom_intraday_positions()`: DB-authoritative, drops any in-memory intraday position with no ACTIVE intraday DB trade, **independent of the Alpaca fetch** (the gap in the old guard). Called at startup (after reconcile) and at the top of `_force_close_intraday`. Fail-safe (never raises, drops nothing on a DB error). NOT per-cycle.
+- **DB cleanup** — deleted the known-unreal AAPL artifacts (archived first to `docs/archive/data/phantom_aapl_cleanup_2026-06-25.json`): 83 `agent_decisions` `INTRADAY_FORCE_CLOSED` AAPL-only rows + 219 `decision_audit` AAPL swing/skip `pm_skip` blanket-collapse artifacts. KEPT legit history (15 NIS digests, 5 rejects, 1 approval, 3 swing/enter decisions).
+
+**Rationale / verification**: Opus adversarial deep-dive returned CLEAN — found a stronger guarantee than the call-site choice: `_record_entry` commits the ACTIVE DB Trade row BEFORE writing `active_positions`, so a symbol is never in memory before its DB row is committed → the purge can never race/drop a real fresh fill. Two complementary guards (DB-authoritative purge + Alpaca-authoritative guard), disjoint from the DB-ghost-add. 5 tests (drop phantom / keep backed / ignore swing+cash / no-intraday no-DB-hit / fail-safe-on-error); full suite green.
+
+**Consequences**: the spurious AAPL force-close cannot recur (caught regardless of Alpaca-fetch health); the dashboard panels are clean. Takes effect on the next uvicorn restart. Not a PIPELINE-rule file → no PIPELINE_ARCHITECTURE update required.
+
+---
+
 ## 2026-06-25 (Macro Intel) — ENABLED both F12 flags (paper)
 
 **Decision**: flipped `UNIFIED_MACRO_SIZING` and `MACRO_TIGHTEN_EXITS` False→True in `retrain_config.py` (owner-approved, paper-first). The graded NIS macro factor now drives per-symbol ENTRY sizing (F12a), and a digested-adverse macro day now tightens open swing stops (F12b, never liquidate / never block). Takes effect on the next uvicorn restart.

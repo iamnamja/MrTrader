@@ -1,0 +1,2430 @@
+{
+ "archived_at": "2026-06-25T17:58:59.698971+00:00",
+ "note": "Phantom AAPL artifacts deleted 2026-06-25 (no AAPL ever in trades). Force-close decisions = spurious; swing/skip = pre-Phase0 blanket-collapse artifacts.",
+ "counts": {
+  "agent_decisions_intraday_force_closed_aapl": 83,
+  "decision_audit_aapl_swing_skip_pmskip": 219
+ },
+ "rows": {
+  "agent_decisions_intraday_force_closed_aapl": [
+   [
+    6317,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 14:25:00.593188"
+   ],
+   [
+    6274,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-21 13:26:05.266686"
+   ],
+   [
+    6276,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-21 16:34:08.062793"
+   ],
+   [
+    6282,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 02:17:33.303786"
+   ],
+   [
+    6280,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-21 23:18:51.263532"
+   ],
+   [
+    6285,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 11:44:24.996847"
+   ],
+   [
+    6321,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 14:32:42.485199"
+   ],
+   [
+    6287,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 11:53:07.099107"
+   ],
+   [
+    6176,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-16 23:38:24.123558"
+   ],
+   [
+    6178,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-17 00:59:26.485195"
+   ],
+   [
+    6293,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 12:31:40.710663"
+   ],
+   [
+    6301,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 12:58:58.366552"
+   ],
+   [
+    6278,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-21 16:54:04.747362"
+   ],
+   [
+    6297,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 12:44:19.120223"
+   ],
+   [
+    6308,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 13:29:39.597253"
+   ],
+   [
+    6324,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 14:48:55.377825"
+   ],
+   [
+    6327,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 14:57:40.065972"
+   ],
+   [
+    6330,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 15:33:24.003108"
+   ],
+   [
+    6332,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 16:56:15.03117"
+   ],
+   [
+    6334,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 17:04:38.727114"
+   ],
+   [
+    6336,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 17:53:42.426688"
+   ],
+   [
+    6338,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 18:02:42.294732"
+   ],
+   [
+    6342,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 20:11:21.4482"
+   ],
+   [
+    6345,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 20:50:54.292043"
+   ],
+   [
+    6350,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 21:39:46.110136"
+   ],
+   [
+    6352,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 22:13:19.392848"
+   ],
+   [
+    6354,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 22:52:57.403411"
+   ],
+   [
+    6356,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 23:01:57.391225"
+   ],
+   [
+    6358,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 23:25:24.243945"
+   ],
+   [
+    6360,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-22 23:46:23.282326"
+   ],
+   [
+    6362,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 00:12:00.37346"
+   ],
+   [
+    6364,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:21:42.948931"
+   ],
+   [
+    6366,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:25:04.37673"
+   ],
+   [
+    6368,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:34:30.439943"
+   ],
+   [
+    6369,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:48:50.353772"
+   ],
+   [
+    6371,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:49:58.459442"
+   ],
+   [
+    6372,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:56:38.756861"
+   ],
+   [
+    6375,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 03:57:46.089158"
+   ],
+   [
+    6378,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 04:16:04.460052"
+   ],
+   [
+    6380,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 04:17:40.673102"
+   ],
+   [
+    6383,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 04:44:48.652288"
+   ],
+   [
+    6385,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 04:55:30.942964"
+   ],
+   [
+    6387,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 05:13:30.916263"
+   ],
+   [
+    6389,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 05:31:08.851566"
+   ],
+   [
+    6392,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 10:29:32.324297"
+   ],
+   [
+    6394,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-23 10:31:16.197002"
+   ],
+   [
+    6409,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 10:34:53.847792"
+   ],
+   [
+    6411,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 10:56:30.576915"
+   ],
+   [
+    6413,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 11:17:14.047538"
+   ],
+   [
+    6415,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 11:19:57.258723"
+   ],
+   [
+    6417,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 11:24:40.187979"
+   ],
+   [
+    6429,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 21:52:02.490389"
+   ],
+   [
+    6431,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-24 21:53:55.53469"
+   ],
+   [
+    6433,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 03:06:38.015334"
+   ],
+   [
+    6435,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 03:13:38.711174"
+   ],
+   [
+    6437,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 03:52:33.106688"
+   ],
+   [
+    6439,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 03:55:49.095921"
+   ],
+   [
+    6442,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 04:06:43.032887"
+   ],
+   [
+    6444,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 04:13:12.701389"
+   ],
+   [
+    6446,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 04:28:18.020524"
+   ],
+   [
+    6448,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 04:35:54.90453"
+   ],
+   [
+    6450,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 05:18:53.027831"
+   ],
+   [
+    6452,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 05:41:24.535799"
+   ],
+   [
+    6454,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 05:47:29.951407"
+   ],
+   [
+    6456,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 06:00:28.634825"
+   ],
+   [
+    6458,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 06:15:37.225701"
+   ],
+   [
+    6460,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 06:23:19.470216"
+   ],
+   [
+    6462,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 06:39:40.604902"
+   ],
+   [
+    6464,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 06:44:12.837111"
+   ],
+   [
+    6471,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 12:17:57.425882"
+   ],
+   [
+    6485,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 12:33:56.744489"
+   ],
+   [
+    6500,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 12:55:03.939487"
+   ],
+   [
+    6507,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 13:14:05.893304"
+   ],
+   [
+    6527,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 14:05:33.374561"
+   ],
+   [
+    6530,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 14:23:09.420792"
+   ],
+   [
+    6533,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 14:37:34.987533"
+   ],
+   [
+    6535,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 14:53:49.436798"
+   ],
+   [
+    6537,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 15:00:52.795356"
+   ],
+   [
+    6539,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 15:18:18.276841"
+   ],
+   [
+    6541,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 15:57:39.100202"
+   ],
+   [
+    6543,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 16:18:02.388953"
+   ],
+   [
+    6545,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 16:33:05.776516"
+   ],
+   [
+    6547,
+    "trader",
+    "INTRADAY_FORCE_CLOSED",
+    null,
+    "{\"symbols\": [\"AAPL\"], \"count\": 1}",
+    "2026-06-25 16:49:43.703353"
+   ]
+  ],
+  "decision_audit_aapl_swing_skip_pmskip": [
+   [
+    "56dc0866-211a-48d2-8387-7e69561be59e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-27 20:22:46.12479"
+   ],
+   [
+    "e9d2fc67-ec01-4431-b128-00f2b7f8161a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 04:01:58.979127"
+   ],
+   [
+    "9e1d5c21-756f-4db2-a6e0-531ddbe7f07f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 12:04:46.628432"
+   ],
+   [
+    "fbd26376-c259-46db-a77b-a34923babf95",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 14:18:00.285034"
+   ],
+   [
+    "dad5eb98-5b99-479e-a17f-a6a099dc3128",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 04:10:26.345437"
+   ],
+   [
+    "2da39883-419b-4c68-a060-1dffa9e53b6a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-27 22:13:20.1687"
+   ],
+   [
+    "e85cbdaa-135e-4430-a54a-5b081bc87d38",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 14:38:14.860703"
+   ],
+   [
+    "7cb694fb-10e7-4632-911e-b960b4924c12",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 23:11:36.820926"
+   ],
+   [
+    "6b9c30d7-4df3-422a-b14c-b49d6e75a64a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 12:10:02.486334"
+   ],
+   [
+    "e4ba790c-8eb8-466b-9e80-16d20b35c588",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 12:51:01.209145"
+   ],
+   [
+    "0007e04e-d4db-4b6f-985a-3126a803d914",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 14:36:39.255304"
+   ],
+   [
+    "89efcea3-93a7-4edc-82fc-61c69fe8d636",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 17:35:28.382533"
+   ],
+   [
+    "513abf42-33c1-4849-8bd8-a3f66ae8f29e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 17:50:24.751468"
+   ],
+   [
+    "33c814dc-eb18-4b86-a068-0f976437f85e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-28 00:56:46.261048"
+   ],
+   [
+    "1569d821-b750-41c6-b3fc-f7646a515c03",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 04:15:43.432878"
+   ],
+   [
+    "5b0c8b81-e63b-485d-bedc-1fc7138187ba",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 14:26:53.251072"
+   ],
+   [
+    "b746bbac-231a-4027-b0ed-c5cd2ae6d904",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 11:55:37.654108"
+   ],
+   [
+    "9e484f8a-d783-4aaf-89a0-c6dc18a75ea9",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 01:06:55.5531"
+   ],
+   [
+    "d8e713cd-8c04-47f3-adf3-3fd383852f04",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 12:37:46.659358"
+   ],
+   [
+    "7066b55d-20b3-46a4-a95b-7a819c3eea16",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 17:52:57.274257"
+   ],
+   [
+    "bb2a9c61-76f2-4cf1-a986-f8c133db9bd4",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 11:58:12.115489"
+   ],
+   [
+    "5405bd5e-2345-4493-895e-f59d7d5ca0a3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 14:17:20.321331"
+   ],
+   [
+    "ee5c9ba0-7fca-4ec2-b8c5-3af2c80a8269",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 12:53:42.562683"
+   ],
+   [
+    "77a0b8ce-5037-4d81-b666-bb044dca86d8",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 13:13:40.265402"
+   ],
+   [
+    "65eb8a60-39ce-47bd-b19d-91c8463f7c34",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 14:22:03.487697"
+   ],
+   [
+    "5589f442-3dad-4e60-ab85-6b594aab01c7",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 13:04:59.454875"
+   ],
+   [
+    "d0c44041-8c92-4fc4-ab9c-8c4140da5cbf",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 18:16:15.576556"
+   ],
+   [
+    "067ea7e5-93c7-4662-a7ff-4260f8448155",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 20:41:46.373598"
+   ],
+   [
+    "aaddbd1d-d5e3-4342-a114-0f86a62157fe",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 02:15:37.968828"
+   ],
+   [
+    "68379aba-a40f-4ddb-9f50-1058c6cfe263",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-30 23:37:25.854473"
+   ],
+   [
+    "273713b8-ff3e-48bd-9255-33859c2a9daa",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 14:27:05.622337"
+   ],
+   [
+    "83df1107-20ef-4877-a103-d128c3e01f85",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 02:33:50.968366"
+   ],
+   [
+    "5dd8988a-76de-4618-8449-2f4f6e99f764",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 14:04:26.459366"
+   ],
+   [
+    "f5c0bb33-ec88-4caa-afed-0078f2b9792d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 02:18:18.299648"
+   ],
+   [
+    "316c25c6-7055-45d2-b530-27e19fe1c5c2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 20:55:39.003697"
+   ],
+   [
+    "3c91858d-245b-45e3-8fe1-359664328091",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 02:21:32.649257"
+   ],
+   [
+    "a6d10d7c-4afb-4381-952d-4cd556164751",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 04:33:01.531975"
+   ],
+   [
+    "7e748fd1-9ae9-484e-965e-f72b0ca4e854",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 14:18:11.370926"
+   ],
+   [
+    "4f22d565-6393-4867-9f70-b7ac798f810b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 14:35:37.967237"
+   ],
+   [
+    "8a835fde-9f8d-457f-a8e1-7ddac62008f2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 02:25:41.395509"
+   ],
+   [
+    "623110fa-ca74-41ee-8785-d1c42b7992aa",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 04:43:29.772432"
+   ],
+   [
+    "661b367a-43a5-4847-8703-8903872d4d12",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 14:56:17.963462"
+   ],
+   [
+    "f81e2ce0-39e1-4f66-bafc-a9f22ff3a74b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 02:35:55.415309"
+   ],
+   [
+    "d93d3a96-ca77-46b6-8820-0e5da8c64da1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:01:59.896908"
+   ],
+   [
+    "d228aa6d-73ed-4c0e-aa8d-8aa756f1952b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 10:54:27.02116"
+   ],
+   [
+    "47459e38-30c6-49e3-9066-e06d826c0d2e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 15:15:39.707107"
+   ],
+   [
+    "34544a2f-7fe5-4e65-af96-48146dfec345",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 02:54:34.952149"
+   ],
+   [
+    "1e63ebab-fb57-4415-a65d-361991dc5659",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-29 01:14:52.430457"
+   ],
+   [
+    "64b3f9d9-c573-421f-86e1-31a4a5b621b1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 11:18:32.233777"
+   ],
+   [
+    "0fcc04c7-d22c-402c-a57b-dd57ab351e94",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-29 01:17:40.820095"
+   ],
+   [
+    "345715d1-63be-41e9-b1d1-d84c15add9fb",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:11:40.494598"
+   ],
+   [
+    "be0f73af-216f-4f56-b0f7-3a69f158b4de",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-29 01:27:07.895265"
+   ],
+   [
+    "5eda3962-fe60-41cd-9ac2-14c4f3142b12",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:07:06.821858"
+   ],
+   [
+    "6a0f4f1e-ce2e-40ce-ad1b-186ad699136a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 15:22:16.122942"
+   ],
+   [
+    "36aab002-7fda-4245-9413-1d168beb754d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 18:52:59.105879"
+   ],
+   [
+    "6b995c08-b91a-4cd1-84a1-98bf466350a0",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:15:56.458113"
+   ],
+   [
+    "0b8ed664-bb24-4c7d-a9ae-0bc8d4d288c5",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 22:58:43.443936"
+   ],
+   [
+    "bbcd5657-eb3a-4f12-8901-9cac2c81f8fe",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:15:05.720492"
+   ],
+   [
+    "458c4bb2-8a7c-4790-960f-e596a496b088",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 17:36:39.528576"
+   ],
+   [
+    "f212a83f-3419-40d3-87be-12e81df2bca1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:20:02.384165"
+   ],
+   [
+    "9e703879-8de5-40e2-8e01-0f3eb7154a90",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-01 23:45:28.406087"
+   ],
+   [
+    "a458294d-7ec4-4dc5-9cbe-fb1fd9bfa4b4",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-08 22:02:22.311597"
+   ],
+   [
+    "99c3eb4e-d749-4314-8df0-a110ed37c92d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 20:38:45.042973"
+   ],
+   [
+    "d3b2c5ae-05c8-414c-9189-91d2c0bdb05e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:23:06.136896"
+   ],
+   [
+    "a9265c2e-9b7f-4224-9cf5-8029bf0e48b5",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:22:30.567599"
+   ],
+   [
+    "0f923fcb-93cf-4d53-925e-fa9859ba2df1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 15:38:58.919907"
+   ],
+   [
+    "7be38026-d0dc-43cb-be1d-ad7b55e19c1f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 17:09:52.2453"
+   ],
+   [
+    "4abeea69-2b81-4cc0-97a0-46e57b9882d1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 20:10:14.032259"
+   ],
+   [
+    "951984dc-5d5d-4599-9ca9-5ed76a6658c1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 16:52:09.804748"
+   ],
+   [
+    "5a75de31-567e-49bd-b741-968b372bc531",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 01:49:43.160761"
+   ],
+   [
+    "2dff8a5b-59f0-4c06-9990-402d8d86db92",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 21:03:47.798259"
+   ],
+   [
+    "8ff6d45b-b0b9-4b24-973b-1383e3b52168",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-08 22:45:05.65051"
+   ],
+   [
+    "522fb358-c511-4145-9e27-206692ea7449",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 14:03:58.313679"
+   ],
+   [
+    "292b1e0f-9336-48a3-b0c2-5d80e0a012b3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:25:45.624181"
+   ],
+   [
+    "2e3f8c1b-dd1c-4d31-bba7-c36a55c92cd3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:56:58.090046"
+   ],
+   [
+    "622dae6e-f100-47f0-b78a-f7f06d7e0d2f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 03:10:29.875995"
+   ],
+   [
+    "fc095322-fb3e-4888-8264-92322adfff08",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:56:37.915773"
+   ],
+   [
+    "e4900655-2275-4d96-a20f-f69a391c0bc3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 01:51:10.420144"
+   ],
+   [
+    "1a4ebe0e-1d4b-40fe-aaa1-67fe0244874c",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 22:23:09.145628"
+   ],
+   [
+    "a6abc046-193d-4674-9f48-303623e6f3c6",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:33:32.549924"
+   ],
+   [
+    "6ecbc873-4aa3-462c-a062-e64992d18c78",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 11:53:06.320617"
+   ],
+   [
+    "559dfd7f-7d2a-44bf-977d-e655e90125a4",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:36:43.07985"
+   ],
+   [
+    "f65c8c3d-5288-4b2e-9ecc-a9cc184da83e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 15:59:12.713502"
+   ],
+   [
+    "e37f7a06-3565-44a0-8473-2f87eb4b2530",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 02:09:19.882089"
+   ],
+   [
+    "d7a31b6c-cb6e-4a36-a520-83ae8a1cb7b2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 23:18:56.157204"
+   ],
+   [
+    "3a859a1d-5b43-43ac-8c49-89e7957982f1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 14:01:27.196264"
+   ],
+   [
+    "160b21a6-32c5-4542-9f41-3a95013ebc1f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 14:00:48.969636"
+   ],
+   [
+    "e1828d56-75f3-48af-bc30-44293acf6b70",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 17:37:35.004612"
+   ],
+   [
+    "8153c411-c2f7-4cac-83ad-58f7ce7dce26",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 17:54:27.305453"
+   ],
+   [
+    "0527c092-ddfd-40f3-b5d4-604c69d85262",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 19:39:23.171822"
+   ],
+   [
+    "35131062-4a9b-402d-b20d-f7b3b610bee3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-03 03:07:24.930419"
+   ],
+   [
+    "27bc9ac7-aa42-4da6-8490-db318009982b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 14:19:55.348566"
+   ],
+   [
+    "faf81579-748b-4d5f-9604-0db73ac94c03",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-07 14:04:41.244285"
+   ],
+   [
+    "51c4962b-731e-4f27-9167-5cc785b9c61b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:46:15.026775"
+   ],
+   [
+    "ea3aedd5-8acf-4840-9d19-036645f7cb1a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 11:53:48.3264"
+   ],
+   [
+    "c9e54e3c-dd52-4e37-8a8a-6d4ed87abb66",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 12:24:24.534226"
+   ],
+   [
+    "e1ab1c37-fe8a-4b0d-9410-4d32cba087ab",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 19:44:46.566153"
+   ],
+   [
+    "792647f1-5491-4cfe-a3c9-b10cb7b94a07",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 19:48:05.963359"
+   ],
+   [
+    "fef60c90-45c4-4e6f-9746-7f3e39bf7f60",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-06 14:26:56.374202"
+   ],
+   [
+    "139aa4f9-9b7e-429d-8e84-7863eba0a155",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-09 16:12:52.705913"
+   ],
+   [
+    "b9903f57-5517-46a0-aff0-d722b2fbb645",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-02 11:55:54.359232"
+   ],
+   [
+    "e39b5cba-571f-467a-8bb8-e56942f9221c",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-27 20:03:38.527773"
+   ],
+   [
+    "c2a0e07d-c119-4264-829d-0340a4bcd094",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-27 20:07:46.197128"
+   ],
+   [
+    "26c1768b-7398-4078-b882-cede353735c9",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-27 20:10:13.718758"
+   ],
+   [
+    "4a3fc2a5-4791-4bb6-a3d7-433a5068a2d1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 03:54:41.352146"
+   ],
+   [
+    "789542d9-79ae-4535-9f6e-c3bafa7ee30d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-05-31 21:43:00.324701"
+   ],
+   [
+    "7a897b11-f389-45c9-9d51-679232cb58ee",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 17:56:16.590826"
+   ],
+   [
+    "b1c42b33-17f4-4100-889f-d9f9c7c28688",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 18:21:53.512621"
+   ],
+   [
+    "51a66588-d5df-4530-80b4-4822be31f5ab",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 18:27:53.891931"
+   ],
+   [
+    "85c9262b-48a9-46ee-9844-892000d896c2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 18:57:40.444179"
+   ],
+   [
+    "4f57141a-f19f-4a50-a57b-8b03a1b1b292",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 19:02:52.21891"
+   ],
+   [
+    "e0aa56d8-b56d-4361-addd-58e00b22ea4f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 19:25:39.93556"
+   ],
+   [
+    "24ec7082-d196-4b66-a137-997390a4a539",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-10 19:46:37.045588"
+   ],
+   [
+    "da1a7895-6483-4723-88cd-b8b74226a8c1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-11 23:19:27.790064"
+   ],
+   [
+    "4f339c63-7e81-4d33-bc7b-74b87e4b5735",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-11 23:50:51.251686"
+   ],
+   [
+    "1ff46a69-86e6-4dcf-b81c-53c3bac6ff97",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 12:18:20.450539"
+   ],
+   [
+    "da9e465a-e85c-4513-9042-26856d686192",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 15:43:44.188659"
+   ],
+   [
+    "7922f923-048e-45bd-95a4-9ebdccd0cadf",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 15:59:07.593946"
+   ],
+   [
+    "6dfa36b5-2b1c-47f7-a067-a61f6fa688a0",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 19:08:36.18267"
+   ],
+   [
+    "c5338b65-7ddb-4597-993d-8f68d23c4f5b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 21:03:15.10539"
+   ],
+   [
+    "ef3c61b7-23bf-4036-a027-e3b9856ff326",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-12 22:50:24.540697"
+   ],
+   [
+    "aa94acb8-2de6-47d3-bcc6-b6fc1d9970de",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 01:31:20.139057"
+   ],
+   [
+    "1e1d7eb2-f1a2-443a-9740-05921dbe7237",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 01:39:22.100278"
+   ],
+   [
+    "9020480d-46cc-48fd-bbfb-8ce995c74b93",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 15:25:04.882799"
+   ],
+   [
+    "d4535f15-60ee-4dc9-a615-840c5537c7e0",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 15:45:24.781901"
+   ],
+   [
+    "1de70de3-1e8e-451c-b2cb-ba88567a80d6",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 16:06:01.05966"
+   ],
+   [
+    "b6f7b36f-781a-4cc9-bd82-966626786202",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 16:29:52.339847"
+   ],
+   [
+    "c93ee82c-2981-4e55-a397-1eeb4d5f3d33",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 16:47:36.433029"
+   ],
+   [
+    "85b2f181-8519-4a1c-be3d-f71a13bf98fa",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 17:37:29.343192"
+   ],
+   [
+    "649d6a98-4b9b-4490-8826-e80b7974a94f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 18:10:03.968895"
+   ],
+   [
+    "5a6cd703-8e86-48e2-a6b8-dfb4b9cefc54",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-14 21:00:44.861876"
+   ],
+   [
+    "bd4d1938-fb4d-48cd-8f1a-0a1afb995de5",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-15 03:01:33.795133"
+   ],
+   [
+    "dd7d69aa-d2c8-4150-9d47-5fed114bb9c4",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-15 03:23:23.964432"
+   ],
+   [
+    "66b2ff5f-ce93-4059-bee3-7d6e2cbc6943",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-15 10:36:48.978663"
+   ],
+   [
+    "48444038-1b51-48b4-831b-b85533d9ae6f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-15 22:38:36.050195"
+   ],
+   [
+    "181869c4-272c-4054-9845-460ed05eefd5",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-15 22:55:58.260293"
+   ],
+   [
+    "5f0642f2-7058-40ff-a144-e9c3be317778",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 16:50:43.044189"
+   ],
+   [
+    "9ae44c48-1ca2-4c88-8bbf-3b9c2701fc60",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 19:25:00.376356"
+   ],
+   [
+    "c832703e-abc5-4800-b6c4-4a81845442ad",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 19:43:10.511456"
+   ],
+   [
+    "1ffe9698-f711-42dd-8c57-e8c65f481c89",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 19:46:40.577008"
+   ],
+   [
+    "f9d924d4-f99a-41f5-bfb5-d8b2b904b905",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 20:17:39.95038"
+   ],
+   [
+    "560ace27-0966-4882-8079-ed0c0d63b14e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 20:51:20.648094"
+   ],
+   [
+    "ba32ab73-0714-4a3d-ac3a-e0e5d7e7163e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 20:55:24.794507"
+   ],
+   [
+    "10d34cb5-81eb-43de-a2ef-987ad8d4dee2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 22:14:34.789555"
+   ],
+   [
+    "46b495cd-e867-4f3d-9d7b-ec1aaebb87a3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 22:44:16.798703"
+   ],
+   [
+    "40cf52ad-4d23-487b-a852-40590e6eee2a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 22:48:07.041004"
+   ],
+   [
+    "9672a0c1-105d-4c47-92e1-0f28ee26ca25",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-16 23:38:56.738663"
+   ],
+   [
+    "317cdb17-ba28-4f84-8156-300cdfa0a652",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-17 01:00:10.18496"
+   ],
+   [
+    "7371b33a-f962-4d92-a5a7-eeb207d1555a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-21 13:27:14.43595"
+   ],
+   [
+    "2fa21e01-d283-4e41-9415-6c3e823eb806",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-21 16:35:13.540903"
+   ],
+   [
+    "5f00b8e7-9ca4-417e-9efa-7bbdac9b772f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-21 16:55:11.836076"
+   ],
+   [
+    "a296b250-0636-4461-82ae-813f7a41bddd",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-21 23:19:58.246439"
+   ],
+   [
+    "c746b8d8-86c8-469d-b488-6ec2b2cd6a49",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 02:18:35.979686"
+   ],
+   [
+    "60e63871-f388-43c4-a6ba-35994ed3a743",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 11:45:38.03646"
+   ],
+   [
+    "2b1f8aef-576e-42b9-a9f0-330306fece03",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 11:54:27.796683"
+   ],
+   [
+    "82369c61-5055-420b-976c-8a8ac4f2ba05",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 12:32:51.5439"
+   ],
+   [
+    "23758db7-1c2e-457b-8b1c-6de55626b404",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 12:45:28.242259"
+   ],
+   [
+    "b9065129-9f6d-4387-964a-a30fa7f1d359",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 13:00:02.920128"
+   ],
+   [
+    "e29290e9-2938-47a4-b35b-1c69a2049059",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 13:30:50.927962"
+   ],
+   [
+    "d761cc70-6f49-41fc-a291-152590050672",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 14:25:46.881758"
+   ],
+   [
+    "7589b726-1ca5-428a-9a0e-8cfcd876473b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 14:33:28.484775"
+   ],
+   [
+    "0c3cf9f6-84ae-4cee-bcd0-44a5548ca900",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 14:49:45.992381"
+   ],
+   [
+    "5b2c8540-da4c-45bb-8ff5-61602f2af16d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 14:58:30.515614"
+   ],
+   [
+    "6b019179-bdb4-481f-846a-1429ff2bcc0f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 15:34:03.936394"
+   ],
+   [
+    "6f952eec-efd6-4264-b035-240ded558ca4",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 16:56:54.220474"
+   ],
+   [
+    "5d5dfb3b-fe75-449b-a28d-00a10365cfb1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 17:05:28.573646"
+   ],
+   [
+    "99c6a111-1938-4ae8-97ad-bb27f4ea500c",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 17:54:18.79376"
+   ],
+   [
+    "c91dfa0d-6f99-4def-ba71-3a44b59522b1",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 18:03:35.202516"
+   ],
+   [
+    "00c8ad60-bd88-49dd-9924-5f9150d2404d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 20:11:56.724476"
+   ],
+   [
+    "f5a387ee-9259-406f-8357-2c139918ee0c",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 20:51:33.815276"
+   ],
+   [
+    "8b57f5ad-3bb6-4034-ad7e-0e2c67714d45",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 21:40:17.270957"
+   ],
+   [
+    "66eec2bf-04e1-4199-8b9d-18d4ae6a9fbd",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 22:13:56.358501"
+   ],
+   [
+    "57a9a7ef-cf25-4ffd-a5a6-06294424a454",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 22:53:38.135278"
+   ],
+   [
+    "78210088-fa4d-4434-ac38-31e653431f47",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 23:02:33.782113"
+   ],
+   [
+    "c18d0d2f-6575-4d54-8e9b-ebf549551203",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 23:25:56.558559"
+   ],
+   [
+    "792fb4ec-ecd8-43c3-b737-acee81b3389d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-22 23:46:51.720917"
+   ],
+   [
+    "9ddbeca6-432f-4c6e-8622-a0e7a23fb615",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 00:12:38.75282"
+   ],
+   [
+    "5af5ce6e-daf6-4fd8-97bc-5bb55114a5ef",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:19:12.365906"
+   ],
+   [
+    "0ec44a28-e53d-4e6e-b5f8-53e729eed521",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:20:30.708704"
+   ],
+   [
+    "bf723316-13f2-46c7-ab5a-8a6fb39b53b2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:22:09.338556"
+   ],
+   [
+    "9ab3b06e-dc3d-4e62-8793-d08c1eb8b349",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:25:38.090296"
+   ],
+   [
+    "8905fbfe-148f-4537-a18f-837b36a44635",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:30:24.389706"
+   ],
+   [
+    "39db6d47-9271-4e8c-b79d-5087812d7465",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:32:38.191592"
+   ],
+   [
+    "3a79a889-f289-4c65-8df2-ebd0402072ec",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:34:57.425514"
+   ],
+   [
+    "12d6d477-f3ce-466b-bd04-5b2f5b229db2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:50:39.353852"
+   ],
+   [
+    "848df685-a08c-4ff7-8e0c-c8f589359215",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 03:58:21.850001"
+   ],
+   [
+    "674c3db7-3873-4bbf-af80-560742f43e2f",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 04:18:48.355389"
+   ],
+   [
+    "a34fd071-abba-48aa-8dbb-59146cc6add9",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 04:45:49.546889"
+   ],
+   [
+    "d03ee7fd-b86e-4afb-8d54-9954eef47898",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 04:56:30.325121"
+   ],
+   [
+    "3a1ea672-9700-4cc2-86bf-8caf1619ca2d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 05:14:31.615484"
+   ],
+   [
+    "d7489a86-4fe0-4fe3-8c7b-7361c45b8bda",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 05:32:08.59689"
+   ],
+   [
+    "9fa70abb-7948-4fe3-84b8-7c1af7ad9f69",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 10:29:42.016591"
+   ],
+   [
+    "ea205594-1f1a-4a08-bd8e-e2008301cd2d",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-23 10:32:18.106202"
+   ],
+   [
+    "f02ea5d5-c4e5-4fed-a51c-5e7c6e09cfc7",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-24 10:35:58.975473"
+   ],
+   [
+    "fbb5d333-a5de-4c8e-b8a5-1cf8d0a955ed",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-24 10:57:34.815786"
+   ],
+   [
+    "c027b918-cf8e-4d2d-81df-36b4fd7a986e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-24 11:20:59.964316"
+   ],
+   [
+    "71169685-c093-4cd6-b1ce-884c0191bc1a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-24 11:25:44.506814"
+   ],
+   [
+    "f970a88c-9f1b-4a9d-8b64-ee9dbfbdf1ee",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-24 21:54:27.544956"
+   ],
+   [
+    "8fb20140-a70e-40d2-8cf6-a2d967e3b91a",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 03:07:05.849019"
+   ],
+   [
+    "a4d709c4-b4f6-4f11-9805-ebfc6f75b5f2",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 03:14:20.876488"
+   ],
+   [
+    "63e460ca-e31b-4561-95b0-e7999d658b6b",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 03:53:06.000653"
+   ],
+   [
+    "ad8d7dab-4fbf-4112-92da-180c7ab741ff",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 03:56:36.965192"
+   ],
+   [
+    "2e3e6304-615e-46cd-9e8c-13ea672b59a8",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 04:07:47.409038"
+   ],
+   [
+    "f264d911-219c-455f-bb66-91e2b6185265",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 04:14:14.560498"
+   ],
+   [
+    "8af2ad7b-ec89-4e1e-9749-afa5887e6dfc",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 04:29:20.786894"
+   ],
+   [
+    "e6b2f859-5206-4b4b-9795-b405474fc993",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 04:36:59.008911"
+   ],
+   [
+    "a03307f6-2407-4f3a-8a3a-29cc85809ce5",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 05:19:54.005994"
+   ],
+   [
+    "60fedcc1-28b0-49a3-87a0-b6dd0c7f49ac",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 05:42:25.938486"
+   ],
+   [
+    "ed16ffc9-bb32-4852-889c-6ed9b478af30",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 05:48:25.049144"
+   ],
+   [
+    "d6c69457-92cc-4425-a8e1-3d6f497c86c3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 05:58:57.978597"
+   ],
+   [
+    "2737c681-033f-4f1f-b14f-ae982de7d7fc",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 06:01:42.746612"
+   ],
+   [
+    "b6e6b377-31d5-410f-a7b4-2060cac242b3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 06:16:35.944903"
+   ],
+   [
+    "782696ef-4d44-4b89-b479-24f9cf4c0bb3",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 06:24:19.610716"
+   ],
+   [
+    "6bd40e1c-da35-4080-8cc4-6519b69e3ea8",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 06:40:44.569447"
+   ],
+   [
+    "d9d06ec3-5092-47d3-bf76-ec2312b18152",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 06:45:18.713492"
+   ],
+   [
+    "ae0a5e6f-c104-46cf-833b-874330e13c4e",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 12:19:04.85247"
+   ],
+   [
+    "e4dbbc0e-6655-4d24-b00f-7e56057d0ffc",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 12:35:06.586321"
+   ],
+   [
+    "e9628c96-c076-4a52-9499-10587a3f59bd",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 12:56:20.289094"
+   ],
+   [
+    "4a4057af-ca66-45b2-ad4e-086f1abddc70",
+    "AAPL",
+    "swing",
+    "skip",
+    "pm_skip: kill_switch",
+    "2026-06-25 13:15:05.153407"
+   ]
+  ]
+ }
+}

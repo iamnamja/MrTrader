@@ -114,6 +114,49 @@ class Trader(BaseAgent):
 
     # ─── Main Loop ────────────────────────────────────────────────────────────
 
+    def _purge_phantom_intraday_positions(self) -> list:
+        """Drop in-memory INTRADAY positions with no backing ACTIVE intraday DB trade.
+
+        A phantom arises when an intraday entry creates the in-memory position but the order never
+        fills / the DB Trade is never committed — it then gets "force-closed" every cycle (spurious
+        INTRADAY_FORCE_CLOSED, and a real sell could OPEN a short). This check is DB-AUTHORITATIVE
+        and independent of the Alpaca-positions fetch, so it still works when get_positions() fails
+        (the gap the existing phantom guard had). Returns the purged symbols. Never raises.
+
+        Safe to call at startup (active_positions is freshly reconciled from Alpaca∩DB, so anything
+        without a DB trade is a genuine phantom) and in the 3:45pm force-close (no fresh entries race
+        that window). NOT called every cycle — a just-filled intraday position can momentarily lack a
+        committed DB row, and we must never drop a real position."""
+        purged: list = []
+        try:
+            intraday = [s for s, p in self.active_positions.items()
+                        if p.get("trade_type") == "intraday"]
+            if not intraday:
+                return purged
+            from app.database.session import get_session
+            from app.database.models import Trade
+            db = get_session()
+            try:
+                backed = {r[0] for r in db.query(Trade.symbol).filter(
+                    Trade.status == "ACTIVE",
+                    Trade.trade_type == "intraday",
+                    Trade.symbol.in_(intraday),
+                ).all()}
+            finally:
+                db.close()
+            for s in intraday:
+                if s not in backed:
+                    self.active_positions.pop(s, None)
+                    purged.append(s)
+            if purged:
+                self.logger.warning(
+                    "Purged %d phantom intraday position(s) with no ACTIVE DB trade: %s",
+                    len(purged), purged,
+                )
+        except Exception as exc:
+            self.logger.debug("phantom intraday purge failed (non-fatal): %s", exc)
+        return purged
+
     async def _reconcile_positions(self, alpaca) -> None:
         """
         On startup, reconcile Alpaca open positions with DB ACTIVE trades.
@@ -429,6 +472,13 @@ class Trader(BaseAgent):
             await self._reconcile_positions(get_alpaca_client())
         except Exception as exc:
             self.logger.warning("Startup reconciliation failed: %s", exc)
+
+        # Drop any in-memory intraday position not backed by an ACTIVE DB trade (DB-authoritative;
+        # independent of the Alpaca fetch). Belt-and-suspenders against a phantom intraday position
+        # — an entry that created in-memory state but whose order never filled / DB row never
+        # committed — which would otherwise be "force-closed" every cycle (spurious
+        # INTRADAY_FORCE_CLOSED + a real sell that could OPEN a short).
+        self._purge_phantom_intraday_positions()
 
         # Phase 78b: reload any pending limit orders from DB so we resume polling
         try:
@@ -2807,6 +2857,13 @@ class Trader(BaseAgent):
         except Exception as exc:
             self.logger.warning("force_close: could not fetch Alpaca positions — assuming all real: %s", exc)
             alpaca_positions = None  # None = unknown; proceed conservatively
+            # The Alpaca-authoritative phantom guard below is skipped on a failed fetch — that was
+            # the gap that let a phantom intraday position be force-closed/sold every cycle. Fall
+            # back to the DB-authoritative purge so a position with no ACTIVE DB trade is dropped
+            # even when get_positions() is down. (A REAL Alpaca-held position always has a DB row —
+            # synthesized by _reconcile_positions at startup, or committed by _record_entry — so
+            # this never drops a genuinely-held position.)
+            self._purge_phantom_intraday_positions()
 
         intraday_symbols = [
             sym for sym, pos in self.active_positions.items()
@@ -2821,6 +2878,9 @@ class Trader(BaseAgent):
         # get_positions at 3:45pm we'd skip its force-close (overnight exposure) — recoverable
         # at next-day startup reconciliation, whereas the phantom short was firing every cycle.
         # Only drop when alpaca_positions is known (skip the guard on a failed fetch).
+        # NOTE: complementary to the DB-authoritative _purge_phantom_intraday_positions() above —
+        # that one drops in-memory intraday with no DB trade (works even if this fetch failed); this
+        # one drops in-memory intraday not held by Alpaca. Neither is dead code.
         if alpaca_positions is not None:
             _phantoms = [s for s in intraday_symbols if s not in alpaca_positions]
             for s in _phantoms:
