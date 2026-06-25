@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5k) — re-quote/escalation limit orders lacked an idempotency key (orphan)
+
+**Context**: Re-audit #4 MAJOR. Entry limit placements pass a `client_order_id`, but the re-quote and escalation REPLACEMENTS placed a fresh limit (after cancelling the old order) with NO key. A lost-response retry then left an untracked live order resting at the broker — an orphan with no stop/target/force-close until the next startup reconcile.
+
+**Decision**:
+- `order_ids.requote_order_id(trade_id, symbol, generation)` — deterministic `rq{gen}-{sha1(trade_id)}`, distinct per requote generation ('esc' for escalation), distinct namespace from market/exit keys.
+- `Trader._place_replacement_limit` — places with the deterministic coid and, on a lost-response exception, retries ONCE with the SAME coid to recover a resting order via `place_limit_order`'s idempotent-reuse (instead of orphaning it). Both replacement sites use it.
+- Escalation now guards a None quote before dereferencing it.
+- **Root-cause hardening surfaced by the deep-dive**: `place_market_order`/`place_limit_order` idempotent-reuse did NOT check `existing.status`, so a deterministic coid could resurrect a CANCELED/expired/rejected order as if it were "resting" (a phantom placement). Both reuse paths now FAIL CLOSED on a dead status (only a live/filled order counts as "already placed").
+
+**Rationale / verification**: Opus deep-dive confirmed the common lost-response orphan is RESOLVED (the retry recovers the resting order; the symbol/side + new dead-status checks keep reuse fail-closed) and flagged the dead-status gap (MEDIUM) → fixed. 9 new tests (requote key distinctness, replacement recovery, dead-order fail-closed for market+limit, live-order reuse control); full suite 4063 green; flake8 clean.
+
+**Consequences**: a re-quote/escalation can no longer orphan a live limit order on a lost response, and a deterministic coid can never resurrect a dead order. **Known residual (LOW, documented)**: if the old-order cancel SUCCEEDS and the replacement lands but its response is lost TWICE (both place attempts), the loop tears the trade down on the next cycle (old id reads "canceled") and the genuinely-resting replacement could still be orphaned — second-order rare; the deterministic coid makes it recoverable by a future coid-based reconcile (candidate follow-up: reconcile/cancel-by-coid in the except). **0 BLOCKERs remain.**
+
+---
+
 ## 2026-06-25 (Audit Wave 5j) — kill switch could UN-ARM itself on a stale DB read
 
 **Context**: Re-audit #4 MAJOR. The daemon's 3s state-sync calls `KillSwitch.load_state()`, which set `_active = db_value` for any bool. If `activate()` set `_active=True` in memory but `_persist_state()` FAILED (DB still holds False — exactly the compound failure a kill switch must survive), the next state-sync read False and silently UN-ARMED the switch within ~3s. The persist side had been hardened (retry + read-back + CRITICAL), but the read side had no latch. A naive "never downgrade True→False" latch was rejected: the state-sync's documented purpose is to propagate a web-triggered activate **AND reset** to the daemon, so a blanket no-downgrade would strand the daemon halted after a legitimate reset.

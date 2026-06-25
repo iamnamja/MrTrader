@@ -41,6 +41,19 @@ def futures_order_ref(run_id: str, instrument_id: str, side: str) -> str:
     return f"{run_id}-{instrument_id}-{side}"
 
 
+def requote_order_id(trade_id, symbol: str, generation) -> str:
+    """Deterministic client_order_id for a RE-QUOTED / ESCALATED entry limit order.
+
+    Keyed on the TRADE + the requote GENERATION, so a lost-response retry of the SAME generation
+    reuses the SAME key (the broker dedups → no orphaned duplicate live order resting untracked),
+    while each new requote/escalation is a DISTINCT order. `generation` is the requote count
+    (0, 1, 2, …) or 'esc' for the final escalation. Hashed + short to stay within the broker's
+    client_order_id length limit; distinct prefix ('rq') from market/exit keys so it can't collide."""
+    disc = str(trade_id) if trade_id else (symbol or "")
+    h = hashlib.sha1(disc.encode("utf-8")).hexdigest()[:10]
+    return f"rq{str(generation)[:4]}-{h}"
+
+
 def exit_order_id(trade_id, symbol: str, phase: str) -> str:
     """Deterministic client_order_id for an EXIT order (H6, exit side).
 

@@ -115,6 +115,28 @@ def test_dup_but_lookup_fails_raises_and_trips_circuit_breaker(monkeypatch):
     assert tc.lookup_calls == 1 and cb == [1]
 
 
+def test_duplicate_mapping_to_dead_order_fails_closed(monkeypatch):
+    # Wave 5k: a coid that maps to a CANCELED/expired/rejected order is NOT a resting order — must
+    # fail closed (raise + trip CB), never return it as a phantom "already placed" success. This is
+    # what makes a deterministic re-quote coid safe to reuse across a cancel->re-place.
+    for dead in ("canceled", "expired", "rejected"):
+        tc = _FakeTradingClient(dup=True, existing=_FakeOrder(oid="dead", status=dead))
+        cb = []
+        monkeypatch.setattr(al, "_notify_circuit_breaker", lambda: cb.append(1))
+        with pytest.raises(al.APIError):
+            _client(tc).place_market_order("SPY", 10, "buy", client_order_id="trend-20260622-SPY")
+        assert tc.lookup_calls == 1 and cb == [1]      # dead -> not reused; fail-closed
+
+
+def test_duplicate_mapping_to_live_order_still_reused(monkeypatch):
+    # control: a LIVE (accepted/new/filled) order IS reused idempotently (no regression)
+    for live in ("accepted", "new", "partially_filled", "filled"):
+        tc = _FakeTradingClient(dup=True, existing=_FakeOrder(oid="live-1", status=live))
+        monkeypatch.setattr(al, "_notify_circuit_breaker", lambda: None)
+        r = _client(tc).place_market_order("SPY", 10, "buy", client_order_id="trend-20260622-SPY")
+        assert r["idempotent_reuse"] is True and r["order_id"] == "live-1"
+
+
 def test_duplicate_without_client_order_id_does_not_idempotent_reuse(monkeypatch):
     # a dup signal with no client_order_id provided is not our idempotency case -> raise as normal
     tc = _FakeTradingClient(dup=True)

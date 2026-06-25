@@ -1829,7 +1829,10 @@ class Trader(BaseAgent):
                 if past_escalation_cutoff and not already_escalated:
                     quote = alpaca.get_quote(symbol)
                     _esc_is_short = pending.get("proposal", {}).get("direction") == "SELL_SHORT"
-                    _esc_side_price = quote.get("bid", 0) if _esc_is_short else quote.get("ask", 0)
+                    # guard a None quote BEFORE dereferencing it (get_quote returns None on failure)
+                    _esc_side_price = 0.0
+                    if quote:
+                        _esc_side_price = quote.get("bid", 0) if _esc_is_short else quote.get("ask", 0)
                     if not quote or _esc_side_price <= 0:
                         self.logger.warning(
                             "Escalation skipped for %s — no quote available", symbol,
@@ -1850,9 +1853,11 @@ class Trader(BaseAgent):
                             new_limit = round(ask * (1 + 0.0005), 2)
                             _esc_side = "buy"
                         try:
-                            new_order = alpaca.place_limit_order(
-                                symbol, pending["shares"], _esc_side, new_limit,
-                            )
+                            from app.live_trading.order_ids import requote_order_id
+                            _esc_coid = requote_order_id(
+                                pending.get("trade_id"), symbol, "esc")
+                            new_order = self._place_replacement_limit(
+                                alpaca, symbol, pending["shares"], _esc_side, new_limit, _esc_coid)
                             new_order_id = new_order.get("order_id")
                             old_limit = pending["limit_price"]
                             pending["order_id"] = new_order_id
@@ -1925,9 +1930,11 @@ class Trader(BaseAgent):
                         new_limit = round(fresh_ask * (1 - offset_pct), 2)
                         _rq_side = "buy"
                     try:
-                        new_order = alpaca.place_limit_order(
-                            symbol, pending["shares"], _rq_side, new_limit,
-                        )
+                        from app.live_trading.order_ids import requote_order_id
+                        _rq_coid = requote_order_id(
+                            pending.get("trade_id"), symbol, requote_count + 1)
+                        new_order = self._place_replacement_limit(
+                            alpaca, symbol, pending["shares"], _rq_side, new_limit, _rq_coid)
                         new_order_id = new_order.get("order_id")
                         old_limit = pending["limit_price"]
                         pending["order_id"] = new_order_id
@@ -2670,6 +2677,23 @@ class Trader(BaseAgent):
             self.logger.error("Failed to record exit for %s: %s", symbol, e)
         finally:
             db.close()
+
+    def _place_replacement_limit(self, alpaca, symbol, shares, side, limit, client_order_id):
+        """Place a re-quote / escalation limit order with a DETERMINISTIC client_order_id, recovering
+        a live order on a lost response instead of orphaning it.
+
+        The replacement is placed after cancelling the prior order. If the first place RAISES on a
+        lost response, the order may already be resting at the broker under this client_order_id; a
+        single retry with the SAME id hits place_limit_order's idempotent-reuse path and returns the
+        existing order (no untracked live duplicate). Re-raises only if it genuinely cannot place."""
+        try:
+            return alpaca.place_limit_order(symbol, shares, side, limit,
+                                            client_order_id=client_order_id)
+        except Exception as first:
+            self.logger.warning("%s: limit place failed (%s) — retrying idempotently (coid=%s) to "
+                                "recover any resting order", symbol, first, client_order_id)
+            return alpaca.place_limit_order(symbol, shares, side, limit,
+                                            client_order_id=client_order_id)
 
     # ─── Intraday Force Close ─────────────────────────────────────────────────
 
