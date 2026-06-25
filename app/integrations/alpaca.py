@@ -309,6 +309,15 @@ class AlpacaClient:
                         # breaker + re-raises) — fail-closed without double-notifying.
                         raise RuntimeError(f"client_order_id {client_order_id} maps to a different "
                                            f"order ({existing.symbol} {existing.side})")
+                    # Only a LIVE/filled order counts as "already placed". A coid that maps to a
+                    # DEAD order (canceled/expired/rejected — e.g. a re-quote that cancelled then
+                    # re-used the same generation key) must NOT be returned as if it were resting,
+                    # else the caller books a phantom placement on a dead order. Fail closed.
+                    _st = str(getattr(existing, "status", "")).lower()
+                    if any(d in _st for d in ("cancel", "expired", "rejected")):
+                        logger.error("Idempotent reuse: coid %s maps to a DEAD order (status=%s) — "
+                                     "not resting; failing closed", client_order_id, _st)
+                        raise RuntimeError(f"client_order_id {client_order_id} maps to a {_st} order")
                     logger.info("Idempotent order reuse: %s %s already placed (client_order_id=%s)",
                                 side, symbol, client_order_id)
                     return {
@@ -383,6 +392,13 @@ class AlpacaClient:
                         # fall through to the generic error path (notifies CB + re-raises) once.
                         raise RuntimeError(f"client_order_id {client_order_id} maps to a different "
                                            f"order ({existing.symbol} {existing.side})")
+                    # DEAD-order guard (see place_market_order): a coid mapping to a canceled/expired/
+                    # rejected order is NOT a resting order — fail closed rather than book a phantom.
+                    _st = str(getattr(existing, "status", "")).lower()
+                    if any(d in _st for d in ("cancel", "expired", "rejected")):
+                        logger.error("Idempotent limit reuse: coid %s maps to a DEAD order "
+                                     "(status=%s) — not resting; failing closed", client_order_id, _st)
+                        raise RuntimeError(f"client_order_id {client_order_id} maps to a {_st} order")
                     logger.info("Idempotent limit-order reuse: %s %s already placed (client_order_id=%s)",
                                 side, symbol, client_order_id)
                     return {
