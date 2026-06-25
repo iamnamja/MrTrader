@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 0) — Decision-Linkage correctness (kills the phantom-AAPL spam)
+
+**Context**: First slice of the Macro Intel scope ([MACRO_INTEL_SCOPE_2026-06-25.md](../reference/MACRO_INTEL_SCOPE_2026-06-25.md)). The Decision-Linkage panel showed many stale "AAPL swing / pm_skip: kill_switch" rows with the kill switch OFF. Root cause: `_write_skip_audit` wrote ONE row per proposal symbol (17 swing-universe names, AAPL first), and `/api/decision-audit/recent` had NO date filter so a stale skip batch (from an active-kill-switch window or a prior server instance) surfaced forever. Prior "fixes" targeted the kill-switch STATE, not the stale-row DISPLAY.
+
+**Decision**:
+- **F1** `/recent` now date-scopes to the last N ET days (`days` param, default 1 = today) — stale prior-session rows no longer surface; `days=0` for forensic history.
+- **F4** `_write_skip_audit` collapses BLANKET strategy-level abstentions (kill_switch / opportunity_score_low / macro_event_window / no_proposals_cached / model_not_trained / …, matched by reason prefix) to ONE `symbol='*'` row even when proposals are passed; genuine per-symbol gates still write one row each.
+- **Frontend** (`App.tsx`): `fmtTsShort` → `mm/dd/yyyy hh:mm` ET for AS OF + Decision-Linkage time; Outcome/counters map the LOWERCASE DB vocab (enter/block/skip/size_down/track/exit_review — was comparing 'BLOCKED'/'APPROVED' → blank); `symbol='*'` renders "All (abstained)".
+
+**Rationale / verification**: Opus deep-dive RESOLVED — empirically verified F1's ET-midnight→UTC boundary excludes prior-ET-day rows and includes today's (SQLite + Postgres); F4 has ZERO impact on any aggregated metric (every calibration/backfill/summary reader filters to `block`/`enter`, never `skip`) and is audit-only (no trading change); blanket prefixes match all live call sites; no per-symbol gate wrongly collapsed. 6 new backend tests; `tsc --noEmit` clean; full suite 4094 green; flake8 clean. **No live trading or safety-gate change.**
+
+**Consequences**: Decision Linkage shows today's real decisions without the phantom-AAPL spam or stale kill-switch rows; timestamps/outcomes render correctly. Phase 1 (assessment-history endpoint) → Phase 2 (polarity + risk step-down) → Phase 3 (SIZE-DOWN macro reactivity) follow. 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Wave 6e) — macro calendar auto-fetches FOMC/CPI/NFP from a feed (hardcoded floor stays)
 
 **Context**: The FOMC/CPI/NFP dates that drive the macro event-window gate (`block_new_entries` ±60min FOMC / ±15min CPI/NFP, used by RM + PM) were hardcoded for one reference year (2026) — they'd silently stop covering events once the year rolled over, and I won't hand-guess regulatory dates. Min approved auto-fetching from a feed.
