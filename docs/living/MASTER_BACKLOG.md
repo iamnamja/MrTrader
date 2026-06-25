@@ -8,6 +8,9 @@
 
 **SSOT:** [`docs/reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md`](../reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md). 4 internal Opus panelists + red-team + 5 external reviews (ChatGPT/Claude/DeepSeek/Gemini/Grok), **unanimous: stop hunting a 5th sleeve for 1–3 months — the binding constraint is capital + a real *tiny-live* track record + not blowing up.** Three phases: **H (Harden) → D (Deploy) → R (Research).**
 
+### Macro Intel — workflow + dashboard fix (SCOPED 2026-06-25, owner-gated build)
+**Scope doc:** [`docs/reference/MACRO_INTEL_SCOPE_2026-06-25.md`](../reference/MACRO_INTEL_SCOPE_2026-06-25.md) (2 Opus passes). Macro risk stays HIGH all day (sticky prompt, no step-down, no surprise-polarity); Beat/Miss mislabels lower-is-better prints (inflation/claims); SIZE DOWN is news-driven and doesn't react to post-event macro; NIS-assessment history isn't surfaced (lineage exists in `nis_macro_history`, no read endpoint); **Decision-Linkage AAPL spam ROOT-CAUSED** = stale `decision_audit` skip rows (no date filter on `/recent`) × 17-per-proposal write × frontend case bug — prior fixes missed it (they fixed kill-switch STATE, not stale-row DISPLAY). Phased F1–F12; **safety floor (`app/calendars/macro.py` + RM Rule 0) untouched.** Awaiting owner decisions §6.
+
 ### Phase H — make the safety layer LOAD-BEARING (the hard IBKR no-go gate; before any IBKR dollar)
 | # | Item | Status |
 |---|---|---|
