@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Wave 6e) — macro calendar auto-fetches FOMC/CPI/NFP from a feed (hardcoded floor stays)
+
+**Context**: The FOMC/CPI/NFP dates that drive the macro event-window gate (`block_new_entries` ±60min FOMC / ±15min CPI/NFP, used by RM + PM) were hardcoded for one reference year (2026) — they'd silently stop covering events once the year rolled over, and I won't hand-guess regulatory dates. Min approved auto-fetching from a feed.
+
+**Decision**: feed-PRIMARY with the hardcoded set as a fail-safe FLOOR. `MacroCalendar` now merges the live economic-calendar feed (FMP, via the shared NIS `economic_calendar` source) once per day, UNIONed with the hardcoded floor (dedup by (type, date)). The feed supplies the forward DATE; the window TIME is the canonical fixed release time per type (FOMC 14:00, CPI/NFP 08:30 ET). `__init__` builds the floor only (no import-time network); the feed merges lazily on the first `get_context` of each day. Fail-safe: any feed error/None/empty → floor unchanged (the gate is NEVER weaker than the hardcoded baseline).
+
+**Rationale / verification**: Opus deep-dive on the safety gate confirmed it is provably never weaker than the floor under ANY feed behavior (union only ADDS; garbage rows can't corrupt the floor; all failure paths return []), import-time is network-free, and the UTC→ET date conversion is correct — it caught a LOW off-by-one for date-only/midnight-UTC feed values (would misplace a feed-added forward window by 1 day), now fixed (midnight-UTC uses the UTC date) + regression-tested. A misclassified feed event can only ADD a (conservative) spurious block, never remove one. 6 tests; 131 macro-area tests green; full suite 4087 green pre-hardening + targeted green after.
+
+**Consequences**: the macro gate now self-extends past 2026 without a code change, while a feed outage falls back to the hardcoded dates. No live behavior change for 2026 (the floor already covered it); forward years gain feed coverage. Completes the research-tier + macro-feed wave (6a–6e). 0 BLOCKERs. **Note:** activating this in the running daemon needs the same uvicorn restart as the 5c–5l live fixes.
+
+---
+
 ## 2026-06-25 (Audit Wave 6d) — daily cache mixed split/dividend adjustment bases (drift)
 
 **Context**: Re-audit research-tier MAJOR (MED-HIGH; affects features/live reads, mitigated in fresh-fetch backtests). Daily bars are cached split/dividend-ADJUSTED (provider auto_adjust=True), but `DataCache.put_daily` was append-only (`concat`+dedup-by-date). A new split/dividend re-scales the provider's WHOLE back-history, so a blind merge mixed adjustment bases → drift in returns/vol/momentum on bars before the re-fetch window.
