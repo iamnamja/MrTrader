@@ -161,7 +161,12 @@ class _PortfolioState:
 
     @property
     def buying_power(self) -> float:
-        return self.cash
+        # Net of the short-collateral reserve, mirroring _effective_cash. Short entries credit
+        # proceeds to `cash` AND reserve an equal collateral; without subtracting the reserve here
+        # the RM buying-power gate would see the proceeds as free buying power and let the short book
+        # over-leverage (the same dollars sizing both books). Long-only books reserve nothing
+        # (short_collateral == 0), so this is identical to `cash` for them.
+        return self.cash - self.short_collateral
 
 
 class AgentSimulator:
@@ -1574,9 +1579,14 @@ class AgentSimulator:
             if not is_short:
                 portfolio.cash -= trade_cost + tx_cost
             else:
-                # Short: receive proceeds; deduct tx cost and post margin
+                # Short: credit proceeds (minus tx) to cash AND reserve collateral = entry notional,
+                # exactly like REBALANCE mode (line ~2085). The prior net-zero hack
+                # (cash += proceeds; cash -= notional) left short_collateral at 0, so buying_power
+                # (now cash - short_collateral) stayed ~full and the RM gate let shorts over-leverage.
+                # Equity_mtm and _effective_cash (both cash - short_collateral + …) are UNCHANGED by
+                # this re-bookkeeping; only the buying-power gate is corrected.
                 portfolio.cash += trade_cost - tx_cost
-                portfolio.cash -= trade_cost  # margin held = notional value
+                portfolio.short_collateral += trade_cost
 
             portfolio.positions[sym] = _Position(
                 symbol=sym,
@@ -2460,8 +2470,13 @@ class AgentSimulator:
             net_pnl = gross_pnl - tx_cost
             pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
             if portfolio is not None:
-                # Net cash: proceeds already booked at entry; cover cost = exit*qty
-                portfolio.cash += gross_pnl - tx_cost
+                # Entry credited proceeds to cash AND reserved collateral = entry notional (parity
+                # with rebalance). On cover: pay the exit notional + exit tx and RELEASE the reserve.
+                # Net round-trip cash = (entry-exit)*qty - tx_entry - tx_exit and equity_mtm are
+                # IDENTICAL to the prior net-zero bookkeeping — only short_collateral is now tracked.
+                portfolio.cash -= exit_price * pos.quantity + tx_cost
+                portfolio.short_collateral = max(
+                    0.0, portfolio.short_collateral - pos.entry_price * pos.quantity)
 
         if portfolio is not None:
             portfolio.daily_pnl += net_pnl
