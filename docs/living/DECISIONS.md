@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 6d) — daily cache mixed split/dividend adjustment bases (drift)
+
+**Context**: Re-audit research-tier MAJOR (MED-HIGH; affects features/live reads, mitigated in fresh-fetch backtests). Daily bars are cached split/dividend-ADJUSTED (provider auto_adjust=True), but `DataCache.put_daily` was append-only (`concat`+dedup-by-date). A new split/dividend re-scales the provider's WHOLE back-history, so a blind merge mixed adjustment bases → drift in returns/vol/momentum on bars before the re-fetch window.
+
+**Decision**: `put_daily` now calls `_discard_if_readjusted` — if the cached and freshly-fetched bars OVERLAP by ≥3 dates and the median relative close difference exceeds `_DAILY_READJUST_TOL` (1%), a re-adjustment is detected → discard the stale-basis history and keep ONLY the freshly-adjusted bars; the missing-range re-fetch rebuilds the older portion on the current basis. A normal incremental update is a disjoint tail (zero overlap → never checked); a small regular dividend back-adjusts recent overlap by <1% → no discard; a split shows ~50–100% → discard. Median (not max) + NaN/0-denominator guards make it robust to a single bad bar; any error keeps existing. Scoped to DAILY only (5-min is a rolling 90-day window, unaffected).
+
+**Rationale / verification**: Opus deep-dive RESOLVED — mixed-basis history can no longer persist; false positives are effectively impossible (same-date adjusted close is deterministic within a basis; the check compares a date to itself across two fetches); no permanent history loss (`missing_daily_range` re-reports the older gap → re-fetch on the current basis). 3 tests; 20 existing cache tests green. **Known LOW (documented):** in the yfinance read path the self-heal is deferred to the NEXT call — the single call that first observes a split returns a short series, which the caller's `len(df) >= 10` guard drops (refills next run); the overlapping-refetch callers (polygon/event_panel) self-heal in-flow. INFO: a <3-bar-overlap refetch across a split slips through (rare; backstopped by event_panel's >45% split-artifact guard) + a latent column-name fragility if a provider ever stored a raw-only `close`.
+
+**Consequences**: equity daily-bar features no longer drift across split/dividend events. Fourth of the research-tier wave. **Eval impact:** historical backtests that reused a split-straddling cache had drifted bars — a fresh cache (or this guard) corrects them; re-runs of cache-reusing evals will shift slightly. 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Audit Wave 6c) — research metric: training-time WF-CV folds weren't time-ordered
 
 **Context**: Re-audit research-tier MAJOR. `ModelTrainer._walk_forward_cv` (an expanding-window CV that reports `wf_auc` during training) split a symbol-major-concatenated `[X_train, X_test]` by row index, so folds weren't time-OOS (a fold's test rows could predate its train rows across symbols). **Important scope:** `wf_auc` is a REPORTED metric, NOT the live-promotion gate — the gate is the separate time-purged CPCV pipeline (already correct). So this was a trust-in-the-reported-number issue, not a gate decision issue.
