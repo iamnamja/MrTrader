@@ -534,6 +534,13 @@ class AgentOrchestrator:
         Fail-safe — write_heartbeat never raises; a failed write just looks 'stale' to the watchdog."""
         from app.live_trading.heartbeat import write_heartbeat
         write_heartbeat()
+        # H2: refresh the in-memory kill-switch state machine's heartbeat too, so its dead-man
+        # backstop only escalates if THIS beat loop has been dead for minutes (never raises).
+        try:
+            from app.live_trading.kill_switch_state import kill_switch_sm
+            kill_switch_sm.heartbeat()
+        except Exception:
+            pass
 
     async def _health_check(self) -> None:
         """Verify DB, Redis, and Alpaca; pause trading if any critical service is down."""
