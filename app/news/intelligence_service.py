@@ -25,6 +25,17 @@ _macro_cache: dict[str, MacroContext] = {}   # date_str → MacroContext
 _stock_cache: dict[str, NewsSignal] = {}     # symbol → NewsSignal (TTL via evaluated_at)
 _STOCK_SIGNAL_TTL_SECS = 3600               # 1 hour before re-fetching
 
+# ── Policy: macro calendar UNAVAILABLE (NOT a genuine no-events day) ──────────
+# When the economic calendar cannot be read at all, we cannot verify whether a high-impact event is
+# imminent, so FAIL CLOSED: block new entries while the calendar is unavailable. The trader gates
+# BOTH swing and intraday entries on premarket.is_swing_blocked()/is_intraday_blocked(), which read
+# this NIS block flag, so blocking is the only stance that protects BOTH books (the NIS sizing factor
+# is wired into intraday sizing only). Blocking affects new entries solely — exits/management still
+# run, and the live trend+cash sleeves do not pass through this gate. The 0.5 sizing factor remains
+# as intraday defense-in-depth. Set MACRO_UNAVAILABLE_BLOCK=False to soften to size-down-only.
+MACRO_UNAVAILABLE_SIZING = 0.5
+MACRO_UNAVAILABLE_BLOCK = True
+
 
 class NewsIntelligenceService:
     """
@@ -56,6 +67,24 @@ class NewsIntelligenceService:
             from app.news.llm_scorer import macro_classify
 
             events = fetch_economic_calendar(days_ahead=1, min_impact="medium")
+            if events is None:
+                # Calendar UNAVAILABLE (distinct from a genuine no-events day). We cannot verify
+                # whether a high-impact event is imminent, so apply a conservative stance instead of
+                # the old fail-OPEN (None collapsed to [] -> "no events" -> trade freely). The
+                # independent hardcoded FOMC/CPI/NFP gate (app/calendars/macro.py) still HARD-blocks
+                # the known big-event windows, so the default here SIZES DOWN rather than halts; flip
+                # MACRO_UNAVAILABLE_BLOCK for a strict fail-closed halt.
+                logger.warning(
+                    "NIS Tier 1: macro calendar UNAVAILABLE — conservative context "
+                    "(size x%.2f, block=%s)", MACRO_UNAVAILABLE_SIZING, MACRO_UNAVAILABLE_BLOCK)
+                return MacroContext(
+                    as_of=datetime.now(timezone.utc),
+                    block_new_entries=MACRO_UNAVAILABLE_BLOCK,
+                    global_sizing_factor=MACRO_UNAVAILABLE_SIZING,
+                    overall_risk="MEDIUM",
+                    rationale="macro calendar unavailable — conservative sizing "
+                              "(cannot verify event risk)",
+                )
             result = macro_classify(events)
 
             if result is None:

@@ -884,8 +884,9 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
 
             state = self._nis_event_refresh_state
             now_utc = now.astimezone(timezone.utc)
+            # None = calendar unavailable -> nothing to post-event-refresh this cycle (treat as empty)
             events = fetch_economic_calendar(days_ahead=0, min_impact="medium")
-            for evt in events:
+            for evt in (events or []):
                 evt_id = evt.get("id")
                 evt_dt = evt.get("event_time")
                 if not evt_id or evt_dt is None:
