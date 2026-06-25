@@ -15,8 +15,6 @@ INACTIVE (refuse to halt on garbage).
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.live_trading.kill_switch import KillSwitch, _CFG_KS_ACTIVE
 
 
@@ -39,7 +37,9 @@ def test_magicmock_value_does_not_activate():
     ks, ret, gc = _load_with_config(MagicMock())
     assert ks.is_active is False
     assert ret is True  # a value was present (load succeeded), just not a valid-True
-    assert gc.call_count == 1 and gc.call_args[0][1] == _CFG_KS_ACTIVE
+    # load_state now reads BOTH the active flag and the monotonic seq (Wave 5j)
+    keys_read = [c.args[1] for c in gc.call_args_list]
+    assert _CFG_KS_ACTIVE in keys_read
 
 
 def test_string_false_does_not_activate():
