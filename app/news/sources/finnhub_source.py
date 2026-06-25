@@ -105,6 +105,15 @@ def _get(endpoint: str, params: dict) -> Optional[dict]:
 def _classify_event(event_name: str) -> Optional[str]:
     """Map a Finnhub event name to our canonical event type, or None."""
     name_lower = event_name.lower()
+    # The GDP PRICE INDEX / DEFLATOR (e.g. "GDP Price Index", "GDP Deflator", "Gross Domestic
+    # Product Implicit Price Deflator") is an INFLATION measure (lower-is-risk-on), NOT growth. It
+    # would otherwise substring-match the "gdp"/"gross domestic" growth keywords below and be
+    # mislabelled higher-better (a hot deflator shown as risk-ON). Class it neutral OTHER_HIGH —
+    # high-impact, but no WRONG risk-on/off claim. (A dedicated lower-better GDP-deflator type is a
+    # possible future enhancement; neutral is the safe, honest minimum.)
+    if ("gdp" in name_lower or "gross domestic" in name_lower) and \
+            ("price" in name_lower or "deflator" in name_lower):
+        return "OTHER_HIGH"
     for keyword, event_type in _HIGH_IMPACT_KEYWORDS.items():
         if keyword in name_lower:
             return event_type

@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit cleanup) — GDP price index / deflator no longer mislabelled as growth
+
+**Context**: A documented LOW residual (from the 2026-06-25 Macro-Intel Phase 2a entry). The Finnhub event classifier substring-matched `"GDP Price Index"` (and "GDP Deflator") on the `gdp` growth keyword → event_type `GDP` (higher_better polarity). A GDP deflator is an INFLATION measure (lower-is-risk-on), so a HOT deflator read **risk-ON** — the wrong direction.
+
+**Decision**: a guard in `finnhub_source._classify_event` (also used by `fmp_source`) — when the name has a GDP token (`gdp`/`gross domestic`) AND a price token (`price`/`deflator`), classify it neutral **OTHER_HIGH** (high-impact, but no risk-on/off claim) before the growth-keyword match. Neutral is the safe, honest minimum (a dedicated lower-better GDP-deflator type is a noted future enhancement).
+
+**Rationale / verification**: Opus deep-dive CONFIRMED clean — catches all deflator namings, leaves real growth releases ("GDP Growth Rate", "Real GDP", "GDP QoQ") as GDP, no false-positive (needs BOTH tokens, so CPI/PPI/House-Price unaffected); OTHER_HIGH is a first-class neutral type, the gate's high-impact window keys off `importance` (not event_type) so the block window is unchanged — only the directional read flips wrong→neutral (strictly safer). 4 tests; full suite green. Non-blocking note: a separate FRED-based classifier in `premarket.py` still maps gdp→GDP but only sets boolean presence flags (no polarity) → harmless, out of scope.
+
+**Consequences**: a GDP-deflator surprise no longer makes a wrong risk-on/off claim on the dashboard or in the NIS macro context. One of the audit's LOW residuals closed. Not a PIPELINE-rule file.
+
+---
+
 ## 2026-06-25 (Alpha-v10 H2 code-half) — wire the kill-switch state machine (shadow-first)
 
 **Context**: The R0.4 cross-venue kill-switch STATE MACHINE (`kill_switch_state.py` — 6 states, auto-triggers capped at CANCEL_ONLY, manual-only de-escalation) was built but inert/unwired. H2 wires it shadow-first so it's observable + fed by its auto-triggers, ready for an owner-present enforce flip; the binary `kill_switch.is_active` remains the hard cross-process stop (checked first).
