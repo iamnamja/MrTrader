@@ -319,6 +319,10 @@ def get_recent_decisions(
                         "final_decision": r.final_decision,
                         "model_score": r.model_score,
                         "size_multiplier": r.size_multiplier,
+                        # F10: surface the two sizing dimensions separately so the SIZE DOWN
+                        # panel can fold the macro factor in alongside the news factor.
+                        "news_sizing_multiplier": r.news_sizing_multiplier,
+                        "macro_sizing_factor": r.macro_sizing_factor,
                         "block_reason": r.block_reason,
                         "news_action_policy": r.news_action_policy,
                         "news_materiality": r.news_materiality,
