@@ -2511,6 +2511,20 @@ class Trader(BaseAgent):
         if _fill and _fill > 0:
             current_price = _fill
 
+        # NEVER compute P&L off a non-positive price. The 3:45pm force-close passes
+        # `get_latest_price() or 0`, and a 0 here would book a phantom P&L of -entry*qty (a long would
+        # show a catastrophic 100% loss). The market order ALREADY filled at the broker, so its fill
+        # price is the source of truth — poll it harder before approximating. Only if even that AND a
+        # live quote are unavailable do we fall back to entry_price (a neutral 0 leg = honest "no info"
+        # rather than a fabricated loss); that total-data-blackout case is logged loudly for recon.
+        if not current_price or current_price <= 0:
+            _fill2 = await self._read_order_fill_price(
+                alpaca, order.get("order_id"), attempts=8, delay=1.0)
+            current_price = float(_fill2 or alpaca.get_latest_price(symbol)
+                                  or pos.get("entry_price") or 0.0)
+            self.logger.warning("%s: exit price was non-positive — recovered %.4f for P&L "
+                                "(fill=%s, reason=%s)", symbol, current_price, _fill2, reason)
+
         if pos.get("direction") == "SELL_SHORT":
             final_leg_pnl = (pos["entry_price"] - current_price) * qty
         else:

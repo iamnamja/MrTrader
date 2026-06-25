@@ -256,6 +256,35 @@ class PremarketIntelligence:
             pass
         return float(bars["close"].iloc[-1])
 
+    def _executable_sell_price(self, client, symbol: str) -> Optional[float]:
+        """The price a long would actually SELL at right now (NBBO bid). Used to CONFIRM a destructive
+        gap AUTO_EXIT: a real crash shows a bid far below the prior close EVEN WITH a wide spread,
+        whereas a single one-sided / illiquid bad mid does not (its bid stays near prior close). Using
+        the bid — not the mid — both is the correct exit reference and is robust to wide-spread crashes
+        (a tight-spread gate would wrongly SUPPRESS exits on real crashes, which widen spreads). Returns
+        None if there is no current bid (e.g. `_current_price` fell back to a minute bar)."""
+        # Prefer the RAW bid (independent of ask validity): a one-sided book during a halt/violent
+        # gap-down nulls get_quote (it needs both sides), which is exactly when a real bid most needs
+        # to confirm a crash exit. Fall back to the two-sided quote's bid.
+        try:
+            raw = client.get_bid(symbol)
+        except Exception:
+            raw = None
+        if raw and raw > 0:
+            return float(raw)
+        try:
+            q = client.get_quote(symbol)
+        except Exception:
+            return None
+        if not q:
+            return None
+        bid = q.get("bid")
+        try:
+            bid = float(bid)
+        except (TypeError, ValueError):
+            return None
+        return bid if bid > 0 else None
+
     def _current_price(self, client, symbol: str) -> float:
         """Best-effort live / pre-market price (quote mid → latest trade/minute close). 0.0 if none.
         This is the 'now' side of a gap — NOT a stale completed daily bar."""
@@ -321,17 +350,36 @@ class PremarketIntelligence:
                 gaps[symbol] = {"gap_pct": round(gap_pct, 4)}
 
                 if gap_pct <= -OVERNIGHT_GAP_EXIT_PCT:
-                    gaps[symbol]["action"] = "AUTO_EXIT"
-                    logger.warning(
-                        "%s: adverse overnight gap %.1f%% → queuing auto-exit",
-                        symbol, gap_pct * 100,
-                    )
-                    if redis_send_fn:
-                        redis_send_fn("trader_exit_requests", {
-                            "symbol": symbol,
-                            "action": "EXIT",
-                            "reason": f"overnight_gap_{gap_pct*100:.1f}pct",
-                        })
+                    # CONFIRM with the executable bid before a destructive auto-exit. A real crash has
+                    # a bid far below prior close (fires); a one-sided/illiquid bad mid does not (its
+                    # bid stays near prior close) → downgrade to PM re-eval rather than a blind sell.
+                    sell_px = self._executable_sell_price(client, symbol)
+                    bid_gap = ((sell_px - prior_close) / prior_close) if sell_px else None
+                    if bid_gap is not None and bid_gap <= -OVERNIGHT_GAP_EXIT_PCT:
+                        gaps[symbol]["action"] = "AUTO_EXIT"
+                        logger.warning(
+                            "%s: adverse overnight gap %.1f%% (bid %.1f%%) → queuing auto-exit",
+                            symbol, gap_pct * 100, bid_gap * 100,
+                        )
+                        if redis_send_fn:
+                            redis_send_fn("trader_exit_requests", {
+                                "symbol": symbol,
+                                "action": "EXIT",
+                                "reason": f"overnight_gap_{gap_pct*100:.1f}pct",
+                            })
+                    else:
+                        gaps[symbol]["action"] = "REEVAL"
+                        logger.warning(
+                            "%s: %.1f%% gap NOT confirmed by the bid (%s) → downgrading to reeval",
+                            symbol, gap_pct * 100,
+                            f"{bid_gap*100:.1f}%" if bid_gap is not None else "no bid",
+                        )
+                        if redis_send_fn:
+                            redis_send_fn("pm_reeval_requests", {
+                                "symbol": symbol,
+                                "reason": f"overnight_gap_{gap_pct*100:.1f}pct_unconfirmed",
+                                "current_price": today_open,
+                            })
                 elif gap_pct <= -OVERNIGHT_GAP_REEVAL_PCT:
                     gaps[symbol]["action"] = "REEVAL"
                     logger.info(

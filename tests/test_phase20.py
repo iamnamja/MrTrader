@@ -136,7 +136,10 @@ class TestOvernightGapAnalysis:
         # comes from a LIVE quote, not a (nonexistent pre-open) daily bar.
         c = MagicMock()
         c.get_bars.return_value = self._make_bars(prior_close)
-        c.get_quote.return_value = {"mid": current}
+        # bid == mid here, so the executable bid CONFIRMS the gap and a >5% gap fires AUTO_EXIT (Wave 5f
+        # confirms a destructive auto-exit against the bid; a bid that doesn't corroborate -> REEVAL)
+        c.get_quote.return_value = {"mid": current, "bid": current, "ask": current}
+        c.get_bid.return_value = current
         return c
 
     def test_small_gap_is_ok(self):

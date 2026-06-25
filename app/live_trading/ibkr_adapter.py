@@ -131,10 +131,18 @@ class IBKRReadOnlyAdapter:
         AccountState. Defensive float parsing; fail-closed if not connected."""
         self._require_connected()
         accts = list(self._ib.managedAccounts() or [])
-        target = accts[0] if len(accts) == 1 else None   # scope to the one account; else USD-only
+        # FAIL-CLOSED on anything but a single managed account: this NAV mapping scopes accountValues
+        # to ONE account. With multiple accounts the old `target=None` path let every account's USD
+        # rows collide in the dict by tag (last-row-wins) -> a silently MIXED/wrong NAV fed to the
+        # cross-venue book-state. Refuse rather than report a wrong number (matches _require_connected).
+        if len(accts) != 1:
+            raise ValueError(
+                f"IBKR NAV mapping requires exactly one managed account; got {len(accts)} "
+                f"({accts}). Multi-account aggregation is not supported (fail-closed read).")
+        target = accts[0]
         usd = {v.tag: v.value for v in self._ib.accountValues()
                if getattr(v, "currency", "") == "USD"
-               and (target is None or getattr(v, "account", "") == target)}
+               and getattr(v, "account", "") == target}
 
         def f(tag: str) -> Optional[float]:
             try:
