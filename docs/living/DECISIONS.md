@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 1) — surface the real timestamped assessment lineage
+
+**Context**: The "Today's NIS Assessment" card showed one rationale blob + a SYNTHESIZED "refresh history" reconstructed client-side from decision-audit rows (hardcoded sizing=1/events=0; post-event re-evals that produced no trade never appeared). The real lineage already lives in `nis_macro_history` (premarket + every post-event re-eval) but had no read endpoint.
+
+**Decision**: added `GET /api/nis/macro-history?days&limit` returning the `nis_macro_history` rows newest-first (filtered by `snapshot_date` on the UTC-date write basis). The frontend now renders the **real** lineage in the assessment card: each re-assessment timestamped `mm/dd/yyyy hh:mm` ET, newest-on-top, with its risk badge / sizing / BLOCK flag / trigger (premarket vs post-event:EVENT) / event count / rationale; the newest is tagged CURRENT. Falls back to the latest `macro.rationale` if the lineage is empty. Read-only; no trading path.
+
+**Rationale / verification**: mirrors the already-deep-dived `/macro` + `/recent` patterns; fail-safe try/except → error dict; date filter aligned to the UTC-date basis `snapshot_date` is written with (avoids an overnight 1-day mismatch). 3 new backend tests; `tsc --noEmit` clean; full suite 4097 green; flake8 clean.
+
+**Consequences**: the operator can now see how macro risk actually evolved across the day (was → is → new) with the triggering event and the LLM's reasoning at each step — answers the "timestamped, newest-on-top, ET format" ask. Phase 2 (polarity + risk step-down) → Phase 3 (SIZE-DOWN reactivity) follow. 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 0) — Decision-Linkage correctness (kills the phantom-AAPL spam)
 
 **Context**: First slice of the Macro Intel scope ([MACRO_INTEL_SCOPE_2026-06-25.md](../reference/MACRO_INTEL_SCOPE_2026-06-25.md)). The Decision-Linkage panel showed many stale "AAPL swing / pm_skip: kill_switch" rows with the kill switch OFF. Root cause: `_write_skip_audit` wrote ONE row per proposal symbol (17 swing-universe names, AAPL first), and `/api/decision-audit/recent` had NO date filter so a stale skip batch (from an active-kill-switch window or a prior server instance) surfaced forever. Prior "fixes" targeted the kill-switch STATE, not the stale-row DISPLAY.

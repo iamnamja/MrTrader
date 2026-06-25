@@ -1598,7 +1598,7 @@ function RampPanel({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
 // ── Macro Intel Panel ────────────────────────────────────────────────────────
 function MacroIntelPanel() {
   const [macro, setMacro] = useState<NisMacroContext | null>(null)
-  const [macroHistory, setMacroHistory] = useState<Array<{ as_of: string; overall_risk: string; global_sizing_factor: number; events_today: number }>>([])
+  const [macroHistory, setMacroHistory] = useState<Array<{ as_of: string; trigger_source: string; trigger_event_type: string | null; trigger_event_name: string | null; overall_risk: string; global_sizing_factor: number; block_new_entries: boolean; rationale: string | null; n_events: number }>>([])
   const [signals, setSignals] = useState<{ blocked: string[]; sized_down: string[]; signals: NisSignal[] }>({ blocked: [], sized_down: [], signals: [] })
   const [decisions, setDecisions] = useState<DecisionAuditRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -1607,31 +1607,20 @@ function MacroIntelPanel() {
   const load = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true); else setLoading(true)
     try {
-      const [m, sig, dec] = await Promise.all([
+      const [m, sig, dec, histResp] = await Promise.all([
         api.nisMacro(),
         api.nisSignals(),
         fetch('/api/decision-audit/recent?limit=100').then(r => r.json()),
+        fetch('/api/nis/macro-history?days=1').then(r => r.json()),
       ])
       const sigTyped = sig as { blocked: string[]; sized_down: string[]; signals: NisSignal[] }
       const decRows = ((dec as { decisions?: DecisionAuditRow[] }).decisions ?? []) as DecisionAuditRow[]
       const newMacro = m as NisMacroContext
       setMacro(newMacro)
       setDecisions(decRows)
-      // Build refresh history: current snapshot + proxy entries from decision audit
       const today = new Date().toISOString().slice(0, 10)
-      const seen = new Set<string>()
-      const hist: typeof macroHistory = []
-      if (newMacro?.as_of) {
-        seen.add(newMacro.as_of)
-        hist.push({ as_of: newMacro.as_of, overall_risk: newMacro.overall_risk, global_sizing_factor: newMacro.global_sizing_factor, events_today: newMacro.events_today?.length ?? 0 })
-      }
-      decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today && r.macro_risk_level)
-        .forEach(r => {
-          const key = (r.decided_at ?? '').slice(0, 16)
-          if (!seen.has(key)) { seen.add(key); hist.push({ as_of: r.decided_at ?? '', overall_risk: r.macro_risk_level ?? '', global_sizing_factor: 1, events_today: 0 }) }
-        })
-      hist.sort((a, b) => b.as_of.localeCompare(a.as_of))
-      setMacroHistory(hist)
+      // Real timestamped re-assessment lineage (newest-first), from nis_macro_history
+      setMacroHistory(((histResp as { history?: typeof macroHistory }).history ?? []))
       // When live NIS cache is empty synthesize blocked/sized_down from decision audit
       if ((sigTyped.blocked?.length ?? 0) === 0 && (sigTyped.sized_down?.length ?? 0) === 0 && decRows.length > 0) {
         const todays = decRows.filter(r => (r.decided_at ?? '').slice(0, 10) === today)
@@ -1750,29 +1739,31 @@ function MacroIntelPanel() {
       {/* [B+C] Rationale + Events */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         <div style={s.card}>
-          <div style={s.cardTitle}>Today's NIS Assessment</div>
-          <div style={{ padding: '10px 14px', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word', maxHeight: 160, overflowY: 'auto', color: C.text }}>
-            {macro?.rationale || '—'}
-          </div>
-          <div style={{ ...s.cardTitle, borderTop: `1px solid ${C.border}`, marginTop: 4, fontSize: 11 }}>
-            Refresh History
-          </div>
-          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 140, overflowY: 'auto' }}>
+          <div style={s.cardTitle}>Today's NIS Assessment — timestamped (newest first)</div>
+          <div style={{ padding: '8px 14px', fontSize: 11, maxHeight: 300, overflowY: 'auto' }}>
             {macroHistory.length === 0
-              ? <span style={{ color: C.muted }}>No history available</span>
+              ? <div style={{ color: C.text, fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word' }}>{macro?.rationale || '—'}</div>
               : macroHistory.map((h, i) => {
                   const rc = riskColorFor(h.overall_risk)
+                  const trig = h.trigger_source === 'post_event'
+                    ? `post-event${h.trigger_event_type ? ': ' + h.trigger_event_type : ''}`
+                    : h.trigger_source
                   return (
-                    <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
-                      <span style={{ color: C.muted, minWidth: 110, flexShrink: 0 }}>{fmtTs(h.as_of)}</span>
-                      <span>
-                        <span style={{ color: rc, fontWeight: 600 }}>{h.overall_risk || '—'}</span>
-                        {(h.global_sizing_factor !== 1 || i === 0) &&
-                          <span style={{ color: C.muted }}> · {h.global_sizing_factor}x sizing</span>}
-                        {h.events_today > 0 &&
-                          <span style={{ color: C.muted, fontSize: 10 }}> · {h.events_today} event(s)</span>}
-                      </span>
+                    <div key={i} style={{ padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ color: C.muted, fontSize: 10 }}>{fmtTsShort(h.as_of)}</span>
+                        <span style={{ color: rc, fontWeight: 700 }}>{(h.overall_risk || '—').toUpperCase()}</span>
+                        <span style={{ color: C.muted, fontSize: 10 }}>{h.global_sizing_factor}x</span>
+                        {h.block_new_entries &&
+                          <span style={{ color: C.red, fontSize: 10, fontWeight: 600 }}>BLOCK</span>}
+                        <span style={{ color: C.muted, fontSize: 10 }}>· {trig}</span>
+                        {h.n_events > 0 && <span style={{ color: C.muted, fontSize: 10 }}>· {h.n_events} event(s)</span>}
+                        {i === 0 && <span style={{ color: C.accent, fontSize: 9, fontWeight: 700 }}>CURRENT</span>}
+                      </div>
+                      {h.rationale &&
+                        <div style={{ color: C.text, fontSize: 11, lineHeight: 1.5, marginTop: 3,
+                          whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{h.rationale}</div>}
                     </div>
                   )
                 })}
