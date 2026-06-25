@@ -99,6 +99,7 @@ class Trader(BaseAgent):
         self._force_closed_today: bool = False
         self._last_date: str = ""
         self._last_regime: str = ""   # track regime changes for stop tightening
+        self._macro_exits_tightened_date = None   # F12b: once-per-ET-day macro exit tightening guard
         # Pending limit orders for swing entries (symbol → order metadata)
         self._pending_limit_orders: Dict[str, Dict[str, Any]] = {}
         # Symbols discarded today after hitting max entry quality rejections.
@@ -677,6 +678,8 @@ class Trader(BaseAgent):
 
         # Check for regime shift → tighten stops on all open swing positions
         await self._apply_regime_stop_tightening(alpaca)
+        # F12b: digested-adverse macro read → tighten swing stops (flagged; never liquidate)
+        await self._apply_macro_exit_tightening(alpaca)
 
         # Check entry signals for approved-but-not-yet-entered symbols
         for symbol, proposal in list(self.approved_symbols.items()):
@@ -2010,35 +2013,7 @@ class Trader(BaseAgent):
         )
 
         for symbol, pos in swing_positions:
-            try:
-                _q = alpaca.get_quote(symbol)
-                current_price = (_q["mid"] if _q else None) or alpaca.get_latest_price(symbol)
-                if current_price is None:
-                    continue
-                bars = alpaca.get_bars(symbol, timeframe="1Day", limit=20)
-                if bars is None or bars.empty:
-                    continue
-                from app.strategy.signals import _calc_atr
-                atr_val = _calc_atr(bars["high"], bars["low"], bars["close"], 14)
-                if not atr_val:
-                    continue
-                _rt_is_short = pos.get("direction") == "SELL_SHORT"
-                if _rt_is_short:
-                    # Short: tighten stop downward (stop is above entry)
-                    tight_stop = round(current_price + 1.0 * atr_val, 4)
-                    _stop_better = tight_stop < pos["stop_price"]
-                else:
-                    tight_stop = round(current_price - 1.0 * atr_val, 4)
-                    _stop_better = tight_stop > pos["stop_price"]
-                if _stop_better:
-                    old_stop = pos["stop_price"]
-                    pos["stop_price"] = tight_stop
-                    self.logger.warning(
-                        "%s: stop tightened (regime=HIGH) $%.2f → $%.2f",
-                        symbol, old_stop, tight_stop,
-                    )
-            except Exception as exc:
-                self.logger.error("Stop tightening failed for %s: %s", symbol, exc)
+            self._tighten_one_stop(symbol, pos, alpaca, "regime=HIGH")
 
         await self.log_decision(
             "REGIME_STOP_TIGHTENED",
@@ -2048,6 +2023,90 @@ class Trader(BaseAgent):
                 "symbols": [s for s, _ in swing_positions],
             },
         )
+
+    def _tighten_one_stop(self, symbol: str, pos: dict, alpaca, reason: str) -> bool:
+        """Tighten one open position's stop to 1×ATR from the current price — only if STRICTLY
+        tighter (never widens, never liquidates). Returns True iff the stop moved. Shared by the
+        regime-shift and macro (F12b) exit-tightening paths."""
+        try:
+            _q = alpaca.get_quote(symbol)
+            current_price = (_q["mid"] if _q else None) or alpaca.get_latest_price(symbol)
+            if current_price is None:
+                return False
+            bars = alpaca.get_bars(symbol, timeframe="1Day", limit=20)
+            if bars is None or bars.empty:
+                return False
+            from app.strategy.signals import _calc_atr
+            atr_val = _calc_atr(bars["high"], bars["low"], bars["close"], 14)
+            if not atr_val:
+                return False
+            _is_short = pos.get("direction") == "SELL_SHORT"
+            if _is_short:
+                # Short: tighten stop downward (stop is above entry)
+                tight_stop = round(current_price + 1.0 * atr_val, 4)
+                _stop_better = tight_stop < pos["stop_price"]
+            else:
+                tight_stop = round(current_price - 1.0 * atr_val, 4)
+                _stop_better = tight_stop > pos["stop_price"]
+            if _stop_better:
+                old_stop = pos["stop_price"]
+                pos["stop_price"] = tight_stop
+                self.logger.warning(
+                    "%s: stop tightened (%s) $%.2f → $%.2f", symbol, reason, old_stop, tight_stop,
+                )
+                return True
+            return False
+        except Exception as exc:
+            self.logger.error("Stop tightening failed for %s: %s", symbol, exc)
+            return False
+
+    async def _apply_macro_exit_tightening(self, alpaca) -> None:
+        """F12b: on a DIGESTED ADVERSE macro read (NIS MacroContext.tighten_exits), tighten open
+        swing stops — NEVER force-liquidate, NEVER block entries. Gated by MACRO_TIGHTEN_EXITS
+        (default OFF → no-op). Fires at most once per ET day; tightening is idempotent (only ever
+        moves a stop tighter). Fails silently — never blocks the trading loop."""
+        try:
+            from app.ml.retrain_config import MACRO_TIGHTEN_EXITS
+            if not MACRO_TIGHTEN_EXITS:
+                return
+            try:
+                from zoneinfo import ZoneInfo
+                _today = datetime.now(ZoneInfo("America/New_York")).date()
+            except Exception:
+                _today = datetime.utcnow().date()
+            if self._macro_exits_tightened_date == _today:
+                return  # already attempted today
+
+            from app.news.intelligence_service import nis
+            # day-cached; first build of the day may hit the LLM (hence to_thread)
+            macro_ctx = await asyncio.to_thread(nis.get_macro_context)
+            if macro_ctx is None or not getattr(macro_ctx, "tighten_exits", False):
+                return
+
+            self._macro_exits_tightened_date = _today  # mark attempted (once/day) regardless of count
+            swing_positions = [
+                (sym, pos) for sym, pos in self.active_positions.items()
+                if pos.get("trade_type", "swing") == "swing"
+            ]
+            if not swing_positions:
+                return
+            self.logger.warning(
+                "Macro tighten_exits (digested adverse) — tightening %d swing stop(s)",
+                len(swing_positions),
+            )
+            moved = [s for s, p in swing_positions
+                     if self._tighten_one_stop(s, p, alpaca, "macro_tighten_exits")]
+            if moved:
+                await self.log_decision(
+                    "MACRO_STOP_TIGHTENED",
+                    reasoning={
+                        "trigger": "nis_tighten_exits",
+                        "symbols": moved,
+                        "rationale": (getattr(macro_ctx, "rationale", "") or "")[:120],
+                    },
+                )
+        except Exception as exc:
+            self.logger.debug("macro exit tightening failed (non-fatal): %s", exc)
 
     # ─── Exit ─────────────────────────────────────────────────────────────────
 

@@ -73,6 +73,10 @@ class MacroContext:
     global_sizing_factor: float = 1.0    # product of all event sizing factors
     overall_risk: RiskLevel = "LOW"
     rationale: str = ""
+    # F12b: a DIGESTED ADVERSE read (all high-impact events released + net BEARISH) may ask the
+    # exit side to tighten stops. Consumed ONLY by exit-review (tighten stops, never liquidate) —
+    # never part of the entry-block contract. Default-safe (False).
+    tighten_exits: bool = False
     schema_version: str = "v1"
 
     @classmethod

@@ -227,6 +227,15 @@ INTRADAY_ENABLED: bool = False
 # for the exit side, the tighten_exits hook (F12b).
 UNIFIED_MACRO_SIZING: bool = False
 
+# ── Macro Intel Phase 3 F12b: macro-driven exit tightening (paper-first, default OFF) ────
+# When True, on a DIGESTED ADVERSE macro read (NIS MacroContext.tighten_exits — all high-impact
+# events released AND net BEARISH) the Trader tightens open swing stops to 1×ATR (reusing the
+# regime-shift tightening path). It NEVER force-liquidates, NEVER blocks new entries, and only
+# moves a stop TIGHTER (idempotent; fires at most once per ET day). Independent of
+# UNIFIED_MACRO_SIZING so the entry-sizing and exit-tightening behaviors can be evaluated
+# separately. Default OFF. Honored by app/agents/trader.py _apply_macro_exit_tightening (F12b).
+MACRO_TIGHTEN_EXITS: bool = False
+
 INTRADAY_RETRAIN: dict = dict(
     days=730,
     n_workers=MAX_WORKERS,

@@ -124,6 +124,10 @@ class NewsIntelligenceService:
             )
 
             event_signals = self._build_event_signals(events, result)
+            # F12b: a DIGESTED ADVERSE read (every high-impact event released + net BEARISH lean)
+            # asks the exit side to tighten stops. Derived from the deterministic floor (not the LLM
+            # free-text) so it's robust; default-safe to False on any uncertain/benign day.
+            tighten_exits = bool(floor["all_released"] and floor["net_lean"] == "BEARISH")
             ctx = MacroContext(
                 as_of=datetime.now(timezone.utc),
                 events_today=event_signals,
@@ -131,6 +135,7 @@ class NewsIntelligenceService:
                 global_sizing_factor=_clamped["sizing_factor"],
                 overall_risk=_clamped["risk_level"],
                 rationale=result.get("rationale", ""),
+                tighten_exits=tighten_exits,
             )
             logger.info(
                 "NIS Tier 1: risk=%s sizing=%.2f block=%s — %s",

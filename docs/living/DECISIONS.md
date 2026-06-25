@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 3 F12b) — macro-driven exit tightening on a digested-adverse read (flagged, paper-first)
+
+**Context**: F12a unified the ENTRY side onto the graded macro factor. Spec A5 also calls for the EXIT side: "a digested adverse read may set a NEW `tighten_exits` flag consumed ONLY by exit-review (tighten stops) — never force-liquidate, never part of the entry-block contract." This is the final Macro Intel slice.
+
+**Decision**:
+- `MacroContext.tighten_exits: bool` (default False), set in `_build_macro_context` from the deterministic floor: `all_released AND net_lean == "BEARISH"` — i.e. every high-impact event has printed AND the net surprise is adverse (a *digested* adverse read, not pre-release uncertainty). Default-safe False on benign / unreleased / LLM-unavailable days.
+- New default-OFF flag `MACRO_TIGHTEN_EXITS` (independent of `UNIFIED_MACRO_SIZING` so entry-sizing and exit-tightening are separately evaluable). When ON, `trader._apply_macro_exit_tightening` tightens open swing stops to 1×ATR, reusing the regime-shift tightening path (extracted into the shared `_tighten_one_stop`). It NEVER force-liquidates, NEVER blocks entries, only moves a stop TIGHTER (idempotent; fires at most once per ET day).
+
+**Rationale / verification**: Opus adversarial deep-dive returned CLEAN — no BLOCKER/HIGH/MEDIUM. Verified: default-OFF is a strict no-op (early return before any NIS fetch / mutation); the `_tighten_one_stop` extraction is byte-equivalent to the old inline regime loop (short/long direction, strictly-tighter check, rounding, exceptions); the never-widen/never-liquidate invariant holds; the once-per-ET-day guard is set at the correct point (adverse-day-with-no-positions still marks done; benign day stays responsive to a later post-event flip); `to_thread` correctly offloads the (day-cached, possibly-LLM) context fetch. Two LOW/NIT addressed (comment corrected; a regime-path test added to pin the shared core both sides). 9 tests; full suite green.
+
+**Consequences**: Macro Intel is feature-complete. When enabled (operator, paper-first), a confirmed adverse macro day protects open swing capital by tightening stops — without ever forcing an exit or blocking new trades. Behavioral, flagged-off — no live change until the flag is flipped + a uvicorn restart.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 3 F12a) — unify PM entry sizing onto the graded NIS macro factor (flagged, paper-first)
 
 **Context**: The macro step-down (Phase 2b) reached the dashboard but NOT actual sizing — the per-symbol NIS path multiplied quantity only by the per-symbol NEWS factor; the graded macro `global_sizing_factor` was never applied to NIS-path entries (F10 documented this). Spec A5: "unify swing/intraday sizing onto the graded NIS `global_sizing_factor` (keep the hardcoded BLOCK as the floor)." This touches the LIVE order-sizing path, so it ships behind a default-OFF flag, paper-first.
