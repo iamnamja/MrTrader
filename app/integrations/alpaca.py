@@ -614,6 +614,24 @@ class AlpacaClient:
             logger.debug("get_quote(%s) failed: %s", symbol, e)
             return None
 
+    def get_bid(self, symbol: str) -> Optional[float]:
+        """Return ONLY the NBBO bid (the executable sale price for a long), independent of ask
+        validity. `get_quote` returns None if EITHER side is non-positive, so a one-sided book
+        (missing/zero ask during a halt or violent gap-down) would null it — exactly when a long most
+        needs its real bid to confirm a crash exit. Returns None if there is no positive bid."""
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            _rate_limiter.acquire()
+            quotes = _retry_call(self.data_client.get_stock_latest_quote, request)
+            quote = quotes.get(symbol)
+            if quote is None:
+                return None
+            bid = float(quote.bid_price)
+            return bid if bid > 0 else None
+        except Exception as e:
+            logger.debug("get_bid(%s) failed: %s", symbol, e)
+            return None
+
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get the latest price for a symbol"""
         try:

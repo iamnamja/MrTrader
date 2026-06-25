@@ -4323,24 +4323,44 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
     def _get_deployed_by_type(self) -> Dict[str, float]:
         """
         Return {trade_type: deployed_dollars} for open positions.
-        Uses Alpaca positions tagged with trade_type in their client_order_id.
-        Falls back to 0 on any error so sizing degrades gracefully.
+
+        Alpaca position dicts carry NO trade_type field, so classification comes from the OPEN DB
+        Trade rows (symbol -> trade_type). Without this every position defaulted to 'swing' and the
+        intraday sleeve's per-type budget cap was never enforced (intraday deployed read as 0 forever
+        -> unbounded intraday headroom). Unknown symbols fall back to 'swing' (conservative: counts
+        toward the larger budget).
+
+        RAISES on an indeterminate read (DB or broker error). The caller (_calculate_quantity) FAILS
+        CLOSED — an all-zeros fallback here would make BOTH the per-sleeve and the gross-exposure cap
+        read as 'nothing deployed' and let a transient read over-deploy the book.
         """
         deployed = {"swing": 0.0, "intraday": 0.0, "total": 0.0}
+        # symbol -> trade_type from open DB trades (the only source of the sleeve attribution).
+        from app.database.session import get_session
+        from app.database.models import Trade
+        type_by_symbol: Dict[str, str] = {}
+        _db = get_session()
         try:
-            from app.live_trading.cash_sleeve import CASH_ETFS  # cash-equiv: not risk gross
-            positions = self._alpaca.get_positions()  # list of position dicts
-            for pos in positions:
-                if pos.get("symbol") in CASH_ETFS:
-                    continue  # P1-1 T-bill sleeve is cash, not deployed risk gross
-                market_val = abs(float(pos.get("market_value") or 0))
-                deployed["total"] += market_val
-                # Trade type tagged in metadata; default to swing for legacy positions
-                tt = pos.get("trade_type") or "swing"
-                if tt in deployed:
-                    deployed[tt] += market_val
-        except Exception:
-            pass
+            rows = (_db.query(Trade.symbol, Trade.trade_type)
+                    .filter(Trade.status.in_(["ACTIVE", "PENDING_FILL"])).all())
+            for sym, tt in rows:
+                tt = tt or "swing"
+                # if a symbol is somehow open in BOTH sleeves, prefer 'intraday' deterministically
+                # (counts toward the tighter cap — conservative) instead of last-row-wins.
+                if sym not in type_by_symbol or tt == "intraday":
+                    type_by_symbol[sym] = tt
+        finally:
+            _db.close()
+        from app.live_trading.cash_sleeve import CASH_ETFS  # cash-equiv: not risk gross
+        positions = self._alpaca.get_positions()  # list of position dicts; raises on broker error
+        for pos in positions:
+            if pos.get("symbol") in CASH_ETFS:
+                continue  # P1-1 T-bill sleeve is cash, not deployed risk gross
+            market_val = abs(float(pos.get("market_value") or 0))
+            deployed["total"] += market_val
+            tt = type_by_symbol.get(pos.get("symbol"), "swing")
+            if tt in deployed:
+                deployed[tt] += market_val
         return deployed
 
     def _calculate_quantity(
@@ -4375,8 +4395,15 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         budget_pct = SWING_BUDGET_PCT if trade_type == "swing" else INTRADAY_BUDGET_PCT
         strategy_budget = account_value * budget_pct
 
-        # 2. How much of each budget and gross cap is already deployed
-        deployed = self._get_deployed_by_type()
+        # 2. How much of each budget and gross cap is already deployed. FAIL CLOSED if it can't be
+        # determined: without it we cannot honour the per-sleeve or gross-exposure caps, so size to
+        # the 1-share floor rather than over-deploy on a transient DB/broker read.
+        try:
+            deployed = self._get_deployed_by_type()
+        except Exception as exc:
+            self.logger.warning("sizing: deployed-capital unavailable — failing CLOSED to the "
+                                "1-share floor (%s)", exc)
+            return 1
         type_headroom = max(0.0, strategy_budget - deployed.get(trade_type, 0.0))
         gross_headroom = max(0.0, account_value * GROSS_EXPOSURE_CAP - deployed["total"])
         available = min(type_headroom, gross_headroom)

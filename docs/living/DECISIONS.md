@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5f) — four live-path MAJORs (batch 2); 1 false-positive killed; 1 deferred
+
+**Context**: Re-audit #3 live MAJORs, batch 2. Six candidates were investigated; **#3 (intraday daily-loss-cap str-vs-date + realized-only) was a FALSE POSITIVE** — `RiskMetric.date` is a `String(10)` column so `str(date.today())` matches correctly, and `_get_daily_pnl` already uses live equity (`equity - last_equity`, incl. unrealized) as its primary (Wave 5c), so realized-only does not apply. **#2 (macro empty-200 fail-open) deferred to Wave 5g** — an empty FMP calendar is often a *legitimate* no-events day; the real fail-open is treating FMP *unavailable* (None) as "no events", an NIS-chain policy fix that deserves its own PR.
+
+**Decision** (the four fixed):
+1. **IBKR multi-account NAV** (`ibkr_adapter.get_account`): the old `target=None` path let every account's USD rows collide by tag (last-row-wins → mixed/wrong NAV). Now **fails closed** — raises unless exactly one managed account (matches the adapter's `_require_connected` philosophy; read-only shadow, single-account setup). Known limitation: rejects an FA "All" multi-account topology we don't run.
+2. **EOD force-close `price=0`** (`trader._execute_exit`): the 3:45pm force-close passes `get_latest_price() or 0`; a 0 would book a phantom `-entry*qty` P&L. Now, when the price is non-positive, it **re-polls the actual broker fill** (`_read_order_fill_price`, 8 attempts) — the order already filled, so the fill is the source of truth — before falling back to a live quote then `entry_price` (neutral 0 leg = honest "no info", logged loudly for recon). This also stops a real adverse fill during a data outage from booking $0 and under-counting realized loss in the daily-loss governor.
+3. **Overnight-gap AUTO_EXIT** (`premarket._check_overnight_gaps`): a >5% adverse gap could fire a destructive auto-exit off a single unvalidated mid. **First attempt** (gating on a *tight* spread) was wrong and caught by deep-dive — real crashes *widen* spreads, so it suppressed exactly the exits we want. **Final**: confirm against the **executable NBBO bid** (`bid_gap <= -5%`) — robust to wide-spread crashes; a one-sided/illiquid bad mid (bid near prior close) downgrades to REEVAL. Added `alpaca.get_bid` (raw bid independent of ask validity) so a one-sided book during a halt still confirms a real crash exit.
+4. **PM deployed-by-type** (`portfolio_manager._get_deployed_by_type`): Alpaca position dicts carry no `trade_type`, so every position defaulted to 'swing' → intraday deployed read as 0 forever → the 30% intraday sleeve cap was unenforced. Now classifies via the **open DB `Trade.trade_type` map** (same-symbol-in-both prefers 'intraday', conservative). Also made it **fail closed**: it raises on an indeterminate DB/broker read and `_calculate_quantity` catches → sizes to the 1-share floor (an all-zeros fallback would make both the per-sleeve and gross caps read 'nothing deployed' and over-deploy on a transient read).
+
+**Rationale / verification**: TWO independent Opus deep-dive rounds. Round 1 confirmed #1 solid (MINOR FA note) and flagged #4/#5/#6 as MAJOR (hidden-loss, spread-gate inversion, transient fail-open) → all three revised. Round 2 re-verified #4/#6 RESOLVED and #5 RESOLVED with one NEW LOW (one-sided book nulls `get_quote`) → closed via `get_bid`. 12 new tests + phase20 gap fixtures updated; full suite 4035 green; flake8 clean (CI args).
+
+**Consequences**: 4 more live-path MAJORs closed (re-audit #3). **0 BLOCKERs remain.** Remaining live MAJORs (~6): #2 macro unavailable→fail-open (Wave 5g); IBKR is read-only-shadow so #1 is pre-live-flip hardening; plus the non-live MAJOR + MINOR tail (mostly parked/dead code — PEAD/swing-ML/intraday OFF/gated).
+
+---
+
 ## 2026-06-24 (Audit Wave 5e) — three live-path MAJORs: fail-OPEN on indeterminate state
 
 **Context**: Re-audit #3 live-path MAJORs, batch 1 of the remaining 13. Each was a fail-OPEN — treating an unknown/error state as the safe state.
