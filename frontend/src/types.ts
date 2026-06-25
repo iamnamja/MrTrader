@@ -269,6 +269,11 @@ export interface NisMacroEvent {
   actual: number | null
   estimate: number | null
   prior: number | null
+  // polarity-aware outcome (server-computed, Phase 2a) — optional for backward-compat
+  market_outcome?: 'risk_on' | 'risk_off' | 'in_line' | 'pending'
+  outcome_label?: string
+  polarity?: string
+  surprise_pct?: number | null
 }
 
 export interface NisMacroContext {

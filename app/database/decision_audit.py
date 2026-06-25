@@ -141,10 +141,13 @@ def persist_nis_macro_snapshot(
 
         today = datetime.now(timezone.utc).date()
         as_of = getattr(macro_context, "as_of", datetime.now(timezone.utc))
+        from app.news.macro_polarity import classify_outcome
         events = []
         for e in getattr(macro_context, "events_today", []):
+            _et = getattr(e, "event_type", None)
+            _outcome = classify_outcome(_et, getattr(e, "actual", None), getattr(e, "estimate", None))
             events.append({
-                "event_type": getattr(e, "event_type", None),
+                "event_type": _et,
                 "event_name": getattr(e, "event_name", ""),
                 "event_time": str(getattr(e, "event_time", None)),
                 "risk_level": getattr(e, "risk_level", None),
@@ -157,6 +160,10 @@ def persist_nis_macro_snapshot(
                 "actual": getattr(e, "actual", None),
                 "estimate": getattr(e, "estimate", None),
                 "prior": getattr(e, "prior", None),
+                # polarity-aware meaning (Phase 2a) — persisted so the lineage carries it
+                "market_outcome": _outcome["market_outcome"],
+                "outcome_label": _outcome["outcome_label"],
+                "polarity": _outcome["polarity"],
             })
         rationale = getattr(macro_context, "rationale", None)
 
