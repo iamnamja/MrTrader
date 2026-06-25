@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Alpha-v10 H1 enforce-prep) — reconciliation models in-flight orders (no false break)
+
+**Context**: The reconciliation-before-trade gate (H1, currently SHADOW) compared DB-expected (ACTIVE **and** PENDING_FILL folded together) vs broker-actual by EXACT point-equality. A just-placed-but-unfilled order (DB `PENDING_FILL`, broker not yet showing the position) was therefore a FALSE break — which in ENFORCE would wrongly HOLD a legitimate rebalance. This was the documented prerequisite for flipping the gate shadow→enforce.
+
+**Decision**: model HELD vs IN-FLIGHT separately. `db_expected_positions` is now ACTIVE-only (held); new `db_pending_positions` returns the PENDING_FILL rows (in-flight working orders); `shadow_reconcile_before_trade` passes them as `pending_qty` (only on the default whole-Alpaca-book path — an explicit venue-scoped `expected`, e.g. the IBKR futures caller, still gets no DB pending, behavior unchanged). In `reconcile()` a position break now fires only when broker `actual` falls OUTSIDE the closed band `[held, held+pending]` (sign-aware lo/hi) by more than `qty_tol`. With `pending==0` the band collapses to the exact point check → **byte-identical to before**, so a genuine PHANTOM (DB held, broker flat, no working order) or ORPHAN still FAIL_CLOSEs.
+
+**Rationale / verification**: Opus adversarial deep-dive on the safety gate returned CLEAN — no BLOCKER/HIGH. Verified the band math across every sign combination (long+buy, long+sell-reduce, short+cover, pure-pending, pure-held, full-close); genuine phantom/orphan detection fully preserved (pend=0 ⇒ exact check); fail-safe intact (still FAIL_CLOSED on any error); the lifecycle fact that a PENDING_FILL row is updated **in place** to ACTIVE (never duplicated) means the band is never spuriously inflated. The one accepted masking vector (a reducing working-sell widens the band down to flat — but a PENDING_FILL row only exists because we recorded placing that order) is documented + tested. Applied the two LOW items (removed the dead `EXPECTED_STATUSES` alias; added a reducing-pending/sell-side end-to-end test). 10 new/updated reconciliation tests; full suite green.
+
+**Consequences**: closes the H1 enforce prerequisite (pending-order false-break). The cash-side check remains the documented non-blocking coverage gap (cash isn't modelled DB-side; omitted cash is a "not checked" NOTE, never a false break). With the shadow soak clean (0 breaks since 06-22), the gate is now ready to flip `pm.reconciliation_mode` → enforce after the clean 7-day soak (~06-29, owner-present). No live behavior change yet (still SHADOW). Not a PIPELINE-rule file → no PIPELINE_ARCHITECTURE update required.
+
+---
+
 ## 2026-06-25 — Phantom intraday position purge + AAPL DB cleanup
 
 **Context**: The Overview "Recent Decisions" panel showed `trader INTRADAY_FORCE_CLOSED AAPL` ~30×/day at all hours, despite no AAPL position (none in `trades`, none in the 7 open trend/cash positions) and intraday being disabled. Root cause: a phantom AAPL lived in the prior process's in-memory `active_positions` (trade_type=intraday) — an intraday entry that created in-memory state but whose order never filled / DB row was never committed — and got "force-closed" every cycle (spurious log + a real sell could OPEN a short). The existing force-close phantom guard only dropped phantoms when the Alpaca `get_positions()` fetch SUCCEEDED. The most recent uvicorn restart already cleared the live symptom (active_positions rebuilt from DB → no AAPL; 0 firings since).
