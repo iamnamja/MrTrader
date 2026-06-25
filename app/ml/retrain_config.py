@@ -216,6 +216,18 @@ SWING_GATE = dict(
 # -2.80, t=-6.85; MODEL_STATUS.md). Set True to resume scanning AND retraining.
 INTRADAY_ENABLED: bool = False
 
+# ── Phase H — H3: pre-trade per-order fat-finger backstop (fail-closed, default ON) ──────
+# A COARSE absolute sanity cap enforced at the Alpaca order chokepoint BEFORE submit — distinct
+# from the NAV-relative PORTFOLIO caps in whole_book_gate. It rejects an absurdly-large SINGLE order
+# (a bug / fat-finger / runaway sizing) so it can never reach the broker. Generous defaults sized
+# for the current ~$100k paper book (the largest legit single order is the cash-sleeve SGOV buffer,
+# ~$49k) with ~10x headroom — REVISIT as NAV scales: a single legit SGOV cash-deploy first
+# approaches the $500k notional cap near ~$1M NAV. (The whole-book gate provides the NAV-relative
+# portfolio bound; this is only the absolute backstop.) Set H3_PRETRADE_CAP_ENABLED=False to disable.
+H3_PRETRADE_CAP_ENABLED: bool = True
+H3_MAX_ORDER_NOTIONAL_USD: float = 500_000.0   # reject a single order whose qty*price exceeds this
+H3_MAX_ORDER_SHARES: int = 100_000             # reject a single order whose share count exceeds this
+
 # ── Macro Intel Phase 3 F12: unified macro sizing (paper-first, default OFF) ──────
 # When True, PM folds the GRADED NIS Tier-1 macro `global_sizing_factor` into per-symbol
 # order quantity in the proposal-build paths (after the per-symbol news multiplier), so the

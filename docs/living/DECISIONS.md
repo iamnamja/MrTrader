@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Alpha-v10 H3) — pre-trade per-order fat-finger backstop (fail-closed)
+
+**Context**: Phase-H safety brick before any IBKR dollar. Nothing rejected an absurdly-large SINGLE live order (a bug / fat-finger / runaway sizing) before it hit the broker — the whole-book gate is portfolio-level and shadow-first (logs, doesn't block); there was no per-order, fail-closed sanity check at the order chokepoint.
+
+**Decision**: a coarse ABSOLUTE per-order cap enforced at the Alpaca order chokepoint. `_assert_order_within_caps(symbol, qty, side, price)` (in `app/integrations/alpaca.py`) is called inside both `place_market_order` and `place_limit_order` BEFORE submit; it raises `OrderSanityError` (fail-closed) when a single order's shares exceed `H3_MAX_ORDER_SHARES` (100k) or its notional `qty*price` exceeds `H3_MAX_ORDER_NOTIONAL_USD` ($500k), or the qty is malformed/non-positive. `place_market_order` gained an optional `est_price` (market orders carry no price) — the 5 automatic market callers (trend, cash, intraday entry, partial/full exit) pass the price they already have; limit orders use `limit_price`; the manual close API (no price) falls back to the shares cap. Pure arithmetic, no I/O — can't fail-open on an outage. Distinct from + additive to the NAV-relative `whole_book_gate` portfolio caps. Flag `H3_PRETRADE_CAP_ENABLED` (default True).
+
+**Rationale / verification**: Opus adversarial deep-dive returned SHIP-READY (no BLOCKER/HIGH). Verified: it cannot fail-open (guard precedes the try/rate-limiter/submit; `OrderSanityError` is not an `APIError` so the idempotency/except blocks can't swallow it; never trips the circuit breaker); a rejected EXIT is safe (every exit caller catches per-symbol and re-checks next cycle — the position stays monitored, never orphaned); the $500k/100k defaults give ~10x headroom on the current ~$100k book (largest legit order = the ~$49k SGOV cash buffer; a single legit cash-deploy first approaches the cap near ~$1M NAV — documented); a guard bug rejects one order, not all trading. Applied the 2 LOW/NIT (don't retry a deterministic `OrderSanityError` in `_place_replacement_limit`; documented the ~$1M trigger NAV). 10 tests; full suite green.
+
+**Consequences**: a fat-finger / bug can no longer place an absurd single live order — it's rejected before the broker sees it, fail-closed, while every legitimate current order passes with wide headroom. Phase-H progress toward the IBKR no-go gate. The IBKR futures-multiplier verify-on-connect half of H3 is already covered by P2.2. Revisit the absolute caps (or move to NAV-relative) as NAV scales. Not a PIPELINE-rule file → no PIPELINE_ARCHITECTURE update. Effective next uvicorn restart.
+
+---
+
 ## 2026-06-25 (Alpha-v10 H1 enforce-prep) — reconciliation models in-flight orders (no false break)
 
 **Context**: The reconciliation-before-trade gate (H1, currently SHADOW) compared DB-expected (ACTIVE **and** PENDING_FILL folded together) vs broker-actual by EXACT point-equality. A just-placed-but-unfilled order (DB `PENDING_FILL`, broker not yet showing the position) was therefore a FALSE break — which in ENFORCE would wrongly HOLD a legitimate rebalance. This was the documented prerequisite for flipping the gate shadow→enforce.

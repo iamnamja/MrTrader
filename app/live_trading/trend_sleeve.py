@@ -799,6 +799,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                     order = alpaca.place_market_order(
                         sym, int(qty), side,
                         client_order_id=idempotency_key("trend", sym),
+                        est_price=price,
                     )
                     oid = order.get("order_id") if isinstance(order, dict) else None
                     if isinstance(order, dict) and order.get("idempotent_reuse"):

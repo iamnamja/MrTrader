@@ -124,6 +124,47 @@ def _is_duplicate_client_order_id(err) -> bool:
     return "client_order_id" in msg and ("exist" in msg or "unique" in msg or "duplicate" in msg)
 
 
+class OrderSanityError(Exception):
+    """Raised by the H3 pre-trade guard when a single order exceeds the absolute fat-finger caps.
+
+    Distinct from APIError, so it propagates to the caller (which logs + skips the order) and never
+    trips the circuit breaker (it's our own refusal to place, not a broker fault)."""
+
+
+def _assert_order_within_caps(symbol: str, quantity, side: str, price=None) -> None:
+    """H3 pre-trade fat-finger backstop — FAIL-CLOSED. Reject (raise OrderSanityError) a single order
+    whose share count exceeds H3_MAX_ORDER_SHARES, or whose notional (qty*price, when a price is
+    available) exceeds H3_MAX_ORDER_NOTIONAL_USD. A malformed/non-positive qty is itself rejected (a
+    malformed order is suspect). Pure arithmetic — no broker/DB/network I/O, so it cannot fail-open
+    on an outage. Disabled only via the explicit H3_PRETRADE_CAP_ENABLED flag."""
+    from app.ml.retrain_config import (
+        H3_PRETRADE_CAP_ENABLED, H3_MAX_ORDER_NOTIONAL_USD, H3_MAX_ORDER_SHARES,
+    )
+    if not H3_PRETRADE_CAP_ENABLED:
+        return
+    try:
+        qty = int(quantity)
+    except (TypeError, ValueError):
+        raise OrderSanityError(f"H3: {symbol} {side} qty is not an integer: {quantity!r}")
+    if qty <= 0:
+        raise OrderSanityError(f"H3: {symbol} {side} non-positive qty {qty}")
+    if qty > H3_MAX_ORDER_SHARES:
+        raise OrderSanityError(
+            f"H3: {symbol} {side} {qty} shares exceeds max-order-size cap {H3_MAX_ORDER_SHARES}")
+    try:
+        px = float(price) if price is not None else None
+    except (TypeError, ValueError):
+        px = None
+    if px is not None and px > 0:
+        notional = qty * px
+        if notional > H3_MAX_ORDER_NOTIONAL_USD:
+            raise OrderSanityError(
+                f"H3: {symbol} {side} notional ${notional:,.0f} ({qty} @ ${px:,.2f}) exceeds "
+                f"per-order cap ${H3_MAX_ORDER_NOTIONAL_USD:,.0f}")
+    # px None/<=0 (e.g. a market order placed with no est_price): notional not checkable here — the
+    # shares cap above still applies as the coarse backstop.
+
+
 def _is_position_not_found(err) -> bool:
     """True if an Alpaca error means the position is CONFIRMED not to exist (the account is flat in
     that symbol), as opposed to an indeterminate read failure (network/5xx/auth). Only a confirmed
@@ -261,7 +302,8 @@ class AlpacaClient:
             return None
 
     def place_market_order(
-        self, symbol: str, quantity: int, side: str, client_order_id: str | None = None
+        self, symbol: str, quantity: int, side: str, client_order_id: str | None = None,
+        est_price: float | None = None,
     ) -> Dict[str, Any]:
         """
         Place a market order
@@ -271,7 +313,12 @@ class AlpacaClient:
             quantity: Number of shares
             side: 'buy' or 'sell'
             client_order_id: Optional identifier we control (proposal UUID); queryable via Alpaca
+            est_price: Optional est. fill price so the H3 pre-trade guard can check notional (a
+                market order carries no price; callers pass the quote/last they already have).
         """
+        # H3 pre-trade fat-finger backstop (fail-closed) — raises OrderSanityError BEFORE any submit;
+        # propagates to the caller (logs + skips), never trips the circuit breaker.
+        _assert_order_within_caps(symbol, quantity, side, est_price)
         try:
             _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
@@ -355,6 +402,8 @@ class AlpacaClient:
             limit_price: Limit price
             client_order_id: Optional identifier we control (proposal UUID); queryable via Alpaca
         """
+        # H3 pre-trade fat-finger backstop (fail-closed) — limit orders carry their own price.
+        _assert_order_within_caps(symbol, quantity, side, limit_price)
         try:
             _rate_limiter.acquire()
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL

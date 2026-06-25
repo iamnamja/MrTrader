@@ -314,7 +314,8 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             price = live.get(sym, 0.0)
             try:
                 order = alpaca.place_market_order(
-                    sym, int(qty), side, client_order_id=idempotency_key("cash", sym, side=side))
+                    sym, int(qty), side, client_order_id=idempotency_key("cash", sym, side=side),
+                    est_price=price)
                 oid = order.get("order_id") if isinstance(order, dict) else None
             except Exception as exc:
                 log.error("cash: order failed %s %s x%d: %s", side, sym, qty, exc)
