@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5j) — kill switch could UN-ARM itself on a stale DB read
+
+**Context**: Re-audit #4 MAJOR. The daemon's 3s state-sync calls `KillSwitch.load_state()`, which set `_active = db_value` for any bool. If `activate()` set `_active=True` in memory but `_persist_state()` FAILED (DB still holds False — exactly the compound failure a kill switch must survive), the next state-sync read False and silently UN-ARMED the switch within ~3s. The persist side had been hardened (retry + read-back + CRITICAL), but the read side had no latch. A naive "never downgrade True→False" latch was rejected: the state-sync's documented purpose is to propagate a web-triggered activate **AND reset** to the daemon, so a blanket no-downgrade would strand the daemon halted after a legitimate reset.
+
+**Decision**: a monotonic sequence (`_CFG_KS_SEQ`, `self._seq`) distinguishes an AUTHORITATIVE change from a STALE value. `_persist_state` bumps `new_seq = max(self._seq, db_seq)+1`, writes active+seq, verifies BOTH on read-back, and advances `self._seq` ONLY on a confirmed write (a failed persist never advances it). `load_state` applies ASYMMETRICALLY: an upgrade to ACTIVE is always honored (fail-safe); a downgrade to INACTIVE is honored ONLY when `db_seq > self._seq` (a real, newer reset); a malformed (non-bool) value leaves the in-memory state unchanged (neither halts nor un-arms).
+
+**Rationale / verification**: Opus deep-dive on this safety-critical change returned RESOLVED — confirmed (1) a failed-persist stale read can no longer un-arm (the stale DB carries an equal/older seq → refuse), and (2) a legitimate cross-process reset still un-arms the daemon (newer seq → honored). JSON config round-trips ints exactly, so the added `check_seq` read-back can't false-CRITICAL. The malformed-value branch is now strictly safer than before (was forced inactive; now unchanged). 8 new tests + 1 existing assertion updated (load_state now reads 2 keys); full suite 4055 green; flake8 clean.
+
+**Consequences**: the emergency stop can no longer self-un-arm on a stale/failed-persist read, while legitimate resets still propagate. **Known follow-up (LOW, pre-existing):** `activate()`/`reset()` are not synchronized, so a concurrent activate-vs-reset at the same base seq is last-writer-wins (a true fix needs an atomic compare-and-set / row lock) — narrow and no worse than before. **0 BLOCKERs remain.**
+
+---
+
 ## 2026-06-25 (Audit Wave 5i) — BLOCKER: a standing pause was lost on an agent crash-and-restart
 
 **Context**: A FRESH adversarial re-audit of the now-hardened live order + control path (4 independent Opus agents over distinct slices) found a new **BLOCKER**: the orchestrator restarts a crashed agent by re-invoking `agent.run()` (`_run_agent`), and `run()` hard-set `self.status = "running"`. So if an agent crashed DURING a manual (operator) or auto (Alpaca-down) pause, the restart silently RESUMED it — the agent self-un-paused while the control plane still reported paused. For the Trader this means placing live orders the operator believed were halted. (The Wave-5h `_manual_paused`/`_auto_paused` latches were correct, but they were never re-projected onto a restarted agent.)

@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 _CFG_KS_ACTIVE = "kill_switch.active"
+# Monotonic sequence bumped on every activate()/reset(). load_state() uses it to tell an
+# AUTHORITATIVE state change (a real cross-process reset, higher seq) apart from a STALE value left
+# by our OWN failed persist (same/older seq) — so the 3s state-sync can never un-arm an active switch
+# on a stale read, yet a genuine web-triggered reset still propagates to the daemon.
+_CFG_KS_SEQ = "kill_switch.seq"
 
 
 def _running_under_pytest() -> bool:
@@ -37,6 +42,9 @@ class KillSwitch:
 
     def __init__(self):
         self._active = False
+        # Last state-sequence this process has applied/persisted. A load_state() downgrade
+        # (active->inactive) is honored ONLY when the DB carries a strictly higher seq.
+        self._seq = 0
         # True once we have SUCCESSFULLY flattened in the current halt episode. Guards against a
         # repeat activate() (manual + watchdog, or a re-trigger) re-submitting closes on an already
         # flat book — a double-sell risk. Reset on reset() (new episode).
@@ -55,27 +63,43 @@ class KillSwitch:
             db = get_session()
             try:
                 val = get_config(db, _CFG_KS_ACTIVE)
+                seq = get_config(db, _CFG_KS_SEQ)
+                db_seq = seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
                 if val is not None:
-                    # STRICT bool check — NEVER coerce via bool(). The genuine
-                    # activate()/reset() path always persists a real JSON bool, so a
-                    # non-bool value here is malformed (corrupted/legacy row, or a
-                    # mocked config store under test). bool() would turn ANY non-empty
-                    # such value — the string "false", a MagicMock, etc. — into True
-                    # and spuriously HALT live trading on startup. Treat malformed as
-                    # INACTIVE: a clean True is never misread, so a real activation is
-                    # never lost; we only ever ignore values that could not have come
-                    # from a legitimate activation.
-                    if isinstance(val, bool):
-                        self._active = val
-                    else:
+                    # STRICT bool check — NEVER coerce via bool(). The genuine activate()/reset()
+                    # path always persists a real JSON bool, so a non-bool value here is malformed
+                    # (corrupted/legacy row, or a mocked config store under test). bool() would turn
+                    # ANY non-empty such value — the string "false", a MagicMock, etc. — into True
+                    # and spuriously HALT live trading. Treat malformed as "leave state unchanged".
+                    if not isinstance(val, bool):
                         logger.warning(
-                            "Kill switch persisted state is non-bool (%r, type=%s) — "
-                            "treating as INACTIVE (refusing to halt on a malformed value)",
+                            "Kill switch persisted state is non-bool (%r, type=%s) — leaving the "
+                            "in-memory state unchanged (refuse to halt OR un-arm on a malformed value)",
                             val, type(val).__name__,
                         )
-                        self._active = False
-                    if self._active:
+                        return True
+                    # ASYMMETRIC apply:
+                    #  • upgrade to ACTIVE (False->True): ALWAYS honor — fail-safe, a persisted halt
+                    #    must bind even on a legacy/seq-less row.
+                    #  • downgrade to INACTIVE (True->False): honor ONLY if the DB carries a strictly
+                    #    NEWER seq (an authoritative cross-process reset). A same/older seq means the
+                    #    DB is stale (e.g. our own activate() persist failed) — refuse to un-arm.
+                    if val and not self._active:
+                        self._active = True
                         logger.warning("Kill switch restored as ACTIVE from persisted state")
+                    elif (not val) and self._active:
+                        if db_seq > self._seq:
+                            self._active = False
+                            logger.warning("Kill switch un-armed from persisted state "
+                                           "(authoritative reset, seq %d > %d)", db_seq, self._seq)
+                        else:
+                            logger.warning(
+                                "Kill switch DB=inactive but no NEWER seq (db_seq=%d <= %d) — "
+                                "refusing to un-arm an active switch (stale/failed-persist guard); "
+                                "only reset() clears it", db_seq, self._seq)
+                    # advance our applied-seq watermark to the DB's if it is ahead
+                    if db_seq > self._seq:
+                        self._seq = db_seq
                     return True
             finally:
                 db.close()
@@ -120,14 +144,24 @@ class KillSwitch:
             try:
                 db = get_session()
                 try:
+                    # Bump a monotonic seq ALONGSIDE the active flag so a peer/state-sync can tell
+                    # this authoritative change apart from a stale value. Seed from max(in-memory,
+                    # DB) so concurrent writers don't regress the counter.
+                    cur = get_config(db, _CFG_KS_SEQ)
+                    cur_seq = cur if isinstance(cur, int) and not isinstance(cur, bool) else 0
+                    new_seq = max(self._seq, cur_seq) + 1
                     set_config(db, _CFG_KS_ACTIVE, self._active, "Kill switch active flag")
+                    set_config(db, _CFG_KS_SEQ, new_seq, "Kill switch state sequence (monotonic)")
                     check = get_config(db, _CFG_KS_ACTIVE)
+                    check_seq = get_config(db, _CFG_KS_SEQ)
                 finally:
                     db.close()
-                if isinstance(check, bool) and check == self._active:
+                if (isinstance(check, bool) and check == self._active
+                        and check_seq == new_seq):
+                    self._seq = new_seq            # only advance on a CONFIRMED write
                     return True
-                logger.warning("Kill switch persist read-back mismatch (got %r, want %r) attempt %d/3",
-                               check, self._active, attempt + 1)
+                logger.warning("Kill switch persist read-back mismatch (got %r/seq %r, want %r/seq %d) "
+                               "attempt %d/3", check, check_seq, self._active, new_seq, attempt + 1)
             except Exception as exc:
                 logger.warning("Kill switch persist attempt %d/3 failed: %s", attempt + 1, exc)
             time.sleep(0.2 * (attempt + 1))
