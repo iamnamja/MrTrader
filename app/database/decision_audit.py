@@ -87,6 +87,46 @@ def write_decision(
         logger.debug("decision_audit write failed (non-fatal): %s", exc)
 
 
+def skip_audit_exists(symbol: str, strategy: str, reason: str) -> bool:
+    """True if a pm_skip row with this EXACT (symbol, strategy, reason) was already written TODAY (ET).
+
+    Idempotency for repeated PM triggers, keyed on the FULL reason string (exact match):
+      * a rapid identical re-trigger produces the identical reason (same VIX/SPY inputs → same
+        score to 3dp, same window suffix) and is deduped — the symptom this fixes; while
+      * a genuinely DISTINCT abstention still records: a different category, a different intraday
+        WINDOW (the reason carries the `:{HH:MM}` suffix, e.g. kill_switch:10:45 vs kill_switch:09:45),
+        a materially different score, or a new ET day all yield a different reason or date.
+
+    Keying on the full reason (not the base) is deliberate — base-keying would collapse the distinct
+    scheduled intraday windows into one row. Exact match also means kill_switch never aliases
+    kill_switch_late. Fails OPEN (returns False) on any error, so a query failure can NEVER suppress
+    a real abstention (we'd rather write a duplicate than silently drop the audit trail)."""
+    try:
+        from app.database.session import get_session
+        from app.database.models import DecisionAudit
+        from zoneinfo import ZoneInfo
+
+        _et = ZoneInfo("America/New_York")
+        start_utc = datetime.now(_et).replace(
+            hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        target = f"pm_skip: {reason}"
+        with get_session() as db:
+            rows = (
+                db.query(DecisionAudit.block_reason)
+                .filter(
+                    DecisionAudit.strategy == strategy,
+                    DecisionAudit.symbol == symbol,
+                    DecisionAudit.final_decision == "skip",
+                    DecisionAudit.decided_at >= start_utc,
+                )
+                .all()
+            )
+        return any(br == target for (br,) in rows)
+    except Exception as exc:
+        logger.debug("skip_audit_exists check failed (non-fatal, fail-open): %s", exc)
+        return False
+
+
 def write_scan_abstention(
     gate_type: str,
     gate_detail: str,
