@@ -23,6 +23,9 @@ def _capture_write(monkeypatch):
     calls = []
     monkeypatch.setattr("app.database.decision_audit.write_decision",
                         lambda **k: calls.append(k))
+    # F11 added an idempotency guard that reads the DB; these tests assert the COLLAPSE logic,
+    # so disable dedup (return False) to keep them isolated from any rows already in the dev DB.
+    monkeypatch.setattr("app.database.decision_audit.skip_audit_exists", lambda *a: False)
     return calls
 
 

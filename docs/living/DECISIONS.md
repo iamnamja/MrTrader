@@ -4,6 +4,21 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 3 F11) — idempotent PM skip-audit (no duplicate rows on re-trigger)
+
+**Context**: Each PM run that abstains writes a `pm_skip` decision_audit row. A re-triggered run (manual re-run, or an adaptive re-scan) for the same standing condition wrote a fresh duplicate row every time, piling up identical abstention records. Phase 0 already collapsed per-proposal spam to one `symbol='*'` row; F11 makes the write itself idempotent across repeats.
+
+**Decision**: new `decision_audit.skip_audit_exists(symbol, strategy, reason)` — True if a `pm_skip` row with this EXACT reason for (symbol, strategy) already exists TODAY (ET). `_write_skip_audit` consults it before every write and skips the duplicate. Keyed on the **FULL reason string** (exact match), not the base:
+- a rapid identical re-trigger → identical reason (same VIX/SPY inputs → same score to 3dp, same window suffix) → deduped (the symptom);
+- a genuinely distinct abstention still records — different category, a different **intraday window** (`kill_switch:09:45` vs `:10:45`), a materially different score, or a new ET day.
+Fails OPEN (returns False on any error) so a check failure can never suppress a real abstention.
+
+**Rationale / verification**: Opus adversarial deep-dive caught that an earlier **base-reason** key (`split(':',1)[0]`) would collapse the distinct scheduled intraday windows (9:45/10:45/13:00) and the three windowed no-proposals gates (spy_hard_stop / daily_loss_cap / gate1a_spy_range) into one row — suppressing genuinely-new scheduled abstentions, beyond the "repeated trigger" mandate. Fixed by switching to full-reason keying; a re-review confirmed HIGH + MEDIUM RESOLVED, no regressions, fail-open + ET-day boundary + no kill_switch/kill_switch_late aliasing all intact. 7 new tests; Phase 0 tests given a `skip_audit_exists→False` shim to stay DB-isolated; full suite green.
+
+**Consequences**: the Decision Linkage audit shows one row per distinct abstention event instead of duplicates, while preserving per-window intraday granularity. Behavioral, live-PM only — no gate/model/pipeline change.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 3 F10) — SIZE DOWN panel folds in the macro sizing factor (honestly)
 
 **Context**: The dashboard "Size Down" card showed only the per-symbol NEWS `sizing_multiplier` — the operator couldn't see the macro dimension that conditions every entry. Operator decision E3 chose "fold the macro factor into the per-symbol display" (over a banner-only or a relabel). Critical domain fact: the macro `global_sizing_factor` is NOT numerically applied per-symbol in the live NIS swing/intraday path today — only the per-symbol news factor multiplies quantity; macro is passed to the per-symbol LLM as a TEXT summary. Numeric per-symbol macro application is deferred to F12 (feature-flagged, paper-first). So the fold must show the macro factor WITHOUT implying it's applied to exposure.

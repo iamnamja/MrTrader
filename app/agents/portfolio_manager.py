@@ -2578,15 +2578,23 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         For a BLANKET strategy-level abstention (see _BLANKET_SKIP_REASONS) write a SINGLE
         symbol='*' row even when `proposals` is given. For a per-symbol gate, write one row per
         proposal (preserving model_score / price). Fails silently — never blocks trading.
+
+        IDEMPOTENT (F11): a repeated PM trigger producing the SAME (symbol, strategy, reason) on the
+        same ET day does NOT pile up duplicate rows. Dedup keys on the FULL reason, so distinct
+        intraday windows (kill_switch:09:45 vs :10:45) each still record — only true repeats collapse.
+        skip_audit_exists fails OPEN so a check error can never suppress a genuinely new abstention.
         """
         try:
-            from app.database.decision_audit import write_decision
+            from app.database.decision_audit import write_decision, skip_audit_exists
             block_reason = f"pm_skip: {reason}"
             _base = reason.split(":", 1)[0]
             if proposals and _base not in self._BLANKET_SKIP_REASONS:
                 for p in proposals:
+                    _sym = p.get("symbol", "*")
+                    if skip_audit_exists(_sym, strategy, reason):
+                        continue  # this exact symbol+reason already recorded today
                     write_decision(
-                        symbol=p.get("symbol", "*"),
+                        symbol=_sym,
                         strategy=strategy,
                         final_decision="skip",
                         model_score=float(p.get("confidence")) if p.get("confidence") is not None else None,
@@ -2594,7 +2602,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                         price_at_decision=p.get("entry_price"),
                         direction=p.get("direction"),
                     )
-            else:
+            elif not skip_audit_exists("*", strategy, reason):
                 write_decision(
                     symbol="*",
                     strategy=strategy,
