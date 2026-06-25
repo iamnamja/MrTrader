@@ -6,12 +6,14 @@ Tracks high-impact scheduled macro events (FOMC, CPI, NFP, GDP) and provides:
   - Window-level awareness: are we within ±N minutes of an event?
   - Sizing recommendation: reduce position size on high-impact days with elevated VIX
 
-Data sources (in priority order):
-  1. Hardcoded 2026 FOMC meeting schedule (most reliable)
-  2. FRED release calendar (fetched once daily, cached)
-  3. yfinance economic calendar (fallback)
+Data sources:
+  - HARDCODED FOMC/CPI/NFP reference-year schedule = the fail-safe FLOOR (always present).
+  - LIVE economic-calendar feed (FMP, via the shared NIS econ-calendar source) merged once per day
+    to EXTEND/refresh forward coverage (so the gate keeps working past the hardcoded year without a
+    code change). The feed supplies the DATE; the window TIME is the canonical fixed release time per
+    type. UNION semantics: the gate is never weaker than the floor; a feed outage falls back to it.
 
-All times are in US/Eastern.
+All times are in US/Eastern. FOMC announcement 14:00 ET (±60 min); CPI/NFP 08:30 ET (±15 min).
 """
 from __future__ import annotations
 
@@ -102,12 +104,21 @@ class MacroCalendar:
     """
 
     def __init__(self):
-        self._events: List[MacroEvent] = self._build_event_list()
+        # Build the HARDCODED floor only at import (no import-time network). The live feed is merged
+        # lazily on the first get_context() of each day.
+        self._events: List[MacroEvent] = self._build_hardcoded_events()
+        self._events_built_date: Optional[str] = None   # date the feed was last merged (None = floor only)
         self._cache: Optional[MacroContext] = None
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 60.0  # refresh every 60s (window awareness needs fresh time)
 
     def get_context(self, vix: Optional[float] = None) -> MacroContext:
+        # Merge the live econ-calendar feed once per day (extends/refreshes the hardcoded floor so the
+        # gate keeps working past the hardcoded year without a code change). Fail-safe: a feed outage
+        # leaves the floor intact — the gate is NEVER weaker than the hardcoded dates.
+        today_str = datetime.now(ET).strftime("%Y-%m-%d")
+        if self._events_built_date != today_str:
+            self._refresh_events(today_str)
         now_mono = time.monotonic()
         if self._cache and now_mono - self._cache_ts < self._cache_ttl:
             return self._cache
@@ -172,7 +183,9 @@ class MacroCalendar:
         )
 
     @staticmethod
-    def _build_event_list() -> List[MacroEvent]:
+    def _build_hardcoded_events() -> List[MacroEvent]:
+        """The fail-safe FLOOR: hardcoded FOMC/CPI/NFP for the reference year. Always present so a
+        feed outage can never leave the gate without coverage."""
         events: List[MacroEvent] = []
         for date_str in FOMC_2026:
             events.append(MacroEvent("FOMC", date_str, "14:00"))
@@ -181,6 +194,61 @@ class MacroCalendar:
         for date_str, time_str in NFP_2026.items():
             events.append(MacroEvent("NFP", date_str, time_str))
         return events
+
+    @staticmethod
+    def _fetch_feed_events(days_ahead: int = 120) -> List[MacroEvent]:
+        """Fetch forward FOMC/CPI/NFP DATES from the economic-calendar feed (FMP, via the shared
+        NIS source). The feed supplies the DATE (which changes year to year); the event WINDOW time
+        is the canonical fixed release time per type (FOMC 14:00 ET, CPI/NFP 08:30 ET) — more
+        reliable than a feed-reported time. FAIL-SAFE: returns [] on any error/unavailability so the
+        hardcoded floor still gates (we never trade unprotected on a feed hiccup)."""
+        out: List[MacroEvent] = []
+        try:
+            from app.news.sources.economic_calendar import fetch_economic_calendar
+            events = fetch_economic_calendar(days_ahead=days_ahead, min_impact="high")
+        except Exception as exc:
+            logger.debug("macro calendar feed fetch failed (using hardcoded floor): %s", exc)
+            return out
+        if not events:   # None (unavailable) or [] (no high-impact events) -> floor only
+            return out
+        _canon = {"FOMC": "14:00", "CPI": "08:30", "NFP": "08:30"}
+        for e in events:
+            et = e.get("event_type")
+            if et not in _canon:
+                continue
+            evt_time = e.get("event_time")
+            try:
+                if evt_time is None:
+                    d = None
+                elif evt_time.hour == 0 and evt_time.minute == 0:
+                    # date-only feed value (parsed to midnight UTC): the intended calendar date IS the
+                    # UTC date; astimezone(ET) would roll it back a day and misplace the window. Use
+                    # the date as-is. (Proper-time values keep the UTC→ET conversion below.)
+                    d = evt_time.strftime("%Y-%m-%d")
+                else:
+                    d = evt_time.astimezone(ET).strftime("%Y-%m-%d")
+            except Exception:
+                d = None
+            if d:
+                out.append(MacroEvent(et, d, _canon[et]))
+        return out
+
+    def _refresh_events(self, today_str: str) -> None:
+        """Rebuild the event list = hardcoded floor UNION live feed (dedup by (type, date)). The
+        union guarantees the gate is never weaker than the floor; the feed only ADDS coverage."""
+        events = self._build_hardcoded_events()
+        seen = {(e.event_type, e.date_str) for e in events}
+        n_feed = 0
+        for fe in self._fetch_feed_events():
+            key = (fe.event_type, fe.date_str)
+            if key not in seen:
+                events.append(fe)
+                seen.add(key)
+                n_feed += 1
+        self._events = events
+        self._events_built_date = today_str
+        if n_feed:
+            logger.info("Macro calendar: merged %d feed event(s) beyond the hardcoded floor", n_feed)
 
 
 # Module-level singleton
