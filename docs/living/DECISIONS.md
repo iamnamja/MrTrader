@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 6b) — research sim: intraday simulator never populated positions (dead caps)
+
+**Context**: Re-audit research-tier MAJOR (non-live). `IntradayAgentSimulator._process_day` created open positions only in a LOCAL `window_entered` dict; `portfolio.positions` was never populated. So `validate_open_positions` (MAX_OPEN) and `validate_portfolio_heat` — both read via `_rm_validate` — were DEAD (a window could open unlimited concurrent positions), and the deployment metric (sampled EOD from `position_market_value` on a same-day-in/out book) was always 0.
+
+**Decision**: register each position in `portfolio.positions` at entry, release it at exit, and sample PEAK concurrent deployment during the window (`_process_day` returns a 3-tuple; the caller records it as the day's deployment instead of the always-0 EOD sample).
+
+**Rationale / verification**: Opus deep-dive RESOLVED. The equity curve is provably UNCHANGED — every position is popped in the same window's exit pass, so `portfolio.positions` is empty at the EOD `equity` sample (`equity == cash` as before). The caps now bind with no off-by-one (`_rm_validate` runs pre-registration; `>= MAX_OPEN` → exactly N enter). No cross-window double-count (positions popped per-window before the next window's peak sample). Because `equity = cash + position_market_value`, same-window sizing now uses true equity (not post-spend cash) — the intended correction and the source of the eval change. 3 tests; 47 intraday-sim tests green; PIPELINE_ARCHITECTURE.md updated (mandatory).
+
+**Consequences**: intraday WF/CPCV deployment + per-window sizing change (more concurrent capital, now capped by MAX_OPEN/heat) → **intraday evals should be RE-RUN**. Second of the research-tier wave (6a–6d). 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Audit Wave 6a) — research sim: signal-mode shorts didn't reserve margin
 
 **Context**: Re-audit research-tier MAJOR (non-live; the live book doesn't short). In `AgentSimulator` SIGNAL mode, a short ENTRY did a net-zero cash hack (`cash += proceeds; cash -= notional`) and left `short_collateral` at 0, while `buying_power` returned raw `cash`. Because the reserve stayed 0, each short's proceeds effectively ADDED free buying power (phantom inflation) → the RM buying-power gate could let the short book stack unbounded shorts. REBALANCE mode already reserved collateral correctly.

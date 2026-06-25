@@ -402,7 +402,7 @@ class IntradayAgentSimulator:
                 spy_daily_as_of = spy_daily_data.iloc[spy_d_dates < day]
                 if len(spy_daily_as_of) == 0:
                     spy_daily_as_of = None
-            day_trades, day_tx = self._process_day(
+            day_trades, day_tx, day_peak_deploy = self._process_day(
                 day, symbols_data, spy_day, portfolio, sector_map,
                 skip_entries=skip_entries,
                 spy_daily_bars=spy_daily_as_of,
@@ -412,10 +412,11 @@ class IntradayAgentSimulator:
             if portfolio.equity > portfolio.peak_equity:
                 portfolio.peak_equity = portfolio.equity
             equity_by_date[day] = portfolio.equity
-            # CRITICAL-2: track daily capital deployment
-            _pmv = portfolio.position_market_value  # long MTM from property at line 77
-            _dep_eq = max(portfolio.equity, 1e-9)
-            deployment_by_date[day] = _pmv / _dep_eq
+            # CRITICAL-2: daily capital deployment = PEAK concurrent deployment DURING the day
+            # (sampled inside _process_day while positions are open). The prior EOD sample read
+            # portfolio.position_market_value here, but intraday is same-day in/out so positions are
+            # always closed by now → it reported 0 every day (dead metric).
+            deployment_by_date[day] = day_peak_deploy
             portfolio.daily_pnl = 0.0
 
         if not accepted_trades:
@@ -438,12 +439,13 @@ class IntradayAgentSimulator:
         sector_map: Dict[str, str],
         skip_entries: bool = False,
         spy_daily_bars: Optional[pd.DataFrame] = None,
-    ) -> Tuple[List[Trade], float]:
+    ) -> Tuple[List[Trade], float, float]:
         trades: List[Trade] = []
         tx_costs = 0.0
+        day_peak_deploy = 0.0   # peak concurrent deployment fraction across the day's scan windows
 
         if skip_entries:
-            return trades, tx_costs
+            return trades, tx_costs, day_peak_deploy
 
         # Pre-load all day bars per symbol once (used across all scan windows)
         sym_day_bars: Dict[str, pd.DataFrame] = {}
@@ -459,7 +461,7 @@ class IntradayAgentSimulator:
             sym_prior[sym] = self._prior_day_ohlc(df, df_idx, day)
 
         if not sym_day_bars:
-            return trades, tx_costs
+            return trades, tx_costs, day_peak_deploy
 
         # Phase 51: multi-scan — iterate over each entry window in order.
         # Symbols already entered earlier in the day are skipped (per-symbol daily cooldown).
@@ -572,6 +574,19 @@ class IntradayAgentSimulator:
                 )
                 entered_today.add(sym)
                 window_entered[sym] = pos
+                # Register the open position so the concurrent caps actually bind: validate_open_positions
+                # (MAX_OPEN) and validate_portfolio_heat both read portfolio.positions, and equity =
+                # cash + position_market_value (so subsequent same-window entries size off true equity,
+                # not post-spend cash). Previously positions lived ONLY in window_entered, so the caps
+                # read an empty dict (dead) and the deployment metric was always 0.
+                portfolio.positions[sym] = pos
+
+            # Capture PEAK concurrent deployment for this window (positions open, before exits). The
+            # EOD sample is always ~0 for a same-day-in/out book, so peak-concurrent is the honest
+            # intraday deployment metric.
+            _win_pmv = portfolio.position_market_value
+            day_peak_deploy = max(day_peak_deploy,
+                                  _win_pmv / max(portfolio.equity, 1e-9))
 
             # Pass 2: simulate exits for all positions entered this window.
             for sym, pos in window_entered.items():
@@ -601,8 +616,12 @@ class IntradayAgentSimulator:
                     exit_reason=exit_reason,
                     trade_type="intraday",
                 ))
+                # Release the now-closed position (same-day in/out): keeps portfolio.positions empty
+                # at day-end so the equity curve sample (= cash) is unchanged, while the concurrent
+                # caps + deployment metric saw it open during the window.
+                portfolio.positions.pop(sym, None)
 
-        return trades, tx_costs
+        return trades, tx_costs, day_peak_deploy
 
     def _pm_score(self, sym_feats: Dict[str, dict]) -> List[Tuple[str, float]]:
         sym_list = list(sym_feats.keys())
