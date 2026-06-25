@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 2a) — polarity-aware macro outcomes (fix the Beat/Miss bug)
+
+**Context**: The event table labeled outcomes by `sign(actual − estimate)` (higher = green "Beat") — earnings framing applied blindly to macro. For lower-is-better prints it inverted the meaning: PCE 0.4<0.5 (cooler inflation = good) and Jobless Claims 215<225 (fewer = good) showed as red "Miss".
+
+**Decision**: new `app/news/macro_polarity.py` is the single source of truth — `POLARITY` map (lower_better: CPI/PPI/PCE/UNEMPLOYMENT/JOBLESS_CLAIMS; higher_better: NFP/GDP/RETAIL_SALES/ISM_MFG/ISM_SVC; neutral: FOMC/OTHER_HIGH) + `classify_outcome()` → `{market_outcome (risk_on/risk_off/in_line/pending), outcome_label (Cooler/Hotter/Stronger/Weaker/Above-Below est/In-Line/Pending), polarity, surprise_pct}` (never raises; 0.5% in-line band). The `/macro` endpoint enriches every event (live + snapshot) with it, `persist_nis_macro_snapshot` persists it into `events_json`, and the UI renders `market_outcome` with market-impact coloring (risk_on green ▲ / risk_off red ▼ / in_line muted) — the naive sign logic removed. This same table will feed the Phase-2b LLM prompt so the model and UI agree.
+
+**Rationale / verification**: Opus deep-dive RESOLVED — directions economically correct; the operator's exact cases now render risk-on/green; `classify_outcome` never raises; API/persist enrichment is collision-free + fail-safe; negatives handled. 10 new tests; `tsc --noEmit` clean; full suite 4107 green; flake8 clean. No trading path. **Known limitation (pre-existing, upstream):** "GDP Price Index" (deflator) substring-matches `GDP` in the finnhub keyword classifier → shows higher_better; minor release, fix is in the classifier not the polarity table — deferred.
+
+**Consequences**: macro outcomes now read correctly for the operator (cooler inflation = risk-on, not "Miss"). Phase 2b (prompt rewrite + risk step-down) → Phase 3 (SIZE-DOWN reactivity) follow. 0 BLOCKERs.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 1) — surface the real timestamped assessment lineage
 
 **Context**: The "Today's NIS Assessment" card showed one rationale blob + a SYNTHESIZED "refresh history" reconstructed client-side from decision-audit rows (hardcoded sizing=1/events=0; post-event re-evals that produced no trade never appeared). The real lineage already lives in `nis_macro_history` (premarket + every post-event re-eval) but had no read endpoint.

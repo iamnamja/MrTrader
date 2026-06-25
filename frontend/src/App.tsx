@@ -1789,21 +1789,21 @@ function MacroIntelPanel() {
                   const evtD = parseEventTime(e.event_time)
                   const released = evtD ? evtD.getTime() <= Date.now() : (e.already_priced_in ?? false)
 
-                  // Outcome: Beat / Miss / In-Line / Pending
+                  // Outcome: polarity-aware market read (server-computed = single source of truth).
+                  // risk_on=green / risk_off=red / in_line=muted. Lower-is-better series (inflation,
+                  // jobless claims) correctly show a below-consensus print as "Cooler" (green), not
+                  // a red "Miss". Falls back to Upcoming/Pending when no actual yet.
                   let outcomLabel = ''
                   let outcomeColor = C.muted
-                  if (released && e.actual != null && e.estimate != null) {
-                    const diff = e.actual - e.estimate
-                    const pct = e.estimate !== 0 ? Math.abs(diff / e.estimate) : 0
-                    if (pct < 0.005) { outcomLabel = 'In-Line'; outcomeColor = C.muted }
-                    else if (diff > 0) { outcomLabel = '▲ Beat'; outcomeColor = C.green }
-                    else { outcomLabel = '▼ Miss'; outcomeColor = C.red }
-                  } else if (released && e.actual != null) {
-                    outcomLabel = 'Released'; outcomeColor = C.muted
-                  } else if (released) {
-                    outcomLabel = 'Released'; outcomeColor = C.muted
-                  } else {
+                  const mo = e.market_outcome
+                  const ol = e.outcome_label
+                  if (mo && mo !== 'pending') {
+                    outcomLabel = mo === 'risk_on' ? `▲ ${ol}` : mo === 'risk_off' ? `▼ ${ol}` : (ol ?? 'In-Line')
+                    outcomeColor = mo === 'risk_on' ? C.green : mo === 'risk_off' ? C.red : C.muted
+                  } else if (!released) {
                     outcomLabel = 'Upcoming'; outcomeColor = C.accent
+                  } else {
+                    outcomLabel = e.actual != null ? 'Released' : 'Pending'; outcomeColor = C.muted
                   }
 
                   const fmtNum = (v: number | null | undefined) =>

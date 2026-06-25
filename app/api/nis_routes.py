@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query
 from app.database.session import get_session
+from app.news.macro_polarity import classify_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def get_macro_context() -> Dict[str, Any]:
                         "actual": e.actual,
                         "estimate": e.estimate,
                         "prior": e.prior,
+                        **classify_outcome(e.event_type, e.actual, e.estimate),
                     }
                     for e in ctx.events_today
                 ],
@@ -82,7 +84,10 @@ def get_macro_context() -> Dict[str, Any]:
                 "source": "db_snapshot",
                 "snapshot_date": snap.snapshot_date.isoformat(),
                 "is_today": snap.snapshot_date == date.today(),
-                "events_today": snap.events_json or [],
+                "events_today": [
+                    {**ev, **classify_outcome(ev.get("event_type"), ev.get("actual"), ev.get("estimate"))}
+                    for ev in (snap.events_json or [])
+                ],
             }
 
         return {"status": "not_yet_run", "detail": "Premarket routine has not run yet today"}
