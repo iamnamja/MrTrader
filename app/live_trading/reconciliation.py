@@ -73,12 +73,16 @@ def reconcile(expected_qty: Dict[tuple, float],
     canonical instrument held on two venues never collides (an id-only key could silently drop a
     cross-venue position and report a false MATCH — the one failure this gate must never have).
 
-    `expected_qty` / `pending_qty`: {(venue, instrument_id): signed_qty} (pending = orders
-    sent-but-unfilled, added to expected first). Actual quantities are SUMMED per key (duplicate
-    lots don't overwrite). A position present on ONE side only is a break. Any qty delta beyond
-    `qty_tol` (fractional-share precision) is MATERIAL -> FAIL_CLOSED. Cash beyond max(abs, bps*NAV)
-    is a break; if cash inputs are omitted the status carries a "cash NOT checked" note (a live
-    caller must supply them).
+    `expected_qty` / `pending_qty`: {(venue, instrument_id): signed_qty}. `expected` = positions the
+    DB believes are HELD (ACTIVE). `pending` = in-flight working orders (the DB's PENDING_FILL rows).
+    A working order means the broker's actual qty may legitimately be ANYWHERE on the unfilled→filled
+    spectrum, so a break fires only when `actual` falls OUTSIDE the closed band
+    `[expected, expected + pending]` (per key, sign-aware) by more than `qty_tol`. With no pending
+    this collapses to the exact point check `|expected - actual| <= qty_tol` (backward-compatible),
+    so a genuine phantom (DB held, broker flat, no working order) or orphan still breaks. Actual
+    quantities are SUMMED per key (duplicate / cross-sleeve lots don't overwrite). Cash beyond
+    max(abs, bps*NAV) is a break; if cash inputs are omitted the status carries a "cash NOT checked"
+    note (a live caller must supply them).
     """
     pending = pending_qty or {}
     actual_qty: Dict[tuple, float] = {}
@@ -86,18 +90,23 @@ def reconcile(expected_qty: Dict[tuple, float],
         k = _ckey(p.venue, p.instrument_id)
         actual_qty[k] = actual_qty.get(k, 0.0) + float(p.quantity)   # SUM, never overwrite
 
-    eff_expected: Dict[tuple, float] = {k: float(v) for k, v in expected_qty.items()}
-    for k, q in pending.items():
-        eff_expected[k] = eff_expected.get(k, 0.0) + float(q)
+    exp_held: Dict[tuple, float] = {k: float(v) for k, v in expected_qty.items()}
 
     breaks: List[PositionBreak] = []
-    for k in set(eff_expected) | set(actual_qty):
-        exp = float(eff_expected.get(k, 0.0))
+    for k in set(exp_held) | set(actual_qty) | set(pending):
+        held = float(exp_held.get(k, 0.0))
+        pend = float(pending.get(k, 0.0))
         act = float(actual_qty.get(k, 0.0))
-        if abs(exp - act) > qty_tol:
+        # An in-flight working order makes any fill level in [held, held+pend] legitimate. Break
+        # only when actual is OUTSIDE that closed band (± tol). pend==0 -> band collapses to {held}
+        # -> exact point check (a genuine phantom/orphan still breaks).
+        lo, hi = (held, held + pend) if pend >= 0 else (held + pend, held)
+        if act < lo - qty_tol or act > hi + qty_tol:
             venue, iid = k
+            # report the nearer band edge as "expected" so the break delta is the true shortfall
+            edge = lo if act < lo else hi
             breaks.append(PositionBreak(instrument_id=iid, venue=venue,
-                                        expected_qty=exp, actual_qty=act, delta=act - exp))
+                                        expected_qty=edge, actual_qty=act, delta=act - edge))
 
     cash_break = None
     cash_checked = expected_cash is not None and actual_cash is not None
@@ -123,22 +132,23 @@ def reconcile(expected_qty: Dict[tuple, float],
                                 notes=notes)
 
 
-# Statuses that represent a position the DB believes we hold-or-have-working. Mirrors
-# trend_sleeve._current_trend_positions so a just-placed order's PENDING_FILL row is NOT a false
-# orphan break the moment its (near-instant) market order fills.
-EXPECTED_STATUSES = ("ACTIVE", "PENDING_FILL")
+# HELD = positions the DB believes we currently hold. PENDING = in-flight working orders (sent,
+# not yet confirmed filled). They are modelled SEPARATELY: held drives the exact match; pending
+# widens the tolerated band to [held, held+pending] so a just-placed-but-unfilled order is NOT a
+# false break (and a filled-but-not-yet-recorded order is still within the band).
+HELD_STATUSES = ("ACTIVE",)
+PENDING_STATUSES = ("PENDING_FILL",)
 
 
-# ── live-path assembly + the shadow-first before-trade gate (Alpha-v10 H1) ─────────
-def db_expected_positions(db) -> Dict[tuple, float]:
-    """The DB's EXPECTED book = ACTIVE/PENDING_FILL Trade rows -> signed qty per (venue,
-    instrument_id). direction BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial lots add).
-    All current live positions are Alpaca-venue. Lazy import so this module stays import-light;
-    equality-filter per status (no in_()) so the query stays scoped SQL-side (not a full-table load)."""
+def _db_signed_by_status(db, statuses) -> Dict[tuple, float]:
+    """Signed qty per (venue, instrument_id) for Trade rows in the given statuses. direction
+    BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial / cross-sleeve lots add). All current
+    live positions are Alpaca-venue. Lazy import so this module stays import-light; equality-filter
+    per status (no in_()) so the query stays scoped SQL-side (not a full-table load)."""
     from app.database.models import Trade
     out: Dict[tuple, float] = {}
     rows = []
-    for status in EXPECTED_STATUSES:
+    for status in statuses:
         rows.extend(db.query(Trade).filter_by(status=status).all())
     for t in rows:
         sym = (t.symbol or "").upper()
@@ -150,6 +160,19 @@ def db_expected_positions(db) -> Dict[tuple, float]:
         k = _ckey(im.ALPACA, iid)
         out[k] = out.get(k, 0.0) + signed
     return out
+
+
+# ── live-path assembly + the shadow-first before-trade gate (Alpha-v10 H1) ─────────
+def db_expected_positions(db) -> Dict[tuple, float]:
+    """The DB's HELD book = ACTIVE Trade rows -> signed qty per (venue, instrument_id)."""
+    return _db_signed_by_status(db, HELD_STATUSES)
+
+
+def db_pending_positions(db) -> Dict[tuple, float]:
+    """The DB's in-flight working orders = PENDING_FILL Trade rows -> signed qty per (venue,
+    instrument_id). Passed as `pending_qty` so a just-placed-but-unfilled order is tolerated within
+    the [held, held+pending] band instead of firing a false orphan/phantom break."""
+    return _db_signed_by_status(db, PENDING_STATUSES)
 
 
 def alpaca_actual_positions(raw_positions) -> List[CanonicalPosition]:
@@ -200,11 +223,19 @@ def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[flo
     HOLD in enforce (and is logged, harmlessly, in shadow). Cash is not yet modelled DB-side, so the
     position book is the v1 check (the #1 phantom-position risk); the result carries the cash note."""
     try:
-        expected = db_expected_positions(db) if expected is None else dict(expected)
+        # Default whole-Alpaca-book path: split held (ACTIVE) vs in-flight (PENDING_FILL) so an
+        # unfilled working order is tolerated, not a false break. An explicit `expected` (e.g. the
+        # venue-scoped IBKR futures caller) supplies its own book and no DB pending.
+        if expected is None:
+            expected = db_expected_positions(db)
+            pending = db_pending_positions(db)
+        else:
+            expected = dict(expected)
+            pending = None
         actual = alpaca_actual_positions(raw_alpaca_positions)
         if extra_actual:
             actual = list(actual) + list(extra_actual)
-        result = reconcile(expected, actual, nav=nav)
+        result = reconcile(expected, actual, nav=nav, pending_qty=pending)
         if not result.ok_to_trade:
             log.warning("[reconcile:%s mode=%s] WOULD-HOLD%s: status=%s breaks=%s %s",
                         label, mode, ("" if mode == ENFORCE else " (shadow: not blocking)"),

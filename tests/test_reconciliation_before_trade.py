@@ -102,15 +102,80 @@ def test_reconcile_short_position_matches_signed():
     assert r.status == rec.MATCH and r.ok_to_trade is True
 
 
-# ── PENDING_FILL counts as expected (a just-placed order is not a false orphan) ──
-def test_db_expected_includes_pending_fill():
+# ── held (ACTIVE) vs pending (PENDING_FILL) are split; pending widens the tolerance band ──
+def test_db_held_is_active_only_pending_is_separate():
     db = FakeDB([_trade("SPY", "BUY", 100, status="PENDING_FILL"),
                  _trade("QQQ", "BUY", 5, status="ACTIVE"),
-                 _trade("IWM", "BUY", 9, status="CLOSED")])     # CLOSED still excluded
-    exp = rec.db_expected_positions(db)
-    assert exp[(im.ALPACA, "SPY")] == 100.0                     # PENDING_FILL included
-    assert exp[(im.ALPACA, "QQQ")] == 5.0
-    assert (im.ALPACA, "IWM") not in exp
+                 _trade("IWM", "BUY", 9, status="CLOSED")])     # CLOSED excluded from both
+    held = rec.db_expected_positions(db)
+    pending = rec.db_pending_positions(db)
+    assert held == {(im.ALPACA, "QQQ"): 5.0}                    # ACTIVE only
+    assert pending == {(im.ALPACA, "SPY"): 100.0}              # PENDING_FILL only
+    assert (im.ALPACA, "IWM") not in held and (im.ALPACA, "IWM") not in pending
+
+
+def test_pending_buy_unfilled_is_not_a_break():
+    # a just-placed BUY (PENDING_FILL) the broker hasn't filled yet -> actual 0 is in [0, 100] -> OK
+    db = FakeDB([_trade("SPY", "BUY", 100, status="PENDING_FILL")])
+    r = rec.shadow_reconcile_before_trade(db, [], nav=100_000.0, label="trend")
+    assert r.status == rec.MATCH and r.ok_to_trade is True
+
+
+def test_pending_buy_filled_not_yet_recorded_is_not_a_break():
+    # the PENDING_FILL order has filled at the broker (actual 100) but the DB row is still
+    # PENDING_FILL -> 100 is the top of [0, 100] band -> OK (no false break in the post-fill window)
+    db = FakeDB([_trade("SPY", "BUY", 100, status="PENDING_FILL")])
+    r = rec.shadow_reconcile_before_trade(db, [_pos("SPY", 100)], nav=100_000.0, label="trend")
+    assert r.status == rec.MATCH and r.ok_to_trade is True
+
+
+def test_pending_partial_fill_within_band_is_not_a_break():
+    db = FakeDB([_trade("SPY", "BUY", 100, status="PENDING_FILL")])
+    r = rec.shadow_reconcile_before_trade(db, [_pos("SPY", 40)], nav=100_000.0, label="trend")
+    assert r.status == rec.MATCH and r.ok_to_trade is True     # 40 in [0,100]
+
+
+def test_pending_overfill_beyond_band_still_breaks():
+    # broker shows MORE than held+pending -> outside the band -> real break (caught)
+    db = FakeDB([_trade("SPY", "BUY", 100, status="PENDING_FILL")])
+    r = rec.shadow_reconcile_before_trade(db, [_pos("SPY", 130)], nav=100_000.0, label="trend")
+    assert r.status == rec.FAIL_CLOSED and r.ok_to_trade is False
+    assert r.position_breaks[0].actual_qty == 130.0
+
+
+def test_genuine_phantom_with_no_pending_still_breaks():
+    # held ACTIVE but broker flat and NO working order -> band collapses to {150} -> break
+    db = FakeDB([_trade("SPY", "BUY", 150, status="ACTIVE")])
+    r = rec.shadow_reconcile_before_trade(db, [], nav=100_000.0, label="trend")
+    assert r.status == rec.FAIL_CLOSED and r.ok_to_trade is False
+
+
+def test_held_plus_pending_band_for_add_to_existing():
+    # hold 100 ACTIVE + a working +50 add (PENDING_FILL): broker anywhere in [100,150] is OK
+    db = FakeDB([_trade("SPY", "BUY", 100, status="ACTIVE"),
+                 _trade("SPY", "BUY", 50, status="PENDING_FILL")])
+    assert rec.shadow_reconcile_before_trade(db, [_pos("SPY", 100)], nav=1e5).status == rec.MATCH  # unfilled
+    assert rec.shadow_reconcile_before_trade(db, [_pos("SPY", 150)], nav=1e5).status == rec.MATCH  # filled
+    assert rec.shadow_reconcile_before_trade(db, [_pos("SPY", 90)], nav=1e5).status == rec.FAIL_CLOSED  # below band
+
+
+def test_reducing_pending_sell_band(monkeypatch):
+    # hold 100 ACTIVE + a working SELL-100 (PENDING_FILL, signed -100): broker anywhere in [0,100] OK
+    # (unfilled=100 … fully-sold=0); a flat broker is the ACCEPTED mask (we did place the sell);
+    # but the broker going SHORT (-1, beyond the band) is a real break.
+    db = FakeDB([_trade("SPY", "BUY", 100, status="ACTIVE"),
+                 _trade("SPY", "SELL_SHORT", 100, status="PENDING_FILL")])  # signed pending -100
+    assert rec.shadow_reconcile_before_trade(db, [_pos("SPY", 100)], nav=1e5).status == rec.MATCH   # unfilled
+    assert rec.shadow_reconcile_before_trade(db, [], nav=1e5).status == rec.MATCH                    # fully sold (accepted)
+    assert rec.shadow_reconcile_before_trade(db, [_pos("SPY", -1)], nav=1e5).status == rec.FAIL_CLOSED  # flipped short
+
+
+def test_cross_sleeve_same_symbol_sums():
+    # same symbol held by two sleeves (two ACTIVE rows) nets to one (venue,iid) expectation
+    db = FakeDB([_trade("SGOV", "BUY", 100, status="ACTIVE"),
+                 _trade("SGOV", "BUY", 60, status="ACTIVE")])
+    r = rec.shadow_reconcile_before_trade(db, [_pos("SGOV", 160)], nav=1e5, label="cash")
+    assert r.status == rec.MATCH and r.ok_to_trade is True
 
 
 def test_pending_fill_order_is_not_a_false_break():
