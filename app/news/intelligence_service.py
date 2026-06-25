@@ -85,19 +85,51 @@ class NewsIntelligenceService:
                     rationale="macro calendar unavailable — conservative sizing "
                               "(cannot verify event risk)",
                 )
-            result = macro_classify(events)
+            # Deterministic day-level FLOOR from per-event polarity — the LLM fail-safe + clamp.
+            from app.news.macro_polarity import aggregate_day, clamp_to_floor
+            floor = aggregate_day(events)
+
+            try:
+                result = macro_classify(events)
+            except Exception as _mexc:
+                # A RAISE (not a clean None) must NOT fall through to the outer flat-neutral fallback,
+                # which would discard the deterministic floor (less conservative on an unreleased-high
+                # day). Treat it identically to "LLM unavailable" → use the floor.
+                logger.warning("NIS Tier 1: macro_classify raised (%s) — using deterministic floor",
+                               _mexc)
+                result = None
 
             if result is None:
-                logger.info("NIS Tier 1: LLM unavailable — using neutral MacroContext")
-                return MacroContext.neutral()
+                # LLM unavailable → drive risk from the deterministic floor (NOT a flat neutral):
+                # an unreleased high-impact event still blocks; a benign all-released day still LOWs.
+                logger.info("NIS Tier 1: LLM unavailable — deterministic floor (risk=%s block=%s)",
+                            floor["min_risk"], floor["block"])
+                return MacroContext(
+                    as_of=datetime.now(timezone.utc),
+                    block_new_entries=floor["block"],
+                    global_sizing_factor=floor["max_sizing"],
+                    overall_risk=floor["min_risk"],
+                    rationale=f"LLM unavailable — deterministic macro floor "
+                              f"(net lean {floor['net_lean']}, {floor['n_high']} high-impact event(s))",
+                )
+
+            # Clamp the LLM result to be NEVER less conservative than the deterministic floor (the
+            # floor only RAISES risk/block and LOWERS sizing; the LLM still drives the step-DOWN to
+            # LOW when the floor permits a benign all-released day).
+            _clamped = clamp_to_floor(
+                result.get("risk_level", "LOW"),
+                bool(result.get("block_new_entries", False)),
+                result.get("sizing_factor", 1.0),
+                floor,
+            )
 
             event_signals = self._build_event_signals(events, result)
             ctx = MacroContext(
                 as_of=datetime.now(timezone.utc),
                 events_today=event_signals,
-                block_new_entries=bool(result.get("block_new_entries", False)),
-                global_sizing_factor=float(result.get("sizing_factor", 1.0)),
-                overall_risk=result.get("risk_level", "LOW"),
+                block_new_entries=_clamped["block_new_entries"],
+                global_sizing_factor=_clamped["sizing_factor"],
+                overall_risk=_clamped["risk_level"],
                 rationale=result.get("rationale", ""),
             )
             logger.info(

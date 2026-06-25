@@ -185,14 +185,22 @@ def macro_classify(events: list[dict]) -> Optional[dict]:
         logger.debug("Macro classify cache hit")
         return cached
 
-    # Build event table for prompt
+    # Build event table for prompt — include the POLARITY-AWARE surprise read so the model judges
+    # market MEANING (a cooler-inflation print is risk-ON), not just "actual vs consensus".
+    from app.news.macro_polarity import classify_outcome
     lines = []
     for e in events:
         est = e.get("estimate")
         prior = e.get("prior")
         actual = e.get("actual")
         already_released = actual is not None
-        status = f"actual={actual}" if already_released else "not yet released"
+        if already_released:
+            _o = classify_outcome(e.get("event_type"), actual, est)
+            _lean = {"risk_on": "risk-ON", "risk_off": "risk-OFF",
+                     "in_line": "in-line", "pending": "pending"}[_o["market_outcome"]]
+            status = f"actual={actual} → {_o['outcome_label']} ({_lean})"
+        else:
+            status = "NOT yet released"
         lines.append(
             f"- {e['event_type']} ({e['importance'].upper()} impact) "
             f"at {str(e['event_time'])[:16]} UTC | "
@@ -201,26 +209,31 @@ def macro_classify(events: list[dict]) -> Optional[dict]:
 
     prompt = f"""{_MACRO_SYSTEM}
 
-Today's scheduled economic events:
+Today's scheduled economic events (the surprise read already accounts for each indicator's polarity
+— e.g. a LOWER inflation/jobless-claims print is risk-ON, a HIGHER growth print is risk-ON):
 {chr(10).join(lines)}
 
-Classify the overall day-level risk for NEW equity swing entries (3-5 day holds).
+Classify the CURRENT forward day-level risk for NEW equity swing entries (3-5 day holds). Risk is a
+function of (a) how much is still UNKNOWN and (b) the realized surprise — NOT "was today a big-data
+day". Once outcomes are known, risk should reflect only the residual repricing, not the pre-release
+uncertainty.
 
 Return JSON with exactly these fields:
 {{
   "risk_level": "<LOW|MEDIUM|HIGH>",
   "direction": "<BULLISH|NEUTRAL|BEARISH>",
+  "net_market_lean": "<BULLISH|NEUTRAL|BEARISH>",
   "sizing_factor": <float 0.5-1.0, where 1.0=no change, 0.5=half size>,
-  "block_new_entries": <true only when risk_level=HIGH AND outcome is genuinely uncertain>,
+  "block_new_entries": <true ONLY when a high-impact event is NOT yet released AND its outcome is genuinely uncertain>,
   "consensus_summary": "<one sentence: what markets expect and why>",
   "rationale": "<one sentence: why this risk level was chosen>"
 }}
 
-Sizing guidance:
-- LOW risk (consensus priced in, small expected move): sizing_factor=1.0
-- MEDIUM risk (some uncertainty, moderate impact): sizing_factor=0.75
-- HIGH risk but outcome known (actual released): sizing_factor=0.85, block=false
-- HIGH risk, outcome unknown, large expected move: sizing_factor=0.5, block=true
+Risk/sizing guidance:
+- All scheduled high-impact events RELEASED and net surprise benign/in-line/risk-ON → risk_level=LOW, sizing_factor=1.0, block=false (the day is digested; do NOT stay elevated just because it was a data day).
+- RELEASED with a MATERIAL ADVERSE (risk-OFF) high-impact surprise → risk_level=MEDIUM (or HIGH if severe), sizing_factor=0.6-0.85, block=false (outcome is known, but repricing risk remains).
+- A high-impact event NOT yet released with a large expected move → risk_level=HIGH, sizing_factor=0.5, block=true.
+- Otherwise (some lingering uncertainty, moderate impact) → risk_level=MEDIUM, sizing_factor=0.75.
 """
 
     result = _call_llm(prompt, call_type="macro_tier1")

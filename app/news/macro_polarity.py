@@ -84,3 +84,60 @@ def classify_outcome(event_type: Optional[str], actual: Any, estimate: Any) -> D
     # neutral: report direction only, no risk-on/off claim
     return {"market_outcome": "in_line", "outcome_label": "Above est" if above else "Below est",
             "polarity": pol, "surprise_pct": surprise_pct}
+
+
+# ── Day-level deterministic floor (the LLM fail-safe + clamp) ─────────────────────
+_RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def aggregate_day(events: Any) -> Dict[str, Any]:
+    """Deterministic day-level macro FLOOR from the per-event polarity outcomes.
+
+    This is the fail-safe (used directly when the LLM is unavailable) AND the safety clamp (the LLM
+    result is never allowed to be LESS conservative than this). Returns:
+      min_risk    : the MINIMUM acceptable risk level (LOW|MEDIUM|HIGH)
+      block       : True when new entries MUST be blocked (an unreleased high-impact event)
+      max_sizing  : the MAXIMUM acceptable global sizing factor
+      net_lean    : BULLISH | BEARISH | NEUTRAL (net of released high-impact surprises)
+      all_released: every high-impact event has an actual
+      n_high      : number of high-impact events
+
+    Logic: an unreleased high-impact event ⇒ HIGH + block (genuine uncertainty). All released with a
+    material ADVERSE (risk_off) high-impact surprise ⇒ MEDIUM, size ≤0.85, no block (outcome known).
+    All released and benign/in-line/risk-on ⇒ LOW, 1.0 (the step-down). No high-impact events ⇒ LOW."""
+    high = [e for e in (events or []) if str(e.get("importance", "")).lower() == "high"]
+    if not high:
+        return {"min_risk": "LOW", "block": False, "max_sizing": 1.0,
+                "net_lean": "NEUTRAL", "all_released": True, "n_high": 0}
+    unreleased = [e for e in high if e.get("actual") is None]
+    outcomes = [classify_outcome(e.get("event_type"), e.get("actual"), e.get("estimate")) for e in high]
+    risk_on = sum(1 for o in outcomes if o["market_outcome"] == "risk_on")
+    risk_off = sum(1 for o in outcomes if o["market_outcome"] == "risk_off")
+    net_lean = "BULLISH" if risk_on > risk_off else "BEARISH" if risk_off > risk_on else "NEUTRAL"
+    if unreleased:
+        return {"min_risk": "HIGH", "block": True, "max_sizing": 0.75,
+                "net_lean": net_lean, "all_released": False, "n_high": len(high)}
+    if risk_off > 0:
+        return {"min_risk": "MEDIUM", "block": False, "max_sizing": 0.85,
+                "net_lean": net_lean, "all_released": True, "n_high": len(high)}
+    return {"min_risk": "LOW", "block": False, "max_sizing": 1.0,
+            "net_lean": net_lean, "all_released": True, "n_high": len(high)}
+
+
+def clamp_to_floor(risk_level: str, block: bool, sizing_factor: float,
+                   floor: Dict[str, Any]) -> Dict[str, Any]:
+    """Clamp an LLM macro result to be NEVER less conservative than the deterministic floor:
+    risk = max(llm, floor.min_risk); block = llm OR floor.block; sizing = min(llm, floor.max_sizing).
+    (The floor only ever RAISES risk/block and LOWERS sizing — the LLM still drives the step-DOWN
+    to LOW when the floor permits it.)"""
+    try:
+        _llm_sz = float(sizing_factor)
+    except (TypeError, ValueError):
+        _llm_sz = floor["max_sizing"]
+    final_risk = max(str(risk_level or "LOW"), floor["min_risk"],
+                     key=lambda r: _RISK_ORDER.get(r, 1))
+    return {
+        "risk_level": final_risk,
+        "block_new_entries": bool(block) or floor["block"],
+        "sizing_factor": min(_llm_sz, floor["max_sizing"]),
+    }
