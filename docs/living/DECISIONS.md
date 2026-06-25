@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Macro Intel Phase 3 F10) — SIZE DOWN panel folds in the macro sizing factor (honestly)
+
+**Context**: The dashboard "Size Down" card showed only the per-symbol NEWS `sizing_multiplier` — the operator couldn't see the macro dimension that conditions every entry. Operator decision E3 chose "fold the macro factor into the per-symbol display" (over a banner-only or a relabel). Critical domain fact: the macro `global_sizing_factor` is NOT numerically applied per-symbol in the live NIS swing/intraday path today — only the per-symbol news factor multiplies quantity; macro is passed to the per-symbol LLM as a TEXT summary. Numeric per-symbol macro application is deferred to F12 (feature-flagged, paper-first). So the fold must show the macro factor WITHOUT implying it's applied to exposure.
+
+**Decision**:
+- **API**: `/api/decision-audit/recent` now returns `news_sizing_multiplier` and `macro_sizing_factor` per row (both already persisted) so the panel can render the two dimensions separately.
+- **UI** (`Size Down` card): each sized-down chip shows the applied news factor as the primary number (`AAPL 0.75×`) plus an *italic, muted, `adv`-tagged* macro segment (`· macro 0.85× adv`); a card-level banner states the day's macro factor once ("advisory across all entries; numerically applied via unified sizing — F12"); the hover tooltip distinguishes "News (applied)" from "Macro — advisory, F12" and frames any combined number as explicitly hypothetical ("If macro were applied per-symbol (F12): exposure ≈ 0.64× — NOT applied today"). All factors render `.toFixed(2)` to kill float noise.
+
+**Rationale / verification**: Opus adversarial deep-dive flagged that a bare per-chip macro number on a card titled "Size Down" reads as applied per-symbol exposure — the exact misrepresentation to avoid on a live trading dashboard. Fixed by the `adv` tag + italic/muted styling + hypothetical combined label, while still honoring the operator's "show it per-symbol" choice. Also closed: float-noise rendering, a wrong-strategy fallback lookup (now also matches `size_down` policy), and a misleading empty-risk fallback label. tsc clean; 2 new API-contract tests; full suite green.
+
+**Consequences**: the operator now sees both sizing dimensions per symbol without being misled about real exposure. The honest "advisory / F12" framing sets up F12 (unify PM sizing onto graded NIS + macro). Display/DTO-only — no gate, model, or pipeline change.
+
+---
+
 ## 2026-06-25 (Macro Intel Phase 2b) — macro risk steps DOWN after benign releases (+ deterministic floor)
 
 **Context**: Macro risk stayed HIGH/0.85 all day even after all events released benign — because the LLM prompt baked in "HIGH but outcome known → 0.85, block=false" (no step-down) and never reasoned about surprise DIRECTION. This feeds the LIVE macro gate (Trader/premarket `block_new_entries` + `global_sizing_factor`), so the fix had to step down WITHOUT ever weakening the gate.

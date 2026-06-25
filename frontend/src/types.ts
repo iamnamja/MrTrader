@@ -312,6 +312,8 @@ export interface DecisionAuditRow {
   final_decision: string
   model_score: number | null
   size_multiplier: number
+  news_sizing_multiplier?: number | null
+  macro_sizing_factor?: number | null
   block_reason: string | null
   news_action_policy: string | null
   news_materiality: number | null

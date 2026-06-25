@@ -1646,6 +1646,9 @@ function MacroIntelPanel() {
 
   const risk = (macro?.overall_risk ?? '').toUpperCase()
   const riskColor = risk === 'HIGH' ? C.red : risk === 'MEDIUM' ? C.yellow : risk === 'LOW' ? C.green : C.muted
+  // F10: the day's macro sizing dimension, folded into the per-symbol SIZE DOWN display.
+  const macroSizing = macro?.global_sizing_factor ?? 1
+  const macroRisk = risk
   const blockBadge = (blocked: boolean) => (
     <span style={{ color: blocked ? C.red : C.green, fontWeight: 700, fontSize: 12 }}>
       {blocked ? 'BLOCKED' : 'CLEAR'}
@@ -1866,14 +1869,40 @@ function MacroIntelPanel() {
               {signals.sized_down.length ? `${signals.sized_down.length} symbol${signals.sized_down.length > 1 ? 's' : ''}` : ''}
             </span>
           </div>
+          {/* F10: fold the day's macro sizing factor in alongside the per-symbol news factor.
+             News factor is what's numerically applied today; macro is advisory until unified
+             sizing (F12) is on — so we show them as two distinct dimensions, never a fake "applied" net. */}
+          {macroSizing < 1 && (
+            <div style={{ padding: '6px 14px', fontSize: 10.5, color: C.muted, borderBottom: `1px solid ${C.border}` }}>
+              Macro context: <span style={{ color: macroRisk === 'HIGH' ? C.red : C.yellow, fontWeight: 600 }}>{macroSizing.toFixed(2)}×</span>
+              {' '}({macroRisk || 'elevated'}) — advisory across all entries; numerically applied via unified sizing (F12).
+            </div>
+          )}
           <div style={{ padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 6, minHeight: 44 }}>
             {signals.sized_down.length === 0
               ? <span style={{ color: C.muted, fontSize: 11 }}>No symbols sized down</span>
               : <>
                   {signals.sized_down.slice(0, 40).map(sym => {
                     const sig = signals.signals.find(x => x.symbol === sym)
-                    const label = sig?.sizing_multiplier != null ? `${sym} ${sig.sizing_multiplier}x` : sym
-                    return chip(label, C.yellow, (sig?.rationale ?? '').slice(0, 120))
+                    const drow = decisions.find(d => d.symbol === sym && d.news_sizing_multiplier != null
+                      && (d.news_action_policy ?? '').includes('size_down'))
+                    const news = sig?.sizing_multiplier ?? drow?.news_sizing_multiplier ?? null
+                    const combined = news != null && macroSizing < 1 ? news * macroSizing : null
+                    const tip = [
+                      news != null ? `News (applied): ${news.toFixed(2)}×` : 'News factor: —',
+                      macroSizing < 1 ? `Macro ${macroRisk || 'context'}: ${macroSizing.toFixed(2)}× — advisory, applied via unified sizing (F12)` : null,
+                      combined != null ? `If macro were applied per-symbol (F12): exposure ≈ ${combined.toFixed(2)}× — NOT applied today` : null,
+                      (sig?.rationale ?? '').slice(0, 160) || null,
+                    ].filter(Boolean).join('  ·  ')
+                    return (
+                      <span key={sym} title={tip} style={{
+                        background: C.yellow + '1e', border: `1px solid ${C.yellow}66`,
+                        color: C.yellow, borderRadius: 4, padding: '2px 7px', fontSize: 11, cursor: 'default',
+                      }}>
+                        {sym}{news != null ? ` ${news.toFixed(2)}×` : ''}
+                        {macroSizing < 1 && <span style={{ color: C.muted, fontSize: 10, fontStyle: 'italic' }}> · macro {macroSizing.toFixed(2)}× adv</span>}
+                      </span>
+                    )
                   })}
                   {signals.sized_down.length > 40 &&
                     <span style={{ color: C.muted, fontSize: 11 }}>+{signals.sized_down.length - 40} more</span>}
