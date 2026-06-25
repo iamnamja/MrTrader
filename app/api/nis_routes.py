@@ -232,12 +232,26 @@ def get_recent_decisions(
     limit: int = Query(default=50, ge=1, le=500),
     strategy: Optional[str] = Query(default=None),
     final_decision: Optional[str] = Query(default=None),
+    days: int = Query(default=1, ge=0, le=30),
 ) -> Dict[str, Any]:
-    """Return the most recent decision_audit rows, optionally filtered."""
+    """Return the most recent decision_audit rows, optionally filtered.
+
+    `days` scopes by decided_at to the last N ET calendar days (default 1 = TODAY only).
+    Without it, /recent returned the last `limit` rows across ALL sessions, so a stale skip
+    batch (e.g. a kill-switch window or a prior server instance) would surface forever — the
+    "phantom AAPL swing / pm_skip: kill_switch with the switch now off" symptom. days=0 disables
+    the date filter (full forensic history)."""
     try:
         from app.database.models import DecisionAudit
         with get_session() as db:
             q = db.query(DecisionAudit).order_by(DecisionAudit.decided_at.desc())
+            if days > 0:
+                from datetime import datetime, timedelta, timezone
+                from zoneinfo import ZoneInfo
+                _et = ZoneInfo("America/New_York")
+                start_et = (datetime.now(_et) - timedelta(days=days - 1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0)
+                q = q.filter(DecisionAudit.decided_at >= start_et.astimezone(timezone.utc))
             if strategy:
                 q = q.filter(DecisionAudit.strategy == strategy)
             if final_decision:

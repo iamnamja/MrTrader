@@ -66,6 +66,19 @@ function fmtTs(iso: string | undefined | null) {
   const time  = d.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit', hour12: true })
   return `${month} ${day} ${year} ${time} ET`
 }
+// Compact ET timestamp: mm/dd/yyyy hh:mm (24h) ET — used on the Macro Intel page.
+function fmtTsShort(iso: string | undefined | null) {
+  if (!iso) return '—'
+  const normalized = /[Z+\-]\d*$/.test(iso) ? iso : iso + 'Z'
+  const d = new Date(normalized)
+  if (isNaN(d.getTime())) return iso
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+  const mm   = d.toLocaleDateString('en-US', { ...opts, month: '2-digit' })
+  const dd   = d.toLocaleDateString('en-US', { ...opts, day: '2-digit' })
+  const yyyy = d.toLocaleDateString('en-US', { ...opts, year: 'numeric' })
+  const time = d.toLocaleTimeString('en-US', { ...opts, hour: '2-digit', minute: '2-digit', hour12: false })
+  return `${mm}/${dd}/${yyyy} ${time} ET`
+}
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
   return v > 0 ? C.green : v < 0 ? C.red : C.text
@@ -1725,7 +1738,7 @@ function MacroIntelPanel() {
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
           <div style={{ color: C.muted, fontSize: 10 }}>AS OF</div>
-          <div style={{ fontSize: 11, color: C.muted }}>{macro?.as_of ? fmtTs(macro.as_of) : '—'}</div>
+          <div style={{ fontSize: 11, color: C.muted }}>{macro?.as_of ? fmtTsShort(macro.as_of) : '—'}</div>
           <button onClick={() => load(true)} disabled={refreshing} style={{
             marginTop: 4, padding: '3px 10px', fontSize: 10, cursor: refreshing ? 'default' : 'pointer',
             border: `1px solid ${C.border}`, borderRadius: 4, background: 'transparent',
@@ -1884,8 +1897,9 @@ function MacroIntelPanel() {
           <span>Decision Linkage — NIS Impact on Trades</span>
           <span style={{ color: C.muted, fontSize: 11 }}>
             {decisions.length > 0 &&
-              `${decisions.length} decisions — ${decisions.filter(d => d.final_decision === 'BLOCKED').length} blocked, ` +
-              `${decisions.filter(d => d.size_multiplier != null && d.size_multiplier < 1).length} sized down`}
+              `${decisions.length} decisions — ${decisions.filter(d => (d.final_decision ?? '').toLowerCase() === 'block').length} blocked, ` +
+              `${decisions.filter(d => (d.final_decision ?? '').toLowerCase() === 'size_down' || (d.size_multiplier != null && d.size_multiplier < 1)).length} sized down, ` +
+              `${decisions.filter(d => (d.final_decision ?? '').toLowerCase() === 'skip').length} skipped`}
           </span>
         </div>
         <div style={{ maxHeight: 340, overflowY: 'auto' }}>
@@ -1900,21 +1914,29 @@ function MacroIntelPanel() {
               {decisions.length === 0
                 ? <tr><td colSpan={8} style={{ padding: 20, color: C.muted, textAlign: 'center' }}>No decision audit records yet</td></tr>
                 : decisions.map(row => {
-                    const outcome = row.final_decision ?? '—'
-                    const outcomeColor = outcome === 'BLOCKED' ? C.red : outcome === 'APPROVED' ? C.green : C.muted
+                    // DB stores lowercase verbs (enter/block/skip/size_down) — map case-correctly.
+                    const dec = (row.final_decision ?? '').toLowerCase()
+                    const outcomeLabel = dec === 'enter' ? 'Entered' : dec === 'block' ? 'Blocked'
+                      : dec === 'skip' ? 'Skipped' : dec === 'size_down' ? 'Sized down'
+                      : dec === 'track' ? 'Tracked' : dec === 'exit_review' ? 'Exit review'
+                      : (row.final_decision ?? '—')
+                    const outcomeColor = dec === 'block' ? C.red : dec === 'enter' ? C.green
+                      : dec === 'size_down' ? C.yellow : C.muted
                     const risk2 = (row.macro_risk_level ?? '').toUpperCase()
                     const rc = risk2 === 'HIGH' ? C.red : risk2 === 'MEDIUM' ? C.yellow : risk2 === 'LOW' ? C.green : C.muted
                     const policy = row.news_action_policy ?? '—'
                     const pc = policy === 'block_entry' ? C.red : policy.includes('size_down') ? C.yellow : C.muted
+                    // strategy-wide abstention rows are logged with symbol '*'
+                    const isAll = row.symbol === '*'
                     return (
                       <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                        <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>{fmtTs(row.decided_at)}</td>
-                        <td style={{ padding: '5px 8px', fontWeight: 600, color: C.accent }}>{row.symbol}</td>
+                        <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>{fmtTsShort(row.decided_at)}</td>
+                        <td style={{ padding: '5px 8px', fontWeight: 600, color: isAll ? C.muted : C.accent }}>{isAll ? 'All (abstained)' : row.symbol}</td>
                         <td style={{ padding: '5px 8px', color: C.muted }}>{row.strategy}</td>
                         <td style={{ padding: '5px 8px' }}>{row.model_score != null ? (row.model_score * 100).toFixed(1) + '%' : '—'}</td>
                         <td style={{ padding: '5px 8px', color: rc }}>{risk2 || '—'}</td>
                         <td style={{ padding: '5px 8px', color: pc, fontSize: 10 }}>{policy}</td>
-                        <td style={{ padding: '5px 8px', color: outcomeColor, fontWeight: 600 }}>{outcome}</td>
+                        <td style={{ padding: '5px 8px', color: outcomeColor, fontWeight: 600 }}>{outcomeLabel}</td>
                         <td style={{ padding: '5px 8px', color: C.muted, fontSize: 10, maxWidth: 200,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                           title={row.block_reason ?? ''}>{row.block_reason || '—'}</td>

@@ -2555,6 +2555,17 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             )
         return allows
 
+    # Reasons that abstain the WHOLE strategy regardless of symbol → ONE summary row, never one per
+    # proposal. Writing 17 identical "pm_skip: kill_switch" rows (one per swing-universe proposal)
+    # was the source of the Decision-Linkage "phantom AAPL swing" spam. Matched by reason PREFIX
+    # (before any ':' suffix like a time window or score). Per-symbol gates (entry_gate, nis_block)
+    # are NOT in this set and still get one row each (genuinely per-symbol information).
+    _BLANKET_SKIP_REASONS = frozenset({
+        "kill_switch", "kill_switch_late", "no_proposals_cached", "model_not_trained",
+        "opportunity_score_low", "macro_event_window", "no_candidates_above_threshold",
+        "gate1c_meltup",
+    })
+
     def _write_skip_audit(
         self,
         strategy: str,
@@ -2564,14 +2575,15 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         """Record an early-exit/skip path in decision_audit so the Signal Monitor
         shows the "skip" outcome instead of silently dropping rows.
 
-        If `proposals` is given, write one row per proposal symbol (preserving
-        model_score / price). Otherwise write a single strategy-level row with
-        symbol='*'. Fails silently — never blocks trading.
+        For a BLANKET strategy-level abstention (see _BLANKET_SKIP_REASONS) write a SINGLE
+        symbol='*' row even when `proposals` is given. For a per-symbol gate, write one row per
+        proposal (preserving model_score / price). Fails silently — never blocks trading.
         """
         try:
             from app.database.decision_audit import write_decision
             block_reason = f"pm_skip: {reason}"
-            if proposals:
+            _base = reason.split(":", 1)[0]
+            if proposals and _base not in self._BLANKET_SKIP_REASONS:
                 for p in proposals:
                     write_decision(
                         symbol=p.get("symbol", "*"),
