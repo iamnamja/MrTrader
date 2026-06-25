@@ -192,6 +192,12 @@ class AgentOrchestrator:
                              exc_info=True)
                 await self._log_error(name, str(exc))
                 await asyncio.sleep(30)
+                # Re-project a STANDING pause onto the agent before it restarts, so a crash during a
+                # manual/auto pause cannot silently resume trading (run() also preserves an existing
+                # 'paused' status; this covers a pause issued during the 30s restart window).
+                if (self._manual_paused or self._auto_paused) and hasattr(agent, "status"):
+                    agent.status = "paused"
+                    logger.warning("Agent %s restart: re-applying standing pause", name)
 
     # ─── Scheduled callbacks ──────────────────────────────────────────────────
 

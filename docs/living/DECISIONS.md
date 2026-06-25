@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-06-25 (Audit Wave 5i) — BLOCKER: a standing pause was lost on an agent crash-and-restart
+
+**Context**: A FRESH adversarial re-audit of the now-hardened live order + control path (4 independent Opus agents over distinct slices) found a new **BLOCKER**: the orchestrator restarts a crashed agent by re-invoking `agent.run()` (`_run_agent`), and `run()` hard-set `self.status = "running"`. So if an agent crashed DURING a manual (operator) or auto (Alpaca-down) pause, the restart silently RESUMED it — the agent self-un-paused while the control plane still reported paused. For the Trader this means placing live orders the operator believed were halted. (The Wave-5h `_manual_paused`/`_auto_paused` latches were correct, but they were never re-projected onto a restarted agent.)
+
+**Decision**: added `BaseAgent._activate_status()` (`if self.status != "paused": self.status = "running"`) and replaced the hard `self.status = "running"` in `Trader.run`, `PortfolioManager.run`, AND `RiskManager.run` with it — so a restarted agent preserves a standing pause. Belt-and-suspenders: `_run_agent` re-applies the standing pause (`agent.status = "paused"`) after the 30s restart sleep when `_manual_paused or _auto_paused`.
+
+**Rationale / verification**: Opus deep-dive confirmed the normal lifecycle is intact (first start + genuine-crash-while-running both reach "running"; resume/auto-resume both clear "paused"; no stuck-paused/deadlock; stop/cancel paths unaffected) — and CAUGHT that the first cut fixed only Trader+PM, leaving the IDENTICAL hard-resume in `RiskManager.run` (same restart wrapper); that was then fixed too. `NewsMonitor` hard-sets running but is NOT registered/restart-wrapped (standalone read-only poller) — correctly unaffected. 3 new tests; full suite 4048 green; flake8 clean.
+
+**Consequences**: a crash-and-restart can no longer silently resume a paused agent — the "paused stays paused across restart" invariant holds for all three restart-managed agents. **This re-audit also surfaced 4 MAJORs queued for follow-up waves**: kill-switch `load_state` can un-arm an active switch on a stale DB read (needs a versioned-seq latch — a naive "never downgrade" would break legitimate cross-process reset propagation via the state-sync loop); trader requote/escalate `place_limit_order` lacks a client_order_id (orphan on lost response); RM per-sleeve budget fails OPEN on a DB read error (PM side already hardened in 5f); reconciler `_is_broker_view_trusted` fails open for a short book. **0 BLOCKERs remain after this fix.**
+
+---
+
 ## 2026-06-25 (Audit Wave 5h) — two control-integrity MAJORs: manual-pause override + stale /health
 
 **Context**: Re-audit #3 live MAJORs.

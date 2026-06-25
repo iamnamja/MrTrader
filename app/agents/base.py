@@ -46,6 +46,16 @@ class BaseAgent(ABC):
         self.logger = logging.getLogger(f"agents.{name}")
         self.status = "initialized"
 
+    def _activate_status(self) -> None:
+        """Set status to 'running' UNLESS a standing pause is in force.
+
+        The orchestrator restarts a crashed agent by re-invoking run(); a hard 'running' at the top
+        of run() would silently resume an agent the operator (or health check) had paused — the agent
+        self-un-pauses while the control plane still reports paused. Preserving an existing 'paused'
+        status keeps the pause across a crash-and-restart."""
+        if self.status != "paused":
+            self.status = "running"
+
     @abstractmethod
     async def run(self):
         """Main agent loop - implement in subclasses."""
