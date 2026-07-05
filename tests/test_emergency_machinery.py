@@ -129,6 +129,55 @@ def test_heartbeat_corrupt_file_is_none(tmp_path):
     assert hb.heartbeat_age_seconds(str(p)) is None
 
 
+# ── H5 off-box dead-man's-snitch ──────────────────────────────────────────────
+class _InlineThread:
+    """Run the target synchronously so the fire-and-forget ping is deterministic in tests."""
+    def __init__(self, target=None, daemon=None, name=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def test_snitch_noop_when_unconfigured(monkeypatch):
+    monkeypatch.delenv(hb.SNITCH_URL_ENV, raising=False)
+    called = []
+    monkeypatch.setattr(hb.urllib.request, "urlopen", lambda *a, **k: called.append(a))
+    # unconfigured -> no dispatch, no network call
+    assert hb.ping_snitch() is False
+    assert called == []
+
+
+def test_snitch_pings_configured_url(monkeypatch):
+    monkeypatch.setattr(hb.threading, "Thread", _InlineThread)
+    seen = {}
+
+    class _Resp:
+        def close(self):
+            seen["closed"] = True
+
+    def _fake_urlopen(u, timeout=None):
+        seen["url"] = u
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(hb.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setenv(hb.SNITCH_URL_ENV, "https://hc-ping.example/abc")
+    assert hb.ping_snitch() is True
+    assert seen["url"] == "https://hc-ping.example/abc" and seen["closed"] is True
+
+
+def test_snitch_never_raises_on_network_error(monkeypatch):
+    monkeypatch.setattr(hb.threading, "Thread", _InlineThread)
+
+    def _boom(*a, **k):
+        raise OSError("network down")
+
+    monkeypatch.setattr(hb.urllib.request, "urlopen", _boom)
+    # explicit url arg overrides env; a failing GET must be swallowed (beat loop must never break)
+    assert hb.ping_snitch("https://hc-ping.example/abc") is True    # dispatched despite the failure
+
+
 # ── H5 dead-man watchdog (_check_once) ────────────────────────────────────────
 class _RecNotifier:
     def __init__(self):

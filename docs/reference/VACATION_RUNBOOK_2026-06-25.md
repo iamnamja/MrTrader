@@ -87,6 +87,13 @@ Requires reachability to the dashboard/API at `http://localhost:8000` (VPN/tunne
 
 ## Total-machine-death (power/OS)
 On-box monitors can't alert if the whole box dies. **It's paper**, so the only effect is a missed
-rebalance until you return (positions persist at Alpaca, nothing liquidates). If you want
-external detection anyway: a free dead-man's-snitch (e.g. healthchecks.io) that emails you when the
-box stops pinging — ask and it's ~5 lines in the heartbeat job (deferred; low value for paper).
+rebalance until you return (positions persist at Alpaca, nothing liquidates). This is exactly the
+July-3 power-outage case the on-box watchdog can't catch.
+
+**Off-box dead-man's-snitch (built — one manual step to arm):** the heartbeat job pings an external URL
+every minute (`heartbeat.ping_snitch`); when the box dies the pings stop and the external service
+emails you. To enable:
+1. Create a free check at healthchecks.io (period 1 min, grace ~5 min) → copy its ping URL.
+2. Set the env var before launching: `$env:MRTRADER_SNITCH_URL='https://hc-ping.com/<uuid>'` (or add
+   it to your `.env`), then `.\serve.ps1`.
+No-op until the env var is set (fire-and-forget, never affects the beat loop).
