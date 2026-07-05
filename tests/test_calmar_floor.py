@@ -16,6 +16,20 @@ def test_vol_floor_finite_not_sentinel():
     assert math.isfinite(val)
 
 
+def test_vol_floor_uses_sqrt12_not_12():
+    # KL-12 MINOR: monthly vol = ann_vol/√12 (vol scales with √time), NOT ann_vol/12. The /12 bug
+    # made the floor DD ~3.5× too small (here it degraded to the MIN_CALMAR_FLOOR_DD=0.01 floor →
+    # Calmar 10.0), inflating Calmar on no-DD folds.
+    import math
+    import numpy as np
+    dr = [0.01, -0.01] * 60                       # 120 obs, mean 0, non-degenerate vol
+    ann_vol = float(np.std(dr, ddof=1)) * math.sqrt(252.0)
+    exp_dd = max(0.5 * ann_vol / math.sqrt(12.0), 0.01)
+    val = compute_calmar(0.10, 0.0, 1.0, daily_returns=dr)      # CAGR(0.10, 1yr) = 0.10
+    assert abs(val - 0.10 / exp_dd) < 1e-9                      # matches √12 floor
+    assert abs(val - 10.0) > 1e-6                               # NOT the buggy /12 (MIN-floored) 10.0
+
+
 def test_vol_floor_falls_back_to_min_dd(caplog):
     import logging
     with caplog.at_level(logging.WARNING):
