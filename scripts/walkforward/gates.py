@@ -64,6 +64,16 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> tuple[flo
     Bug fix (WF deep-review pass 2): E[SR_max] must be multiplied by sqrt(V[SR]); the
     prior implementation omitted that scaling factor. `n_obs` is the number of return
     observations (trading days), not the number of trades.
+
+    ⚠️ KNOWN UNITS DEFECT (KL-12 CONFIRMED-2, 2026-07-05 — NOT YET FIXED, deliberate):
+    this feeds the ANNUALIZED `sharpe` into the PER-OBSERVATION variance `(1+0.5·SR²)/(T−1)`,
+    which inflates the z-score by ~√252 and saturates p→1.0 (the "DSR saturation" of KL-1 is
+    largely THIS units bug, not an inherent ceiling). The correct form keeps units consistent:
+    `V[SR_ann]=(252+0.5·SR_ann²)/(T−1)`. Fixing it makes DSR DISCRIMINATE — but it becomes so
+    strict it rejects models at the legacy gate's own 0.80 Sharpe threshold, so flipping it
+    REDEFINES the (deprecated, non-live) `mean_sharpe` gate and is deferred to a deliberate
+    gate-design decision. **Zero live impact** — the live path (`ruler_v2`) never calls this.
+    See DECISIONS 2026-07-05 for the corrected-vs-old grid + re-examination.
     """
     if n_trials <= 1 or n_obs <= 1:
         return sharpe, 0.5
@@ -133,7 +143,9 @@ def compute_calmar(total_return_pct: float, max_drawdown_pct: float, years: floa
         if USE_CALMAR_VOL_FLOOR:
             if daily_returns and len(daily_returns) >= 2:
                 ann_vol = float(np.std(daily_returns, ddof=1)) * math.sqrt(252.0)
-                monthly_vol = ann_vol / 12.0
+                # KL-12 MINOR fix: vol scales with √time, so monthly vol = ann_vol/√12, NOT /12.
+                # The prior /12 made the floor DD ~3.5× too small, inflating Calmar on no-DD folds.
+                monthly_vol = ann_vol / math.sqrt(12.0)
                 dd = max(0.5 * monthly_vol, MIN_CALMAR_FLOOR_DD)
             else:
                 import logging as _logging

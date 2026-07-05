@@ -32,6 +32,25 @@ def _panels(n_days=260, n_mkts=5, seed=1):
     return rets, carry, prices, roll_days, base
 
 
+# ---- empirical p fail-closed (KL-12 CONFIRMED-3) ----
+def test_empirical_p_fails_closed_on_nonfinite_obs():
+    # A NaN/inf observed statistic must NOT read as significant. Pre-fix, np.sum(arr >= NaN)==0
+    # collapsed p to 1/(1+N) ≈ 0.001 (a manufactured strong verdict).
+    null = np.array([0.1, 0.5, 1.0, 2.0])
+    assert np.isnan(nz._empirical_p(null, float("nan")))
+    assert np.isnan(nz._empirical_p(null, float("inf")))
+    # a NaN p routes through the downstream `< 0.05` verdict comparisons as False (RESIDUE, safe)
+    assert not (nz._empirical_p(null, float("nan")) < 0.05)
+
+
+def test_empirical_p_finite_obs_matches_davison_hinkley():
+    null = np.array([0.0, 1.0, 2.0, 3.0])          # N=4
+    # obs=2.0 → #{null >= 2.0} = 2 (2.0, 3.0) → p = (1+2)/(1+4) = 0.6
+    assert nz._empirical_p(null, 2.0) == 0.6
+    # a very strong obs beyond the null → p = 1/(1+N) (the floor), still finite
+    assert nz._empirical_p(null, 99.0) == 1.0 / 5.0
+
+
 # ---- cross_sectional_permute ----
 def test_cross_sectional_permute_shape_and_determinism():
     _, carry, _, _, _ = _panels()
