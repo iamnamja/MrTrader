@@ -532,8 +532,12 @@ class AgentOrchestrator:
     async def _write_heartbeat(self) -> None:
         """Dead-man liveness beat (H5): write the durable heartbeat the external watchdog reads.
         Fail-safe — write_heartbeat never raises; a failed write just looks 'stale' to the watchdog."""
-        from app.live_trading.heartbeat import write_heartbeat
+        from app.live_trading.heartbeat import ping_snitch, write_heartbeat
         write_heartbeat()
+        # Off-box dead-man's-snitch: ping an external check each beat so total-machine death (power/OS)
+        # — the one failure the on-box watchdog dies with — is caught externally. No-op unless
+        # MRTRADER_SNITCH_URL is set; fire-and-forget, never raises.
+        ping_snitch()
         # H2: refresh the in-memory kill-switch state machine's heartbeat too, so its dead-man
         # backstop only escalates if THIS beat loop has been dead for minutes (never raises).
         try:
