@@ -6,6 +6,20 @@
 
 ---
 
+## Follow-up execution (2026-07-05) — all surviving threads RUN and CLOSED
+
+The three cheap/free re-tests the audit recommended were executed (Opus agents, report-only, no retrain, no live change). **All three confirm the original verdicts — nothing resurrects.**
+
+| Thread | Run | Result | Verdict |
+|---|---|---|---|
+| **futures_skewness** (commodity-only) | restricted to 30 commodity mkts, same `skew_signal`/3bps | standalone Sharpe **+0.19** (up from +0.03 full-universe; modern-stronger post15 +0.19 / 20s +0.36) BUT **residual-α t +0.08** (needs ~1.6); Sharpe < 0.30. NOT carry-adjacent (signal corr +0.07) — genuinely orthogonal, just no standalone edge | **CLOSE-AS-NULL** |
+| **swing_ml_ranker** (dollar-neutral L/S, explicit SPY hedge) | already-committed RANKER-v2 "Spike A" CPCV C(8,2), bear fold incl. | CPCV mean **+0.136**, P5 (bear) **−3.46**, DSR p 0.032, t +0.18 — fails all gates, still dies in the bear regime. Removing the invalid inverted-composite hedge did NOT change the answer → the null is the **signal**, not the hedge | **CLOSE the family** |
+| **curve_momentum** (free sub-period read) | `run_futures_factors` `_subs` tuple | Sharpe −0.24, post15 −0.12 (still negative), 20s +0.03 (flat), residual-α t −1.38 — no post-2015 rescue | **CONFIRMED-DEAD** |
+
+Net: the "too conservative?" hypothesis is closed on the specific candidates too — the bar held under direct re-test, not just review.
+
+---
+
 # Re-Adjudication of Killed / Parked Strategy Families — Lead Quant Decision Memo
 
 *22 families re-reviewed; 7 flagged as possible false-negatives and each put through an adversarial refutation. Date: 2026-07-05.*
