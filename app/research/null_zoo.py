@@ -194,6 +194,18 @@ def _factor_panels(prices: pd.DataFrame, carry: pd.DataFrame,
     ]
 
 
+def _empirical_p(arr, obs) -> float:
+    """Davison-Hinkley one-sided empirical p = (1 + #{null >= obs}) / (1 + N).
+
+    KL-12 CONFIRMED-3 fix: a NON-FINITE observed statistic FAILS CLOSED (returns NaN). Previously a
+    NaN `obs` made `np.sum(arr >= NaN) == 0` → p collapse to 1/(1+N) ≈ 0.001 (read as "significant"),
+    so a degenerate / insufficient-history sleeve could manufacture the strongest verdict. NaN routes
+    through the downstream `< 0.05` comparisons as False → RESIDUE (conservative)."""
+    if not np.isfinite(obs):
+        return float("nan")
+    return float((1 + int(np.sum(arr >= obs))) / (1 + len(arr))) if len(arr) else float("nan")
+
+
 def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.DataFrame,
                  roll_days: pd.DataFrame, base: pd.Series, *,
                  prices: Optional[pd.DataFrame] = None,
@@ -273,8 +285,7 @@ def run_null_zoo(returns: pd.DataFrame, carry: pd.DataFrame, mom_signal: pd.Data
 
     nb_arr, cn_arr, x6_arr = np.array(nb_ts), np.array(cn_ts), np.array(x6_ts)
 
-    def _p(arr, obs):  # Davison-Hinkley one-sided empirical p = (1 + #{null >= obs}) / (1 + N)
-        return float((1 + int(np.sum(arr >= obs))) / (1 + len(arr))) if len(arr) else float("nan")
+    _p = _empirical_p  # KL-12 CONFIRMED-3: fail-closed on a non-finite observed statistic
 
     null_book_p = _p(nb_arr, bar)
     carry_null_p = _p(cn_arr, t_obs_carry)

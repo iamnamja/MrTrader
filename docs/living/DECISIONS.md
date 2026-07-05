@@ -4,6 +4,24 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-05 (Harness audit KL-12) — DSR "saturation" was a UNITS BUG, not an inherent ceiling; corrected DSR is strict
+
+**Context**: The 2026-07-05 harness-correctness audit (`docs/reference/HARNESS_CORRECTNESS_AUDIT_2026-07-05.md`, PIPELINE_ARCHITECTURE KL-12) found `scripts/walkforward/gates.py:deflated_sharpe_ratio` fed the **annualized** Sharpe into the **per-observation** Bailey/LdP variance `V[SR]=(1+0.5·SR²)/(T−1)` while `n_obs` was the DAILY count. This inflated the z-score by ~√252, so the DSR p-value **saturated to ~1.0 for every input** — a permanent always-pass no-op. This is the same saturation documented in KL-1 that helped motivate abandoning DSR for the Ruler-v2 acceptance framework — i.e. **part of that rationale was a units artifact, not a true multiple-testing ceiling.**
+
+**Decision**: **DEFER the production units flip** (2026-07-05). The correct form keeps units consistent: `V[SR_ann] = (252 + 0.5·SR_ann²)/(T−1)`. But flipping it makes DSR so strict it **rejects models at the legacy gate's own 0.80 Sharpe threshold** — nothing at 0.80–0.85 passes DSR at any reasonable N — so it does not merely fix a number, it **redefines the (deprecated, non-live) `mean_sharpe` gate** and breaks its documented contract across ~12 tests. That is a deliberate gate-design decision (keep DSR binding? at what N? or drop DSR from the legacy gate entirely, since `ruler_v2` superseded it), not a mechanical bug-fix, so it is deferred. The defect is documented loudly in `gates.py:deflated_sharpe_ratio` + KL-12; the code keeps CURRENT behavior for now. **Zero live impact either way** — the LIVE path (`GATE_MODE="ruler_v2"`) never calls this function. When re-integrated, do NOT revert to DSR as the PRIMARY gate (Ruler-v2's Bayesian P(SR>0) posterior + two-tier acceptance + live-paper structural gate remain better), and use the family-level trial count (~25), not 250/300, as N.
+
+**Rationale / re-examination (the key finding)**: with units fixed, DSR **discriminates and is in fact STRICT** — it was never "too lenient," it was silently broken. Corrected p-values (OLD → FIXED, `periods_per_year=252`):
+
+| Sharpe | N_trials | T (days) | OLD p | FIXED p | gate p>0.95 |
+|---|---|---|---|---|---|
+| 0.80 | 250 | 250 | 1.000 | 0.021 | fail |
+| 0.80 | 25 | 2500 (10y) | 1.000 | 0.699 | fail |
+| 1.00 | 25 | 2500 | 1.000 | 0.875 | fail |
+| 1.50 | 25 | 2500 | 1.000 | 0.997 | **pass** |
+| 5.14 | 250 | 250 | 1.000 | 0.984 | pass |
+
+Implication: at N_trials=250–300 the corrected DSR is **too strict for this program's sleeves** (a genuine 0.8–1.0 Sharpe fails even with 10y of history) — consistent with why we size modestly and count families (~25), not 250, as N. **If DSR is ever re-promoted to a binding gate, use the family-level trial count (`family_registry.family_trial_count()`), not 250/300.** This is exactly why the production flip is deferred: ~12 legacy-gate tests assert the gate PROMOTES at ~0.85 Sharpe (relying on the always-pass bug); the corrected gate cannot, so re-integrating it means deciding the legacy gate's operating point (or retiring DSR from it), not editing fixtures.
+
 ## 2026-06-25 (Audit cleanup) — GDP price index / deflator no longer mislabelled as growth
 
 **Context**: A documented LOW residual (from the 2026-06-25 Macro-Intel Phase 2a entry). The Finnhub event classifier substring-matched `"GDP Price Index"` (and "GDP Deflator") on the `gdp` growth keyword → event_type `GDP` (higher_better polarity). A GDP deflator is an INFLATION measure (lower-is-risk-on), so a HOT deflator read **risk-ON** — the wrong direction.

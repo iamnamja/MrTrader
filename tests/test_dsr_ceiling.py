@@ -29,6 +29,9 @@ def _report(sharpe: float, n_folds: int = 2) -> WalkForwardReport:
 
 # ── WalkForwardReport ──────────────────────────────────────────────────────────
 def test_dsr_saturates_at_high_sharpe():
+    # NOTE: this saturation is largely the KL-12 CONFIRMED-2 units defect (annualized Sharpe into a
+    # per-observation variance) — documented in DECISIONS 2026-07-05; the units fix is deferred as it
+    # redefines the (non-live) legacy gate. This test pins CURRENT behavior until that decision.
     _, p = deflated_sharpe_ratio(5.14, 250, 250)
     assert p > DSR_SATURATION_P
 
