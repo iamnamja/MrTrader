@@ -6,8 +6,9 @@ stale/missing heartbeat, re-arms after recovery, and only flattens when --auto-f
 """
 from __future__ import annotations
 
-import json
 import os
+
+import pytest
 
 from app.live_trading import emergency_flatten as ef
 from app.live_trading import heartbeat as hb
@@ -187,3 +188,37 @@ def test_watchdog_auto_flatten_only_when_enabled(monkeypatch):
                         lambda **k: {"status": "activated"}, raising=False)
     wd._check_once(max_stale=600.0, auto_flatten=True, already_alerted=False)
     assert called["flatten"] == 1
+
+
+def test_watchdog_start_grace_waits_before_first_check(monkeypatch):
+    # serve.ps1 co-launches the watchdog with --start-grace-sec so it doesn't false-alert on the
+    # stale heartbeat from the prior run while the brain boots. The grace must sleep BEFORE the
+    # first _check_once — otherwise the very first check fires a spurious dead_man_alert on startup.
+    slept: list[float] = []
+    monkeypatch.setattr(wd.time, "sleep", lambda s: slept.append(s))
+
+    def _stop_the_loop(*a, **k):
+        raise KeyboardInterrupt          # BaseException — not swallowed by the loop's `except Exception`
+
+    monkeypatch.setattr(wd, "_check_once", _stop_the_loop)
+    monkeypatch.setattr("sys.argv",
+                        ["dead_man_watchdog", "--start-grace-sec", "120", "--interval-sec", "5"])
+
+    with pytest.raises(KeyboardInterrupt):
+        wd.main()
+
+    assert slept and slept[0] == 120     # grace slept first, before the first check reached
+
+
+def test_watchdog_no_grace_by_default_checks_immediately(monkeypatch):
+    # Default (no serve.ps1 grace, e.g. manual/cron launch): no pre-check sleep — first check is
+    # immediate, preserving the existing behavior for the standalone runbook invocation.
+    slept: list[float] = []
+    monkeypatch.setattr(wd.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(wd, "_check_once", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr("sys.argv", ["dead_man_watchdog", "--interval-sec", "5"])
+
+    with pytest.raises(KeyboardInterrupt):
+        wd.main()
+
+    assert slept == []                   # no grace -> nothing slept before the (immediate) first check
