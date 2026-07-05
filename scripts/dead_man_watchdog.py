@@ -77,6 +77,11 @@ def main() -> int:
                     help="run a single check and exit (tests/cron). NOTE: the one-alert-per-episode "
                          "guarantee holds in the persistent loop; under repeated cron --once a "
                          "sustained outage re-alerts each run once the prior email is sent.")
+    ap.add_argument("--start-grace-sec", type=float, default=0.0,
+                    help="on the persistent loop, wait this long before the FIRST check so a "
+                         "co-launched server has time to boot and write a fresh heartbeat — avoids a "
+                         "false stale-alert on startup (e.g. serve.ps1 auto-launch). Ignored for "
+                         "--once. Default 0.")
     args = ap.parse_args()
 
     print(f"[watchdog] start: max_stale={args.max_stale_sec:.0f}s interval={args.interval_sec:.0f}s "
@@ -84,6 +89,11 @@ def main() -> int:
     if args.once:
         stale = _check_once(args.max_stale_sec, args.auto_flatten, already_alerted=False)
         return 1 if stale else 0
+
+    if args.start_grace_sec > 0:
+        print(f"[watchdog] startup grace: waiting {args.start_grace_sec:.0f}s for a fresh heartbeat "
+              f"before the first check")
+        time.sleep(args.start_grace_sec)
 
     alerted = False
     while True:
