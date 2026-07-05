@@ -10,14 +10,19 @@
 
 ## Before you leave — checklist
 
-1. **Start the dead-man watchdog** (the #1 unattended safety — alerts you if the brain dies/hangs).
-   Run in a **persistent terminal** that stays open all week, alert-only (no auto-flatten):
+1. **Dead-man watchdog** (the #1 unattended safety — alerts you if the brain dies/hangs).
+   **`serve.ps1` now auto-starts it** as a detached sibling process (120 s startup grace so it
+   doesn't false-alert while the brain boots; alert-only, no auto-flatten) and stops it when uvicorn
+   exits — so a normal `.\serve.ps1` launch is already covered; nothing to do. Confirm it came up:
+   `logs\watchdog.out.log` should show a `[watchdog] start:` line, and a `watchdog PID …` line prints
+   at launch. To run it standalone instead (manual/cron, no server restart):
    ```
    PYTHONPATH=. venv/Scripts/python scripts/dead_man_watchdog.py
    ```
    It reads the 1-min heartbeat file and emails `[CRITICAL] dead_man_alert` if it goes stale. It only
    **enqueues** — `notify_watcher` (which has the SMTP creds) does the sending, so the watchdog needs
-   no creds of its own. Alerts once per episode, re-arms on recovery.
+   no creds of its own. Alerts once per episode, re-arms on recovery. **Caveat unchanged:** it runs on
+   the same box, so it catches a brain crash/hang but NOT total-machine death (power/OS) — see below.
 
 2. **Phone notifications for the alerts (Option 1 — pure email, no webhook).** Every alert already
    emails `kimminjae@gmail.com`; catastrophic ones are subject-prefixed **`[CRITICAL] `**. Make your

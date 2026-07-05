@@ -41,7 +41,40 @@ if ($pgReady) {
     Write-Host "    fresh infra). Starting the API anyway - it may fail on DB connect." -ForegroundColor Yellow
 }
 
+# --- Launch the EXTERNAL dead-man watchdog (Alpha-v10 H5) alongside the server ---
+# It must be a SEPARATE process: an in-process monitor can't report the brain (uvicorn) dying/hanging.
+# It reads the brain's 1-min heartbeat file and emails [CRITICAL] dead_man_alert if it goes stale.
+#   --start-grace-sec 120  : don't check until the brain has had time to boot + write a fresh
+#                            heartbeat, else it would false-alert on the stale file from the last run.
+#   alert-only             : no --auto-flatten (no trading authority) — matches the runbook default.
+# We stop it in `finally` when uvicorn exits so a clean Ctrl+C shutdown doesn't leave it firing a
+# false stale-heartbeat alert ~10 min later. (NOTE: it catches a brain crash/hang, NOT total-machine
+# death — it runs on the same box; for power-loss detection use an off-box dead-man's-snitch.)
+$watchdog = $null
+$pyExe = Join-Path $root "venv\Scripts\python.exe"
+if (Test-Path $pyExe) {
+    Write-Host "==> Starting dead-man watchdog (alert-only, 120s startup grace)..." -ForegroundColor Cyan
+    $env:PYTHONPATH = "."
+    $watchdog = Start-Process -FilePath $pyExe `
+        -ArgumentList "scripts\dead_man_watchdog.py", "--start-grace-sec", "120" `
+        -WorkingDirectory $root -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput "logs\watchdog.out.log" `
+        -RedirectStandardError  "logs\watchdog.err.log"
+    Write-Host "    watchdog PID $($watchdog.Id) - emails [CRITICAL] dead_man_alert if the brain hangs/dies." -ForegroundColor Green
+} else {
+    Write-Host "    WARNING: venv python not found ($pyExe) - dead-man watchdog NOT started." -ForegroundColor Yellow
+    Write-Host "    Start it manually: `$env:PYTHONPATH='.'; venv\Scripts\python scripts\dead_man_watchdog.py" -ForegroundColor Yellow
+}
+
 Write-Host "==> Starting API server on http://0.0.0.0:8000 ..." -ForegroundColor Cyan
 # --timeout-graceful-shutdown bounds uvicorn's wait for in-flight work on Ctrl+C;
 # the in-process lifespan watchdog (app/main.py) is the hard backstop against hangs.
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+try {
+    uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+}
+finally {
+    if ($watchdog -and -not $watchdog.HasExited) {
+        Write-Host "==> Stopping dead-man watchdog (PID $($watchdog.Id))..." -ForegroundColor Cyan
+        Stop-Process -Id $watchdog.Id -Force -ErrorAction SilentlyContinue
+    }
+}
