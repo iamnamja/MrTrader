@@ -1394,7 +1394,16 @@ function TradesPanel() {
 type Execution = {
   order_id: string; symbol: string; side: string; qty: number; filled_qty: number
   filled_avg_price: number | null; status: string; order_type: string | null
+  time_in_force: string | null; limit_price: number | null; stop_price: number | null
+  commission: number | null; client_order_id: string | null
   submitted_at: string | null; filled_at: string | null
+}
+// Strategy/sleeve that placed the order — first segment of the client_order_id
+// (e.g. "trend-20260706-UUP" → "trend", "cash-...-SGOV-buy" → "cash").
+function execSource(coid: string | null): string {
+  if (!coid) return '—'
+  const head = coid.split('-')[0]
+  return head || '—'
 }
 function ExecutionsPanel() {
   const [rows, setRows] = useState<Execution[]>([])
@@ -1434,24 +1443,27 @@ function ExecutionsPanel() {
         <div style={{ overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Time', 'Symbol', 'Side', 'Qty', 'Filled', 'Avg Price', 'Type', 'Status'].map(h => (
+              {['Time', 'Source', 'Symbol', 'Side', 'Qty', 'Filled', 'Avg Price', 'Value', 'Type', 'Limit/Stop', 'Status'].map(h => (
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 1 }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={8} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>Loading…</td></tr>
+                ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>Loading…</td></tr>
                 : rows.length === 0
-                  ? <tr><td colSpan={8} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
+                  ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
                   : rows.map((r, i) => (
                     <tr key={r.order_id || i}>
                       <td style={{ ...s.td, color: C.muted }}>{fmtExecTime(r.filled_at ?? r.submitted_at)}</td>
+                      <td style={{ ...s.td, color: C.blue, fontSize: 10, fontWeight: 600 }}>{execSource(r.client_order_id)}</td>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{r.symbol}</td>
                       <td style={{ ...s.td, color: r.side === 'buy' ? C.green : C.red, fontWeight: 600 }}>{r.side.toUpperCase()}</td>
                       <td style={s.td}>{r.qty}</td>
                       <td style={s.td}>{r.filled_qty}</td>
                       <td style={s.td}>{fmt$(r.filled_avg_price)}</td>
-                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{r.order_type ?? '—'}</td>
+                      <td style={s.td}>{r.filled_qty && r.filled_avg_price ? fmt$(r.filled_qty * r.filled_avg_price) : '—'}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{(r.order_type ?? '—') + (r.time_in_force ? ' · ' + r.time_in_force : '')}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{r.limit_price != null ? fmt$(r.limit_price) : r.stop_price != null ? 'stop ' + fmt$(r.stop_price) : '—'}</td>
                       <td style={{ ...s.td }}><span style={{
                         padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600,
                         background: `${stColor(r.status)}1a`, color: stColor(r.status), border: `1px solid ${stColor(r.status)}4d`,
