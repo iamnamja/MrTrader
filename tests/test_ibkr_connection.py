@@ -106,6 +106,37 @@ def test_stopped_manager_is_terminal(fake_ib):
         mgr.call(lambda ib: ib.managedAccounts())
 
 
+def test_op_timeout_raises_connectionerror_not_raw_timeout(fake_ib):
+    # A hung op must fail-closed with ConnectionError (uniform contract), not a raw TimeoutError.
+    import asyncio
+    mgr = IBKRConnectionManager(client_id=9)
+    try:
+        assert mgr.connect() is True
+
+        async def _hang(ib):
+            await asyncio.sleep(10)
+        with pytest.raises(ConnectionError):
+            mgr.call(lambda ib: _hang(ib), timeout=0.2)
+    finally:
+        mgr.stop()
+
+
+def test_call_on_loop_fail_closed_when_loop_torn_down(fake_ib):
+    # The stop()/dead-loop race must raise ConnectionError, never a raw AttributeError/RuntimeError.
+    mgr = IBKRConnectionManager(client_id=9)
+    try:
+        assert mgr.connect() is True
+        mgr._stopped = True                              # simulate a concurrent stop() in progress
+        with pytest.raises(ConnectionError):
+            mgr._call_on_loop(lambda ib: ib.isConnected(), timeout=1.0)
+        mgr._loop = None                                 # or the loop already nulled
+        with pytest.raises(ConnectionError):
+            mgr._call_on_loop(lambda ib: ib.isConnected(), timeout=1.0)
+    finally:
+        mgr._stopped = False
+        mgr.stop()
+
+
 def test_r1_0b_no_write_surface():
     # MINOR-6: rename-resistant tripwire — no order/place method on the read-only R1.0b manager.
     # (The real read-only gate is connectAsync(readonly=True) + the gateway's Read-Only API.)

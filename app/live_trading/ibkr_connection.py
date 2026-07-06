@@ -98,26 +98,44 @@ class IBKRConnectionManager:
             raise RuntimeError("ibkr-conn: dedicated loop/IB failed to start")
 
     def _call_on_loop(self, thunk: Callable[[Any], Any], timeout: Optional[float]) -> Any:
-        """Run `thunk(ib)` on the dedicated loop. If it returns a coroutine, await it there."""
+        """Run `thunk(ib)` on the dedicated loop (awaiting a returned coroutine/Future there) and return
+        the result. FAIL-CLOSED and uniform: every failure — a concurrent stop() nulling/closing the
+        loop, a dispatch onto a closed loop, or an op timeout — raises ConnectionError (never a raw
+        AttributeError/RuntimeError/TimeoutError, and never a multi-second stall on a torn-down loop)."""
+        loop = self._loop                       # SNAPSHOT once — stop() may null self._loop concurrently
+        if self._stopped or loop is None or loop.is_closed():
+            raise ConnectionError("ibkr-conn: loop unavailable (stopped/closed) — call refused, fail-closed")
+
         async def _run() -> Any:
             r = thunk(self._ib)
             if inspect.isawaitable(r):          # coroutine OR Future/Task (ib_insync returns Futures)
                 r = await r
             return r
-        fut = asyncio.run_coroutine_threadsafe(_run(), self._loop)   # type: ignore[arg-type]
+        coro = _run()
         try:
-            return fut.result(timeout if timeout is not None else self._op_timeout)
-        except concurrent.futures.TimeoutError:
-            # MAJOR-2: cancel the still-running coroutine on the loop, else a flaky-gateway timeout
-            # leaves it in flight and a later connect() dispatches a SECOND connectAsync → racing sessions.
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError as e:               # loop closed/stopped between the guard and dispatch
+            coro.close()                        # avoid a "coroutine was never awaited" warning
+            raise ConnectionError(f"ibkr-conn: loop closed during dispatch — fail-closed: {e}") from e
+        eff_timeout = timeout if timeout is not None else self._op_timeout
+        try:
+            return fut.result(eff_timeout)
+        except concurrent.futures.TimeoutError as e:
+            # Cancel the still-running coroutine on the loop, else a flaky-gateway timeout leaves it in
+            # flight and a later connect() dispatches a SECOND connectAsync → racing sessions. Translate
+            # to ConnectionError so callers get the uniform fail-closed contract (never a raw timeout).
             fut.cancel()
-            raise
+            raise ConnectionError(f"ibkr-conn: op timed out after {eff_timeout}s — fail-closed") from e
 
     # ── public API ────────────────────────────────────────────────────────────────
     def call(self, thunk: Callable[[Any], Any], *, timeout: Optional[float] = None) -> Any:
         """Dispatch an IB operation onto the dedicated loop from any thread (fail-closed if down).
 
-        Contract: `thunk(ib)` MUST be non-blocking and MUST NOT re-enter the manager (MAJOR-1)."""
+        Contract: `thunk(ib)` MUST be non-blocking and MUST NOT re-enter the manager (MAJOR-1). It runs
+        on the ALREADY-RUNNING dedicated loop, so it must use ib_insync's `...Async` variants (e.g.
+        `ib.reqExecutionsAsync()`, `ib.connectAsync()`) or a plain sync call (`ib.placeOrder()`, an
+        attribute read) — NOT the blocking convenience wrappers (`ib.reqExecutions()`), which call
+        `loop.run_until_complete` internally and raise `RuntimeError: loop already running`."""
         self._assert_not_loop_thread()
         with self._lock:                          # brief: thread-start single-flight ONLY (no loop op)
             try:
@@ -149,7 +167,20 @@ class IBKRConnectionManager:
                 return self._is_connected_unlocked()
             except Exception as e:             # noqa: BLE001 — fail-closed
                 log.warning("ibkr-conn: connect failed: %s", e)
+                # Force the (possibly half-open) socket closed so a timed-out connectAsync doesn't leave
+                # a lingering session + a claimed clientId that wedges the NEXT reconnect (MAJOR-2).
+                self._safe_disconnect()
                 return False
+
+    def _safe_disconnect(self) -> None:
+        """Best-effort, bounded, never-raises hard close of the ib socket — used to reclaim a half-open
+        session after a failed/timed-out connect so the same clientId reconnects cleanly."""
+        try:
+            loop = self._loop
+            if loop is not None and not loop.is_closed() and self._ib is not None:
+                self._call_on_loop(lambda ib: ib.disconnect(), timeout=5.0)
+        except Exception:                      # noqa: BLE001
+            log.debug("ibkr-conn: post-failure disconnect (best-effort) failed", exc_info=True)
 
     def ensure_connected(self, *, min_reconnect_gap: float = 5.0) -> bool:
         """Reconnect if the session dropped, rate-limited so a hard-down gateway isn't hammered."""
@@ -205,3 +236,6 @@ class IBKRConnectionManager:
                 pass
         if thread is not None:
             thread.join(timeout=5.0)
+            if thread.is_alive():              # a blocking thunk stalled the loop → loop.stop never ran
+                log.warning("ibkr-conn: dedicated loop thread did not exit within 5s (a blocking thunk "
+                            "may be stalling the loop) — leaked until process exit")
