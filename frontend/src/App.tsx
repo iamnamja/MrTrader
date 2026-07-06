@@ -79,6 +79,23 @@ function fmtTsShort(iso: string | undefined | null) {
   const time = d.toLocaleTimeString('en-US', { ...opts, hour: '2-digit', minute: '2-digit', hour12: false })
   return `${mm}/${dd}/${yyyy} ${time} ET`
 }
+// Executions blotter time: HH:MM:SS in ET (24h), with a compact MM/DD prefix so a multi-day
+// blotter stays unambiguous — orders can span rebalance days.
+function fmtExecTime(iso: string | undefined | null) {
+  if (!iso) return '—'
+  // Detect an existing tz (trailing Z, or a +HH:MM / +HHMM offset — Alpaca emits "+00:00").
+  // The old /[Z+\-]\d*$/ missed "+00:00" and wrongly appended 'Z' → invalid date → raw fallback.
+  const hasTz = /[Zz]$|[+\-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso + 'Z'   // assume UTC only if truly naive
+  const d = new Date(normalized)
+  if (isNaN(d.getTime())) return iso
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' }
+  const date = d.toLocaleDateString('en-US', { ...opts, month: '2-digit', day: '2-digit' })
+  const time = d.toLocaleTimeString('en-US', {
+    ...opts, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+  return `${date} ${time} ET`
+}
 function clr(v: number | undefined | null) {
   if (v == null) return C.text
   return v > 0 ? C.green : v < 0 ? C.red : C.text
@@ -1428,7 +1445,7 @@ function ExecutionsPanel() {
                   ? <tr><td colSpan={8} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
                   : rows.map((r, i) => (
                     <tr key={r.order_id || i}>
-                      <td style={{ ...s.td, color: C.muted }}>{fmtTs(r.filled_at ?? r.submitted_at)}</td>
+                      <td style={{ ...s.td, color: C.muted }}>{fmtExecTime(r.filled_at ?? r.submitted_at)}</td>
                       <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{r.symbol}</td>
                       <td style={{ ...s.td, color: r.side === 'buy' ? C.green : C.red, fontWeight: 600 }}>{r.side.toUpperCase()}</td>
                       <td style={s.td}>{r.qty}</td>
