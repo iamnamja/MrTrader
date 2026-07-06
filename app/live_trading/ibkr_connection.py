@@ -103,8 +103,13 @@ class IBKRConnectionManager:
         loop, a dispatch onto a closed loop, or an op timeout — raises ConnectionError (never a raw
         AttributeError/RuntimeError/TimeoutError, and never a multi-second stall on a torn-down loop)."""
         loop = self._loop                       # SNAPSHOT once — stop() may null self._loop concurrently
-        if self._stopped or loop is None or loop.is_closed():
-            raise ConnectionError("ibkr-conn: loop unavailable (stopped/closed) — call refused, fail-closed")
+        # Guard on the REAL loop state only (NOT self._stopped): stop() itself sets _stopped=True and
+        # THEN calls _call_on_loop for its graceful ib.disconnect() while the loop is still open — a
+        # _stopped check here would skip that disconnect and re-strand the clientId. call() already
+        # rejects a stopped manager upstream via _ensure_thread(); None/closed here + the op-timeout
+        # below keep every torn-down path fail-closed with ConnectionError.
+        if loop is None or loop.is_closed():
+            raise ConnectionError("ibkr-conn: loop unavailable (torn down) — call refused, fail-closed")
 
         async def _run() -> Any:
             r = thunk(self._ib)

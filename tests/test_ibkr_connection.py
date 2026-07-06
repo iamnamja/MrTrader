@@ -122,19 +122,29 @@ def test_op_timeout_raises_connectionerror_not_raw_timeout(fake_ib):
 
 
 def test_call_on_loop_fail_closed_when_loop_torn_down(fake_ib):
-    # The stop()/dead-loop race must raise ConnectionError, never a raw AttributeError/RuntimeError.
+    # After stop() tears the loop down, _call_on_loop must fail closed with ConnectionError — never a
+    # raw AttributeError (None deref) or RuntimeError (closed-loop dispatch).
     mgr = IBKRConnectionManager(client_id=9)
-    try:
-        assert mgr.connect() is True
-        mgr._stopped = True                              # simulate a concurrent stop() in progress
-        with pytest.raises(ConnectionError):
-            mgr._call_on_loop(lambda ib: ib.isConnected(), timeout=1.0)
-        mgr._loop = None                                 # or the loop already nulled
-        with pytest.raises(ConnectionError):
-            mgr._call_on_loop(lambda ib: ib.isConnected(), timeout=1.0)
-    finally:
-        mgr._stopped = False
-        mgr.stop()
+    assert mgr.connect() is True
+    mgr.stop()                                           # loop nulled/closed by stop()
+    with pytest.raises(ConnectionError):
+        mgr._call_on_loop(lambda ib: ib.isConnected(), timeout=1.0)
+
+
+def test_stop_runs_graceful_disconnect(fake_ib):
+    # Regression guard: the _call_on_loop fail-closed guard must NOT skip stop()'s own graceful
+    # ib.disconnect() (which releases the clientId on the gateway) — stop() sets _stopped BEFORE it.
+    mgr = IBKRConnectionManager(client_id=9)
+    assert mgr.connect() is True
+    calls = {"n": 0}
+    real_disc = mgr._ib.disconnect
+
+    def _counting_disc():
+        calls["n"] += 1
+        return real_disc()
+    mgr._ib.disconnect = _counting_disc
+    mgr.stop()
+    assert calls["n"] == 1                                # graceful disconnect actually ran
 
 
 def test_r1_0b_no_write_surface():
