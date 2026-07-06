@@ -72,6 +72,12 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   the owner step at R1.0c.**
   **`call()` contract (carried into R1.0c):** the thunk MUST be non-blocking and MUST NOT re-enter the
   manager; every dispatch carries a bounded timeout (cancel-on-timeout is built in).
+  **Cutover-readiness hardening (2026-07-06, 2nd Opus deep-dive):** `_call_on_loop` now snapshots the
+  loop and **fails closed with `ConnectionError`** on the `stop()`/dead-loop race (no more raw
+  `AttributeError`/`RuntimeError` or ~30s stall) and translates op timeouts to `ConnectionError` too
+  (uniform fail-closed); a failed/timed-out `connect` **hard-closes the half-open socket** so a claimed
+  `clientId` can't wedge the next reconnect; `stop()` warns on a leaked loop thread; the `...Async`-thunk
+  requirement is documented on `call()`.
 - **R1.0c-1 — `WritableIBKRAdapter` (write surface, SHADOW)**: ✅ **DONE** —
   `app/live_trading/writable_ibkr_adapter.py`. Implements the write Protocol on the R1.0b manager:
   OrderIntent → IBKR `Stock`/`Future` contract + `MarketOrder`, **multiplier ONLY from
