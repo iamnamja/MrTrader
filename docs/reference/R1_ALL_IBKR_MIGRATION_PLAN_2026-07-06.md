@@ -60,13 +60,22 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   **`WritableAlpacaAdapter`** that wraps the EXISTING `alpaca.place_market_order` byte-identically (H3
   fat-finger + H6 idempotent-reuse preserved). **No caller — inert.** Validates the abstraction on the
   working venue before IBKR.
-- **R1.0b — robust IBKR connection**: upgrade `ibkr_adapter` from read-only to a real connection
-  MANAGER — single dedicated `ib_insync` thread owning the loop + connection (the R1.1-review decision),
-  `clientId` single-flight, connect/reconnect/heartbeat, fail-closed on stale clock/data. **Read-Only
-  API OFF is an explicit owner step here.** Still no order call wired.
-- **R1.0c — `WritableIBKRAdapter`** (implements the write Protocol): `place`/`cancel`, fills via
-  `execDetails` + commissions via `commissionReport`, disconnect-gap fill recovery, `whatIfOrder`
-  margin preview, multiplier ONLY from `instrument_master`. Guarded OFF by config; places nothing yet.
+- **R1.0b — robust IBKR connection**: ✅ **DONE** — `app/live_trading/ibkr_connection.py`
+  `IBKRConnectionManager`: single dedicated `ib_insync` thread owning its own loop + `IB()`; all ops
+  dispatched onto it via `run_coroutine_threadsafe`; `clientId` single-flight, idempotent connect,
+  rate-limited `ensure_connected`, fail-closed, clean `stop()`. Validated LIVE (paper DUQ869409:
+  connect / managedAccounts / reqCurrentTimeAsync / cross-thread dispatch / teardown). Inert (no caller,
+  no auto-connect, **no order method**; read-capable only, `readonly=True`). Opus deep-dive folded in:
+  timed-out coroutines are cancelled; a re-entrant call from the loop thread fails loud (never
+  deadlocks); the data `call()` dispatch is NOT under the manager lock (so a hung op can't stall
+  `stop()`/`is_connected()`); `stop()` is terminal. Read-Only API stays ON here; **flipping it OFF is
+  the owner step at R1.0c.**
+  **`call()` contract (carried into R1.0c):** the thunk MUST be non-blocking and MUST NOT re-enter the
+  manager; every dispatch carries a bounded timeout (cancel-on-timeout is built in).
+- **R1.0c — `WritableIBKRAdapter`** (implements the write Protocol, runs ON the R1.0b manager):
+  `place`/`cancel`, fills via `execDetails` + commissions via `commissionReport`, disconnect-gap fill
+  recovery, `whatIfOrder` margin preview, multiplier ONLY from `instrument_master`. Guarded OFF by
+  config; places nothing yet. **Owner step: turn the Gateway Read-Only API OFF before any order path.**
 
 ### R1.1 — ETF/cash on IBKR (SHADOW)
 Route the trend + cash order CONSTRUCTION through `WritableIBKRAdapter` in **shadow**, alongside the
