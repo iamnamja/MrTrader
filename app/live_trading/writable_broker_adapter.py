@@ -126,6 +126,8 @@ class WritableAlpacaAdapter:
         if intent.quantity != int(intent.quantity):
             raise ValueError(f"WritableAlpacaAdapter: non-integer quantity {intent.quantity} "
                              f"(whole shares only — caller must round before place())")
+        if int(intent.quantity) <= 0:          # fail-closed: no 0/negative order reaches the broker
+            raise ValueError(f"WritableAlpacaAdapter: quantity must be positive (got {intent.quantity})")
         # For Alpaca equities the canonical instrument_id IS the broker symbol. The idempotency key
         # (client_ref) is passed through VERBATIM — the adapter must not re-derive it (R1 design §3.6).
         res = self._client.place_market_order(

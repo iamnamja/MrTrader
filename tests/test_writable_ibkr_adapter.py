@@ -167,6 +167,71 @@ def test_qualify_future_rejects_non_future():
         WritableIBKRAdapter(_FakeConn(_QualifyIB([])), mode="shadow").qualify_future("SPY")
 
 
+def test_qualify_future_all_expired_fails_closed():
+    # m6: only expired expiries (stale reqContractDetails) must fail closed, not trade a dead contract.
+    cds = [_CD(_Contract("ES", "20200320")), _CD(_Contract("ES", "20200620"))]
+    with pytest.raises(ValueError):
+        WritableIBKRAdapter(_FakeConn(_QualifyIB(cds)), mode="shadow").qualify_future("FUT.ES")
+
+
+# ── R1 cutover hardening: fail-closed order build + ETF venue mapping + live-qualify ──
+
+def test_etf_universe_maps_to_ibkr_venue():
+    # M1: every trend + cash ETF must resolve on the IBKR venue, else the cutover fail-closes the gate.
+    from app.live_trading import instrument_master as im
+    for sym in ("SPY", "QQQ", "TLT", "GLD", "SGOV", "BIL"):
+        assert im.lookup("IBKR", sym) == sym
+
+
+def test_zero_or_negative_quantity_rejected():
+    for q in (0, -3):
+        with pytest.raises(ValueError):
+            WritableIBKRAdapter(_FakeConn(), mode="shadow").place(_intent(quantity=q))
+
+
+def test_invalid_side_rejected():
+    with pytest.raises(ValueError):
+        WritableIBKRAdapter(_FakeConn(), mode="shadow").place(_intent(side="LONG"))
+
+
+class _LivePlaceIB:
+    def __init__(self):
+        self.placed = None
+
+    async def reqContractDetailsAsync(self, base):
+        return [_CD(_Contract("ES", "20301200"))]        # front-month, mult 50 (matches master)
+
+    def placeOrder(self, contract, order):
+        self.placed = contract
+        t = type("Trade", (), {})()
+        t.order = type("O", (), {"orderId": 7})()
+        t.orderStatus = type("S", (), {"status": "PreSubmitted"})()
+        return t
+
+
+def test_live_place_futures_qualifies_before_placing():
+    # I1 invariant: a LIVE futures order MUST route through qualify_future (front-month + multiplier
+    # re-check on the resolved contract) — never place the bare generic future.
+    ib = _LivePlaceIB()
+    res = WritableIBKRAdapter(_FakeConn(ib), mode="live").place(
+        _intent(instrument_id="FUT.ES", sec_type="FUT"))
+    assert ib.placed.lastTradeDateOrContractMonth == "20301200"   # qualified, not a bare generic future
+    assert res.accepted_status == "presubmitted" and res.broker_order_id == "7"
+
+
+def test_preview_nulls_unset_margin_sentinel():
+    # m3: IBKR's UNSET_DOUBLE (~1.79e308) for an unpopulated margin field must read as None, not a
+    # giant real margin that flips ok=True.
+    class _IB:
+        async def whatIfOrderAsync(self, contract, order):
+            return type("S", (), {"initMarginChange": 1.7976931348623157e308,
+                                  "maintMarginChange": 1.7976931348623157e308,
+                                  "equityWithLoanAfter": "", "commission": 0.0,
+                                  "maxCommission": 0.0})()
+    mi = WritableIBKRAdapter(_FakeConn(_IB()), mode="shadow").preview(_intent())
+    assert mi.init_margin is None and mi.maint_margin is None and mi.ok is False
+
+
 # ── R1.0c-2: async fill capture (reqExecutions → FillEvent; disconnect-gap recovery) ──
 
 class _Exec:
