@@ -90,9 +90,20 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   #1-killer guard); (2) the shadow snapshot now records `contract_multiplier` (what's actually bound to
   the IBKR `Contract`), and the multiplier test asserts on the built contract, not just the master echo.
   11 tests.
-- **R1.0c-2 — live path (owner-gated, Read-Only-OFF)**: async fill capture (`execDetails` +
-  `commissionReport` → `FillEvent`), disconnect-gap fill recovery, futures front-month qualification
-  (`reqContractDetails`), working `whatIfOrder` margin, and the actual `mode="live"` place smoke-test.
+- **R1.0c-2a — inert fill + qualification surface (READ-only-safe)**: ✅ **DONE** — no Read-Only flip
+  needed. `qualify_future(instrument_id)` resolves a FUT to its **front-month** via `reqContractDetails`
+  (filters by `tradingClass==root`, nearest non-expired expiry) and **RE-VERIFIES the multiplier on the
+  RESOLVED contract** against the master (the #1-killer guard on the real contract, fail-closed) — wired
+  into the live `place()` FUT path so a live futures order can never go out as a bare generic contract.
+  `get_fills(client_ref=None)` is the **SEPARATE async fill channel** via `reqExecutions` → `FillEvent`
+  (BOT/SLD→BUY/SELL, `orderRef`→`client_ref`, symbol→canonical `instrument_id`, `execId`→`exec_id`,
+  `commissionReport` joined); because `reqExecutions` replays the whole session, it **doubles as
+  disconnect-gap recovery** (consumer dedupes on `exec_id`). `FillEvent` gained `exec_id`/`side`/`venue`.
+  Both reads **degrade** (return `[]`/raise fail-closed) on error, never crash the caller. Validated LIVE
+  read-only (paper): FUT.ES → **ESU6, expiry 20260918, tradingClass ES, mult 50, exch CME**; `get_fills`
+  ran clean (0 fills). 20 tests; independent Opus deep-dive. **Places nothing** (still shadow).
+- **R1.0c-2b — live path (owner-gated, Read-Only-OFF)**: the actual `mode="live"` place smoke-test and a
+  real (non-empty) `whatIfOrder` margin — both need the gateway's Read-Only API OFF.
   **Owner step: turn the Gateway Read-Only API OFF** (the one hands-on gate before any IBKR order).
 
 ### R1.1 — ETF/cash on IBKR (SHADOW)
