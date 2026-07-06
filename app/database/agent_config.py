@@ -429,6 +429,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "description": "API client id the adapter uses to identify its connection (any int; distinct per concurrent client).",
         "group": "IBKR",
     },
+    {
+        "key": "ibkr.shadow_routing",
+        "default": "false",
+        "type": "str",
+        "description": "Alpha-v10 R1.1 SHADOW routing of the live ETF/cash rebalance onto IBKR. 'false' (default) = OFF. 'true'/'on' = the trend + cash sleeves reconstruct each Alpaca order as the IBKR order it WOULD build and LOG a comparison (summary['ibkr_shadow_route']) — placing NOTHING on IBKR (no gateway connection; structurally can't dispatch). Surfaces instrument-mapping gaps on real rebalance data before the R1.2 cutover. Instantly reversible.",
+        "group": "IBKR",
+    },
     # ── IBKR futures EXECUTOR — Alpha-v10 P2.3 (order-construction + SHADOW only; places nothing) ─
     {
         "key": "ibkr.futures_enabled",
