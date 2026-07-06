@@ -106,11 +106,20 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   real (non-empty) `whatIfOrder` margin — both need the gateway's Read-Only API OFF.
   **Owner step: turn the Gateway Read-Only API OFF** (the one hands-on gate before any IBKR order).
 
-### R1.1 — ETF/cash on IBKR (SHADOW)
-Route the trend + cash order CONSTRUCTION through `WritableIBKRAdapter` in **shadow**, alongside the
-live Alpaca path: compute the IBKR orders it *would* place, log + snapshot, **place nothing on IBKR**.
-Compare vs the actual Alpaca fills/positions — this is where whole-share rounding + any execution
-surprise surface, before a single real IBKR order. (The enforce gates already evaluate `venue=IBKR`.)
+### R1.1 — ETF/cash on IBKR (SHADOW) ✅ **built (gated OFF)**
+`app/live_trading/ibkr_shadow_router.py` — the trend + cash sleeves now reconstruct each Alpaca ETF/cash
+order as the IBKR order it *would* build (`OrderIntent` → shadow `WritableIBKRAdapter.place()`), log +
+compare (`ibkr_qty` vs `alpaca_qty`, into the rebalance `summary["ibkr_shadow_route"]`), and **place
+nothing on IBKR**. The live value is a weekly **reconstruction / instrument-mapping check** on real
+rebalance data — an unmapped symbol fails closed and is recorded — before a single real IBKR order.
+(Whole-share rounding is identical on both sides for whole-share ETFs, so that only really bites for
+futures lots at R1.3; here it's the mapping-gap + reconstruction parity that matters.)
+- **Gated OFF** by the `ibkr.shadow_routing` agent-config flag (default off; instantly reversible).
+- **Structurally cannot reach the gateway**: a shadow place returns before any dispatch, so the router
+  needs no IBKR connection — and its connection stub RAISES if anyone ever tries to dispatch.
+- **Never raises into the live loop**: per-order fail-closed; the Alpaca placement is untouched.
+- Runs in BOTH shadow and live rebalance modes (so the comparison accrues during the Alpaca-shadow soak).
+- Owner step to activate: set `ibkr.shadow_routing=on`. (The enforce gates already evaluate `venue=IBKR`.)
 
 ### R1.2 — Cut over ETF/cash to IBKR (tiny-live)
 Flip `trend`/`cash` venue → IBKR (whole book-state now reads IBKR positions). Alpaca adapter stays as
