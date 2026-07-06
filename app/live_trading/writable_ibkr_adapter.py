@@ -306,12 +306,6 @@ class WritableIBKRAdapter:
         """Pre-trade `whatIfOrder` margin preview (does NOT place). Read-only-safe if the gateway allows
         what-if under Read-Only API; if not, it degrades to ok=False (surfaces the block honestly)."""
         inst = self._instrument(intent.instrument_id)
-        # A FUT must be the qualified front-month (mirror place()); whatIfOrder on a bare generic future
-        # returns nothing → ok=False, so the margin gate would be blind on exactly the asset class that
-        # needs margin. Qualification is a READ (reqContractDetails), Read-Only-API-safe.
-        contract = (self.qualify_future(intent.instrument_id) if inst.sec_type == "FUT"
-                    else self._build_contract(inst))
-        order = self._build_order(intent)
 
         def _f(x):
             try:
@@ -320,6 +314,14 @@ class WritableIBKRAdapter:
                 return None
             return None if abs(v) > 1e17 else v   # IBKR UNSET_DOUBLE (~1.79e308) = field not populated
         try:
+            # A FUT must be the qualified front-month (mirror place()); whatIfOrder on a bare generic
+            # future returns nothing → ok=False, so the margin gate would be blind on exactly the asset
+            # class that needs margin. Qualification is a READ (reqContractDetails), Read-Only-API-safe.
+            # Kept INSIDE the try so a qualify/build failure DEGRADES to ok=False (preview's contract) —
+            # it never raises into the caller (unlike place(), which must raise on a bad order).
+            contract = (self.qualify_future(intent.instrument_id) if inst.sec_type == "FUT"
+                        else self._build_contract(inst))
+            order = self._build_order(intent)
             st = self._conn.call(lambda ib: ib.whatIfOrderAsync(contract, order))
             init_m = _f(getattr(st, "initMarginChange", None))
             maint_m = _f(getattr(st, "maintMarginChange", None))

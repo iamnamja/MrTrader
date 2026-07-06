@@ -232,6 +232,14 @@ def test_preview_nulls_unset_margin_sentinel():
     assert mi.init_margin is None and mi.maint_margin is None and mi.ok is False
 
 
+def test_preview_degrades_to_ok_false_on_qualify_failure():
+    # preview must DEGRADE (not raise) when FUT qualification fails — its documented contract.
+    cds = [_CD(_Contract("ES", "20200320"))]     # only expired → qualify_future raises internally
+    mi = WritableIBKRAdapter(_FakeConn(_QualifyIB(cds)), mode="shadow").preview(
+        _intent(instrument_id="FUT.ES", sec_type="FUT"))
+    assert mi.ok is False
+
+
 # ── R1.0c-2: async fill capture (reqExecutions → FillEvent; disconnect-gap recovery) ──
 
 class _Exec:
