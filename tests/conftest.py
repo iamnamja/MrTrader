@@ -103,6 +103,27 @@ import app.analytics.drawdown_analyzer  # noqa: E402,F401
 # GATE_MODE via `from app.ml.retrain_config import GATE_MODE` inside each gate
 # function, so patching the module attribute is sufficient.
 @pytest.fixture(autouse=True)
+def _ensure_current_event_loop():
+    """Guarantee a current event loop on the main thread for EVERY test.
+
+    eventkit (ib_insync's dependency) calls asyncio.get_event_loop() at IMPORT
+    time; on Python 3.12 that RAISES "no current event loop" when none is set on
+    the thread. Under pytest-asyncio strict mode an async test can leave the
+    main-thread loop reset to None, so whichever test first imports ib_insync on
+    a worker (directly, or via a fixture like `fake_ib`) crashes at import —
+    purely as a function of shard/loadscope ordering. This makes that import
+    order-independent. Autouse + function-scoped so it runs before the requested
+    fixtures that do the import; a no-op when a loop already exists.
+    """
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _legacy_gate_mode_default(request):
     if "significance_gate_mode" in getattr(request, "fixturenames", ()):  # opted in elsewhere
         yield
