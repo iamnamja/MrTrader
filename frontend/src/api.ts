@@ -23,6 +23,7 @@ export const api = {
   agentLastActivity: () => get('/api/dashboard/agent-last-activity'),
   positions: () => get('/api/dashboard/positions'),
   trades: (status?: string) => get(`/api/dashboard/trades${status ? `?status=${status}` : ''}`),
+  executions: (limit = 100) => get(`/api/dashboard/executions?limit=${limit}`),
   liveStatus: () => get('/api/dashboard/live/status'),
   auditLog: (limit = 20) => get(`/api/dashboard/live/audit-log?limit=${limit}`),
   killSwitch: (reason: string) => post('/api/dashboard/live/kill-switch', { reason }),

@@ -499,6 +499,38 @@ class AlpacaClient:
             logger.error(f"Error fetching order status: {e}")
             return None
 
+    def get_orders(self, limit: int = 100, status: str = "all") -> List[Dict[str, Any]]:
+        """Recent orders (EXECUTIONS) from Alpaca — the source of truth for what actually traded,
+        including weekly rebalance resizings that never create a DB Trade row. Newest-first.
+
+        The DB `orders` table + the /trades (positions) view do NOT capture rebalance buys/sells;
+        this reads the broker directly so the dashboard can show an execution-level blotter."""
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+            _status = {"all": QueryOrderStatus.ALL, "open": QueryOrderStatus.OPEN,
+                       "closed": QueryOrderStatus.CLOSED}.get(str(status).lower(), QueryOrderStatus.ALL)
+            req = GetOrdersRequest(status=_status, limit=min(max(int(limit), 1), 500), direction="desc")
+            orders = self.trading_client.get_orders(filter=req) or []
+            out: List[Dict[str, Any]] = []
+            for o in orders:
+                out.append({
+                    "order_id": str(o.id),
+                    "symbol": o.symbol,
+                    "side": str(o.side).rsplit(".", 1)[-1].lower(),          # OrderSide.BUY -> buy
+                    "qty": float(o.qty) if o.qty else 0,                     # keep fractional (blotter = truth)
+                    "filled_qty": float(o.filled_qty) if o.filled_qty else 0,
+                    "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+                    "status": str(o.status).rsplit(".", 1)[-1].lower(),      # OrderStatus.FILLED -> filled
+                    "order_type": str(getattr(o, "order_type", "") or "").rsplit(".", 1)[-1].lower() or None,
+                    "submitted_at": o.submitted_at.isoformat() if getattr(o, "submitted_at", None) else None,
+                    "filled_at": o.filled_at.isoformat() if getattr(o, "filled_at", None) else None,
+                })
+            return out
+        except Exception as e:  # noqa: BLE001 — dashboard read must degrade gracefully
+            logger.error(f"Error fetching orders: {e}")
+            return []
+
     def get_bars(
         self,
         symbol: str,
