@@ -52,8 +52,11 @@ class CanonicalInstrument:
 
 
 def _etf(sym: str, cash: bool = False) -> CanonicalInstrument:
+    # ETFs use the SAME ticker on both venues, so register BOTH — otherwise `lookup(IBKR, "SPY")`
+    # returns None and, at the all-IBKR cutover, every IBKR-held ETF reads as `mapped=False` → a
+    # fail-closed whole-book-gate breach that would HOLD the entire trend rebalance (Alpha-v10 R1, M1).
     return CanonicalInstrument(instrument_id=sym, asset_class=(CASH_ETF if cash else ETF),
-                               is_cash_equivalent=cash, venue_symbols={ALPACA: sym})
+                               is_cash_equivalent=cash, venue_symbols={ALPACA: sym, IBKR: sym})
 
 
 def _fut(root: str, mult: float, exchange: str,

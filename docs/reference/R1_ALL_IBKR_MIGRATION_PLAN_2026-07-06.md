@@ -108,6 +108,17 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   Both reads **degrade** (return `[]`/raise fail-closed) on error, never crash the caller. Validated LIVE
   read-only (paper): FUT.ES → **ESU6, expiry 20260918, tradingClass ES, mult 50, exch CME**; `get_fills`
   ran clean (0 fills). 20 tests; independent Opus deep-dive. **Places nothing** (still shadow).
+- **Cutover-readiness hardening (2026-07-06, 2nd Opus deep-dive of the write surface):** (1) **M1** —
+  the ETF universe now maps to the IBKR venue (`_etf` registers `{ALPACA, IBKR}`); without it every
+  IBKR-held ETF read `mapped=False` → a whole-book-gate breach that would HOLD the trend rebalance the
+  moment equities move to IBKR. (2) **M2** — `preview()` now qualifies a FUT to its front-month before
+  `whatIfOrder` (else futures margin was always empty/ok=False — the margin gate blind on the one asset
+  class that needs it). (3) fail-closed order build: `_build_order` rejects a non-BUY/SELL side and a
+  0/negative quantity (mirrored in `WritableAlpacaAdapter`); `qualify_future` fails closed when only
+  EXPIRED contracts resolve (never trade a dead contract); `preview` nulls the IBKR UNSET_DOUBLE margin
+  sentinel (no giant-garbage `ok=True`). +6 tests; independent Opus verify. Still inert.
+  *(Deferred: gating unmapped **equity** fills to the known universe — needs a `FillEvent.mapped` flag +
+  consumer policy; after M1 the whole R1 ETF universe maps, so no phantom for the actual migration.)*
 - **R1.0c-2b — live path (owner-gated, Read-Only-OFF)**: the actual `mode="live"` place smoke-test and a
   real (non-empty) `whatIfOrder` margin — both need the gateway's Read-Only API OFF.
   **Owner step: turn the Gateway Read-Only API OFF** (the one hands-on gate before any IBKR order).

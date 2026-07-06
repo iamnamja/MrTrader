@@ -112,11 +112,15 @@ class WritableIBKRAdapter:
         from ib_insync import MarketOrder
         if intent.order_type != "MARKET":
             raise NotImplementedError(f"WritableIBKRAdapter: only MARKET in R1.0c (got {intent.order_type})")
+        side = str(intent.side).upper()
+        if side not in ("BUY", "SELL"):        # fail-closed: never pass an unknown side to the broker
+            raise ValueError(f"WritableIBKRAdapter: side must be BUY/SELL (got {intent.side!r})")
         if intent.quantity != int(intent.quantity):
             raise ValueError(f"WritableIBKRAdapter: non-integer quantity {intent.quantity} "
                              f"(whole shares/lots only — caller must round)")
-        order = MarketOrder(str(intent.side).upper(), abs(int(intent.quantity)),
-                            tif=(intent.tif or "DAY"))
+        if int(intent.quantity) <= 0:          # fail-closed: no 0/negative-lot order reaches placeOrder
+            raise ValueError(f"WritableIBKRAdapter: quantity must be positive (got {intent.quantity})")
+        order = MarketOrder(side, int(intent.quantity), tif=(intent.tif or "DAY"))
         if intent.client_ref:
             order.orderRef = intent.client_ref     # idempotency link (passed VERBATIM, never re-derived)
         return order
@@ -223,8 +227,12 @@ class WritableIBKRAdapter:
             e = self._norm_expiry(c)
             return bool(e) and e >= today[:len(e)]   # compare at the expiry's OWN granularity (6 or 8)
         unexpired = sorted((c for c in matched if _unexpired(c)), key=self._norm_expiry)
-        # nearest non-expired; if ALL look expired (stale reqContractDetails), take the latest month.
-        front = unexpired[0] if unexpired else sorted(matched, key=self._norm_expiry)[-1]
+        if not unexpired:
+            # FAIL CLOSED rather than trade a dead contract: if reqContractDetails is stale and returns
+            # ONLY expired expiries, submitting on the latest one would place on an expired contract.
+            raise ValueError(f"qualify_future: {instrument_id} resolved only EXPIRED contracts "
+                             f"(stale reqContractDetails?) — fail-closed")
+        front = unexpired[0]                          # nearest non-expired = the front month
         try:
             rm = float(front.multiplier) if getattr(front, "multiplier", None) else None
         except (TypeError, ValueError):
@@ -298,15 +306,22 @@ class WritableIBKRAdapter:
         """Pre-trade `whatIfOrder` margin preview (does NOT place). Read-only-safe if the gateway allows
         what-if under Read-Only API; if not, it degrades to ok=False (surfaces the block honestly)."""
         inst = self._instrument(intent.instrument_id)
-        contract = self._build_contract(inst)
-        order = self._build_order(intent)
 
         def _f(x):
             try:
-                return float(x)
+                v = float(x)
             except (TypeError, ValueError):
                 return None
+            return None if abs(v) > 1e17 else v   # IBKR UNSET_DOUBLE (~1.79e308) = field not populated
         try:
+            # A FUT must be the qualified front-month (mirror place()); whatIfOrder on a bare generic
+            # future returns nothing → ok=False, so the margin gate would be blind on exactly the asset
+            # class that needs margin. Qualification is a READ (reqContractDetails), Read-Only-API-safe.
+            # Kept INSIDE the try so a qualify/build failure DEGRADES to ok=False (preview's contract) —
+            # it never raises into the caller (unlike place(), which must raise on a bad order).
+            contract = (self.qualify_future(intent.instrument_id) if inst.sec_type == "FUT"
+                        else self._build_contract(inst))
+            order = self._build_order(intent)
             st = self._conn.call(lambda ib: ib.whatIfOrderAsync(contract, order))
             init_m = _f(getattr(st, "initMarginChange", None))
             maint_m = _f(getattr(st, "maintMarginChange", None))
