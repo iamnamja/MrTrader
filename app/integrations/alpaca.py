@@ -523,6 +523,11 @@ class AlpacaClient:
                     "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
                     "status": str(o.status).rsplit(".", 1)[-1].lower(),      # OrderStatus.FILLED -> filled
                     "order_type": str(getattr(o, "order_type", "") or "").rsplit(".", 1)[-1].lower() or None,
+                    "time_in_force": str(getattr(o, "time_in_force", "") or "").rsplit(".", 1)[-1].upper() or None,
+                    "limit_price": float(o.limit_price) if getattr(o, "limit_price", None) else None,
+                    "stop_price": float(o.stop_price) if getattr(o, "stop_price", None) else None,
+                    "commission": float(o.commission) if getattr(o, "commission", None) else None,
+                    "client_order_id": getattr(o, "client_order_id", None),   # → strategy/sleeve source
                     "submitted_at": o.submitted_at.isoformat() if getattr(o, "submitted_at", None) else None,
                     "filled_at": o.filled_at.isoformat() if getattr(o, "filled_at", None) else None,
                 })
