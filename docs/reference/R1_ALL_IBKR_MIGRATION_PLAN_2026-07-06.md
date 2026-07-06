@@ -72,10 +72,28 @@ The execution seam + a real IBKR write connection. All inert / shadow (places no
   the owner step at R1.0c.**
   **`call()` contract (carried into R1.0c):** the thunk MUST be non-blocking and MUST NOT re-enter the
   manager; every dispatch carries a bounded timeout (cancel-on-timeout is built in).
-- **R1.0c — `WritableIBKRAdapter`** (implements the write Protocol, runs ON the R1.0b manager):
-  `place`/`cancel`, fills via `execDetails` + commissions via `commissionReport`, disconnect-gap fill
-  recovery, `whatIfOrder` margin preview, multiplier ONLY from `instrument_master`. Guarded OFF by
-  config; places nothing yet. **Owner step: turn the Gateway Read-Only API OFF before any order path.**
+- **R1.0c-1 — `WritableIBKRAdapter` (write surface, SHADOW)**: ✅ **DONE** —
+  `app/live_trading/writable_ibkr_adapter.py`. Implements the write Protocol on the R1.0b manager:
+  OrderIntent → IBKR `Stock`/`Future` contract + `MarketOrder`, **multiplier ONLY from
+  `instrument_master`** (the #1-killer guard; unmapped → fail-closed), `client_ref` → `orderRef`
+  verbatim. `place()`/`cancel()` are SHADOW by default (`mode="shadow"`): build + validate + LOG the
+  would-be order, **place NOTHING** (`mode="live"` is R1.1+, and Read-Only rejects it anyway). Reads
+  delegate to `IBKRReadOnlyAdapter` bound to the manager's `ib`. Validated LIVE (SPY STK mult 1.0;
+  FUT.ES → symbol ES / exch CME / **mult 50** from the spec; unmapped fail-closed; shadow placed
+  nothing). **Finding: `whatIfOrder` margin preview is BLOCKED by the Read-Only API** (Error 321 →
+  empty OrderState → `preview.ok=False`), so real margin preview needs Read-Only-OFF. (This is also
+  what pops the gateway's "an API client is attempting to place an order" dialog — a what-if counts
+  as an order attempt; **Read-Only correctly blocks it, nothing is placed**; keep Read-Only ON.)
+  Independent Opus deep-dive: **SAFE-TO-MERGE** (no reachable live-order path). Two findings folded in:
+  (1) the FUT multiplier now **fails CLOSED** on a 0/None/fractional multiplier — raises instead of
+  emitting an empty string that would let IBKR substitute a default (was the one fail-*open* hole in the
+  #1-killer guard); (2) the shadow snapshot now records `contract_multiplier` (what's actually bound to
+  the IBKR `Contract`), and the multiplier test asserts on the built contract, not just the master echo.
+  11 tests.
+- **R1.0c-2 — live path (owner-gated, Read-Only-OFF)**: async fill capture (`execDetails` +
+  `commissionReport` → `FillEvent`), disconnect-gap fill recovery, futures front-month qualification
+  (`reqContractDetails`), working `whatIfOrder` margin, and the actual `mode="live"` place smoke-test.
+  **Owner step: turn the Gateway Read-Only API OFF** (the one hands-on gate before any IBKR order).
 
 ### R1.1 — ETF/cash on IBKR (SHADOW)
 Route the trend + cash order CONSTRUCTION through `WritableIBKRAdapter` in **shadow**, alongside the

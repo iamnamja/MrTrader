@@ -59,6 +59,18 @@ class FillEvent:
     ts: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class MarginImpact:
+    """A pre-trade margin/what-if preview (IBKR `whatIfOrder`). Venue-neutral shape; only IBKR
+    populates it meaningfully (Alpaca equities have no margin preview). Not on the Protocol —
+    `preview()` is an IBKR-specific method, not required of every writable adapter."""
+    init_margin: Optional[float]
+    maint_margin: Optional[float]
+    buying_power_after: Optional[float]
+    ok: bool
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class WritableBrokerAdapter(BrokerAdapter, Protocol):
     """Read side (BrokerAdapter) + the order surface. `place()` returns an ACK; fills are async."""
