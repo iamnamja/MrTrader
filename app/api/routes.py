@@ -398,6 +398,23 @@ async def get_trade_history(limit: int = 100, status: str = ""):
         db.close()
 
 
+@router.get("/executions")
+@ttl_cache(seconds=10)
+async def get_executions(limit: int = 100, status: str = "all"):
+    """Execution-level order blotter from Alpaca — the source of truth for what ACTUALLY traded,
+    including weekly rebalance resizings that never create a DB Trade row (so they don't appear in
+    /trades, which is a position-lifecycle view). Newest-first. Degrades to empty if Alpaca is down."""
+    try:
+        orders = await asyncio.wait_for(
+            asyncio.to_thread(_alpaca().get_orders, min(max(int(limit), 1), 500), status),
+            timeout=6.0,
+        )
+        return {"count": len(orders), "executions": orders}
+    except Exception as exc:
+        logger.warning("Executions fetch failed (returning empty): %s", exc)
+        return {"count": 0, "executions": [], "error": "alpaca_unavailable"}
+
+
 # ─── Agent decisions ──────────────────────────────────────────────────────────
 
 @router.get("/agent-last-activity")
