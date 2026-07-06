@@ -50,13 +50,18 @@ class OrderResult:
 @dataclass(frozen=True)
 class FillEvent:
     """Async fill capture — the SEPARATE channel (execDetails/commissionReport on IBKR; order poll on
-    Alpaca). Defined here as the contract; the async wiring lands with the venue adapters (R1.0c+)."""
+    Alpaca). One event per broker execution (a market order can fill in several). `exec_id` is the
+    broker's execution id — the IDEMPOTENCY key the consumer dedupes on (reqExecutions replays the
+    whole session's fills on every poll / after a disconnect, so the same fill will re-appear)."""
     client_ref: Optional[str]
     instrument_id: str
     filled_qty: float
     avg_price: Optional[float]
     commission: Optional[float] = None
     ts: Optional[str] = None
+    exec_id: Optional[str] = None       # broker execution id — dedup / disconnect-gap idempotency key
+    side: Optional[str] = None          # BUY | SELL (normalized from IBKR BOT/SLD)
+    venue: str = "IBKR"
 
 
 @dataclass(frozen=True)

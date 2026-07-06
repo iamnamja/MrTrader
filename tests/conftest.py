@@ -117,9 +117,15 @@ def _ensure_current_event_loop():
     """
     import asyncio
     try:
-        asyncio.get_event_loop()
+        asyncio.get_running_loop()          # an async test's loop is running → nothing to do
     except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+        # No running loop. Probe the current loop the SAME way eventkit does at import
+        # (policy.get_event_loop, which RAISES cleanly with no DeprecationWarning — unlike the
+        # module-level asyncio.get_event_loop wrapper); create one only if truly absent.
+        try:
+            asyncio.get_event_loop_policy().get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
     yield
 
 
