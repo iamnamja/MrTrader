@@ -799,6 +799,18 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "whole_book_gate"
             return summary
 
+        # ── R1.1: SHADOW-route the same orders onto IBKR (gated OFF by default; places nothing on
+        # IBKR; never breaks the rebalance) — surfaces whole-share/mapping deltas before the cutover ──
+        try:
+            from app.live_trading import ibkr_shadow_router as _isr
+            from app.live_trading.order_ids import idempotency_key as _ik
+            summary["ibkr_shadow_route"] = _isr.route_shadow(
+                [{"symbol": it["symbol"], "side": it["side"], "qty": it["qty"],
+                  "price": live.get(it["symbol"], 0.0)} for it in approved],
+                sleeve="trend", client_ref=lambda it: _ik("trend", it["symbol"]), db=db)
+        except Exception:
+            log.debug("trend: ibkr shadow-route wiring failed (swallowed)", exc_info=True)
+
         # ── Execute or shadow ──
         if shadow:
             for it in approved:

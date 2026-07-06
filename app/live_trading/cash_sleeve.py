@@ -316,6 +316,17 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             log.info("cash: within buffer band (deployable=$%.0f) — no action", deployable)
             return summary
 
+        # ── R1.1: SHADOW-route onto IBKR (gated OFF by default; places nothing; never breaks cash) ──
+        try:
+            from app.live_trading import ibkr_shadow_router as _isr
+            from app.live_trading.order_ids import idempotency_key as _ik
+            summary["ibkr_shadow_route"] = _isr.route_shadow(
+                [{"symbol": it["symbol"], "side": it["side"], "qty": it["qty"],
+                  "price": live.get(it["symbol"], 0.0)} for it in intents],
+                sleeve="cash", client_ref=lambda it: _ik("cash", it["symbol"], side=it["side"]), db=db)
+        except Exception:
+            log.debug("cash: ibkr shadow-route wiring failed (swallowed)", exc_info=True)
+
         # ── Execute or shadow ──
         if shadow:
             for it in intents:
