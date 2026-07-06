@@ -7,9 +7,42 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_is_postgres = settings.database_url.startswith("postgresql") or settings.database_url.startswith("postgres")
+
+def _resolve_database_url(url: str, *, test_mode: bool) -> str:
+    """Fail-closed DB isolation: a TEST-MODE process must NEVER connect to the production Postgres.
+
+    `is_test_mode()` (MRTRADER_TEST_MODE / pytest) reroutes the log file + the auxiliary SQLite
+    stores, but the MAIN Postgres engine below was built straight from `settings.database_url` with
+    NO guard — and conftest isolates that engine only via an IN-PROCESS `get_session` patch, which is
+    NOT inherited across a process boundary. So a test-mode SUBPROCESS app-boot (which DOES inherit
+    the MRTRADER_TEST_MODE env) connected to the live DB and wrote real rows (the "phantom AAPL
+    force-close in prod" incident, 2026-07-05). This guard closes it structurally: under test mode a
+    Postgres URL is ALWAYS wrong, so redirect to a SQLite test DB (`MRTRADER_TEST_DATABASE_URL` or a
+    temp file). Production (not test mode) is completely unaffected — the URL is returned unchanged.
+    """
+    is_pg = url.startswith("postgresql") or url.startswith("postgres")
+    if test_mode and is_pg:
+        import os
+        import tempfile
+        safe = os.environ.get("MRTRADER_TEST_DATABASE_URL")
+        if not safe:
+            _p = os.path.join(tempfile.gettempdir(), "mrtrader_test_sqlite", "session_guard.db")
+            os.makedirs(os.path.dirname(_p), exist_ok=True)
+            safe = f"sqlite:///{_p}"
+        logger.warning(
+            "TEST MODE: refusing production Postgres URL (host=%s) — redirecting the DB engine to "
+            "%s. A test-mode process must never write to the live database.",
+            url.rsplit("@", 1)[-1], safe)
+        return safe
+    return url
+
+
+from app.utils.runtime import is_test_mode  # noqa: E402 — leaf util (os/sys only), no circular import
+
+_database_url = _resolve_database_url(settings.database_url, test_mode=is_test_mode())
+_is_postgres = _database_url.startswith("postgresql") or _database_url.startswith("postgres")
 engine = create_engine(
-    settings.database_url,
+    _database_url,
     poolclass=QueuePool,
     pool_size=5,
     max_overflow=10,

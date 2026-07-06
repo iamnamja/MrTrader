@@ -49,6 +49,12 @@ def _set_test_db_env(worker: str = "gw_main", *, force: bool = False) -> None:
     setter("MRTRADER_ALLOCATOR_TRACKING_DB", str(db_dir / "allocator_tracking.db"))
     setter("MRTRADER_NOTIFICATIONS_DB", str(db_dir / "notifications.db"))
     setter("MRTRADER_RESEARCH_REGISTRY_DB", str(db_dir / "research_registry.db"))
+    # Main-DB fail-closed backstop: session._resolve_database_url redirects a test-mode Postgres URL
+    # here. Its value matters for a spawned app SUBPROCESS (which inherits this env but not conftest's
+    # in-process patches) — per-worker so subprocesses of different xdist workers don't collide. The
+    # in-process module `engine` is built once at conftest import and is never written to (every test
+    # patches SessionLocal), so its exact guard path is immaterial in-process.
+    setter("MRTRADER_TEST_DATABASE_URL", f"sqlite:///{db_dir / 'session_guard.db'}")
 
 
 _set_test_db_env()  # import-time safety default (shared 'gw_main'); overridden below
