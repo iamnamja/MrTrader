@@ -167,6 +167,14 @@ def _mock_alpaca():
         "symbol": "AAPL", "quantity": 10, "avg_price": 150.0,
     }
     alpaca.place_market_order.return_value = {"id": "order-1"}
+    alpaca.get_orders.return_value = [
+        {"order_id": "o1", "symbol": "IWM", "side": "buy", "qty": 1, "filled_qty": 1,
+         "filled_avg_price": 299.62, "status": "filled", "order_type": "market",
+         "submitted_at": "2026-07-06T13:45:03", "filled_at": "2026-07-06T13:45:03"},
+        {"order_id": "o2", "symbol": "EFA", "side": "sell", "qty": 1, "filled_qty": 1,
+         "filled_avg_price": 104.95, "status": "filled", "order_type": "market",
+         "submitted_at": "2026-07-06T13:45:02", "filled_at": "2026-07-06T13:45:02"},
+    ]
     return alpaca
 
 
@@ -207,6 +215,17 @@ class TestDashboardRoutes:
         data = r.json()
         assert len(data) == 1
         assert data[0]["symbol"] == "AAPL"
+
+    def test_executions_endpoint(self):
+        # The Executions blotter reads Alpaca orders (incl. rebalance resizings that never
+        # create a DB Trade row), so it surfaces what /trades cannot.
+        with patch("app.api.routes._alpaca", return_value=self.alpaca):
+            r = self.client.get("/api/dashboard/executions")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 2
+        assert data["executions"][0]["symbol"] == "IWM" and data["executions"][0]["side"] == "buy"
+        assert data["executions"][1]["side"] == "sell"
 
     def test_trades_endpoint_empty(self):
         with patch("app.api.routes.get_session") as mock_sess:

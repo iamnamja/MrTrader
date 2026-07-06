@@ -1296,7 +1296,7 @@ function TradesPanel() {
       </div>
       <div style={s.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-          <div style={s.cardTitle}>Trade History</div>
+          <div style={s.cardTitle}>Positions History <span style={{ fontSize: 10, color: C.muted, fontWeight: 400 }}>— position &amp; swing-trade lifecycles (not individual orders; see Executions)</span></div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {(['today', '7d', '30d', 'all'] as TradesDateFilter[]).map(d => (
               <button key={d} onClick={() => setDateFilter(d)} style={{
@@ -1363,6 +1363,84 @@ function TradesPanel() {
                   </tr>
                   )
                 })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Executions Panel (broker order blotter) ──────────────────────────────────
+// Actual Alpaca orders — the source of truth for what traded, INCLUDING weekly rebalance
+// resizings that never create a DB Trade row (so they don't show in the Positions History tab).
+type Execution = {
+  order_id: string; symbol: string; side: string; qty: number; filled_qty: number
+  filled_avg_price: number | null; status: string; order_type: string | null
+  submitted_at: string | null; filled_at: string | null
+}
+function ExecutionsPanel() {
+  const [rows, setRows] = useState<Execution[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const j = await api.executions(200) as { executions?: Execution[]; error?: string }
+      setRows(Array.isArray(j?.executions) ? j.executions : [])
+      setErr(!!j?.error)
+    } catch { setErr(true) } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const filled = rows.filter(r => r.status === 'filled').length
+  const buys = rows.filter(r => r.side === 'buy').length
+  const sells = rows.filter(r => r.side === 'sell').length
+  const stColor = (st: string) => st === 'filled' ? C.green
+    : (st === 'canceled' || st === 'rejected' || st === 'expired') ? C.red : C.muted
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard label="Executions" value={String(rows.length)} sub="recent broker orders" />
+        <KpiCard label="Filled" value={String(filled)} />
+        <KpiCard label="Buys" value={String(buys)} color={C.green} />
+        <KpiCard label="Sells" value={String(sells)} color={C.red} />
+      </div>
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <div style={s.cardTitle}>Executions — actual broker orders (incl. rebalance resizings)</div>
+          <button onClick={() => load()} style={btnStyle}>Refresh</button>
+        </div>
+        {err && <div style={{ color: C.yellow, fontSize: 11, marginBottom: 8 }}>Alpaca unavailable — try Refresh.</div>}
+        <div style={{ overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>
+              {['Time', 'Symbol', 'Side', 'Qty', 'Filled', 'Avg Price', 'Type', 'Status'].map(h => (
+                <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 1 }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {loading
+                ? <tr><td colSpan={8} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>Loading…</td></tr>
+                : rows.length === 0
+                  ? <tr><td colSpan={8} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
+                  : rows.map((r, i) => (
+                    <tr key={r.order_id || i}>
+                      <td style={{ ...s.td, color: C.muted }}>{fmtTs(r.filled_at ?? r.submitted_at)}</td>
+                      <td style={{ ...s.td, color: C.accent, fontWeight: 600 }}>{r.symbol}</td>
+                      <td style={{ ...s.td, color: r.side === 'buy' ? C.green : C.red, fontWeight: 600 }}>{r.side.toUpperCase()}</td>
+                      <td style={s.td}>{r.qty}</td>
+                      <td style={s.td}>{r.filled_qty}</td>
+                      <td style={s.td}>{fmt$(r.filled_avg_price)}</td>
+                      <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{r.order_type ?? '—'}</td>
+                      <td style={{ ...s.td }}><span style={{
+                        padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600,
+                        background: `${stColor(r.status)}1a`, color: stColor(r.status), border: `1px solid ${stColor(r.status)}4d`,
+                      }}>{r.status}</span></td>
+                    </tr>
+                  ))}
             </tbody>
           </table>
         </div>
@@ -4358,7 +4436,7 @@ function PeadPanel() {
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Positions', 'Trades', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents', 'PEAD', 'Macro Intel'] as const
+const TABS = ['Overview', 'Positions', 'Positions History', 'Executions', 'Signal Monitor', 'Capital Ramp', 'Kill Switch', 'Orchestrator', 'Readiness', 'Analytics', 'Watchlist', 'Performance', 'Config', 'Monitor', 'Agents', 'PEAD', 'Macro Intel'] as const
 type Tab = typeof TABS[number]
 
 export default function App() {
@@ -4500,7 +4578,8 @@ export default function App() {
           <OverviewPanel summary={summary} health={health} decisions={decisions} macroCtx={macroCtx} />
         )}
         {tab === 'Positions' && <PositionsPanel onRefresh={loadSummary} />}
-        {tab === 'Trades' && <TradesPanel />}
+        {tab === 'Positions History' && <TradesPanel />}
+        {tab === 'Executions' && <ExecutionsPanel />}
         {tab === 'Signal Monitor' && <SignalsPanel feed={signalFeed} decisions={decisions} />}
         {tab === 'Capital Ramp' && <RampPanel toast={toast} />}
         {tab === 'Kill Switch' && <KillPanel toast={toast} />}
