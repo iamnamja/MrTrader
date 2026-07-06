@@ -68,6 +68,17 @@ def test_shadow_router_never_dispatches_to_gateway():
     assert len(rows) == 10 and all(r["status"] == "shadow" for r in rows)
 
 
+def test_shadow_routing_flag_registered_and_settable(db_session):
+    # The R1.1 flag must be a first-class, schema-registered config: default OFF, settable to ON,
+    # and is_enabled must read it end-to-end (no schema entry => set_agent_config would reject it).
+    from app.database.agent_config import set_agent_config, get_agent_config
+    assert get_agent_config(db_session, "ibkr.shadow_routing") == "false"   # schema default OFF
+    assert isr.is_enabled(db_session) is False
+    set_agent_config(db_session, "ibkr.shadow_routing", "true")
+    assert get_agent_config(db_session, "ibkr.shadow_routing") == "true"
+    assert isr.is_enabled(db_session) is True
+
+
 def test_is_enabled_reads_flag_truthy_values(monkeypatch):
     import app.database.agent_config as ac
     vals = {"ibkr.shadow_routing": "on"}
