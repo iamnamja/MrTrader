@@ -18,12 +18,16 @@ gross cap, per-name caps, PEAD crowding, partial/failed fills, timing. That is e
 Layers:
   1. record_daily_snapshot() — EOD (trading days only): full-universe Alpaca closes + the
      trend-tagged held qty + NAV.
-  2. record_rebalance_intent() — on the rebalance day: the intended weights + blocked count +
-     governor multiplier (diagnostics). Carried forward until the next rebalance.
+  2. record_rebalance_intent() — on the rebalance day: the intended (governed) weights + blocked
+     count + the COMPOSITE overlay mult AND (CH0b) each INDIVIDUAL governor multiplier (crash /
+     credit / ladder) + the UNGOVERNED counterfactual book (all multipliers = 1.0). Carried
+     forward until the next rebalance.
   3. compute_report() / weekly_report() — per consecutive trading-day pair, build
      intended_return = Σ intended_w · r_sym and actual_return = Σ actual_w · r_sym (same
      prices), then report correlation / annualized tracking error / drift / drag and a
-     PASS / WATCH / FAIL / BUILDING verdict.
+     PASS / WATCH / FAIL / BUILDING verdict. (CH0b) ALSO the static-vs-governed counterfactual
+     (governed vs ungoverned cum → governor_pnl) + a regime-conditional breakdown (BULL/NEUTRAL/
+     BEAR, same taxonomy as the CH0a baseline) attributing WHERE governing helped or hurt.
 
 Report-only. Touches no order path. Mirrors trend_tracker.py (append-only sqlite, never
 raises, env-overridable DB for pytest-xdist isolation).
@@ -63,10 +67,27 @@ CREATE TABLE IF NOT EXISTS trend_backval_daily (
     intended_weights  TEXT,    -- JSON {symbol: fraction_of_nav} (rebalance days; carried fwd)
     n_positions       INTEGER,
     n_blocked         INTEGER, -- RM/quality blocks at the rebalance (missed-trade proxy)
-    overlay_mult      REAL,    -- governor multiplier applied at rebalance (diagnostic)
+    overlay_mult      REAL,    -- COMPOSITE governor multiplier applied at rebalance (diagnostic)
     created_at        REAL
 );
 """
+
+# CH0b — columns added after the table shipped. Persisted per rebalance so the scorecard can
+# (a) attribute EACH governor's decision and (b) replay the ungoverned counterfactual. Migrated
+# idempotently onto an existing DB (SQLite has no ADD-COLUMN-IF-NOT-EXISTS).
+_ADDED_COLUMNS = {
+    "crash_mult": "REAL",           # VIX-term crash governor multiplier (individual)
+    "credit_mult": "REAL",          # credit/curve governor multiplier (individual)
+    "ladder_mult": "REAL",          # drawdown-ladder multiplier (individual, un-floored)
+    "ungoverned_weights": "TEXT",   # JSON {symbol: fraction_of_nav} with ALL multipliers = 1.0
+}
+
+
+def _ensure_columns(c: sqlite3.Connection) -> None:
+    have = {r[1] for r in c.execute("PRAGMA table_info(trend_backval_daily)").fetchall()}
+    for col, typ in _ADDED_COLUMNS.items():
+        if col not in have:
+            c.execute(f"ALTER TABLE trend_backval_daily ADD COLUMN {col} {typ}")
 
 
 def _conn() -> sqlite3.Connection:
@@ -74,6 +95,7 @@ def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(str(DB_PATH), timeout=10)
     c.execute("PRAGMA journal_mode=WAL;")
     c.executescript(_SCHEMA)
+    _ensure_columns(c)
     return c
 
 
@@ -164,17 +186,33 @@ def record_rebalance_intent(summary: dict, *, asof: _date | str | None = None) -
         td = today.isoformat() if isinstance(today, _date) else str(today)
         n_blocked = len(summary.get("blocked", []) or [])
         overlay = summary.get("overlay_mult")
+
+        def _f(key):  # summary multiplier -> float or None (never raises)
+            v = summary.get(key)
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        crash_m, credit_m = _f("crash_governor_mult"), _f("credit_governor_mult")
+        ladder_m = _f("drawdown_ladder_mult")
+        ungov = summary.get("ungoverned_weights") or {}
         with _conn() as c:
             c.execute(
                 "INSERT INTO trend_backval_daily(trade_date, intended_weights, n_blocked, "
-                "overlay_mult, created_at) VALUES (?,?,?,?,?) "
+                "overlay_mult, crash_mult, credit_mult, ladder_mult, ungoverned_weights, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
                 "intended_weights=excluded.intended_weights, n_blocked=excluded.n_blocked, "
-                "overlay_mult=excluded.overlay_mult",
+                "overlay_mult=excluded.overlay_mult, crash_mult=excluded.crash_mult, "
+                "credit_mult=excluded.credit_mult, ladder_mult=excluded.ladder_mult, "
+                "ungoverned_weights=excluded.ungoverned_weights",
                 (td, json.dumps(iw), n_blocked,
-                 (float(overlay) if overlay is not None else None), time.time()),
+                 (float(overlay) if overlay is not None else None),
+                 crash_m, credit_m, ladder_m, json.dumps(ungov), time.time()),
             )
-        log.info("back_validation intent %s: %d names, blocked=%d", td, len(iw), n_blocked)
+        log.info("back_validation intent %s: %d names, blocked=%d (crash=%s credit=%s ladder=%s)",
+                 td, len(iw), n_blocked, crash_m, credit_m, ladder_m)
         return True
     except Exception:
         log.exception("back_validation.record_rebalance_intent failed (swallowed)")
@@ -210,23 +248,29 @@ def _json(s: Optional[str]) -> dict:
         return {}
 
 
-def daily_pairs(snapshots: list[dict]) -> tuple[list[tuple[float, float]], dict]:
-    """Build (actual_return, intended_return) NAV-fraction pairs over consecutive trading
-    days, replaying the carried-forward intended weights on the SAME Alpaca prices as the
-    actual held book. Pure. Returns (pairs, diag) where diag counts dropped days.
+def daily_rows(snapshots: list[dict]) -> tuple[list[dict], dict]:
+    """Per consecutive-trading-day pair, the NAV-fraction return of THREE books on the SAME
+    Alpaca prices: the ACTUAL held book, the carried INTENDED (governed) book, and the carried
+    UNGOVERNED counterfactual book (all governor/ladder multipliers = 1.0). Pure. Returns
+    (rows, diag) where each row = {date, actual, intended, ungoverned}.
 
-      actual_return_t   = Σ_sym  (qty_{t-1}·price_{sym,t-1}/nav_{t-1}) · (price_{sym,t}/price_{sym,t-1} - 1)
-      intended_return_t = Σ_sym  intended_w_sym(≤t-1)                   · (price_{sym,t}/price_{sym,t-1} - 1)
+      actual_t     = Σ_sym (qty_{t-1}·px_{t-1}/nav_{t-1}) · (px_t/px_{t-1} - 1)
+      intended_t   = Σ_sym intended_w_sym(≤t-1)           · (px_t/px_{t-1} - 1)   [governed]
+      ungoverned_t = Σ_sym ungoverned_w_sym(≤t-1)         · (px_t/px_{t-1} - 1)   [counterfactual]
 
-    Only symbols priced on BOTH days contribute (no look-ahead; entries/exits handled by the
-    full-universe price panel). Days before the first rebalance (no intended book) are dropped.
+    Only symbols priced on BOTH days contribute (no look-ahead). Days before the first rebalance
+    (no intended book) are dropped. For rows recorded BEFORE CH0b (no ungoverned_weights column),
+    ungoverned falls back to the governed book → governor_pnl = 0 for those days (honest: the
+    counterfactual wasn't captured pre-CH0b, so we attribute no governor effect).
     """
-    pairs: list[tuple[float, float]] = []
+    rows: list[dict] = []
     diag = {"no_intent_days": 0, "bad_days": 0}
     prev = None
     carried_intent: Optional[dict] = None
+    carried_ungov: Optional[dict] = None
     for row in snapshots:
         iw = _json(row.get("intended_weights"))
+        uw = _json(row.get("ungoverned_weights"))
         # carry-forward intent updates AFTER using prev as the t-1 anchor
         if prev is not None:
             try:
@@ -237,26 +281,99 @@ def daily_pairs(snapshots: list[dict]) -> tuple[list[tuple[float, float]], dict]
                 if carried_intent is None:
                     diag["no_intent_days"] += 1
                 elif nav0 > 0:
-                    a_ret = 0.0
-                    i_ret = 0.0
+                    ungov_book = carried_ungov if carried_ungov is not None else carried_intent
+                    a_ret = i_ret = u_ret = 0.0
                     for sym, px1 in p1.items():
                         px0 = p0.get(sym)
                         if not px0 or not px1:
                             continue
                         r = float(px1) / float(px0) - 1.0
-                        qty = float(pos0.get(sym, 0.0))
-                        a_ret += (qty * float(px0) / nav0) * r
+                        a_ret += (float(pos0.get(sym, 0.0)) * float(px0) / nav0) * r
                         i_ret += float(carried_intent.get(sym, 0.0)) * r
-                    pairs.append((a_ret, i_ret))
+                        u_ret += float(ungov_book.get(sym, 0.0)) * r
+                    rows.append({"date": row.get("trade_date"), "actual": a_ret,
+                                 "intended": i_ret, "ungoverned": u_ret})
                 else:
                     diag["bad_days"] += 1
             except Exception:
                 diag["bad_days"] += 1
-                log.exception("daily_pairs: bad row %s", row.get("trade_date"))
+                log.exception("daily_rows: bad row %s", row.get("trade_date"))
+        # Carry both books forward TOGETHER. A fresh intent that lacks its ungoverned book falls
+        # back to the intent itself (governor_pnl 0) rather than comparing the NEW intent against
+        # a STALE prior ungoverned book — belt-and-suspenders given "lost governor data is
+        # permanent" (in the live path both are always written together, so this never fires).
         if iw:
             carried_intent = iw
+            carried_ungov = uw if uw else iw
+        elif uw:
+            carried_ungov = uw
         prev = row
-    return pairs, diag
+    return rows, diag
+
+
+def daily_pairs(snapshots: list[dict]) -> tuple[list[tuple[float, float]], dict]:
+    """(actual_return, intended_return) NAV-fraction pairs — the execution-friction axis. Thin
+    wrapper over daily_rows (kept for the tracking metrics + existing callers)."""
+    rows, diag = daily_rows(snapshots)
+    return [(r["actual"], r["intended"]) for r in rows], diag
+
+
+def governor_counterfactual(rows: list[dict]) -> dict[str, Any]:
+    """Governed (intended) vs UNGOVERNED cumulative NAV-fraction return over the window — the
+    realized P&L effect of the governors' sizing, isolated from execution friction. Positive
+    governor_pnl = de-risking HELPED (governed beat ungoverned); negative = it cost us. Pure."""
+    import numpy as np
+    if not rows:
+        return {"n_days": 0, "governed_cum": None, "ungoverned_cum": None, "governor_pnl": None}
+    g = np.array([r["intended"] for r in rows], dtype=float)
+    u = np.array([r["ungoverned"] for r in rows], dtype=float)
+    gc = float(np.prod(1.0 + g) - 1.0)
+    uc = float(np.prod(1.0 + u) - 1.0)
+    return {"n_days": len(rows), "governed_cum": gc, "ungoverned_cum": uc,
+            "governor_pnl": gc - uc}
+
+
+def _regime_labels(dates: list) -> dict[str, str]:
+    """PIT regime label per trade_date via the backtest regime map (SAME BULL/NEUTRAL/BEAR
+    taxonomy the CH0a baseline is profiled on, so the live slice lines up with the gate). Never
+    raises → {} on failure (regime breakdown omitted). Fetches VIX; called only off-BUILDING."""
+    try:
+        import pandas as pd
+        from scripts.walkforward.regime import load_regime_map
+        ds = sorted(pd.Timestamp(d) for d in dates if d)
+        if not ds:
+            return {}
+        rmap = load_regime_map(ds[0].date(), ds[-1].date())
+        labels = pd.Series({pd.Timestamp(d): v for d, v in rmap.items()}).sort_index()
+        aligned = labels.reindex(ds, method="ffill")
+        return {d.date().isoformat(): (str(v) if pd.notna(v) else "UNLABELED")
+                for d, v in aligned.items()}
+    except Exception:
+        log.exception("back_validation._regime_labels failed (swallowed)")
+        return {}
+
+
+def regime_slices(rows: list[dict]) -> dict[str, dict]:
+    """Per-regime actual/intended/ungoverned cum return + governor P&L — attributes WHERE
+    governing helped or hurt (the CH2-relevant question). Empty if the regime map is
+    unavailable. Pure except the one VIX fetch inside _regime_labels."""
+    import numpy as np
+    labels = _regime_labels([r["date"] for r in rows])
+    if not labels:
+        return {}
+    buckets: dict[str, list] = {}
+    for r in rows:
+        buckets.setdefault(labels.get(str(r["date"]), "UNLABELED"), []).append(r)
+    out: dict[str, dict] = {}
+    for lab, rs in buckets.items():
+        i = np.array([x["intended"] for x in rs], dtype=float)
+        u = np.array([x["ungoverned"] for x in rs], dtype=float)
+        ic = float(np.prod(1.0 + i) - 1.0)
+        uc = float(np.prod(1.0 + u) - 1.0)
+        out[lab] = {"n_days": len(rs),
+                    "actual_cum": float(np.prod(1.0 + np.array([x["actual"] for x in rs])) - 1.0),
+                    "intended_cum": ic, "ungoverned_cum": uc, "governor_pnl": ic - uc}
+    return out
 
 
 def _tracking_metrics(pairs: list[tuple[float, float]]) -> dict[str, Any]:
@@ -323,6 +440,14 @@ class BackValReport:
     window_start: Optional[str]
     window_end: Optional[str]
     note: Optional[str] = None
+    # CH0b — per-governor activity + the static-vs-governed counterfactual + regime attribution.
+    crash_governor_days: int = 0
+    credit_governor_days: int = 0
+    ladder_days: int = 0
+    governed_cum_return: Optional[float] = None
+    ungoverned_cum_return: Optional[float] = None
+    governor_pnl: Optional[float] = None      # governed_cum - ungoverned_cum (>0 = de-risk helped)
+    regime_breakdown: Optional[dict] = None   # {regime: {n_days, *_cum, governor_pnl}}
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -338,13 +463,23 @@ def compute_report(start: _date | str | None = None,
         if end is not None:
             ed = end.isoformat() if isinstance(end, _date) else str(end)
             snaps = [s for s in snaps if s["trade_date"] <= ed]
+
+        def _active(col):  # count rebalance days where an individual governor cut exposure
+            return sum(1 for s in snaps if s.get(col) is not None and float(s[col]) < 1.0)
+
         gov_days = sum(1 for s in snaps if (s.get("overlay_mult") or 1.0) < 1.0)
+        crash_days, credit_days, ladder_days = _active("crash_mult"), _active("credit_mult"), \
+            _active("ladder_mult")
         blocked = sum(int(s.get("n_blocked") or 0) for s in snaps)
         ws = snaps[0]["trade_date"] if snaps else None
         we = snaps[-1]["trade_date"] if snaps else None
 
-        pairs, diag = daily_pairs(snaps)
+        rows, diag = daily_rows(snaps)
+        pairs = [(r["actual"], r["intended"]) for r in rows]
         m = _tracking_metrics(pairs)
+        cf = governor_counterfactual(rows)
+        # Regime attribution fetches VIX — skip on tiny/BUILDING windows (keeps it cheap + hermetic).
+        regimes = regime_slices(rows) if m["n_days"] >= MIN_DAYS_FOR_VERDICT else {}
         notes = []
         if diag["no_intent_days"]:
             notes.append(f"{diag['no_intent_days']} day(s) had no intended book yet")
@@ -362,7 +497,12 @@ def compute_report(start: _date | str | None = None,
             actual_sharpe_navcontrib=m["actual_sharpe"],
             intended_sharpe_navcontrib=m["intended_sharpe"],
             governor_days=gov_days, total_blocked=blocked,
-            window_start=ws, window_end=we, note=note)
+            window_start=ws, window_end=we, note=note,
+            crash_governor_days=crash_days, credit_governor_days=credit_days,
+            ladder_days=ladder_days,
+            governed_cum_return=cf["governed_cum"], ungoverned_cum_return=cf["ungoverned_cum"],
+            governor_pnl=cf["governor_pnl"],
+            regime_breakdown=(regimes or None))
     except Exception:
         log.exception("back_validation.compute_report failed (swallowed)")
         return BackValReport("ERROR", 0, None, None, None, None, None, None, None, None,
