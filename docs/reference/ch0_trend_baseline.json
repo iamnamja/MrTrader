@@ -1,0 +1,80 @@
+{
+  "artifact": "CH0a \u2014 constant-gross ETF-trend baseline (the CH2 out-of-sample bar)",
+  "created_utc": "2026-07-07T20:21:29+00:00",
+  "git_commit": "886602a",
+  "baseline_end": "2026-07-07",
+  "universe": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "EFA",
+    "EEM",
+    "TLT",
+    "IEF",
+    "GLD",
+    "DBC",
+    "UUP"
+  ],
+  "policy": "tsmom_backtest(TSMOMConfig()): inverse-vol, per-name+gross caps, weekly rebal, NO governor overlays, book_vol_target=None (= all antifragile multipliers 1.0)",
+  "data_fingerprint": {
+    "sha256": "5383e1c2a2b826e5",
+    "n_rows": 4892,
+    "last_close_per_symbol": {
+      "DBC": 28.549999,
+      "EEM": 67.879997,
+      "EFA": 105.019997,
+      "GLD": 386.540009,
+      "IEF": 94.18,
+      "IWM": 292.950012,
+      "QQQ": 721.340027,
+      "SPY": 741.75,
+      "TLT": 85.769997,
+      "UUP": 27.950001
+    }
+  },
+  "window": [
+    "2007-01-04",
+    "2026-06-12"
+  ],
+  "cpcv_gate": {
+    "n_obs": 3661,
+    "n_folds": 8,
+    "mean_sharpe": 0.7009,
+    "path_sharpe_tstat": 5.4872,
+    "point_sr": 0.7002,
+    "hac_p_one_sided": 0.0016,
+    "worst_regime_sharpe": -1.657,
+    "paper_passed": true,
+    "capital_passed": false,
+    "pass_fields_are_regime_waived": true
+  },
+  "standalone": {
+    "n_obs": 4891,
+    "sharpe": 0.724,
+    "ann_return": 0.0676,
+    "ann_vol": 0.0934,
+    "max_drawdown": -0.1389,
+    "calmar": 0.487
+  },
+  "regime_conditional_sharpe": {
+    "BEAR": {
+      "n_days": 1435,
+      "sharpe": -0.769,
+      "ann_return": -0.0804,
+      "frac_days": 0.293
+    },
+    "BULL": {
+      "n_days": 1271,
+      "sharpe": 4.113,
+      "ann_return": 0.2772,
+      "frac_days": 0.26
+    },
+    "NEUTRAL": {
+      "n_days": 2185,
+      "sharpe": 0.44,
+      "ann_return": 0.043,
+      "frac_days": 0.447
+    }
+  },
+  "note": "CH2 gate (BOTH required): a governed/antifragile trend book must (a) BEAT this CPCV mean_sharpe out-of-sample with new params charged to the DSR trial count, AND (b) NOT regress the BEAR regime-conditional Sharpe (the CPCV folds under-sample stress, so a mean_sharpe-only gate would reward benign-regime gains while degrading the tail that antifragile sizing exists to protect). Fail either \u2192 ship nothing."
+}

@@ -9,8 +9,11 @@ instrument it with a **live-forward scorecard**, close the last live-path risk g
 pre-registered terminating search. It is edge-**hardening + operating**, not edge-discovery.
 
 ## Governing rules (from the synthesis — non-negotiable)
-- **Every sizing change must BEAT constant-gross trend out-of-sample on CPCV, with the new parameters
-  charged to the DSR trial count.** If it doesn't beat static, ship nothing — you've only added knobs.
+- **Every sizing change must (a) BEAT constant-gross trend out-of-sample on CPCV, with the new parameters
+  charged to the DSR trial count, AND (b) NOT regress the BEAR regime-conditional Sharpe.** If it doesn't
+  beat static, ship nothing — you've only added knobs. The dual gate is because the CH0a CPCV folds
+  under-sample stress (no BEAR fold), so a mean_sharpe-only gate would reward benign-regime gains while
+  degrading the tail antifragile sizing exists to protect (CH0a Opus review, 2026-07-07).
 - **Continuous tilts, not hard regime switches** (switches are where whipsaw + overfitting live).
 - **Shadow-first, always** — every new sizing/gate multiplier logs what it *would* do (applies 1.0) behind
   a default-off flag until it clears its gate + a shadow soak; then flip, instantly reversible.
@@ -30,8 +33,14 @@ governors (parked/off), drawdown ladder (shadow/off), vol-targeting/inverse-vol 
 
 ### CH0 — Baseline + live-forward scorecard (measure before you change) ← **START**
 You cannot gate anything without (a) the benchmark it must beat and (b) the harness to observe live behavior.
-- **CH0a — constant-gross trend BASELINE:** a frozen CPCV/backtest record of the current constant-gross
-  trend book (Sharpe, tail, turnover, regime-conditional profile) = the bar every CH2 change must clear OOS.
+- **CH0a — constant-gross trend BASELINE:** ✅ DONE (2026-07-07). Frozen record in
+  `docs/reference/ch0_trend_baseline.json` (`scripts/ch0_baseline.py`, pinned `end=2026-07-07` + data
+  fingerprint for immutability; Opus-reviewed, no CRITICAL/MAJOR-correctness). **The bar CH2 must clear:**
+  CPCV mean_sharpe **0.7009** (path-t 5.49, point_SR 0.70); standalone Sharpe 0.724 / maxDD −13.9% /
+  Calmar 0.49. **Regime-conditional Sharpe (the CH2 target profile): BULL +4.11 (26% days) / NEUTRAL
+  +0.44 (45%) / BEAR −0.77 (29%)** — trend earns everything in bull/neutral and bleeds in bear, which is
+  exactly the whipsaw/tail failure mode CH2a/CH2c attack. Fold-coverage is LOW (n_folds=8, no BEAR fold)
+  → hence the dual gate above.
 - **CH0b — live-forward scorecard:** a periodic report attributing live-vs-backtest divergence — realized
   slippage, missed-rebalance impact, each governor's decisions, turnover, exposure, and the **static-vs-
   governed counterfactual** (what the book WOULD have done ungoverned). Bayesian into sizing over time.
@@ -97,5 +106,7 @@ informs CH2) → CH4 (only if CH0–3 not delayed) → CH5 (continuous, starts n
 tests + an independent Opus deep-dive, per this project's discipline.
 
 ## Status
-- **CH0** — 🔄 next (2026-07-07).
+- **CH0a** — ✅ DONE (2026-07-07): constant-gross baseline frozen + Opus-reviewed (see CH0 above).
+- **CH0b** — 🔄 next: live-forward scorecard (persist per-governor multipliers + static-vs-governed
+  counterfactual + regime label; land the persistence BEFORE the enforce soak accrues).
 - CH1–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).
