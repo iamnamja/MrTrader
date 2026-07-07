@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-07 (Alpha-v10 R1.3) — futures roll = HYBRID (calendar for financials, dynamic OI-crossover for physical commodities)
+
+**Context**: R1.3 needs a live futures roll rule. The carry/xSMOM edge was backtested on a FIXED rule (`futures_carry.ROLL_BUFFER_DAYS=5`: roll 5 days before the day-15 scheduled expiry), and the first live front-month qualifier (`writable_ibkr_adapter.qualify_future`) naively picked the nearest **non-expired** contract — no FND/liquidity awareness. Two questions: is fixed-5-days right, and how far before expiry? Recon (live paper gateway) found **IBKR exposes no First Notice Day** (only `contractMonth`/`lastTradeDateOrContractMonth`), so FND must be derived; **Norgate has per-contract volume + open_interest** (dynamic roll feasible). To decide fixed-vs-dynamic with data instead of waiting for live-shadow accrual, built `app/research/futures_roll_analysis.py` and measured, over the last 16 OI-crossover rolls per market, the gap between where the fixed rule / FND floor roll and where **open interest actually migrated**.
+
+**Empirical result** (`median(fixed_roll − liquidity_roll)`, days; +ve = fixed rolls LATE, holding past liquidity):
+- **Cash (ES/NQ/RTY): −5d; FX (6E/6J): −1.5/−2d; VX: +5d** → fixed ≈ liquidity (within a week). **Calendar is fine.**
+- **Physical commodities: CL +34, NG +35, GC +22, SI +23.5, HG +26, ZC +30.5, ZS +30, ZN/ZB/ZF +16** → the fixed rule rolls **2–5 WEEKS after** OI migrated. Even the FND floor is +11 to +26d late. Every cycle, a fixed/FND roll sits weeks in a thinning, near-delivery contract.
+
+**Decision**: adopt a **HYBRID roll** — the **fixed calendar rule for cash + FX** (financials), and a **dynamic open-interest-crossover roll for physically-delivered markets** (energy/metal/grain/rate), **bounded by the FND + last-trade safety floor** already built in `futures_roll_policy.py` (the floor is a hard delivery-risk backstop, not the primary trigger). Cash-settled markets keep the calendar rule (matches the backtest, no delivery risk).
+
+**Rationale**: the data is unambiguous — for commodities the calendar rule is systematically 2–5 weeks late (recurring execution drag + delivery-window/illiquidity risk), while for financials it's within ~5 days of liquidity so dynamic adds nothing. Independent Opus review verified the settlement taxonomy (all 16 correct) and caught that the FND estimate is LATE for energy (fixed by the last-trade cap). The OI-front is restricted to the nearest-4 contracts so a far-dated OI hump (crude's December calendar contracts) can't masquerade as the front (this cut CL's spurious 200-day artifacts to a clean ~34d).
+
+**Consequences**: the dynamic roll changes roll TIMING by weeks vs the backtest for the 11 physical markets, so **the carry/xSMOM edge MUST be re-validated on the dynamic-roll schedule before any live futures capital** (a roll-timing change silently alters realized returns — the documented R1.3 before-live gate). Still pending for live futures: wire the live vol/OI crossover into `futures_roll_policy` (currently instrumented, not binding), add an exchange holiday calendar, and re-run the carry backtest on the hybrid roll. All inert/analysis today — nothing trades. See the R1 plan R1.3 section.
+
+---
+
 ## 2026-07-06 (Phase H) — reconciliation + whole-book gate flipped shadow → ENFORCE (live)
 
 **Context**: The two live-path safety gates had run in shadow since 2026-06-22 (~2-week clean soak, zero breaks/breaches). The enforce flip was deliberately gated on a **clean first live rebalance after the unclean July-3 power outage** — to confirm the post-outage DB↔broker state reconciles clean before making the gate load-bearing. The 2026-07-06 Monday rebalance delivered exactly that: trend (09:45, 4 orders) + cash (09:50, SGOV deploy), both `status=ok`, with `[reconcile:trend/cash mode=shadow] OK` and `[whole-book-gate:trend mode=shadow] OK` — no break, no breach, no `[CRITICAL]` email.

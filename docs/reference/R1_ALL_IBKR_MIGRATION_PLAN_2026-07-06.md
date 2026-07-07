@@ -165,6 +165,12 @@ instrumentation). Recon against the live paper gateway established:
   true expiry falls BEFORE the prior-month-end estimate (Opus review caught this: without the cap the
   policy would roll crude ~10 days after it stopped trading). Independent Opus review verified the
   settlement taxonomy (all 16 correct) + grain/metal/Treasury FND; energy fix folded in.
+- **Empirical answer (2026-07-07, `app/research/futures_roll_analysis.py`):** measured `fixed_roll −
+  liquidity_roll` (OI-crossover) over the last 16 rolls/market. **Cash (ES/NQ/RTY −5d), FX (6E/6J −2d),
+  VX (+5d) → fixed ≈ liquidity (calendar is fine).** **Physical commodities → fixed rolls 2–5 WEEKS LATE**
+  (CL +34, NG +35, ZC +30, ZS +30, GC +22, SI +23, HG +26, ZN/ZB/ZF +16; even FND is +11 to +26d late).
+  **DECISION: HYBRID roll** — calendar for cash+FX, **dynamic OI-crossover for physical markets**, bounded
+  by the FND/last-trade safety floor. (See `DECISIONS.md` 2026-07-07.)
 - **R1.3 is measure-first:** `roll_report()` logs all candidate dates so we quantify the fixed-vs-FND-vs
   -liquidity gaps per product on real data BEFORE choosing fixed-vs-dynamic. **Any live roll that diverges
   from the backtested `fixed` rule must be re-validated against the signal** (a roll change silently
