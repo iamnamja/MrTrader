@@ -4,6 +4,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
+
+**Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**
+
+**Result** (Track-B t = residual-alpha HAC-t vs the live ETF-trend book — the GL-0 gate metric):
+| sleeve | full-76 Sharpe / t | IBKR-16 Sharpe / t |
+|---|---|---|
+| book | 0.67 / **2.61** | 0.50 / **−0.20** |
+| carry | 0.58 / 2.03 | 0.56 / 0.24 |
+| xsmom | 0.56 / 2.22 | 0.27 / −0.09 |
+
+On 16 markets the diversification Track-B t **collapses 2.61 → −0.20**. Standalone Sharpe partially survives (0.50), but the residual-alpha vs trend — the entire "second engine / real diversifier" rationale (GL-0/GL-1) — is **gone**.
+
+**Decision**: **DO NOT deploy futures capital on the 16-market set.** The R1.3 futures-live premise as scoped is not supported by the data. The 16 is a CHOICE, not an IBKR limit (IBKR offers most of the 76-market liquid universe), so the path forward before any futures capital is **(1) EXPAND the IBKR futures universe (16 → toward ~76 liquid markets, each verify-on-connect'd) to restore cross-sectional breadth, then RE-RUN this gate.** Falling back to futures-standalone (Sharpe 0.50, non-diversifying) is rejected — it abandons the diversification rationale for the roll/delivery/execution complexity. If breadth can't be expanded, futures-live is SHELVED and the live book stays ETF-trend + cash.
+
+**Rationale**: cross-sectional carry/xSMOM edges are breadth-driven (dispersion across many, weakly-correlated markets). The 16 IBKR markets are too few and too internally-correlated (3 equity indices + 3 rates + 2 grains + 2 FX + energy/metals), so the cross-section washes out. This is precisely the failure mode the before-live gate exists to catch — and it caught it BEFORE any capital.
+
+**Consequences**: R1.3's entire built stack (roll policy, delivery monitor, holiday calendar, hybrid roll, live signal) remains valid + inert — it's the EXECUTION plumbing, unaffected by this verdict; it just isn't fed live capital yet. The next futures work is a DATA/UNIVERSE task (expand `instrument_master`'s IBKR futures set + verify-on-connect), not more execution plumbing. ETF-trend + cash remains the sole live book; R1.1/R1.2 (ETF cutover to IBKR) is unaffected. `scripts/run_futures_16market_revalidation.py` is the reusable gate (re-run after any universe change). See ML_EXPERIMENT_LOG + the R1 plan R1.3 section.
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3) — futures roll = HYBRID (calendar for financials, dynamic OI-crossover for physical commodities)
 
 **Context**: R1.3 needs a live futures roll rule. The carry/xSMOM edge was backtested on a FIXED rule (`futures_carry.ROLL_BUFFER_DAYS=5`: roll 5 days before the day-15 scheduled expiry), and the first live front-month qualifier (`writable_ibkr_adapter.qualify_future`) naively picked the nearest **non-expired** contract — no FND/liquidity awareness. Two questions: is fixed-5-days right, and how far before expiry? Recon (live paper gateway) found **IBKR exposes no First Notice Day** (only `contractMonth`/`lastTradeDateOrContractMonth`), so FND must be derived; **Norgate has per-contract volume + open_interest** (dynamic roll feasible). To decide fixed-vs-dynamic with data instead of waiting for live-shadow accrual, built `app/research/futures_roll_analysis.py` and measured, over the last 16 OI-crossover rolls per market, the gap between where the fixed rule / FND floor roll and where **open interest actually migrated**.
