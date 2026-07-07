@@ -811,6 +811,38 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "whole_book_gate"
             return summary
 
+        # ── CH1 per-name correlation/heat/concentration gate (shadow-first) ──
+        # Closes the gap: the live trend book never ran the RiskManager's per-name checks (those
+        # covered only the dead proposal path). Book-level metrics off the target book + the
+        # ALREADY-FETCHED price panel (no new I/O). Runs AFTER the whole-book gate (deeper/narrower
+        # gate is the last word). Same idiom: mode read FIRST so an ENFORCE-mode wiring failure
+        # fails CLOSED (HOLD); shadow/off are always inert.
+        try:
+            pn_mode = str(get_agent_config(db, "pm.per_name_gate_mode") or "shadow").strip().lower()
+        except Exception:
+            pn_mode = "shadow"
+        blocked_by_per_name = False
+        if pn_mode != "off":
+            try:
+                from app.live_trading import per_name_gate as _png
+                from app.notifications import notifier as _pnnotifier
+                pn_verdict = _png.shadow_per_name_gate(
+                    summary.get("intended_weights", {}), prices_df,
+                    mode=pn_mode, label="trend", per_name_cap=max_pos, notifier=_pnnotifier)
+                summary["per_name_gate_mode"] = pn_mode
+                summary["per_name_allow"] = bool(pn_verdict.allow)
+                summary["per_name_breaches"] = list(pn_verdict.breaches)
+                blocked_by_per_name = (pn_mode == "enforce" and not pn_verdict.allow)
+            except Exception:
+                log.debug("trend: per-name gate wiring failed", exc_info=True)
+                blocked_by_per_name = (pn_mode == "enforce")   # fail-CLOSED in enforce; inert otherwise
+        if blocked_by_per_name:
+            log.warning("trend: per-name gate (mode=%s) -> HOLD rebalance: %s",
+                        pn_mode, summary.get("per_name_breaches"))
+            summary["status"] = "blocked"
+            summary["block_reason"] = "per_name_gate"
+            return summary
+
         # ── R1.1: SHADOW-route the same orders onto IBKR (gated OFF by default; places nothing on
         # IBKR; never breaks the rebalance) — surfaces whole-share/mapping deltas before the cutover ──
         try:

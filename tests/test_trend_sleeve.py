@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -397,6 +398,86 @@ def test_run_enforce_with_uppercase_mode_still_enforces(monkeypatch, _patch_env)
     summary = ts.run_trend_rebalance(db=MagicMock())
 
     assert summary["status"] == "blocked" and summary["block_reason"] == "reconciliation"
+
+
+# ── CH1 per-name gate wiring (shadow proceeds / enforce HOLDS / off skips) ───────
+def _diversified_uptrend_prices(symbols, n=300, seed=0):
+    """Independent positive-drift random walks: each name net-UP (TSMOM long) but pairwise
+    return-correlation ~0 -> a genuinely diversified book (weighted-avg book corr well below the
+    gate threshold). Contrast with `_uptrend_prices` (identical path -> corr 1.0)."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2024-01-01", periods=n, freq="B")
+    data = {s: pd.Series(100.0 + np.cumsum(rng.normal(0.10, 0.30, n)), index=idx)
+            for s in symbols}
+    return pd.DataFrame(data)
+
+
+def test_run_enforce_holds_on_per_name_correlation_breach(monkeypatch, _patch_env):
+    # default _uptrend_prices = identical path -> book corr 1.0 -> the "one bet" breach HOLDS.
+    cfg, audits = _patch_env
+    cfg["pm.per_name_gate_mode"] = "enforce"
+    cfg["pm.trend_shadow"] = "false"          # live -> proves the HOLD precedes any order
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "blocked" and summary["block_reason"] == "per_name_gate"
+    assert any("book_correlation" in b for b in summary.get("per_name_breaches", []))
+    assert fake.orders == []                   # nothing placed — held before execution
+
+
+def test_run_shadow_proceeds_despite_per_name_breach(monkeypatch, _patch_env):
+    cfg, audits = _patch_env
+    cfg["pm.per_name_gate_mode"] = "shadow"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=object())
+
+    assert summary["status"] == "ok"           # shadow: a breach does NOT block
+    assert summary.get("per_name_allow") is False              # but it WAS observed
+    assert summary.get("per_name_breaches")
+
+
+def test_run_enforce_uppercase_mode_still_enforces(monkeypatch, _patch_env):
+    # normalized -> "ENFORCE" must not silently degrade to shadow
+    cfg, audits = _patch_env
+    cfg["pm.per_name_gate_mode"] = "ENFORCE"
+    cfg["pm.trend_shadow"] = "false"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "blocked" and summary["block_reason"] == "per_name_gate"
+
+
+def test_run_off_skips_per_name_gate(monkeypatch, _patch_env):
+    cfg, audits = _patch_env
+    cfg["pm.per_name_gate_mode"] = "off"
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=object())
+
+    assert summary["status"] == "ok"
+    assert "per_name_gate_mode" not in summary    # off -> not evaluated (no telemetry)
+
+
+def test_run_enforce_clean_book_proceeds(monkeypatch, _patch_env):
+    # a genuinely diversified book (pairwise corr ~0) must NOT spuriously HOLD in enforce.
+    cfg, audits = _patch_env
+    cfg["pm.per_name_gate_mode"] = "enforce"
+    cfg["pm.trend_shadow"] = "false"
+    fake = _FakeAlpaca(_diversified_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "ok"                          # not blocked
+    assert summary.get("per_name_allow") is True
+    assert not any("book_correlation" in b for b in summary.get("per_name_breaches", []))
 
 
 def test_run_live_earlier_orders_committed_when_later_order_fails(monkeypatch, _patch_env):
