@@ -4,6 +4,25 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-07 (Comprehensive Review) — STOP the broad second-edge hunt; COMPOUND-AND-HARDEN the one edge (5-LLM panel, unanimous)
+
+**Context**: After ~28 evaluated strategy families yielded one durable live edge (ETF trend) + cash, and the carry+xSMOM futures book failed the diversification gate on the tradeable universe, the owner asked whether we keep coming up empty because durable retail alpha is *rare* or because our *method* is wrong (validating on one realized history, demanding UNCONDITIONAL edge, signal-mining, running a static weekly system). Ran a grounded 5-LLM panel (DeepSeek/ChatGPT/Gemini/Claude/Grok) fed our full kill-list + validation stack + architecture + 6 attackable hypotheses. SSOT: `docs/reference/prompts/20260707_Comp_Review/SYNTHESIS_AND_DECISION.md`.
+
+**Decision (unanimous panel + my concurrence): STOP the broad hunt for a second edge. COMPOUND-AND-HARDEN the one edge.** The null result is the MARKET, not the method — the kill-list shape (everything real is null, collinear-with-trend, or cost/decay-killed) shows retail-accessible edges are a low-dimensional factor space we already own the biggest axis of. Better validation would kill MORE candidates, not surface new ones. Data is not the constraint (more data repeatedly killed); capital/breadth/patience/process are.
+
+**The ranked plan (base case — no broad hunt):**
+1. Close the per-name **correlation/heat** gap on the live path. *(Code correction to the panel: the live trend+cash path is NOT unguarded — gross / net-equity-beta / notional / unmapped + reconciliation are already LIVE + ENFORCE; the gap is the per-name RM layer, so this is hardening, not an emergency.)*
+2. **Make trend antifragile** — 3 NEW pieces: trend-strength-conditioned gross, correlation-regime gross scaling, a trending-vs-whipsaw-aware crash governor. GATE: must beat constant-gross trend on CPCV with the new params charged to DSR, else ship nothing.
+3. **Live-forward scorecard** (live-vs-backtest attribution; Bayesian into sizing).
+4. **Regime-conditional DECOMPOSITION as a diagnostic** on the live edge + the 2 PARKED collinear strategies (the only analysis that could rescue a keeper) — no new hunt.
+5. **ONE terminating, pre-registered search: a ranging-market MR sleeve** (regime filter = COMPLEMENT of the trend signal; off-regime flat; mandatory detection-lag test; Track-B; params→DSR; **written 12-month moratorium if it fails**) — only if it doesn't delay 1–4. If we can't pre-commit to stopping, skip it.
+
+**Rationale / my code-grounded corrections**: (a) the panel over-stated the "RM bypass" (see #1). (b) Two models called the futures book "edge #2, just breadth-gated → grow capital to trade ~48 markets" — I **down-weight** this: our FB0 sweep already showed the book is marginal even at full 76-market breadth (t≈2.6 ~1 SE above the bar), survivorship-inflated, and cost-inflated (flat 3bps understates real commodity roll costs). So the futures book stays SHELVED; "grow capital to deploy it" is low-EV. This makes the shelve-and-compound verdict MORE robust.
+
+**Consequences**: research direction shifts from *edge-discovery* to *edge-hardening + operating*. Futures-live stays SHELVED (FB-SHELVE, this session's other decision). The live book (ETF trend + cash, paper) is unchanged; R1.1/R1.2 (ETF→IBKR migration) proceed independently. DON'T: buy alpha data, build a regime→selection layer (nothing to rotate into), resurrect the futures book, use hard regime switches, or override the live system discretionarily. Panel's 6-month bet on a deployable second edge: ~20–30% (no). See PROJECT_STATE + the synthesis SSOT.
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
 
 **Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**
