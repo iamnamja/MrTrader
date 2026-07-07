@@ -31,7 +31,7 @@ governors (parked/off), drawdown ladder (shadow/off), vol-targeting/inverse-vol 
 
 ## Phases
 
-### CH0 — Baseline + live-forward scorecard (measure before you change) ← **START**
+### CH0 — Baseline + live-forward scorecard (measure before you change) — ✅ **DONE (2026-07-07)**
 You cannot gate anything without (a) the benchmark it must beat and (b) the harness to observe live behavior.
 - **CH0a — constant-gross trend BASELINE:** ✅ DONE (2026-07-07). Frozen record in
   `docs/reference/ch0_trend_baseline.json` (`scripts/ch0_baseline.py`, pinned `end=2026-07-07` + data
@@ -47,15 +47,18 @@ You cannot gate anything without (a) the benchmark it must beat and (b) the harn
   the composite `overlay_mult`) + the **ungoverned counterfactual book** (all multipliers = 1.0) at every
   live rebalance (`trend_sleeve` stashes `ungoverned_weights`; idempotent SQLite migration). The report adds
   the **static-vs-governed counterfactual** (`governor_pnl = governed_cum − ungoverned_cum`, +ve = de-risk
-  helped) + a **regime-conditional breakdown** (BULL/NEUTRAL/BEAR — SAME taxonomy as the CH0a baseline, so
-  the live slice lines up with the CH2 gate) attributing WHERE governing helped or hurt. Opus-reviewed
+  helped) + a **regime-conditional breakdown** (BULL/NEUTRAL/BEAR — same label taxonomy as the CH0a
+  baseline) attributing WHERE governing helped or hurt. *(Caveat: the live regime map thresholds VIX
+  against a recent expanding window, not CH0a's deep-history one, so the live slice is APPROXIMATELY —
+  converging, not identically — comparable to the frozen baseline profile; the CH2 decision gate itself runs
+  on CPCV with the deep-history map, so this diagnostic mismatch doesn't affect the gate.)* Opus-reviewed
   (SAFE-TO-MERGE, no CRITICAL/MAJOR; provably inert to live trades — the new fields are write-once summary
   fields read only by the scorecard; Monday capture verified no-silent-NULL). Emits via the existing weekly
   notifier. **Deliverable met:** baseline (CH0a) + scorecard (CH0b). *Foundation for CH2/CH3/CH5.* **The
   live counterfactual accrues weekly starting the first enforce rebalance (2026-07-13) — it cannot be
   backfilled, hence landed BEFORE the soak.**
 
-### CH1 — Close the per-name correlation/heat gap on the live path (hardening, not an emergency)
+### CH1 — Close the per-name correlation/heat gap on the live path (hardening, not an emergency) ← **NEXT**
 The live trend+cash path already passes the whole-book gate (gross/beta/notional) + reconciliation in
 enforce — but NOT the agent RiskManager's **per-name correlation / heat / concentration** checks (those
 cover only the dead proposal-driven path). Wire those into the live path, **shadow → enforce** (same pattern
@@ -64,7 +67,8 @@ closed, shadow-soaked then enforced. Independent of CH2 — can run in parallel.
 
 ### CH2 — Antifragile trend sizing: the THREE new pieces (SHADOW → gated)
 The core build. Each is a **continuous multiplier** on trend gross, shadow-first, gated vs the CH0a baseline
-(beat constant-gross OOS on CPCV, params → DSR), armed only after a shadow soak.
+by the **DUAL gate — (a) beat constant-gross CPCV mean_sharpe 0.7009 OOS with params → DSR, AND (b) don't
+regress the BEAR regime-conditional Sharpe** (the folds under-sample stress) — armed only after a shadow soak.
 - **CH2a — trend-strength-conditioned gross:** size UP when the trend signal is broad + strong across the
   universe; size DOWN when weak/conflicting — directly attacks TSMOM's whipsaw failure mode (weak-trend
   regimes are where it bleeds).
@@ -76,7 +80,8 @@ The core build. Each is a **continuous multiplier** on trend gross, shadow-first
   reversing, not merely when vol is high. Stops the governor from cutting winning crisis-trends.
 - **Composite rule:** all multipliers compose (× the existing floored governors), can only be armed
   individually behind flags, each with its own CPCV evidence. **Deliverable:** the 3 multipliers, each with
-  a "beats constant-gross OOS" gate result; ship only the ones that pass; the rest stay documented + off.
+  a DUAL-gate result (beats constant-gross OOS mean_sharpe AND no BEAR-regime-Sharpe regression); ship only
+  the ones that pass; the rest stay documented + off.
 
 ### CH3 — Regime-conditional decomposition (DIAGNOSTIC — informs CH2, no new hunt)
 Decompose, by frozen regime labels over the existing purged folds: (a) the LIVE trend edge (when does it
