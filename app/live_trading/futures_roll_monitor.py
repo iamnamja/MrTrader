@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, Dict, List, Optional
 
+from app.live_trading import exchange_calendar as ec
 from app.live_trading import futures_roll_policy as rp
 
 log = logging.getLogger(__name__)
@@ -39,14 +40,9 @@ CRITICAL_MARGIN_BDAYS = 2        # escalate this many trading days BEFORE the ha
 
 
 def _business_days_between(a: date, b: date) -> int:
-    """Signed weekday count from `a` to `b` (positive if b is after a). Holidays not modelled."""
-    lo, hi = (a, b) if b >= a else (b, a)
-    n, d = 0, lo
-    while d < hi:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            n += 1
-    return n if b >= a else -n
+    """Signed TRADING-day count from `a` to `b` (positive if b is after a) — HOLIDAY-AWARE, so
+    `days_to_floor` reflects real trading days, not raw weekdays across a holiday."""
+    return ec.trading_days_between(a, b)
 
 
 @dataclass(frozen=True)

@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, Optional
 
+from app.live_trading import exchange_calendar as ec
+
 log = logging.getLogger(__name__)
 
 ROLL_BUFFER_DAYS = 5          # mirror app/research/futures_carry.ROLL_BUFFER_DAYS (backtest convention)
@@ -60,24 +62,15 @@ def settlement(root: str) -> str:
 
 
 def _minus_business_days(d: date, n: int) -> date:
-    """`d` shifted back `n` weekdays (Mon–Fri). Holidays not modelled (see _last_business_day_of_month);
-    the shadow phase verifies against reality and a holiday only makes this land ~1 day LATER."""
-    out = d
-    while n > 0:
-        out -= timedelta(days=1)
-        if out.weekday() < 5:
-            n -= 1
-    return out
+    """`d` shifted back `n` TRADING days — HOLIDAY-AWARE (exchange_calendar), so a month-end holiday
+    can't silently compress the FND / last-trade safety margin (was weekday-only; Opus MINOR)."""
+    return ec.minus_trading_days(d, n)
 
 
 def _last_business_day_of_month(year: int, month: int) -> date:
-    """Last weekday (Mon–Fri) of the given month. (Exchange holidays not modelled — a holiday would
-    push the true FND a day or two EARLIER, so this is a slightly LATE estimate; the safety buffer
-    below absorbs it, and the shadow phase verifies against reality.)"""
-    d = date(year + (month // 12), (month % 12) + 1, 1) - timedelta(days=1)   # last calendar day
-    while d.weekday() >= 5:                                                    # back up off Sat/Sun
-        d -= timedelta(days=1)
-    return d
+    """Last TRADING day of the month — HOLIDAY-AWARE. The FND estimate keys off this, so a month-end
+    holiday now correctly pulls the estimate ~1 day earlier (the safe direction) instead of being late."""
+    return ec.last_trading_day_of_month(year, month)
 
 
 def first_notice_day_estimate(delivery_year: int, delivery_month: int, root: str) -> Optional[date]:
