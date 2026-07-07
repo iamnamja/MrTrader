@@ -144,8 +144,19 @@ def run_futures_rebalance(db=None, *, force: bool = False, adapter=None) -> Dict
         broker_lots = {p.instrument_id: int(round(p.quantity)) for p in positions}
         prices = {p.instrument_id: float(p.price) for p in positions if p.price and p.price > 0}
 
-        # ── Target weights (STUB), minus any verify-blocked instrument ──
-        weights = {k: v for k, v in _stub_target_weights(db).items() if k not in blocked_iids}
+        # ── Target weights: LIVE carry+xsmom signal if ibkr.futures_signal_live is on (R1.3), else the
+        # STUB. Both go through the SAME shadow path below (places nothing). Minus any verify-blocked. ──
+        from app.database.agent_config import get_agent_config as _g
+        signal_live = str(_g(db, "ibkr.futures_signal_live") or "").strip().lower() in (
+            "1", "true", "on", "yes")
+        if signal_live:
+            from app.live_trading.futures_signal import current_target_weights
+            raw_weights = current_target_weights()      # {} on any failure -> no would-be orders
+            summary["weight_source"] = "live_carry_xsmom"
+        else:
+            raw_weights = _stub_target_weights(db)
+            summary["weight_source"] = "stub"
+        weights = {k: v for k, v in raw_weights.items() if k not in blocked_iids}
 
         # ── Size: target lots -> order deltas -> run-id order refs ──
         from app.live_trading.futures_sizing import target_lots, futures_order_deltas

@@ -147,6 +147,18 @@ Wire the LIVE carry/xsmom signal → `futures_target_weights` (replaces the stub
 shadow → tiny-live (1–2 lots/market) behind the enforce whole-book gate; require **≥1 clean roll cycle**
 (the crash-governor / roll mechanics P2 couldn't CPCV-test).
 
+**✅ Live signal wired (SHADOW, 2026-07-07): `app/live_trading/futures_signal.py`.**
+`current_target_weights()` extracts the CURRENT target-weight vector from the SAME validated
+`futures_book` construction (0.5·carry + 0.5·xsmom via `carry_backtest`, now exposing its levered weight
+panel `W` under `return_weights=True`) — last-row weights, computed cross-sectionally over the full liquid
+universe then FILTERED to the IBKR-tradeable instruments. Wired into `run_futures_rebalance` behind
+`ibkr.futures_signal_live` (default OFF → the stub; on → live signal), **still SHADOW — places nothing**.
+Validated on the live Norgate mirror (5 tradeable weights, gross 0.13). **Before live futures CAPITAL
+(documented in the module + `DECISIONS`):** (1) re-validate the carry/xSMOM edge on the hybrid roll;
+(2) confirm the edge survives on the 16-market tradeable SLICE of the 76-market book (+ decide gross
+renormalisation); (3) a forward-target (un-shifted) weight extraction vs the backtest's 1-day PIT lag;
+(4) a fresh data feed (the Norgate mirror lags). Never raises → {} on any failure (no would-be orders).
+
 **Roll policy — recon + design (2026-07-07):** `app/live_trading/futures_roll_policy.py` (SHADOW
 instrumentation). Recon against the live paper gateway established:
 - **IBKR `reqContractDetails` exposes NO First Notice Day** — only `contractMonth` (delivery month),
