@@ -12,7 +12,7 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 **The ranked plan (base case — no broad hunt):**
 1. Close the per-name **correlation/heat** gap on the live path. *(Code correction to the panel: the live trend+cash path is NOT unguarded — gross / net-equity-beta / notional / unmapped + reconciliation are already LIVE + ENFORCE; the gap is the per-name RM layer, so this is hardening, not an emergency.)*
-2. **Make trend antifragile** — 3 NEW pieces: trend-strength-conditioned gross, correlation-regime gross scaling, a trending-vs-whipsaw-aware crash governor. GATE: must beat constant-gross trend on CPCV with the new params charged to DSR, else ship nothing.
+2. **Make trend antifragile** — 3 NEW pieces: trend-strength-conditioned gross, correlation-regime gross scaling, a trending-vs-whipsaw-aware crash governor. GATE (made DUAL by the CH0a review, see the CH0 entry below): must beat constant-gross trend CPCV mean_sharpe with the new params charged to DSR AND not regress the BEAR regime-conditional Sharpe, else ship nothing.
 3. **Live-forward scorecard** (live-vs-backtest attribution; Bayesian into sizing).
 4. **Regime-conditional DECOMPOSITION as a diagnostic** on the live edge + the 2 PARKED collinear strategies (the only analysis that could rescue a keeper) — no new hunt.
 5. **ONE terminating, pre-registered search: a ranging-market MR sleeve** (regime filter = COMPLEMENT of the trend signal; off-regime flat; mandatory detection-lag test; Track-B; params→DSR; **written 12-month moratorium if it fails**) — only if it doesn't delay 1–4. If we can't pre-commit to stopping, skip it.
