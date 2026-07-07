@@ -147,6 +147,31 @@ Wire the LIVE carry/xsmom signal → `futures_target_weights` (replaces the stub
 shadow → tiny-live (1–2 lots/market) behind the enforce whole-book gate; require **≥1 clean roll cycle**
 (the crash-governor / roll mechanics P2 couldn't CPCV-test).
 
+**Roll policy — recon + design (2026-07-07):** `app/live_trading/futures_roll_policy.py` (SHADOW
+instrumentation). Recon against the live paper gateway established:
+- **IBKR `reqContractDetails` exposes NO First Notice Day** — only `contractMonth` (delivery month),
+  `lastTradeDateOrContractMonth`, `realExpirationDate`, `timeZoneId`. So an FND floor must be **derived**
+  per-market, not read from the broker. Norgate DOES provide per-contract `volume`/`open_interest`
+  (feasible vol/OI-crossover roll).
+- **A fixed "N days before last-trade" roll is unsafe for physically-delivered contracts.** Live proof:
+  the qualifier's nearest-expiry "front" for **ZS (soybeans)** today is the **July** contract, whose
+  **First Notice Day (~Jun 30) is ~2 weeks before last-trade and already PAST** — i.e. a naive roll
+  would sit in the delivery window, in an illiquid rolled-away contract.
+- **Design (per-market, earliest-binding):** `roll = min( fixed 5d-before-scheduled-expiry [backtest
+  convention, all markets], FND floor [physical grain/metal/rate, derived from the delivery month],
+  last_trade cap [ALWAYS: 3 trading days before the IBKR last-trade date], liquidity vol/OI crossover
+  [INSTRUMENTED, not yet binding] )`. Cash-settled (ES/NQ/RTY/VX) → calendar only; FX (6E/6J) →
+  settle-on-expiry. **Energy (CL/NG) is protected by the last_trade cap, NOT the FND estimate** — their
+  true expiry falls BEFORE the prior-month-end estimate (Opus review caught this: without the cap the
+  policy would roll crude ~10 days after it stopped trading). Independent Opus review verified the
+  settlement taxonomy (all 16 correct) + grain/metal/Treasury FND; energy fix folded in.
+- **R1.3 is measure-first:** `roll_report()` logs all candidate dates so we quantify the fixed-vs-FND-vs
+  -liquidity gaps per product on real data BEFORE choosing fixed-vs-dynamic. **Any live roll that diverges
+  from the backtested `fixed` rule must be re-validated against the signal** (a roll change silently
+  alters returns). **Before live futures:** verify the per-market FND rules against exchange calendars
+  (esp. rates/energy — the estimate is "last business day of the month before delivery," standard for
+  grains/metals) and wire the vol/OI crossover. Independent Opus review of the settlement/FND taxonomy.
+
 ### R1.4 — Consolidate + scale (single venue)
 Collapse to single-venue book-state / reconciliation / kill-switch / margin reserve (drop the cross-venue
 plumbing that's now moot). Retire the Alpaca operational path (keep the adapter as a dormant fallback OR
