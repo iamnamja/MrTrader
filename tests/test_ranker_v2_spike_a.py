@@ -701,6 +701,7 @@ class TestPointInTimeNeutrality:
         assert abs(result.mean_net_dollar) < 0.10, (
             f"mean net_dollar not neutral: {result.mean_net_dollar:.3f}")
 
+    @pytest.mark.timeout(300)  # realistic dollar-neutral sim; ~53s solo, >120s under CI xdist load
     def test_long_budget_flows_into_long_sizing(self):
         _, result = _run_dn_book(long_gross=0.40, short_gross=0.40,
                                  target_n=60, short_n=60)
