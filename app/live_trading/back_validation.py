@@ -334,9 +334,12 @@ def governor_counterfactual(rows: list[dict]) -> dict[str, Any]:
 
 
 def _regime_labels(dates: list) -> dict[str, str]:
-    """PIT regime label per trade_date via the backtest regime map (SAME BULL/NEUTRAL/BEAR
-    taxonomy the CH0a baseline is profiled on, so the live slice lines up with the gate). Never
-    raises → {} on failure (regime breakdown omitted). Fetches VIX; called only off-BUILDING."""
+    """PIT regime label per trade_date via the backtest regime map (SAME BULL/NEUTRAL/BEAR label
+    taxonomy the CH0a baseline is profiled on). Caveat: load_regime_map thresholds VIX against an
+    expanding window anchored at `start`, so a live-window call sees a RECENT VIX distribution, not
+    CH0a's deep-history one → the live regime slice is APPROXIMATELY (converging), not identically,
+    comparable to the frozen baseline profile. It's a live DIAGNOSTIC; the CH2 decision gate runs on
+    CPCV with the deep-history map. Never raises → {} on failure. Fetches VIX; called only off-BUILDING."""
     try:
         import pandas as pd
         from scripts.walkforward.regime import load_regime_map
