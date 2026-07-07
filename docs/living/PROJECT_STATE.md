@@ -8,7 +8,9 @@
 
 ## 🧭 NOW (2026-07-07): Alpha-v10 R1 — all-IBKR migration surface BUILT + cutover-hardened (inert); R1.3 futures roll designed
 
-**SSOT: [`docs/reference/R1_ALL_IBKR_MIGRATION_PLAN_2026-07-06.md`](../reference/R1_ALL_IBKR_MIGRATION_PLAN_2026-07-06.md).** Decision (2026-07-06, owner): consolidate the ENTIRE live book (ETFs + cash + futures) onto **IBKR as the single venue** — migrate once, in paper, shadow-first.
+**🧭 STRATEGIC DIRECTION SET (2026-07-07, 5-LLM Comprehensive Review — SSOT `docs/reference/prompts/20260707_Comp_Review/SYNTHESIS_AND_DECISION.md`):** unanimous verdict — **STOP the broad second-edge hunt; COMPOUND-AND-HARDEN the one edge (ETF trend + cash).** The null is the market not the method; every real thing is null / collinear-with-trend / cost-decay-killed. **Ranked plan:** (1) close the per-name correlation/heat gap on the live path [gross/beta/notional/recon already ENFORCE — hardening, not an emergency]; (2) **make trend antifragile** — 3 NEW pieces (trend-strength gross, correlation-regime gross, trending-vs-whipsaw governor), gated to beat constant-gross trend OOS; (3) live-forward scorecard; (4) regime-conditional decomposition as a *diagnostic*; (5) ONE terminating pre-registered search (ranging-market MR, complement-of-trend regime filter, detection-lag test, written 12-mo moratorium if it fails). **DON'T:** buy alpha data, build a regime→selection layer, resurrect the futures book (marginal + cost-inflated even at full breadth per FB0), hard regime switches. **Futures-live = SHELVED (FB-SHELVE).** See DECISIONS 2026-07-07.
+
+**SSOT (IBKR migration): [`docs/reference/R1_ALL_IBKR_MIGRATION_PLAN_2026-07-06.md`](../reference/R1_ALL_IBKR_MIGRATION_PLAN_2026-07-06.md).** Decision (2026-07-06, owner): consolidate the ENTIRE live book (ETFs + cash + futures) onto **IBKR as the single venue** — migrate once, in paper, shadow-first. *(Futures leg now shelved per the review above; ETF/cash migration R1.1/R1.2 proceeds.)*
 
 **Live book UNCHANGED** = Alpaca trend (paper) + cash (SGOV) + crypto paper. Every IBKR piece below is inert/shadow — nothing has placed a single IBKR order.
 
