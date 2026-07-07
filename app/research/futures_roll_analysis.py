@@ -15,6 +15,7 @@ Pure analysis over the mirrored data (no live calls, nothing traded).
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import List, Optional
 
 import pandas as pd
@@ -73,6 +74,34 @@ def roll_timing_comparison(market: str, root: Optional[str] = None, *,
                 })
         prevc = c
     return pd.DataFrame(rows).tail(last_n).reset_index(drop=True)
+
+
+def liquidity_lead_days(market: str, *, metric: str = "open_interest", last_n: int = 16) -> Optional[int]:
+    """Median CALENDAR days by which the OI-crossover LEADS the SCHEDULED (day-15) expiry, over the last
+    `last_n` rolls. `fixed_roll = scheduled − ROLL_BUFFER_DAYS`, so `scheduled − liquidity_roll =
+    fixed_minus_liq + ROLL_BUFFER_DAYS`. None if there's no roll history."""
+    t = roll_timing_comparison(market, metric=metric, last_n=last_n)
+    if t.empty:
+        return None
+    return int(round(float(t["fixed_minus_liq"].median()))) + ROLL_BUFFER_DAYS
+
+
+def estimate_liquidity_roll(root: str, contract_month: Optional[str], *,
+                            metric: str = "open_interest") -> Optional[date]:
+    """Project the CURRENT cycle's OI-crossover date = scheduled expiry (day-15 of the delivery month)
+    − the historical median lead. PIT-safe (only past rolls). Returns None for cash/FX (no dynamic roll)
+    or on insufficient history. Feed this as the `liquidity_roll` input to `futures_roll_policy` so the
+    HYBRID roll's dynamic leg is populated in the shadow phase. (Live cutover swaps in live IBKR OI.)"""
+    if rp.settlement(root) != rp.PHYSICAL:
+        return None
+    ym = rp._parse_yyyymm(contract_month)
+    if ym is None:
+        return None
+    lead = liquidity_lead_days(root, metric=metric)
+    if lead is None:
+        return None
+    y, m = ym
+    return date(y, m, 15) - timedelta(days=lead)
 
 
 def summarize(markets: List[str], *, metric: str = "open_interest", last_n: int = 24) -> pd.DataFrame:

@@ -157,11 +157,14 @@ instrumentation). Recon against the live paper gateway established:
   the qualifier's nearest-expiry "front" for **ZS (soybeans)** today is the **July** contract, whose
   **First Notice Day (~Jun 30) is ~2 weeks before last-trade and already PAST** — i.e. a naive roll
   would sit in the delivery window, in an illiquid rolled-away contract.
-- **Design (per-market, earliest-binding):** `roll = min( fixed 5d-before-scheduled-expiry [backtest
-  convention, all markets], FND floor [physical grain/metal/rate, derived from the delivery month],
-  last_trade cap [ALWAYS: 3 trading days before the IBKR last-trade date], liquidity vol/OI crossover
-  [INSTRUMENTED, not yet binding] )`. Cash-settled (ES/NQ/RTY/VX) → calendar only; FX (6E/6J) →
-  settle-on-expiry. **Energy (CL/NG) is protected by the last_trade cap, NOT the FND estimate** — their
+- **Design (per-market, earliest-binding):** `recommended = min( fixed 5d-before-scheduled-expiry
+  [ALWAYS an upper bound — never roll later than the calendar rule], FND floor [physical grain/metal/rate],
+  last_trade cap [ALWAYS: 3 trading days before the IBKR last-trade date], **liquidity vol/OI crossover
+  [BINDING for PHYSICAL markets ✅ 2026-07-07]** )`. Cash-settled (ES/NQ/RTY/VX) → calendar only; FX
+  (6E/6J) → settle-on-expiry (liquidity ignored). The OI-crossover leg is populated by
+  `futures_roll_analysis.estimate_liquidity_roll(root, contract_month)` (projects the current cycle's
+  crossover forward from the historical median lead; PIT-safe; None for cash/FX) — Norgate-based in the
+  shadow phase, swaps to live IBKR OI at cutover. **Energy (CL/NG) is protected by the last_trade cap, NOT the FND estimate** — their
   true expiry falls BEFORE the prior-month-end estimate (Opus review caught this: without the cap the
   policy would roll crude ~10 days after it stopped trading). Independent Opus review verified the
   settlement taxonomy (all 16 correct) + grain/metal/Treasury FND; energy fix folded in.

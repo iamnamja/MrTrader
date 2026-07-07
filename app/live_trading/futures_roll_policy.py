@@ -113,10 +113,19 @@ class RollDates:
 
     @property
     def recommended(self) -> Optional[date]:
-        """The roll date we'd ACT on: earliest (most conservative) of ALL binding candidates — the
-        backtested `fixed` rule, the `fnd` floor (physical only), AND the `last_trade` cap (always).
-        `liquidity_roll` is logged, not yet binding."""
-        cands = [d for d in (self.fixed_roll, self.fnd_floor, self.last_trade_cap) if d is not None]
+        """The roll date we'd ACT on: earliest (most conservative) of the binding candidates — the
+        `fnd` floor (physical) and the `last_trade` cap (always), plus ONE of:
+          - PHYSICAL commodities → the `liquidity_roll` (OI-crossover) when available, else `fixed`.
+          - cash / FX          → the `fixed` calendar rule.
+        This is the HYBRID roll (DECISIONS 2026-07-07): dynamic OI-crossover for physical markets (they
+        roll 2–5 weeks before the calendar rule), fixed calendar for financials (fixed ≈ liquidity there).
+        `fixed` is ALWAYS a candidate (an upper bound — never roll later than the backtest rule); the
+        `liquidity_roll` is added ONLY for physical, pulling the roll earlier; the FND / last-trade floor
+        always binds if earlier (delivery safety wins over execution)."""
+        cands = [self.fixed_roll, self.fnd_floor, self.last_trade_cap]
+        if self.settlement == PHYSICAL and self.liquidity_roll is not None:
+            cands.append(self.liquidity_roll)          # the hybrid dynamic roll (physical only)
+        cands = [d for d in cands if d is not None]
         return min(cands) if cands else None
 
 
