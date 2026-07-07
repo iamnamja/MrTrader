@@ -54,6 +54,7 @@ RATE_LIMITS: dict[str, int] = {
     "reconciliation_break": 0,    # H1 reconciliation-before-trade DB<->broker mismatch (shadow/enforce)
     "dead_man_alert": 0,          # H5 external dead-man watchdog: brain heartbeat stale (app down/hung)
     "gate_error": 0,              # H8: a safety gate (whole-book/recon) could not even EVALUATE
+    "futures_delivery_risk": 0,   # R1.3: a held future is at/near its FND/last-trade floor unrolled
 }
 
 # ── Severity tiers (H8) — triage at a glance + route CATASTROPHIC events to a louder channel ──
@@ -68,6 +69,7 @@ _SEVERITY: dict[str, str] = {
     "gate_error": CATASTROPHIC,
     "reconciliation_break": WARNING,
     "whole_book_gate_breach": WARNING,
+    "futures_delivery_risk": CATASTROPHIC,   # holding a physical future into delivery = money-losing
 }
 _SEVERITY_PREFIX = {CATASTROPHIC: "[CRITICAL] ", WARNING: "[WARN] ", INFO: ""}
 
@@ -474,6 +476,23 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Error", p.get("error")),
             ("Effect", "Gate is fail-SAFE (rebalance proceeded under the per-order + gross caps); "
                        "a persistent error means the holistic check is NOT running — investigate."),
+        ])
+
+    elif event_type == "futures_delivery_risk":
+        subj = (f"[MrTrader] FUTURES DELIVERY RISK — {p.get('root', '?')} "
+                f"{p.get('urgency', '')} ({p.get('days_to_floor', '?')}d to floor)")
+        body = _section("R1.3 — a held future is approaching its delivery/last-trade floor UNROLLED", [
+            ("Market", f"{p.get('root')} ({p.get('settlement')})"),
+            ("Contract / delivery", p.get("delivery_month")),
+            ("Position", p.get("qty")),
+            ("Today", p.get("today")),
+            ("Recommended roll", p.get("recommended")),
+            ("Hard floor (FND/last-trade)", p.get("floor")),
+            ("Trading days to floor", p.get("days_to_floor")),
+            ("Urgency", p.get("urgency")),
+            ("Action", "ROLL or FLATTEN this contract now — holding a physically-delivered future into "
+                       "First Notice / delivery risks assignment (full notional + the physical). IBKR "
+                       "auto-liquidation is a last resort only, at their discretion/pricing."),
         ])
 
     else:

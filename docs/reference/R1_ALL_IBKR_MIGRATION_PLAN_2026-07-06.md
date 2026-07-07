@@ -171,6 +171,20 @@ instrumentation). Recon against the live paper gateway established:
   (CL +34, NG +35, ZC +30, ZS +30, GC +22, SI +23, HG +26, ZN/ZB/ZF +16; even FND is +11 to +26d late).
   **DECISION: HYBRID roll** — calendar for cash+FX, **dynamic OI-crossover for physical markets**, bounded
   by the FND/last-trade safety floor. (See `DECISIONS.md` 2026-07-07.)
+- **Delivery-safety monitor (2026-07-07, `app/live_trading/futures_roll_monitor.py`):** hardens the
+  "bot down 1–2 days near roll time" case. (1) `catch_up_on_restart(held, today)` — on daemon startup,
+  roll any future whose roll is DUE/overdue IMMEDIATELY (not at the next weekly rebalance), so an outage
+  over the roll date can't leave a position in an expiring contract till Monday. (2) Downtime-buffered
+  urgency tiers — `APPROACHING` pre-alerts `DOWNTIME_ALERT_BDAYS` before the roll; `CRITICAL` escalates
+  `CRITICAL_MARGIN_BDAYS` BEFORE the hard FND/last-trade floor (so a multi-day outage can't silently
+  cross it). (3) `notify_delivery_risk` → CATASTROPHIC `futures_delivery_risk` (off-box snitch webhook).
+  Inert until the futures executor wires it in (no held-futures source yet). Answer to "would we take
+  delivery from a short outage?": **no** — the hybrid roll fires weeks before FND (~22–26d buffer, from
+  the analysis), catch-up re-rolls on restart, and IBKR auto-liquidation is the last resort. Independent
+  Opus review (SAFE) folded in: a PHYSICAL position with no computable floor now **fails safe to CRITICAL**
+  (never silent). **Before live:** exchange-calendar-aware month-end/buffer math — the FND estimate + the
+  CRITICAL margin are weekday-only, so a month-end holiday can compress the margin (shadow-soak validates
+  this per market).
 - **R1.3 is measure-first:** `roll_report()` logs all candidate dates so we quantify the fixed-vs-FND-vs
   -liquidity gaps per product on real data BEFORE choosing fixed-vs-dynamic. **Any live roll that diverges
   from the backtested `fixed` rule must be re-validated against the signal** (a roll change silently
