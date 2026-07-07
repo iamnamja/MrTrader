@@ -182,9 +182,13 @@ instrumentation). Recon against the live paper gateway established:
   delivery from a short outage?": **no** — the hybrid roll fires weeks before FND (~22–26d buffer, from
   the analysis), catch-up re-rolls on restart, and IBKR auto-liquidation is the last resort. Independent
   Opus review (SAFE) folded in: a PHYSICAL position with no computable floor now **fails safe to CRITICAL**
-  (never silent). **Before live:** exchange-calendar-aware month-end/buffer math — the FND estimate + the
-  CRITICAL margin are weekday-only, so a month-end holiday can compress the margin (shadow-soak validates
-  this per market).
+  (never silent).
+- **Exchange holiday calendar ✅ DONE (2026-07-07, `app/live_trading/exchange_calendar.py`):** the FND /
+  last-trade / CRITICAL-margin business-day math is now **holiday-aware** (was weekday-only — the Opus
+  MINOR). Computes the 10 US futures-exchange full-close holidays algorithmically (any year, with the
+  weekend-observance rule + Good Friday via computus); `futures_roll_policy` + `futures_roll_monitor`
+  delegate their trading-day math to it, so a month-end holiday pulls the FND estimate ~1 day earlier
+  (the SAFE direction) instead of compressing the margin.
 - **R1.3 is measure-first:** `roll_report()` logs all candidate dates so we quantify the fixed-vs-FND-vs
   -liquidity gaps per product on real data BEFORE choosing fixed-vs-dynamic. **Any live roll that diverges
   from the backtested `fixed` rule must be re-validated against the signal** (a roll change silently
