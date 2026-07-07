@@ -4,7 +4,11 @@
 
 ---
 
-## 🎯 ACTIVE PLAN — Alpha-v10 "harden, don't hunt" (2026-06-22, 10-LLM panel)
+## 🎯 ACTIVE PROGRAM — Compound-and-Harden (CH) (2026-07-07, 5-LLM Comprehensive Review)
+
+**SSOT:** [`docs/reference/COMPOUND_AND_HARDEN_PROGRAM_2026-07-07.md`](../reference/COMPOUND_AND_HARDEN_PROGRAM_2026-07-07.md) (verdict: `docs/reference/prompts/20260707_Comp_Review/SYNTHESIS_AND_DECISION.md`; DECISIONS 2026-07-07). After ~28 evaluated families → one live edge (ETF trend) + cash, and the futures book failed the diversification gate, the 5-LLM panel (DeepSeek/ChatGPT/Gemini/Claude/Grok) was **unanimous: STOP the broad second-edge hunt; make the ONE edge antifragile + condition-reactive and let it compound.** Phases: **CH0** baseline + live-forward scorecard ← START → **CH1** per-name correlation/heat gate on the live path → **CH2** the 3 NEW antifragile sizing pieces (trend-strength gross, correlation-regime gross, trending-vs-whipsaw governor; each gated to beat constant-gross OOS, params→DSR) → **CH3** regime-conditional decomposition (diagnostic) → **CH4** ONE terminating pre-registered ranging-MR search (12-mo moratorium if it fails) → **CH5** live accrual + 12-mo review. Futures-live = SHELVED. This SUPERSEDES the futures-hunt direction; the Alpha-v10 "harden, don't hunt" program below is its parent lineage.
+
+## 🎯 PARENT PLAN — Alpha-v10 "harden, don't hunt" (2026-06-22, 10-LLM panel)
 
 **SSOT:** [`docs/reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md`](../reference/prompts/20260622_LLM_Alpha_V10/COMPREHENSIVE_ROADMAP_2026-06-22.md). 4 internal Opus panelists + red-team + 5 external reviews (ChatGPT/Claude/DeepSeek/Gemini/Grok), **unanimous: stop hunting a 5th sleeve for 1–3 months — the binding constraint is capital + a real *tiny-live* track record + not blowing up.** Three phases: **H (Harden) → D (Deploy) → R (Research).**
 
