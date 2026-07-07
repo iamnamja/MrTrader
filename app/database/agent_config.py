@@ -238,6 +238,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.per_name_gate_mode",
+        "default": "shadow",
+        "type": "str",
+        "description": "CH1 (Compound-and-Harden) per-name risk gate mode. Closes the gap that the live trend book never ran the RiskManager's per-name checks (those covered only the dead proposal path). Book-level metrics computed from the target book + the already-fetched price panel (no new I/O): CORRELATION (NAV-weighted avg signed pairwise corr of the target book > risk-policy corr-spike level = the '10-name book' is really one bet), CONCENTRATION (any name's weight > per-name notional cap), HEAT (proposed-book open-risk vs 6% cap; loose for the stopless trend book). 'shadow' (default) = LOGS + emails what it WOULD hold, blocks nothing. 'enforce' = a breach HOLDS the rebalance (fail-closed). 'off' = not evaluated. FAIL-SAFE: any gate error -> proceed (shadow). Flip to 'enforce' only after a clean shadow window.",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.reconciliation_mode",
         "default": "shadow",
         "type": "str",

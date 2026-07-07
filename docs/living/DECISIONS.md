@@ -39,6 +39,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-07 (CH1 — Compound-and-Harden) — per-name correlation/heat/concentration gate on the live trend path (shadow-first); a COARSE book-corr backstop, NOT a sector-check reuse
+
+**Context**: the live trend+cash path passes the whole-book gate (gross/beta/notional) + reconciliation in enforce, but never ran the agent RiskManager's PER-NAME checks (correlation / heat / concentration) — those only ever covered the dead proposal-driven ML/swing path. CH1 closes that gap the same way the whole-book gate did.
+
+**Decision — build a book-level gate, do NOT reuse the order-level RM functions.** New `app/live_trading/per_name_gate.py` mirrors `whole_book_gate.py` (fail-safe, never raises; `pm.per_name_gate_mode` default **shadow**; enforce HOLDS fail-closed; off skips), wired into `run_trend_rebalance` after the whole-book gate. All three metrics compute from data ALREADY in scope (no new I/O): correlation from `prices_df.pct_change().corr()`, concentration + heat from the target `intended_weights`.
+
+**Decision — deliberately did NOT reuse the RM's sector/factor-concentration check.** The all-ETF trend universe (SPY/QQQ/IWM/EFA/EEM/TLT/IEF/GLD/DBC/UUP) maps entirely to `UNKNOWN` in `SECTOR_MAP` (single-stocks only), so that check would bucket the whole book into one sector and breach every week → a permanent fail-close in enforce. Instead: **concentration** = per-name cap `max(policy 0.25, configured trend_max_position_pct)` (defense-in-depth clip-integrity, can't permanent-hold when max_pos is raised); **heat** = proposed-book open-risk vs 6% (loose for the stopless trend book).
+
+**Decision — the correlation gate is a COARSE "one bet" backstop with a HIGH, PROVISIONAL threshold; the nuanced response is CH2b.** The metric is the NAV-weighted SIGNED avg pairwise book correlation. Equity ETFs are structurally ~0.85 correlated, so a normal risk-on trend book (long-only TSMOM drops the bond/gold/FX diversifiers) legitimately sits ~0.75–0.90 EVERY equity-led week. So the gate threshold is set HIGH (0.90/0.95, above the structural level) to trip only when the book has genuinely collapsed to one bet (diversifiers gone / crisis correlation spike) — NOT to hold normal weeks. Using risk_policy's stress-conditional degross level (0.60) here would hold nearly every week (a permanent HOLD — the exact failure this gate avoids); that was caught in the Opus review. **The threshold is provisional: the gate's shadow-mode job is to RECORD `weighted_avg_book_corr` weekly, and the enforce threshold must be calibrated from that observed distribution before any flip.** The continuous correlation-regime DEGROSS (sizing, not a hard block) is CH2b's job.
+
+**Rationale**: shadow-first + fail-safe means the gate is provably inert to live trades today (Opus-confirmed: the new fields are shadow telemetry; the gate never raises; an enforce wiring failure fails CLOSED). Calibrate-from-the-soak-before-enforce is the same discipline used for the whole-book gate and reconciliation.
+
+**Consequences**: the per-name safety gap on the live path is closed (shadow). CH1 done. NEXT = CH2 (antifragile sizing) — needs the CH0a baseline + the DUAL gate; CH3 (diagnostic) can run alongside. No live trading behavior changed (shadow logs only). Enforce flip is owner-present, after a clean shadow soak + threshold calibration.
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
 
 **Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**

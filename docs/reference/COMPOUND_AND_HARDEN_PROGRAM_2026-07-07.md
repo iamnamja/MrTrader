@@ -58,12 +58,27 @@ You cannot gate anything without (a) the benchmark it must beat and (b) the harn
   live counterfactual accrues weekly starting the first enforce rebalance (2026-07-13) — it cannot be
   backfilled, hence landed BEFORE the soak.**
 
-### CH1 — Close the per-name correlation/heat gap on the live path (hardening, not an emergency) ← **NEXT**
+### CH1 — Close the per-name correlation/heat gap on the live path (hardening, not an emergency) — ✅ **SHADOW-LANDED (2026-07-07)**
 The live trend+cash path already passes the whole-book gate (gross/beta/notional) + reconciliation in
 enforce — but NOT the agent RiskManager's **per-name correlation / heat / concentration** checks (those
-cover only the dead proposal-driven path). Wire those into the live path, **shadow → enforce** (same pattern
-as the whole-book gate). **Deliverable:** a per-name correlation/heat gate on the live order path, fail-
-closed, shadow-soaked then enforced. Independent of CH2 — can run in parallel.
+cover only the dead proposal-driven path). CH1 wires those into the live path, **shadow → enforce** (same
+pattern as the whole-book gate). **Built:** `app/live_trading/per_name_gate.py` (mirrors `whole_book_gate.py`
+— fail-safe, never raises; `pm.per_name_gate_mode` default **shadow**), wired into `run_trend_rebalance`
+after the whole-book gate. Book-level metrics off data ALREADY in scope (no new I/O):
+- **correlation** = NAV-weighted signed avg pairwise book corr (`prices_df.pct_change().corr()`) — a COARSE
+  "the 10-name book collapsed to genuinely ONE bet" backstop, thresholded HIGH (0.90/0.95, above the
+  structural ~0.85 equity-ETF corr) so it does NOT hold normal equity-led weeks; the nuanced continuous
+  response is CH2b, not this gate.
+- **concentration** = per-name cap `max(policy 0.25, configured max_position_pct)` (defense-in-depth clip-
+  integrity; can't permanent-hold when `trend_max_position_pct` is raised).
+- **heat** = proposed-book open-risk vs 6% (loose for the stopless trend book; backstop).
+Deliberately did **NOT** reuse the RM's sector/factor-concentration check — the all-ETF universe maps to
+`UNKNOWN` and would breach every week (permanent fail-close). Opus-reviewed (SAFE-TO-MERGE as shadow-default,
+provably inert to live trades, no live-path bug). **⚠️ BEFORE ENFORCE:** the correlation threshold is
+PROVISIONAL — the gate RECORDS `weighted_avg_book_corr` every week; calibrate the enforce threshold from the
+observed shadow-soak distribution (and reconcile it with any `trend_max_position_pct` change) before flipping
+`pm.per_name_gate_mode`→enforce. **Deliverable met:** a fail-closed per-name gate on the live order path,
+shadow-soaking now. Independent of CH2 — ran in parallel.
 
 ### CH2 — Antifragile trend sizing: the THREE new pieces (SHADOW → gated)
 The core build. Each is a **continuous multiplier** on trend gross, shadow-first, gated vs the CH0a baseline
@@ -123,6 +138,10 @@ tests + an independent Opus deep-dive, per this project's discipline.
 - **CH0b** — ✅ CODE DONE (2026-07-07): scorecard persists per-governor multipliers + ungoverned
   counterfactual + regime attribution; Opus-reviewed, inert to live trades. **Live counterfactual accrues
   weekly from the 2026-07-13 enforce rebalance** (can't be backfilled → landed first).
-- **CH0** — ✅ complete (baseline + scorecard). **NEXT: CH1** (per-name correlation/heat gate on the live
-  path, shadow→enforce) — independent of CH2, can start now.
-- CH1–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).
+- **CH0** — ✅ complete (baseline + scorecard).
+- **CH1** — ✅ SHADOW-LANDED (2026-07-07): per-name correlation/heat/concentration gate on the live path
+  (`per_name_gate.py`, `pm.per_name_gate_mode` default shadow); Opus-reviewed, inert to live trades.
+  Shadow-soaking; correlation enforce-threshold to be calibrated from the soak (see CH1 above).
+- **NEXT: CH2** — the 3 antifragile sizing multipliers (needs the CH0a baseline; DUAL gate). CH3 (diagnostic)
+  can run alongside.
+- CH2–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).
