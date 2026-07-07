@@ -120,10 +120,15 @@ class CarryConfig:
 
 def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
                    cfg: CarryConfig = CarryConfig(),
-                   roll_days: Optional[pd.DataFrame] = None) -> pd.Series:
+                   roll_days: Optional[pd.DataFrame] = None,
+                   *, return_weights: bool = False):
     """Cross-sectional carry book daily NET returns. weight_i ∝ (cross-sectional carry
     z-score) × inverse-vol, clipped, gross-capped, book-vol-targeted; PIT (carry at t →
-    position t+1); cost on |Δweight|. `returns` = winsorized true returns panel."""
+    position t+1); cost on |Δweight|. `returns` = winsorized true returns panel.
+
+    `return_weights=True` returns the levered per-market position-weight PANEL `W` (dates × markets)
+    instead of the net-return series — the ACTUAL positions the book holds, for live target extraction
+    (`app/live_trading/futures_signal.py`). Default False → callers unchanged."""
     rets = returns.sort_index()
     cz_raw = carry.reindex(rets.index).ffill(limit=STALE_LIMIT)   # cap stale-carry contamination
     # cross-sectional z-score of carry each day (demean + standardize across markets)
@@ -167,6 +172,8 @@ def carry_backtest(returns: pd.DataFrame, carry: pd.DataFrame,
     # from the vol overlay is charged too (charging |Δw|*blev understates it by ~half).
     blev_f = blev.fillna(0.0)
     W = w.mul(blev_f, axis=0)
+    if return_weights:
+        return W                         # levered position-weight panel (PIT); live target = last row
     turnover = W.diff().abs().sum(axis=1).fillna(0.0)
     cost = turnover * (cfg.cost_bps / 1e4)
 

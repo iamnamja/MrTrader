@@ -461,6 +461,13 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "IBKR",
     },
     {
+        "key": "ibkr.futures_signal_live",
+        "default": "false",
+        "type": "str",
+        "description": "Alpha-v10 R1.3: source of the futures-rebalance target weights. 'false' (default) = the explicit STUB (ibkr.futures_target_weights_json). 'true'/'on' = the LIVE carry+xsmom book signal (app/live_trading/futures_signal.current_target_weights — the validated futures_book construction, last-row weights, filtered to the IBKR-tradeable universe). Still SHADOW either way (run_futures_rebalance places nothing). Before live futures CAPITAL: re-validate the edge on the hybrid roll + a fresh data feed (the Norgate mirror may lag).",
+        "group": "IBKR",
+    },
+    {
         "key": "ibkr.futures_target_weights_json",
         "default": "",
         "type": "str",
