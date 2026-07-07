@@ -23,6 +23,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-07 (CH0 — Compound-and-Harden) — freeze the constant-gross baseline + a DUAL CH2 gate; instrument each governor's live P&L before changing sizing
+
+**Context**: CH0 of the Compound-and-Harden program (SSOT `docs/reference/COMPOUND_AND_HARDEN_PROGRAM_2026-07-07.md`) — "measure before you change." You cannot gate CH2's antifragile-sizing changes without (a) the benchmark they must beat and (b) a harness that observes how the live governors actually behave.
+
+**Decision — CH0a (baseline):** froze the ungoverned trend book (`tsmom_backtest(TSMOMConfig())`, all antifragile/governor multipliers = 1.0) through the uniform CPCV/Ruler-v2 gate + a regime-conditional breakdown → `docs/reference/ch0_trend_baseline.json` (`scripts/ch0_baseline.py`; pinned `end=2026-07-07` + a data fingerprint so the "immutable benchmark" is actually reproducible/verifiable). **Result:** CPCV mean_sharpe **0.7009**; regime profile **BULL +4.11 / NEUTRAL +0.44 / BEAR −0.77** — trend earns in bull/neutral and bleeds in bear.
+
+**Decision — the CH2 gate is DUAL, not mean_sharpe-only.** Because the CH0a CPCV folds under-sample stress (n_folds=8, no BEAR fold) while the standalone BEAR Sharpe is −0.77, a mean_sharpe-only gate would green-light a governed book that lifts benign-regime Sharpe while DEGRADING the bear tail — the exact failure antifragile sizing exists to prevent. **So every CH2 change must (a) beat CPCV mean_sharpe 0.7009 OOS with params charged to DSR AND (b) not regress the BEAR regime-conditional Sharpe.** (From the CH0a Opus review.)
+
+**Decision — CH0b (scorecard):** EXTEND the existing P1-4 intended-vs-actual harness (`app/live_trading/back_validation.py`), don't build anew. Persist **each individual governor's multiplier** (crash/credit/ladder — previously only the composite was kept) + the **ungoverned counterfactual book** at every live rebalance; the report adds the **static-vs-governed counterfactual** (`governor_pnl`, +ve = de-risking helped) + a **regime-conditional breakdown** (same BULL/NEUTRAL/BEAR taxonomy as CH0a). This is what lets CH2/CH3/CH5 answer "did governing the book actually help, and in which regime?" from live data.
+
+**Rationale / timing**: the live counterfactual accrues weekly starting the **first enforce rebalance (2026-07-13)** and **cannot be backfilled** — so the persistence landed BEFORE the soak. Both CH0a and CH0b were Opus deep-dived (SAFE-TO-MERGE, no CRITICAL/MAJOR; CH0b provably inert to live trades — the new fields are write-once summary fields read only by the scorecard).
+
+**Consequences**: CH0 (baseline + scorecard) is complete. CH2's gate is now concretely specified (dual). NEXT = CH1 (per-name correlation/heat gate on the live path, shadow→enforce; independent of CH2). No live trading behavior changed.
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
 
 **Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**

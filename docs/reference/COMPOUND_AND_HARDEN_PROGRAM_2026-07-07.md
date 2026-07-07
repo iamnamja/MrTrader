@@ -41,11 +41,19 @@ You cannot gate anything without (a) the benchmark it must beat and (b) the harn
   +0.44 (45%) / BEAR −0.77 (29%)** — trend earns everything in bull/neutral and bleeds in bear, which is
   exactly the whipsaw/tail failure mode CH2a/CH2c attack. Fold-coverage is LOW (n_folds=8, no BEAR fold)
   → hence the dual gate above.
-- **CH0b — live-forward scorecard:** a periodic report attributing live-vs-backtest divergence — realized
-  slippage, missed-rebalance impact, each governor's decisions, turnover, exposure, and the **static-vs-
-  governed counterfactual** (what the book WOULD have done ungoverned). Bayesian into sizing over time.
-  Reuses the existing paper track + notifier + dashboard. **Deliverable:** the baseline + the scorecard,
-  emitting weekly. *This is the foundation for CH2/CH3/CH5.*
+- **CH0b — live-forward scorecard:** ✅ CODE DONE (2026-07-07; accrues live from Mon 2026-07-13).
+  EXTENDS the existing P1-4 intended-vs-actual harness (`app/live_trading/back_validation.py`) rather than
+  building anew: now persists **each individual governor's multiplier** (crash / credit / ladder — was only
+  the composite `overlay_mult`) + the **ungoverned counterfactual book** (all multipliers = 1.0) at every
+  live rebalance (`trend_sleeve` stashes `ungoverned_weights`; idempotent SQLite migration). The report adds
+  the **static-vs-governed counterfactual** (`governor_pnl = governed_cum − ungoverned_cum`, +ve = de-risk
+  helped) + a **regime-conditional breakdown** (BULL/NEUTRAL/BEAR — SAME taxonomy as the CH0a baseline, so
+  the live slice lines up with the CH2 gate) attributing WHERE governing helped or hurt. Opus-reviewed
+  (SAFE-TO-MERGE, no CRITICAL/MAJOR; provably inert to live trades — the new fields are write-once summary
+  fields read only by the scorecard; Monday capture verified no-silent-NULL). Emits via the existing weekly
+  notifier. **Deliverable met:** baseline (CH0a) + scorecard (CH0b). *Foundation for CH2/CH3/CH5.* **The
+  live counterfactual accrues weekly starting the first enforce rebalance (2026-07-13) — it cannot be
+  backfilled, hence landed BEFORE the soak.**
 
 ### CH1 — Close the per-name correlation/heat gap on the live path (hardening, not an emergency)
 The live trend+cash path already passes the whole-book gate (gross/beta/notional) + reconciliation in
@@ -107,6 +115,9 @@ tests + an independent Opus deep-dive, per this project's discipline.
 
 ## Status
 - **CH0a** — ✅ DONE (2026-07-07): constant-gross baseline frozen + Opus-reviewed (see CH0 above).
-- **CH0b** — 🔄 next: live-forward scorecard (persist per-governor multipliers + static-vs-governed
-  counterfactual + regime label; land the persistence BEFORE the enforce soak accrues).
+- **CH0b** — ✅ CODE DONE (2026-07-07): scorecard persists per-governor multipliers + ungoverned
+  counterfactual + regime attribution; Opus-reviewed, inert to live trades. **Live counterfactual accrues
+  weekly from the 2026-07-13 enforce rebalance** (can't be backfilled → landed first).
+- **CH0** — ✅ complete (baseline + scorecard). **NEXT: CH1** (per-name correlation/heat gate on the live
+  path, shadow→enforce) — independent of CH2, can start now.
 - CH1–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

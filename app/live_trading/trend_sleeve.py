@@ -575,6 +575,9 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # behavior). Fail-closed to the static value on any error.
         from app.live_trading.sleeve_allocator_live import effective_trend_allocation
         alloc = effective_trend_allocation(db)
+        # CH0b: pre-governor allocation (all overlay/ladder multipliers = 1.0) — the anchor for
+        # the scorecard's static-vs-governed counterfactual (ungoverned_weights below).
+        base_alloc = alloc
         # Alpha-v7 F1b: VIX term-structure crash governor — scale the sleeve's exposure by
         # [derisk_to, 1.0] (de-risk in backwardation). Fail-safe to 1.0 (= today's behavior);
         # can only REDUCE exposure, never increase it. Applied to the scalar budget so it
@@ -666,6 +669,15 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # pre-gross-cap (those deviations ARE the friction we measure).
         summary["intended_weights"] = {
             s: float(min(float(w) * float(alloc), max_pos))
+            for s, w in target_weights.items() if w and float(w) > 0
+        }
+        # CH0b: the UNGOVERNED counterfactual book — the same inverse-vol targets sized off the
+        # PRE-governor allocation (all overlay/ladder multipliers = 1.0), same per-name cap. The
+        # scorecard replays this vs the governed intended book on the SAME prices to attribute the
+        # governors' realized P&L (did de-risking help or cost us this week?). NOT ladder-rescaled
+        # below — it is by definition the no-governor book.
+        summary["ungoverned_weights"] = {
+            s: float(min(float(w) * float(base_alloc), max_pos))
             for s, w in target_weights.items() if w and float(w) > 0
         }
 

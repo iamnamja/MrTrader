@@ -15,15 +15,18 @@ def bv(tmp_path, monkeypatch):
 
 
 def _insert(bv, *, td, nav=100_000.0, prices=None, positions=None,
-            intended=None, n_blocked=None, overlay=None):
+            intended=None, n_blocked=None, overlay=None,
+            crash=None, credit=None, ladder=None, ungoverned=None):
     with bv._conn() as c:
         c.execute(
             "INSERT INTO trend_backval_daily(trade_date, nav, prices, positions, "
-            "intended_weights, n_positions, n_blocked, overlay_mult, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "intended_weights, n_positions, n_blocked, overlay_mult, crash_mult, credit_mult, "
+            "ladder_mult, ungoverned_weights, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (td, nav, json.dumps(prices or {}), json.dumps(positions or {}),
              (json.dumps(intended) if intended is not None else None),
-             len(positions or {}), n_blocked, overlay, 0.0))
+             len(positions or {}), n_blocked, overlay, crash, credit, ladder,
+             (json.dumps(ungoverned) if ungoverned is not None else None), 0.0))
 
 
 # ── daily_pairs: intended-vs-actual, same prices, PIT ─────────────────────────
@@ -185,3 +188,134 @@ def test_record_rebalance_intent_records_live(bv):
     rows = bv.read_daily()
     assert rows and json.loads(rows[-1]["intended_weights"]) == {"SPY": 0.1}
     assert rows[-1]["n_blocked"] == 2
+
+
+# ── CH0b: per-governor persistence + counterfactual + regime attribution ──────
+def test_record_intent_persists_individual_governors_and_ungoverned(bv):
+    # crash 0.5, credit 1.0, ladder 1.0 → governed book is half the ungoverned book.
+    s = {"status": "ok", "mode": "live", "blocked": [],
+         "intended_weights": {"SPY": 0.05, "QQQ": 0.05},
+         "ungoverned_weights": {"SPY": 0.10, "QQQ": 0.10},
+         "crash_governor_mult": 0.5, "credit_governor_mult": 1.0,
+         "drawdown_ladder_mult": 1.0, "overlay_mult": 0.5}
+    assert bv.record_rebalance_intent(s) is True
+    r = bv.read_daily()[-1]
+    assert r["crash_mult"] == 0.5 and r["credit_mult"] == 1.0 and r["ladder_mult"] == 1.0
+    assert json.loads(r["ungoverned_weights"]) == {"SPY": 0.10, "QQQ": 0.10}
+
+
+def test_daily_rows_ungoverned_falls_back_to_intended_when_absent(bv):
+    # Pre-CH0b rows (no ungoverned_weights) → ungoverned == intended → governor_pnl 0.
+    snaps = [
+        {"trade_date": "2026-06-01", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 1000.0}), "intended_weights": json.dumps({"SPY": 0.10})},
+        {"trade_date": "2026-06-02", "nav": 100_000.0, "prices": json.dumps({"SPY": 11.0}),
+         "positions": json.dumps({"SPY": 1000.0}), "intended_weights": None},
+    ]
+    rows, _ = bv.daily_rows(snaps)
+    assert rows[0]["intended"] == pytest.approx(rows[0]["ungoverned"])
+    assert bv.governor_counterfactual(rows)["governor_pnl"] == pytest.approx(0.0)
+
+
+def test_governor_counterfactual_derisk_costs_in_a_rally(bv):
+    # governed = half-size (crash cut), ungoverned = full-size; +10% up move → de-risking
+    # LOST money (governed_cum < ungoverned_cum → governor_pnl < 0).
+    snaps = [
+        {"trade_date": "2026-06-01", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 1000.0}),
+         "intended_weights": json.dumps({"SPY": 0.05}),
+         "ungoverned_weights": json.dumps({"SPY": 0.10})},
+        {"trade_date": "2026-06-02", "nav": 100_000.0, "prices": json.dumps({"SPY": 11.0}),
+         "positions": json.dumps({"SPY": 1000.0})},
+    ]
+    rows, _ = bv.daily_rows(snaps)
+    cf = bv.governor_counterfactual(rows)
+    assert cf["governed_cum"] == pytest.approx(0.005)     # 0.05 * 0.10
+    assert cf["ungoverned_cum"] == pytest.approx(0.010)   # 0.10 * 0.10
+    assert cf["governor_pnl"] == pytest.approx(-0.005)    # de-risk cost 50bps in the rally
+
+
+def test_governor_counterfactual_derisk_helps_in_a_selloff(bv):
+    # governed = half-size (crash cut), ungoverned = full-size; -10% down move → de-risking
+    # HELPED (governed_cum > ungoverned_cum → governor_pnl > 0, the positive direction).
+    snaps = [
+        {"trade_date": "2026-06-01", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 500.0}),
+         "intended_weights": json.dumps({"SPY": 0.05}),
+         "ungoverned_weights": json.dumps({"SPY": 0.10})},
+        {"trade_date": "2026-06-02", "nav": 100_000.0, "prices": json.dumps({"SPY": 9.0}),
+         "positions": json.dumps({"SPY": 500.0})},
+    ]
+    rows, _ = bv.daily_rows(snaps)
+    cf = bv.governor_counterfactual(rows)
+    assert cf["governed_cum"] == pytest.approx(-0.005)     # 0.05 * -0.10
+    assert cf["ungoverned_cum"] == pytest.approx(-0.010)   # 0.10 * -0.10
+    assert cf["governor_pnl"] == pytest.approx(0.005)      # de-risk SAVED 50bps in the selloff
+
+
+def test_daily_rows_fresh_intent_without_ungov_does_not_use_stale_ungov(bv):
+    # A post-CH0b rebalance (day3) updates intent but — anomalously — carries NO ungoverned book.
+    # It must fall back to the FRESH intent (pnl 0), NOT compare against day1's stale ungoverned.
+    snaps = [
+        {"trade_date": "2026-06-01", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 500.0}),
+         "intended_weights": json.dumps({"SPY": 0.05}),
+         "ungoverned_weights": json.dumps({"SPY": 0.10})},          # day1: big stale ungov
+        {"trade_date": "2026-06-02", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 500.0})},
+        {"trade_date": "2026-06-03", "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+         "positions": json.dumps({"SPY": 500.0}),
+         "intended_weights": json.dumps({"SPY": 0.20})},            # day3: fresh intent, NO ungov
+        {"trade_date": "2026-06-04", "nav": 100_000.0, "prices": json.dumps({"SPY": 11.0}),
+         "positions": json.dumps({"SPY": 500.0})},
+    ]
+    rows, _ = bv.daily_rows(snaps)
+    last = rows[-1]  # the day3->day4 pair uses day3's carried books
+    assert last["intended"] == pytest.approx(last["ungoverned"])   # fresh intent, not stale 0.10
+    assert last["ungoverned"] == pytest.approx(0.20 * (11.0 / 10.0 - 1.0))
+
+
+def test_regime_slices_group_and_attribute(bv, monkeypatch):
+    from scripts.walkforward import regime as _rg
+    monkeypatch.setattr(_rg, "load_regime_map",
+                        lambda a, b, **k: {__import__("datetime").date(2026, 6, 2): "BULL"})
+    rows = [{"date": "2026-06-02", "actual": 0.01, "intended": 0.005, "ungoverned": 0.010}]
+    out = bv.regime_slices(rows)
+    assert set(out) == {"BULL"}
+    assert out["BULL"]["n_days"] == 1
+    assert out["BULL"]["governor_pnl"] == pytest.approx(0.005 - 0.010)
+
+
+def test_regime_slices_empty_when_map_unavailable(bv, monkeypatch):
+    from scripts.walkforward import regime as _rg
+    monkeypatch.setattr(_rg, "load_regime_map",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no vix")))
+    rows = [{"date": "2026-06-02", "actual": 0.01, "intended": 0.005, "ungoverned": 0.010}]
+    assert bv.regime_slices(rows) == {}   # swallowed → omitted, not crashed
+
+
+def test_compute_report_counts_individual_governors(bv):
+    _insert(bv, td="2026-06-01", prices={"SPY": 10.0}, positions={"SPY": 1000.0},
+            intended={"SPY": 0.05}, ungoverned={"SPY": 0.10},
+            crash=0.5, credit=1.0, ladder=1.0, overlay=0.5)
+    _insert(bv, td="2026-06-02", prices={"SPY": 11.0}, positions={"SPY": 1000.0})
+    rep = bv.compute_report()
+    assert rep.crash_governor_days == 1     # crash_mult 0.5 < 1
+    assert rep.credit_governor_days == 0    # credit 1.0
+    assert rep.ladder_days == 0
+    assert rep.governor_pnl == pytest.approx(-0.005)   # de-risk cost in the +10% move
+
+
+def test_schema_migration_is_idempotent_on_legacy_db(bv):
+    # Simulate a legacy DB: drop the CH0b columns, then _conn() must re-add them (no crash).
+    with bv._conn() as c:
+        c.execute("DROP TABLE trend_backval_daily")
+        c.executescript(
+            "CREATE TABLE trend_backval_daily (trade_date TEXT PRIMARY KEY, nav REAL, "
+            "prices TEXT, positions TEXT, intended_weights TEXT, n_positions INTEGER, "
+            "n_blocked INTEGER, overlay_mult REAL, created_at REAL);")
+    # first _conn() migrates; a second must be a no-op (idempotent)
+    for _ in range(2):
+        with bv._conn() as c:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(trend_backval_daily)").fetchall()}
+    assert {"crash_mult", "credit_mult", "ladder_mult", "ungoverned_weights"} <= cols
