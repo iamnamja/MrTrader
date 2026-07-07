@@ -159,6 +159,17 @@ Validated on the live Norgate mirror (5 tradeable weights, gross 0.13). **Before
 renormalisation); (3) a forward-target (un-shifted) weight extraction vs the backtest's 1-day PIT lag;
 (4) a fresh data feed (the Norgate mirror lags). Never raises → {} on any failure (no would-be orders).
 
+**🚨 BEFORE-LIVE GATE RESULT (2026-07-07) — FAILED on the 16-market set (`scripts/run_futures_16market_revalidation.py`):**
+the carry+xSMOM book's **Track-B t (diversification vs live ETF-trend) collapses 2.61 → −0.20** on the 16
+IBKR-tradeable markets vs the validated 76-market universe (standalone Sharpe 0.50 survives; carry 2.03→0.24,
+xsmom 2.22→−0.09). Methodology validated (full-76 reproduced the GL-0 reference 2.61 exactly). **The edge is
+breadth-driven and the 16-market slice is too thin/correlated → the diversifier rationale is gone. DECISION
+(DECISIONS 2026-07-07): DO NOT deploy futures capital on 16 markets. Next futures work = EXPAND the IBKR
+futures universe (16 → toward ~76, verify-on-connect each) to restore breadth, then re-run this gate; else
+shelve futures-live.** The built execution stack (roll policy/monitor/calendar/hybrid roll/signal) stays
+valid + inert — it's the plumbing; the gate just says don't feed it 16-market capital. R1.1/R1.2 (ETF cutover)
+are UNAFFECTED.
+
 **Roll policy — recon + design (2026-07-07):** `app/live_trading/futures_roll_policy.py` (SHADOW
 instrumentation). Recon against the live paper gateway established:
 - **IBKR `reqContractDetails` exposes NO First Notice Day** — only `contractMonth` (delivery month),

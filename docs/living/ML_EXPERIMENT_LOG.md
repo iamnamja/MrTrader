@@ -134,6 +134,12 @@ Tracks model improvement iterations for active and recent phases.
 
 ---
 
+## Futures book — 16-market IBKR re-validation (R1.3 before-live gate) — 2026-07-07 — VERDICT: ❌ EDGE DOES NOT SURVIVE on 16 markets (breadth kill)
+
+`scripts/run_futures_16market_revalidation.py` re-ran the EXACT carry+xSMOM book construction + Track-B machinery on the 16 IBKR-tradeable markets vs the validated 76-market liquid universe. **Track-B t (residual-alpha HAC-t vs live ETF-trend — the GL-0 diversification gate metric): book 2.61 → −0.20; carry 2.03 → 0.24; xsmom 2.22 → −0.09.** Standalone Sharpe: book 0.67 → 0.50 (partly survives), xsmom 0.56 → 0.27. **Methodology validated** — the full-76 book Track-B t reproduced the GL-0 reference (2.611) exactly, so the collapse is real, not a pipeline bug. Cross-sectional carry/xSMOM is breadth-driven; the 16-market slice is too few + too internally-correlated (3 equity indices, 3 rates, 2 grains, 2 FX, energy/metals) → the diversifier rationale (the whole "second engine" case) is gone. **DECISION (DECISIONS 2026-07-07): don't deploy futures capital on 16 markets; next futures work = EXPAND the IBKR universe (16 → ~76, verify-on-connect) then re-run this gate, else shelve futures-live.** The R1.3 execution stack (roll/monitor/calendar/hybrid/signal) is valid + inert; ETF-trend + cash stays the sole live book.
+
+---
+
 ## Alpha-v7 candidate sweep through the LIVE Ruler-v2 gate — 2026-06-14 — VERDICT: ❌ NO NEW PAPER MODEL (every available candidate genuinely fails; not a gate Type-II)
 
 **Goal**: now that Ruler v2 is the live promotion gate (less Type-II, no plausibility-only Type-I leak), run the available candidates through it to find anything turn-on-able in PAPER. Two data-complete candidates were runnable; the rest are blocked/dead. Both runnable ones FAIL on significance/SR — verified honest negatives by an independent Opus methodology review (scoring leak-free; FAILs not artifacts).
