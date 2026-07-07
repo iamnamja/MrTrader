@@ -1,5 +1,7 @@
 """R1.3 — futures_roll_analysis: OI-crossover roll detection + fixed/FND/liquidity gap table.
 Uses a synthetic Norgate panel (monkeypatched) so it runs without the mirror."""
+from datetime import date, timedelta
+
 import pandas as pd
 import pytest
 
@@ -44,6 +46,29 @@ def test_roll_timing_comparison_gaps(fake_norgate):
     assert str(row["fnd"]) == "2026-06-30"               # grain FND = last biz day of June
     # fixed rolls WAY after liquidity migrated — the headline finding for physical markets.
     assert row["fixed_minus_liq"] > 100 and row["fnd_minus_liq"] > 100
+
+
+def test_liquidity_lead_days(fake_norgate):
+    # scheduled(N=Jul) = 2026-07-15; liquidity_roll = 2026-02-06 → lead = 159 days.
+    # (fixed_minus_liq + ROLL_BUFFER_DAYS; the synthetic single roll is far out, so just assert > 0.)
+    lead = ra.liquidity_lead_days("ZS")
+    assert lead is not None and lead > 0
+
+
+def test_estimate_liquidity_roll_projects_before_scheduled_expiry(fake_norgate, monkeypatch):
+    monkeypatch.setattr(ra, "liquidity_lead_days", lambda root, **k: 40)   # 40-day lead
+    est = ra.estimate_liquidity_roll("ZS", "202607")
+    assert est == date(2026, 7, 15) - timedelta(days=40)                   # scheduled − lead
+
+
+def test_estimate_liquidity_roll_none_for_cash_and_bad_month():
+    assert ra.estimate_liquidity_roll("ES", "202609") is None        # cash → no dynamic roll
+    assert ra.estimate_liquidity_roll("ZS", "202613") is None        # malformed month → None
+
+
+def test_estimate_liquidity_roll_none_on_insufficient_history(monkeypatch):
+    monkeypatch.setattr(ra, "liquidity_lead_days", lambda root, **k: None)   # no roll history
+    assert ra.estimate_liquidity_roll("ZS", "202607") is None
 
 
 def test_summarize_shape(fake_norgate):

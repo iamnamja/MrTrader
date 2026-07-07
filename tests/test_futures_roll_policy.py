@@ -84,10 +84,28 @@ def test_roll_report_snapshot_and_logs():
     assert snap["liquidity_roll"] is None                 # not wired yet (instrumentation slot)
 
 
-def test_liquidity_roll_is_recorded_but_not_yet_binding():
-    # A supplied vol/OI crossover date is logged but does NOT change the recommendation (R1.3 measures
-    # it first; making it binding requires re-validating the signal under the new roll).
-    liq = date(2026, 6, 20)
+def test_liquidity_roll_is_binding_for_physical_markets():
+    # HYBRID: for a PHYSICAL market the OI-crossover date is BINDING (pulls the roll earlier).
+    liq = date(2026, 6, 8)
     rd = rp.compute_roll_dates("ZS", contract_month="202607", last_trade="20260714", liquidity_roll=liq)
     assert rd.liquidity_roll == liq
-    assert rd.recommended == date(2026, 6, 30)            # still the FND floor, not the earlier liq date
+    assert rd.recommended == date(2026, 6, 8)             # crossover < FND floor (Jun 30) → binds
+
+
+def test_liquidity_roll_ignored_for_cash_and_fx():
+    # Cash/FX keep the calendar rule (fixed + the always-on last-trade cap) — a crossover date must NOT
+    # change their recommendation. An EARLIER liq date would move it if it were binding; it must not.
+    liq = date(2026, 5, 1)                               # much earlier than fixed/cap — a trap
+    for root, cm, lt in (("ES", "202609", "20260918"), ("6E", "202609", "20260914")):
+        rd = rp.compute_roll_dates(root, contract_month=cm, last_trade=lt, liquidity_roll=liq)
+        assert rd.recommended == min(rd.fixed_roll, rd.last_trade_cap)   # calendar/cap, NOT the liq date
+        assert rd.recommended != liq
+
+
+def test_fixed_bounds_a_late_liquidity_estimate_for_physical():
+    # Safety: even if the crossover estimate is anomalously LATE (after the fixed rule), `fixed` still
+    # bounds it — we never roll a physical LATER than the calendar rule.
+    late = date(2026, 8, 1)                               # later than fixed_roll (Jul 10) and FND (Jun 30)
+    rd = rp.compute_roll_dates("ZS", contract_month="202607", last_trade="20260714", liquidity_roll=late)
+    assert rd.recommended == date(2026, 6, 30)           # FND floor still earliest; never the late liq
+    assert rd.recommended <= rd.fixed_roll               # fixed always bounds — never roll later than calendar
