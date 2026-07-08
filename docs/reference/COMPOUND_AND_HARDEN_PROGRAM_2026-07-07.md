@@ -80,16 +80,22 @@ observed shadow-soak distribution (and reconcile it with any `trend_max_position
 `pm.per_name_gate_mode`→enforce. **Deliverable met:** a fail-closed per-name gate on the live order path,
 shadow-soaking now. Independent of CH2 — ran in parallel.
 
-### CH2 — Antifragile trend sizing: the THREE new pieces (SHADOW → gated)
+### CH2 — Antifragile trend sizing: the THREE new pieces (SHADOW → gated) ← **IN PROGRESS**
 The core build. Each is a **continuous multiplier** on trend gross, shadow-first, gated vs the CH0a baseline
 by the **DUAL gate — (a) beat constant-gross CPCV mean_sharpe 0.7009 OOS with params → DSR, AND (b) don't
 regress the BEAR regime-conditional Sharpe** (the folds under-sample stress) — armed only after a shadow soak.
+**Shared gate harness built:** `app/research/ch2_sizing.py::gate_multiplier` (governed = base × m[t] through
+the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on + the BEAR prong via `regime_conditional_sharpe`).
 - **CH2a — trend-strength-conditioned gross:** size UP when the trend signal is broad + strong across the
   universe; size DOWN when weak/conflicting — directly attacks TSMOM's whipsaw failure mode (weak-trend
-  regimes are where it bleeds).
-- **CH2b — correlation-regime gross scaling:** cut gross when realized cross-sectional correlation → 1
-  (every position becomes one bet; "diversification" is illusory) — a real-time exposure-honesty control.
-- **CH2c — trending-vs-whipsaw-aware crash governor:** the existing VIX governor cuts on *stress* — but
+  regimes are where it bleeds). *(pending)*
+- **CH2b — correlation-regime gross scaling** — ❌ **KILLED (2026-07-08):** cut gross when the held-book
+  weighted correlation → 1. All 3 pre-registered configs FAIL every prong OOS (primary mean_sharpe 0.6607,
+  Δ−0.040, improvement p 0.68 n.s., BEAR regresses −0.795); high held-book correlation is predominantly a
+  strong equity-BULL signal (trend's best periods), not a crisis signal — correlation is direction-blind.
+  Ship nothing. Registered `ch2b_correlation_gross` (KILLED). DECISIONS 2026-07-08. *Directly motivates CH2c
+  (add the direction signal).*
+- **CH2c — trending-vs-whipsaw-aware crash governor** ← **NEXT:** the existing VIX governor cuts on *stress* — but
   trend often MAKES money in *trending* crises (2008/2022). Distinguish "trending stress" (stay — it's
   paying) from "whipsaw stress" (cut): de-risk when vol is high **AND** trend signals are conflicting/
   reversing, not merely when vol is high. Stops the governor from cutting winning crisis-trends.
@@ -142,6 +148,7 @@ tests + an independent Opus deep-dive, per this project's discipline.
 - **CH1** — ✅ SHADOW-LANDED (2026-07-07): per-name correlation/heat/concentration gate on the live path
   (`per_name_gate.py`, `pm.per_name_gate_mode` default shadow); Opus-reviewed, inert to live trades.
   Shadow-soaking; correlation enforce-threshold to be calibrated from the soak (see CH1 above).
-- **NEXT: CH2** — the 3 antifragile sizing multipliers (needs the CH0a baseline; DUAL gate). CH3 (diagnostic)
-  can run alongside.
-- CH2–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).
+- **CH2** — 🔄 IN PROGRESS (2026-07-08): shared gate harness built (`app/research/ch2_sizing.py`). **CH2b
+  correlation-regime gross = ❌ KILLED** (doesn't beat constant-gross; correlation is direction-blind).
+  **NEXT: CH2c** (whipsaw-aware governor) → then CH2a (trend-strength gross). CH3 (diagnostic) can run alongside.
+- CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

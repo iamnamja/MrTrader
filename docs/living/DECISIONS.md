@@ -55,6 +55,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-08 (CH2b — Compound-and-Harden) — correlation-regime gross scaling does NOT beat constant-gross → KILLED (ship nothing); built the shared CH2 gate harness
+
+**Context**: CH2 makes the trend book antifragile via continuous gross-sizing multipliers, each gated by the DUAL rule (beat the frozen CH0a constant-gross baseline CPCV mean_sharpe **0.7009** out-of-sample with params → DSR, AND not regress the BEAR regime-conditional Sharpe ≥ −0.77). Built the shared gate harness `app/research/ch2_sizing.py::gate_multiplier` (governed book = base × m[t]; run through the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on; reuse `ch0_baseline.regime_conditional_sharpe` for the BEAR prong). Built CH2b first (correlation cut — de-risk-only, simplest).
+
+**The shared gate harness (hardened after its own Opus review):** `gate_multiplier` runs governed = base × m[t] through the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on. Hardened so it can safely gate the LATER multipliers too: (1) the **harness owns the PIT 1-day lag** — signals return info-through-t, the harness shifts, so an author can't leak by forgetting to (MAJOR-2); (2) it gates against the **full-precision** base evaluated in-run (m≡1 reproduces 0.7009 exactly), not the rounded artifact; (3) a **paired block-bootstrap significance** prong so a noise-level "beat" can't ship (MAJOR-1); (4) it charges **re-sizing turnover** on |Δm|; (5) a **shift-sensitivity** diagnostic flags any timing-precise (leaky) signal. TRIPLE gate: beat mean_sharpe SIGNIFICANTLY AND not regress BEAR.
+
+**CH2b signal**: cut gross when the **held-book** weighted average pairwise correlation rises toward 1 (the book has collapsed to one bet). First cut used the raw 10-ETF universe correlation and NEVER fired (the idle bond/gold/FX diversifiers wash the average below 0.40) — corrected to the **held-book weighted** correlation (the backtest twin of the CH1 live per_name_gate metric), which does fire (avg multiplier ~0.96).
+
+**Result (3 pre-registered configs, all gated vs the full-precision base 0.7009):**
+| config | mean_sharpe | Δ vs base | improve p | BEAR | verdict |
+|---|---|---|---|---|---|
+| ch2b_primary (w63, 0.60→0.90, floor 0.50) | 0.6607 | **−0.0402** | 0.68 (n.s.) | −0.795 (regresses) | FAIL |
+| ch2b_shorter_window (w42) | 0.6591 | −0.0418 | 0.80 | −0.829 | FAIL |
+| ch2b_gentler_band (0.70→0.95, floor 0.60) | 0.6825 | −0.0183 | 0.60 | −0.787 | FAIL |
+
+**Decision: KILL CH2b — ship nothing.** All three configs FAIL every prong — worse mean_sharpe, improvement not significant (p ≈ 0.6–0.8), AND they regress BEAR. The mechanism is clear and expected: high held-book correlation happens **predominantly in strong equity BULL trends** (trend's most profitable periods, all equities rising together), not just in crises — so cutting gross on correlation sacrifices return. **Correlation alone is direction-blind**: it can't distinguish a profitable correlated bull from a dangerous correlated crash. Per the program's discipline ("if it doesn't beat static, ship nothing — you've only added a knob") and OPT-5 (pre-register, no post-hoc flipping), CH2b is killed. Registered `ch2b_correlation_gross` as a KILLED family (N_TRIALS 26→27) + a DEGREES_OF_FREEDOM entry.
+
+**Consequences**: no live change (CH2b was never wired — it failed the gate). The shared gate harness is now built + tested for CH2c/CH2a. **The CH2b kill directly motivates CH2c**: the trending-vs-whipsaw-aware governor adds the direction signal correlation lacks (de-risk only when vol is high AND trend is conflicting/reversing — a whipsaw — not when the book is merely correlated-and-trending). NEXT = CH2c.
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
 
 **Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**

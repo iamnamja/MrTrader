@@ -1,0 +1,92 @@
+{
+  "multiplier": "CH2b \u2014 correlation-regime gross scaling",
+  "gate": "governed must beat the base CPCV mean_sharpe (SIGNIFICANTLY, paired bootstrap) AND not regress BEAR",
+  "base_mean_sharpe": 0.7009,
+  "n_trials_registered": 3,
+  "primary_config": "ch2b_primary",
+  "PASS": false,
+  "verdict": "KILL - does not beat constant-gross; ship nothing",
+  "results": [
+    {
+      "label": "ch2b_primary",
+      "n_trials_registered": 3,
+      "mean_sharpe": 0.6607,
+      "baseline_mean_sharpe": 0.7009,
+      "d_mean_sharpe": -0.0402,
+      "improve_pvalue": 0.678,
+      "bear_sharpe": -0.795,
+      "baseline_bear_sharpe": -0.769,
+      "path_sharpe_tstat": 5.0777,
+      "point_sr": 0.66,
+      "worst_regime_sharpe": -1.6839,
+      "avg_mult": 0.957,
+      "min_mult": 0.5,
+      "lag_sensitivity": -0.0241,
+      "beats_baseline": false,
+      "improvement_significant": false,
+      "bear_no_regression": false,
+      "PASS": false,
+      "config": {
+        "name": "ch2b_primary",
+        "window": 63,
+        "corr_lo": 0.6,
+        "corr_hi": 0.9,
+        "floor": 0.5
+      }
+    },
+    {
+      "label": "ch2b_shorter_window",
+      "n_trials_registered": 3,
+      "mean_sharpe": 0.6591,
+      "baseline_mean_sharpe": 0.7009,
+      "d_mean_sharpe": -0.0418,
+      "improve_pvalue": 0.795,
+      "bear_sharpe": -0.829,
+      "baseline_bear_sharpe": -0.769,
+      "path_sharpe_tstat": 5.0456,
+      "point_sr": 0.6566,
+      "worst_regime_sharpe": -1.7147,
+      "avg_mult": 0.9571,
+      "min_mult": 0.5,
+      "lag_sensitivity": -0.0246,
+      "beats_baseline": false,
+      "improvement_significant": false,
+      "bear_no_regression": false,
+      "PASS": false,
+      "config": {
+        "name": "ch2b_shorter_window",
+        "window": 42,
+        "corr_lo": 0.6,
+        "corr_hi": 0.9,
+        "floor": 0.5
+      }
+    },
+    {
+      "label": "ch2b_gentler_band",
+      "n_trials_registered": 3,
+      "mean_sharpe": 0.6825,
+      "baseline_mean_sharpe": 0.7009,
+      "d_mean_sharpe": -0.0183,
+      "improve_pvalue": 0.596,
+      "bear_sharpe": -0.787,
+      "baseline_bear_sharpe": -0.769,
+      "path_sharpe_tstat": 5.3104,
+      "point_sr": 0.6824,
+      "worst_regime_sharpe": -1.6817,
+      "avg_mult": 0.9762,
+      "min_mult": 0.6,
+      "lag_sensitivity": -0.0182,
+      "beats_baseline": false,
+      "improvement_significant": false,
+      "bear_no_regression": false,
+      "PASS": false,
+      "config": {
+        "name": "ch2b_gentler_band",
+        "window": 63,
+        "corr_lo": 0.7,
+        "corr_hi": 0.95,
+        "floor": 0.6
+      }
+    }
+  ]
+}
