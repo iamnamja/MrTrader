@@ -132,6 +132,22 @@ def test_governed_returns_identity_multiplier_reproduces_base():
     assert np.allclose(gov.to_numpy(), base.to_numpy())      # m≡1 → exact reproduction
 
 
+def test_governed_returns_levers_up_when_m_above_one():
+    # the m>1 path (CH2a up-sizing) — the harness must NOT clip/cap. After the harness lag, m[0] is
+    # the warmup fill (1.0) and m[1:]=1.5 → gov[1:] = 1.5 × base[1:] (levered, not capped at 1.0).
+    idx = pd.date_range("2020-01-01", periods=30, freq="B")
+    base = pd.Series(np.random.default_rng(7).normal(0, 0.01, 30), index=idx)
+    gov, m = ch2.governed_returns(pd.Series(1.5, index=idx), base, apply_lag=True, cost_bps=0.0)
+    assert m.iloc[0] == pytest.approx(1.0)                       # warmup fill
+    assert np.allclose(m.iloc[1:].to_numpy(), 1.5)             # not capped at 1.0
+    assert np.allclose(gov.iloc[1:].to_numpy(), (base.iloc[1:] * 1.5).to_numpy())
+
+
+def test_strength_signal_raises_on_unknown_kind():
+    with pytest.raises(ValueError):
+        ch2._strength_signal(pd.DataFrame(), None, "not_a_signal")
+
+
 def test_governed_returns_charges_resize_turnover():
     idx = pd.date_range("2020-01-01", periods=4, freq="B")
     base = pd.Series([0.0, 0.0, 0.0, 0.0], index=idx)         # isolate the cost term
@@ -220,6 +236,37 @@ def test_vix_ratio_series_aligns_and_ffills(monkeypatch):
     assert not ratio.isna().all()                                     # aligned, not all-NaN
     assert ratio.loc["2020-01-03"] == pytest.approx(24.0 / 20.0)       # a book day matches its ratio
     assert ratio.iloc[-1] == pytest.approx(18.0 / 20.0)               # beyond vix data -> ffill last
+
+
+def test_trend_strength_gross_maps_clarity_to_leverage(monkeypatch):
+    idx = pd.date_range("2020-01-01", periods=5, freq="B")
+    # clarity: below lo, at lo, mid, at hi, above hi
+    monkeypatch.setattr(ch2, "trend_clarity",
+                        lambda p, c: pd.Series([0.10, 0.30, 0.50, 0.70, 0.90], index=idx))
+    m = ch2.trend_strength_gross_multiplier(pd.DataFrame(index=idx), None, kind="clarity",
+                                            lo=0.30, hi=0.70, m_lo=0.50, m_hi=1.50)
+    assert m.iloc[0] == pytest.approx(0.50)   # whipsaw (<= lo) -> m_lo (cut)
+    assert m.iloc[2] == pytest.approx(1.00)   # mid clarity -> 1.0 (neutral)
+    assert m.iloc[3] == pytest.approx(1.50)   # clean trend (>= hi) -> m_hi (lever UP)
+    assert m.iloc[4] == pytest.approx(1.50)   # clamped at m_hi
+
+
+def test_trend_strength_cut_only_never_levers_up(monkeypatch):
+    idx = pd.date_range("2020-01-01", periods=3, freq="B")
+    monkeypatch.setattr(ch2, "trend_clarity", lambda p, c: pd.Series([0.9, 0.5, 0.1], index=idx))
+    m = ch2.trend_strength_gross_multiplier(pd.DataFrame(index=idx), None, kind="clarity",
+                                            lo=0.30, hi=0.70, m_lo=0.50, m_hi=1.00)
+    assert m.max() <= 1.0 + 1e-9 and m.min() >= 0.50 - 1e-9   # cut-only: never > 1.0
+
+
+def test_trend_breadth_fraction_trending():
+    from app.strategy.tsmom import TSMOMConfig
+    idx = pd.date_range("2019-01-01", periods=300, freq="B")
+    up = pd.Series(100.0 * (1.01 ** np.arange(300)), index=idx)          # trending UP
+    down = pd.Series(100.0 * (0.99 ** np.arange(300)), index=idx)        # trending DOWN
+    prices = pd.DataFrame({"A": up, "B": up * 2, "C": down})
+    breadth = ch2.trend_breadth(prices, TSMOMConfig(universe=["A", "B", "C"]))
+    assert breadth.dropna().iloc[-1] == pytest.approx(2.0 / 3.0)         # 2 of 3 net-up
 
 
 def test_whipsaw_no_cut_when_stress_absent(monkeypatch):

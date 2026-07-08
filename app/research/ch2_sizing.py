@@ -393,6 +393,90 @@ def run_ch2c() -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────────────
+# CH2a — trend-strength-conditioned gross
+# ──────────────────────────────────────────────────────────────────────────────────
+def trend_breadth(prices: pd.DataFrame, cfg) -> pd.Series:
+    """Book BREADTH per date = fraction of the universe with a net-positive ensemble trend signal
+    ∈ [0,1]. High = a broad rally (many names trending up); low = narrow/no participation. PIT.
+    The 'broad' half of 'broad + strong' (trend_clarity is the 'strong' half).
+
+    Same warmup wart as trend_clarity: tsmom_signals fills insufficient-history to 0 (not >0 → not
+    counted as trending), so a name in its own lookback warmup drags breadth DOWN. Harmless for the
+    2007-listed universe (warm before any signal matters); recheck if the universe adds a late name."""
+    from app.strategy.tsmom import tsmom_signals
+    return (tsmom_signals(prices, cfg) > 0).mean(axis=1)
+
+
+def _strength_signal(prices: pd.DataFrame, cfg, kind: str) -> pd.Series:
+    if kind == "clarity":
+        return trend_clarity(prices, cfg)
+    if kind == "breadth":
+        return trend_breadth(prices, cfg)
+    raise ValueError(f"unknown strength signal {kind!r}")
+
+
+def trend_strength_gross_multiplier(prices: pd.DataFrame, cfg, *, kind: str = "clarity",
+                                    lo: float = 0.30, hi: float = 0.70, m_lo: float = 0.50,
+                                    m_hi: float = 1.50) -> pd.Series:
+    """CH2a: size gross by trend strength/breadth — lever UP (toward m_hi) when the book's trends
+    are broad + clean, CUT (toward m_lo) when weak/conflicting (whipsaw, where TSMOM is thought to
+    bleed). `kind` selects the signal ('clarity' = within-name lookback agreement, 'breadth' =
+    fraction of the universe trending). Linear in the signal between [lo, hi]. Un-shifted (harness
+    owns the lag).
+
+    Unlike CH2b/CH2c this can exceed 1.0 (UP-sizing) — in the backtest that simply levers the book
+    (Sharpe is invariant to uniform leverage, so any gain must come from TIMING: more gross when the
+    signal predicts higher forward Sharpe). A LIVE wiring (only if it passes) would cap the
+    up-sizing by the 80% gross cap + a leverage ceiling; the research gate leaves it uncapped to
+    measure the pure timing effect."""
+    s = _strength_signal(prices, cfg, kind)
+    frac = ((s - lo) / max(hi - lo, 1e-9)).clip(lower=0.0, upper=1.0)
+    return m_lo + (m_hi - m_lo) * frac
+
+
+CH2A_CONFIGS = [
+    {"name": "ch2a_primary", "kind": "clarity", "lo": 0.30, "hi": 0.70, "m_lo": 0.50, "m_hi": 1.50},
+    {"name": "ch2a_gentle", "kind": "clarity", "lo": 0.30, "hi": 0.70, "m_lo": 0.75, "m_hi": 1.25},
+    # de-risk-ONLY variant (never levers up) — isolates "is the value in cutting whipsaw, or in
+    # levering clean trends?"
+    {"name": "ch2a_cut_only", "kind": "clarity", "lo": 0.30, "hi": 0.70, "m_lo": 0.50, "m_hi": 1.00},
+    # the 'broad' operationalization (breadth, not clarity) — so the KILL isn't a strawman on one
+    # strength measure.
+    {"name": "ch2a_breadth", "kind": "breadth", "lo": 0.30, "hi": 0.70, "m_lo": 0.50, "m_hi": 1.50},
+]
+
+
+def run_ch2a() -> dict:
+    """Gate the trend-strength (up/down) gross sizing vs constant-gross. PASS on ch2a_primary."""
+    from app.strategy.tsmom import TSMOMConfig
+    base, spy, closes = build_base()
+    cfg = TSMOMConfig(universe=[c for c in closes.columns])
+    n_trials = len(CH2A_CONFIGS)
+    base_rep = _evaluate(base, spy, "ch2a_base", n_trials)
+    base_mean_sharpe = float(base_rep.mean_sharpe)
+    results = []
+    for c in CH2A_CONFIGS:
+        m = trend_strength_gross_multiplier(closes, cfg, kind=c["kind"], lo=c["lo"], hi=c["hi"],
+                                            m_lo=c["m_lo"], m_hi=c["m_hi"])
+        r = gate_multiplier(m, base, spy, label=c["name"], n_trials=n_trials,
+                            base_mean_sharpe=base_mean_sharpe)
+        r["config"] = c
+        results.append(r)
+    primary = next(r for r in results if r["label"] == "ch2a_primary")
+    return {
+        "multiplier": "CH2a — trend-strength-conditioned gross (lever up clean trends / cut whipsaw)",
+        "gate": "governed must beat the base CPCV mean_sharpe (SIGNIFICANTLY) AND not regress BEAR",
+        "base_mean_sharpe": round(base_mean_sharpe, 4),
+        "n_trials_registered": n_trials,
+        "primary_config": "ch2a_primary",
+        "PASS": bool(primary["PASS"]),
+        "verdict": ("SHIP (shadow-first)" if primary["PASS"]
+                    else "KILL - does not beat constant-gross; ship nothing"),
+        "results": results,
+    }
+
+
 def _print_block(out: dict) -> None:
     print(f"  {out['multiplier']}")
     print(f"    base_mean_sharpe (full precision): {out['base_mean_sharpe']}")
@@ -411,7 +495,7 @@ def _print_block(out: dict) -> None:
 
 
 def main() -> int:
-    out = {"candidates": [run_ch2b(), run_ch2c()]}
+    out = {"candidates": [run_ch2a(), run_ch2b(), run_ch2c()]}
     with open(RESULTS_ARTIFACT, "w") as f:
         json.dump(out, f, indent=2, default=str)
     print(f"CH2 sizing -> {RESULTS_ARTIFACT}")
