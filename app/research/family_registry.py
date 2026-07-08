@@ -115,6 +115,10 @@ FAMILIES: List[Family] = [
            "clarity + breadth. Signals have ~0 forward-Sharpe corr -> sizing injects Var(m) noise "
            "-> ship nothing. ALL 3 CH2 trend-quality sizing pieces killed (vol-targeting untested)",
            "DECISIONS 2026-07-08 CH2a"),
+    Family("ch4_ranging_mr", "CH4 ranging-market mean-reversion sleeve", "equity_etf", KILLED,
+           "the ONE pre-registered terminating search; primary fails Track-A + off-regime + Track-B "
+           "(t -0.52); ranging regime rare (2% active); the good-looking loose config was a "
+           "detection-lag mirage -> KILL, 12-mo moratorium binds", "DECISIONS 2026-07-08 CH4"),
     # ── Crypto ──
     Family("crypto_trend", "Crypto trend (TSMOM, spot)", "crypto", PAPER,
            "Sharpe 0.64, corr-to-trend 0.18; CAPITAL fail (history)", "DECISIONS 2026-06-16 P3-1"),
@@ -156,6 +160,10 @@ DEGREES_OF_FREEDOM: List[str] = [
     "CH2a trend-strength gross: 4 pre-registered configs across TWO operationalizations (clarity x3 + "
     "breadth) so it isn't a one-measure strawman; all decisively worse than constant-gross "
     "(-0.07 to -0.19) -> killed. With CH2b+CH2c this closes CH2: conditional sizing doesn't beat static.",
+    "CH4 ranging-MR: 8 pre-registered configs, decision on the primary ONLY (no best-of-8). Primary "
+    "killed (3/5 gates); the one config that passed Track-A+Track-B (loose_regime, CPCV 0.82) FAILED "
+    "the detection-lag gate (0.82->0.16 under a 2d regime lag = mirage). Pre-registration prevented "
+    "the mirage flipping the verdict; 12-month hunting moratorium binds.",
 ]
 
 
