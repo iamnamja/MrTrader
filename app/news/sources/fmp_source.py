@@ -43,12 +43,19 @@ def _key() -> Optional[str]:
 def fetch_economic_calendar(
     days_ahead: int = 3,
     min_impact: str = "medium",
+    *,
+    include_past_today: bool = False,
 ) -> Optional[list[dict]]:
     """Return today's (and near-term) economic events from FMP, normalized.
 
     Each dict: event_type, event_name, event_time (UTC datetime), importance, estimate,
     prior, actual, country, currency, id, source. Returns ``None`` if FMP is unavailable
     (so a caller may fall back to another provider).
+
+    ``include_past_today`` (default False): normally an event more than 1h in the past is
+    dropped (the trading gate wants a forward-looking view — do NOT change that default).
+    When True, events from earlier TODAY (already released) are KEPT so their now-available
+    ``actual`` can be read — used by the read-only Macro-Intel display back-fill, NOT the gate.
     """
     global _ECON_CAL_DISABLED
     key = _key()
@@ -89,6 +96,10 @@ def fetch_economic_calendar(
 
     now_utc = datetime.now(timezone.utc)
     cutoff = now_utc + timedelta(days=days_ahead)
+    # Lower bound: normally "1h ago" (forward-looking gate view); with include_past_today, midnight
+    # UTC today so already-released same-day events (and their actuals) are kept for the display.
+    lower_bound = (now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+                   if include_past_today else now_utc - timedelta(hours=1))
     min_rank = _IMPACT_RANK.get(min_impact, 1)
 
     results: list[dict] = []
@@ -103,7 +114,7 @@ def fetch_economic_calendar(
         except ValueError:
             continue
 
-        if evt_dt < now_utc - timedelta(hours=1) or evt_dt > cutoff:
+        if evt_dt < lower_bound or evt_dt > cutoff:
             continue
 
         impact = (e.get("impact") or "low").lower()
