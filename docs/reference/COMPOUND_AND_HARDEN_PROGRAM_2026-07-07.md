@@ -95,10 +95,14 @@ the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on + the BEAR prong via `
   strong equity-BULL signal (trend's best periods), not a crisis signal — correlation is direction-blind.
   Ship nothing. Registered `ch2b_correlation_gross` (KILLED). DECISIONS 2026-07-08. *Directly motivates CH2c
   (add the direction signal).*
-- **CH2c — trending-vs-whipsaw-aware crash governor** ← **NEXT:** the existing VIX governor cuts on *stress* — but
-  trend often MAKES money in *trending* crises (2008/2022). Distinguish "trending stress" (stay — it's
-  paying) from "whipsaw stress" (cut): de-risk when vol is high **AND** trend signals are conflicting/
-  reversing, not merely when vol is high. Stops the governor from cutting winning crisis-trends.
+- **CH2c — trending-vs-whipsaw-aware crash governor** — ❌ **KILLED (2026-07-08):** de-risk only when stressed
+  AND trends are choppy (whipsaw = 1 − trend clarity), so a broad *trending* crash (2008/2022) is NOT cut.
+  Hypothesis vindicated — it beats the plain VIX governor (+0.003, and pulls BEAR back from −0.883 to −0.791) —
+  but vs constant-gross only +0.0006 (n.s., p 0.56) + still regresses BEAR → ship nothing. Registered
+  `ch2c_whipsaw_governor` (KILLED). **⚠️ CH3 flag (scoped, NOT a verdict):** measured ONLY on the trend
+  book's Sharpe + bear-regime Sharpe, the plain VIX governor (LIVE) doesn't beat static + worsens the bear
+  tail — but this harness does NOT measure its actual mandate (portfolio drawdown/tail-insurance), which
+  mechanically lowers Sharpe. A question for CH3 on the right objective, not "turn it off." DECISIONS 2026-07-08.
 - **Composite rule:** all multipliers compose (× the existing floored governors), can only be armed
   individually behind flags, each with its own CPCV evidence. **Deliverable:** the 3 multipliers, each with
   a DUAL-gate result (beats constant-gross OOS mean_sharpe AND no BEAR-regime-Sharpe regression); ship only
@@ -149,6 +153,7 @@ tests + an independent Opus deep-dive, per this project's discipline.
   (`per_name_gate.py`, `pm.per_name_gate_mode` default shadow); Opus-reviewed, inert to live trades.
   Shadow-soaking; correlation enforce-threshold to be calibrated from the soak (see CH1 above).
 - **CH2** — 🔄 IN PROGRESS (2026-07-08): shared gate harness built (`app/research/ch2_sizing.py`). **CH2b
-  correlation-regime gross = ❌ KILLED** (doesn't beat constant-gross; correlation is direction-blind).
-  **NEXT: CH2c** (whipsaw-aware governor) → then CH2a (trend-strength gross). CH3 (diagnostic) can run alongside.
+  correlation-regime gross = ❌ KILLED** (direction-blind). **CH2c whipsaw governor = ❌ KILLED** (beats the
+  plain governor but not constant-gross significantly; flagged the live governor for CH3). **NEXT: CH2a**
+  (trend-strength gross — the up-sizing one) → then CH3 (diagnostic; now has the governor question).
 - CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

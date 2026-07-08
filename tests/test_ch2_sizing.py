@@ -175,3 +175,58 @@ def test_load_baseline_bar_reads_frozen_artifact():
     bar = ch2.load_baseline_bar()
     assert bar["mean_sharpe"] == pytest.approx(0.7009, abs=1e-4)
     assert bar["bear_sharpe"] is not None and bar["bear_sharpe"] < 0   # BEAR is negative
+
+
+# ── CH2c — whipsaw-aware governor ─────────────────────────────────────────────
+def test_whipsaw_governor_cuts_only_on_stress_AND_chop(monkeypatch):
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    # clarity: clean, clean, chop, chop ; ratio: calm, stress, calm, stress
+    monkeypatch.setattr(ch2, "trend_clarity", lambda p, c: pd.Series([1.0, 1.0, 0.0, 0.0], index=idx))
+    ratio = pd.Series([0.90, 1.15, 0.90, 1.15], index=idx)
+    m = ch2.whipsaw_governor_multiplier(pd.DataFrame(index=idx), None, ratio,
+                                        r_lo=1.00, r_hi=1.15, derisk_to=0.50)
+    assert m.iloc[0] == pytest.approx(1.0)   # calm -> no cut
+    assert m.iloc[1] == pytest.approx(1.0)   # STRESS but clean trend (whipsaw 0) -> stay (it's paying)
+    assert m.iloc[2] == pytest.approx(1.0)   # chop but calm -> no cut
+    assert m.iloc[3] == pytest.approx(0.5)   # stress AND chop -> cut to derisk_to
+
+
+def test_trend_clarity_is_one_for_clean_uptrend():
+    from app.strategy.tsmom import TSMOMConfig
+    idx = pd.date_range("2019-01-01", periods=300, freq="B")
+    up = pd.Series(100.0 * (1.01 ** np.arange(300)), index=idx)   # strictly monotone up
+    prices = pd.DataFrame({"A": up, "B": up * 1.5})
+    clarity = ch2.trend_clarity(prices, TSMOMConfig(universe=["A", "B"]))
+    assert clarity.dropna().iloc[-1] == pytest.approx(1.0)         # all lookbacks agree -> |ens|=1
+
+
+def test_plain_vix_governor_is_binary_cut():
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    ratio = pd.Series([0.90, 1.10, 1.00, 1.20], index=idx)
+    m = ch2.plain_vix_governor_multiplier(ratio, idx, ratio_threshold=1.00, derisk_to=0.50)
+    assert list(m) == [1.0, 0.5, 1.0, 0.5]   # >1.0 -> cut; ==1.0 not > threshold -> stay
+
+
+def test_vix_ratio_series_aligns_and_ffills(monkeypatch):
+    # guards the tz/date-alignment fragility: a mis-align would return an all-NaN ratio (governor
+    # silently vanishes). Assert the ratio reindexes non-NaN onto the book's trading days + ffills.
+    from scripts.walkforward import sleeves as _sl
+    vix_idx = pd.date_range("2020-01-01", periods=5, freq="B")         # Jan1,2,3,6,7
+    vix = pd.Series([20.0, 22.0, 24.0, 20.0, 18.0], index=vix_idx)
+    vix3m = pd.Series([20.0] * 5, index=vix_idx)
+    monkeypatch.setattr(_sl, "fetch_vix_term", lambda **k: (vix, vix3m))
+    book_idx = pd.date_range("2020-01-02", periods=6, freq="B")        # Jan2,3,6,7,8,9 (past vix end)
+    ratio = ch2.vix_ratio_series(book_idx)
+    assert not ratio.isna().all()                                     # aligned, not all-NaN
+    assert ratio.loc["2020-01-03"] == pytest.approx(24.0 / 20.0)       # a book day matches its ratio
+    assert ratio.iloc[-1] == pytest.approx(18.0 / 20.0)               # beyond vix data -> ffill last
+
+
+def test_whipsaw_no_cut_when_stress_absent(monkeypatch):
+    # pre-VIX3M / calm: NaN or sub-threshold ratio -> stress fillna 0 -> m=1 even at MAX whipsaw
+    idx = pd.date_range("2007-01-01", periods=3, freq="B")
+    monkeypatch.setattr(ch2, "trend_clarity", lambda p, c: pd.Series([0.0, 0.0, 0.0], index=idx))
+    ratio = pd.Series([np.nan, np.nan, np.nan], index=idx)            # no VIX3M yet
+    m = ch2.whipsaw_governor_multiplier(pd.DataFrame(index=idx), None, ratio,
+                                        r_lo=1.00, r_hi=1.15, derisk_to=0.50)
+    assert (m == 1.0).all()                                          # no stress -> no cut

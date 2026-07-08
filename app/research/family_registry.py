@@ -106,6 +106,10 @@ FAMILIES: List[Family] = [
            "cuts gross on high held-book corr; -0.040 mean_sharpe (n.s.) + regresses BEAR vs "
            "constant-gross OOS (correlation is direction-blind) -> ship nothing",
            "DECISIONS 2026-07-08 CH2b"),
+    Family("ch2c_whipsaw_governor", "CH2c whipsaw-aware crash governor", "overlay", KILLED,
+           "beats the plain VIX governor (+0.003) but only +0.0006 vs constant-gross (n.s.) + "
+           "regresses BEAR -> ship nothing (CH3 flag: plain governor's trend-book Sharpe cost is "
+           "not its mandate = portfolio tail-insurance)", "DECISIONS 2026-07-08 CH2c"),
     # ── Crypto ──
     Family("crypto_trend", "Crypto trend (TSMOM, spot)", "crypto", PAPER,
            "Sharpe 0.64, corr-to-trend 0.18; CAPITAL fail (history)", "DECISIONS 2026-06-16 P3-1"),
@@ -141,6 +145,9 @@ DEGREES_OF_FREEDOM: List[str] = [
     "capital.",
     "CH2b correlation-regime gross: 3 pre-registered configs (window/band/floor), all gated vs the "
     "frozen CH0a baseline; none beat constant-gross (best -0.009) -> killed, no post-hoc flipping.",
+    "CH2c whipsaw governor: 3 pre-registered configs (band/derisk_to) vs constant-gross + the plain "
+    "VIX governor as reference; whipsaw-awareness DID beat the plain governor (+0.003) but only "
+    "+0.0006 vs constant-gross (n.s.) + regressed BEAR -> killed.",
 ]
 
 
