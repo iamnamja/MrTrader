@@ -1,0 +1,258 @@
+{
+  "search": "CH4 - ranging-market mean-reversion sleeve (the ONE terminating search)",
+  "preregistration": "docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md",
+  "decision_on": "mr_primary (pre-registered; no best-of-8)",
+  "n_trials_registered": 8,
+  "PASS": false,
+  "verdict": "KILL - ship nothing; the 12-month hunting moratorium (to 2027-07-08) BINDS",
+  "results": [
+    {
+      "name": "mr_primary",
+      "config": {
+        "name": "mr_primary",
+        "lookback": 5,
+        "z_enter": 1.0,
+        "clarity_lo": 0.4,
+        "vol_pctl": 0.5
+      },
+      "active_frac": 0.02,
+      "n_obs": 4891,
+      "daily_sharpe": 0.08,
+      "cpcv_mean_sharpe": 0.0118,
+      "point_sr": 0.1095,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": -0.108,
+      "gate2_ok": false,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.0118,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.4068,
+          "2": 0.5376,
+          "3": 0.0449
+        },
+        "ok": true
+      },
+      "gate4_track_b_t": -0.515,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_slow",
+      "config": {
+        "name": "mr_slow",
+        "lookback": 10,
+        "z_enter": 1.0,
+        "clarity_lo": 0.4,
+        "vol_pctl": 0.5
+      },
+      "active_frac": 0.02,
+      "n_obs": 4891,
+      "daily_sharpe": 0.048,
+      "cpcv_mean_sharpe": 0.0712,
+      "point_sr": 0.2128,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": -0.103,
+      "gate2_ok": false,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.0712,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.5057,
+          "2": 0.5216,
+          "3": 0.1612
+        },
+        "ok": true
+      },
+      "gate4_track_b_t": -0.667,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_deep",
+      "config": {
+        "name": "mr_deep",
+        "lookback": 5,
+        "z_enter": 1.5,
+        "clarity_lo": 0.4,
+        "vol_pctl": 0.5
+      },
+      "active_frac": 0.02,
+      "n_obs": 4891,
+      "daily_sharpe": 0.182,
+      "cpcv_mean_sharpe": 0.046,
+      "point_sr": 0.0764,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": 0.129,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.046,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.4133,
+          "2": 0.3189,
+          "3": 0.0876
+        },
+        "ok": true
+      },
+      "gate4_track_b_t": 0.414,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_tight_regime",
+      "config": {
+        "name": "mr_tight_regime",
+        "lookback": 5,
+        "z_enter": 1.0,
+        "clarity_lo": 0.3,
+        "vol_pctl": 0.4
+      },
+      "active_frac": 0.004,
+      "n_obs": 4891,
+      "daily_sharpe": 0.329,
+      "cpcv_mean_sharpe": 0.1022,
+      "point_sr": 0.1877,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": 0.373,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.1022,
+        "lagged_cpcv_mean_sharpe": {
+          "1": -0.0065,
+          "2": -0.0281,
+          "3": 0.2171
+        },
+        "ok": false
+      },
+      "gate4_track_b_t": 1.275,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_loose_regime",
+      "config": {
+        "name": "mr_loose_regime",
+        "lookback": 5,
+        "z_enter": 1.0,
+        "clarity_lo": 0.5,
+        "vol_pctl": 0.6
+      },
+      "active_frac": 0.074,
+      "n_obs": 4891,
+      "daily_sharpe": 0.579,
+      "cpcv_mean_sharpe": 0.8212,
+      "point_sr": 0.7801,
+      "gate1_track_a_paper_pass": true,
+      "gate2_off_regime_sharpe": 0.524,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.8212,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.3587,
+          "2": 0.1549,
+          "3": 0.5757
+        },
+        "ok": false
+      },
+      "gate4_track_b_t": 2.77,
+      "gate4_ok": true,
+      "track_b_verdict": "PASS",
+      "PASS": false
+    },
+    {
+      "name": "mr_slow_deep",
+      "config": {
+        "name": "mr_slow_deep",
+        "lookback": 10,
+        "z_enter": 1.5,
+        "clarity_lo": 0.4,
+        "vol_pctl": 0.5
+      },
+      "active_frac": 0.02,
+      "n_obs": 4891,
+      "daily_sharpe": 0.159,
+      "cpcv_mean_sharpe": 0.0633,
+      "point_sr": 0.1984,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": 0.188,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.0633,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.3999,
+          "2": 0.3129,
+          "3": -0.116
+        },
+        "ok": false
+      },
+      "gate4_track_b_t": -0.326,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_clarity_only",
+      "config": {
+        "name": "mr_clarity_only",
+        "lookback": 5,
+        "z_enter": 1.0,
+        "clarity_lo": 0.4,
+        "vol_pctl": 1.0
+      },
+      "active_frac": 0.059,
+      "n_obs": 4891,
+      "daily_sharpe": 0.183,
+      "cpcv_mean_sharpe": 0.2889,
+      "point_sr": 0.2248,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": 0.208,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.2889,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.5027,
+          "2": 0.6648,
+          "3": 0.3153
+        },
+        "ok": true
+      },
+      "gate4_track_b_t": 0.455,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    },
+    {
+      "name": "mr_vol_only",
+      "config": {
+        "name": "mr_vol_only",
+        "lookback": 5,
+        "z_enter": 1.0,
+        "clarity_lo": 1.0,
+        "vol_pctl": 0.5
+      },
+      "active_frac": 0.603,
+      "n_obs": 4891,
+      "daily_sharpe": 0.084,
+      "cpcv_mean_sharpe": 0.202,
+      "point_sr": 0.0558,
+      "gate1_track_a_paper_pass": false,
+      "gate2_off_regime_sharpe": -0.038,
+      "gate2_ok": true,
+      "gate3_detection_lag": {
+        "base_cpcv_mean_sharpe": 0.202,
+        "lagged_cpcv_mean_sharpe": {
+          "1": 0.1415,
+          "2": 0.1674,
+          "3": 0.151
+        },
+        "ok": true
+      },
+      "gate4_track_b_t": -0.359,
+      "gate4_ok": false,
+      "track_b_verdict": "FAIL",
+      "PASS": false
+    }
+  ]
+}

@@ -134,10 +134,14 @@ dd_improve COVID −4.25% / BEAR_2022 −1.3% / GFC −0.4%, at −0.003 Sharpe 
 drag is the expected insurance premium). **Deliverable met:** the regime report; both parked strategies closed;
 governor confirmed. No live change. DECISIONS 2026-07-08.
 
-### CH4 — The ONE terminating, pre-registered search: ranging-market MR sleeve ← **NEXT**
-Runs ONLY if it does not delay CH0–CH3 (done). **CH3 produced NO candidate** — both parked strategies closed
-(sector_rotation decorrelates in BEAR but loses 34%/yr there; credit_timing collinear), so CH4 is the
-originally-named **ranging-market MR sleeve**: pre-register it, gate it, and let the moratorium bind if it fails.
+### CH4 — The ONE terminating, pre-registered search: ranging-market MR sleeve — ❌ **KILLED (2026-07-08); MORATORIUM BINDS**
+Pre-registered (`docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`), then run. **Result: KILL.** The primary
+`mr_primary` fails 3/5 gates (Track-A CPCV 0.012; off-regime −0.11; Track-B residual-α t **−0.52**); the ranging
+regime (low clarity AND low vol) is rare (2% active) with no edge there. The one good-looking config
+(`mr_loose_regime`, CPCV 0.82, Track-B t 2.77) FAILED the detection-lag gate (0.82→0.16 under a 2-day regime lag
+= boundary-fit mirage) — and the pre-registered primary-only decision meant it couldn't flip the verdict.
+Registered `ch4_ranging_mr` KILLED. **The 12-month hunting MORATORIUM is now IN EFFECT (to 2027-07-08).**
+DECISIONS 2026-07-08 (CH4 RUN). *(Spec for the record:)*
 The single well-specified conditional family with a real mechanism
 (liquidity provision to overreaction) + a non-overfit regime filter + structural anti-correlation:
 - **Regime filter = the COMPLEMENT of the existing trend signal** (low realized-vol + weak trend-strength) —
@@ -180,8 +184,11 @@ tests + an independent Opus deep-dive, per this project's discipline.
   `sector_rotation` decorrelates in BEAR (0.14) but LOSES −34%/yr there; `credit_timing` collinear → BOTH
   CLOSED, no CH4 candidate. The live plain crash governor HELPS on its drawdown mandate (maxDD −1.8pp, COVID
   −4.25%) → KEEP it (resolves the CH2c flag). No live change.
-- **CH4** — 🔄 IN PROGRESS (2026-07-08): the ONE terminating search = the ranging-market MR sleeve.
-  **PRE-REGISTERED** (frozen spec + gates + the 12-month moratorium): `docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`,
-  DECISIONS 2026-07-08. Run pending (build the sleeve per spec → the 5 frozen gates → PASS to paper, or KILL +
-  the moratorium binds). → then CH5 (accrual).
+- **CH4** — ✅ DONE (2026-07-08): the ONE terminating search (ranging-MR sleeve) **KILLED** — primary fails
+  3/5 gates; the good-looking loose config was a detection-lag mirage; pre-registration held. **The 12-month
+  hunting MORATORIUM is IN EFFECT (to 2027-07-08).**
+- **CH-PROGRAM COMPLETE through CH4.** Verdict: the durable edge is trend + cash; conditional sizing doesn't
+  improve it (CH2), the parked strategies don't diversify it (CH3), and the one sanctioned search found nothing
+  (CH4). **NEXT: CH5** — operate + compound the one hardened edge, accrue the scorecard; pre-committed review
+  2027-07-08. No live change anywhere in CH0–CH4.
 - CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

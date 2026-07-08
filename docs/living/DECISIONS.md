@@ -4,6 +4,28 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-08 (CH4 RUN — Compound-and-Harden) — the ranging-MR sleeve FAILS its pre-registered gates → KILL; the 12-month hunting MORATORIUM (to 2027-07-08) is now IN EFFECT. Compound-and-Harden is COMPLETE through CH4.
+
+**Context**: ran the ranging-market mean-reversion sleeve against the gates frozen in the CH4 pre-registration (`docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`, prior DECISIONS entry). `app/research/ch4_mr_sleeve.py` → `docs/reference/ch4_mr_results.json`. Decision on the pre-registered primary `mr_primary` ONLY (no best-of-8). Report-only; no live change.
+
+**Result — the primary FAILS 3 of 5 gates → KILL:**
+| gate | mr_primary | verdict |
+|---|---|---|
+| standalone Track-A PAPER | FAIL (CPCV mean_sharpe 0.012, no edge) | ✗ |
+| off-regime Sharpe ≥ −0.10 | FAIL (−0.11, tiny exit/cost drag) | ✗ |
+| detection-LAG (CPCV survives 1/2/3d) | pass (trivially, ~0 either way) | — |
+| Track-B residual-α t ≥ 1.96 | FAIL (t **−0.515**, anti-diversifying) | ✗ |
+
+The pre-registered regime — RANGING = low trend-clarity **AND** low realized vol — is **rare** (active only **2%** of days: low-clarity days tend to come WITH high vol, so the intersection barely occurs), and on those days the MR sleeve has no edge and does not diversify the trend book. **Decision: KILL — ship nothing.**
+
+**The discipline caught a mirage (why the pre-registration mattered).** The one config that LOOKED like an edge — `mr_loose_regime` (a loosened-regime SENSITIVITY config, NOT the primary): CPCV mean_sharpe **0.82**, Track-A PASS, Track-B t **2.77** — **FAILS the detection-LAG gate**: its CPCV mean_sharpe collapses to 0.36 / 0.16 / 0.58 under a 1/2/3-day lag on the *regime* signal (the reversal signal is unchanged). An edge that needs the regime boundary detected to within ~2 days is not robustly harvestable live — a boundary-fit mirage, exactly what the lag gate exists to kill. Because the decision was pre-registered on the primary (no best-of-8), this promising-but-fake config could not flip the verdict. Opus-reviewed: the KILL is real (the pipeline demonstrably CAN pass — loose_regime cleared Track-A + Track-B — so failing the primary is a genuine null, not a broken gate), and rejecting loose_regime on the lag test is sound. Registered `ch4_ranging_mr` KILLED (N_TRIALS 29→30).
+
+**Decision — THE 12-MONTH HUNTING MORATORIUM IS NOW IN EFFECT (binds through 2027-07-08).** Per the pre-registration, a CH4 KILL binds the moratorium: **no new broad edge-discovery search runs until 2027-07-08.** The program is now CH5 only — operate + compound the hardened single trend edge (+ cash), accrue the CH0b live-forward scorecard, harden operations. The next edge-hunt is permitted ONLY at the CH5 12-month review (2027-07-08), and only if the live trend edge has held up. (Bug-fixes, hardening, execution/data work — e.g. the IBKR R1 migration — and re-validating LIVE strategies are NOT edge-hunts and remain allowed.)
+
+**Consequences — Compound-and-Harden is COMPLETE through CH4:** CH0 (baseline + scorecard) ✅, CH1 (per-name gate, shadow) ✅, CH2 (antifragile sizing — all 3 KILLED; keep sizing simple) ✅, CH3 (regime diagnostic — no parked diversifier; keep the crash governor) ✅, CH4 (ranging-MR — KILLED; moratorium binds) ✅. **The empirical verdict of the whole program stands: the durable edge is trend + cash; conditional sizing doesn't improve it, the parked strategies don't diversify it, and the one sanctioned new search found nothing. The honest move is to OPERATE the one edge simply and let it compound (CH5), not to keep hunting.** No live trading behavior changed anywhere in CH0–CH4. NEXT = CH5 (live-forward accrual; the enforce-soak clock started 2026-07-06; pre-committed review 2027-07-08).
+
+---
+
 ## 2026-07-08 (CH4 PRE-REGISTRATION — Compound-and-Harden) — the ONE terminating search (ranging-market MR sleeve) + the 12-month hunting moratorium, committed BEFORE the run
 
 **Context**: CH4 is the single well-specified conditional edge-search the program permits before a hunting moratorium (DECISIONS 2026-07-07). CH3 produced no parked-strategy candidate (both closed), so CH4 is the originally-named **ranging-market mean-reversion sleeve**. Its discipline is PRE-REGISTRATION: freeze the hypothesis, strategy, parameter grid, gates, DSR count, and the moratorium in writing BEFORE running, so a null result cannot be rationalized away.
