@@ -180,6 +180,8 @@ tests + an independent Opus deep-dive, per this project's discipline.
   `sector_rotation` decorrelates in BEAR (0.14) but LOSES −34%/yr there; `credit_timing` collinear → BOTH
   CLOSED, no CH4 candidate. The live plain crash governor HELPS on its drawdown mandate (maxDD −1.8pp, COVID
   −4.25%) → KEEP it (resolves the CH2c flag). No live change.
-- **NEXT: CH4** — the ONE terminating pre-registered search = the ranging-market MR sleeve (parked strategies
-  gave no candidate), bound by the 12-month moratorium → then CH5 (accrual).
+- **CH4** — 🔄 IN PROGRESS (2026-07-08): the ONE terminating search = the ranging-market MR sleeve.
+  **PRE-REGISTERED** (frozen spec + gates + the 12-month moratorium): `docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`,
+  DECISIONS 2026-07-08. Run pending (build the sleeve per spec → the 5 frozen gates → PASS to paper, or KILL +
+  the moratorium binds). → then CH5 (accrual).
 - CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

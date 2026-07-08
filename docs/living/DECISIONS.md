@@ -4,6 +4,20 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-08 (CH4 PRE-REGISTRATION — Compound-and-Harden) — the ONE terminating search (ranging-market MR sleeve) + the 12-month hunting moratorium, committed BEFORE the run
+
+**Context**: CH4 is the single well-specified conditional edge-search the program permits before a hunting moratorium (DECISIONS 2026-07-07). CH3 produced no parked-strategy candidate (both closed), so CH4 is the originally-named **ranging-market mean-reversion sleeve**. Its discipline is PRE-REGISTRATION: freeze the hypothesis, strategy, parameter grid, gates, DSR count, and the moratorium in writing BEFORE running, so a null result cannot be rationalized away.
+
+**Decision — the frozen spec (SSOT: `docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`):** a short-horizon time-series mean-reversion sleeve on the 10-ETF trend universe (buy short-term oversold dips, long-flat, inverse-vol sized), **active ONLY in RANGING regimes** = the COMPLEMENT of the trend signal (low `trend_clarity` AND low realized vol; flat otherwise). Anti-correlated to the live trend book by construction. Mechanism: MR should earn in exactly the regime where trend bleeds (choppy/ranging). Tests ONLY the regime-CONDITIONAL form (unconditional ETF MR was already killed — `etf_relative_value` point_SR 0.026).
+
+**Pre-registered GATES (all must pass on the PRIMARY config `mr_primary`; grid of 8 → DSR n_trials=8):** (1) standalone `evaluate_sleeve` CPCV Ruler-v2 Track-A PAPER pass; (2) off-regime Sharpe ≥ −0.10 (edge is from the ranging regime, not leakage); (3) a **detection-LAG test** — the in-regime edge must survive an extra 1–5 day lag on the regime signal (kills look-ahead regime mirages); (4) **Track-B residual-alpha vs the live trend book, HAC t ≥ 1.96** (it must DIVERSIFY, not just anti-correlate); (5) DSR/family charging. Decision on the pre-registered primary only — no best-of-8 selection.
+
+**Decision — THE 12-MONTH HUNTING MORATORIUM (binds on a CH4 KILL):** if `mr_primary` fails any gate, **no new broad edge-discovery search runs until 2027-07-08.** Until then the program is CH5 only: operate + compound the hardened trend edge, accrue the scorecard, harden ops. The next hunt is permitted only at the CH5 12-month review (2027-07-08), and only if the live trend edge held up. (Bug-fixes, hardening, execution/data work, and re-validation of LIVE strategies are NOT edge-hunts and remain allowed.) This moratorium is committed HERE, before the run — it is the price of the one CH4 search.
+
+**Consequences**: no code/live change in this pre-registration commit — it freezes the test. The run PR builds the sleeve per this spec, runs the frozen gates, and reports PASS (→ a paper candidate; moratorium does not bind) or KILL (→ ship nothing; the moratorium binds). Terminating either way.
+
+---
+
 ## 2026-07-08 (CH3 — Compound-and-Harden) — regime diagnostic: NEITHER parked strategy is a conditional diversifier (both CLOSED — no CH4 candidate); the live crash governor EARNS its keep on its drawdown mandate → keep it (resolves the CH2c flag)
 
 **Context**: CH3 is the read-only regime-conditional diagnostic (`scripts/ch3_regime_diagnostic.py` → `docs/reference/ch3_regime_diagnostic.json`), decomposing three questions by the frozen BULL/NEUTRAL/BEAR labels (same taxonomy as CH0a). No live change, no signal search.
