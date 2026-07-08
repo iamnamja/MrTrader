@@ -10,6 +10,7 @@ GET /api/decision-audit/recent    — last N decision_audit rows
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone, timedelta, date
 from typing import Any, Dict, Optional
 
@@ -21,6 +22,48 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/nis", tags=["nis"])
 audit_router = APIRouter(prefix="/api/decision-audit", tags=["decision-audit"])
+
+# ── Macro-actuals display back-fill ───────────────────────────────────────────
+# The Macro-Intel snapshot is built once premarket (~09:00 ET), so an event released LATER that
+# day (e.g. 08:30 jobless claims whose actual FMP posts with a lag) stays actual=None -> "Pending".
+# This DISPLAY-ONLY helper re-fetches today's released events (include_past_today=True — a path the
+# trading gate does NOT use) and back-fills the actual on read, cached to avoid hammering FMP.
+# It changes NOTHING about the cached trading decision (risk/sizing/block); it only fills the actual.
+_actuals_cache: Dict[str, tuple] = {}   # {today_iso: (fetched_at_epoch, {event_type: {...}})}
+_ACTUALS_TTL_SEC = 600                   # 10 min
+
+
+def _todays_event_actuals() -> Dict[str, Dict[str, Any]]:
+    """Fresh FMP actuals for TODAY's already-released events, keyed by event_type, cached 10 min.
+    Never raises (returns {} on any failure -> the display simply stays 'Pending')."""
+    today = date.today().isoformat()
+    cached = _actuals_cache.get(today)
+    if cached and (time.time() - cached[0]) < _ACTUALS_TTL_SEC:
+        return cached[1]
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        from app.news.sources.fmp_source import fetch_economic_calendar
+        events = fetch_economic_calendar(days_ahead=0, min_impact="low",
+                                         include_past_today=True) or []
+        for e in events:
+            if e.get("actual") is not None and e.get("event_type"):
+                out[e["event_type"]] = {"actual": e.get("actual"), "estimate": e.get("estimate"),
+                                        "prior": e.get("prior")}
+    except Exception:
+        logger.debug("macro actuals back-fill fetch failed (non-fatal)", exc_info=True)
+    _actuals_cache[today] = (time.time(), out)
+    return out
+
+
+def _enrich_event(ev: Dict[str, Any], actuals: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Fill a still-Pending event's actual from the fresh fetch, then (re)classify the outcome."""
+    if ev.get("actual") is None:
+        got = actuals.get(ev.get("event_type"))
+        if got and got.get("actual") is not None:
+            ev = {**ev, "actual": got["actual"],
+                  "estimate": ev.get("estimate") if ev.get("estimate") is not None else got.get("estimate"),
+                  "prior": ev.get("prior") if ev.get("prior") is not None else got.get("prior")}
+    return {**ev, **classify_outcome(ev.get("event_type"), ev.get("actual"), ev.get("estimate"))}
 
 
 # ── NIS: Macro Context ────────────────────────────────────────────────────────
@@ -40,6 +83,8 @@ def get_macro_context() -> Dict[str, Any]:
                 _is_today = ctx.as_of.date() == date.today() if hasattr(ctx.as_of, "date") else True
             except Exception:
                 _is_today = True
+            # Back-fill actuals for events released after the ~09:00 snapshot (today only).
+            actuals = _todays_event_actuals() if _is_today else {}
             return {
                 "as_of": ctx.as_of.isoformat() if hasattr(ctx.as_of, "isoformat") else str(ctx.as_of),
                 "overall_risk": ctx.overall_risk,
@@ -50,7 +95,7 @@ def get_macro_context() -> Dict[str, Any]:
                 "snapshot_date": date.today().isoformat(),
                 "is_today": _is_today,
                 "events_today": [
-                    {
+                    _enrich_event({
                         "event_type": e.event_type,
                         "event_name": getattr(e, "event_name", ""),
                         "event_time": e.event_time,
@@ -64,8 +109,7 @@ def get_macro_context() -> Dict[str, Any]:
                         "actual": e.actual,
                         "estimate": e.estimate,
                         "prior": e.prior,
-                        **classify_outcome(e.event_type, e.actual, e.estimate),
-                    }
+                    }, actuals)
                     for e in ctx.events_today
                 ],
             }
@@ -75,6 +119,8 @@ def get_macro_context() -> Dict[str, Any]:
         with get_session() as db:
             snap = db.query(NisMacroSnapshot).order_by(NisMacroSnapshot.snapshot_date.desc()).first()
         if snap is not None:
+            _snap_today = snap.snapshot_date == date.today()
+            actuals = _todays_event_actuals() if _snap_today else {}
             return {
                 "as_of": snap.as_of.isoformat(),
                 "overall_risk": snap.overall_risk,
@@ -83,11 +129,8 @@ def get_macro_context() -> Dict[str, Any]:
                 "rationale": snap.rationale,
                 "source": "db_snapshot",
                 "snapshot_date": snap.snapshot_date.isoformat(),
-                "is_today": snap.snapshot_date == date.today(),
-                "events_today": [
-                    {**ev, **classify_outcome(ev.get("event_type"), ev.get("actual"), ev.get("estimate"))}
-                    for ev in (snap.events_json or [])
-                ],
+                "is_today": _snap_today,
+                "events_today": [_enrich_event(dict(ev), actuals) for ev in (snap.events_json or [])],
             }
 
         return {"status": "not_yet_run", "detail": "Premarket routine has not run yet today"}
