@@ -86,9 +86,12 @@ by the **DUAL gate — (a) beat constant-gross CPCV mean_sharpe 0.7009 OOS with 
 regress the BEAR regime-conditional Sharpe** (the folds under-sample stress) — armed only after a shadow soak.
 **Shared gate harness built:** `app/research/ch2_sizing.py::gate_multiplier` (governed = base × m[t] through
 the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on + the BEAR prong via `regime_conditional_sharpe`).
-- **CH2a — trend-strength-conditioned gross:** size UP when the trend signal is broad + strong across the
-  universe; size DOWN when weak/conflicting — directly attacks TSMOM's whipsaw failure mode (weak-trend
-  regimes are where it bleeds). *(pending)*
+- **CH2a — trend-strength-conditioned gross** — ❌ **KILLED (2026-07-08):** lever UP broad+clean trends /
+  cut whipsaw, tested TWO ways (clarity + breadth) so it's not a one-measure strawman. All 4 pre-registered
+  configs decisively WORSE (−0.07 to −0.19 mean_sharpe; primary Δ−0.194). Mechanism: the signals have ≈0
+  forward-Sharpe correlation, so conditioning gross on them only injects a Var(m) noise penalty (SR loss
+  monotonic in m-dispersion; ~82% noise / ~18% turnover). Registered `ch2a_trend_strength_gross` (KILLED).
+  DECISIONS 2026-07-08.
 - **CH2b — correlation-regime gross scaling** — ❌ **KILLED (2026-07-08):** cut gross when the held-book
   weighted correlation → 1. All 3 pre-registered configs FAIL every prong OOS (primary mean_sharpe 0.6607,
   Δ−0.040, improvement p 0.68 n.s., BEAR regresses −0.795); high held-book correlation is predominantly a
@@ -107,6 +110,14 @@ the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on + the BEAR prong via `
   individually behind flags, each with its own CPCV evidence. **Deliverable:** the 3 multipliers, each with
   a DUAL-gate result (beats constant-gross OOS mean_sharpe AND no BEAR-regime-Sharpe regression); ship only
   the ones that pass; the rest stay documented + off.
+- **★ CH2 RESULT (2026-07-08): all three KILLED — antifragile sizing on the available signals does NOT beat
+  constant-gross.** CH2a trend-strength/breadth (−0.07/−0.19), CH2b correlation (−0.040), CH2c whipsaw governor
+  (+0.0006, n.s.). None of the trend-quality signals (correlation, VIX-whipsaw, strength/breadth) has forward-
+  Sharpe edge → conditioning gross on them only injects a Var(m) noise penalty. A valuable POSITIVE result:
+  the constant-gross trend book's sizing is already near-optimal; reactive trend-quality knobs degrade it.
+  **Scope:** does NOT generalize to vol-TARGETING (`book_vol_target`, a different mechanism, untested here).
+  No live change (nothing passed). The hardened gate harness (`app/research/ch2_sizing.py`) remains for any
+  future sizing idea.
 
 ### CH3 — Regime-conditional decomposition (DIAGNOSTIC — informs CH2, no new hunt)
 Decompose, by frozen regime labels over the existing purged folds: (a) the LIVE trend edge (when does it
@@ -152,8 +163,9 @@ tests + an independent Opus deep-dive, per this project's discipline.
 - **CH1** — ✅ SHADOW-LANDED (2026-07-07): per-name correlation/heat/concentration gate on the live path
   (`per_name_gate.py`, `pm.per_name_gate_mode` default shadow); Opus-reviewed, inert to live trades.
   Shadow-soaking; correlation enforce-threshold to be calibrated from the soak (see CH1 above).
-- **CH2** — 🔄 IN PROGRESS (2026-07-08): shared gate harness built (`app/research/ch2_sizing.py`). **CH2b
-  correlation-regime gross = ❌ KILLED** (direction-blind). **CH2c whipsaw governor = ❌ KILLED** (beats the
-  plain governor but not constant-gross significantly; flagged the live governor for CH3). **NEXT: CH2a**
-  (trend-strength gross — the up-sizing one) → then CH3 (diagnostic; now has the governor question).
+- **CH2** — ✅ COMPLETE (2026-07-08): all 3 sizing multipliers KILLED — **antifragile sizing does NOT beat
+  constant-gross** (CH2a trend-strength −0.07/−0.19, CH2b correlation −0.040, CH2c whipsaw +0.0006 n.s.).
+  A positive result: keep the trend book's sizing SIMPLE. No live change. **NEXT: CH3** (regime diagnostic;
+  now carries the CH2c flag — does the live plain crash governor's tail-insurance justify its trend-book
+  Sharpe cost?).
 - CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).

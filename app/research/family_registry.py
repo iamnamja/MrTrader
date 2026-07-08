@@ -110,6 +110,11 @@ FAMILIES: List[Family] = [
            "beats the plain VIX governor (+0.003) but only +0.0006 vs constant-gross (n.s.) + "
            "regresses BEAR -> ship nothing (CH3 flag: plain governor's trend-book Sharpe cost is "
            "not its mandate = portfolio tail-insurance)", "DECISIONS 2026-07-08 CH2c"),
+    Family("ch2a_trend_strength_gross", "CH2a trend-strength/breadth gross sizing", "overlay", KILLED,
+           "lever up clean/broad trends + cut whipsaw; -0.07 to -0.19 mean_sharpe across BOTH "
+           "clarity + breadth. Signals have ~0 forward-Sharpe corr -> sizing injects Var(m) noise "
+           "-> ship nothing. ALL 3 CH2 trend-quality sizing pieces killed (vol-targeting untested)",
+           "DECISIONS 2026-07-08 CH2a"),
     # ── Crypto ──
     Family("crypto_trend", "Crypto trend (TSMOM, spot)", "crypto", PAPER,
            "Sharpe 0.64, corr-to-trend 0.18; CAPITAL fail (history)", "DECISIONS 2026-06-16 P3-1"),
@@ -148,6 +153,9 @@ DEGREES_OF_FREEDOM: List[str] = [
     "CH2c whipsaw governor: 3 pre-registered configs (band/derisk_to) vs constant-gross + the plain "
     "VIX governor as reference; whipsaw-awareness DID beat the plain governor (+0.003) but only "
     "+0.0006 vs constant-gross (n.s.) + regressed BEAR -> killed.",
+    "CH2a trend-strength gross: 4 pre-registered configs across TWO operationalizations (clarity x3 + "
+    "breadth) so it isn't a one-measure strawman; all decisively worse than constant-gross "
+    "(-0.07 to -0.19) -> killed. With CH2b+CH2c this closes CH2: conditional sizing doesn't beat static.",
 ]
 
 
