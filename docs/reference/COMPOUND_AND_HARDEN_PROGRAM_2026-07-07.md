@@ -119,16 +119,26 @@ the SAME `evaluate_sleeve`→CPCV path CH0a was frozen on + the BEAR prong via `
   No live change (nothing passed). The hardened gate harness (`app/research/ch2_sizing.py`) remains for any
   future sizing idea.
 
-### CH3 — Regime-conditional decomposition (DIAGNOSTIC — informs CH2, no new hunt)
-Decompose, by frozen regime labels over the existing purged folds: (a) the LIVE trend edge (when does it
-work / whipsaw — feeds CH2a/CH2c), and (b) the two PARKED collinear strategies (`sector_rotation`,
-`credit_timing`) — is their 0.51/0.52 collinearity to trend **regime-specific**? This is the only analysis
-that could rescue a keeper (a regime-gated version could diversify). **Deliverable:** a regime-conditional
-report; if a parked strategy is a *conditional* diversifier, it becomes a CH4-style pre-registered candidate
-— otherwise the question is closed. **No new signal search.**
+### CH3 — Regime-conditional decomposition (DIAGNOSTIC — no new hunt) — ✅ **DONE (2026-07-08)**
+Read-only (`scripts/ch3_regime_diagnostic.py` → `docs/reference/ch3_regime_diagnostic.json`), by frozen
+BULL/NEUTRAL/BEAR labels. **Q1 (trend by regime, confirmatory):** BULL SR +4.11 / NEUTRAL +0.44 / BEAR −0.77
+— structure real, not tradeable via sizing (CH2). **Q2 (parked collinearity → NEITHER is a diversifier, both CLOSED):** a candidate must decorrelate AND stay
+active + non-losing in the decorrelating regime. `sector_rotation` corr-to-trend collapses to 0.14 in BEAR
+(n=1218 incl GFC) BUT is active and **LOSES −34%/yr there (Sharpe −1.26)** → decorrelates by making a DIFFERENT
+losing bet, not a hedge → NOT a candidate. `credit_timing` collinear (0.33) + loses → CLOSED. **No CH4 candidate
+from the parked strategies.** (The first draft nominated sector_rotation on corr alone; the review caught that
+decorrelation is mechanically confounded for long-flat strategies → added a standalone-value check that reversed
+it.) **Q3 (governor tail — resolves the CH2c flag):** on the RIGHT objective (`evaluate_overlay`) the plain VIX
+governor **HELPS (shallower tail, Sharpe preserved)** — full maxDD −1.8pp shallower + contiguous crisis
+dd_improve COVID −4.25% / BEAR_2022 −1.3% / GFC −0.4%, at −0.003 Sharpe → **KEEP the governor** (the CH2c Sharpe
+drag is the expected insurance premium). **Deliverable met:** the regime report; both parked strategies closed;
+governor confirmed. No live change. DECISIONS 2026-07-08.
 
-### CH4 — The ONE terminating, pre-registered search: ranging-market MR sleeve
-Runs ONLY if it does not delay CH0–CH3. The single well-specified conditional family with a real mechanism
+### CH4 — The ONE terminating, pre-registered search: ranging-market MR sleeve ← **NEXT**
+Runs ONLY if it does not delay CH0–CH3 (done). **CH3 produced NO candidate** — both parked strategies closed
+(sector_rotation decorrelates in BEAR but loses 34%/yr there; credit_timing collinear), so CH4 is the
+originally-named **ranging-market MR sleeve**: pre-register it, gate it, and let the moratorium bind if it fails.
+The single well-specified conditional family with a real mechanism
 (liquidity provision to overreaction) + a non-overfit regime filter + structural anti-correlation:
 - **Regime filter = the COMPLEMENT of the existing trend signal** (low realized-vol + weak trend-strength) —
   reuses a signal we didn't overfit, and is anti-correlated to the live book by construction.
@@ -165,7 +175,11 @@ tests + an independent Opus deep-dive, per this project's discipline.
   Shadow-soaking; correlation enforce-threshold to be calibrated from the soak (see CH1 above).
 - **CH2** — ✅ COMPLETE (2026-07-08): all 3 sizing multipliers KILLED — **antifragile sizing does NOT beat
   constant-gross** (CH2a trend-strength −0.07/−0.19, CH2b correlation −0.040, CH2c whipsaw +0.0006 n.s.).
-  A positive result: keep the trend book's sizing SIMPLE. No live change. **NEXT: CH3** (regime diagnostic;
-  now carries the CH2c flag — does the live plain crash governor's tail-insurance justify its trend-book
-  Sharpe cost?).
+  A positive result: keep the trend book's sizing SIMPLE. No live change.
+- **CH3** — ✅ DONE (2026-07-08): regime diagnostic. NEITHER parked strategy is a conditional diversifier —
+  `sector_rotation` decorrelates in BEAR (0.14) but LOSES −34%/yr there; `credit_timing` collinear → BOTH
+  CLOSED, no CH4 candidate. The live plain crash governor HELPS on its drawdown mandate (maxDD −1.8pp, COVID
+  −4.25%) → KEEP it (resolves the CH2c flag). No live change.
+- **NEXT: CH4** — the ONE terminating pre-registered search = the ranging-market MR sleeve (parked strategies
+  gave no candidate), bound by the 12-month moratorium → then CH5 (accrual).
 - CH3–CH5 — planned. CH4 is gated on a pre-committed moratorium; CH5's clock has started (enforce soak).
