@@ -76,6 +76,26 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-08 (CH2c — Compound-and-Harden) — whipsaw-aware crash governor beats the plain governor but NOT constant-gross → KILLED; and the LIVE plain governor doesn't beat static on risk-adjusted return (CH3 flag)
+
+**Context**: the CH2b kill showed correlation is direction-blind. CH2c adds the direction signal: de-risk ONLY when the market is stressed (VIX/VIX3M backwardation) AND the book's trends are choppy (whipsaw), NOT when a broad trend is simply riding a correlated crash (2008/2022, where trend PROFITS). Signal: `m = 1 − (1−derisk_to)·stress·whipsaw`, where stress = backwardation depth and whipsaw = 1 − trend clarity (clarity = mean over names of |ensemble-sign|; 1 = all lookbacks agree = clean trend, <1 = conflicting = chop). Gated through the shared harness vs constant-gross (0.7009), with the existing plain (binary, stress-only) VIX governor as a reference.
+
+**Result:**
+| candidate | mean_sharpe | Δ vs base | improve p | BEAR | vs plain gov |
+|---|---|---|---|---|---|
+| **plain VIX governor** (live, stress-only) | 0.6985 | −0.0024 | 0.61 | **−0.883** | — |
+| ch2c_primary (r 1.00→1.15, derisk 0.50) | 0.7015 | +0.0006 | 0.56 (n.s.) | −0.791 | **+0.0030** |
+| ch2c_deeper_cut (derisk 0.25) | 0.7015 | +0.0006 | 0.57 | −0.802 | +0.0030 |
+| ch2c_wider_band (r→1.25) | 0.7026 | +0.0018 | 0.36 | −0.780 | +0.0041 |
+
+**Decision: KILL CH2c — ship nothing.** The hypothesis is VINDICATED but the effect is too small to ship: whipsaw-awareness DOES beat the plain governor (+0.003 mean_sharpe, and it pulls the BEAR tail back from −0.883 to −0.791 by NOT cutting the trending crashes) — the direction signal is real. But vs constant-gross it improves only +0.0006 (nowhere near significant, p 0.56) and still regresses BEAR slightly (−0.791 < −0.769). Fails the significance + BEAR prongs. Per "beat static significantly or ship nothing," killed. Registered `ch2c_whipsaw_governor` KILLED (N_TRIALS 27→28).
+
+**⚠️ CH3 FLAG (scoped finding — NOT a verdict on the live governor):** the **plain VIX crash governor is currently LIVE (default ON)**, and **measured ONLY on the trend book's CPCV Sharpe + BEAR-regime Sharpe** it does NOT beat constant-gross (−0.0024 mean_sharpe) and worsens the BEAR-regime Sharpe (−0.883 vs the ungoverned −0.769) — because it cuts gross in the *trending* crashes where trend profits. **Crucial caveat: this harness does NOT measure the governor's actual mandate** — portfolio-level crisis TAIL-INSURANCE / drawdown-reduction (validated on event-study crisis windows, F1b). A tail-insurance overlay MECHANICALLY lowers Sharpe (it gives up crash-day trend profit) while still delivering its intended drawdown protection, so a lower Sharpe here is EXPECTED and does **not** mean the governor has no value. This is therefore a **question for CH3** (does the drawdown/tail protection justify the Sharpe + bear-regime drag, measured on the RIGHT objective?), **not** an "it doesn't work / turn it off." Do NOT change the live governor here — CH2c changed nothing live (it failed its own gate). Flagged for CH3.
+
+**Consequences**: no live change (CH2c never wired). Two of the three CH2 multipliers (CH2b, CH2c) are now KILLED — consistent with the program's strong prior ("you've only added a knob"). NEXT = CH2a (trend-strength-conditioned gross — the one that sizes UP, the only remaining candidate), then CH3 (which now has a concrete governor question to answer).
+
+---
+
 ## 2026-07-07 (Alpha-v10 R1.3 — BEFORE-LIVE GATE) — the carry+xSMOM futures book does NOT survive on the 16 IBKR markets; DON'T deploy futures capital until the universe is expanded
 
 **Context**: R1.3 wired the live carry+xSMOM futures signal into the shadow rebalance, extracting weights for the 16 markets in `instrument_master` (called "a small representative IBKR futures set"). The signal extractor surfaced that this is only the 16-market SLICE of the validated ~76-market `futures_book` (gross 0.13 on 5 of 16). The documented before-live gate: does the edge survive the breadth reduction? Re-ran the EXACT book construction + Track-B machinery on both universes (`scripts/run_futures_16market_revalidation.py`). **Methodology validated: the full-76 book Track-B t reproduced 2.61, matching the GL-0 reference (2.611) exactly.**

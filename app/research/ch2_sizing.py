@@ -161,6 +161,7 @@ def gate_multiplier(raw_mult: pd.Series, base_returns: pd.Series, spy: pd.Series
         "label": label,
         "n_trials_registered": max(1, int(n_trials)),
         "mean_sharpe": round(float(rep.mean_sharpe), 4),
+        "mean_sharpe_full": float(rep.mean_sharpe),   # unrounded (for full-precision deltas)
         "baseline_mean_sharpe": round(float(base_mean_sharpe), 4),
         "d_mean_sharpe": round(float(rep.mean_sharpe) - float(base_mean_sharpe), 4),
         "improve_pvalue": round(float(p_improve), 4),
@@ -290,20 +291,132 @@ def run_ch2b() -> dict:
     }
 
 
-def main() -> int:
-    out = run_ch2b()
-    with open(RESULTS_ARTIFACT, "w") as f:
-        json.dump(out, f, indent=2, default=str)
-    print(f"CH2b -> {RESULTS_ARTIFACT}")
-    print(f"  gate: {out['gate']}")
-    print(f"  base_mean_sharpe (full precision): {out['base_mean_sharpe']}")
+# ──────────────────────────────────────────────────────────────────────────────────
+# CH2c — trending-vs-whipsaw-aware crash governor
+# ──────────────────────────────────────────────────────────────────────────────────
+def vix_ratio_series(index: pd.Index) -> pd.Series:
+    """VIX/VIX3M term-structure ratio aligned to `index` (ffill onto trading days). >1 =
+    backwardation = acute stress. ^VIX3M starts ~2008, so 2007 is NaN (→ no stress → m=1)."""
+    from scripts.walkforward.sleeves import fetch_vix_term
+    vix, vix3m = fetch_vix_term(end=BASELINE_END)
+    df = pd.concat([pd.Series(vix).rename("vix"), pd.Series(vix3m).rename("vix3m")],
+                   axis=1, join="inner").dropna().sort_index()
+    ratio = (df["vix"] / df["vix3m"])
+    ratio.index = pd.to_datetime(ratio.index)
+    return ratio.reindex(pd.DatetimeIndex(index), method="ffill")
+
+
+def trend_clarity(prices: pd.DataFrame, cfg) -> pd.Series:
+    """Book-wide trend CLARITY per date = mean over names of |ensemble-sign| ∈ [0,1]. Per name,
+    |ens|=1 iff ALL lookbacks agree (a clean strong trend); <1 iff lookbacks conflict (choppy/
+    reversing = whipsaw). High = broad clean trends; low = whipsaw. PIT (info through t).
+
+    CAVEAT: tsmom_signals fills insufficient-history to 0, so a name in its OWN lookback warmup
+    reads as clarity 0 (max whipsaw). Harmless for this universe (all 10 ETFs listed by 2007, and
+    stress/VIX3M only exists from 2008 → the book is fully warmed before any cut can fire, and the
+    warmup book is flat anyway). But a LATE-LISTING name added to the universe would spuriously
+    read as whipsaw during its warmup — recheck this if the trend universe changes."""
+    from app.strategy.tsmom import tsmom_signals
+    return tsmom_signals(prices, cfg).abs().mean(axis=1)
+
+
+def whipsaw_governor_multiplier(prices: pd.DataFrame, cfg, vix_ratio: pd.Series, *,
+                                r_lo: float = 1.00, r_hi: float = 1.15,
+                                derisk_to: float = 0.50) -> pd.Series:
+    """CH2c multiplier: de-risk ONLY when the market is stressed AND the book's trends are choppy.
+      stress[t]   = clip((ratio[t]-r_lo)/(r_hi-r_lo), 0, 1)      (backwardation depth)
+      whipsaw[t]  = 1 - trend_clarity[t]                          (0 = clean trend, 1 = chop)
+      m[t]        = 1 - (1-derisk_to)·stress[t]·whipsaw[t]
+    So a broad TRENDING crash (stress high, whipsaw≈0) is NOT cut (trend is paying), while choppy
+    stress (stress high, whipsaw high) cuts to ~derisk_to. Un-shifted (harness owns the lag)."""
+    ratio = vix_ratio.reindex(prices.index, method="ffill")
+    stress = ((ratio - r_lo) / max(r_hi - r_lo, 1e-9)).clip(lower=0.0, upper=1.0).fillna(0.0)
+    whipsaw = (1.0 - trend_clarity(prices, cfg)).clip(lower=0.0, upper=1.0)
+    return 1.0 - (1.0 - derisk_to) * stress * whipsaw
+
+
+def plain_vix_governor_multiplier(vix_ratio: pd.Series, index: pd.Index, *,
+                                  ratio_threshold: float = 1.00,
+                                  derisk_to: float = 0.50) -> pd.Series:
+    """The EXISTING live VIX-term crash governor (binary: cut to derisk_to whenever backwardated),
+    as a raw un-shifted signal for the same harness — the CH2c reference ('does whipsaw-awareness
+    beat the plain governor?'). Not double-shifted: we build the raw at-close signal and let the
+    harness apply the 1-day lag (matching crash_governor.vix_term_multiplier's own shift)."""
+    ratio = vix_ratio.reindex(pd.DatetimeIndex(index), method="ffill")
+    return pd.Series(np.where(ratio > ratio_threshold, derisk_to, 1.0), index=ratio.index)
+
+
+CH2C_CONFIGS = [
+    {"name": "ch2c_primary", "r_lo": 1.00, "r_hi": 1.15, "derisk_to": 0.50},
+    {"name": "ch2c_deeper_cut", "r_lo": 1.00, "r_hi": 1.15, "derisk_to": 0.25},
+    {"name": "ch2c_wider_band", "r_lo": 1.00, "r_hi": 1.25, "derisk_to": 0.50},
+]
+
+
+def run_ch2c() -> dict:
+    """Gate the whipsaw-aware governor vs constant-gross (the program gate) + report the PLAIN VIX
+    governor as a reference (is whipsaw-awareness worth it?). PASS decided on ch2c_primary."""
+    from app.strategy.tsmom import TSMOMConfig
+    base, spy, closes = build_base()
+    cfg = TSMOMConfig(universe=[c for c in closes.columns])
+    ratio = vix_ratio_series(closes.index)
+    n_trials = len(CH2C_CONFIGS)
+    base_rep = _evaluate(base, spy, "ch2c_base", n_trials)
+    base_mean_sharpe = float(base_rep.mean_sharpe)
+
+    # reference: the plain (binary, stress-only) VIX governor already live
+    plain_m = plain_vix_governor_multiplier(ratio, closes.index, ratio_threshold=1.00, derisk_to=0.50)
+    plain = gate_multiplier(plain_m, base, spy, label="plain_vix_governor", n_trials=1,
+                            base_mean_sharpe=base_mean_sharpe)
+
+    results = []
+    for c in CH2C_CONFIGS:
+        m = whipsaw_governor_multiplier(closes, cfg, ratio, r_lo=c["r_lo"], r_hi=c["r_hi"],
+                                        derisk_to=c["derisk_to"])
+        r = gate_multiplier(m, base, spy, label=c["name"], n_trials=n_trials,
+                            base_mean_sharpe=base_mean_sharpe)
+        r["config"] = c
+        r["d_vs_plain_governor"] = round(r["mean_sharpe_full"] - plain["mean_sharpe_full"], 4)
+        results.append(r)
+    primary = next(r for r in results if r["label"] == "ch2c_primary")
+    return {
+        "multiplier": "CH2c — trending-vs-whipsaw-aware crash governor",
+        "gate": "governed must beat the base CPCV mean_sharpe (SIGNIFICANTLY) AND not regress BEAR",
+        "base_mean_sharpe": round(base_mean_sharpe, 4),
+        "plain_vix_governor_reference": plain,
+        "n_trials_registered": n_trials,
+        "primary_config": "ch2c_primary",
+        "PASS": bool(primary["PASS"]),
+        "verdict": ("SHIP (shadow-first)" if primary["PASS"]
+                    else "KILL - does not beat constant-gross; ship nothing"),
+        "results": results,
+    }
+
+
+def _print_block(out: dict) -> None:
+    print(f"  {out['multiplier']}")
+    print(f"    base_mean_sharpe (full precision): {out['base_mean_sharpe']}")
+    if "plain_vix_governor_reference" in out:
+        p = out["plain_vix_governor_reference"]
+        print(f"    [ref ] plain_vix_governor     meanSR {p['mean_sharpe']:+.4f} "
+              f"(d {p['d_mean_sharpe']:+.4f}, p_impr {p['improve_pvalue']})  BEAR {p['bear_sharpe']}")
     for r in out["results"]:
         flag = "PASS" if r["PASS"] else "----"
-        print(f"  [{flag}] {r['label']:<22} meanSR {r['mean_sharpe']:+.4f} "
+        extra = (f" vsPlain {r['d_vs_plain_governor']:+.4f}" if "d_vs_plain_governor" in r else "")
+        print(f"    [{flag}] {r['label']:<22} meanSR {r['mean_sharpe']:+.4f} "
               f"(d {r['d_mean_sharpe']:+.4f}, p_impr {r['improve_pvalue']})  BEAR {r['bear_sharpe']}  "
               f"avg_m {r['avg_mult']}  beats={r['beats_baseline']} sig={r['improvement_significant']} "
-              f"bear_ok={r['bear_no_regression']} lag_sens={r['lag_sensitivity']}")
-    print(f"  VERDICT: {out['verdict']}")
+              f"bear_ok={r['bear_no_regression']}{extra}")
+    print(f"    VERDICT: {out['verdict']}")
+
+
+def main() -> int:
+    out = {"candidates": [run_ch2b(), run_ch2c()]}
+    with open(RESULTS_ARTIFACT, "w") as f:
+        json.dump(out, f, indent=2, default=str)
+    print(f"CH2 sizing -> {RESULTS_ARTIFACT}")
+    for block in out["candidates"]:
+        _print_block(block)
     return 0
 
 
