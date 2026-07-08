@@ -1,0 +1,275 @@
+{
+  "artifact": "CH3 - regime-conditional diagnostic (read-only; no live change)",
+  "created_utc": "2026-07-08T13:52:08+00:00",
+  "git_commit": "2de337f",
+  "baseline_end": "2026-07-07",
+  "q1_trend_by_regime": {
+    "question": "Q1 - when does the constant-gross trend edge work vs whipsaw, by regime?",
+    "regime_profile": {
+      "BEAR": {
+        "n_days": 1435,
+        "frac_days": 0.293,
+        "hit_rate": 0.435,
+        "contribution_sum_ret": -0.458,
+        "sharpe": -0.769,
+        "ann_return": -0.0804,
+        "ann_vol": 0.1046,
+        "max_drawdown_artifact": -0.4746,
+        "calmar_artifact": -0.169
+      },
+      "BULL": {
+        "n_days": 1271,
+        "frac_days": 0.26,
+        "hit_rate": 0.622,
+        "contribution_sum_ret": 1.3979,
+        "sharpe": 4.113,
+        "ann_return": 0.2772,
+        "ann_vol": 0.0674,
+        "max_drawdown_artifact": -0.0327,
+        "calmar_artifact": 8.469
+      },
+      "NEUTRAL": {
+        "n_days": 2185,
+        "frac_days": 0.447,
+        "hit_rate": 0.511,
+        "contribution_sum_ret": 0.3726,
+        "sharpe": 0.44,
+        "ann_return": 0.043,
+        "ann_vol": 0.0976,
+        "max_drawdown_artifact": -0.4493,
+        "calmar_artifact": 0.096
+      }
+    },
+    "note": "Confirms + deepens the CH0a profile (BULL/NEUTRAL earn, BEAR bleeds). Combined with CH2 (conditional gross sizing on these regimes does NOT beat static), the regime structure is REAL but not tradeable via reactive gross sizing."
+  },
+  "q2_conditional_collinearity": {
+    "question": "Q2 - are the parked collinear strategies CONDITIONAL diversifiers by regime?",
+    "coverage": "Common window 2008-2026 (inner-join of trend + both parked). sector_rotation ranks whatever SPDR sectors are rankable each day (the 9 original SPDRs date to ~2000; XLRE/XLC join 2015/2018 but are NOT required), so its BEAR bucket (n=1218) INCLUDES GFC-2008. credit_timing (HYG/IEF) covers 2007+.",
+    "method_note": "A candidate must (a) decorrelate to < 0.30 in some regime AND (b) be ACTIVE + non-losing there (standalone ann_vol >= 30% of its full-sample vol, ann_return >= -5%) - the guard against 'uncorrelated-because-flat' (a long-flat strategy in cash during BEAR decorrelates mechanically without diversifying). Decorrelation is necessary NOT sufficient; a pass is a pre-registered lead that must still clear the full CH4 gate (Track-B + detection-lag + DSR). Per-regime max_drawdown/calmar are concatenation artifacts (non-adjacent days) - not used here.",
+    "common_window": [
+      "2008-01-04",
+      "2026-06-12"
+    ],
+    "n_common_days": 4639,
+    "regime_conditional_corr": {
+      "ALL": {
+        "n_days": 4639,
+        "corr_to_base": {
+          "sector_rotation": 0.402,
+          "credit_timing": 0.607
+        }
+      },
+      "BEAR": {
+        "n_days": 1218,
+        "corr_to_base": {
+          "sector_rotation": 0.142,
+          "credit_timing": 0.334
+        }
+      },
+      "BULL": {
+        "n_days": 1613,
+        "corr_to_base": {
+          "sector_rotation": 0.772,
+          "credit_timing": 0.81
+        }
+      },
+      "NEUTRAL": {
+        "n_days": 1808,
+        "corr_to_base": {
+          "sector_rotation": 0.599,
+          "credit_timing": 0.76
+        }
+      }
+    },
+    "parked_regime_profiles": {
+      "sector_rotation": {
+        "BEAR": {
+          "n_days": 1218,
+          "frac_days": 0.263,
+          "hit_rate": 0.442,
+          "contribution_sum_ret": -1.6548,
+          "sharpe": -1.263,
+          "ann_return": -0.3424,
+          "ann_vol": 0.271,
+          "max_drawdown_artifact": -0.8466,
+          "calmar_artifact": -0.404
+        },
+        "BULL": {
+          "n_days": 1613,
+          "frac_days": 0.348,
+          "hit_rate": 0.618,
+          "contribution_sum_ret": 2.6817,
+          "sharpe": 4.413,
+          "ann_return": 0.419,
+          "ann_vol": 0.0949,
+          "max_drawdown_artifact": -0.0501,
+          "calmar_artifact": 8.366
+        },
+        "NEUTRAL": {
+          "n_days": 1808,
+          "frac_days": 0.39,
+          "hit_rate": 0.501,
+          "contribution_sum_ret": 0.8586,
+          "sharpe": 0.76,
+          "ann_return": 0.1197,
+          "ann_vol": 0.1574,
+          "max_drawdown_artifact": -0.44,
+          "calmar_artifact": 0.272
+        }
+      },
+      "credit_timing": {
+        "BEAR": {
+          "n_days": 1218,
+          "frac_days": 0.263,
+          "hit_rate": 0.211,
+          "contribution_sum_ret": -1.3528,
+          "sharpe": -1.716,
+          "ann_return": -0.2799,
+          "ann_vol": 0.1631,
+          "max_drawdown_artifact": -0.7752,
+          "calmar_artifact": -0.361
+        },
+        "BULL": {
+          "n_days": 1613,
+          "frac_days": 0.348,
+          "hit_rate": 0.621,
+          "contribution_sum_ret": 2.7548,
+          "sharpe": 5.007,
+          "ann_return": 0.4304,
+          "ann_vol": 0.086,
+          "max_drawdown_artifact": -0.0353,
+          "calmar_artifact": 12.195
+        },
+        "NEUTRAL": {
+          "n_days": 1808,
+          "frac_days": 0.39,
+          "hit_rate": 0.47,
+          "contribution_sum_ret": 0.6361,
+          "sharpe": 0.681,
+          "ann_return": 0.0887,
+          "ann_vol": 0.1302,
+          "max_drawdown_artifact": -0.5098,
+          "calmar_artifact": 0.174
+        }
+      }
+    },
+    "verdicts": {
+      "sector_rotation": {
+        "unconditional_corr": 0.402,
+        "by_regime": {
+          "BEAR": 0.142,
+          "BULL": 0.772,
+          "NEUTRAL": 0.599
+        },
+        "lowest_regime": "BEAR",
+        "lowest_corr": 0.142,
+        "regime_standalone": {
+          "ann_vol": 0.271,
+          "ann_return": -0.3424,
+          "sharpe": -1.263
+        },
+        "full_ann_vol": 0.18,
+        "conditional_diversifier": false,
+        "verdict": "NOT a candidate - decorrelates in BEAR (corr 0.142) but LOSES there (ann_return -0.3424 < -0.05) - CLOSED"
+      },
+      "credit_timing": {
+        "unconditional_corr": 0.607,
+        "by_regime": {
+          "BEAR": 0.334,
+          "BULL": 0.81,
+          "NEUTRAL": 0.76
+        },
+        "lowest_regime": "BEAR",
+        "lowest_corr": 0.334,
+        "regime_standalone": {
+          "ann_vol": 0.1631,
+          "ann_return": -0.2799,
+          "sharpe": -1.716
+        },
+        "full_ann_vol": 0.1283,
+        "conditional_diversifier": false,
+        "verdict": "NOT a candidate - collinear across all regimes - question CLOSED"
+      }
+    }
+  },
+  "q3_governor_tail": {
+    "question": "Q3 - does the live plain VIX crash governor earn its keep on its MANDATE (drawdown / crisis tail), given it costs trend-book Sharpe (CH2c -0.0024)?",
+    "overlay_report": {
+      "label": "vix_term_governor",
+      "n_days": 4891,
+      "window_start": "2007-01-04",
+      "window_end": "2026-06-12",
+      "mean_multiplier": 0.9439787364547128,
+      "derisk_fraction": 0.11204252709057452,
+      "without": {
+        "sharpe": 0.724271768771669,
+        "ann_ret": 0.06529052028096749,
+        "ann_vol": 0.09336516825268586,
+        "max_dd": -0.1388861278526098,
+        "calmar": 0.47010109137937656
+      },
+      "with": {
+        "sharpe": 0.7215724492776752,
+        "ann_ret": 0.060590715746299484,
+        "ann_vol": 0.08675867971589422,
+        "max_dd": -0.1205114790502887,
+        "calmar": 0.502779620860975
+      },
+      "d_sharpe": -0.0026993194939938236,
+      "d_max_dd": 0.018374648802321092,
+      "d_calmar": 0.032678529481598495,
+      "d_ann_ret": -0.004699804534668006,
+      "crisis": {
+        "GFC_2008": {
+          "without_dd": -0.0418282383771621,
+          "with_dd": -0.03755070151758466,
+          "dd_improve": 0.0042775368595774355
+        },
+        "COVID_2020": {
+          "without_dd": -0.10726509709401544,
+          "with_dd": -0.06476082639026193,
+          "dd_improve": 0.04250427070375351
+        },
+        "BEAR_2022": {
+          "without_dd": -0.057832746973645044,
+          "with_dd": -0.04484825578773011,
+          "dd_improve": 0.012984491185914937
+        }
+      },
+      "improves_tail": true,
+      "sharpe_preserved": true,
+      "verdict": "HELPS (shallower tail, Sharpe preserved)"
+    },
+    "per_regime": {
+      "BEAR": {
+        "n_days": 1435,
+        "d_sharpe": -0.076,
+        "d_max_dd_artifact": 0.0502
+      },
+      "BULL": {
+        "n_days": 1271,
+        "d_sharpe": -0.023,
+        "d_max_dd_artifact": 0.0
+      },
+      "NEUTRAL": {
+        "n_days": 2185,
+        "d_sharpe": -0.127,
+        "d_max_dd_artifact": -0.0301
+      }
+    },
+    "per_regime_caveat": "d_sharpe is valid (order-independent); d_max_dd_artifact is a difference of within-regime concatenated (non-adjacent) drawdowns - directional only. The DECISION rests on the full-sample d_max_dd + contiguous crises.",
+    "interpretation": {
+      "reduces_full_sample_maxdd": true,
+      "d_max_dd_full": 0.018374648802321092,
+      "d_sharpe_full": -0.0026993194939938236,
+      "crisis_dd_improve": {
+        "GFC_2008": 0.0043,
+        "COVID_2020": 0.0425,
+        "BEAR_2022": 0.013
+      },
+      "bear_d_sharpe": -0.076,
+      "overlay_verdict": "HELPS (shallower tail, Sharpe preserved)",
+      "read": "Decision-grade evidence = the FULL-SAMPLE d_max_dd (contiguous) + the contiguous crisis-window dd_improve. If those show the governor makes crisis drawdowns SHALLOWER it EARNS its keep on its tail-insurance mandate DESPITE the small Sharpe drag (expected for insurance). If it does NOT reduce crisis drawdown it is a pure drag. This is the CH3 adjudication of the CH2c flag - it does NOT change the live governor."
+    }
+  }
+}
