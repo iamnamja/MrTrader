@@ -102,6 +102,10 @@ FAMILIES: List[Family] = [
            "no tail benefit (dSharpe -0.018) -> off", "DECISIONS 2026-06-14 G1"),
     Family("short_interest_overlay", "Short-interest de-risk overlay", "overlay", KILLED,
            "uniformly Sharpe-negative marginal to governor", "DECISIONS 2026-06-15 G2"),
+    Family("ch2b_correlation_gross", "CH2b correlation-regime gross scaling", "overlay", KILLED,
+           "cuts gross on high held-book corr; -0.040 mean_sharpe (n.s.) + regresses BEAR vs "
+           "constant-gross OOS (correlation is direction-blind) -> ship nothing",
+           "DECISIONS 2026-07-08 CH2b"),
     # ── Crypto ──
     Family("crypto_trend", "Crypto trend (TSMOM, spot)", "crypto", PAPER,
            "Sharpe 0.64, corr-to-trend 0.18; CAPITAL fail (history)", "DECISIONS 2026-06-16 P3-1"),
@@ -135,6 +139,8 @@ DEGREES_OF_FREEDOM: List[str] = [
     "different signal) -> then dropped per GL-1 tail diagnostics.",
     "PEAD: live size 3.0x -> 1.0x telemetry -> event-level demote (p=0.78); never high-conviction "
     "capital.",
+    "CH2b correlation-regime gross: 3 pre-registered configs (window/band/floor), all gated vs the "
+    "frozen CH0a baseline; none beat constant-gross (best -0.009) -> killed, no post-hoc flipping.",
 ]
 
 
