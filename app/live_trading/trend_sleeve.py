@@ -606,6 +606,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         from app.live_trading.kill_switch import kill_switch
         if kill_switch.is_active:
             log.warning("trend: kill switch ACTIVE — no rebalance")
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="kill_switch")
             summary["status"] = "blocked"
             summary["block_reason"] = "kill_switch"
             return summary
@@ -623,6 +624,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         _ksm = evaluate_new_risk(_ksm_mode, label="trend", logger=log)
         summary["kill_switch_sm_state"] = _ksm["state"]
         if not _ksm["allow"]:
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="kill_switch_sm")
             summary["status"] = "blocked"
             summary["block_reason"] = "kill_switch_sm"
             return summary
@@ -778,6 +780,9 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if blocked_by_recon:
             log.warning("trend: reconciliation (mode=%s) -> HOLD rebalance: %s",
                         recon_mode, summary.get("recon_breaks"))
+            # Record the enforce HOLD in the audit trail (an enforce-mode hold is a significant
+            # decision; without this it was only logged, invisible to decision_audit + monitoring).
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="reconciliation")
             summary["status"] = "blocked"
             summary["block_reason"] = "reconciliation"
             return summary
@@ -807,6 +812,8 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if blocked_by_gate:
             log.warning("trend: whole-book gate (mode=%s) -> HOLD rebalance: %s",
                         gate_mode, summary.get("gate_breaches"))
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
+                   block_reason="whole_book_gate")
             summary["status"] = "blocked"
             summary["block_reason"] = "whole_book_gate"
             return summary
@@ -839,6 +846,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         if blocked_by_per_name:
             log.warning("trend: per-name gate (mode=%s) -> HOLD rebalance: %s",
                         pn_mode, summary.get("per_name_breaches"))
+            _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="per_name_gate")
             summary["status"] = "blocked"
             summary["block_reason"] = "per_name_gate"
             return summary

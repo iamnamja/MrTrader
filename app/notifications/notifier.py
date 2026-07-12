@@ -55,6 +55,7 @@ RATE_LIMITS: dict[str, int] = {
     "dead_man_alert": 0,          # H5 external dead-man watchdog: brain heartbeat stale (app down/hung)
     "gate_error": 0,              # H8: a safety gate (whole-book/recon) could not even EVALUATE
     "futures_delivery_risk": 0,   # R1.3: a held future is at/near its FND/last-trade floor unrolled
+    "enforce_rebalance_verification": 0,  # CH5: post-rebalance enforce-mode verification (PASS/ATTENTION)
 }
 
 # ── Severity tiers (H8) — triage at a glance + route CATASTROPHIC events to a louder channel ──
@@ -494,6 +495,23 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
                        "First Notice / delivery risks assignment (full notional + the physical). IBKR "
                        "auto-liquidation is a last resort only, at their discretion/pricing."),
         ])
+
+    elif event_type == "enforce_rebalance_verification":
+        st = p.get("status", "?")
+        sc = p.get("scorecard") or {}
+        subj = f"[MrTrader] Enforce-rebalance verify {p.get('date', '')} — {st}"
+        rows = [
+            ("Status", st),
+            ("Config (gates)", p.get("config")),
+            ("Scorecard captured", f"intended={sc.get('n_intended')} ungoverned={sc.get('n_ungoverned')} "
+                                   f"crash_mult={sc.get('crash_mult')} overlay_mult={sc.get('overlay_mult')}"
+                                   if sc.get("present") else "NO row yet"),
+            ("Decisions today", p.get("decisions")),
+        ]
+        if p.get("attention"):
+            rows.append(("⚠ ATTENTION", "; ".join(p["attention"])))
+        body = _section("CH5 — post-rebalance ENFORCE verification (config in force + CH0b scorecard "
+                        "capture + spurious-HOLD check)", rows)
 
     else:
         subj = f"[MrTrader] {event_type}"

@@ -412,6 +412,27 @@ def _diversified_uptrend_prices(symbols, n=300, seed=0):
     return pd.DataFrame(data)
 
 
+def test_enforce_whole_book_gate_hold_writes_audit_row(monkeypatch, _patch_env):
+    # a spurious/real enforce HOLD must be RECORDED in decision_audit (not just logged), so the
+    # CH5 verifier + monitoring can see it. Force a whole-book-gate breach in enforce.
+    cfg, audits = _patch_env
+    cfg["pm.whole_book_gate_mode"] = "enforce"
+    cfg["pm.trend_shadow"] = "false"
+    from app.live_trading import whole_book_gate as wbg
+    monkeypatch.setattr(wbg, "shadow_gate_from_intents",
+                        lambda *a, **k: wbg.WholeBookGateVerdict(allow=False, mode="enforce",
+                                                                 breaches=["gross_ex_cash > cap"]))
+    fake = _FakeAlpaca(_uptrend_prices(["SPY", "QQQ", "TLT"]))
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+
+    summary = ts.run_trend_rebalance(db=MagicMock())
+
+    assert summary["status"] == "blocked" and summary["block_reason"] == "whole_book_gate"
+    assert fake.orders == []                                    # held before execution
+    assert any(a.get("block_reason") == "whole_book_gate" and a.get("final_decision") == "block"
+               for a in audits)                                 # the enforce HOLD is now audited
+
+
 def test_run_enforce_holds_on_per_name_correlation_breach(monkeypatch, _patch_env):
     # default _uptrend_prices = identical path -> book corr 1.0 -> the "one bet" breach HOLDS.
     cfg, audits = _patch_env
