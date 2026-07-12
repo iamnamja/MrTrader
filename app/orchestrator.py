@@ -154,6 +154,19 @@ class AgentOrchestrator:
             job_id="cash_rebalance_trigger", misfire_grace_time=1800,
         )
 
+        # CH5 — post-rebalance ENFORCE verification at 11:07 ET (same weekly cadence + weekday +
+        # market-open guard as the trend rebalance). Read-only: confirms the enforce gates evaluated
+        # CLEAN (no spurious hold) and the CH0b scorecard captured this rebalance's per-governor
+        # multipliers + ungoverned counterfactual (un-backfillable); emails a PASS/ATTENTION summary.
+        # 11:07 (not 10:17) gives ample slack even if the 09:45 rebalance MISFIRES late (its
+        # misfire_grace_time is 1800s → it can start as late as ~10:15), so the scorecard write is
+        # always done first. No trading. Critical for the FIRST enforce Monday (2026-07-13) and a
+        # durable weekly enforce-health check thereafter.
+        scheduler.schedule_daily_at_time(
+            self._verify_enforce_rebalance, hour=11, minute=7,
+            job_id="enforce_rebalance_verify", misfire_grace_time=1800,
+        )
+
         # Crypto trend LIVE-PAPER tracker (P3-1) at 09:55 ET — report-only OOS recorder.
         # Recomputes the rules-based crypto-trend book on live Alpaca closes weekly and
         # freezes the forward out-of-sample slice. No orders, no capital. Crypto is 24/7
@@ -278,6 +291,50 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("Retraining trigger failed: %s", exc)
             await self._log_error("model_trainer", str(exc))
+
+    async def _verify_enforce_rebalance(self) -> None:
+        """CH5 post-rebalance ENFORCE verification (read-only; emails a PASS/ATTENTION summary).
+
+        Fires daily (cron) but runs only on the trend rebalance weekday AND only when the market is
+        open (same fail-closed guard as the rebalance — no point verifying a rebalance that didn't
+        happen). Confirms the enforce gates evaluated clean + the CH0b scorecard captured the
+        governor data (un-backfillable). Blocking DB/notifier work runs off the event loop. Never
+        disrupts anything — verification only, no trading."""
+        from datetime import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except Exception:
+            _et = None
+        try:
+            from app.database.session import get_session
+            from app.database.agent_config import get_agent_config
+            db = get_session()
+            try:
+                target_weekday = int(get_agent_config(db, "pm.trend_rebalance_weekday"))
+            finally:
+                db.close()
+        except Exception:
+            target_weekday = 0
+        today = _dt.now(_et).date() if _et else _dt.now().date()
+        if today.weekday() != target_weekday:
+            return
+        try:
+            from app.integrations import get_alpaca_client
+            clock = get_alpaca_client().get_clock()
+        except Exception as exc:
+            logger.debug("enforce-verify: clock check failed — skip: %s", exc)
+            return
+        if not clock or not clock.get("is_open"):
+            return
+        try:
+            from scripts.verify_enforce_rebalance import run_and_report
+            loop = asyncio.get_event_loop()
+            rep = await loop.run_in_executor(None, run_and_report)
+            logger.info("Enforce-rebalance verify: status=%s attention=%d",
+                        rep.get("status"), len(rep.get("attention", [])))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("enforce-rebalance verify failed (non-fatal): %s", exc)
 
     async def _trigger_trend_rebalance(self) -> None:
         """Weekly TSMOM trend-sleeve rebalance (Alpha-v4 live wiring).
