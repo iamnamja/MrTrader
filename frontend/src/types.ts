@@ -258,7 +258,8 @@ export interface MonitorHealth {
 export interface NisMacroEvent {
   event_type: string
   event_name?: string | null
-  event_time: string | null
+  event_time: string | null            // display-only "HH:MM UTC" (no date)
+  event_time_utc?: string | null       // full ISO-8601 timestamp (date preserved) — prefer this
   risk_level: string
   direction: string
   sizing_factor: number

@@ -157,10 +157,15 @@ class NewsIntelligenceService:
         for e in events:
             evt_time = e["event_time"]
             time_str = evt_time.strftime("%H:%M UTC") if hasattr(evt_time, "strftime") else str(evt_time)[:16]
+            # Full ISO timestamp with the DATE preserved — event_time is display-only "HH:MM UTC"
+            # and drops the date, which prevents the UI from distinguishing a same-day release from a
+            # next-day (1-day look-ahead) event that is what actually holds the block.
+            iso_str = evt_time.isoformat() if hasattr(evt_time, "isoformat") else ""
             signals.append(MacroEventSignal(
                 event_type=e["event_type"],
                 event_name=e.get("event_name", ""),
                 event_time=time_str,
+                event_time_utc=iso_str,
                 risk_level=llm_result.get("risk_level", "LOW"),
                 direction=llm_result.get("direction", "NEUTRAL"),
                 sizing_factor=float(llm_result.get("sizing_factor", 1.0)),
