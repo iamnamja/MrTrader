@@ -906,9 +906,16 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
   const sizeStr = ctx.global_sizing_factor !== 1.0 ? ` · sizing ${ctx.global_sizing_factor}×` : ''
   const blockStr = ctx.block_new_entries ? ' · NEW ENTRIES BLOCKED' : ''
   const nEvents = ctx.events_today.length
-  const fmtTime = (t: string | null) =>
-    t ? new Date(t).toLocaleString([], { timeZone: 'America/New_York', month: 'short',
-      day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' ET' : '—'
+  // Format an ISO timestamp as "Jul 15, 08:30 ET" (date preserved so a next-day look-ahead event
+  // reads as tomorrow, not today). Falls back to the raw display string if the ISO is missing/bad.
+  const fmtTime = (iso: string | null | undefined, fallback?: string | null) => {
+    if (iso) {
+      const d = new Date(iso)
+      if (!isNaN(d.getTime())) return d.toLocaleString([], { timeZone: 'America/New_York',
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' ET'
+    }
+    return fallback ?? '—'
+  }
   const outColor = (o?: string) =>
     o === 'risk_on' ? C.green : o === 'risk_off' ? C.red : o === 'pending' ? C.yellow : C.muted
   // The events that are still UNRELEASED — these (esp. high-impact) are what drive an ongoing block.
@@ -935,7 +942,7 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
         <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
           {stale
             ? `${nEvents} event${nEvents !== 1 ? 's' : ''} on ${ctx.snapshot_date ?? 'last read'}`
-            : `${nEvents} event${nEvents !== 1 ? 's' : ''} · as of ${fmtTime(ctx.as_of)}`}
+            : `${nEvents} event${nEvents !== 1 ? 's' : ''} · as of ${fmtTime(ctx.as_of, null)}`}
         </span>
       </div>
 
@@ -945,7 +952,7 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
           {!stale && ctx.block_new_entries && pending.length > 0 && (
             <div style={{ fontSize: 11, color: C.yellow, marginBottom: 6 }}>
               Blocked by {pending.length} unreleased event{pending.length !== 1 ? 's' : ''} in the 1-day
-              look-ahead (the book de-risks AHEAD of imminent high-impact prints — note the DATE column;
+              look-ahead (the book de-risks AHEAD of imminent high-impact prints — see the When column;
               an event dated tomorrow is what holds the block today). Lifts once they release / at the
               next premarket read.
             </div>
@@ -962,18 +969,29 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
                 </tr>
               </thead>
               <tbody>
-                {ctx.events_today.map((e, i) => (
-                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
-                    <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{fmtTime(e.event_time)}</td>
-                    <td style={s.td}>{e.event_name || e.event_type}</td>
-                    <td style={{ ...s.td, color: e.actual == null ? C.muted : C.text }}>
-                      {e.actual == null ? 'pending' : e.actual}</td>
-                    <td style={s.td}>{e.estimate ?? '—'}</td>
-                    <td style={s.td}>{e.prior ?? '—'}</td>
-                    <td style={{ ...s.td, color: outColor(e.market_outcome), fontWeight: 600 }}>
-                      {e.outcome_label ?? (e.actual == null ? 'Pending' : '—')}</td>
-                  </tr>
-                ))}
+                {ctx.events_today.map((e, i) => {
+                  // Released iff its timestamp is in the past. A future-dated event (next-day
+                  // look-ahead) hasn't happened yet → "Upcoming", not "Pending" (which wrongly
+                  // implies an overdue print). Only a past event with no actual is truly "Pending".
+                  const evtD = e.event_time_utc ? new Date(e.event_time_utc) : null
+                  const released = evtD && !isNaN(evtD.getTime()) ? evtD.getTime() <= Date.now()
+                    : e.actual != null
+                  const scored = e.market_outcome && e.market_outcome !== 'pending'
+                  const outLabel = scored ? e.outcome_label : !released ? 'Upcoming'
+                    : e.actual == null ? 'Pending' : '—'
+                  const outClr = scored ? outColor(e.market_outcome) : !released ? C.accent : C.muted
+                  return (
+                    <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{fmtTime(e.event_time_utc, e.event_time)}</td>
+                      <td style={s.td}>{e.event_name || e.event_type}</td>
+                      <td style={{ ...s.td, color: e.actual == null ? C.muted : C.text }}>
+                        {e.actual == null ? '—' : e.actual}</td>
+                      <td style={s.td}>{e.estimate ?? '—'}</td>
+                      <td style={s.td}>{e.prior ?? '—'}</td>
+                      <td style={{ ...s.td, color: outClr, fontWeight: 600 }}>{outLabel}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}
@@ -1849,7 +1867,14 @@ function MacroIntelPanel() {
   const fmtEventTime = (t: string | null | undefined) => {
     const d = parseEventTime(t)
     if (!d) return t ?? '—'
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
+    const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
+    // Prepend the date when the event isn't today (a next-day look-ahead event) so it reads as
+    // tomorrow rather than silently looking like a today print.
+    const etDay = (x: Date) => x.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+    if (etDay(d) !== etDay(new Date())) {
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' + time
+    }
+    return time
   }
 
   if (loading) return <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading Macro Intel…</div>
@@ -1949,7 +1974,7 @@ function MacroIntelPanel() {
                 ) : (macro?.events_today ?? []).map((e, i) => {
                   const ic = (e.risk_level ?? '').toUpperCase()
                   const icColor = ic === 'HIGH' ? C.red : ic === 'MEDIUM' ? C.yellow : C.green
-                  const evtD = parseEventTime(e.event_time)
+                  const evtD = parseEventTime(e.event_time_utc || e.event_time)
                   const released = evtD ? evtD.getTime() <= Date.now() : (e.already_priced_in ?? false)
 
                   // Outcome: polarity-aware market read (server-computed = single source of truth).
@@ -1975,7 +2000,7 @@ function MacroIntelPanel() {
                   return (
                     <tr key={i} title={e.consensus_summary ?? ''} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: '5px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
-                        {fmtEventTime(e.event_time)}
+                        {fmtEventTime(e.event_time_utc || e.event_time)}
                       </td>
                       <td style={{ padding: '5px 8px', fontWeight: 600 }} title={e.event_name || e.event_type}>
                         {e.event_name || e.event_type}

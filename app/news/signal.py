@@ -36,7 +36,7 @@ class MacroEventSignal:
     Replaces the binary FOMC/NFP block in premarket.py.
     """
     event_type: str                      # canonical bucket: "FOMC", "NFP", "CPI", "OTHER_HIGH"
-    event_time: str                      # "14:00 ET"
+    event_time: str                      # DISPLAY-ONLY "HH:MM UTC" (no date — use event_time_utc for the date)
     risk_level: RiskLevel                # LOW / MEDIUM / HIGH
     direction: Direction                 # expected market direction post-event
     sizing_factor: float                 # 0.5–1.0 applied to all new entries today
@@ -54,6 +54,9 @@ class MacroEventSignal:
     event_name: str = ""                 # raw vendor name (e.g. "Retail Sales Ex Autos MoM (May)");
     #                                      surfaced in the UI so OTHER_HIGH rows aren't opaque and
     #                                      same-type rows (Retail Sales MoM vs Ex-Autos) disambiguate
+    event_time_utc: str = ""             # full ISO-8601 UTC timestamp (DATE preserved) — the
+    #                                      authoritative time; event_time drops the date so the UI
+    #                                      cannot tell a same-day print from a next-day look-ahead one
 
     @property
     def effective_sizing_factor(self) -> float:

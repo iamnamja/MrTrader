@@ -99,6 +99,7 @@ def get_macro_context() -> Dict[str, Any]:
                         "event_type": e.event_type,
                         "event_name": getattr(e, "event_name", ""),
                         "event_time": e.event_time,
+                        "event_time_utc": getattr(e, "event_time_utc", "") or "",
                         "risk_level": e.risk_level,
                         "direction": e.direction,
                         "sizing_factor": e.sizing_factor,

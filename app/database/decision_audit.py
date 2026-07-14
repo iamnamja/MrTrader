@@ -190,6 +190,7 @@ def persist_nis_macro_snapshot(
                 "event_type": _et,
                 "event_name": getattr(e, "event_name", ""),
                 "event_time": str(getattr(e, "event_time", None)),
+                "event_time_utc": getattr(e, "event_time_utc", "") or "",
                 "risk_level": getattr(e, "risk_level", None),
                 "direction": getattr(e, "direction", None),
                 "sizing_factor": getattr(e, "sizing_factor", None),
