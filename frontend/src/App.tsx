@@ -893,8 +893,9 @@ function Pill({ label, ok, warn }: { label: string; ok: boolean; warn?: boolean 
   )
 }
 
-// ── Macro Risk Banner ─────────────────────────────────────────────────────────
+// ── Macro Risk Banner (expandable) ────────────────────────────────────────────
 function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
+  const [open, setOpen] = useState(false)
   if (!ctx) return null
   // is_today omitted (older API) => assume current. Only false marks a stale snapshot
   // (premarket hasn't run today, so /api/nis/macro is serving a prior day's snapshot).
@@ -905,27 +906,79 @@ function MacroRiskBanner({ ctx }: { ctx: NisMacroContext | null }) {
   const sizeStr = ctx.global_sizing_factor !== 1.0 ? ` · sizing ${ctx.global_sizing_factor}×` : ''
   const blockStr = ctx.block_new_entries ? ' · NEW ENTRIES BLOCKED' : ''
   const nEvents = ctx.events_today.length
+  const fmtTime = (t: string | null) =>
+    t ? new Date(t).toLocaleString([], { timeZone: 'America/New_York', month: 'short',
+      day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' ET' : '—'
+  const outColor = (o?: string) =>
+    o === 'risk_on' ? C.green : o === 'risk_off' ? C.red : o === 'pending' ? C.yellow : C.muted
+  // The events that are still UNRELEASED — these (esp. high-impact) are what drive an ongoing block.
+  const pending = ctx.events_today.filter(e => e.actual == null)
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
       borderRadius: 6, marginBottom: 12,
       background: `${riskColor}10`, border: `1px solid ${riskColor}40`,
     }}>
-      <span style={{ fontWeight: 700, fontSize: 11, color: riskColor, whiteSpace: 'nowrap' }}>
-        {stale
-          ? `NIS MACRO: no read today (last ${ctx.snapshot_date ?? 'n/a'}: ${ctx.overall_risk})`
-          : `NIS MACRO: ${ctx.overall_risk}${blockStr}${sizeStr}`}
-      </span>
-      {!stale && ctx.rationale && (
-        <span style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {ctx.rationale}
+      {/* clickable header — click to expand details */}
+      <div onClick={() => setOpen(o => !o)} title="Click for the events + rationale behind this read"
+        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', cursor: 'pointer' }}>
+        <span style={{ fontSize: 10, color: riskColor, width: 10 }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontWeight: 700, fontSize: 11, color: riskColor, whiteSpace: 'nowrap' }}>
+          {stale
+            ? `NIS MACRO: no read today (last ${ctx.snapshot_date ?? 'n/a'}: ${ctx.overall_risk})`
+            : `NIS MACRO: ${ctx.overall_risk}${blockStr}${sizeStr}`}
         </span>
+        {!stale && ctx.rationale && !open && (
+          <span style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {ctx.rationale}
+          </span>
+        )}
+        <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+          {stale
+            ? `${nEvents} event${nEvents !== 1 ? 's' : ''} on ${ctx.snapshot_date ?? 'last read'}`
+            : `${nEvents} event${nEvents !== 1 ? 's' : ''} · as of ${fmtTime(ctx.as_of)}`}
+        </span>
+      </div>
+
+      {/* expanded details: why this read — the unreleased-event driver + full rationale + the events */}
+      {open && (
+        <div style={{ padding: '4px 14px 12px 34px', borderTop: `1px solid ${riskColor}33` }}>
+          {!stale && ctx.block_new_entries && pending.length > 0 && (
+            <div style={{ fontSize: 11, color: C.yellow, marginBottom: 6 }}>
+              Blocked by {pending.length} unreleased event{pending.length !== 1 ? 's' : ''} in the 1-day
+              look-ahead (the book de-risks AHEAD of imminent high-impact prints — note the DATE column;
+              an event dated tomorrow is what holds the block today). Lifts once they release / at the
+              next premarket read.
+            </div>
+          )}
+          {ctx.rationale && (
+            <div style={{ fontSize: 11, color: C.text, lineHeight: 1.5, marginBottom: 8 }}>{ctx.rationale}</div>
+          )}
+          {nEvents > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+              <thead>
+                <tr style={{ color: C.muted, textAlign: 'left' }}>
+                  <th style={s.td}>When</th><th style={s.td}>Event</th><th style={s.td}>Actual</th>
+                  <th style={s.td}>Est</th><th style={s.td}>Prior</th><th style={s.td}>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ctx.events_today.map((e, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{fmtTime(e.event_time)}</td>
+                    <td style={s.td}>{e.event_name || e.event_type}</td>
+                    <td style={{ ...s.td, color: e.actual == null ? C.muted : C.text }}>
+                      {e.actual == null ? 'pending' : e.actual}</td>
+                    <td style={s.td}>{e.estimate ?? '—'}</td>
+                    <td style={s.td}>{e.prior ?? '—'}</td>
+                    <td style={{ ...s.td, color: outColor(e.market_outcome), fontWeight: 600 }}>
+                      {e.outcome_label ?? (e.actual == null ? 'Pending' : '—')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
-      <span style={{ fontSize: 10, color: C.muted, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-        {stale
-          ? `${nEvents} event${nEvents !== 1 ? 's' : ''} on ${ctx.snapshot_date ?? 'last read'}`
-          : `${nEvents} event${nEvents !== 1 ? 's' : ''} today`}
-      </span>
     </div>
   )
 }
