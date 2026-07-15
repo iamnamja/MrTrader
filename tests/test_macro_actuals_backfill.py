@@ -35,6 +35,35 @@ def test_enrich_does_not_override_an_existing_actual():
     assert out["actual"] == 217.0                       # keep the already-recorded value
 
 
+def test_enrich_fills_missing_event_time_utc():
+    # a date-less snapshot event gets its full ISO timestamp re-derived from the live calendar
+    meta = {"PPI": {"event_time_utc": "2026-07-15T12:30:00+00:00"}}
+    ev = {"event_type": "PPI", "event_time": "12:30 UTC", "event_time_utc": "", "actual": None}
+    out = nr._enrich_event(ev, meta)
+    assert out["event_time_utc"] == "2026-07-15T12:30:00+00:00"
+
+
+def test_enrich_does_not_override_existing_event_time_utc():
+    meta = {"PPI": {"event_time_utc": "2026-07-15T12:30:00+00:00"}}
+    ev = {"event_type": "PPI", "event_time_utc": "2026-07-14T12:30:00+00:00", "actual": None}
+    out = nr._enrich_event(ev, meta)
+    assert out["event_time_utc"] == "2026-07-14T12:30:00+00:00"   # keep what the snapshot recorded
+
+
+def test_todays_event_actuals_captures_time_for_unreleased(monkeypatch):
+    # an unreleased (actual=None) look-ahead event still contributes its full timestamp
+    from datetime import datetime, timezone
+    monkeypatch.setattr(nr, "_actuals_cache", {})
+    monkeypatch.setattr(
+        "app.news.sources.fmp_source.fetch_economic_calendar",
+        lambda **k: [{"event_type": "PPI", "event_name": "PPI MoM (Jun)", "actual": None,
+                      "estimate": 0.0, "prior": 1.1,
+                      "event_time": datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)}])
+    out = nr._todays_event_actuals()
+    assert out["PPI"]["event_time_utc"] == "2026-07-15T12:30:00+00:00"
+    assert "actual" not in out["PPI"]                    # unreleased -> no actual recorded
+
+
 def test_todays_event_actuals_never_raises(monkeypatch):
     # a fetch failure must degrade to {} (display simply stays Pending), never 500 the route
     monkeypatch.setattr(nr, "_actuals_cache", {})

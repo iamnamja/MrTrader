@@ -34,8 +34,15 @@ _ACTUALS_TTL_SEC = 600                   # 10 min
 
 
 def _todays_event_actuals() -> Dict[str, Dict[str, Any]]:
-    """Fresh FMP actuals for TODAY's already-released events, keyed by event_type, cached 10 min.
-    Never raises (returns {} on any failure -> the display simply stays 'Pending')."""
+    """Fresh FMP metadata for the display window (today + 1-day look-ahead), keyed by event_type,
+    cached 10 min: the released actual/estimate/prior AND the full ISO event_time_utc.
+
+    The event_time_utc back-fill matters because a snapshot built by older code (or served from the
+    DB before today's premarket re-runs) carries only a date-less "HH:MM UTC" string, so the UI
+    cannot tell a same-day print from a next-day look-ahead one. Re-deriving the full timestamp from
+    the live calendar lets the display show the real ET date without waiting for the next premarket.
+
+    Never raises (returns {} on any failure -> the display degrades to the snapshot's own fields)."""
     today = date.today().isoformat()
     cached = _actuals_cache.get(today)
     if cached and (time.time() - cached[0]) < _ACTUALS_TTL_SEC:
@@ -43,26 +50,40 @@ def _todays_event_actuals() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     try:
         from app.news.sources.fmp_source import fetch_economic_calendar
-        events = fetch_economic_calendar(days_ahead=0, min_impact="low",
+        # days_ahead=1 so the look-ahead events that hold the block (e.g. tomorrow's PPI) are covered
+        # too — their full date is exactly what the operator needs to see they are not yet due.
+        events = fetch_economic_calendar(days_ahead=1, min_impact="low",
                                          include_past_today=True) or []
         for e in events:
-            if e.get("actual") is not None and e.get("event_type"):
-                out[e["event_type"]] = {"actual": e.get("actual"), "estimate": e.get("estimate"),
-                                        "prior": e.get("prior")}
+            et = e.get("event_type")
+            if not et:
+                continue
+            rec = out.setdefault(et, {})
+            evt_time = e.get("event_time")
+            if evt_time is not None and not rec.get("event_time_utc"):
+                rec["event_time_utc"] = (evt_time.isoformat() if hasattr(evt_time, "isoformat")
+                                         else str(evt_time))
+            if e.get("actual") is not None:
+                rec.update({"actual": e.get("actual"), "estimate": e.get("estimate"),
+                            "prior": e.get("prior")})
     except Exception:
         logger.debug("macro actuals back-fill fetch failed (non-fatal)", exc_info=True)
     _actuals_cache[today] = (time.time(), out)
     return out
 
 
-def _enrich_event(ev: Dict[str, Any], actuals: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Fill a still-Pending event's actual from the fresh fetch, then (re)classify the outcome."""
-    if ev.get("actual") is None:
-        got = actuals.get(ev.get("event_type"))
-        if got and got.get("actual") is not None:
+def _enrich_event(ev: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Back-fill a still-Pending event's actual + its missing full timestamp from the fresh fetch,
+    then (re)classify the outcome."""
+    got = meta.get(ev.get("event_type"))
+    if got:
+        if ev.get("actual") is None and got.get("actual") is not None:
             ev = {**ev, "actual": got["actual"],
                   "estimate": ev.get("estimate") if ev.get("estimate") is not None else got.get("estimate"),
                   "prior": ev.get("prior") if ev.get("prior") is not None else got.get("prior")}
+        # supply the full ISO timestamp when the snapshot only has the date-less display string
+        if not ev.get("event_time_utc") and got.get("event_time_utc"):
+            ev = {**ev, "event_time_utc": got["event_time_utc"]}
     return {**ev, **classify_outcome(ev.get("event_type"), ev.get("actual"), ev.get("estimate"))}
 
 
