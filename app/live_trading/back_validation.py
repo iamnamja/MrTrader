@@ -80,6 +80,10 @@ _ADDED_COLUMNS = {
     "credit_mult": "REAL",          # credit/curve governor multiplier (individual)
     "ladder_mult": "REAL",          # drawdown-ladder multiplier (individual, un-floored)
     "ungoverned_weights": "TEXT",   # JSON {symbol: fraction_of_nav} with ALL multipliers = 1.0
+    "per_name_metrics": "TEXT",     # CH1 soak: JSON of the per-name gate's realized metrics this
+    #                                 rebalance (mode/allow/would_block/max_name_weight/
+    #                                 weighted_avg_book_corr/portfolio_heat_frac) — the book-corr
+    #                                 distribution the enforce threshold is calibrated from
 }
 
 
@@ -197,19 +201,22 @@ def record_rebalance_intent(summary: dict, *, asof: _date | str | None = None) -
         crash_m, credit_m = _f("crash_governor_mult"), _f("credit_governor_mult")
         ladder_m = _f("drawdown_ladder_mult")
         ungov = summary.get("ungoverned_weights") or {}
+        pnm = summary.get("per_name_metrics")
+        pnm_json = json.dumps(pnm) if pnm else None
         with _conn() as c:
             c.execute(
                 "INSERT INTO trend_backval_daily(trade_date, intended_weights, n_blocked, "
                 "overlay_mult, crash_mult, credit_mult, ladder_mult, ungoverned_weights, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "per_name_metrics, created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
                 "intended_weights=excluded.intended_weights, n_blocked=excluded.n_blocked, "
                 "overlay_mult=excluded.overlay_mult, crash_mult=excluded.crash_mult, "
                 "credit_mult=excluded.credit_mult, ladder_mult=excluded.ladder_mult, "
-                "ungoverned_weights=excluded.ungoverned_weights",
+                "ungoverned_weights=excluded.ungoverned_weights, "
+                "per_name_metrics=excluded.per_name_metrics",
                 (td, json.dumps(iw), n_blocked,
                  (float(overlay) if overlay is not None else None),
-                 crash_m, credit_m, ladder_m, json.dumps(ungov), time.time()),
+                 crash_m, credit_m, ladder_m, json.dumps(ungov), pnm_json, time.time()),
             )
         log.info("back_validation intent %s: %d names, blocked=%d (crash=%s credit=%s ladder=%s)",
                  td, len(iw), n_blocked, crash_m, credit_m, ladder_m)
@@ -236,6 +243,58 @@ def read_daily(since: _date | str | None = None) -> list[dict[str, Any]]:
     except Exception:
         log.exception("back_validation.read_daily failed (swallowed)")
         return []
+
+
+# CH1 enforce-threshold calibration candidates: the provisional gate is BOOK_CORR_GATE_AT=0.90.
+# The soak reports how often each candidate WOULD have bound so the flip picks a threshold with a
+# safety margin above the observed book-corr, not a guessed constant.
+_CORR_CANDIDATES = (0.80, 0.85, 0.90, 0.95)
+
+
+def per_name_soak_report(since: _date | str | None = None) -> dict[str, Any]:
+    """Summarize the CH1 per-name-gate shadow soak → the data that calibrates the enforce
+    correlation threshold. Reads the per_name_metrics captured on each LIVE rebalance row and
+    reports the observed book-correlation distribution + how many rebalances each candidate
+    threshold WOULD have blocked. Pure/read-only; never raises (returns n=0 on any failure)."""
+    empty = {"n": 0, "since": (str(since) if since else None), "book_corr": {},
+             "max_name_weight": {}, "would_block_at": {}, "actual_would_blocks": 0, "rows": []}
+    try:
+        rows = []
+        for r in read_daily(since):
+            m = _json(r.get("per_name_metrics"))
+            if not m:
+                continue
+            rows.append({"trade_date": r.get("trade_date"),
+                         "book_corr": m.get("weighted_avg_book_corr"),
+                         "max_name_weight": m.get("max_name_weight"),
+                         "portfolio_heat_frac": m.get("portfolio_heat_frac"),
+                         "would_block": bool(m.get("would_block"))})
+        if not rows:
+            return empty
+
+        def _dist(key):
+            vals = sorted(v for v in (row[key] for row in rows) if v is not None)
+            if not vals:
+                return {}
+            n = len(vals)
+
+            # nearest-rank percentiles (no numpy dependency; deterministic)
+            def _pct(p):
+                return vals[min(n - 1, max(0, int(round(p * (n - 1)))))]
+            return {"n": n, "min": vals[0], "median": _pct(0.5), "p95": _pct(0.95),
+                    "max": vals[-1]}
+
+        corrs = [row["book_corr"] for row in rows if row["book_corr"] is not None]
+        would_block_at = {f"{t:.2f}": sum(1 for c in corrs if c > t) for t in _CORR_CANDIDATES}
+        return {"n": len(rows), "since": (str(since) if since else None),
+                "book_corr": _dist("book_corr"),
+                "max_name_weight": _dist("max_name_weight"),
+                "would_block_at": would_block_at,
+                "actual_would_blocks": sum(1 for row in rows if row["would_block"]),
+                "rows": rows}
+    except Exception:
+        log.exception("back_validation.per_name_soak_report failed (swallowed)")
+        return empty
 
 
 # ──────────────────────────────────────────────────────────────────────────────────
