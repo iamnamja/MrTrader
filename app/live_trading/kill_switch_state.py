@@ -165,3 +165,56 @@ def evaluate_new_risk(mode: str, *, label: str = "", logger=None) -> dict:
     except Exception:
         return {"mode": (mode or "shadow").strip().lower(), "state": "UNKNOWN",
                 "allow": True, "would_block": False}
+
+
+# rebalance action classes
+REBAL_FULL = "full"                 # place all orders (NORMAL)
+REBAL_REDUCE_ONLY = "reduce_only"   # place only risk-REDUCING orders; suppress risk-increasing ones
+REBAL_BLOCKED = "blocked"           # place no new orders at all
+
+
+def evaluate_rebalance(mode: str, *, label: str = "", logger=None) -> dict:
+    """Classify what a periodic (weekly) rebalance may do under the current kill state, per `mode`.
+
+    This is the REDUCE-ONLY refinement of the coarse evaluate_new_risk gate: instead of blocking a
+    whole rebalance when new risk is halted (which also kills the protective EXITS that shed risk),
+    the caller runs the rebalance REDUCE-ONLY — placing risk-reducing orders (trims/sells / buffer
+    replenishment) and suppressing risk-increasing ones (new buys / deploys).
+
+      NORMAL              -> 'full'         (place all orders)
+      HALT_NEW_RISK       -> 'reduce_only'  (only risk-reducing orders; the dead-man / recon-FAIL
+                                             default, and the ONLY state auto-triggers reach)
+      CANCEL_ONLY & above -> 'blocked'      (place no new orders — flatten is a separate operator-
+                                             driven action, not the weekly rebalance's job)
+
+    'off'/'shadow' ALWAYS return action='full' (the sleeve runs unchanged — zero live change); the
+    action the machine WOULD take in enforce is logged + returned as 'shadow_action' so the soak is
+    visible. Only 'enforce' returns a restricting action.
+    FAIL-SAFE: any error -> 'full' (a state-machine bug must never halt a live rebalance; the binary
+    kill_switch.is_active, checked separately upstream, remains the hard stop).
+    Returns {mode, state, action, shadow_action}."""
+    try:
+        m = (mode or "shadow").strip().lower()
+        st = kill_switch_sm.state
+        if m == "off":
+            return {"mode": "off", "state": st, "action": REBAL_FULL, "shadow_action": REBAL_FULL}
+        # Only run the in-process dead-man if a LIVE loop has fed a heartbeat (see evaluate_new_risk).
+        if kill_switch_sm._beat_count > 0:
+            kill_switch_sm.dead_man_check(max_stale_sec=_SM_DEAD_MAN_STALE_SEC)
+            st = kill_switch_sm.state
+        if kill_switch_sm.can_increase_risk():                       # NORMAL
+            would = REBAL_FULL
+        elif severity(st) <= severity(HALT_NEW_RISK):                # exactly HALT_NEW_RISK
+            would = REBAL_REDUCE_ONLY
+        else:                                                        # CANCEL_ONLY and above
+            would = REBAL_BLOCKED
+        if would != REBAL_FULL and logger is not None:
+            logger.warning("[kill_switch_sm:%s mode=%s] %s rebalance: state=%s -> %s",
+                           label, m, "ENFORCE" if m == "enforce" else "WOULD (shadow: not acting)",
+                           st, would)
+        return {"mode": m, "state": st,
+                "action": would if m == "enforce" else REBAL_FULL,
+                "shadow_action": would}
+    except Exception:
+        return {"mode": (mode or "shadow").strip().lower(), "state": "UNKNOWN",
+                "action": REBAL_FULL, "shadow_action": REBAL_FULL}

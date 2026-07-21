@@ -176,23 +176,24 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "kill_switch"
             return summary
 
-        # ── H2: kill-switch state machine (shadow-first; same flag/contract as trend) ──
-        # NOTE for the eventual enforce flip: coarsely blocking the WHOLE cash rebalance also skips
-        # the buffer-replenish branch (a reduce-only T-bill SELL that raises liquidity) — so a
-        # reduce-only refinement is the right enforce-time follow-up. Harmless in shadow (logs only),
-        # and no worse than the binary-kill / recon-enforce gates above which already block this path.
+        # ── H2: kill-switch state machine (shadow-first; same flag/contract as trend) — REDUCE-ONLY ──
+        # HALT_NEW_RISK runs the cash rebalance reduce-only: the buffer-replenish SELL (raises
+        # liquidity — risk-reducing) still fires; the T-bill DEPLOY (parking fresh cash) is suppressed
+        # (see the deploy guard below). CANCEL_ONLY+ blocks the whole rebalance. 'shadow' runs FULL.
         from app.database.agent_config import get_agent_config as _gac
-        from app.live_trading.kill_switch_state import evaluate_new_risk
+        from app.live_trading.kill_switch_state import evaluate_rebalance
         try:
             _ksm_mode = str(_gac(db, "pm.kill_switch_sm_mode") or "shadow").strip().lower()
         except Exception:
             _ksm_mode = "shadow"
-        _ksm = evaluate_new_risk(_ksm_mode, label="cash", logger=log)
+        _ksm = evaluate_rebalance(_ksm_mode, label="cash", logger=log)
         summary["kill_switch_sm_state"] = _ksm["state"]
-        if not _ksm["allow"]:
+        summary["kill_switch_sm_action"] = _ksm["action"]
+        if _ksm["action"] == "blocked":
             summary["status"] = "blocked"
             summary["block_reason"] = "kill_switch_sm"
             return summary
+        _ksm_reduce_only = (_ksm["action"] == "reduce_only")
 
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
@@ -264,6 +265,16 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             log.warning("cash: positions unavailable — HOLD rebalance (%s)", exc)
             summary["status"] = "failed"
             summary["block_reason"] = "positions_unavailable"
+            return summary
+
+        # H2 reduce-only: under HALT_NEW_RISK, suppress the T-bill DEPLOY (parking fresh cash is a
+        # new buy) but let the buffer-replenish SELL below proceed (it raises liquidity — protective).
+        # Inert in shadow (action='full'); only acts on the enforce flip.
+        if _ksm_reduce_only and deployable > _MIN_NOTIONAL:
+            log.warning("cash: kill-switch HALT_NEW_RISK reduce-only -> T-bill deploy suppressed "
+                        "($%.0f kept as cash); buffer-replenish still allowed", deployable)
+            summary["action"] = "deploy_suppressed"
+            summary["reduce_only"] = True
             return summary
 
         intents: List[Dict[str, Any]] = []
