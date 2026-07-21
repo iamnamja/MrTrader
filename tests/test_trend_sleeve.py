@@ -236,6 +236,40 @@ def test_run_shadow_places_no_orders(monkeypatch, _patch_env):
     assert len(shadow_audits) == len(summary["approved"])
 
 
+def test_reduce_only_keeps_sells_suppresses_buys(monkeypatch, _patch_env):
+    """HALT_NEW_RISK + enforce -> the trend rebalance runs reduce-only: a protective SELL (exit of a
+    held down-trending name) is kept; new BUYS are suppressed. Gross can only fall."""
+    cfg, audits = _patch_env
+    cfg["pm.kill_switch_sm_mode"] = "enforce"
+    # SPY/QQQ rising (long -> buys), TLT falling (weight 0 -> the held TLT is a full-exit sell)
+    idx = pd.date_range("2024-01-01", periods=300, freq="B")
+    prices = pd.DataFrame({
+        "SPY": pd.Series([100.0 * (1 + 0.001 * k) for k in range(300)], index=idx),
+        "QQQ": pd.Series([110.0 * (1 + 0.001 * k) for k in range(300)], index=idx),
+        "TLT": pd.Series([120.0 * (1 - 0.001 * k) for k in range(300)], index=idx),
+    })
+    fake = _FakeAlpaca(prices)
+    monkeypatch.setattr("app.integrations.get_alpaca_client", lambda: fake)
+    monkeypatch.setattr(ts, "_current_trend_positions", lambda db, alpaca: {"TLT": 100})
+
+    from app.live_trading.kill_switch_state import kill_switch_sm, NORMAL, HALT_NEW_RISK
+    kill_switch_sm.heartbeat()
+    kill_switch_sm.set_state(HALT_NEW_RISK, reason="test", actor="t", manual=True)
+    try:
+        summary = ts.run_trend_rebalance(db=object())
+    finally:
+        kill_switch_sm.set_state(NORMAL, reason="reset", actor="t", manual=True)
+
+    assert summary["status"] == "ok"
+    assert summary["kill_switch_sm_action"] == "reduce_only" and summary["reduce_only"] is True
+    # only the protective TLT sell survives; SPY + QQQ buys are suppressed
+    assert [o["side"] for o in summary["approved"]] == ["sell"]
+    assert summary["approved"][0]["symbol"] == "TLT"
+    assert summary["n_suppressed_new_risk"] == 2
+    suppressed = [a for a in audits if a.get("block_reason") == "kill_switch_sm_reduce_only"]
+    assert {a["symbol"] for a in suppressed} == {"SPY", "QQQ"}
+
+
 def _patch_macro_backwardation(monkeypatch, ratio):
     """Force the crash governor's live VIX/VIX3M read to a fixed ratio (fresh data)."""
     import pandas as pd

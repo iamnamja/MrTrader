@@ -611,23 +611,27 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["block_reason"] = "kill_switch"
             return summary
 
-        # ── H2: kill-switch state machine (shadow-first) ──
-        # An escalated state (e.g. recon-break / dead-man HALT_NEW_RISK) gates the new-risk rebalance.
-        # 'shadow' (default) logs only; 'enforce' skips the rebalance (conservative — held positions
-        # keep their stops; a skipped weekly rebalance is safe). FAIL-SAFE: allow on any error.
+        # ── H2: kill-switch state machine (shadow-first) — REDUCE-ONLY refinement ──
+        # An escalated state gates the rebalance. HALT_NEW_RISK (the dead-man / recon-FAIL default)
+        # runs the rebalance REDUCE-ONLY: protective SELLS still shed risk; new BUYS are suppressed
+        # (gross can only fall, never rise). CANCEL_ONLY+ blocks the whole rebalance (held positions
+        # keep their stops; a skipped weekly rebalance is safe). 'shadow' (default) logs only — the
+        # sleeve runs FULL. FAIL-SAFE: 'full' on any error.
         from app.database.agent_config import get_agent_config as _gac
-        from app.live_trading.kill_switch_state import evaluate_new_risk
+        from app.live_trading.kill_switch_state import evaluate_rebalance
         try:
             _ksm_mode = str(_gac(db, "pm.kill_switch_sm_mode") or "shadow").strip().lower()
         except Exception:
             _ksm_mode = "shadow"
-        _ksm = evaluate_new_risk(_ksm_mode, label="trend", logger=log)
+        _ksm = evaluate_rebalance(_ksm_mode, label="trend", logger=log)
         summary["kill_switch_sm_state"] = _ksm["state"]
-        if not _ksm["allow"]:
+        summary["kill_switch_sm_action"] = _ksm["action"]
+        if _ksm["action"] == "blocked":
             _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="kill_switch_sm")
             summary["status"] = "blocked"
             summary["block_reason"] = "kill_switch_sm"
             return summary
+        _ksm_reduce_only = (_ksm["action"] == "reduce_only")
 
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
@@ -869,6 +873,25 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             summary["status"] = "blocked"
             summary["block_reason"] = "per_name_gate"
             return summary
+
+        # ── H2 reduce-only: under HALT_NEW_RISK, keep only risk-REDUCING orders (SELLS) and suppress
+        # risk-increasing ones (BUYS) — gross can only fall. Applied here (after all gates, before
+        # shadow-route + execute) so suppressed buys are neither IBKR-shadow-routed nor placed. In
+        # shadow mode the action is 'full', so this is inert until the enforce flip. Long-only book →
+        # side=='sell' is exactly the risk-reducing set.
+        if _ksm_reduce_only:
+            _suppressed = [it for it in approved if it["side"] != "sell"]
+            approved = [it for it in approved if it["side"] == "sell"]
+            summary["approved"] = approved          # keep the summary == what will actually be placed
+            summary["blocked"] = list(summary.get("blocked", [])) + [
+                {**it, "block_reason": "kill_switch_sm_reduce_only"} for it in _suppressed]
+            for it in _suppressed:
+                _audit(it["symbol"], it["side"], price=live.get(it["symbol"], 0.0),
+                       final_decision="block", block_reason="kill_switch_sm_reduce_only")
+            summary["reduce_only"] = True
+            summary["n_suppressed_new_risk"] = len(_suppressed)
+            log.warning("trend: kill-switch HALT_NEW_RISK reduce-only -> %d sell(s) kept, "
+                        "%d buy(s) suppressed", len(approved), len(_suppressed))
 
         # ── R1.1: SHADOW-route the same orders onto IBKR (gated OFF by default; places nothing on
         # IBKR; never breaks the rebalance) — surfaces whole-share/mapping deltas before the cutover ──

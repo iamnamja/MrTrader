@@ -13,7 +13,8 @@ import pytest
 
 from app.live_trading import kill_switch_state as ksm
 from app.live_trading.kill_switch_state import (
-    evaluate_new_risk, kill_switch_sm, NORMAL, HALT_NEW_RISK,
+    evaluate_new_risk, evaluate_rebalance, kill_switch_sm, NORMAL, HALT_NEW_RISK,
+    CANCEL_ONLY, REBAL_FULL, REBAL_REDUCE_ONLY, REBAL_BLOCKED,
 )
 
 
@@ -25,6 +26,45 @@ def _reset_sm():
     yield
     kill_switch_sm.set_state(NORMAL, reason="test-reset", actor="test", manual=True)
     kill_switch_sm.heartbeat()
+
+
+# ── evaluate_rebalance: the reduce-only classifier ───────────────────────────────
+def test_rebalance_normal_is_full_in_all_modes():
+    for m in ("shadow", "enforce", "off"):
+        r = evaluate_rebalance(m, label="t")
+        assert r["action"] == REBAL_FULL and r["shadow_action"] == REBAL_FULL
+
+
+def test_rebalance_halt_is_reduce_only_in_enforce():
+    kill_switch_sm.set_state(HALT_NEW_RISK, reason="x", actor="t", manual=True)
+    r = evaluate_rebalance("enforce", label="t")
+    assert r["action"] == REBAL_REDUCE_ONLY and r["state"] == HALT_NEW_RISK
+
+
+def test_rebalance_halt_shadow_runs_full_but_reports_would():
+    kill_switch_sm.set_state(HALT_NEW_RISK, reason="x", actor="t", manual=True)
+    r = evaluate_rebalance("shadow", label="t", logger=logging.getLogger("t"))
+    assert r["action"] == REBAL_FULL                    # shadow never restricts the live sleeve
+    assert r["shadow_action"] == REBAL_REDUCE_ONLY      # but reports what enforce WOULD do
+
+
+def test_rebalance_cancel_only_and_above_is_blocked():
+    kill_switch_sm.set_state(CANCEL_ONLY, reason="x", actor="t", manual=True)
+    r = evaluate_rebalance("enforce", label="t")
+    assert r["action"] == REBAL_BLOCKED
+
+
+def test_rebalance_off_is_full_even_when_halted():
+    kill_switch_sm.set_state(HALT_NEW_RISK, reason="x", actor="t", manual=True)
+    r = evaluate_rebalance("off", label="t")
+    assert r["action"] == REBAL_FULL
+
+
+def test_rebalance_fail_safe_is_full_on_error(monkeypatch):
+    monkeypatch.setattr(ksm.kill_switch_sm, "can_increase_risk",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    r = evaluate_rebalance("enforce", label="t")
+    assert r["action"] == REBAL_FULL
 
 
 # ── evaluate_new_risk: the consult contract ──────────────────────────────────────

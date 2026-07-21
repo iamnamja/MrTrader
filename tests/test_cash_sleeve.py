@@ -102,6 +102,44 @@ def test_kill_switch_blocks(cs, monkeypatch):
     assert s["status"] == "blocked" and s["block_reason"] == "kill_switch"
 
 
+def _sm_halt():
+    """Put the kill-switch state machine in HALT_NEW_RISK; return a callable to reset it to NORMAL.
+    Fresh heartbeat first so evaluate_rebalance's dead-man check doesn't interfere."""
+    from app.live_trading.kill_switch_state import kill_switch_sm, NORMAL, HALT_NEW_RISK
+    kill_switch_sm.heartbeat()
+    kill_switch_sm.set_state(HALT_NEW_RISK, reason="test", actor="t", manual=True)
+    return lambda: kill_switch_sm.set_state(NORMAL, reason="reset", actor="t", manual=True)
+
+
+def test_reduce_only_suppresses_tbill_deploy(cs, monkeypatch):
+    # HALT_NEW_RISK + enforce -> deploying idle cash (a new buy) is suppressed; no orders.
+    reset = _sm_halt()
+    try:
+        alpaca = _FakeAlpaca(cash=50_000, equity=100_000, prices={"SGOV": 100.0, "BIL": 91.0})
+        _setup(monkeypatch, cs, alpaca=alpaca,
+               config={**_BASE_CFG, "pm.kill_switch_sm_mode": "enforce"})
+        s = cs.run_cash_rebalance(db=object())
+        assert s["action"] == "deploy_suppressed" and s.get("reduce_only") is True
+        assert alpaca.orders == [] and not s.get("approved")
+    finally:
+        reset()
+
+
+def test_reduce_only_still_allows_buffer_replenish_sell(cs, monkeypatch):
+    # HALT_NEW_RISK + enforce -> the protective SELL (raise liquidity) is a risk-reducing order and
+    # MUST still fire (the whole point of reduce-only).
+    reset = _sm_halt()
+    try:
+        alpaca = _FakeAlpaca(cash=500, equity=100_000, prices={"SGOV": 100.0})
+        _setup(monkeypatch, cs, alpaca=alpaca, current={"SGOV": 100},
+               config={**_BASE_CFG, "pm.kill_switch_sm_mode": "enforce"})
+        s = cs.run_cash_rebalance(db=object())
+        assert s["action"] == "raise" and not s.get("reduce_only")
+        assert s["approved"][0]["side"] == "sell" and s["approved"][0]["qty"] == 16
+    finally:
+        reset()
+
+
 def test_shadow_places_no_orders(cs, monkeypatch):
     alpaca = _FakeAlpaca(cash=50_000, equity=100_000, prices={"SGOV": 100.0})
     _setup(monkeypatch, cs, alpaca=alpaca, config=_BASE_CFG)

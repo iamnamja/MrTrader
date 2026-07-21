@@ -4,6 +4,23 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-21 (H2 hardening) — kill-switch reduce-only refinement: `HALT_NEW_RISK` runs the sleeves reduce-only (protective exits pass) instead of blocking the whole rebalance.
+
+**Context**: the kill-switch state machine (`kill_switch_sm`, `pm.kill_switch_sm_mode`, default shadow) is one of two governors still in shadow (the other is the CH1 per-name gate). Its documented pre-flip work was a *reduce-only refinement*: the coarse wiring (`evaluate_new_risk`) blocked the ENTIRE trend/cash rebalance when new risk was halted — which would also kill the protective SELLS/exits that shed risk. Flipping it to enforce as-is could block a de-risking trade during exactly the stress it exists for. This is hardening/execution work (permitted under the CH5 moratorium), not edge-hunting.
+
+**Decision**: added `evaluate_rebalance(mode)` to the state machine — a rebalance-level classifier returning `full` / `reduce_only` / `blocked`:
+- **NORMAL → full** (place all orders).
+- **HALT_NEW_RISK → reduce_only** — place only risk-REDUCING orders, suppress risk-increasing ones. Trend: keep SELLS, suppress BUYS (long-only book → gross can only fall). Cash: keep the buffer-replenish SELL (raises liquidity), suppress the T-bill DEPLOY (parking fresh cash). This is the only state the auto-triggers (dead-man / recon-FAIL) reach.
+- **CANCEL_ONLY & above → blocked** — the weekly rebalance places nothing; a full flatten is a separate operator-driven action, not the rebalance's job.
+
+The trend/cash sleeves consult `evaluate_rebalance`; the RiskManager keeps `evaluate_new_risk` (the correct per-order new-risk primitive for the dormant proposal path). **Shadow still runs FULL** — the classifier returns `action='full'` in shadow/off and only reports `shadow_action`, so there is ZERO live behavior change until `pm.kill_switch_sm_mode` is flipped to enforce. FAIL-SAFE: any error → `full` (a state-machine bug must never halt a live rebalance; the binary `kill_switch.is_active` remains the hard stop).
+
+**Rationale**: the invariant we want under a halt is *gross non-increasing* — shed risk freely, add none. Allowing sells + suppressing buys guarantees it, and it's the semantic the state machine already modelled (`can_increase_risk` vs `allows_reduce_only`); the gap was purely that the sleeve callers early-returned instead of running reduce-only.
+
+**Consequences**: the kill-switch is now safe to flip to enforce (protective exits survive a halt). Remaining owner-gated step: flip `pm.kill_switch_sm_mode`→enforce after a clean shadow week — noting the evidence is weak in a calm tape (it hasn't been exercised by a real drawdown since the 07-14 restart). +12 tests (classifier states + trend sell-kept/buy-suppressed + cash deploy-suppressed/replenish-kept). No live behavior change. Paired with the CH1 per-name-gate soak tracker (same session) — both prep the two shadow governors for promotion. Docs: MASTER_BACKLOG H2 + PROJECT_STATE promotion queue.
+
+---
+
 ## 2026-07-08 (CH4 RUN — Compound-and-Harden) — the ranging-MR sleeve FAILS its pre-registered gates → KILL; the 12-month hunting MORATORIUM (to 2027-07-08) is now IN EFFECT. Compound-and-Harden is COMPLETE through CH4.
 
 **Context**: ran the ranging-market mean-reversion sleeve against the gates frozen in the CH4 pre-registration (`docs/reference/CH4_MR_PREREGISTRATION_2026-07-08.md`, prior DECISIONS entry). `app/research/ch4_mr_sleeve.py` → `docs/reference/ch4_mr_results.json`. Decision on the pre-registered primary `mr_primary` ONLY (no best-of-8). Report-only; no live change.
