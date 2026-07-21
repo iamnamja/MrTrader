@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-21 (H2 GO-LIVE) — kill-switch state machine flipped shadow→enforce (`pm.kill_switch_sm_mode`=enforce).
+
+**Context**: with the reduce-only refinement shipped (entry below), the kill-switch state machine was safe to promote from shadow to enforce — the last of the two shadow governors ready for a flip (the per-name gate still needs soak calibration). Owner-approved.
+
+**Decision**: flipped `pm.kill_switch_sm_mode` `shadow → enforce` (config change, persisted to the production DB; the daemon reads it live at each rebalance — no restart). Verified the running daemon is on the #654 commit (`b3ebf69`), i.e. it HAS the reduce-only code, so an enforce `HALT_NEW_RISK` runs the trend/cash rebalance reduce-only (sheds risk, keeps protective exits) rather than blocking the whole rebalance. Whole-book gate + reconciliation were already enforce; per-name gate stays shadow.
+
+**Rationale / risk**: the SM is currently `NORMAL`/dormant and only acts if an auto-trigger escalates it — the dead-man (stale heartbeat >5min) or a reconciliation FAIL_CLOSED (recon is enforce). When it acts, the effect is bounded (reduce-only → gross non-increasing). Reconciliation-FAIL already blocks the rebalance via its own gate, so the SM's incremental value is mainly the dead-man cover. **Caveat**: it has not been exercised by a real drawdown (calm-tape evidence) — this is a fail-safe we're arming, not a battle-tested one. **Instant revert** if it spuriously halts: `set_agent_config(db,'pm.kill_switch_sm_mode','shadow')`.
+
+**Consequences**: H2 is COMPLETE. Live governor stack = whole-book gate ENFORCE + reconciliation ENFORCE + kill-switch SM ENFORCE (reduce-only) + per-name gate SHADOW (soak accruing). No behavior change unless/until the SM escalates. First live rebalance under the flip = Mon 2026-07-27 (the automated 11:07 verify job covers it). Docs: PROJECT_STATE promotion queue + MASTER_BACKLOG H2.
+
+---
+
 ## 2026-07-21 (H2 hardening) — kill-switch reduce-only refinement: `HALT_NEW_RISK` runs the sleeves reduce-only (protective exits pass) instead of blocking the whole rebalance.
 
 **Context**: the kill-switch state machine (`kill_switch_sm`, `pm.kill_switch_sm_mode`, default shadow) is one of two governors still in shadow (the other is the CH1 per-name gate). Its documented pre-flip work was a *reduce-only refinement*: the coarse wiring (`evaluate_new_risk`) blocked the ENTIRE trend/cash rebalance when new risk was halted — which would also kill the protective SELLS/exits that shed risk. Flipping it to enforce as-is could block a de-risking trade during exactly the stress it exists for. This is hardening/execution work (permitted under the CH5 moratorium), not edge-hunting.
