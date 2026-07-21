@@ -978,6 +978,15 @@ async def live_readiness_check():
     return ReadinessChecker().run()
 
 
+@router.get("/ibkr/readiness")
+async def ibkr_readiness_check():
+    """IBKR migration readiness (R1.2 tiny-live pre-flight): ib_insync availability, shadow-route
+    reconstruction self-test, gateway reachability, account/Read-Only state, and the remaining
+    blockers. Read-only — places nothing, opens no gateway session."""
+    from app.live_trading import ibkr_readiness
+    return ibkr_readiness.probe()
+
+
 # ─── Analytics ────────────────────────────────────────────────────────────────
 
 @router.get("/analytics/signal-attribution")

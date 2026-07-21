@@ -254,6 +254,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Startup connectivity check failed: %s", e)
 
+    # ── 4.5 IBKR migration readiness (read-only; never fatal) ─────────────────
+    # Surface the IBKR path's readiness at boot so a silent gap (e.g. ib_insync not importable →
+    # the R1.1 shadow router skipping for weeks) is visible immediately, not discovered on a Monday
+    # rebalance. Places nothing; opens no gateway session. `GET /api/ibkr/readiness` for the detail.
+    try:
+        from app.live_trading import ibkr_readiness
+        log.info("OK %s", ibkr_readiness.format_line(ibkr_readiness.probe()))
+    except Exception as e:  # noqa: BLE001
+        log.debug("IBKR readiness probe failed (non-fatal): %s", e)
+
     # ── 5-8. Trading-brain preamble + boot ────────────────────────────────────
     # R0.2 daemon decouple: in the DEFAULT in_process mode the web boots the brain
     # (state restore → reconciliation → queue flush → orchestrator/agents/news),

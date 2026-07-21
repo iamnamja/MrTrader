@@ -137,6 +137,7 @@ futures lots at R1.3; here it's the mapping-gap + reconstruction parity that mat
 - **Never raises into the live loop**: per-order fail-closed; the Alpaca placement is untouched.
 - Runs in BOTH shadow and live rebalance modes (so the comparison accrues during the Alpaca-shadow soak).
 - Owner step to activate: set `ibkr.shadow_routing=on`. (The enforce gates already evaluate `venue=IBKR`.)
+- **⚠️→✅ Silent-skip fixed (2026-07-21):** the flag was on but the router logged `ib_insync unavailable — skipped` on every rebalance (the running daemon predated the `ib_insync` install) → **zero** comparison data accrued for weeks. The 07-21 restart onto the venv (has `ib_insync==0.9.86`) fixes it; a dry-run of 07-20's real 8 orders reconstructs **8/8 clean** (no mapping gaps) → live comparison resumes 07-27. **Readiness probe added:** `app/live_trading/ibkr_readiness.py` (+ `GET /api/ibkr/readiness`, + a boot-time log line) reports `ib_insync` availability, a shadow-route reconstruction self-test, gateway reachability, account/Read-Only state, and the remaining blockers as a stage (`BLOCKED` / `R1.1_SHADOW_READY` / `GATEWAY_UP` / `R1.0C2B_READY`) — so this class of silent gap surfaces at boot, not on a Monday. **Current stage: `R1.1_SHADOW_READY`** (only blocker: IB Gateway not running — needed for R1.0c-2b / R1.2, not for R1.1).
 
 ### R1.2 — Cut over ETF/cash to IBKR (tiny-live)
 Flip `trend`/`cash` venue → IBKR (whole book-state now reads IBKR positions). Alpaca adapter stays as
