@@ -155,30 +155,30 @@ async def get_dashboard_summary():
         buying_power = float(account["buying_power"]) if account else None
         cash = float(account["cash"]) if account else None
 
-        # P&L from Alpaca portfolio history — ground truth, unaffected by DB duplicates
-        def _pnl_from_alpaca():
+        # Daily P&L = today's equity vs the prior market close (Alpaca's own `last_equity`). This is
+        # the canonical broker daily P&L (realized + unrealized) and — unlike the 1D portfolio-history
+        # series, which lags pre-market — it agrees with the overnight move at all times. Falls back to
+        # open-position unrealized P&L only when last_equity is unavailable.
+        last_equity = None
+        if account is not None and account.get("last_equity") is not None:
             try:
-                from alpaca.trading.requests import GetPortfolioHistoryRequest
-                req = GetPortfolioHistoryRequest(period="1D", timeframe="5Min")
-                hist = _alpaca().trading_client.get_portfolio_history(req)
-                pnl_series = hist.profit_loss or []
-                today_alpaca = next((float(v) for v in reversed(pnl_series) if v is not None), None)
-                return today_alpaca
-            except Exception:
-                return None
-
-        try:
-            today_alpaca_pnl = await asyncio.wait_for(asyncio.to_thread(_pnl_from_alpaca), timeout=8.0)
-        except (asyncio.TimeoutError, Exception):
-            today_alpaca_pnl = None
+                last_equity = float(account["last_equity"])
+            except (TypeError, ValueError):
+                last_equity = None
 
         if account_value is not None:
-            daily_pnl = round(today_alpaca_pnl, 2) if today_alpaca_pnl is not None else round(unrealized_pnl, 2)
-            prev_close = account_value - daily_pnl
+            if last_equity is not None:
+                daily_pnl = round(account_value - last_equity, 2)
+                prev_close = last_equity
+            else:
+                daily_pnl = round(unrealized_pnl, 2)
+                prev_close = account_value - daily_pnl
             daily_pnl_pct = round(daily_pnl / prev_close * 100, 2) if prev_close > 0 else 0.0
-            paper_start = 100_000.0
+            # Total P&L baseline = the CONFIGURED starting capital, not a hardcoded constant — stays
+            # correct if the paper account is ever re-funded to a different size.
+            paper_start = float(settings.initial_capital) if settings.initial_capital else 100_000.0
             total_pnl = round(account_value - paper_start, 2)
-            total_pnl_pct = round(total_pnl / paper_start * 100, 2)
+            total_pnl_pct = round(total_pnl / paper_start * 100, 2) if paper_start > 0 else None
         else:
             daily_pnl = round(unrealized_pnl, 2)
             daily_pnl_pct = total_pnl = total_pnl_pct = None
