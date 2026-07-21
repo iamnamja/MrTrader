@@ -839,6 +839,25 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 summary["per_name_gate_mode"] = pn_mode
                 summary["per_name_allow"] = bool(pn_verdict.allow)
                 summary["per_name_breaches"] = list(pn_verdict.breaches)
+                # CH1 soak: persist the gate's realized metrics per rebalance so the enforce
+                # correlation threshold can be CALIBRATED from the observed book-corr distribution
+                # (the whole point of the shadow soak). NaN -> None so it round-trips through JSON.
+
+                def _fin(v):
+                    try:
+                        return float(v) if v is not None and float(v) == float(v) else None
+                    except (TypeError, ValueError):
+                        return None
+                _d = pn_verdict.details or {}
+                summary["per_name_metrics"] = {
+                    "mode": pn_mode,
+                    "allow": bool(pn_verdict.allow),
+                    "would_block": bool(pn_verdict.breaches),
+                    "breaches": list(pn_verdict.breaches),
+                    "max_name_weight": _fin(_d.get("max_name_weight")),
+                    "weighted_avg_book_corr": _fin(_d.get("weighted_avg_book_corr")),
+                    "portfolio_heat_frac": _fin(_d.get("portfolio_heat_frac")),
+                }
                 blocked_by_per_name = (pn_mode == "enforce" and not pn_verdict.allow)
             except Exception:
                 log.debug("trend: per-name gate wiring failed", exc_info=True)

@@ -190,6 +190,42 @@ def test_record_rebalance_intent_records_live(bv):
     assert rows[-1]["n_blocked"] == 2
 
 
+# ── CH1: per-name-gate shadow soak (enforce-threshold calibration data) ───────
+def test_record_intent_persists_per_name_metrics(bv):
+    s = {"status": "ok", "mode": "live", "blocked": [], "intended_weights": {"SPY": 0.1},
+         "per_name_metrics": {"mode": "shadow", "allow": True, "would_block": False,
+                              "breaches": [], "max_name_weight": 0.079,
+                              "weighted_avg_book_corr": 0.347, "portfolio_heat_frac": 0.01}}
+    assert bv.record_rebalance_intent(s) is True
+    m = json.loads(bv.read_daily()[-1]["per_name_metrics"])
+    assert m["weighted_avg_book_corr"] == 0.347 and m["would_block"] is False
+
+
+def test_soak_report_summarizes_corr_and_threshold_blocks(bv):
+    # three clean rebalances at book-corr 0.30 / 0.40 / 0.92 → only the 0.92 breaches 0.90
+    for td, corr, wb in [("2026-07-06", 0.30, False), ("2026-07-13", 0.40, False),
+                         ("2026-07-20", 0.92, True)]:
+        bv.record_rebalance_intent({
+            "status": "ok", "mode": "live", "blocked": [], "intended_weights": {"SPY": 0.1},
+            "per_name_metrics": {"would_block": wb, "max_name_weight": 0.08,
+                                 "weighted_avg_book_corr": corr, "portfolio_heat_frac": 0.01}},
+            asof=td)
+    rep = bv.per_name_soak_report()
+    assert rep["n"] == 3
+    assert rep["book_corr"]["min"] == 0.30 and rep["book_corr"]["max"] == 0.92
+    # only the 0.92 row exceeds the 0.90 candidate; none exceed 0.95
+    assert rep["would_block_at"]["0.90"] == 1 and rep["would_block_at"]["0.95"] == 0
+    assert rep["would_block_at"]["0.80"] == 1
+    assert rep["actual_would_blocks"] == 1
+
+
+def test_soak_report_empty_when_no_metrics(bv):
+    bv.record_rebalance_intent({"status": "ok", "mode": "live", "blocked": [],
+                                "intended_weights": {"SPY": 0.1}})   # no per_name_metrics
+    rep = bv.per_name_soak_report()
+    assert rep["n"] == 0 and rep["book_corr"] == {}
+
+
 # ── CH0b: per-governor persistence + counterfactual + regime attribution ──────
 def test_record_intent_persists_individual_governors_and_ungoverned(bv):
     # crash 0.5, credit 1.0, ladder 1.0 → governed book is half the ungoverned book.
