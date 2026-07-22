@@ -1,0 +1,306 @@
+{
+  "artifact": "Universe-expansion study (pre-registered 2026-07-22)",
+  "baseline_end": "2026-07-07",
+  "baseline_bar": {
+    "mean_sharpe": 0.7009,
+    "bear_sharpe": -0.769
+  },
+  "sig_alpha": 0.05,
+  "n_trials_disclosed": 13,
+  "in_run_baseline_mean_sharpe": 0.7009,
+  "n_candidates": 12,
+  "n_pass": 0,
+  "passers": [],
+  "rows": [
+    {
+      "label": "baseline10",
+      "added": [],
+      "n_universe": 10,
+      "mean_sharpe": 0.7009,
+      "delta_mean": -0.0,
+      "bear_sharpe": -0.769,
+      "paired_pvalue": null,
+      "verdict": "BASELINE",
+      "regime_profile": {
+        "BEAR": -0.769,
+        "BULL": 4.113,
+        "NEUTRAL": 0.44
+      }
+    },
+    {
+      "label": "add_USO",
+      "added": [
+        "USO"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6498,
+      "delta_mean": -0.0511,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.504,
+      "delta_bear": 0.265,
+      "paired_pvalue": 0.51,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.504,
+        "BULL": 3.853,
+        "NEUTRAL": 0.447
+      }
+    },
+    {
+      "label": "add_UNG",
+      "added": [
+        "UNG"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6496,
+      "delta_mean": -0.0513,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.664,
+      "delta_bear": 0.105,
+      "paired_pvalue": 0.604,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.664,
+        "BULL": 3.908,
+        "NEUTRAL": 0.483
+      }
+    },
+    {
+      "label": "add_DBA",
+      "added": [
+        "DBA"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6809,
+      "delta_mean": -0.02,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.665,
+      "delta_bear": 0.104,
+      "paired_pvalue": 0.382,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.665,
+        "BULL": 4.119,
+        "NEUTRAL": 0.418
+      }
+    },
+    {
+      "label": "add_FXE",
+      "added": [
+        "FXE"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6414,
+      "delta_mean": -0.0595,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.73,
+      "delta_bear": 0.039,
+      "paired_pvalue": 0.766,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.73,
+        "BULL": 4.116,
+        "NEUTRAL": 0.404
+      }
+    },
+    {
+      "label": "add_FXY",
+      "added": [
+        "FXY"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6217,
+      "delta_mean": -0.0792,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.707,
+      "delta_bear": 0.062,
+      "paired_pvalue": 0.902,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.707,
+        "BULL": 4.007,
+        "NEUTRAL": 0.354
+      }
+    },
+    {
+      "label": "add_VNQ",
+      "added": [
+        "VNQ"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6333,
+      "delta_mean": -0.0676,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.955,
+      "delta_bear": -0.186,
+      "paired_pvalue": 0.716,
+      "beats": false,
+      "bear_no_regression": false,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.955,
+        "BULL": 4.053,
+        "NEUTRAL": 0.595
+      }
+    },
+    {
+      "label": "add_TIP",
+      "added": [
+        "TIP"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.6606,
+      "delta_mean": -0.0403,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.709,
+      "delta_bear": 0.06,
+      "paired_pvalue": 0.371,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.709,
+        "BULL": 4.023,
+        "NEUTRAL": 0.434
+      }
+    },
+    {
+      "label": "add_SLV",
+      "added": [
+        "SLV"
+      ],
+      "n_universe": 11,
+      "mean_sharpe": 0.5616,
+      "delta_mean": -0.1393,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.653,
+      "delta_bear": 0.116,
+      "paired_pvalue": 0.77,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.653,
+        "BULL": 3.834,
+        "NEUTRAL": 0.454
+      }
+    },
+    {
+      "label": "grp_commodities_granular",
+      "added": [
+        "USO",
+        "UNG",
+        "DBA"
+      ],
+      "n_universe": 13,
+      "mean_sharpe": 0.6403,
+      "delta_mean": -0.0606,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.458,
+      "delta_bear": 0.311,
+      "paired_pvalue": 0.587,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.458,
+        "BULL": 3.721,
+        "NEUTRAL": 0.465
+      }
+    },
+    {
+      "label": "grp_fx",
+      "added": [
+        "FXE",
+        "FXY"
+      ],
+      "n_universe": 12,
+      "mean_sharpe": 0.592,
+      "delta_mean": -0.1089,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.702,
+      "delta_bear": 0.067,
+      "paired_pvalue": 0.941,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.702,
+        "BULL": 4.01,
+        "NEUTRAL": 0.323
+      }
+    },
+    {
+      "label": "grp_real_assets",
+      "added": [
+        "VNQ",
+        "TIP"
+      ],
+      "n_universe": 12,
+      "mean_sharpe": 0.6327,
+      "delta_mean": -0.0682,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.894,
+      "delta_bear": -0.125,
+      "paired_pvalue": 0.596,
+      "beats": false,
+      "bear_no_regression": false,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.894,
+        "BULL": 3.975,
+        "NEUTRAL": 0.586
+      }
+    },
+    {
+      "label": "grp_kitchen_sink",
+      "added": [
+        "USO",
+        "UNG",
+        "DBA",
+        "FXE",
+        "FXY",
+        "VNQ",
+        "TIP",
+        "SLV"
+      ],
+      "n_universe": 18,
+      "mean_sharpe": 0.4935,
+      "delta_mean": -0.2074,
+      "min_fold_sharpe": null,
+      "bear_sharpe": -0.621,
+      "delta_bear": 0.148,
+      "paired_pvalue": 0.889,
+      "beats": false,
+      "bear_no_regression": true,
+      "significant": false,
+      "verdict": "FAIL",
+      "regime_profile": {
+        "BEAR": -0.621,
+        "BULL": 3.382,
+        "NEUTRAL": 0.523
+      }
+    }
+  ]
+}

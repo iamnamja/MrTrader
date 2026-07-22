@@ -4,6 +4,49 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-22 (universe-expansion study) — NO orthogonal-macro ETF improves the trend book → KEEP the 10-ETF universe as-is. 0/12 candidates pass the DUAL gate.
+
+**Context**: owner-authorized re-validation (not a new-edge hunt — same TSMOM engine + same DUAL gate as CH2; re-validating the live strategy is permitted under the CH5 moratorium). Pre-registered `docs/reference/UNIVERSE_EXPANSION_PREREGISTRATION_2026-07-22.md`; harness `app/research/universe_expansion.py` → `docs/reference/universe_expansion_results.json`. Tested 8 orthogonal-macro ETFs (USO/UNG/DBA/FXE/FXY/VNQ/TIP/SLV) added individually + 4 groups, through the SAME CPCV path CH0a was frozen on. In-run baseline reproduced CH0a exactly (mean_sharpe **0.7009**).
+
+**Result — 0/12 PASS. Every addition LOWERS the constant-gross CPCV mean_sharpe; none beats 0.7009; none is significant:**
+| candidate | nU | meanSR | Δmean | BEAR | Δbear | pval | verdict |
+|---|---|---|---|---|---|---|---|
+| baseline10 | 10 | 0.7009 | — | −0.769 | — | — | bar |
+| +DBA | 11 | 0.6809 | −0.020 | −0.665 | +0.104 | 0.38 | FAIL |
+| +TIP | 11 | 0.6606 | −0.040 | −0.709 | +0.060 | 0.37 | FAIL |
+| +USO | 11 | 0.6498 | −0.051 | −0.504 | +0.265 | 0.51 | FAIL |
+| +UNG | 11 | 0.6496 | −0.051 | −0.664 | +0.105 | 0.60 | FAIL |
+| +VNQ | 11 | 0.6333 | −0.068 | −0.955 | −0.186 | 0.72 | FAIL |
+| +FXE | 11 | 0.6414 | −0.060 | −0.730 | +0.039 | 0.77 | FAIL |
+| +FXY | 11 | 0.6217 | −0.079 | −0.707 | +0.062 | 0.90 | FAIL |
+| +SLV | 11 | 0.5616 | −0.139 | −0.653 | +0.116 | 0.77 | FAIL |
+| grp_kitchen_sink | 18 | 0.4935 | −0.207 | −0.621 | +0.148 | 0.89 | FAIL |
+*(groups commodities/fx/real_assets all FAIL similarly; full table in the JSON.)*
+
+**Decision: KEEP the live universe = the 10 ETFs. No expansion.** The decisive, pre-committed null: the "beats" prong fails for all 12 (every addition reduces mean_sharpe), so the DUAL gate can't even reach the BEAR/significance prongs.
+
+**Why (the mechanism, honest read)**: the 10-ETF basket already spans the major macro factors (US/intl/EM equity, long/intermediate rates, gold, broad commodities, USD). Under a fixed gross budget (Σ|w|≤1) + inverse-vol sizing, adding MORE instruments *dilutes* the allocation to the best-trending names and pulls in lower-trend-quality / higher-cost legs (USO/UNG roll drag, SLV noise + GLD-collinear, FX ETFs trend poorly) — more names ≠ more return here, it's thinner concentration on what works. **Nuance worth recording (not a reversal):** several commodity adds IMPROVE the BEAR tail (USO Δbear +0.265, commodities-group +0.311, DBA +0.104) — real crisis-diversification — but the BULL/NEUTRAL give-up outweighs it, so they still fail the primary mean_sharpe prong. There is no free lunch here; the basket is near-optimal for this engine.
+
+**Consequences**: `pm.trend_universe` unchanged. Confirms the Compound-and-Harden verdict empirically (operate the existing edge simply). Report-only; no live change. Logged to ML_EXPERIMENT_LOG. Pairs with the covered-call/VRP rejection (entry below) — both close out the "add income/assets" line of inquiry with evidence.
+
+---
+
+## 2026-07-22 — Covered-call ETFs and DIY covered-call writing are REJECTED for the live book (packaged/naked short-vol; anti-trend; on the do-not list). VRP, if ever, only via the parked defined-risk micro-sleeve.
+
+**Context**: owner asked whether (a) buying index covered-call ETFs (JEPI/QYLD/XYLD/JEPQ) for "income + upside", or (b) writing covered calls ourselves on the ETFs the trend book holds, makes sense.
+
+**Decision — NO to both, for the live trend book.** A covered call = long index + short call = **long index + short volatility**; the "income" is the volatility risk premium (VRP). Both forms are rejected:
+
+*(a) Covered-call ETFs* — (1) **collinear, not orthogonal**: QYLD ≈ QQQ minus upside (~0.9+ corr with the equity ETFs already held) → adds a lower-Sharpe copy of existing exposure, not trend breadth; (2) **anti-trend**: trend earns the fat right tail (sustained up-moves), which covered calls sell away → self-defeating on a trend engine, and keeps ~full downside in a crash (thin premium cushion) → fights the crash governor; (3) **income is a return-shape illusion**: high distribution yield ≠ high total return (QYLD total-return has badly lagged QQQ); our backtest is total-return, so the yield framing adds nothing; (4) **history-starved**: JEPI 2020 / JEPQ 2022 / SPYI-QQQI 2022-24 never traded the GFC — insufficient for CPCV through a real crisis.
+
+*(b) DIY covered-call writing on our holdings* — additionally **mechanically impossible at $100k**: one contract = 100 shares of the underlying, but the entire equity core is held in sub-100-share lots (SPY 10, QQQ 9, IWM 26, EFA 76, EEM 73 — each ~$7k vs a ~$70k SPY contract). Only DBC/UUP clear 100 shares, and those are the commodity/FX legs with thin, low-premium options. Even at 10× the size the **weekly-rebalance vs 30-45-DTE-option cadence mismatch** (a name the signal exits mid-option-life → stranded short call / buy-back at a loss) and the short-convexity skew flip remain disqualifying. Plus it would require an options order path + Greeks/assignment/roll/tax machinery we deliberately don't have.
+
+**Consistency with prior findings**: this matches the existing do-not lists verbatim — Alpha-v9 "**no naked short vol**"; MASTER_BACKLOG "**index-VRP ETP — dangerous, last**"; Alpha-v10 do-not "**VIX-VRP back into the live book**" / "short-convexity as a 'diversifier' in a crisis". The ONLY sanctioned VRP form is the parked **defined-risk, regime-gated (sell only when IV is rich), ≤2%-NAV tail-budget micro-sleeve, paired with trend by skew** (Alpha-v7 P6) — spreads, not naked calls; and it's moratorium-gated until 2027-07-08.
+
+**Consequences**: no covered-call exposure enters the live book. If the goal is yield on idle cash, covered-call ETFs are the wrong tool (full equity drawdown risk ≠ the SGOV cash sleeve's ~risk-free). VRP stays shelved as the P6 defined-risk micro-sleeve for post-moratorium evaluation. Universe expansion (if any) proceeds only via genuinely orthogonal macro legs through the DUAL gate (see the 2026-07-22 universe-expansion study).
+
+---
+
 ## 2026-07-21 (H2 GO-LIVE) — kill-switch state machine flipped shadow→enforce (`pm.kill_switch_sm_mode`=enforce).
 
 **Context**: with the reduce-only refinement shipped (entry below), the kill-switch state machine was safe to promote from shadow to enforce — the last of the two shadow governors ready for a flip (the per-name gate still needs soak calibration). Owner-approved.
