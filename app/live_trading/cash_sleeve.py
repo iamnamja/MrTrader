@@ -349,14 +349,22 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             return summary
 
         from app.live_trading.order_ids import idempotency_key
+        # R1.2: place through the canonical venue seam (Alpaca by default = byte-identical; IBKR when
+        # pm.cash_venue=ibkr, gated behind the Phase-3 cutover). Resolved ONCE.
+        from app.live_trading.execution_router import resolve_venue, get_execution_adapter
+        from app.live_trading.writable_broker_adapter import OrderIntent
+        _venue = resolve_venue(db, "cash")
+        summary["venue"] = _venue
+        _adapter = get_execution_adapter(_venue, alpaca_client=alpaca, db=db)
         for it in intents:
             sym, side, qty = it["symbol"], it["side"], it["qty"]
             price = live.get(sym, 0.0)
             try:
-                order = alpaca.place_market_order(
-                    sym, int(qty), side, client_order_id=idempotency_key("cash", sym, side=side),
-                    est_price=price)
-                oid = order.get("order_id") if isinstance(order, dict) else None
+                res = _adapter.place(OrderIntent(
+                    venue=_venue.upper(), instrument_id=sym, sec_type="ETF",
+                    side=str(side).upper(), quantity=int(qty),
+                    client_ref=idempotency_key("cash", sym, side=side), est_price=price))
+                oid = res.broker_order_id
             except Exception as exc:
                 log.error("cash: order failed %s %s x%d: %s", side, sym, qty, exc)
                 _audit(sym, side, price=price, final_decision="block", block_reason="order_error")
@@ -368,7 +376,7 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             # the freshly-computed target_shares (that would book shares never traded). Re-derive the
             # ACTUAL held shares from the broker so the DB matches reality; on the risk-off SELL path
             # surface the under-replenishment so it's visible, never silently swallowed.
-            if isinstance(order, dict) and order.get("idempotent_reuse"):
+            if res.idempotent_reuse:
                 log.info("cash: idempotent reuse %s %s — re-deriving actual shares (no new fill)",
                          side, sym)
                 _actual = None

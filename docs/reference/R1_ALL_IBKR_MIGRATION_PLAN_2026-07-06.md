@@ -143,6 +143,22 @@ futures lots at R1.3; here it's the mapping-gap + reconstruction parity that mat
 Flip `trend`/`cash` venue → IBKR (whole book-state now reads IBKR positions). Alpaca adapter stays as
 the **instant rollback**. Tiny sizes first; soak; reconcile IBKR ↔ DB clean under enforce.
 
+**Phased build:**
+- **✅ Phase 1 (2026-07-23) — venue-routing seam.** `app/live_trading/execution_router.py`
+  (`resolve_venue(db, sleeve)` → `pm.{sleeve}_venue`, default `alpaca`, fail-safe to alpaca on
+  unknown/blank/error; `get_execution_adapter(venue)` → `WritableAlpacaAdapter` / `WritableIBKRAdapter(
+  mode='live')` from a `from_config` conn, RAISES on unknown venue). Both trend+cash sleeves now PLACE
+  via `adapter.place(OrderIntent(...))` instead of `alpaca.place_market_order` directly — byte-identical
+  on `alpaca` (the adapter wraps the same call, preserving H3 fat-finger + H6 idempotent-reuse). Zero
+  live change until the venue is flipped. +9 router tests; fixed a latent test-fixture bug (fake used
+  `sym/qty` vs the real `symbol/quantity`, masked by the old positional call).
+- **⬜ Phase 2 — venue-aware reads.** Positions / NAV / reconciliation read from the ACTIVE venue (the
+  `(venue, instrument_id)` recon key already supports this; the sleeves' read helpers are still
+  Alpaca-hardcoded).
+- **⬜ Phase 3 — the owner-present cutover.** Gateway up + `ibkr.account` set → Read-Only OFF
+  (R1.0c-2b) → flatten Alpaca → flip `pm.cash_venue`→ibkr (canary) → verify/reconcile → then trend.
+  Wires the IBKR connect/disconnect + async-fill lifecycle (needs a live gateway to test).
+
 ### R1.3 — Futures on IBKR (SHADOW → tiny-live)
 Wire the LIVE carry/xsmom signal → `futures_target_weights` (replaces the stub). Futures rebalance
 shadow → tiny-live (1–2 lots/market) behind the enforce whole-book gate; require **≥1 clean roll cycle**
