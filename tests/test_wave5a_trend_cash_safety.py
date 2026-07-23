@@ -59,8 +59,9 @@ def test_cash_idempotent_reuse_rederives_actual_shares(monkeypatch):
         def get_latest_price(self, s):
             return self._prices.get(s)
 
-        def place_market_order(self, sym, qty, side, client_order_id=None, est_price=None):
-            self.orders.append((sym, qty, side))
+        def place_market_order(self, symbol, quantity, side, client_order_id=None, est_price=None):
+            # symbol/quantity match the real client — the sleeve places through WritableAlpacaAdapter.
+            self.orders.append((symbol, quantity, side))
             return {"order_id": "x", "idempotent_reuse": True}     # same-day re-run collision
 
         def get_position(self, sym, **k):
