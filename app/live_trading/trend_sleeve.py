@@ -915,18 +915,24 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         else:
             placed = 0
             from app.live_trading.order_ids import idempotency_key
+            # R1.2: place through the canonical venue seam (Alpaca by default = byte-identical;
+            # IBKR when pm.trend_venue=ibkr, gated behind the Phase-3 cutover). Resolved ONCE.
+            from app.live_trading.execution_router import resolve_venue, get_execution_adapter
+            from app.live_trading.writable_broker_adapter import OrderIntent
+            _venue = resolve_venue(db, "trend")
+            summary["venue"] = _venue
+            _adapter = get_execution_adapter(_venue, alpaca_client=alpaca, db=db)
             for it in approved:
                 sym, side, qty = it["symbol"], it["side"], it["qty"]
                 price = live.get(sym, 0.0)
                 try:
-                    order = alpaca.place_market_order(
-                        sym, int(qty), side,
-                        client_order_id=idempotency_key("trend", sym),
-                        est_price=price,
-                    )
-                    oid = order.get("order_id") if isinstance(order, dict) else None
-                    if isinstance(order, dict) and order.get("idempotent_reuse"):
-                        # H6: a retry caught the order Alpaca already had — no double-fill, and we
+                    res = _adapter.place(OrderIntent(
+                        venue=_venue.upper(), instrument_id=sym, sec_type="ETF",
+                        side=str(side).upper(), quantity=int(qty),
+                        client_ref=idempotency_key("trend", sym), est_price=price))
+                    oid = res.broker_order_id
+                    if res.idempotent_reuse:
+                        # H6: a retry caught the order the broker already had — no double-fill, and we
                         # still record the Trade row below (closing the orphan window).
                         log.info("trend: idempotent reuse %s %s (order already placed)", side, sym)
                 except Exception as exc:
