@@ -162,7 +162,10 @@ async def get_dashboard_summary():
         last_equity = None
         if account is not None and account.get("last_equity") is not None:
             try:
-                last_equity = float(account["last_equity"])
+                _le = float(account["last_equity"])
+                # Alpaca sometimes returns last_equity=0 (paper reset / off-hours) — treat a
+                # non-positive value as UNAVAILABLE, else daily_pnl = equity - 0 = the whole account.
+                last_equity = _le if _le > 0 else None
             except (TypeError, ValueError):
                 last_equity = None
 
@@ -533,6 +536,7 @@ async def get_equity_history(range: str = "1d"):
 
         timestamps = hist.timestamp or []
         equity_series = hist.equity or []
+        base_value = getattr(hist, "base_value", None)   # the period's PRIOR-CLOSE reference
         import zoneinfo
         et = zoneinfo.ZoneInfo("America/New_York")
 
@@ -553,7 +557,15 @@ async def get_equity_history(range: str = "1d"):
 
         if not raw:
             return []
-        baseline = raw[0]["equity"]
+        # Baseline = the PRIOR CLOSE (Alpaca base_value) so the curve's P&L matches the "Daily P&L"
+        # KPI — both measured since yesterday's close (incl. the overnight gap). Previously the 1D
+        # curve baselined off the first INTRADAY bar (~09:30 open), so it excluded the overnight move
+        # and disagreed with the KPI by exactly that gap. Fall back to the first point if base_value
+        # is missing/non-positive.
+        try:
+            baseline = float(base_value) if base_value and float(base_value) > 0 else raw[0]["equity"]
+        except (TypeError, ValueError):
+            baseline = raw[0]["equity"]
         points = [{"time": p["time"], "pnl": round(p["equity"] - baseline, 2)} for p in raw]
         return points
 
