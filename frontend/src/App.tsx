@@ -1860,21 +1860,27 @@ function MacroIntelPanel() {
       const offsetH = etOffset ? parseInt(etOffset) : -4
       return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), +hh - offsetH, +mm))
     }
-    const normalised = /[Z+\-]\d*$/.test(t) ? t : t + 'Z'
+    // Append 'Z' only when the string carries a time-of-day but no timezone marker.
+    // A trailing offset can be 'Z', '+00:00', '-0400', etc. — the old /[Z+\-]\d*$/ test
+    // missed colon-bearing offsets (e.g. '+00:00'), yielding '...+00:00Z' (an invalid date)
+    // which fell through to rendering the raw ISO string. Leave date-only strings untouched.
+    const hasZone = /(Z|[+\-]\d{2}:?\d{2})$/.test(t)
+    const hasTime = t.includes('T') || /\d{1,2}:\d{2}/.test(t)
+    const normalised = hasTime && !hasZone ? t + 'Z' : t
     const d = new Date(normalised)
     return isNaN(d.getTime()) ? null : d
   }
   const fmtEventTime = (t: string | null | undefined) => {
     const d = parseEventTime(t)
     if (!d) return t ?? '—'
-    const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET'
-    // Prepend the date when the event isn't today (a next-day look-ahead event) so it reads as
-    // tomorrow rather than silently looking like a today print.
+    const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' }) + ' ET'
+    // Always prefix a day label so every row reads consistently: "Today" for same-day events,
+    // otherwise the calendar date (e.g. "Jul 30") so a look-ahead event isn't mistaken for a today print.
     const etDay = (x: Date) => x.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
-    if (etDay(d) !== etDay(new Date())) {
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) + ' ' + time
-    }
-    return time
+    const dayLabel = etDay(d) === etDay(new Date())
+      ? 'Today'
+      : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' })
+    return dayLabel + ' ' + time
   }
 
   if (loading) return <div style={{ ...s.card, padding: 24, color: C.muted, textAlign: 'center' }}>Loading Macro Intel…</div>

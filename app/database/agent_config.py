@@ -259,6 +259,20 @@ CONFIG_SCHEMA: List[Dict[str, Any]] = [
         "group": "Portfolio Manager",
     },
     {
+        "key": "pm.trend_venue",
+        "default": "alpaca",
+        "type": "str",
+        "description": "R1.2 execution + read venue for the TREND sleeve ('alpaca' | 'ibkr'). 'alpaca' (default) = byte-identical to pre-R1.2: orders place through WritableAlpacaAdapter and positions/NAV/reconciliation read the Alpaca book. 'ibkr' = route placement to WritableIBKRAdapter AND read positions/NAV/reconciliation from IBKR (R1.2 Phase 2 venue-aware reads). FAIL-SAFE: any unknown/blank value falls back to 'alpaca' (a live order/read must never route to an unintended venue). Do NOT flip to 'ibkr' outside the owner-present Phase-3 cutover (gateway up + Read-Only OFF + Alpaca flattened first).",
+        "group": "Portfolio Manager",
+    },
+    {
+        "key": "pm.cash_venue",
+        "default": "alpaca",
+        "type": "str",
+        "description": "R1.2 execution + read venue for the CASH (T-bill) sleeve ('alpaca' | 'ibkr'). Same semantics + fail-safe as pm.trend_venue. The Phase-3 cutover flips 'cash' FIRST as the canary (smallest book) before 'trend'. Default 'alpaca' = byte-identical.",
+        "group": "Portfolio Manager",
+    },
+    {
         "key": "pm.drawdown_ladder_enabled",
         "default": "false",
         "type": "str",

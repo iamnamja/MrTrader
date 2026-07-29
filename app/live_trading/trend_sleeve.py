@@ -445,9 +445,10 @@ def _live_prices(alpaca, symbols: List[str], fallback_df) -> Dict[str, float]:
     return out
 
 
-def _current_trend_positions(db, alpaca) -> Dict[str, int]:
-    """Symbols tagged selector='trend' in the DB, sized from ACTUAL Alpaca shares
-    (trust Alpaca for quantity = handles partial fills; trust DB for attribution)."""
+def _current_trend_positions(db, source) -> Dict[str, int]:
+    """Symbols tagged selector='trend' in the DB, sized from ACTUAL broker shares
+    (trust the broker for quantity = handles partial fills; trust DB for attribution).
+    `source` is the venue-aware `VenueReader` (or any object exposing `.get_positions()`)."""
     from app.database.models import Trade
     # FAIL-CLOSED: distinguish 'genuinely flat' from 'could not determine'. If either the DB query
     # or the broker read fails we must NOT return {} — an empty current book makes compute_trend_deltas
@@ -469,7 +470,7 @@ def _current_trend_positions(db, alpaca) -> Dict[str, int]:
         return {}   # query SUCCEEDED and there are no trend rows -> genuinely flat
 
     try:
-        positions = alpaca.get_positions() or []
+        positions = source.get_positions() or []
     except Exception as exc:
         log.warning("trend: get_positions failed during reconcile: %s", exc)
         raise RuntimeError(f"trend current-positions broker read failed: {exc}") from exc
@@ -635,6 +636,11 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
 
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
+        # R1.2 Phase 2: positions/NAV/gross-cap read from the ACTIVE venue (pm.trend_venue; default
+        # alpaca = byte-identical). Market-data reads (prices) stay on the Alpaca client — the data
+        # feed is venue-neutral and not part of the venue cutover.
+        from app.live_trading.venue_reads import get_venue_reader
+        reader = get_venue_reader(db, "trend", alpaca_client=alpaca)
 
         # ── Data (fail-closed) ──
         prices_df = _fetch_prices(alpaca, universe)
@@ -689,7 +695,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
 
         # ── NAV (fail-closed; never size off a hardcoded fallback) ──
         try:
-            nav = float(alpaca.get_account()["equity"])
+            nav = float(reader.get_account()["equity"])
         except Exception as exc:
             log.warning("trend: NAV fetch failed — fail-closed: %s", exc)
             _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
@@ -720,7 +726,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
 
         # ── Current trend positions + live prices (fail-CLOSED if undeterminable) ──
         try:
-            current = _current_trend_positions(db, alpaca)
+            current = _current_trend_positions(db, reader)
         except Exception as exc:
             log.warning("trend: current positions unavailable — fail-closed (no rebalance): %s", exc)
             _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
@@ -738,7 +744,7 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # ── Gross cap (trend + PEAD <= 80%) ──
         try:
             from app.live_trading.cash_sleeve import CASH_ETFS  # cash-equiv: not risk gross
-            all_positions = alpaca.get_positions() or []
+            all_positions = reader.get_positions() or []
             total_gross = sum(abs(float(p.get("market_value") or 0.0))
                               for p in all_positions
                               if p.get("symbol") not in CASH_ETFS)
@@ -772,7 +778,8 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                 from app.live_trading import reconciliation as _recon
                 from app.notifications import notifier as _rnotifier
                 recon_result = _recon.shadow_reconcile_before_trade(
-                    db, all_positions, nav=nav, mode=recon_mode, label="trend", notifier=_rnotifier)
+                    db, all_positions, nav=nav, mode=recon_mode, label="trend",
+                    venue=reader.venue, notifier=_rnotifier)
                 summary["recon_mode"] = recon_mode
                 summary["recon_status"] = recon_result.status
                 summary["recon_breaks"] = [(b.venue, b.instrument_id, b.expected_qty, b.actual_qty)

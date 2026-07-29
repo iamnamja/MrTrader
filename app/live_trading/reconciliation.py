@@ -34,6 +34,15 @@ ENFORCE = "enforce"
 OFF = "off"
 
 
+def _im_venue(venue: str) -> str:
+    """Map a router venue string ('alpaca'/'ibkr', any case — as `resolve_venue` returns it) to the
+    instrument-master venue CONSTANT (`im.ALPACA`/`im.IBKR`, which are upper-case). Without this the
+    lower-case reader venue would miss every `im.lookup(venue, sym)` (mapped=False, iid→raw symbol).
+    Unknown → the raw upper-case value (so a typo can't silently collide with a real venue). Note
+    im.ALPACA/im.IBKR are already upper-case, so the default path is a no-op."""
+    return str(venue or im.ALPACA).strip().upper()
+
+
 @dataclass(frozen=True)
 class PositionBreak:
     instrument_id: str
@@ -140,12 +149,15 @@ HELD_STATUSES = ("ACTIVE",)
 PENDING_STATUSES = ("PENDING_FILL",)
 
 
-def _db_signed_by_status(db, statuses) -> Dict[tuple, float]:
+def _db_signed_by_status(db, statuses, venue: str = im.ALPACA) -> Dict[tuple, float]:
     """Signed qty per (venue, instrument_id) for Trade rows in the given statuses. direction
-    BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial / cross-sleeve lots add). All current
-    live positions are Alpaca-venue. Lazy import so this module stays import-light; equality-filter
-    per status (no in_()) so the query stays scoped SQL-side (not a full-table load)."""
+    BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial / cross-sleeve lots add). `venue` tags
+    the key + resolves the instrument (default Alpaca = the live book pre-cutover; R1.2 Phase 2 lets a
+    sleeve pass its ACTIVE venue so expected and actual are tagged consistently). Lazy import so this
+    module stays import-light; equality-filter per status (no in_()) so the query stays scoped SQL-side
+    (not a full-table load)."""
     from app.database.models import Trade
+    venue = _im_venue(venue)
     out: Dict[tuple, float] = {}
     rows = []
     for status in statuses:
@@ -154,37 +166,40 @@ def _db_signed_by_status(db, statuses) -> Dict[tuple, float]:
         sym = (t.symbol or "").upper()
         if not sym:
             continue
-        iid = im.lookup(im.ALPACA, sym) or sym
+        iid = im.lookup(venue, sym) or sym
         qty = float(t.quantity or 0)
         signed = -qty if str(t.direction).upper() == "SELL_SHORT" else qty
-        k = _ckey(im.ALPACA, iid)
+        k = _ckey(venue, iid)
         out[k] = out.get(k, 0.0) + signed
     return out
 
 
 # ── live-path assembly + the shadow-first before-trade gate (Alpha-v10 H1) ─────────
-def db_expected_positions(db) -> Dict[tuple, float]:
+def db_expected_positions(db, venue: str = im.ALPACA) -> Dict[tuple, float]:
     """The DB's HELD book = ACTIVE Trade rows -> signed qty per (venue, instrument_id)."""
-    return _db_signed_by_status(db, HELD_STATUSES)
+    return _db_signed_by_status(db, HELD_STATUSES, venue)
 
 
-def db_pending_positions(db) -> Dict[tuple, float]:
+def db_pending_positions(db, venue: str = im.ALPACA) -> Dict[tuple, float]:
     """The DB's in-flight working orders = PENDING_FILL Trade rows -> signed qty per (venue,
     instrument_id). Passed as `pending_qty` so a just-placed-but-unfilled order is tolerated within
     the [held, held+pending] band instead of firing a false orphan/phantom break."""
-    return _db_signed_by_status(db, PENDING_STATUSES)
+    return _db_signed_by_status(db, PENDING_STATUSES, venue)
 
 
-def alpaca_actual_positions(raw_positions) -> List[CanonicalPosition]:
+def alpaca_actual_positions(raw_positions, venue: str = im.ALPACA) -> List[CanonicalPosition]:
     """Broker truth -> canonical positions for the reconciler (only venue/instrument_id/quantity are
-    used by reconcile()). `raw_positions` are the Alpaca client position dicts already fetched by the
-    caller (no extra API call)."""
+    used by reconcile()). `raw_positions` are the broker position dicts already fetched by the caller
+    (no extra API call). `venue` tags the key + resolves the instrument (default Alpaca; R1.2 Phase 2
+    passes the ACTIVE venue so the actual book keys match the expected book). ETF/cash shape only
+    (multiplier 1.0) — futures come in via `extra_actual` as real canonical positions."""
+    venue = _im_venue(venue)
     out: List[CanonicalPosition] = []
     for p in raw_positions or []:
         sym = (p.get("symbol") or "").upper()
         if not sym:
             continue
-        iid = im.lookup(im.ALPACA, sym) or sym
+        iid = im.lookup(venue, sym) or sym
         try:
             qty = float(p.get("qty") or 0.0)
         except (TypeError, ValueError):
@@ -198,15 +213,16 @@ def alpaca_actual_positions(raw_positions) -> List[CanonicalPosition]:
         except (TypeError, ValueError):
             mv = qty * price
         out.append(CanonicalPosition(
-            instrument_id=iid, venue=im.ALPACA, broker_symbol=sym, asset_class=im.EQUITY,
+            instrument_id=iid, venue=venue, broker_symbol=sym, asset_class=im.EQUITY,
             quantity=qty, price=price, multiplier=1.0, currency="USD",
-            market_value=mv, notional=abs(qty) * price, mapped=im.lookup(im.ALPACA, sym) is not None))
+            market_value=mv, notional=abs(qty) * price, mapped=im.lookup(venue, sym) is not None))
     return out
 
 
 def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[float] = None,
                                   extra_actual: Optional[List[CanonicalPosition]] = None,
                                   expected: Optional[Dict[tuple, float]] = None,
+                                  venue: str = im.ALPACA,
                                   mode: str = SHADOW, label: str = "",
                                   notifier=None) -> ReconciliationResult:
     """FAIL-SAFE pre-trade reconciliation a sleeve calls BEFORE placing: builds DB-expected vs
@@ -227,12 +243,12 @@ def shadow_reconcile_before_trade(db, raw_alpaca_positions, *, nav: Optional[flo
         # unfilled working order is tolerated, not a false break. An explicit `expected` (e.g. the
         # venue-scoped IBKR futures caller) supplies its own book and no DB pending.
         if expected is None:
-            expected = db_expected_positions(db)
-            pending = db_pending_positions(db)
+            expected = db_expected_positions(db, venue)
+            pending = db_pending_positions(db, venue)
         else:
             expected = dict(expected)
             pending = None
-        actual = alpaca_actual_positions(raw_alpaca_positions)
+        actual = alpaca_actual_positions(raw_alpaca_positions, venue)
         if extra_actual:
             actual = list(actual) + list(extra_actual)
         result = reconcile(expected, actual, nav=nav, pending_qty=pending)
