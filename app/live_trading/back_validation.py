@@ -128,7 +128,12 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
                         for s in str(get_agent_config(db, "pm.trend_universe")).split(",")
                         if s.strip()]
             alpaca = get_alpaca_client()
-            held = _ts._current_trend_positions(db, alpaca)   # {sym: int qty}, trend-tagged
+            # R1.2 Phase 2: the scorecard reads the trend book from the ACTIVE venue (default alpaca =
+            # byte-identical). The alpaca-venue reader holds the client (no db needed after this), so it
+            # is still usable for the NAV read below after the db is closed.
+            from app.live_trading.venue_reads import get_venue_reader
+            reader = get_venue_reader(db, "trend", alpaca_client=alpaca)
+            held = _ts._current_trend_positions(db, reader)   # {sym: int qty}, trend-tagged
         finally:
             if _own_db:
                 db.close()
@@ -149,7 +154,7 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
 
         prices = {s: float(v) for s, v in prices_df.iloc[-1].to_dict().items()
                   if v is not None and float(v) == float(v)}  # drop NaN
-        acct = alpaca.get_account()
+        acct = reader.get_account()
         nav = float(acct.get("portfolio_value") or acct.get("equity") or 0.0)
         positions = {s: float(q) for s, q in held.items() if q}
 

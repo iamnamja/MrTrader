@@ -66,8 +66,9 @@ class _PositionsUnavailable(RuntimeError):
     rebalance re-buy an already-held T-bill (target_shares = 0 + qty) or skip a risk-off sell."""
 
 
-def _current_cash_positions(db, alpaca) -> Dict[str, int]:
-    """Symbols tagged selector='cash' in the DB, sized from ACTUAL Alpaca shares.
+def _current_cash_positions(db, source) -> Dict[str, int]:
+    """Symbols tagged selector='cash' in the DB, sized from ACTUAL broker shares
+    (`source` is the venue-aware `VenueReader`, or any object exposing `.get_positions()`).
 
     Raises _PositionsUnavailable on an indeterminate read (DB or broker error) so the caller
     fail-closes; returns {} ONLY when there are genuinely no cash positions."""
@@ -82,7 +83,7 @@ def _current_cash_positions(db, alpaca) -> Dict[str, int]:
     if not cash_syms:
         return {}
     try:
-        positions = alpaca.get_positions() or []
+        positions = source.get_positions() or []
     except Exception as exc:
         raise _PositionsUnavailable(f"get_positions failed: {exc}") from exc
     return {p["symbol"]: int(p.get("qty") or 0)
@@ -197,8 +198,12 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
 
         from app.integrations import get_alpaca_client
         alpaca = get_alpaca_client()
+        # R1.2 Phase 2: account/positions read from the ACTIVE venue (pm.cash_venue; default alpaca =
+        # byte-identical). Market-data reads (prices) stay on the Alpaca client (venue-neutral feed).
+        from app.live_trading.venue_reads import get_venue_reader
+        reader = get_venue_reader(db, "cash", alpaca_client=alpaca)
         try:
-            acct = alpaca.get_account()
+            acct = reader.get_account()
             nav = float(acct["equity"])
             cash_on_hand = float(acct.get("cash") or 0.0)
             buying_power = float(acct.get("buying_power") or cash_on_hand)
@@ -225,9 +230,10 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             try:
                 from app.live_trading import reconciliation as _recon
                 from app.notifications import notifier as _rnotifier
-                raw_positions = alpaca.get_positions() or []
+                raw_positions = reader.get_positions() or []
                 recon_result = _recon.shadow_reconcile_before_trade(
-                    db, raw_positions, nav=nav, mode=recon_mode, label="cash", notifier=_rnotifier)
+                    db, raw_positions, nav=nav, mode=recon_mode, label="cash",
+                    venue=reader.venue, notifier=_rnotifier)
                 summary["recon_mode"] = recon_mode
                 summary["recon_status"] = recon_result.status
                 blocked_by_recon = (recon_mode == "enforce" and not recon_result.ok_to_trade)
@@ -258,7 +264,7 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         prices_df = _cash_fallback_prices(alpaca, universe)   # NOT _fetch_prices (SPY-gated)
         live = _live_prices(alpaca, universe, prices_df)
         try:
-            current = _current_cash_positions(db, alpaca)
+            current = _current_cash_positions(db, reader)
         except _PositionsUnavailable as exc:
             # Fail CLOSED: without a confirmed position map we could re-buy a held T-bill or
             # under-replenish the buffer. Skip this cycle; positions stay as-is, retry next run.
@@ -381,7 +387,7 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                          side, sym)
                 _actual = None
                 try:
-                    _pos = alpaca.get_position(sym)
+                    _pos = reader.get_position(sym)
                     if isinstance(_pos, dict):
                         _actual = abs(int(_pos.get("qty") or 0))
                 except Exception:

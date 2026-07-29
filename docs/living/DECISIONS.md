@@ -4,6 +4,18 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-07-29 — R1.2 Phase 2 venue-aware reads SHIPPED (inert). The read side is a dict-shaped facade byte-identical on Alpaca; four IBKR-activation hazards deferred to Phase 3 as blocking prerequisites.
+
+**Context**: R1.2 Phase 1 (PR #659) made order PLACEMENT venue-aware but every READ (positions / NAV / gross-cap / reconciliation / idempotent re-derive) in the trend+cash sleeves still hit the raw Alpaca client — the silent-wrong-venue hazard (post-cutover: orders route IBKR, sizing/recon read Alpaca).
+
+**Decision**: ship the venue-aware read **seam** now (inert); defer the IBKR connect/disconnect/sync **lifecycle** to Phase 3 (per the R1 plan — it needs a live gateway to test). `app/live_trading/venue_reads.py` `VenueReader` returns the Alpaca position/account **dict shape** the sleeves already consume — `venue=alpaca` (default) delegates to the raw client **byte-for-byte**; `venue=ibkr` normalizes canonical `CanonicalPosition`/`AccountState` → dicts. Trend+cash+back_validation read through it (market-data reads stay on Alpaca, venue-neutral). Reconciliation gained a `venue` param (default `im.ALPACA`) with an `_im_venue` normalizer bridging the router's lower-case `alpaca`/`ibkr` to the upper-case `im` constants. `pm.trend_venue`/`pm.cash_venue` are now CONFIG_SCHEMA keys (default `alpaca`, fail-safe on unknown).
+
+**Why byte-identical is the whole safety story**: the live book stays on Alpaca until an owner flips a venue in Phase 3. The alpaca `VenueReader` branches return the raw client's exact objects (tests assert *object identity*); the ibkr branch never constructs/connects while alpaca. Two independent Opus reviews (safety/byte-identical + adversarial-cutover) **confirmed no CRITICAL/HIGH in the current book**; the scariest fail-open hunted (silent connect → flat book) verified **fail-CLOSED**.
+
+**Consequences**: zero live change. +18 tests; full suite 4425 green; flake8 clean. **Four latent IBKR-activation hazards the reviews surfaced are now BLOCKING Phase-3 prerequisites** (marked in-code as `TODO(R1.2 Phase 3)`; enumerated in the R1 plan Phase-2 entry): (1) disconnect lifecycle (socket strand); (2) distinct clientId (shared `ibkr.client_id` → concurrent-connect collision); (3) portfolio-sync fail-closed (async `ib.portfolio()` empty → full re-buy = **fail-OPEN**); (4) multi-asset gross-cap (futures `market_value` understated = **fail-OPEN**). `monitoring.py`/`emergency_flatten.py` reads remain Alpaca-bound → route them at/before the flip. Cheap hardening folded in: the IBKR provider now fails LOUD+CLOSED on a bad connect.
+
+---
+
 ## 2026-07-22 (universe-expansion study) — NO orthogonal-macro ETF improves the trend book → KEEP the 10-ETF universe as-is. 0/12 candidates pass the DUAL gate.
 
 **Context**: owner-authorized re-validation (not a new-edge hunt — same TSMOM engine + same DUAL gate as CH2; re-validating the live strategy is permitted under the CH5 moratorium). Pre-registered `docs/reference/UNIVERSE_EXPANSION_PREREGISTRATION_2026-07-22.md`; harness `app/research/universe_expansion.py` → `docs/reference/universe_expansion_results.json`. Tested 8 orthogonal-macro ETFs (USO/UNG/DBA/FXE/FXY/VNQ/TIP/SLV) added individually + 4 groups, through the SAME CPCV path CH0a was frozen on. In-run baseline reproduced CH0a exactly (mean_sharpe **0.7009**).

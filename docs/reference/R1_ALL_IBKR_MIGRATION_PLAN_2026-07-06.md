@@ -152,12 +152,37 @@ the **instant rollback**. Tiny sizes first; soak; reconcile IBKR ↔ DB clean un
   on `alpaca` (the adapter wraps the same call, preserving H3 fat-finger + H6 idempotent-reuse). Zero
   live change until the venue is flipped. +9 router tests; fixed a latent test-fixture bug (fake used
   `sym/qty` vs the real `symbol/quantity`, masked by the old positional call).
-- **⬜ Phase 2 — venue-aware reads.** Positions / NAV / reconciliation read from the ACTIVE venue (the
-  `(venue, instrument_id)` recon key already supports this; the sleeves' read helpers are still
-  Alpaca-hardcoded).
+- **✅ Phase 2 (2026-07-29) — venue-aware reads.** `app/live_trading/venue_reads.py` — `VenueReader`
+  returns the Alpaca position/account **dict shape** the sleeves consume: `venue=alpaca` (default)
+  delegates to the raw client **byte-for-byte**; `venue=ibkr` reads canonical `CanonicalPosition`/
+  `AccountState` off the IBKR read adapter and normalizes to dicts. Trend + cash sleeves now read
+  positions / NAV / gross-cap / `get_position` through the reader (market-data reads stay on Alpaca —
+  the feed is venue-neutral); `back_validation` reads the scorecard book venue-aware too. Reconciliation
+  gained a `venue` param (default `im.ALPACA`) threaded through `db_expected_positions` /
+  `db_pending_positions` / `alpaca_actual_positions` / `shadow_reconcile_before_trade`, with `_im_venue`
+  bridging the router's lower-case `alpaca`/`ibkr` to the upper-case `im` constants (else expected/actual
+  keys mismatch → phantom breaks). `pm.trend_venue`/`pm.cash_venue` are now first-class CONFIG_SCHEMA
+  keys (default `alpaca`, fail-safe on any unknown value). **Zero live change** (venue stays alpaca; the
+  ibkr branch never constructs/connects while alpaca). +18 venue/recon tests; full suite 4425 green;
+  flake8 clean. Two independent Opus reviews (safety/byte-identical + adversarial-cutover): **byte-
+  identical-on-alpaca CONFIRMED, no CRITICAL/HIGH in the current book.** Cheap hardening folded in
+  (IBKR provider now fails LOUD+CLOSED on a bad connect; dead-ternary removed).
+  **⚠️ BLOCKING Phase-3 prerequisites the reviews surfaced (all latent — inert while alpaca; do NOT
+  flip a venue to ibkr before these; marked in-code as `TODO(R1.2 Phase 3)` in `venue_reads.py`):**
+  (1) **disconnect lifecycle** — the IBKR read adapter is never disconnected (strands the socket);
+  (2) **distinct clientId** — `ibkr.client_id` is shared across futures-read / writable / both venue
+  readers → concurrent connects in one cron window collide (Gateway rejects duplicate clientId → HOLD);
+  (3) **portfolio-sync fail-closed** — `ib.portfolio()` is an async cache; a connected-but-unsynced
+  read returns `[]` → `_current_*_positions` treats it as "genuinely flat" → **full re-buy of the
+  sleeve (fail-OPEN)**; assert the account subscription synced before trusting an empty portfolio;
+  (4) **multi-asset gross-cap** — `get_positions()` returns the whole IBKR book incl. futures; the
+  trend gross-cap sums `market_value` (≈ daily P&L for futures → understated → fail-OPEN) on a shared
+  IBKR account; filter to equity/ETF or use book_state notional. Also route `monitoring.py` +
+  `emergency_flatten.py` (still Alpaca-hardcoded) to the active venue before/at the flip.
 - **⬜ Phase 3 — the owner-present cutover.** Gateway up + `ibkr.account` set → Read-Only OFF
-  (R1.0c-2b) → flatten Alpaca → flip `pm.cash_venue`→ibkr (canary) → verify/reconcile → then trend.
-  Wires the IBKR connect/disconnect + async-fill lifecycle (needs a live gateway to test).
+  (R1.0c-2b) → **clear the four Phase-2-review prerequisites above** → flatten Alpaca → flip
+  `pm.cash_venue`→ibkr (canary) → verify/reconcile → then trend. Wires the IBKR connect/disconnect +
+  async-fill lifecycle (needs a live gateway to test).
 
 ### R1.3 — Futures on IBKR (SHADOW → tiny-live)
 Wire the LIVE carry/xsmom signal → `futures_target_weights` (replaces the stub). Futures rebalance
