@@ -766,8 +766,9 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                    final_decision="block", block_reason=b.get("block_reason"))
 
         # ── H1 reconciliation-before-trade (shadow-first; the broker is reality, the DB is memory) ──
-        # Runs BEFORE the risk gate: verify the DB book matches the broker before sizing/placing.
-        # Mode read first so an ENFORCE-mode wiring failure fails CLOSED (HOLD); shadow is always inert.
+        # Verify the DB book matches the broker before the whole-book gate + placement. (apply_risk_gate
+        # above only computed approved/blocked — nothing is placed until the execute loop below, after
+        # every gate.) Mode read first so an ENFORCE-mode wiring failure fails CLOSED (HOLD); shadow inert.
         try:
             recon_mode = str(get_agent_config(db, "pm.reconciliation_mode") or "shadow").strip().lower()
         except Exception:
@@ -812,17 +813,22 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             from app.notifications import notifier as _notifier
             gate_verdict = wbg.shadow_gate_from_intents(
                 all_positions, approved, live, nav, mode=gate_mode, label="trend",
-                notifier=_notifier)
+                venue=reader.venue, notifier=_notifier)
             summary["gate_mode"] = gate_mode
             summary["gate_allow"] = bool(gate_verdict.allow)
             summary["gate_breaches"] = list(gate_verdict.breaches)
-            blocked_by_gate = (gate_mode == "enforce" and not gate_verdict.allow)
+            summary["gate_error"] = gate_verdict.error
+            # Fail-CLOSED in enforce on a breach OR an internal eval error. The gate's own fail-safe
+            # returns allow=True on an internal exception (so a gate bug can't crash a rebalance), so
+            # the CALLER must treat a set error as a HOLD — else an UNEVALUATED book slips the gate.
+            blocked_by_gate = (gate_mode == "enforce"
+                               and (not gate_verdict.allow or gate_verdict.error is not None))
         except Exception:
             log.debug("trend: whole-book gate wiring failed", exc_info=True)
             blocked_by_gate = (gate_mode == "enforce")   # fail-CLOSED in enforce; inert in shadow
         if blocked_by_gate:
-            log.warning("trend: whole-book gate (mode=%s) -> HOLD rebalance: %s",
-                        gate_mode, summary.get("gate_breaches"))
+            log.warning("trend: whole-book gate (mode=%s) -> HOLD rebalance: breaches=%s error=%s",
+                        gate_mode, summary.get("gate_breaches"), summary.get("gate_error"))
             _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block",
                    block_reason="whole_book_gate")
             summary["status"] = "blocked"
@@ -869,13 +875,17 @@ def run_trend_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
                     "weighted_avg_book_corr": _fin(_d.get("weighted_avg_book_corr")),
                     "portfolio_heat_frac": _fin(_d.get("portfolio_heat_frac")),
                 }
-                blocked_by_per_name = (pn_mode == "enforce" and not pn_verdict.allow)
+                summary["per_name_error"] = pn_verdict.error
+                # Fail-CLOSED in enforce on a breach OR an internal eval error (same rationale as the
+                # whole-book gate: the gate returns allow=True on an internal exception).
+                blocked_by_per_name = (pn_mode == "enforce"
+                                       and (not pn_verdict.allow or pn_verdict.error is not None))
             except Exception:
                 log.debug("trend: per-name gate wiring failed", exc_info=True)
                 blocked_by_per_name = (pn_mode == "enforce")   # fail-CLOSED in enforce; inert otherwise
         if blocked_by_per_name:
-            log.warning("trend: per-name gate (mode=%s) -> HOLD rebalance: %s",
-                        pn_mode, summary.get("per_name_breaches"))
+            log.warning("trend: per-name gate (mode=%s) -> HOLD rebalance: breaches=%s error=%s",
+                        pn_mode, summary.get("per_name_breaches"), summary.get("per_name_error"))
             _audit(CORE_SYMBOL, "buy", price=0.0, final_decision="block", block_reason="per_name_gate")
             summary["status"] = "blocked"
             summary["block_reason"] = "per_name_gate"

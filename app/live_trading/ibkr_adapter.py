@@ -151,9 +151,18 @@ class IBKRReadOnlyAdapter:
                 return None
 
         maint = f("MaintMarginReq")
+        nav = f("NetLiquidation")
+        if nav is None:
+            # No NetLiquidation row = accountValues haven't synced on this (connected) session
+            # (ib account values arrive async after connect). Refuse rather than report NAV 0.0,
+            # which would zero out sizing or divide-by-zero a gross/NAV gate — a silent wrong number.
+            # Fail-closed, matching the single-managed-account guard above.
+            # (R1.2 Phase 3: validate the account-sync semantics against a live gateway.)
+            raise ValueError(
+                "IBKR NetLiquidation unavailable — account values not synced yet (fail-closed read)")
         return AccountState(
             venue=self.venue,
-            nav=f("NetLiquidation") or 0.0,
+            nav=nav,
             cash=f("TotalCashValue") or 0.0,
             buying_power=f("BuyingPower") or 0.0,
             settled_cash=f("SettledCash"),
@@ -168,8 +177,19 @@ class IBKRReadOnlyAdapter:
         ~daily P&L and would understate gross — the trap book_state.py guards against). Fail-closed if
         not connected."""
         self._require_connected()
+        port = list(self._ib.portfolio() or [])
+        if not port and not list(self._ib.accountValues() or []):
+            # An empty portfolio on a CONNECTED session is ambiguous: genuinely flat, OR the account-
+            # update subscription hasn't synced yet (ib.portfolio() is an async local cache). A false
+            # "flat" read makes a sleeve re-buy the whole book (fail-OPEN). Disambiguate via
+            # accountValues: a synced session always has them, so if those are ALSO empty we cannot
+            # confirm sync → fail-closed. (A truly flat but synced account has accountValues, no
+            # portfolio rows → returns [] below.) R1.2 Phase 3: validate sync semantics on a live gateway.
+            raise ConnectionError(
+                "IBKR portfolio empty and account not synced — cannot confirm a flat book "
+                "(fail-closed read)")
         out: List[CanonicalPosition] = []
-        for it in self._ib.portfolio():
+        for it in port:
             c = it.contract
             bsym = c.symbol
             iid = self.normalize_instrument(bsym)

@@ -149,15 +149,36 @@ HELD_STATUSES = ("ACTIVE",)
 PENDING_STATUSES = ("PENDING_FILL",)
 
 
+def _sleeve_venue(db, selector: str, _cache: dict) -> str:
+    """The im-venue of the sleeve that OWNS `selector`. The trend and cash sleeves can be on different
+    venues during the R1.2 cutover (cash-first canary → cash on IBKR while trend is still on Alpaca),
+    so a Trade row belongs to whichever venue its sleeve is configured for. Only 'trend'/'cash' are
+    venue-routable; every other selector (pead, '', …) defaults to Alpaca (not part of the cutover).
+    Cached per call so we do at most two config reads. Fail-safe: any error → Alpaca."""
+    s = (selector or "").strip().lower()
+    sleeve = s if s in ("trend", "cash") else None
+    if sleeve is None:
+        return im.ALPACA
+    if sleeve not in _cache:
+        try:
+            from app.live_trading.execution_router import resolve_venue
+            _cache[sleeve] = _im_venue(resolve_venue(db, sleeve))
+        except Exception:  # noqa: BLE001 — fail-safe to Alpaca (never break reconciliation wiring)
+            _cache[sleeve] = im.ALPACA
+    return _cache[sleeve]
+
+
 def _db_signed_by_status(db, statuses, venue: str = im.ALPACA) -> Dict[tuple, float]:
-    """Signed qty per (venue, instrument_id) for Trade rows in the given statuses. direction
-    BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial / cross-sleeve lots add). `venue` tags
-    the key + resolves the instrument (default Alpaca = the live book pre-cutover; R1.2 Phase 2 lets a
-    sleeve pass its ACTIVE venue so expected and actual are tagged consistently). Lazy import so this
-    module stays import-light; equality-filter per status (no in_()) so the query stays scoped SQL-side
-    (not a full-table load)."""
+    """Signed qty per (venue, instrument_id) for the Trade rows in the given statuses that BELONG to
+    `venue`. direction BUY -> +qty, SELL_SHORT -> -qty; summed per key (partial / cross-sleeve lots
+    add). A row belongs to `venue` when its sleeve (by selector) is configured for that venue — so a
+    split-venue book (mid-cutover) reconciles PER VENUE instead of the other venue's rows showing up
+    as phantom breaks. Pre-cutover every sleeve is Alpaca, so an Alpaca-venue call returns the whole
+    book exactly as before (byte-identical). Lazy import so this module stays import-light; equality-
+    filter per status (no in_()) so the query stays scoped SQL-side (not a full-table load)."""
     from app.database.models import Trade
     venue = _im_venue(venue)
+    _vcache: dict = {}
     out: Dict[tuple, float] = {}
     rows = []
     for status in statuses:
@@ -165,6 +186,9 @@ def _db_signed_by_status(db, statuses, venue: str = im.ALPACA) -> Dict[tuple, fl
     for t in rows:
         sym = (t.symbol or "").upper()
         if not sym:
+            continue
+        # Only reconcile rows that belong to THIS venue's book (cutover-split safe).
+        if _sleeve_venue(db, getattr(t, "selector", None), _vcache) != venue:
             continue
         iid = im.lookup(venue, sym) or sym
         qty = float(t.quantity or 0)

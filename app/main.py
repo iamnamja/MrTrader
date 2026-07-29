@@ -257,7 +257,7 @@ async def lifespan(app: FastAPI):
     # ── 4.5 IBKR migration readiness (read-only; never fatal) ─────────────────
     # Surface the IBKR path's readiness at boot so a silent gap (e.g. ib_insync not importable →
     # the R1.1 shadow router skipping for weeks) is visible immediately, not discovered on a Monday
-    # rebalance. Places nothing; opens no gateway session. `GET /api/ibkr/readiness` for the detail.
+    # rebalance. Places nothing; opens no gateway session. `GET /api/dashboard/ibkr/readiness` for detail.
     try:
         from app.live_trading import ibkr_readiness
         log.info("OK %s", ibkr_readiness.format_line(ibkr_readiness.probe()))

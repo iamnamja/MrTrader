@@ -424,6 +424,27 @@ def _is_broker_view_trusted(alpaca, alpaca_positions: dict) -> bool:
 _MIN_POSITIONS_TO_TRUST_GHOST = 1
 
 
+def _sleeve_cutover_to_non_alpaca(db_session, trade) -> bool:
+    """True when this trade belongs to a trend/cash sleeve configured for a NON-Alpaca venue (R1.2
+    cutover). This reconciler reads ONLY the Alpaca book, so a position cut over to IBKR is legitimately
+    absent from the Alpaca snapshot — ghost-closing it would corrupt the DB (and trigger a re-buy).
+    Pre-cutover every sleeve is Alpaca, so this is always False (byte-identical). Fail-safe: any error
+    → False (unchanged behavior)."""
+    sleeve = None
+    for attr in ("trade_type", "selector"):
+        v = (getattr(trade, attr, "") or "").strip().lower()
+        if v in ("trend", "cash"):
+            sleeve = v
+            break
+    if sleeve is None:
+        return False
+    try:
+        from app.live_trading.execution_router import resolve_venue
+        return resolve_venue(db_session, sleeve) != "alpaca"
+    except Exception:  # noqa: BLE001 — fail-safe: treat as Alpaca (unchanged ghost behavior)
+        return False
+
+
 def reconcile(alpaca, db_session) -> Dict[str, Any]:
     """
     Run reconciliation. Returns a summary dict.
@@ -486,6 +507,11 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             for trade in active_trades:
                 if trade.symbol in alpaca_positions:
                     continue
+                if _sleeve_cutover_to_non_alpaca(db_session, trade):
+                    logger.info(
+                        "Skipping ghost check for Trade#%d %s — sleeve cut over to a non-Alpaca "
+                        "venue (not visible in the Alpaca snapshot)", trade.id, trade.symbol)
+                    continue
                 trade_age_anchor = trade.created_at or now
                 if trade_age_anchor > ghost_cutoff:
                     logger.info(
@@ -526,6 +552,19 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             # Pass B — resolve RECONCILE_GHOST_PENDING trades
             pending_ghosts = db_session.query(Trade).filter_by(status=RECONCILE_GHOST_PENDING).all()
             for ghost in pending_ghosts:
+                if _sleeve_cutover_to_non_alpaca(db_session, ghost):
+                    # Sleeve cut over to a non-Alpaca venue after this row was promoted (Pass A only
+                    # iterates ACTIVE, so a pre-flip PENDING ghost would otherwise be CLOSED here by the
+                    # Alpaca-only closer). It's not a ghost — it's invisible to the Alpaca snapshot.
+                    # Rescue it back to ACTIVE (never fabricate an exit fill for a cut-over position).
+                    ghost.status = "ACTIVE"
+                    ghost.ghost_detection_count = 0
+                    ghost.ghost_first_detected_at = None
+                    ghost.ghost_last_detected_at = None
+                    logger.info(
+                        "GHOST RESCUED: Trade#%d %s — sleeve on a non-Alpaca venue, not a ghost",
+                        ghost.id, ghost.symbol)
+                    continue
                 if ghost.symbol in alpaca_positions:
                     # Position reappeared — false alarm, revert to ACTIVE
                     ghost.status = "ACTIVE"

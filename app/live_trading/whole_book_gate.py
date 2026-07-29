@@ -123,6 +123,10 @@ def build_proposed_book(current_positions_raw: List[dict], intents: List[dict],
     """Apply `intents` (buy/sell deltas) to the broker's CURRENT positions to get the PROPOSED book.
     current_positions_raw: broker dicts {symbol, qty, current_price/market_value}; intents:
     {symbol, side ('buy'/'sell'), qty}; prices: live price map (for symbols not currently held)."""
+    # Normalize the venue to the instrument-master CONSTANT (upper-case) at the im.lookup site, so ANY
+    # caller passing the router venue ('alpaca'/'ibkr', lower-case) still resolves — else mapped=False
+    # → cash-equivalents look like risk gross + factors go unmapped → false breach / false HOLD.
+    venue = str(venue or im.ALPACA).strip().upper()
     qty: Dict[str, float] = {}
     px: Dict[str, float] = dict(prices or {})
     for p in current_positions_raw or []:
@@ -152,6 +156,10 @@ def shadow_gate_from_intents(current_positions_raw: List[dict], intents: List[di
     evaluates, logs (+ emails on a breach), and returns the verdict. NEVER raises — any error ->
     allow=True so a gate bug can't disrupt a live rebalance. The CALLER decides whether to act on
     the verdict (only in ENFORCE mode)."""
+    # Normalize the venue to the instrument-master CONSTANT (im.ALPACA/im.IBKR are UPPER-case, but a
+    # sleeve passes the router venue 'alpaca'/'ibkr' lower-case). Without this every symbol misses the
+    # case-sensitive im.lookup → mapped=False → a false `unmapped` breach → a false HOLD in enforce.
+    venue = str(venue or im.ALPACA).strip().upper()
     try:
         book = build_proposed_book(current_positions_raw, intents, prices, nav, venue=venue)
         v = evaluate(book, policy)
