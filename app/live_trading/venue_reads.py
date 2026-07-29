@@ -109,13 +109,15 @@ def _default_ibkr_provider(db) -> Callable[[], object]:
          writable execution adapter, AND both venue readers — concurrent connects in one cron window
          collide (Gateway rejects a duplicate clientId → that sleeve fail-closes/HOLDs every cycle).
          Allocate a distinct clientId per consumer.
-      3. PORTFOLIO-SYNC fail-closed. `ib.portfolio()` is an async local cache; a connected-but-not-yet-
-         synced session returns `[]`, which `_current_*_positions` would read as "genuinely flat" →
-         a full re-buy of the sleeve (fail-OPEN). Assert the account-update subscription completed
-         (non-empty accountValues / an explicit sync flag) before trusting an empty portfolio.
-      4. MULTI-ASSET gross-cap. `get_positions()` returns the WHOLE IBKR book incl. futures; the trend
+      3. MULTI-ASSET gross-cap. `get_positions()` returns the WHOLE IBKR book incl. futures; the trend
          gross-cap sums `market_value` (≈ daily P&L for futures → understated → fail-OPEN). Filter to
          equity/ETF (or use book_state notional) before the gross-cap sum on a shared IBKR account.
+      4b. PORTFOLIO-SYNC (partially mitigated — must be COMPLETED in Phase 3). `IBKRReadOnlyAdapter`
+         now fails CLOSED on the BOTH-empty case (empty portfolio AND empty accountValues) and on a
+         missing NetLiquidation. But accountValues stream BEFORE portfolio rows on `reqAccountUpdates`,
+         so a values-synced-but-positions-not window still returns `[]` (fail-OPEN → whole-sleeve
+         re-buy). A correct guard needs an explicit completion signal (`accountDownloadEnd` /
+         `positionEnd` / a sync flag), which needs a live gateway to wire + validate.
     """
     def _build():
         from app.live_trading.ibkr_adapter import IBKRReadOnlyAdapter

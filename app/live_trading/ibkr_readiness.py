@@ -2,7 +2,7 @@
 
 Answers "how ready is the IBKR path?" at a glance so a silent gap — e.g. `ib_insync` not being
 importable, which made the R1.1 shadow router skip for weeks and accrue ZERO comparison data — is
-visible at daemon boot and on demand (`GET /api/ibkr/readiness`), instead of being discovered on a
+visible at daemon boot and on demand (`GET /api/dashboard/ibkr/readiness`), instead of being discovered on a
 Monday rebalance. This is the single pre-flight check before the owner-present R1.2 cutover.
 
 Touches NOTHING live: no order is placed, no gateway session is opened (only a TCP-reachability

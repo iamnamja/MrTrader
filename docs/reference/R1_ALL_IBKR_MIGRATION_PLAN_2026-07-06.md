@@ -137,7 +137,7 @@ futures lots at R1.3; here it's the mapping-gap + reconstruction parity that mat
 - **Never raises into the live loop**: per-order fail-closed; the Alpaca placement is untouched.
 - Runs in BOTH shadow and live rebalance modes (so the comparison accrues during the Alpaca-shadow soak).
 - Owner step to activate: set `ibkr.shadow_routing=on`. (The enforce gates already evaluate `venue=IBKR`.)
-- **⚠️→✅ Silent-skip fixed (2026-07-21):** the flag was on but the router logged `ib_insync unavailable — skipped` on every rebalance (the running daemon predated the `ib_insync` install) → **zero** comparison data accrued for weeks. The 07-21 restart onto the venv (has `ib_insync==0.9.86`) fixes it; a dry-run of 07-20's real 8 orders reconstructs **8/8 clean** (no mapping gaps) → live comparison resumes 07-27. **Readiness probe added:** `app/live_trading/ibkr_readiness.py` (+ `GET /api/ibkr/readiness`, + a boot-time log line) reports `ib_insync` availability, a shadow-route reconstruction self-test, gateway reachability, account/Read-Only state, and the remaining blockers as a stage (`BLOCKED` / `R1.1_SHADOW_READY` / `GATEWAY_UP` / `R1.0C2B_READY`) — so this class of silent gap surfaces at boot, not on a Monday. **Current stage: `R1.1_SHADOW_READY`** (only blocker: IB Gateway not running — needed for R1.0c-2b / R1.2, not for R1.1).
+- **⚠️→✅ Silent-skip fixed (2026-07-21):** the flag was on but the router logged `ib_insync unavailable — skipped` on every rebalance (the running daemon predated the `ib_insync` install) → **zero** comparison data accrued for weeks. The 07-21 restart onto the venv (has `ib_insync==0.9.86`) fixes it; a dry-run of 07-20's real 8 orders reconstructs **8/8 clean** (no mapping gaps) → live comparison resumes 07-27. **Readiness probe added:** `app/live_trading/ibkr_readiness.py` (+ `GET /api/dashboard/ibkr/readiness`, + a boot-time log line) reports `ib_insync` availability, a shadow-route reconstruction self-test, gateway reachability, account/Read-Only state, and the remaining blockers as a stage (`BLOCKED` / `R1.1_SHADOW_READY` / `GATEWAY_UP` / `R1.0C2B_READY`) — so this class of silent gap surfaces at boot, not on a Monday. **Current stage: `R1.1_SHADOW_READY`** (only blocker: IB Gateway not running — needed for R1.0c-2b / R1.2, not for R1.1).
 
 ### R1.2 — Cut over ETF/cash to IBKR (tiny-live)
 Flip `trend`/`cash` venue → IBKR (whole book-state now reads IBKR positions). Alpaca adapter stays as
@@ -179,10 +179,35 @@ the **instant rollback**. Tiny sizes first; soak; reconcile IBKR ↔ DB clean un
   trend gross-cap sums `market_value` (≈ daily P&L for futures → understated → fail-OPEN) on a shared
   IBKR account; filter to equity/ETF or use book_state notional. Also route `monitoring.py` +
   `emergency_flatten.py` (still Alpaca-hardcoded) to the active venue before/at the flip.
-- **⬜ Phase 3 — the owner-present cutover.** Gateway up + `ibkr.account` set → Read-Only OFF
-  (R1.0c-2b) → **clear the four Phase-2-review prerequisites above** → flatten Alpaca → flip
-  `pm.cash_venue`→ibkr (canary) → verify/reconcile → then trend. Wires the IBKR connect/disconnect +
-  async-fill lifecycle (needs a live gateway to test).
+- **✅ Phase 2.5 (2026-07-29) — pre-cutover readiness deep-dive + hardening batch.** 4 parallel Opus
+  component audits (connection/write-surface, routing/reads/shadow/readiness, reconciliation/book-state/
+  instrument-master, safety-gates/scorecard) + runtime ground-truth. **Verdict: components SOLID + inert;
+  all 12 live ETFs (10 trend + SGOV + BIL) map under BOTH venues (the critical cutover check PASSES).**
+  Gateway-independent fixes SHIPPED (all byte-identical while venues are Alpaca; independent Opus review):
+  - **G1** — reconciliation now scopes the expected book PER VENUE (a row belongs to its sleeve's venue),
+    so the cash-first canary reconciles cleanly instead of FAIL_CLOSED-every-rebalance from cross-venue
+    phantom breaks. (Config-derived — no `Trade.venue` column; there's no migration infra.)
+  - **G2** — `startup_reconciler` skips its ghost pass for a trend/cash trade whose sleeve is on a
+    non-Alpaca venue (else it ghost-CLOSED the IBKR sleeve within ~20 min → DB corruption).
+  - **G3/G6 (PARTIAL)** — `IBKRReadOnlyAdapter` fails CLOSED on the BOTH-empty case (empty portfolio AND
+    empty accountValues) and on a missing NetLiquidation, instead of reading "flat" → whole-sleeve
+    re-buy. **⚠️ NOT fully closed: accountValues stream before portfolio rows, so a values-synced-but-
+    positions-not window is still fail-OPEN — Phase 3 must complete this with an explicit sync-complete
+    signal (`accountDownloadEnd`/`positionEnd`) + validate on a live gateway.**
+  - **G5** — the enforce whole-book + per-name gates HOLD on an internal eval error (not just a breach);
+    fixed a would-be regression where the paired venue-arg parity passed lower-case `'alpaca'` into the
+    gate's case-sensitive `im.lookup` → false `unmapped` breach → false HOLD (now normalized to the
+    im-constant).
+- **⬜ Phase 3 — the owner-present cutover.** Gateway up + `ibkr.account` set → Read-Only OFF (R1.0c-2b)
+  → **clear the REMAINING gateway-gated blockers** → flatten Alpaca → flip `pm.cash_venue`→ibkr (canary)
+  → verify/reconcile → then trend. Remaining blockers (need a live gateway; in-code `TODO(R1.2 Phase 3)`
+  in `venue_reads.py`): **(a) distinct clientId** — `ibkr.client_id=1` is shared across the futures read
+  adapter, the writable execution adapter, and both venue readers → concurrent connects collide; **(b)
+  IBKR read-adapter disconnect lifecycle** (socket strand); **(c) multi-asset gross-cap** — the trend
+  inline gross-cap sums `market_value` (understated for futures) if the IBKR account ever holds futures;
+  **(d) COMPLETE + validate the G3 sync guard** on the live socket (the values-before-positions window is still fail-open — needs `accountDownloadEnd`/`positionEnd`); **(e) restart the daemon onto current `main`**
+  (the running process predates Phase 2). Wires the IBKR connect/disconnect + async-fill lifecycle.
+  *(Readiness endpoint is `GET /api/dashboard/ibkr/readiness`.)*
 
 ### R1.3 — Futures on IBKR (SHADOW → tiny-live)
 Wire the LIVE carry/xsmom signal → `futures_target_weights` (replaces the stub). Futures rebalance
