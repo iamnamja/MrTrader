@@ -152,14 +152,16 @@ class IBKRReadOnlyAdapter:
 
         maint = f("MaintMarginReq")
         nav = f("NetLiquidation")
-        if nav is None:
-            # No NetLiquidation row = accountValues haven't synced on this (connected) session
-            # (ib account values arrive async after connect). Refuse rather than report NAV 0.0,
-            # which would zero out sizing or divide-by-zero a gross/NAV gate — a silent wrong number.
-            # Fail-closed, matching the single-managed-account guard above.
-            # (R1.2 Phase 3: validate the account-sync semantics against a live gateway.)
+        if nav is None or nav <= 0.0:
+            # A missing NetLiquidation row = accountValues haven't synced on this (connected) session;
+            # a 0.0 row can also stream mid-sync (before the real balance arrives). Either way, refuse
+            # rather than return NAV<=0, which would zero out sizing or divide-by-zero a gross/NAV gate
+            # — a silent wrong number. A funded, synced account always reports NAV>0; a genuinely
+            # zero-balance account can't be traded anyway. Fail-closed, matching the single-managed-
+            # account guard above. (R1.2 Phase 3: validate the account-sync semantics on a live gateway.)
             raise ValueError(
-                "IBKR NetLiquidation unavailable — account values not synced yet (fail-closed read)")
+                "IBKR NetLiquidation unavailable or <= 0 — account not synced / unfunded "
+                "(fail-closed read)")
         return AccountState(
             venue=self.venue,
             nav=nav,

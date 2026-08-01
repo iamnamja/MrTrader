@@ -118,6 +118,16 @@ def test_get_account_fails_closed_when_nav_missing():
         ad.get_account()
 
 
+def test_get_account_fails_closed_when_nav_zero():
+    """MED-1: a 0.00 NetLiquidation row can stream mid-sync before the real balance arrives — that's
+    still 'not synced', so fail CLOSED rather than return nav=0.0 (which zeroes sizing / divides a gate)."""
+    from app.live_trading.ibkr_adapter import IBKRReadOnlyAdapter
+    ad = IBKRReadOnlyAdapter(ib=_FakeIB(
+        acct_values=[_av("NetLiquidation", 0), _av("TotalCashValue", 0)]))
+    with pytest.raises(ValueError):
+        ad.get_account()
+
+
 def test_get_account_ok_when_synced():
     from app.live_trading.ibkr_adapter import IBKRReadOnlyAdapter
     ad = IBKRReadOnlyAdapter(ib=_FakeIB(
@@ -125,6 +135,27 @@ def test_get_account_ok_when_synced():
                      _av("BuyingPower", 20000)]))
     acct = ad.get_account()
     assert acct.nav == 100000.0 and acct.cash == 5000.0 and acct.buying_power == 20000.0
+
+
+# ── centralized venue normalization (choke point) ─────────────────────────────────────
+def test_im_lookup_normalizes_lowercase_router_venue():
+    """The C1 bug class is now impossible by construction: im.lookup normalizes the venue, so a
+    lower-case router venue ('alpaca'/'ibkr') resolves identically to the upper-case constant."""
+    from app.live_trading import instrument_master as im
+    assert im.to_im_venue("alpaca") == im.ALPACA
+    assert im.to_im_venue("ibkr") == im.IBKR
+    assert im.to_im_venue(None) == im.ALPACA
+    assert im.lookup("alpaca", "SPY") == im.lookup(im.ALPACA, "SPY") == "SPY"
+    assert im.lookup("ibkr", "SGOV") == im.lookup(im.IBKR, "SGOV") == "SGOV"
+
+
+# ── MED-2: the two modules resolve a trade's sleeve identically ───────────────────────
+def test_owning_sleeve_selector_first_shared_precedence():
+    from app.live_trading.execution_router import owning_sleeve
+    assert owning_sleeve("cash", "swing") == "cash"       # selector wins
+    assert owning_sleeve("", "trend") == "trend"          # trade_type fallback
+    assert owning_sleeve("pead", None) is None            # non-routable → None (Alpaca default)
+    assert owning_sleeve(None, None) is None
 
 
 # ── G5: enforce whole-book gate HOLDS on an internal eval error ────────────────────────

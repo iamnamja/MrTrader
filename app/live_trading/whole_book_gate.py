@@ -123,10 +123,11 @@ def build_proposed_book(current_positions_raw: List[dict], intents: List[dict],
     """Apply `intents` (buy/sell deltas) to the broker's CURRENT positions to get the PROPOSED book.
     current_positions_raw: broker dicts {symbol, qty, current_price/market_value}; intents:
     {symbol, side ('buy'/'sell'), qty}; prices: live price map (for symbols not currently held)."""
-    # Normalize the venue to the instrument-master CONSTANT (upper-case) at the im.lookup site, so ANY
-    # caller passing the router venue ('alpaca'/'ibkr', lower-case) still resolves — else mapped=False
-    # → cash-equivalents look like risk gross + factors go unmapped → false breach / false HOLD.
-    venue = str(venue or im.ALPACA).strip().upper()
+    # Normalize the venue to the instrument-master CONSTANT so a lower-case router venue ('alpaca')
+    # still resolves in im.lookup — else mapped=False → a held cash ETF (SGOV) is miscounted as risk
+    # gross → a false whole-book-gate HOLD in enforce (the C1 near-miss). im.lookup also normalizes,
+    # but do it here too so the CanonicalPosition.venue TAG is the constant, not the raw router string.
+    venue = im.to_im_venue(venue)
     qty: Dict[str, float] = {}
     px: Dict[str, float] = dict(prices or {})
     for p in current_positions_raw or []:
@@ -156,11 +157,9 @@ def shadow_gate_from_intents(current_positions_raw: List[dict], intents: List[di
     evaluates, logs (+ emails on a breach), and returns the verdict. NEVER raises — any error ->
     allow=True so a gate bug can't disrupt a live rebalance. The CALLER decides whether to act on
     the verdict (only in ENFORCE mode)."""
-    # Normalize the venue to the instrument-master CONSTANT (im.ALPACA/im.IBKR are UPPER-case, but a
-    # sleeve passes the router venue 'alpaca'/'ibkr' lower-case). Without this every symbol misses the
-    # case-sensitive im.lookup → mapped=False → a false `unmapped` breach → a false HOLD in enforce.
-    venue = str(venue or im.ALPACA).strip().upper()
     try:
+        # venue is normalized inside build_proposed_book (→ im.to_im_venue) so a lower-case router
+        # venue resolves; no separate normalization needed here.
         book = build_proposed_book(current_positions_raw, intents, prices, nav, venue=venue)
         v = evaluate(book, policy)
         v = WholeBookGateVerdict(allow=v.allow, mode=mode, breaches=v.breaches,

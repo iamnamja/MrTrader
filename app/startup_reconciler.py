@@ -430,17 +430,14 @@ def _sleeve_cutover_to_non_alpaca(db_session, trade) -> bool:
     absent from the Alpaca snapshot — ghost-closing it would corrupt the DB (and trigger a re-buy).
     Pre-cutover every sleeve is Alpaca, so this is always False (byte-identical). Fail-safe: any error
     → False (unchanged behavior)."""
-    sleeve = None
-    for attr in ("trade_type", "selector"):
-        v = (getattr(trade, attr, "") or "").strip().lower()
-        if v in ("trend", "cash"):
-            sleeve = v
-            break
-    if sleeve is None:
-        return False
     try:
-        from app.live_trading.execution_router import resolve_venue
-        return resolve_venue(db_session, sleeve) != "alpaca"
+        from app.live_trading.execution_router import owning_sleeve, resolve_venue, ALPACA
+        # SHARED owning_sleeve (selector-first, trade_type fallback) so this and reconciliation's
+        # per-venue scoping agree on which sleeve/venue owns a row.
+        sleeve = owning_sleeve(getattr(trade, "selector", None), getattr(trade, "trade_type", None))
+        if sleeve is None:
+            return False
+        return resolve_venue(db_session, sleeve) != ALPACA
     except Exception:  # noqa: BLE001 — fail-safe: treat as Alpaca (unchanged ghost behavior)
         return False
 
@@ -564,6 +561,19 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     logger.info(
                         "GHOST RESCUED: Trade#%d %s — sleeve on a non-Alpaca venue, not a ghost",
                         ghost.id, ghost.symbol)
+                    result["ghost_positions"].append({
+                        "trade_id": ghost.id, "symbol": ghost.symbol, "action": "rescued",
+                    })
+                    db_session.add(AuditLog(
+                        action="RECONCILE_GHOST_RESCUED",
+                        details={
+                            "trade_id": ghost.id, "symbol": ghost.symbol,
+                            "reason": "sleeve cut over to a non-Alpaca venue — not visible in the "
+                                      "Alpaca snapshot",
+                            "rescued_at": now.isoformat(),
+                        },
+                        timestamp=now,
+                    ))
                     continue
                 if ghost.symbol in alpaca_positions:
                     # Position reappeared — false alarm, revert to ACTIVE

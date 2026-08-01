@@ -35,12 +35,10 @@ OFF = "off"
 
 
 def _im_venue(venue: str) -> str:
-    """Map a router venue string ('alpaca'/'ibkr', any case — as `resolve_venue` returns it) to the
-    instrument-master venue CONSTANT (`im.ALPACA`/`im.IBKR`, which are upper-case). Without this the
-    lower-case reader venue would miss every `im.lookup(venue, sym)` (mapped=False, iid→raw symbol).
-    Unknown → the raw upper-case value (so a typo can't silently collide with a real venue). Note
-    im.ALPACA/im.IBKR are already upper-case, so the default path is a no-op."""
-    return str(venue or im.ALPACA).strip().upper()
+    """Thin alias for the canonical `im.to_im_venue` (kept for readability at the reconciliation call
+    sites). Normalizes a router venue ('alpaca'/'ibkr') to the upper-case instrument-master constant
+    so `im.lookup`/`_ckey` resolve correctly."""
+    return im.to_im_venue(venue)
 
 
 @dataclass(frozen=True)
@@ -149,19 +147,19 @@ HELD_STATUSES = ("ACTIVE",)
 PENDING_STATUSES = ("PENDING_FILL",)
 
 
-def _sleeve_venue(db, selector: str, _cache: dict) -> str:
-    """The im-venue of the sleeve that OWNS `selector`. The trend and cash sleeves can be on different
+def _trade_venue(db, trade, _cache: dict) -> str:
+    """The im-venue of the sleeve that OWNS `trade`. The trend and cash sleeves can be on different
     venues during the R1.2 cutover (cash-first canary → cash on IBKR while trend is still on Alpaca),
-    so a Trade row belongs to whichever venue its sleeve is configured for. Only 'trend'/'cash' are
-    venue-routable; every other selector (pead, '', …) defaults to Alpaca (not part of the cutover).
-    Cached per call so we do at most two config reads. Fail-safe: any error → Alpaca."""
-    s = (selector or "").strip().lower()
-    sleeve = s if s in ("trend", "cash") else None
+    so a Trade row belongs to whichever venue its sleeve is configured for. Sleeve is resolved by the
+    SHARED `execution_router.owning_sleeve` (selector-first, trade_type fallback) so this and the
+    startup-reconciler ghost exemption never assign the same row to different venues. Non-routable →
+    Alpaca (not part of the cutover). Cached per call (≤2 config reads). Fail-safe: any error → Alpaca."""
+    from app.live_trading.execution_router import owning_sleeve, resolve_venue
+    sleeve = owning_sleeve(getattr(trade, "selector", None), getattr(trade, "trade_type", None))
     if sleeve is None:
         return im.ALPACA
     if sleeve not in _cache:
         try:
-            from app.live_trading.execution_router import resolve_venue
             _cache[sleeve] = _im_venue(resolve_venue(db, sleeve))
         except Exception:  # noqa: BLE001 — fail-safe to Alpaca (never break reconciliation wiring)
             _cache[sleeve] = im.ALPACA
@@ -188,7 +186,7 @@ def _db_signed_by_status(db, statuses, venue: str = im.ALPACA) -> Dict[tuple, fl
         if not sym:
             continue
         # Only reconcile rows that belong to THIS venue's book (cutover-split safe).
-        if _sleeve_venue(db, getattr(t, "selector", None), _vcache) != venue:
+        if _trade_venue(db, t, _vcache) != venue:
             continue
         iid = im.lookup(venue, sym) or sym
         qty = float(t.quantity or 0)

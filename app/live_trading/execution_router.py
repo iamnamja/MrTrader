@@ -20,6 +20,21 @@ ALPACA = "alpaca"
 IBKR = "ibkr"
 _VALID = (ALPACA, IBKR)
 
+_ROUTABLE_SLEEVES = ("trend", "cash")
+
+
+def owning_sleeve(selector, trade_type=None):
+    """The venue-routable sleeve ('trend'|'cash') that owns a Trade, or None. Single source of truth
+    for this mapping so every consumer (reconciliation's per-venue scoping, the startup-reconciler
+    ghost exemption) assigns a row to the SAME venue during a split-venue cutover. Precedence:
+    `selector` (the PM attribution field) first, then `trade_type` as a fallback; any non-routable
+    value → None (defaults to Alpaca — not part of the cutover)."""
+    for v in (selector, trade_type):
+        s = (v or "").strip().lower()
+        if s in _ROUTABLE_SLEEVES:
+            return s
+    return None
+
 
 def resolve_venue(db, sleeve: str) -> str:
     """The configured execution venue for `sleeve` ('trend' | 'cash'); default 'alpaca'.
