@@ -29,6 +29,20 @@ CRYPTO = "CRYPTO"
 ALPACA = "ALPACA"
 IBKR = "IBKR"
 
+_VENUES = (ALPACA, IBKR)
+
+
+def to_im_venue(venue) -> str:
+    """Normalize a venue string to the instrument-master CONSTANT (`ALPACA`/`IBKR`, upper-case).
+
+    The single source of truth for venue-case bridging. The execution router / `resolve_venue` /
+    `pm.*_venue` config all speak LOWER-case ('alpaca'/'ibkr'); the instrument master keys off the
+    UPPER-case constants. Any venue value that reaches `lookup()` or a `(venue, instrument_id)` key
+    MUST pass through here first — otherwise a lower-case venue silently misses the case-sensitive
+    dict (mapped=False → e.g. a cash ETF miscounted as risk gross → a false whole-book-gate HOLD; the
+    R1.2 'C1' near-miss). None/blank → ALPACA (the pre-cutover default)."""
+    return str(venue or ALPACA).strip().upper()
+
 
 @dataclass(frozen=True)
 class CanonicalInstrument:
@@ -43,7 +57,9 @@ class CanonicalInstrument:
     verified: bool = True                    # False = static spec must be verify-on-connect (IBKR)
 
     def broker_symbol(self, venue: str) -> Optional[str]:
-        return self.venue_symbols.get(venue)
+        # Normalize the venue (same choke-point discipline as im.lookup) so a lower-case router venue
+        # resolves; venue_symbols keys are the upper-case constants.
+        return self.venue_symbols.get(to_im_venue(venue))
 
     @property
     def sec_type(self) -> str:
@@ -118,8 +134,10 @@ def get(instrument_id: str) -> Optional[CanonicalInstrument]:
 
 
 def lookup(venue: str, broker_symbol: str) -> Optional[str]:
-    """Map a venue's broker symbol to the canonical instrument_id, or None on a miss."""
-    return _BY_VENUE_SYMBOL.get((venue, broker_symbol))
+    """Map a venue's broker symbol to the canonical instrument_id, or None on a miss. The venue is
+    normalized at this choke point (`to_im_venue`), so a lower-case router venue ('alpaca'/'ibkr')
+    resolves correctly by construction — no caller can reintroduce the C1 case-mismatch miss."""
+    return _BY_VENUE_SYMBOL.get((to_im_venue(venue), broker_symbol))
 
 
 def all_instruments() -> Dict[str, CanonicalInstrument]:

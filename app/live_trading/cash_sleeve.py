@@ -359,6 +359,7 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
         # pm.cash_venue=ibkr, gated behind the Phase-3 cutover). Resolved ONCE.
         from app.live_trading.execution_router import resolve_venue, get_execution_adapter
         from app.live_trading.writable_broker_adapter import OrderIntent
+        from app.live_trading import instrument_master as im
         _venue = resolve_venue(db, "cash")
         summary["venue"] = _venue
         _adapter = get_execution_adapter(_venue, alpaca_client=alpaca, db=db)
@@ -367,7 +368,7 @@ def run_cash_rebalance(db=None, *, force: bool = False) -> Dict[str, Any]:
             price = live.get(sym, 0.0)
             try:
                 res = _adapter.place(OrderIntent(
-                    venue=_venue.upper(), instrument_id=sym, sec_type="ETF",
+                    venue=im.to_im_venue(_venue), instrument_id=sym, sec_type="ETF",
                     side=str(side).upper(), quantity=int(qty),
                     client_ref=idempotency_key("cash", sym, side=side), est_price=price))
                 oid = res.broker_order_id

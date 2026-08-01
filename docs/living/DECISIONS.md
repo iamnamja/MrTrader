@@ -4,6 +4,22 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-08-01 — Cutover-hardening round 2 (2 focused Opus passes: venue-normalization sweep + C1/H1/H2 delta review). No live bug found; centralized venue normalization + closed 4 cutover-only gaps.
+
+**Context**: after a server-side interruption, re-verified the merged state (both PRs intact, fixes present, 4436 tests green) and ran a SCOPED second pass — the only unreviewed delta was the review-response fixes from #662, and the venue-case pattern had already caused one near-miss (C1). Two Opus passes: a systematic venue→lookup sweep + an adversarial review of the C1/H1/H2 fix-ups.
+
+**Result: no live-now bug.** The sweep confirmed every one of ~18 venue→`im.lookup`/venue-key sites is safe (constant-sourced or normalized); the delta review verified C1 is airtight byte-identical on the live book (it also corrected the mechanism: a lower-case venue would miscount SGOV as risk gross, not "unmapped factors"). All findings were cutover-only or observability.
+
+**Decision — centralize + close the gaps (all byte-identical today):**
+- **Structural (kills the C1 bug class):** a single `instrument_master.to_im_venue()` helper, and normalization moved INTO the choke points `im.lookup()` + `CanonicalInstrument.broker_symbol()`, so a lower-case router venue resolves by construction — no caller can reintroduce the miss. The 5 scattered hand-rolled normalizers (`reconciliation._im_venue`, two `whole_book_gate` inlines, two sleeve `OrderIntent` `.upper()`) now delegate to the one helper.
+- **MED-1:** `IBKRReadOnlyAdapter.get_account` fails CLOSED on `NetLiquidation <= 0` (not just missing) — a 0.0 row can stream mid-sync.
+- **MED-2:** a shared `execution_router.owning_sleeve(selector, trade_type)` (selector-first) used by BOTH reconciliation's per-venue scoping and the startup-reconciler ghost exemption, so they can never assign a row to different venues during the canary.
+- **LOW:** the Pass-B ghost RESCUE now writes a `RECONCILE_GHOST_RESCUED` AuditLog (parity with REVERTED); the startup helper uses the `ALPACA` constant not a literal.
+
+**Consequences**: zero live change; +7 tests; full suite green; flake8 clean. The IBKR cutover surface is now covered by 10 independent Opus passes across the session. Phase-3 blockers unchanged.
+
+---
+
 ## 2026-07-29 — Pre-cutover readiness deep-dive (4 parallel Opus audits) → cutover-hardening batch: G1/G2/G3/G5/G6 FIXED (gateway-independent), G4 + disconnect lifecycle + multi-asset gross-cap DEFERRED to Phase 3.
 
 **Context**: with time before the owner-present Phase-3 IBKR cutover, ran a full component readiness audit (4 parallel Opus reviewers over connection/write-surface, routing/reads/shadow/readiness, reconciliation/book-state/instrument-master, safety-gates/scorecard) + runtime ground-truth (config state, readiness probe, 320 IBKR+safety tests). **Verdict: the built components are SOLID and correctly inert; the single most important cutover check — all 12 live ETFs (10 trend + SGOV + BIL) map under BOTH Alpaca and IBKR — PASSES cleanly.** No current-book regression found.
