@@ -56,33 +56,48 @@ class TestBeaconSends:
         self.orch = AgentOrchestrator()
         self.orch._started_at = 0.0
 
-    def test_sends_ok_when_all_probes_succeed(self):
-        with patch("app.live_trading.heartbeat.heartbeat_age_seconds", return_value=12.0), \
-             patch("app.integrations.alpaca.AlpacaClient") as ac, \
-             patch("app.live_trading.reconciliation.reconcile") as rec:
+    @staticmethod
+    def _hermetic():
+        """Patch EVERY external the beacon touches, including the DB session the
+        reconciliation probe opens — otherwise the probe degrades on a missing database
+        and the test passes/fails for a reason it never intended to assert."""
+        return [
+            patch("app.live_trading.heartbeat.heartbeat_age_seconds", return_value=12.0),
+            patch("app.integrations.alpaca.AlpacaClient"),
+            patch("app.database.SessionLocal"),
+            patch("app.live_trading.reconciliation.db_expected_positions", return_value={}),
+            patch("app.live_trading.reconciliation.db_pending_positions", return_value={}),
+            patch("app.live_trading.reconciliation.reconcile"),
+        ]
+
+    def _run_hermetic(self, recon_status):
+        ctxs = self._hermetic()
+        started = [c.start() for c in ctxs]
+        try:
+            ac, rec = started[1], started[5]
             ac.return_value.get_account.return_value = {"equity": "100000"}
             ac.return_value.get_positions.return_value = [{"symbol": "SPY", "qty": "10"}]
-            rec.return_value.status = "MATCH"
+            rec.return_value.status = recon_status
             rec.return_value.position_breaks = []
-            cap = _run_beacon(self.orch)
+            return _run_beacon(self.orch)
+        finally:
+            for c in ctxs:
+                c.stop()
 
+    def test_sends_ok_when_all_probes_succeed(self):
+        cap = self._run_hermetic("MATCH")
         assert cap["event_type"] == "daily_alive"
-        assert cap["payload"]["all_ok"] is True
+        assert cap["payload"]["reconciliation"] == "MATCH"
         assert cap["payload"]["degraded"] == []
+        assert cap["payload"]["all_ok"] is True
 
     def test_reconciliation_break_marks_degraded_but_still_sends(self):
         """A live DB<->broker break must show up as DEGRADED, not as a missing email."""
-        with patch("app.live_trading.heartbeat.heartbeat_age_seconds", return_value=12.0), \
-             patch("app.integrations.alpaca.AlpacaClient") as ac, \
-             patch("app.live_trading.reconciliation.reconcile") as rec:
-            ac.return_value.get_account.return_value = {"equity": "100000"}
-            ac.return_value.get_positions.return_value = []
-            rec.return_value.status = "FAIL_CLOSED"
-            rec.return_value.position_breaks = []
-            cap = _run_beacon(self.orch)
-
+        cap = self._run_hermetic("FAIL_CLOSED")
+        assert cap["event_type"] == "daily_alive", "must still be enqueued"
         assert cap["payload"]["all_ok"] is False
-        assert any("reconciliation" in d for d in cap["payload"]["degraded"])
+        # degraded specifically because of the break — not because a probe blew up
+        assert cap["payload"]["degraded"] == ["reconciliation not MATCH"]
 
     def test_probe_failure_degrades_rather_than_suppresses(self):
         """THE core contract: a broker outage must not silence the beacon."""
