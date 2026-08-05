@@ -62,6 +62,7 @@ class AgentOrchestrator:
 
         logger.info("Starting orchestrator…")
         self._running = True
+        self._started_at = time.time()   # uptime source for the daily liveness beacon
 
         # Launch each agent's run() loop as a background task
         for name, agent in self.agents.items():
@@ -113,6 +114,15 @@ class AgentOrchestrator:
         # to trading (a file write); fail-safe (write_heartbeat never raises).
         scheduler.schedule_every_n_minutes(
             self._write_heartbeat, minutes=1, job_id="dead_man_heartbeat"
+        )
+
+        # Daily liveness beacon at 07:45 ET, ALL SEVEN DAYS (day_of_week="0-6"). Runs before the
+        # open so a dead host is discoverable while there is still time to act. Weekends included
+        # deliberately: a beacon that is legitimately silent on Saturday cannot be used to detect a
+        # host that died on Friday night. Its ABSENCE is the alert — see notifier render("daily_alive").
+        scheduler.schedule_daily_at_time(
+            self._send_daily_alive, hour=7, minute=45,
+            job_id="daily_alive_beacon", misfire_grace_time=3600, day_of_week="0-6",
         )
 
         # Daily portfolio selection trigger at 09:30 ET (agents also self-trigger,
@@ -585,6 +595,104 @@ class AgentOrchestrator:
                 logger.error("Back-validation snapshot failed (continuing): %s", _bvexc)
         except Exception as exc:
             logger.error("Daily summary failed: %s", exc)
+
+    async def _send_daily_alive(self) -> None:
+        """Daily liveness beacon (07:45 ET, all 7 days).
+
+        The on-box dead-man watchdog can only alert while the HOST is alive — a power cut, an OS
+        reboot or a network drop kills the alerter alongside the brain, so that failure mode emits
+        nothing at all. (2026-08-05 demonstrated it: a Windows-Update reboot at 00:29 took the app
+        down for 16h and not one email was sent.) This inverts the signal: a positive beacon every
+        day means silence is itself actionable.
+
+        Every probe is individually guarded — a failing sub-check degrades the report rather than
+        suppressing it, because a beacon that can be silenced by its own errors is worthless.
+        """
+        from app.notifications import notifier
+
+        degraded: list[str] = []
+        p: dict[str, Any] = {"date": datetime.now().strftime("%Y-%m-%d")}
+
+        def probe(key: str, fn, fmt=str) -> None:
+            try:
+                p[key] = fmt(fn())
+            except Exception as exc:  # noqa: BLE001 — never let a probe kill the beacon
+                p[key] = "unavailable"
+                degraded.append(f"{key}: {type(exc).__name__}")
+
+        probe("uptime", lambda: f"{(time.time() - self._started_at) / 3600:.1f} h"
+              if getattr(self, "_started_at", None) else "unknown")
+
+        def _hb_age():
+            from app.live_trading.heartbeat import heartbeat_age_seconds
+            age = heartbeat_age_seconds()
+            return "no heartbeat file" if age is None else f"{age:.0f}s"
+        probe("heartbeat_age", _hb_age)
+
+        def _kill():
+            from app.live_trading.kill_switch_state import kill_switch_sm
+            from app.live_trading.kill_switch import kill_switch
+            # is_active is a PROPERTY, not a method; the state machine exposes .state
+            return (f"binary={'ACTIVE' if kill_switch.is_active else 'off'} "
+                    f"state_machine={kill_switch_sm.state}")
+        probe("kill_switch", _kill)
+
+        def _acct():
+            from app.integrations.alpaca import AlpacaClient
+            a = AlpacaClient().get_account()
+            return f"${float(a.get('equity', 0)):,.2f}"
+        probe("equity", _acct)
+
+        def _pos():
+            from app.integrations.alpaca import AlpacaClient
+            raw = AlpacaClient().get_positions()
+            if not raw:
+                return "0 (flat)"
+            return f"{len(raw)} — " + ", ".join(
+                f"{x.get('symbol')} {float(x.get('qty', 0)):g}" for x in raw)
+        probe("positions", _pos)
+
+        def _recon():
+            """READ-ONLY reconcile. Deliberately calls the pure reconcile() rather than
+            reconcile_and_alert(mode=enforce): a beacon must never itself escalate the
+            kill-switch state machine to HALT_NEW_RISK."""
+            import app.live_trading.reconciliation as R
+            from app.integrations.alpaca import AlpacaClient
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                expected = R.db_expected_positions(db, R.im.ALPACA)
+                pending = R.db_pending_positions(db, R.im.ALPACA)
+                actual = R.alpaca_actual_positions(AlpacaClient().get_positions(), R.im.ALPACA)
+                res = R.reconcile(expected, actual, pending_qty=pending)
+                if res.position_breaks:
+                    return f"{res.status} — " + ", ".join(
+                        f"{b.instrument_id} exp {b.expected_qty:g} act {b.actual_qty:g}"
+                        for b in res.position_breaks)
+                return res.status
+            finally:
+                db.close()
+        probe("reconciliation", _recon)
+
+        def _mkt():
+            from app.api.orchestrator_routes import _market_status
+            return "open" if _market_status().get("is_open") else "closed"
+        probe("market", _mkt)
+
+        def _mode():
+            from app.trading_modes import mode_manager
+            return mode_manager.mode.value
+        probe("trading_mode", _mode)
+        # DEGRADED on a probe failure OR a live reconciliation break — the two things that
+        # mean "up, but do not assume it is working".
+        recon_bad = isinstance(p.get("reconciliation"), str) and "MATCH" not in p["reconciliation"]
+        if recon_bad:
+            degraded.append("reconciliation not MATCH")
+        p["degraded"] = degraded
+        p["all_ok"] = not degraded
+
+        notifier.enqueue("daily_alive", p)
+        logger.info("Daily alive beacon enqueued: all_ok=%s degraded=%s", p["all_ok"], degraded)
 
     async def _write_heartbeat(self) -> None:
         """Dead-man liveness beat (H5): write the durable heartbeat the external watchdog reads.

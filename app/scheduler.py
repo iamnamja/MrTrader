@@ -29,7 +29,7 @@ class AgentScheduler:
 
     def schedule_daily_at_time(
         self, func: Callable, hour: int, minute: int, job_id: str,
-        misfire_grace_time: int = 60,
+        misfire_grace_time: int = 60, day_of_week: str = "0-4",
     ):
         """Run func daily at hh:mm ET on weekdays.
 
@@ -39,18 +39,23 @@ class AgentScheduler:
         would silently skip the ENTIRE week, so pass a generous grace (the trend job
         uses 1800s) — the rebalance target is a slow signal, so firing up to 30 min late
         is harmless, whereas dropping the week is not.
+
+        day_of_week: APScheduler cron day spec, default "0-4" (Mon–Fri) since almost every
+        job here is market-driven. Pass "0-6" for jobs whose ABSENCE is the signal (the
+        daily liveness email) — a job that is legitimately silent on weekends cannot be
+        used to detect a dead host on a Saturday.
         """
         self.scheduler.add_job(
             func,
-            CronTrigger(hour=hour, minute=minute, day_of_week="0-4",
+            CronTrigger(hour=hour, minute=minute, day_of_week=day_of_week,
                         timezone="America/New_York"),
             id=job_id,
             replace_existing=True,
             misfire_grace_time=misfire_grace_time,
             coalesce=True,
         )
-        logger.info("Scheduled %s daily at %02d:%02d ET (grace=%ds)",
-                    job_id, hour, minute, misfire_grace_time)
+        logger.info("Scheduled %s at %02d:%02d ET (days=%s, grace=%ds)",
+                    job_id, hour, minute, day_of_week, misfire_grace_time)
 
     def schedule_every_n_minutes(
         self, func: Callable, minutes: int, job_id: str
