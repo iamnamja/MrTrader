@@ -56,6 +56,7 @@ RATE_LIMITS: dict[str, int] = {
     "gate_error": 0,              # H8: a safety gate (whole-book/recon) could not even EVALUATE
     "futures_delivery_risk": 0,   # R1.3: a held future is at/near its FND/last-trade floor unrolled
     "enforce_rebalance_verification": 0,  # CH5: post-rebalance enforce-mode verification (PASS/ATTENTION)
+    "daily_alive":       0,       # daily liveness beacon — its ABSENCE is the alert (see render())
 }
 
 # ── Severity tiers (H8) — triage at a glance + route CATASTROPHIC events to a louder channel ──
@@ -512,6 +513,32 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             rows.append(("⚠ ATTENTION", "; ".join(p["attention"])))
         body = _section("CH5 — post-rebalance ENFORCE verification (config in force + CH0b scorecard "
                         "capture + spurious-HOLD check)", rows)
+
+    elif event_type == "daily_alive":
+        # Liveness beacon. Unlike every other event here, the SIGNAL IS ITS ABSENCE: the in-process
+        # dead-man watchdog shares a host with the brain, so a power cut / OS reboot / network loss
+        # kills the alerter too and nothing is emitted at all. A daily positive beacon converts that
+        # silent class of failure into something an away-from-keyboard owner can notice.
+        ok = bool(p.get("all_ok"))
+        mark = "OK" if ok else "DEGRADED"
+        subj = f"[MrTrader] Daily alive {p.get('date', '')} — {mark}"
+        rows = [
+            ("Status", mark),
+            ("Uptime", p.get("uptime")),
+            ("Heartbeat age", p.get("heartbeat_age")),
+            ("Trading mode", p.get("trading_mode")),
+            ("Kill switch", p.get("kill_switch")),
+            ("Equity", p.get("equity")),
+            ("Open positions", p.get("positions")),
+            ("Reconciliation", p.get("reconciliation")),
+            ("Market", p.get("market")),
+        ]
+        if p.get("degraded"):
+            rows.append(("&#9888; Degraded", "; ".join(p["degraded"])))
+        body = _section("Daily liveness beacon", rows)
+        body += ("<p style='color:#666;font-size:13px'>You receive this once a day. "
+                 "<strong>If this email stops arriving, the host is down</strong> — the in-process "
+                 "watchdog cannot alert on its own death.</p>")
 
     else:
         subj = f"[MrTrader] {event_type}"
