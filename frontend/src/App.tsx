@@ -1468,6 +1468,10 @@ type Execution = {
   time_in_force: string | null; limit_price: number | null; stop_price: number | null
   commission: number | null; client_order_id: string | null
   submitted_at: string | null; filled_at: string | null
+  // FIFO realized P&L, computed server-side from the FULL order history (a symbol's opening buys
+  // are routinely older than this page, so it cannot be derived from `rows`). Null on buys —
+  // they only move the basis — and null when the replay could not be validated against the broker.
+  realized_pnl?: number | null; realized_pct?: number | null; pnl_basis?: string | null
 }
 // Strategy/sleeve that placed the order — first segment of the client_order_id
 // (e.g. "trend-20260706-UUP" → "trend", "cash-...-SGOV-buy" → "cash").
@@ -1480,13 +1484,17 @@ function ExecutionsPanel() {
   const [rows, setRows] = useState<Execution[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
+  const [pnlErr, setPnlErr] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const j = await api.executions(200) as { executions?: Execution[]; error?: string }
+      const j = await api.executions(200) as {
+        executions?: Execution[]; error?: string; pnl_error?: string
+      }
       setRows(Array.isArray(j?.executions) ? j.executions : [])
       setErr(!!j?.error)
+      setPnlErr(!!j?.pnl_error)
     } catch { setErr(true) } finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
@@ -1494,6 +1502,10 @@ function ExecutionsPanel() {
   const filled = rows.filter(r => r.status === 'filled').length
   const buys = rows.filter(r => r.side === 'buy').length
   const sells = rows.filter(r => r.side === 'sell').length
+  // Realized total over the rows on screen. Only closing fills contribute — a buy realizes nothing.
+  const realized = rows.reduce((a, r) => a + (r.realized_pnl ?? 0), 0)
+  const nRealized = rows.filter(r => r.realized_pnl != null).length
+  const nUnknown = rows.filter(r => r.pnl_basis === 'incomplete_history').length
   const stColor = (st: string) => st === 'filled' ? C.green
     : (st === 'canceled' || st === 'rejected' || st === 'expired') ? C.red : C.muted
 
@@ -1504,6 +1516,13 @@ function ExecutionsPanel() {
         <KpiCard label="Filled" value={String(filled)} />
         <KpiCard label="Buys" value={String(buys)} color={C.green} />
         <KpiCard label="Sells" value={String(sells)} color={C.red} />
+        {/* Scoped to the rows on screen, NOT all-time — the two differ a lot (the visible window
+            is the most recent 200 orders), so the label has to say so or it reads as lifetime P&L. */}
+        <KpiCard
+          label="Realized P&L (shown)" value={fmt$(realized)}
+          sub={`${nRealized} closing fill${nRealized === 1 ? '' : 's'} in view · FIFO`}
+          color={realized >= 0 ? C.green : C.red}
+        />
       </div>
       <div style={s.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
@@ -1511,18 +1530,23 @@ function ExecutionsPanel() {
           <button onClick={() => load()} style={btnStyle}>Refresh</button>
         </div>
         {err && <div style={{ color: C.yellow, fontSize: 11, marginBottom: 8 }}>Alpaca unavailable — try Refresh.</div>}
+        {pnlErr && <div style={{ color: C.yellow, fontSize: 11, marginBottom: 8 }}>Realized P&amp;L unavailable — blotter shown without it.</div>}
+        {nUnknown > 0 && <div style={{ color: C.yellow, fontSize: 11, marginBottom: 8 }}>
+          {nUnknown} row{nUnknown === 1 ? '' : 's'} show n/a — those symbols have fills older than the retrievable
+          order history, so their cost basis cannot be established.
+        </div>}
         <div style={{ overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Time', 'Source', 'Symbol', 'Side', 'Qty', 'Filled', 'Avg Price', 'Value', 'Type', 'Limit/Stop', 'Status'].map(h => (
+              {['Time', 'Source', 'Symbol', 'Side', 'Qty', 'Filled', 'Avg Price', 'Value', 'Realized P&L', 'Type', 'Limit/Stop', 'Status'].map(h => (
                 <th key={h} style={{ ...s.th, position: 'sticky', top: 0, background: C.surface, zIndex: 1 }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>Loading…</td></tr>
+                ? <tr><td colSpan={12} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>Loading…</td></tr>
                 : rows.length === 0
-                  ? <tr><td colSpan={11} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
+                  ? <tr><td colSpan={12} style={{ ...s.td, textAlign: 'center', color: C.muted, padding: 20 }}>{err ? 'Could not load executions' : 'No executions found'}</td></tr>
                   : rows.map((r, i) => (
                     <tr key={r.order_id || i}>
                       <td style={{ ...s.td, color: C.muted }}>{fmtExecTime(r.filled_at ?? r.submitted_at)}</td>
@@ -1533,6 +1557,17 @@ function ExecutionsPanel() {
                       <td style={s.td}>{r.filled_qty}</td>
                       <td style={s.td}>{fmt$(r.filled_avg_price)}</td>
                       <td style={s.td}>{r.filled_qty && r.filled_avg_price ? fmt$(r.filled_qty * r.filled_avg_price) : '—'}</td>
+                      <td style={{ ...s.td, fontWeight: 600, color: r.realized_pnl == null ? C.muted : r.realized_pnl >= 0 ? C.green : C.red }}
+                        title={r.pnl_basis === 'opening' ? 'Opening/adding — a buy realizes nothing, it only moves the cost basis'
+                          : r.pnl_basis === 'incomplete_history' ? 'Cost basis unknown: this symbol has fills older than the retrievable order history'
+                            : r.pnl_basis === 'realized' ? 'Realized against FIFO cost basis' : ''}>
+                        {r.pnl_basis === 'incomplete_history'
+                          ? <span style={{ color: C.yellow }}>n/a</span>
+                          : r.realized_pnl == null
+                            ? '—'
+                            : <>{fmt$(r.realized_pnl)}{r.realized_pct != null &&
+                              <span style={{ color: C.muted, fontWeight: 400, fontSize: 10 }}> ({r.realized_pct >= 0 ? '+' : ''}{r.realized_pct.toFixed(2)}%)</span>}</>}
+                      </td>
                       <td style={{ ...s.td, color: C.muted, fontSize: 10 }}>{(r.order_type ?? '—') + (r.time_in_force ? ' · ' + r.time_in_force : '')}</td>
                       <td style={{ ...s.td, color: C.muted }}>{r.limit_price != null ? fmt$(r.limit_price) : r.stop_price != null ? 'stop ' + fmt$(r.stop_price) : '—'}</td>
                       <td style={{ ...s.td }}><span style={{

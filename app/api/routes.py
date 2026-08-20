@@ -406,16 +406,44 @@ async def get_trade_history(limit: int = 100, status: str = ""):
 async def get_executions(limit: int = 100, status: str = "all"):
     """Execution-level order blotter from Alpaca — the source of truth for what ACTUALLY traded,
     including weekly rebalance resizings that never create a DB Trade row (so they don't appear in
-    /trades, which is a position-lifecycle view). Newest-first. Degrades to empty if Alpaca is down."""
+    /trades, which is a position-lifecycle view). Newest-first. Degrades to empty if Alpaca is down.
+
+    Each row carries `realized_pnl` on a FIFO cost basis. That basis is replayed from the
+    FULL order history, not from the returned page: a symbol's opening buys are routinely older than
+    any page the UI asks for, so computing this client-side (or from `limit` rows) would produce a
+    confidently wrong number for exactly the positions held longest. The replay is validated against
+    live broker positions per symbol — a symbol that disagrees is reported `incomplete_history`
+    rather than guessed at. See app/analytics/execution_pnl.py."""
+    n = min(max(int(limit), 1), 500)
     try:
         orders = await asyncio.wait_for(
-            asyncio.to_thread(_alpaca().get_orders, min(max(int(limit), 1), 500), status),
+            asyncio.to_thread(_alpaca().get_orders, n, status),
             timeout=6.0,
         )
-        return {"count": len(orders), "executions": orders}
     except Exception as exc:
         logger.warning("Executions fetch failed (returning empty): %s", exc)
         return {"count": 0, "executions": [], "error": "alpaca_unavailable"}
+
+    # P&L is additive: if the basis replay fails, still serve the blotter (without P&L) rather
+    # than 500-ing the whole tab.
+    try:
+        from app.analytics.execution_pnl import attach_realized_pnl
+
+        history, positions = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(_alpaca().get_all_orders),
+                asyncio.to_thread(_alpaca().get_positions),
+            ),
+            timeout=12.0,
+        )
+        pos_map = {p["symbol"]: float(p.get("qty") or 0) for p in (positions or [])}
+        orders = attach_realized_pnl(orders, history, pos_map)
+        realized = sum(o["realized_pnl"] for o in orders if o.get("realized_pnl") is not None)
+        return {"count": len(orders), "executions": orders,
+                "realized_pnl_window": realized, "pnl_method": "fifo"}
+    except Exception as exc:
+        logger.warning("Execution P&L unavailable (serving blotter without it): %s", exc)
+        return {"count": len(orders), "executions": orders, "pnl_error": "pnl_unavailable"}
 
 
 # ─── Agent decisions ──────────────────────────────────────────────────────────

@@ -4,6 +4,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-08-20 — Execution blotter gets per-fill realized P&L on a FIFO basis (measured against the live account, not assumed). Moving-average was proposed first and disproven.
+
+**Context**: the Executions tab is the only view of rebalance resizings — they never create a DB Trade row, so `/trades` cannot show them — but it had no P&L column. A fill on a scaled position has no P&L of its own until you know the basis it was sold against, which is only recoverable by replaying the symbol's whole fill history.
+
+**Decision**: compute realized P&L server-side per fill using **FIFO lot matching**, replayed from the FULL order history and validated against live broker positions. Buys report `None` (a buy realizes nothing; it only moves the basis). New module `app/analytics/execution_pnl.py`; `AlpacaClient.get_all_orders()` pages the full history so the basis stays correct as the book grows past the 500-order single-call cap.
+
+**Rationale — the first recommendation was wrong and measurement caught it.** Moving-average cost was proposed and chosen on the stated grounds that it matches Alpaca's `avg_entry_price`, keeping the Executions and Positions tabs consistent. Checking that claim against the live account disproved it:
+
+- **FIFO reproduces Alpaca's `avg_entry_price` EXACTLY** — 0.0000 difference across all 8 open positions. Moving-average differs on every scaled position (DBC −0.2478/sh, SPY +0.8482/sh, …).
+- **Only FIFO reconciles to account equity.** Both conventions satisfy `realized = (sells − buys) + remaining_basis`; on the same 310 fills that yields FIFO **$978.02** vs moving-average **$908.67**. The account's own `equity − deposits − unrealized − fees` implies **$977.93** — FIFO to within 9 cents of rounding. The $69 difference is purely where each convention draws the realized/unrealized line, not an error in either.
+- Independent confirmation that the fill set is complete: the pure cash-flow identity `equity = deposits + (sells − buys) + fees + market_value` reconciles to **$0.09** across 310 fills. Account funding was a single $100,000 JNLC on 2025-10-01; fees total −$3.49; there are no dividends or interest.
+- FIFO is also the US tax-reporting standard, so the number means something outside this UI.
+
+**Two silent traps found against live data** (both would have produced wrong numbers, not errors):
+1. **Partially-filled CANCELED orders still trade.** `MP` had `buy qty 152 → filled 117, status=canceled`. Selecting fills by `status == "filled"` — the obvious predicate, and what the tab's own KPIs still use — drops 117 real shares and corrupts every later basis for that symbol. The correct predicate is `filled_qty > 0`.
+2. **A FIFO replay that ignores shorts strands lots and overstates P&L** (read $1,009.85 instead of $978.02). The book has a `quality_short` selector in its history, so short handling is not optional.
+
+**Consequences**: the blotter now answers "what did this fill make?" with a number that ties to the account. `Trade.pnl` in the DB is NOT that number and the two should not be reconciled — a spot check found the DB claiming +$337.26 on TNDM where the actual fills (3 buys of 84 averaging 19.696667, sold 252 @ 19.69) realized **−$1.68**; the DB figure is a position-lifecycle approximation that does not reflect scaled entries. The replay is self-validating: any symbol whose replay disagrees with the broker is rendered `n/a` rather than guessed, so history growing beyond the retrievable window degrades visibly instead of silently. The KPI is explicitly labelled "(shown)" because the visible 200-row window and all-time totals differ materially (−$1,259.88 vs +$978.02). Not a WF/CPCV pipeline change, so `PIPELINE_ARCHITECTURE.md` is intentionally untouched.
+
+---
+
 ## 2026-08-05 — Unattended-operation hardening: repaired a latent DBC book break that would have frozen new risk, and added a daily liveness beacon because the on-box watchdog dies with its host.
 
 **Context**: a Windows-Update reboot at 00:29 ET took the whole stack down until it was restarted manually at 16:31 — **16 hours, the entire 2026-08-05 session, with zero alerts emitted**. Reviewing the box ahead of a 2-week unattended window (2026-08-06 → ~08-20) surfaced that this was not a one-off and that two independent latent faults would have compounded it.
