@@ -512,29 +512,82 @@ class AlpacaClient:
                        "closed": QueryOrderStatus.CLOSED}.get(str(status).lower(), QueryOrderStatus.ALL)
             req = GetOrdersRequest(status=_status, limit=min(max(int(limit), 1), 500), direction="desc")
             orders = self.trading_client.get_orders(filter=req) or []
-            out: List[Dict[str, Any]] = []
-            for o in orders:
-                out.append({
-                    "order_id": str(o.id),
-                    "symbol": o.symbol,
-                    "side": str(o.side).rsplit(".", 1)[-1].lower(),          # OrderSide.BUY -> buy
-                    "qty": float(o.qty) if o.qty else 0,                     # keep fractional (blotter = truth)
-                    "filled_qty": float(o.filled_qty) if o.filled_qty else 0,
-                    "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
-                    "status": str(o.status).rsplit(".", 1)[-1].lower(),      # OrderStatus.FILLED -> filled
-                    "order_type": str(getattr(o, "order_type", "") or "").rsplit(".", 1)[-1].lower() or None,
-                    "time_in_force": str(getattr(o, "time_in_force", "") or "").rsplit(".", 1)[-1].upper() or None,
-                    "limit_price": float(o.limit_price) if getattr(o, "limit_price", None) else None,
-                    "stop_price": float(o.stop_price) if getattr(o, "stop_price", None) else None,
-                    "commission": float(o.commission) if getattr(o, "commission", None) else None,
-                    "client_order_id": getattr(o, "client_order_id", None),   # → strategy/sleeve source
-                    "submitted_at": o.submitted_at.isoformat() if getattr(o, "submitted_at", None) else None,
-                    "filled_at": o.filled_at.isoformat() if getattr(o, "filled_at", None) else None,
-                })
-            return out
+            return self._orders_to_dicts(orders)
         except Exception as e:  # noqa: BLE001 — dashboard read must degrade gracefully
             logger.error(f"Error fetching orders: {e}")
             return []
+
+    @staticmethod
+    def _orders_to_dicts(orders) -> List[Dict[str, Any]]:
+        """Broker Order objects -> the blotter dict shape. Shared by get_orders/get_all_orders so
+        the paged history and the single-page read can never drift apart."""
+        out: List[Dict[str, Any]] = []
+        for o in orders:
+            out.append({
+                "order_id": str(o.id),
+                "symbol": o.symbol,
+                "side": str(o.side).rsplit(".", 1)[-1].lower(),          # OrderSide.BUY -> buy
+                "qty": float(o.qty) if o.qty else 0,                     # keep fractional (blotter = truth)
+                "filled_qty": float(o.filled_qty) if o.filled_qty else 0,
+                "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+                "status": str(o.status).rsplit(".", 1)[-1].lower(),      # OrderStatus.FILLED -> filled
+                "order_type": str(getattr(o, "order_type", "") or "").rsplit(".", 1)[-1].lower() or None,
+                "time_in_force": str(getattr(o, "time_in_force", "") or "").rsplit(".", 1)[-1].upper() or None,
+                "limit_price": float(o.limit_price) if getattr(o, "limit_price", None) else None,
+                "stop_price": float(o.stop_price) if getattr(o, "stop_price", None) else None,
+                "commission": float(o.commission) if getattr(o, "commission", None) else None,
+                "client_order_id": getattr(o, "client_order_id", None),   # → strategy/sleeve source
+                "submitted_at": o.submitted_at.isoformat() if getattr(o, "submitted_at", None) else None,
+                "filled_at": o.filled_at.isoformat() if getattr(o, "filled_at", None) else None,
+            })
+        return out
+
+    def get_all_orders(self, max_pages: int = 12, page_size: int = 500) -> List[Dict[str, Any]]:
+        """FULL retrievable order history, newest-first, by paging backwards on `until`.
+
+        Cost-basis replay needs every fill for a symbol, not a recent page: a single get_orders call
+        is capped at 500, and this book crosses that in a few months. Paging keeps the blotter's
+        realized P&L correct as history grows instead of silently losing the oldest buys. Bounded by
+        `max_pages` so a pathological account can't spin; the caller validates the replay against
+        broker positions anyway, so a truncated history degrades to "incomplete_history", not to a
+        wrong number."""
+        from datetime import datetime, timezone
+
+        seen: Dict[str, Dict[str, Any]] = {}
+        until = None
+        for _ in range(max_pages):
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus
+                req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=page_size,
+                                       direction="desc", until=until)
+                orders = self.trading_client.get_orders(filter=req) or []
+            except Exception as e:  # noqa: BLE001 — dashboard read must degrade gracefully
+                logger.error(f"Error paging orders: {e}")
+                break
+            if not orders:
+                break
+
+            page = self._orders_to_dicts(orders)
+            before = len(seen)
+            for o in page:
+                seen[o["order_id"]] = o
+            # No new ids -> the cursor stopped advancing; stop rather than loop on the same page.
+            if len(seen) == before:
+                break
+
+            stamps = [o["submitted_at"] for o in page if o.get("submitted_at")]
+            if len(page) < page_size or not stamps:
+                break
+            oldest = min(stamps)
+            try:
+                until = datetime.fromisoformat(oldest.replace("Z", "+00:00"))
+            except ValueError:
+                break
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+
+        return sorted(seen.values(), key=lambda o: o.get("submitted_at") or "", reverse=True)
 
     def get_bars(
         self,

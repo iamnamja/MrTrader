@@ -6,9 +6,19 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
-## ⚠️ UNATTENDED WINDOW: 2026-08-06 → ~2026-08-20 (owner away; UI via Tailscale only)
+## ✅ UNATTENDED WINDOW CLOSED (2026-08-06 → 2026-08-20) — owner back, stack survived intact
 
-Set up 2026-08-05. **If you are reading this cold during the window, check these first:**
+The daily liveness beacon fired **15/15 days including weekends, every one delivered, zero gaps and zero errors**. No reboot occurred (Windows Updates stayed paused), and the DBC repair held — the book reconciled MATCH throughout, so the Aug 10 cash-sleeve run that would have latched HALT_NEW_RISK never had a break to latch onto.
+
+**The two structural gaps below are NOT fixed and still apply to the next absence** — the update pause (through 2026-09-02) removed the likely *trigger*, not the *consequence*:
+
+- **There is still NO auto-start.** Postgres/Redis run in Docker Desktop, which starts only from the `HKCU` Run key on *interactive logon*. After any reboot — power cut included — the stack stays down until someone logs in and runs `.\serve.ps1`.
+- **Host death is still only detectable by the beacon's absence.** Setting `MRTRADER_SNITCH_URL` would give genuinely off-box detection; the plumbing already exists in `heartbeat.ping_snitch()`.
+- **`stop.ps1` does not stop `notify_watcher`** — it survives a restart and keeps running stale code. Restart it manually after deploying anything that touches notification rendering, or beacons render as raw JSON.
+
+<details><summary>Original operating notes from the window (kept for the next trip)</summary>
+
+**If you are reading this cold during an unattended window, check these first:**
 
 - **Daily liveness email arrives 07:45 ET, every day incl. weekends** (`daily_alive`). **Its ABSENCE is the alert** — the on-box dead-man watchdog dies with its host and cannot report its own death. No email ⇒ assume the host is down.
 - **Windows Updates are PAUSED through 2026-09-02** — this was the cause of the 2026-08-05 outage (reboot 00:29 → app down 16h, whole session missed, no alert). Do not un-pause during the window.
@@ -17,6 +27,8 @@ Set up 2026-08-05. **If you are reading this cold during the window, check these
 - **Outage exposure is missed trend rebalances, not runaway loss**: 0 resting broker orders, every trend position has `stop_price=None`. Nothing goes unenforced if the brain is down.
 
 Post-vacation follow-ups: real auto-start (Postgres/Redis as native services, no interactive logon needed) and set `MRTRADER_SNITCH_URL` for genuinely off-box dead-man detection (`heartbeat.ping_snitch()` plumbing already exists).
+
+</details>
 
 ## 🧭 NOW (2026-07-08): Compound-and-Harden ✅ COMPLETE through CH4 — CH0 baseline+scorecard, CH1 per-name gate (shadow), CH2 antifragile sizing (all 3 KILLED), CH3 regime diagnostic (parked strategies closed; crash governor kept), CH4 ranging-MR search **KILLED → 12-mo hunting MORATORIUM in effect (to 2027-07-08)**. Verdict: edge = trend+cash, operate it simply. **NOW: CH5** (live accrual; review 2027-07-08). IBKR R1 migration surface BUILT + cutover-hardened (inert). No live change in CH0–CH4.
 
