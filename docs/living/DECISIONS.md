@@ -4,6 +4,31 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-08-21 — "Unstable full suite" was concurrent pytest sessions, not a broken suite. Root cause documented; conftest now warns instead of degrading silently.
+
+**Context**: a local full-suite run produced 17 failures plus `KeyError: <WorkerController gw12>`, scattered across FastAPI `TestClient` tests on routes nobody had touched, and serial runs hung outright. It looked like a genuine regression or a flaky suite.
+
+**Root cause — operator error, with a confusing amplifier.** Long runs that exceeded the tool timeout were backgrounded and left alive, and new runs were started on top, so several full-suite sessions competed at once (alongside the live trading app and Docker). The chain from there:
+
+1. Contention starves the sessions, so normally-fast tests exceed `--timeout=120`.
+2. **pytest-timeout on Windows has no `SIGALRM`, so it uses the `thread` method — which HARD-KILLS the process.** This is by design, not a bug.
+3. xdist reports the killed worker as `node down: Not properly terminated` and **respawns replacements**, which is why worker ids climbed to `gw17` despite `-n 4` in `pytest.ini` (4 concurrent, 14 replacements — not 18 workers).
+4. Every test in flight on a killed worker reports `FAILED`, producing the scattered, unrelated-looking failures.
+
+**Proof the suite is healthy**: a single clean run with the live app still running = **4464 passed, 8 skipped, 0 failures, 0 node deaths, ~2m41s**. CI's 4 sharded runs were green throughout.
+
+**Correction to an earlier claim**: it was reported that the instability "reproduces on a clean tree with the changes stashed, so it is environmental." The conclusion (not caused by that PR) was right, but the reasoning was confounded — the baseline run itself overlapped a still-running background full-suite run, so it measured the same self-inflicted contention rather than a pre-existing condition.
+
+**Decision**: add a concurrent-session detector to `tests/conftest.py`. It **warns and never blocks** — running a single FILE alongside a full run is legitimate and useful, and conftest cannot tell the two scopes apart.
+
+Liveness is an **OS file lock, deliberately not a pid probe**: the kernel releases a lock when its owner dies, so a KILLED run — precisely the case here — cannot leave a stale entry that fires a false warning. Metadata lives in the FILENAME (`<pid>-<epoch>.lock`) so probing never reads a byte range another process holds locked. Registration is controller-only (`workerinput` absent), or each xdist worker would add a redundant lock.
+
+**A Windows-specific bug the empirical test caught**: the first implementation called `entry.unlink()` inside the `with open(...)` block. Windows refuses to delete a file while any handle is open, so the resulting `PermissionError` fell through to the "cannot open → assume live" branch and reported *exactly the stale entries it was meant to reclaim* as live sessions. The handle must be closed before unlinking. Verified against all three behaviours: live session warns, killed session does not and its lock is reclaimed, clean exit leaves the directory empty.
+
+**Consequences**: a confusing multi-minute degradation now announces itself in one line at startup. Nothing else changed — no timeout, worker-count, or isolation changes. `-n 4` in `pytest.ini` stays as-is; it is a deliberate Windows-OOM cap from #215. Practical guidance: run the full suite once (~3 min) and let it finish; do not start a second full run alongside it. No new lint debt (conftest E402 count unchanged at 10). Not a WF/CPCV pipeline change, so `PIPELINE_ARCHITECTURE.md` is intentionally untouched.
+
+---
+
 ## 2026-08-20 — Execution blotter gets per-fill realized P&L on a FIFO basis (measured against the live account, not assumed). Moving-average was proposed first and disproven.
 
 **Context**: the Executions tab is the only view of rebalance resizings — they never create a DB Trade row, so `/trades` cannot show them — but it had no P&L column. A fill on a scaled position has no P&L of its own until you know the basis it was sold against, which is only recoverable by replaying the symbol's whole fill history.

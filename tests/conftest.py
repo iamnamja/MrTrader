@@ -60,11 +60,142 @@ def _set_test_db_env(worker: str = "gw_main", *, force: bool = False) -> None:
 _set_test_db_env()  # import-time safety default (shared 'gw_main'); overridden below
 
 
+# ── Concurrent-session detector (2026-08-21) ─────────────────────────────────
+# Two pytest sessions running at once on this machine degrade in a way that looks
+# like a broken suite but isn't. Observed chain: sessions compete for CPU -> normally
+# fast tests exceed `--timeout=120` -> pytest-timeout on Windows has no SIGALRM so it
+# uses the `thread` method, which HARD-KILLS the process -> xdist reports
+# "node down: Not properly terminated" and respawns (worker ids climb past -n 4, e.g.
+# gw17) -> every test in flight on a killed worker reports FAILED, scattered across
+# files nobody touched. Diagnosing that from the symptoms costs far more than this
+# warning does.
+#
+# WARN, never block: running a single file while a full run is in progress is fine and
+# useful. Only two full suites competing is the problem, and we cannot tell the scopes
+# apart from here — so we state the facts and let the reader judge.
+#
+# Liveness is an OS file lock, deliberately NOT a pid probe: a lock is released by the
+# kernel when its owner dies, so a KILLED run (precisely the case here) cannot leave a
+# stale entry that produces a false warning. Metadata lives in the FILENAME so probing
+# never has to read a byte range another process holds locked.
+_SESSION_DIR = _Path(_tempfile.gettempdir()) / "mrtrader_pytest_sessions"
+_session_lock_fh = None          # module-global: keep the handle alive for the session
+_session_lock_path = None
+
+
+def _lock_file(fh) -> bool:
+    """Try to take an exclusive non-blocking lock. True = acquired (owner is gone)."""
+    try:
+        if _os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _live_sessions() -> list[str]:
+    """Filenames of other sessions still alive, cleaning up any stale ones."""
+    live: list[str] = []
+    for entry in _SESSION_DIR.glob("*.lock"):
+        if _session_lock_path and entry == _session_lock_path:
+            continue
+        try:
+            fh = open(entry, "a+b")
+        except OSError:
+            # Cannot even open it — most likely held by a live session, so count it
+            # rather than silently ignoring it.
+            if entry.exists():
+                live.append(entry.stem)
+            continue
+        try:
+            acquired = _lock_file(fh)
+        finally:
+            # MUST close before unlinking: Windows refuses to delete a file while any
+            # handle is open, and unlinking inside a `with` block therefore raises
+            # PermissionError on exactly the stale entries we are trying to reclaim.
+            fh.close()
+        if acquired:
+            try:
+                entry.unlink(missing_ok=True)        # owner died -> stale, reclaim
+            except OSError:
+                pass                                 # another prober won the race
+        else:
+            live.append(entry.stem)                  # still held -> genuinely running
+    return live
+
+
+def _register_session() -> list[str]:
+    global _session_lock_fh, _session_lock_path
+    import time as _t                    # local: keeps the module import block lint-clean
+    _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    others = _live_sessions()
+    _session_lock_path = _SESSION_DIR / f"{_os.getpid()}-{int(_t.time())}.lock"
+    fh = open(_session_lock_path, "a+b")
+    if _lock_file(fh):
+        _session_lock_fh = fh        # hold for the whole session
+    else:                            # cannot lock our own file: give up quietly
+        fh.close()
+    return others
+
+
+def _release_session() -> None:
+    global _session_lock_fh
+    try:
+        if _session_lock_fh is not None:
+            try:
+                if _os.name == "nt":
+                    import msvcrt
+                    _session_lock_fh.seek(0)
+                    msvcrt.locking(_session_lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(_session_lock_fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            _session_lock_fh.close()
+            _session_lock_fh = None
+        if _session_lock_path:
+            _session_lock_path.unlink(missing_ok=True)
+    except Exception:
+        pass                         # cleanup must never fail a run
+
+
 def pytest_configure(config):
     # Per-worker isolation: workerinput is set by xdist in each worker before
     # collection; force per-worker paths so no two workers share a SQLite file.
     worker = getattr(config, "workerinput", {}).get("workerid", "gw_main")
     _set_test_db_env(worker, force=True)
+
+    # Controller only — xdist workers would each register a redundant lock.
+    if hasattr(config, "workerinput"):
+        return
+    try:
+        others = _register_session()
+    except Exception:
+        return                       # a diagnostic must never break the run
+    if not others:
+        return
+    import sys as _sys
+    _sys.stderr.write(
+        "\n" + "=" * 78 + "\n"
+        f"  WARNING: {len(others)} other pytest session(s) already running on this machine\n"
+        f"           (pid-timestamp: {', '.join(others)})\n\n"
+        "  Two FULL-suite runs at once starve each other, trip the 120s per-test\n"
+        "  timeout, and get their xdist workers killed — surfacing as unrelated\n"
+        "  FAILEDs and 'node down: Not properly terminated'. Results will be\n"
+        "  unreliable. Running a single FILE alongside a full run is fine.\n"
+        + "=" * 78 + "\n\n"
+    )
+    _sys.stderr.flush()
+
+
+def pytest_unconfigure(config):
+    if not hasattr(config, "workerinput"):
+        _release_session()
 
 
 from datetime import datetime
