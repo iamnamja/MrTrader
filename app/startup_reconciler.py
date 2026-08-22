@@ -780,9 +780,49 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
             if status_str == "filled" and filled_qty > 0 and filled_price:
                 filled_price = float(filled_price)
                 intended_price = float(trade.entry_price or filled_price)
+
+                # A sleeve (trend/cash) row is NOT an entry ticket: its `quantity` is the TARGET
+                # position and its alpaca_order_id is whichever incremental rebalance order last
+                # moved toward that target. Adopting filled_qty here would write the DELTA as the
+                # position — e.g. DBC target 228 whose attached order is a SELL of 298 would be
+                # recorded as 298. Only a swing/PEAD entry row's fill IS its position.
+                _sleeve = str(getattr(trade, "trade_type", "") or "").lower()
+                _is_sleeve_row = _sleeve in ("trend", "cash")
+
+                # One ACTIVE row per symbol+sleeve. Promoting beside an existing ACTIVE row would
+                # DOUBLE-COUNT the symbol in db_expected_positions and manufacture a reconciliation
+                # break far larger than the drift it was meant to heal.
+                _existing_active = (
+                    db_session.query(Trade)
+                    .filter(Trade.symbol == trade.symbol,
+                            Trade.status == "ACTIVE",
+                            Trade.trade_type == trade.trade_type,
+                            Trade.id != trade.id)
+                    .first()
+                )
+                if _existing_active is not None:
+                    # Fold the target into the row that already represents this position, and
+                    # retire the pending ticket. This is what heals accumulated drift: the stale
+                    # ACTIVE row is corrected to the newest target instead of lingering.
+                    _new_qty = trade.quantity if _is_sleeve_row else filled_qty
+                    logger.info(
+                        "PENDING_FILL Trade#%d %s folded into ACTIVE Trade#%d (qty %s -> %s)",
+                        trade.id, trade.symbol, _existing_active.id,
+                        _existing_active.quantity, _new_qty,
+                    )
+                    _existing_active.quantity = _new_qty
+                    _existing_active.entry_price = filled_price
+                    trade.status = "CLOSED"
+                    trade.status_reason = (
+                        f"superseded: folded into ACTIVE Trade#{_existing_active.id}"
+                    )
+                    trade.closed_at = datetime.utcnow()
+                    continue
+
                 trade.status = "ACTIVE"
                 trade.entry_price = filled_price
-                trade.quantity = filled_qty
+                if not _is_sleeve_row:
+                    trade.quantity = filled_qty
                 trade.highest_price = filled_price
                 # Record the fill in the Order table
                 db_order = Order(
