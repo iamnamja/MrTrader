@@ -8,6 +8,7 @@
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+. (Join-Path $root "_lib.ps1")
 
 # --- Resolve the venv interpreter UP FRONT and preflight uvicorn ------------------
 # This script must not depend on the venv being ACTIVATED. The VS Code Python extension
@@ -16,8 +17,8 @@ $root = $PSScriptRoot
 # AFTER the frontend build and AFTER the watchdog had been started (which `finally` then
 # tore straight back down). Checking here fails in one second with an actionable message
 # instead of ~10 seconds in with a half-started stack.
-$pyExe = Join-Path $root "venv\Scripts\python.exe"
-$useVenv = Test-Path $pyExe
+$pyExe = Get-MrtPython -Root $root
+$useVenv = [bool]$pyExe
 if ($useVenv) {
     # try/catch AND exit-code check: under $ErrorActionPreference='Stop', PowerShell 5.1 turns a
     # native command's STDERR into a terminating error, so a missing module throws a RemoteException
@@ -36,8 +37,9 @@ if ($useVenv) {
         exit 1
     }
 } else {
-    Write-Host "WARNING: venv not found at $pyExe - falling back to whatever is on PATH." -ForegroundColor Yellow
-    Write-Host "         The dead-man watchdog will NOT start without the venv." -ForegroundColor Yellow
+    Write-Host "WARNING: venv not found at $(Join-Path $root 'venv\Scripts\python.exe')" -ForegroundColor Yellow
+    Write-Host "         Falling back to whatever is on PATH. The dead-man watchdog and" -ForegroundColor Yellow
+    Write-Host "         notify_watcher will NOT start without the venv." -ForegroundColor Yellow
     if (-not (Get-Command uvicorn -ErrorAction SilentlyContinue)) {
         Write-Host "uvicorn not found on PATH either - cannot start the server." -ForegroundColor Red
         Write-Host "Fix: create the venv, or activate it before running this script." -ForegroundColor Yellow
@@ -100,6 +102,18 @@ if ($useVenv) {
     Write-Host "    WARNING: venv python not found ($pyExe) - dead-man watchdog NOT started." -ForegroundColor Yellow
     Write-Host "    Start it manually: `$env:PYTHONPATH='.'; venv\Scripts\python scripts\dead_man_watchdog.py" -ForegroundColor Yellow
 }
+
+# --- Start the notification drainer -------------------------------------------------
+# Nothing used to start this, so it survived stop.ps1 -> serve.ps1 cycles only by accident:
+# stop.ps1 never killed it either. Once killed, nothing brought it back, and the daily
+# liveness beacon would enqueue mail that was never sent — a silent failure of the very
+# thing meant to detect silence. Idempotent, so re-running serve.ps1 is safe.
+#
+# Deliberately NOT stopped in the `finally` below (unlike the dead-man watchdog): it owns
+# no trading authority, draining a queue while the brain is down is harmless, and stopping
+# it is stop.ps1's job. Ctrl+C on this window therefore leaves mail delivery working.
+Write-Host "==> Starting notification watcher..." -ForegroundColor Cyan
+Start-MrtNotifyWatcher -Root $root -PyExe $pyExe
 
 Write-Host "==> Starting API server on http://0.0.0.0:8000 ..." -ForegroundColor Cyan
 # --timeout-graceful-shutdown bounds uvicorn's wait for in-flight work on Ctrl+C;
