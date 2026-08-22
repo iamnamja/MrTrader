@@ -486,13 +486,21 @@ class AlpacaClient:
         """Get order status"""
         try:
             order = self.trading_client.get_order_by_id(order_id)
+            # NORMALIZE status/side to bare lowercase strings, exactly as get_orders does.
+            # Returning the raw enum leaked "OrderStatus.FILLED" to callers that all do
+            # `str(status).lower()` and compare against "filled"/"new"/... — a comparison that
+            # can never be true. That silently disabled THREE things at once: PENDING_FILL rows
+            # never promoted to ACTIVE (startup_reconciler), the EOD sweep never cancelled stale
+            # working orders (portfolio_manager), and the Trader's fill branch never fired.
+            # Callers already apply str().lower(), which is a no-op on an already-bare string,
+            # so normalizing here is safe for every existing consumer.
             return {
                 "order_id": order.id,
                 "symbol": order.symbol,
                 "qty": int(float(order.qty)),
                 "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
-                "side": str(order.side),
-                "status": order.status,
+                "side": str(order.side).rsplit(".", 1)[-1].lower(),        # OrderSide.BUY -> buy
+                "status": str(order.status).rsplit(".", 1)[-1].lower(),    # OrderStatus.FILLED -> filled
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
             }
         except Exception as e:
