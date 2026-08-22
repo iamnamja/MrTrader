@@ -60,11 +60,13 @@ def main() -> int:
     # Load the trained regime model
     import pickle
     from app.ml.regime_model import MODEL_DIR
-    candidates = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
-    if not candidates:
+    # NUMERIC latest — a lexical sort backfills with v9 while v40 exists, which would write
+    # scores from a stale model into the historical record. See app.ml.model_versioning.
+    from app.ml.model_versioning import latest_versioned_file
+    model_path = latest_versioned_file(MODEL_DIR, "regime_model")
+    if model_path is None:
         logger.error("No trained regime model found — run train_regime_model.py first")
         return 1
-    model_path = candidates[-1]
     with open(model_path, "rb") as f:
         payload = pickle.load(f)
     xgb_model = payload["xgb_model"]

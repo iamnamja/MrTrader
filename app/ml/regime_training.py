@@ -309,8 +309,10 @@ class RegimeModelTrainer:
         )
 
         if version is None:
-            existing = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
-            version = len(existing) + 1
+            # max+1, not len+1: counting collides (and silently overwrites) the moment any
+            # version is deleted or archived. See app.ml.model_versioning.
+            from app.ml.model_versioning import next_version
+            version = next_version(MODEL_DIR, "regime_model")
 
         model_path = MODEL_DIR / f"regime_model_v{version}.pkl"
         xgb_model, temperature = self.train_final(df)

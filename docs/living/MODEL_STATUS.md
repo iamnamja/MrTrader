@@ -147,11 +147,37 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 
 ## Active Models (Paper Trading)
 
+> **Reconciled against the DB 2026-08-22.** Verified from `ModelVersion` (`status='ACTIVE'`)
+> and, for regime, from the artifacts + `regime_model_versions`. Two corrections: swing was
+> listed as v224 but the ACTIVE row is **v223** (v224–v229 are all `RETIRED` — trained, never
+> promoted), and regime was listed as v5 but is now **v40**. See the regime note below: the
+> loader was picking v9 for six weeks, which is why the recorded version had drifted so far.
+
 | Model | Version | Status | Last WF Sharpe | Last CPCV Result | Notes |
 |---|---|---|---|---|---|
-| swing | v224 | ⚠️ UNVERIFIABLE | INVALID (in-sample) | Cannot run — trained_through=None | Saved 2026-05-29, predates trained_through feature (PR #311, 2026-05-30). Retrain required. |
-| intraday_meta | v63 | ⚠️ UNVERIFIABLE | **INVALID (in-sample memorization)** | +5.143 STRUCK FROM RECORD | Saved 2026-05-22. +5.14 was scored on its own training data — see below. Retrain required. |
-| regime | v5 | ACTIVE | — | — | Regime classifier; AUC gate separate |
+| swing | **v223** | ⚠️ UNVERIFIABLE | INVALID (in-sample) | Cannot run — trained_through=None | DB `ACTIVE`. Saved 2026-05-27, predates trained_through (PR #311, 2026-05-30). v224–v229 exist but are `RETIRED`. Retrain required. **Dormant** — live book is trend + cash. |
+| intraday | v63 | ⚠️ UNVERIFIABLE | **INVALID (in-sample memorization)** | +5.143 STRUCK FROM RECORD | DB `ACTIVE`. Saved 2026-05-22. +5.14 was scored on its own training data — see below. v64/v65 `RETIRED`. **Dormant** — no intraday sleeve live. |
+| regime | **v40** | ACTIVE | — | log_loss/macro-F1 gate (not Sharpe) | Trained 2026-08-21. File-based (`regime_model_v*.pkl` + `regime_model_versions`), NOT in `ModelVersion`. Carries the live book's sizing. |
+| portfolio_selector | v4 | ACTIVE | — | — | DB `ACTIVE`; present for completeness |
+
+> ### ⚠️ 2026-08-22 — regime loader was pinned to v9 for six weeks (FIXED)
+>
+> `sorted(MODEL_DIR.glob("regime_model_v*.pkl"))[-1]` sorts **lexically**, so once v10 landed
+> (2026-07-10) the "latest" file was `regime_model_v9.pkl` — `"v9" > "v40"` as text. The live
+> scorer therefore ran on weights trained through **2026-07-02** while v10–v40 were trained and
+> silently ignored. Nothing errored.
+>
+> Second effect, same root cause: the portfolio manager's retrain-interval guard `stat()`'d the
+> same wrongly-chosen file. v9's mtime was always older than `REGIME_RETRAIN_INTERVAL_DAYS=7`,
+> so the "model is fresh, skip" branch never fired and the regime model retrained **daily**
+> instead of weekly — the cadence `retrain_config` explicitly argues against ("daily retraining
+> adds noise without benefit"). The daily `trained_at` stamps in `regime_model_versions`
+> (8/17, 8/18, 8/19, 8/20, 8/21) are the fingerprint.
+>
+> Fixed by `app/ml/model_versioning.py` (numeric parse, max-based) at all five call sites.
+> **Live effect: the regime scorer now loads v40 instead of v9, which changes position sizing
+> weights.** Features were always current — only the trained weights were stale — so this is a
+> weights refresh, not a switch from frozen to live inputs.
 
 > ## 🔴 CRITICAL (2026-05-31): Both ML models are UNVERIFIABLE; prior results are in-sample
 >
