@@ -107,6 +107,7 @@ Trigger → doc to update (in the same PR):
 ### Notifications
 - Use `notifier.enqueue("phase_complete", {...})` to email kimminjae@gmail.com on phase completion
 - `notify_watcher.py` must be running to drain the queue — `.\start.ps1` / `.\serve.ps1` start it and `.\stop.ps1` stops it (the app's own lifespan starts it too). Enqueued mail is NOT sent while it is down.
+- Whichever starter wins the singleton logs to its own file: app → `logs/notify_watcher.log`, launcher → `logs/notify_watcher.launcher.log`. They must NOT share one file — on Windows a redirect holds a write handle for the child's lifetime, so the loser fails with `[Errno 13] Permission denied`. Check both when tracing a missing email.
 
 ### Local service lifecycle (Windows)
 - `.\serve.ps1` (production-style) / `.\start.ps1` (dev, hot-reload) / `.\stop.ps1` — shared helpers in `_lib.ps1`

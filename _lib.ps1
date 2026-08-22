@@ -56,9 +56,14 @@ function Start-MrtNotifyWatcher {
         Guarded by a running-check rather than leaning on the script's own singleton lock,
         so a redundant launch cannot disturb the live watcher's log.
 
-        Appends rather than truncates (hence the cmd.exe wrapper — Start-Process's
-        -RedirectStandardOutput always truncates), matching main.py's open(log, "a") so a
-        restart does not wipe the send history. #>
+        Logs to its OWN file (notify_watcher.launcher.log), NOT the app's notify_watcher.log.
+        Sharing one file does not work on Windows: a redirect holds a write handle for the
+        child's lifetime, so while a launcher-started watcher was alive the app's own
+        open(log, "a") failed with "[Errno 13] Permission denied" — destroying exactly the
+        fallback this function exists to provide. Separate files also make it obvious after
+        the fact WHICH starter won. This file is truncated per launch (Start-Process cannot
+        append); the durable send history lives in the notifications DB's sent_at, and the
+        app's own log is untouched. #>
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         [string]$PyExe
@@ -77,16 +82,29 @@ function Start-MrtNotifyWatcher {
     $logDir = Join-Path $Root "logs"
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $script = Join-Path $Root "scripts\notify_watcher.py"
-    $logPath = Join-Path $logDir "notify_watcher.log"
+    $logPath = Join-Path $logDir "notify_watcher.launcher.log"
     try {
-        $cmdLine = '"{0}" "{1}" >> "{2}" 2>&1' -f $PyExe, $script, $logPath
-        [void](Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmdLine `
-            -WorkingDirectory $Root -PassThru -WindowStyle Hidden)
-        Start-Sleep -Milliseconds 700
-        if (Test-MrtNotifyWatcher) {
+        # Plain Start-Process, no cmd.exe wrapper: writing to our own file removes the need for
+        # shell append semantics, and with it a real quoting trap — passing @('/c', $line) as an
+        # ARRAY makes PowerShell re-quote the element so cmd mis-parses it and the command
+        # silently never runs (no process, no error, no log).
+        [void](Start-Process -FilePath $PyExe -ArgumentList $script `
+            -WorkingDirectory $Root -WindowStyle Hidden `
+            -RedirectStandardOutput $logPath `
+            -RedirectStandardError  (Join-Path $logDir "notify_watcher.launcher.err"))
+
+        # POLL rather than sleep a fixed amount: the interpreter has to import the app package
+        # and open SQLite before it registers, which routinely takes longer than a flat wait and
+        # produced a false "did not stay up" warning while the watcher was in fact coming up.
+        $up = $false
+        for ($i = 0; $i -lt 25; $i++) {
+            Start-Sleep -Milliseconds 200
+            if (Test-MrtNotifyWatcher) { $up = $true; break }
+        }
+        if ($up) {
             Write-Host "    notify_watcher started - drains the email queue (daily beacon, alerts)." -ForegroundColor Green
         } else {
-            Write-Host "    WARNING: notify_watcher did not stay up - see $logPath" -ForegroundColor Yellow
+            Write-Host "    WARNING: notify_watcher did not come up within 5s - see $logPath" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "    WARNING: could not start notify_watcher: $($_.Exception.Message)" -ForegroundColor Yellow
