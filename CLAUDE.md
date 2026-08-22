@@ -106,7 +106,11 @@ Trigger → doc to update (in the same PR):
 
 ### Notifications
 - Use `notifier.enqueue("phase_complete", {...})` to email kimminjae@gmail.com on phase completion
-- `notify_watcher.py` must be running to drain the queue
+- `notify_watcher.py` must be running to drain the queue — `.\start.ps1` / `.\serve.ps1` start it and `.\stop.ps1` stops it (the app's own lifespan starts it too). Enqueued mail is NOT sent while it is down.
+
+### Local service lifecycle (Windows)
+- `.\serve.ps1` (production-style) / `.\start.ps1` (dev, hot-reload) / `.\stop.ps1` — shared helpers in `_lib.ps1`
+- These resolve the venv **explicitly**; never rely on a bare `uvicorn`/`python` being on PATH, which only holds inside an activated shell (the VS Code terminal activates automatically, a plain PowerShell does not)
 
 ---
 

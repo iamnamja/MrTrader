@@ -2,6 +2,8 @@
 # Usage: .\start.ps1
 
 $ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
+. (Join-Path $root "_lib.ps1")
 
 Write-Host ""
 Write-Host "=== MrTrader Startup ===" -ForegroundColor Cyan
@@ -33,44 +35,43 @@ while ($attempts -lt 15) {
 Write-Host "      PostgreSQL ready." -ForegroundColor Green
 Write-Host "      Redis ready." -ForegroundColor Green
 
-# ── 3. Kill anything holding port 8000 ────────────────────────────────────────
-Write-Host "[3/4] Clearing port 8000..." -ForegroundColor Yellow
-$pids = (netstat -ano | Select-String ":8000.*LISTENING") -replace '.*\s+(\d+)$','$1'
-foreach ($p in $pids) {
-    if ($p -match '^\d+$') {
-        taskkill /PID $p /F 2>$null | Out-Null
-    }
+# ── 3. Kill anything holding ports 8000 / 3000 ────────────────────────────────
+Write-Host "[3/5] Clearing ports 8000 and 3000..." -ForegroundColor Yellow
+Stop-MrtPort -Port 8000
+Stop-MrtPort -Port 3000
+Write-Host "      Ports 8000 and 3000 are free." -ForegroundColor Green
+
+# ── 4. Notification watcher ───────────────────────────────────────────────────
+# Same drainer serve.ps1 starts; stop.ps1 stops it. Idempotent, so re-running is safe.
+# Without it, queued mail (including the daily liveness beacon) is never sent.
+Write-Host "[4/5] Starting notification watcher..." -ForegroundColor Yellow
+Start-MrtNotifyWatcher -Root $root
+
+# ── 5. Start backend + frontend in separate windows ───────────────────────────
+Write-Host "[5/5] Starting backend and frontend..." -ForegroundColor Yellow
+
+# Backend — new PowerShell window.
+# Invoke the venv interpreter EXPLICITLY instead of relying on Activate.ps1: the previous
+# form swallowed activation errors with `2>$null` and then called a bare `uvicorn`, so a
+# broken/renamed venv surfaced as "uvicorn is not recognized" in a window that had already
+# scrolled away — or, worse, silently ran on whatever interpreter PATH happened to offer.
+$pyExe = Get-MrtPython -Root $root
+if ($pyExe) {
+    $backendCmd = "cd '$root'; Write-Host 'Backend starting...' -ForegroundColor Cyan; " +
+                  "& '$pyExe' -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"
+} else {
+    Write-Host "      WARNING: venv not found - backend will use whatever is on PATH." -ForegroundColor Yellow
+    $backendCmd = "cd '$root'; Write-Host 'Backend starting (no venv!)...' -ForegroundColor Yellow; " +
+                  "uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"
 }
-Write-Host "      Port 8000 is free." -ForegroundColor Green
-
-# ── 3b. Kill anything holding port 3000 ───────────────────────────────────────
-Write-Host "      Clearing port 3000..." -ForegroundColor Yellow
-$pids3 = (netstat -ano | Select-String ":3000.*LISTENING") -replace '.*\s+(\d+)$','$1'
-foreach ($p in $pids3) {
-    if ($p -match '^\d+$') {
-        taskkill /PID $p /F 2>$null | Out-Null
-    }
-}
-Write-Host "      Port 3000 is free." -ForegroundColor Green
-
-# ── 4. Start backend + frontend in separate windows ───────────────────────────
-Write-Host "[4/4] Starting backend and frontend..." -ForegroundColor Yellow
-
-# Backend — new PowerShell window
-Start-Process powershell -ArgumentList @(
-    "-NoExit",
-    "-Command",
-    "cd 'C:\Projects\MrTrader'; .\.venv\Scripts\Activate.ps1 2>`$null; .\venv\Scripts\Activate.ps1 2>`$null; Write-Host 'Backend starting...' -ForegroundColor Cyan; uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"
-) -WindowStyle Normal
+Start-Process powershell -ArgumentList @("-NoExit", "-Command", $backendCmd) -WindowStyle Normal
 
 Start-Sleep 3
 
-# Frontend — new PowerShell window
-Start-Process powershell -ArgumentList @(
-    "-NoExit",
-    "-Command",
-    "cd 'C:\Projects\MrTrader\frontend'; Write-Host 'Frontend starting...' -ForegroundColor Cyan; npm run dev"
-) -WindowStyle Normal
+# Frontend — new PowerShell window ($root, not a hardcoded path, so a clone or a renamed
+# checkout still works)
+$frontendCmd = "cd '$(Join-Path $root 'frontend')'; Write-Host 'Frontend starting...' -ForegroundColor Cyan; npm run dev"
+Start-Process powershell -ArgumentList @("-NoExit", "-Command", $frontendCmd) -WindowStyle Normal
 
 Write-Host ""
 Write-Host "=== All systems starting ===" -ForegroundColor Cyan

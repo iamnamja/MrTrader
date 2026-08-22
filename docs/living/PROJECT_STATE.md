@@ -14,7 +14,7 @@ The daily liveness beacon fired **15/15 days including weekends, every one deliv
 
 - **There is still NO auto-start.** Postgres/Redis run in Docker Desktop, which starts only from the `HKCU` Run key on *interactive logon*. After any reboot — power cut included — the stack stays down until someone logs in and runs `.\serve.ps1`.
 - **Host death is still only detectable by the beacon's absence.** Setting `MRTRADER_SNITCH_URL` would give genuinely off-box detection; the plumbing already exists in `heartbeat.ping_snitch()`.
-- **`stop.ps1` does not stop `notify_watcher`** — it survives a restart and keeps running stale code. Restart it manually after deploying anything that touches notification rendering, or beacons render as raw JSON.
+- ~~**`stop.ps1` does not stop `notify_watcher`**~~ — **FIXED 2026-08-22.** `stop.ps1` now stops it (and the dead-man watchdog, which a killed `serve.ps1` window used to orphan), and `start.ps1`/`serve.ps1` start it. Shared helpers live in `_lib.ps1` so the three scripts cannot drift apart again. Note the app's own lifespan (`app/main.py` step 10) also starts it and terminates it on a CLEAN shutdown — the launcher start matters when the app does NOT come up, since the dead-man watchdog reports a dead brain by *enqueueing* mail and needs a live drainer to send it.
 
 <details><summary>Original operating notes from the window (kept for the next trip)</summary>
 
