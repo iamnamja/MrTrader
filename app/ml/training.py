@@ -3208,10 +3208,12 @@ class ModelTrainer:
             db.close()
             return (latest.version + 1) if latest else 1
         except Exception:
-            # DB not available — derive version from existing pkl files
+            # DB not available — derive version from existing pkl files. NUMERIC max, not a
+            # lexical sort: with swing_v223 present, sorted()[-1] is swing_v99, so this
+            # fallback would hand back 100 and overwrite a live artifact.
             from pathlib import Path as _P
-            files = sorted(_P(self.model_dir).glob(f"{model_name}_v*.pkl"))
-            return (int(files[-1].stem.split("_v")[-1]) + 1) if files else 1
+            from app.ml.model_versioning import next_version
+            return next_version(_P(self.model_dir), model_name)
 
     def _record_version(
         self, version: int, n_train: int, n_test: int,

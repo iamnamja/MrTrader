@@ -4569,9 +4569,14 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         from app.ml.retrain_config import REGIME_RETRAIN_INTERVAL_DAYS
         from app.ml.regime_training import MODEL_DIR, regime_gate
 
-        existing = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
-        if existing:
-            age_days = (time.time() - existing[-1].stat().st_mtime) / 86400.0
+        # NUMERIC latest: a lexical sort returned v9 once v10 existed, so this guard aged
+        # the WRONG file (v9, 2026-07-02). Its mtime was always older than the interval, the
+        # "model is fresh" branch never fired, and the regime model retrained DAILY instead
+        # of weekly — the cadence retrain_config explicitly argues against.
+        from app.ml.model_versioning import latest_versioned_file
+        newest = latest_versioned_file(MODEL_DIR, "regime_model")
+        if newest is not None:
+            age_days = (time.time() - newest.stat().st_mtime) / 86400.0
             if age_days < REGIME_RETRAIN_INTERVAL_DAYS:
                 self.logger.info(
                     "Regime model is %.1f days old (interval=%d) — skipping retrain",

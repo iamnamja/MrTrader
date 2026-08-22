@@ -54,11 +54,14 @@ class RegimeModel:
 
     def load(self, path: Optional[Path] = None) -> bool:
         if path is None:
-            candidates = sorted(MODEL_DIR.glob("regime_model_v*.pkl"))
-            if not candidates:
+            # NUMERIC, not lexical: sorted(glob(...))[-1] returns v9 once v10 exists
+            # ("v9" > "v40" as text), which silently pinned this scorer to a model trained
+            # through 2026-07-02 while 31 newer ones were ignored. See app.ml.model_versioning.
+            from app.ml.model_versioning import latest_versioned_file
+            path = latest_versioned_file(MODEL_DIR, "regime_model")
+            if path is None:
                 logger.warning("No regime model found in %s — will use legacy fallback", MODEL_DIR)
                 return False
-            path = candidates[-1]
 
         try:
             with open(path, "rb") as f:

@@ -1167,9 +1167,10 @@ class IntradayModelTrainer:
             finally:
                 db.close()
         except Exception:
+            # NUMERIC max, not a lexical sort — see app.ml.model_versioning.
             from pathlib import Path as _P
-            files = sorted(_P(self.model_dir).glob(f"{model_name}_v*.pkl"))
-            return (int(files[-1].stem.split("_v")[-1]) + 1) if files else 1
+            from app.ml.model_versioning import next_version
+            return next_version(_P(self.model_dir), model_name)
 
     @staticmethod
     def record_tier3_result(
