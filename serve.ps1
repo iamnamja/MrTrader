@@ -9,6 +9,42 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 
+# --- Resolve the venv interpreter UP FRONT and preflight uvicorn ------------------
+# This script must not depend on the venv being ACTIVATED. The VS Code Python extension
+# activates it automatically, so a bare `uvicorn` works there and nowhere else — running
+# .\serve.ps1 from a plain PowerShell window died with "uvicorn is not recognized" only
+# AFTER the frontend build and AFTER the watchdog had been started (which `finally` then
+# tore straight back down). Checking here fails in one second with an actionable message
+# instead of ~10 seconds in with a half-started stack.
+$pyExe = Join-Path $root "venv\Scripts\python.exe"
+$useVenv = Test-Path $pyExe
+if ($useVenv) {
+    # try/catch AND exit-code check: under $ErrorActionPreference='Stop', PowerShell 5.1 turns a
+    # native command's STDERR into a terminating error, so a missing module throws a RemoteException
+    # instead of just setting $LASTEXITCODE. Without the catch this preflight would die with a stack
+    # trace in precisely the case it exists to explain.
+    $uvicornOk = $false
+    try {
+        & $pyExe -m uvicorn --version 2>&1 | Out-Null
+        $uvicornOk = ($LASTEXITCODE -eq 0)
+    } catch {
+        $uvicornOk = $false
+    }
+    if (-not $uvicornOk) {
+        Write-Host "uvicorn is not installed in the venv ($pyExe)." -ForegroundColor Red
+        Write-Host "Fix: & '$pyExe' -m pip install -r requirements.txt" -ForegroundColor Yellow
+        exit 1
+    }
+} else {
+    Write-Host "WARNING: venv not found at $pyExe - falling back to whatever is on PATH." -ForegroundColor Yellow
+    Write-Host "         The dead-man watchdog will NOT start without the venv." -ForegroundColor Yellow
+    if (-not (Get-Command uvicorn -ErrorAction SilentlyContinue)) {
+        Write-Host "uvicorn not found on PATH either - cannot start the server." -ForegroundColor Red
+        Write-Host "Fix: create the venv, or activate it before running this script." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 Write-Host "==> Building frontend (production)..." -ForegroundColor Cyan
 Set-Location (Join-Path $root "frontend")
 npm run build
@@ -51,8 +87,7 @@ if ($pgReady) {
 # false stale-heartbeat alert ~10 min later. (NOTE: it catches a brain crash/hang, NOT total-machine
 # death — it runs on the same box; for power-loss detection use an off-box dead-man's-snitch.)
 $watchdog = $null
-$pyExe = Join-Path $root "venv\Scripts\python.exe"
-if (Test-Path $pyExe) {
+if ($useVenv) {
     Write-Host "==> Starting dead-man watchdog (alert-only, 120s startup grace)..." -ForegroundColor Cyan
     $env:PYTHONPATH = "."
     $watchdog = Start-Process -FilePath $pyExe `
@@ -70,7 +105,14 @@ Write-Host "==> Starting API server on http://0.0.0.0:8000 ..." -ForegroundColor
 # --timeout-graceful-shutdown bounds uvicorn's wait for in-flight work on Ctrl+C;
 # the in-process lifespan watchdog (app/main.py) is the hard backstop against hangs.
 try {
-    uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+    # Invoke through the venv interpreter EXPLICITLY (see the preflight above). `-m uvicorn`
+    # rather than venv\Scripts\uvicorn.exe keeps $pyExe as the single source of truth and still
+    # works if that console-script shim is missing or stale.
+    if ($useVenv) {
+        & $pyExe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+    } else {
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+    }
 }
 finally {
     if ($watchdog -and -not $watchdog.HasExited) {
