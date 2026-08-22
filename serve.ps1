@@ -47,6 +47,30 @@ if ($useVenv) {
     }
 }
 
+# --- Refuse to start if something already owns port 8000 --------------------------
+# Checked here, before ANY work, because uvicorn discovers a port clash far too late: it
+# runs the entire lifespan startup first — DB migrations, all three agents, the scheduler,
+# position reconciliation — and only then binds. A second .\serve.ps1 therefore boots a
+# COMPLETE second trading brain, reconciles positions, and shuts down again, leaving two
+# live orchestrators overlapping for a couple hundred milliseconds. Both own schedulers
+# that can fire, so that overlap is a real double-act hazard, not a cosmetic one.
+#
+# Deliberately refuses rather than killing the incumbent (which is what start.ps1's dev
+# flow does): silently terminating a running trading server is not something a
+# production-style launcher should decide on its own.
+if (Test-MrtPortInUse -Port 8000) {
+    Write-Host ""
+    Write-Host "Port 8000 is already in use - MrTrader looks like it is ALREADY RUNNING." -ForegroundColor Red
+    Write-Host "Refusing to start a second instance (two brains would both schedule and trade)." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Stop the running one first:   .\stop.ps1" -ForegroundColor Yellow
+    Write-Host "  Then start fresh:             .\serve.ps1" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Currently listening on :8000 -" -ForegroundColor Gray
+    netstat -ano | Select-String ":8000\s.*LISTENING" | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+    exit 1
+}
+
 Write-Host "==> Building frontend (production)..." -ForegroundColor Cyan
 Set-Location (Join-Path $root "frontend")
 npm run build

@@ -128,6 +128,20 @@ function Stop-MrtDeadManWatchdog {
     [void](Stop-MrtProcessByPattern -Pattern '*dead_man_watchdog*' -Label "dead-man watchdog")
 }
 
+function Test-MrtPortInUse {
+    <#  True when something is already LISTENING on $Port.
+
+        Callers must check this BEFORE starting anything. uvicorn runs the whole lifespan
+        startup — DB migrations, all three agents, the scheduler, position reconciliation —
+        and only THEN binds its socket, so a port clash is discovered far too late: the
+        second instance boots a complete trading brain, runs reconciliation, and shuts down
+        again. Two live brains for ~200ms is not a theoretical concern when both own
+        schedulers that can fire. #>
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $found = netstat -ano | Select-String ":$Port\s.*LISTENING"
+    return ($found.Count -gt 0)
+}
+
 function Stop-MrtPort {
     <#  Kill whatever is LISTENING on $Port (uvicorn on 8000, vite on 3000). #>
     param([Parameter(Mandatory = $true)][int]$Port)
