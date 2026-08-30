@@ -4,6 +4,24 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-08-30 — INCIDENT: the 08-22 PENDING_FILL "fold" untagged two sleeve rows and caused a double-buy (~11.5% of equity in unintended exposure). Position visibility now matches on selector OR trade_type.
+
+**What happened**: on 2026-08-24 the trend rebalance issued a FULL FRESH BUY on top of positions it already held — `DBC 228 + buy 214 = 442` (target 214) and `EEM 70 + buy 101 = 171` (target 101). At the time of discovery that was **$11,646 of unintended exposure, 11.5% of equity**. Monday's cash sleeve correctly refused to act (`reconcile:cash mode=enforce -> FAIL_CLOSED -> HOLD`), which stopped it spreading.
+
+**Cause — a regression introduced by the 2026-08-22 fix in this log.** `_current_trend_positions` selects the sleeve's holdings on `selector == 'trend'` **alone**. Two adopted rows (`#144` DBC, `#147` EEM) carried `trade_type='trend'` with a **blank selector** — the startup reconciler's *reactivate* branch reuses an old row and never re-tagged it (only the synthetic-create branch sets `selector`). Those symbols stayed visible anyway, because their `PENDING_FILL` rows — which `trend_sleeve` always tags `selector='trend'` — were still open.
+
+The 08-22 fold then **closed exactly those rows** and folded their target into the untagged ACTIVE row. That removed the last `selector='trend'` row for both symbols, so the sleeve saw `cur = 0`, and `delta = target - 0` became a full fresh buy. `_current_trend_positions`' own fail-closed comment warns about precisely this outcome ("an empty current book makes compute_trend_deltas issue a full fresh BUY for every name we already hold") — the fold created the condition it warns about.
+
+**Decision**:
+1. **Visibility matches `selector` OR `trade_type`** (`trend_sleeve._current_trend_positions`), so a row tagged by either write path is seen. It also WARNS when the two disagree, rather than silently depending on both being set.
+2. **The fold carries the sleeve tag**: when folding a pending row into an untagged ACTIVE row, `selector`/`trade_type` are copied across instead of being dropped.
+3. **The reactivate branch re-tags** via `classify_sleeve`, closing the source of untagged rows.
+4. **Data repaired** to broker truth (`DBC 442`, `EEM 171`) with `selector='trend'` — NOT to the 214/101 targets, because the DB must record what is actually held. Reconciliation returned MATCH and the sleeve now reports `DBC 442, EEM 171`, so the next rebalance computes a SELL of the excess through the normal gated path rather than another buy. Prior rows backed up to `logs/trade_rows_backup_20260830.json`.
+
+**Consequences**: the unwind runs through the strategy's own sizing and risk gates at the next Monday rebalance rather than by hand. **The broader lesson is that a "healing" reconciler write is a trading action**: the 08-22 fold looked purely clerical — it corrected a quantity and closed a duplicate — but by discarding a tag it changed what the strategy believed it owned, and the next rebalance acted on that belief with real orders. Reconciler changes touching sleeve rows must be evaluated for what the SLEEVES will read afterwards, not only for whether reconciliation returns MATCH. Tests pin the exact regression (a held position must never produce a full fresh buy; a row tagged either way must be visible). Not a WF/CPCV pipeline change, so `PIPELINE_ARCHITECTURE.md` is intentionally untouched.
+
+---
+
 ## 2026-08-21 — "Unstable full suite" was concurrent pytest sessions, not a broken suite. Root cause documented; conftest now warns instead of degrading silently.
 
 **Context**: a local full-suite run produced 17 failures plus `KeyError: <WorkerController gw12>`, scattered across FastAPI `TestClient` tests on routes nobody had touched, and serial runs hung outright. It looked like a genuine regression or a flaky suite.
