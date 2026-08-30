@@ -449,19 +449,36 @@ def _current_trend_positions(db, source) -> Dict[str, int]:
     """Symbols tagged selector='trend' in the DB, sized from ACTUAL broker shares
     (trust the broker for quantity = handles partial fills; trust DB for attribution).
     `source` is the venue-aware `VenueReader` (or any object exposing `.get_positions()`)."""
+    from sqlalchemy import or_
     from app.database.models import Trade
     # FAIL-CLOSED: distinguish 'genuinely flat' from 'could not determine'. If either the DB query
     # or the broker read fails we must NOT return {} — an empty current book makes compute_trend_deltas
     # issue a full fresh BUY for every name we already hold (a double-buy of the whole sleeve). Raise
     # so the caller blocks the rebalance (positions_unavailable) instead of over-trading.
     try:
+        # Match on selector OR trade_type. Keying on `selector` ALONE made a row tagged
+        # trade_type='trend' with a blank selector invisible here, so the sleeve believed it
+        # held nothing and issued a full fresh BUY on top of the real position — the exact
+        # double-buy the fail-closed note below warns about. It happened on 2026-08-24:
+        # DBC 228 -> 442 and EEM 70 -> 171, ~11.5% of equity in unintended exposure. Accepting
+        # either tag makes visibility robust to whichever field a given write path populated.
         rows = (
             db.query(Trade)
-            .filter(Trade.selector == "trend",
+            .filter(or_(Trade.selector == "trend", Trade.trade_type == "trend"),
                     Trade.status.in_(["ACTIVE", "PENDING_FILL"]))
             .all()
         )
         trend_syms = {r.symbol for r in rows}
+        # Surface disagreement rather than silently papering over it — a row tagged one way but
+        # not the other means some write path is not setting both, and the next such row could
+        # be missed by a different consumer.
+        for r in rows:
+            if (r.selector or "").strip() != (r.trade_type or "").strip():
+                log.warning(
+                    "trend: Trade#%s %s has mismatched tags (selector=%r trade_type=%r) — "
+                    "position visibility depends on both being set",
+                    r.id, r.symbol, r.selector, r.trade_type,
+                )
     except Exception as exc:
         log.warning("trend: DB position query failed: %s", exc)
         raise RuntimeError(f"trend current-positions DB query failed: {exc}") from exc

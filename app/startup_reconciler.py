@@ -812,6 +812,17 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                     )
                     _existing_active.quantity = _new_qty
                     _existing_active.entry_price = filled_price
+                    # CARRY THE SLEEVE TAG. `_current_trend_positions` selects on
+                    # selector=='trend', NOT trade_type — so folding a correctly tagged pending
+                    # row into an UNTAGGED adopted row (the reactivate path below leaves selector
+                    # blank) silently removes the symbol from the sleeve's view of what it holds.
+                    # It then computes cur=0 and issues a FULL FRESH BUY on top of the real
+                    # position. That is not hypothetical: it doubled DBC (228 -> 442) and EEM
+                    # (70 -> 171) on 2026-08-24, ~11.5% of equity in unintended exposure.
+                    if not (_existing_active.selector or "").strip():
+                        _existing_active.selector = trade.selector
+                    if not (_existing_active.trade_type or "").strip():
+                        _existing_active.trade_type = trade.trade_type
                     trade.status = "CLOSED"
                     trade.status_reason = (
                         f"superseded: folded into ACTIVE Trade#{_existing_active.id}"
@@ -997,6 +1008,17 @@ def reconcile(alpaca, db_session) -> Dict[str, Any]:
                 _dir = getattr(recent_trade, "direction", "BUY") or "BUY"
                 _partial = recompute_partial_pnl(db_session, recent_trade.id, _entry, _dir)
                 recent_trade.status = "ACTIVE"
+                # Re-tag the sleeve on reactivation. Unlike the synthetic-create branch below,
+                # this path reuses an old row and previously left `selector` at whatever it was —
+                # frequently blank. A blank selector makes the row invisible to
+                # `_current_trend_positions` (which selects on selector=='trend'), so the sleeve
+                # believes it holds nothing and re-buys the whole position.
+                _react_sleeve = classify_sleeve(symbol, db_session)
+                if _react_sleeve in ("trend", "cash"):
+                    if not (recent_trade.selector or "").strip():
+                        recent_trade.selector = _react_sleeve
+                    if not (recent_trade.trade_type or "").strip():
+                        recent_trade.trade_type = _react_sleeve
                 recent_trade.quantity = abs(qty)
                 recent_trade.exit_price = None
                 recent_trade.exit_price_source = None
