@@ -197,3 +197,50 @@ where there is no prior row to anchor on.
   current −1.77% (verdict WATCH) is contaminated by the 2026-08-24 double-buy.
 - Slippage drag of −0.70 bps/day is now measurable per sleeve — worth attacking, since against a
   ~3.3%/yr expected gross edge it consumes a large share.
+
+---
+
+## 12. Post-deploy findings (first live run, 2026-09-01 16:15)
+
+The recorder fired end-to-end and the trend series continued correctly from the backfill
+(`181.92 - 114.03 = 67.89`). Two issues surfaced that only a live run could expose.
+
+### 12a. `cash_prices=0` — the cash sleeve was skipped (FIXED)
+
+`_fetch_prices` is trend-specific and **fail-closes when SPY is absent** ("core symbol SPY
+missing/short"), so the separate cash-only call returned `None` and the sleeve logged
+`not marked (unpriced holdings) — P&L not written`.
+
+Fixed by fetching the trend universe and the held cash symbols in ONE call and splitting them at
+storage time. `prices` is still filtered to exactly the trend universe, so `compute_report`'s
+drift metric — which iterates every key of that column — remains untouched. Verified live:
+`prices=10 cash_prices=1`, and both sleeves now record.
+
+### 12b. ⚠️ Alpaca paper pays NO dividends — the cash sleeve is systematically understated
+
+The first cash row read `daily -$138.04`, which is impossible for a T-bill ETF on ~$49k. It was
+real: SGOV closed 100.69 -> 100.41, a monthly **ex-dividend** drop, and 493 x -$0.28 = -$138.04.
+The arithmetic is right; the economics are not, because no dividend is credited.
+
+| | |
+|---|---|
+| SGOV ex-div drops since 2026-06-15 | -0.27, -0.29, -0.28 = **-0.84/share** |
+| Price-only return (what paper shows) | **-0.119%** |
+| Total return (what a live account earns) | **+0.481%** |
+| Gap over ~2.5 months | **~0.60pp** (~$270 on the held size) |
+
+**Decision: record it faithfully, do NOT correct it.** Marking cash at total-return prices would
+make the sleeve series stop reconciling against the account's own NAV, and that reconciliation is
+the only thing that caught the three construction errors in §9. A scorecard that quietly disagrees
+with the broker is worth less than one visibly distorted in a known, quantified way.
+
+**Implications for Track A** — the live paper record understates the book:
+
+- The cash sleeve reads ~-3%/yr where live would be ~+4.5%/yr.
+- Roughly **$270 of income is missing** from the ~2.5-month record; the headline -0.50% equity
+  move would be nearer -0.23% with it.
+- The distortion GROWS with the cash allocation, and cash is currently ~49% of the book.
+- It vanishes entirely on real capital, so it must not be read as strategy underperformance.
+
+Any future comparison of live-paper results against a backtest that assumes total returns has to
+adjust for this, or it will systematically penalise the cash sleeve.

@@ -142,11 +142,25 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
             from app.live_trading.venue_reads import get_venue_reader
             reader = get_venue_reader(db, "trend", alpaca_client=alpaca)
             held = _ts._current_trend_positions(db, reader)   # {sym: int qty}, trend-tagged
+            # Cash-sleeve symbols actually HELD, resolved here so they can ride the SAME price
+            # fetch as the trend universe below.
+            try:
+                from app.live_trading.cash_sleeve import CASH_ETFS
+                _held_all = {str(p.get("symbol") or "").upper()
+                             for p in (reader.get_positions() or [])}
+                cash_syms = sorted(_held_all & {s.upper() for s in CASH_ETFS})
+            except Exception:  # noqa: BLE001
+                cash_syms = []
         finally:
             if _own_db:
                 db.close()
 
-        prices_df = _ts._fetch_prices(alpaca, universe)
+        # ONE fetch covering the trend universe AND the held cash symbols. Fetching cash on its own
+        # does not work: _fetch_prices is trend-specific and fail-closes when SPY is absent
+        # ("core symbol SPY missing/short"), so a cash-only call returns None — which is exactly
+        # why the first live run recorded cash_prices=0 and skipped the cash sleeve. The two sets
+        # are split apart again at storage time so `prices` keeps meaning the trend universe.
+        prices_df = _ts._fetch_prices(alpaca, list(dict.fromkeys(list(universe) + cash_syms)))
         if prices_df is None or prices_df.empty:
             log.warning("back_validation: price panel unavailable — snapshot skipped")
             return False
@@ -160,8 +174,12 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
                      last_bar, today.isoformat())
             return False
 
-        prices = {s: float(v) for s, v in prices_df.iloc[-1].to_dict().items()
-                  if v is not None and float(v) == float(v)}  # drop NaN
+        _last = {s: float(v) for s, v in prices_df.iloc[-1].to_dict().items()
+                 if v is not None and float(v) == float(v)}   # drop NaN
+        _universe = set(universe)
+        # `prices` stays EXACTLY the trend universe — compute_report's daily_rows() iterates every
+        # key of it, so a cash symbol leaking in would enter the drift/tracking-error metric.
+        prices = {s: v for s, v in _last.items() if s in _universe}
         acct = reader.get_account()
         nav = float(acct.get("portfolio_value") or acct.get("equity") or 0.0)
         positions = {s: float(q) for s, q in held.items() if q}
@@ -170,22 +188,9 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
         # the cash sleeve cannot be marked at all: the trend panel prices only the 10-ETF trend
         # universe, so SGOV was unpriced on 49 of the first 51 snapshot days. Best-effort — a cash
         # price failure must never cost us the trend snapshot, which is the scorecard's core.
-        cash_prices: dict[str, float] = {}
-        try:
-            from app.live_trading.cash_sleeve import CASH_ETFS
-            # Only the cash ETFs actually HELD — CASH_ETFS lists 8 eligible tickers but the book
-            # holds one. Fetching all 8 would risk a single thin/invalid symbol failing the batch
-            # and losing the prices we do need.
-            _held_syms = {str(p.get("symbol") or "").upper()
-                          for p in (reader.get_positions() or [])}
-            cash_syms = sorted(_held_syms & {s.upper() for s in CASH_ETFS})
-            if cash_syms:
-                cash_df = _ts._fetch_prices(alpaca, cash_syms)
-                if cash_df is not None and not cash_df.empty:
-                    cash_prices = {s: float(v) for s, v in cash_df.iloc[-1].to_dict().items()
-                                   if v is not None and float(v) == float(v)}
-        except Exception:  # noqa: BLE001
-            log.debug("back_validation: cash price fetch failed (snapshot continues)", exc_info=True)
+        # Cash-sleeve closes, split out of the same panel and stored SEPARATELY
+        # (see _ADDED_COLUMNS["cash_prices"]).
+        cash_prices = {s: v for s, v in _last.items() if s in set(cash_syms)}
 
         with _conn() as c:
             c.execute(
