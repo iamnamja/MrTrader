@@ -4,6 +4,26 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-01 — The crash governor had gone silently inert: yfinance stopped supplying ^VIX3M, so the trend sleeve lost its only de-risk mechanism. FRED added as a fallback.
+
+**Found by asking whether one WARNING line was a one-off.** The 2026-08-31 rebalance logged `crash governor: insufficient/invalid signal -> mult=1.0 (fail-safe)` — the ONLY such line in all of 2026. It was not a blip: the governor logs nothing on a clean pass (`mult == 1.0`), so the four prior rebalances were genuine successes and this was a first failure at the end of a long decay.
+
+**Cause — upstream data, not our code.** yfinance returns a frame for `^VIX3M` whose `Close` is almost entirely NaN (measured **1 non-NaN of 8 rows** on 2026-09-01, against 8/8 for `^VIX`). `_fetch_closes` legitimately skips NaN values, so the ticker never tripped its own "No close data returned" warning — the column simply thinned out. Rows carrying BOTH series:
+
+| through Apr 2026 | Jun | Jul | Aug |
+|---|---|---|---|
+| 100% | 73% | 39% | **5%** (1 of 21) |
+
+Last complete row: **2026-08-05**.
+
+**Why it mattered.** `_crash_governor_multiplier` needs vix and vix3m on the SAME settled date to compute the VIX/VIX3M term-structure ratio, and de-risks the sleeve to `derisk_to=0.5` in backwardation. It is fail-safe by design, so a data outage can never flatten the book — but the inverse is the real exposure: **it can no longer CUT risk either**. The trend sleeve was unprotected against precisely the regime the governor exists to guard against, and the failure was near-silent — one WARNING per weekly rebalance, which is why five weeks of decay went unnoticed.
+
+**Decision**: add **FRED as a gap-filling fallback** for the volatility series only (`VIXCLS`, `VXVCLS` — the latter being VIX3M / legacy VXV). yfinance stays PRIMARY: it is intraday-fresh and the other four tickers are fine; FRED writes only where yfinance left a value missing, so a working value is never overwritten. FRED's ~1-business-day publication lag is harmless because the governor deliberately reads only SETTLED closes strictly before today. Deliberately NOT `app.macro.fred_client`, which hardcodes `limit: 24` for the regime detector's recent-window contract and cannot serve a date range.
+
+**Consequences**: the historical gap was repaired by `scripts/backfill_macro_vol_from_fred.py` (+37 usable pairs, 2139 → 2176; backup at `macro_history.parquet.bak`), and the ongoing fallback fired unprompted on the next refresh ("filled 2 missing vix3m value(s) from FRED"). The governor now computes: **multiplier 1.0** with no warning — correctly no de-risk, since VIX 15.3 < VIX3M 17.5 is normal contango. The wider lesson is about **fail-safe controls degrading invisibly**: this one behaved exactly as designed at every step and still left the book unprotected for weeks, because "fail-safe" means the failure looks identical to the healthy state. A safety control that can only be observed when it fires needs an explicit liveness signal — worth considering surfacing governor availability in the daily beacon. Not a WF/CPCV pipeline change, so `PIPELINE_ARCHITECTURE.md` is intentionally untouched.
+
+---
+
 ## 2026-08-30 — INCIDENT: the 08-22 PENDING_FILL "fold" untagged two sleeve rows and caused a double-buy (~11.5% of equity in unintended exposure). Position visibility now matches on selector OR trade_type.
 
 **What happened**: on 2026-08-24 the trend rebalance issued a FULL FRESH BUY on top of positions it already held — `DBC 228 + buy 214 = 442` (target 214) and `EEM 70 + buy 101 = 171` (target 101). At the time of discovery that was **$11,646 of unintended exposure, 11.5% of equity**. Monday's cash sleeve correctly refused to act (`reconcile:cash mode=enforce -> FAIL_CLOSED -> HOLD`), which stopped it spreading.
