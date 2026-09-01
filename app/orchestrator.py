@@ -593,6 +593,16 @@ class AgentOrchestrator:
                 await loop.run_in_executor(None, back_validation.record_daily_snapshot)
             except Exception as _bvexc:
                 logger.error("Back-validation snapshot failed (continuing): %s", _bvexc)
+
+            # Per-sleeve P&L — recorded DAILY here, immediately after the snapshot it marks
+            # against. Previously the only trend_tracker write lived in the weekly rebalance and
+            # passed no P&L at all, so three months of live paper produced 14 rows with every
+            # P&L column NULL, while CH5's stated purpose was to let that scorecard accrue.
+            try:
+                from app.live_trading import sleeve_pnl
+                await loop.run_in_executor(None, sleeve_pnl.record_daily_pnl)
+            except Exception as _pexc:
+                logger.error("Sleeve P&L recording failed (continuing): %s", _pexc)
         except Exception as exc:
             logger.error("Daily summary failed: %s", exc)
 

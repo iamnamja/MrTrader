@@ -69,6 +69,8 @@ def record_daily(
     turnover: float | None = None,
     realized_pnl: float | None = None,
     unrealized_pnl: float | None = None,
+    daily_pnl_override: float | None = None,
+    cumulative_pnl_override: float | None = None,
     extra: dict[str, Any] | None = None,
 ) -> bool:
     """Upsert today's trend tracking row. Never raises.
@@ -76,6 +78,13 @@ def record_daily(
     PARTIAL UPSERT semantics: every field defaults to None meaning "don't touch"
     (COALESCE(excluded, existing) on conflict). daily_pnl/cumulative_pnl are derived
     only when P&L inputs are supplied this call. Returns True on success.
+
+    `*_override` let a caller that has ALREADY computed a correct series write it verbatim.
+    The default derivation anchors on the prior DB row and treats a missing prior as
+    unrealized=0, which books an inherited opening level as day-one P&L — measured at $199.33 of
+    error when backfilling a book that was not flat on day one. `sleeve_pnl.daily_pnl_series`
+    seeds that baseline properly, so it passes its own values rather than letting them be
+    re-derived from an anchor that does not exist yet.
     """
     if trade_date is None:
         trade_date = _date.today()
@@ -107,6 +116,10 @@ def record_daily(
                 prior_unreal = float(prior[1]) if prior and prior[1] is not None else 0.0
                 daily_pnl = float(realized_pnl or 0.0) + (float(unrealized_pnl or 0.0) - prior_unreal)
                 cumulative_pnl = prior_cum + daily_pnl
+            if daily_pnl_override is not None:
+                daily_pnl = float(daily_pnl_override)
+            if cumulative_pnl_override is not None:
+                cumulative_pnl = float(cumulative_pnl_override)
 
             c.execute(
                 "INSERT INTO trend_daily(trade_date, n_positions, gross_deployed, "
