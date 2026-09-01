@@ -84,6 +84,14 @@ _ADDED_COLUMNS = {
     #                                 rebalance (mode/allow/would_block/max_name_weight/
     #                                 weighted_avg_book_corr/portfolio_heat_frac) — the book-corr
     #                                 distribution the enforce threshold is calibrated from
+    "cash_prices": "TEXT",          # JSON {symbol: close} for the CASH sleeve's T-bill ETFs.
+    #   DELIBERATELY a separate column, not merged into `prices`. compute_report's daily_rows()
+    #   iterates `for sym, px1 in p1.items()` over EVERY key in `prices`, so a cash symbol added
+    #   there would enter the drift/tracking-error computation. It would contribute 0 today (SGOV
+    #   is absent from `positions` and `intended_weights`), but that is an accident of the current
+    #   book rather than a guarantee — and it would silently break the moment a cash symbol
+    #   appeared in either. Keeping cash prices out of `prices` preserves that column's documented
+    #   meaning ("the full trend universe") and leaves the scorecard's headline metric untouched.
 }
 
 
@@ -158,18 +166,40 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
         nav = float(acct.get("portfolio_value") or acct.get("equity") or 0.0)
         positions = {s: float(q) for s, q in held.items() if q}
 
+        # Cash-sleeve closes, stored SEPARATELY (see _ADDED_COLUMNS["cash_prices"]). Without these
+        # the cash sleeve cannot be marked at all: the trend panel prices only the 10-ETF trend
+        # universe, so SGOV was unpriced on 49 of the first 51 snapshot days. Best-effort — a cash
+        # price failure must never cost us the trend snapshot, which is the scorecard's core.
+        cash_prices: dict[str, float] = {}
+        try:
+            from app.live_trading.cash_sleeve import CASH_ETFS
+            # Only the cash ETFs actually HELD — CASH_ETFS lists 8 eligible tickers but the book
+            # holds one. Fetching all 8 would risk a single thin/invalid symbol failing the batch
+            # and losing the prices we do need.
+            _held_syms = {str(p.get("symbol") or "").upper()
+                          for p in (reader.get_positions() or [])}
+            cash_syms = sorted(_held_syms & {s.upper() for s in CASH_ETFS})
+            if cash_syms:
+                cash_df = _ts._fetch_prices(alpaca, cash_syms)
+                if cash_df is not None and not cash_df.empty:
+                    cash_prices = {s: float(v) for s, v in cash_df.iloc[-1].to_dict().items()
+                                   if v is not None and float(v) == float(v)}
+        except Exception:  # noqa: BLE001
+            log.debug("back_validation: cash price fetch failed (snapshot continues)", exc_info=True)
+
         with _conn() as c:
             c.execute(
                 "INSERT INTO trend_backval_daily(trade_date, nav, prices, positions, "
-                "n_positions, created_at) VALUES (?,?,?,?,?,?) "
+                "n_positions, cash_prices, created_at) VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET nav=excluded.nav, "
                 "prices=excluded.prices, positions=excluded.positions, "
-                "n_positions=excluded.n_positions",
+                "n_positions=excluded.n_positions, "
+                "cash_prices=COALESCE(excluded.cash_prices, cash_prices)",
                 (today.isoformat(), nav, json.dumps(prices), json.dumps(positions),
-                 len(positions), time.time()),
+                 len(positions), (json.dumps(cash_prices) if cash_prices else None), time.time()),
             )
-        log.info("back_validation snapshot %s: nav=%.2f held=%d prices=%d",
-                 today.isoformat(), nav, len(positions), len(prices))
+        log.info("back_validation snapshot %s: nav=%.2f held=%d prices=%d cash_prices=%d",
+                 today.isoformat(), nav, len(positions), len(prices), len(cash_prices))
         return True
     except Exception:
         log.exception("back_validation.record_daily_snapshot failed (swallowed)")

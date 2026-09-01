@@ -33,36 +33,89 @@ CREATE TABLE IF NOT EXISTS cash_daily (
 """
 
 
+# P&L columns added 2026-09-01. The cash sleeve carried NO P&L fields at all, yet its SGOV income
+# is comparable in magnitude to the trend sleeve's own P&L — a trend-only scorecard misrepresents
+# the book. Same idempotent ALTER pattern as back_validation (SQLite has no ADD COLUMN IF NOT
+# EXISTS). Semantics match trend_tracker: `unrealized_pnl` is a LEVEL, `daily_pnl` is
+# realized + Δ(level).
+_ADDED_COLUMNS = {
+    "realized_pnl": "REAL",
+    "unrealized_pnl": "REAL",
+    "daily_pnl": "REAL",
+    "cumulative_pnl": "REAL",
+}
+
+
+def _ensure_columns(c: sqlite3.Connection) -> None:
+    have = {r[1] for r in c.execute("PRAGMA table_info(cash_daily)").fetchall()}
+    for col, typ in _ADDED_COLUMNS.items():
+        if col not in have:
+            c.execute(f"ALTER TABLE cash_daily ADD COLUMN {col} {typ}")
+
+
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), timeout=10)
     c.execute("PRAGMA journal_mode=WAL;")
     c.executescript(_SCHEMA)
+    _ensure_columns(c)
     return c
 
 
 def record_daily(trade_date: _date | str | None = None, *, n_positions: int | None = None,
                  tbill_deployed: float | None = None, cash_buffer: float | None = None,
+                 realized_pnl: float | None = None, unrealized_pnl: float | None = None,
+                 daily_pnl_override: float | None = None,
+                 cumulative_pnl_override: float | None = None,
                  extra: dict[str, Any] | None = None) -> bool:
-    """Upsert today's cash-sleeve row. Partial upsert (None = don't touch). Never raises."""
+    """Upsert today's cash-sleeve row. Partial upsert (None = don't touch). Never raises.
+
+    `unrealized_pnl` is the LEVEL of open-position gain (mark minus cost basis), NOT the daily
+    change — `daily_pnl` is derived as realized + Δ(level), so passing the level twice would
+    re-count the same open gain every day and drift `cumulative_pnl`.
+    """
     td = trade_date or _date.today()
     td = td.isoformat() if isinstance(td, _date) else str(td)
 
     def _f(x):
         return float(x) if x is not None else None
 
+    pnl_supplied = realized_pnl is not None or unrealized_pnl is not None
     try:
         with _conn() as c:
+            daily_pnl = cumulative_pnl = None
+            if pnl_supplied:
+                prior = c.execute(
+                    "SELECT cumulative_pnl, unrealized_pnl FROM cash_daily "
+                    "WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1", (td,),
+                ).fetchone()
+                prior_cum = float(prior[0]) if prior and prior[0] is not None else 0.0
+                prior_unreal = float(prior[1]) if prior and prior[1] is not None else 0.0
+                daily_pnl = float(realized_pnl or 0.0) + (float(unrealized_pnl or 0.0) - prior_unreal)
+                cumulative_pnl = prior_cum + daily_pnl
+            # See trend_tracker.record_daily: overrides let a caller with an already-correct
+            # series write it verbatim rather than have it re-derived from a missing anchor.
+            if daily_pnl_override is not None:
+                daily_pnl = float(daily_pnl_override)
+            if cumulative_pnl_override is not None:
+                cumulative_pnl = float(cumulative_pnl_override)
+
             c.execute(
                 "INSERT INTO cash_daily(trade_date, n_positions, tbill_deployed, cash_buffer, "
-                "extra, created_at) VALUES (?,?,?,?,?,?) "
+                "realized_pnl, unrealized_pnl, daily_pnl, cumulative_pnl, extra, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
                 "n_positions=COALESCE(excluded.n_positions, n_positions), "
                 "tbill_deployed=COALESCE(excluded.tbill_deployed, tbill_deployed), "
                 "cash_buffer=COALESCE(excluded.cash_buffer, cash_buffer), "
+                "realized_pnl=COALESCE(excluded.realized_pnl, realized_pnl), "
+                "unrealized_pnl=COALESCE(excluded.unrealized_pnl, unrealized_pnl), "
+                "daily_pnl=COALESCE(excluded.daily_pnl, daily_pnl), "
+                "cumulative_pnl=COALESCE(excluded.cumulative_pnl, cumulative_pnl), "
                 "extra=COALESCE(excluded.extra, extra)",
                 (td, (int(n_positions) if n_positions is not None else None),
                  _f(tbill_deployed), _f(cash_buffer),
+                 _f(realized_pnl), _f(unrealized_pnl), daily_pnl, cumulative_pnl,
                  (json.dumps(extra, default=str) if extra is not None else None), time.time()))
         return True
     except Exception:
