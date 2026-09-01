@@ -44,6 +44,88 @@ INITIAL_START = "2018-01-01"
 
 _COLUMNS = ["date"] + list(TICKER_COLUMNS.values())
 
+# FRED fallback for the volatility series. yfinance returns a frame for ^VIX3M but with the
+# Close almost entirely NaN — measured 1 non-NaN of 8 rows on 2026-09-01, against 8/8 for ^VIX.
+# Because the extractor legitimately skips NaN values, the ticker never triggers the
+# "No close data returned" warning; the column simply thins out. Coverage of rows carrying BOTH
+# vix and vix3m decayed 100% (through Apr 2026) -> 73% (Jun) -> 39% (Jul) -> 5% (Aug), with the
+# last complete row on 2026-08-05.
+#
+# That silently disabled the crash governor, which needs both series on the SAME settled date to
+# compute the VIX/VIX3M term-structure ratio. It is fail-safe (returns 1.0 = no de-risk), so the
+# only symptom was one WARNING per weekly rebalance — the trend sleeve simply stopped being able
+# to cut exposure in backwardation, which is the one regime it exists to protect against.
+#
+# FRED carries both series complete and free. yfinance stays PRIMARY (intraday-fresh, and the
+# other four tickers are fine); FRED only fills values yfinance left missing. FRED publishes with
+# roughly a one-business-day lag, which is harmless here: the governor deliberately reads only
+# SETTLED closes strictly before today.
+FRED_SERIES = {
+    "vix": "VIXCLS",     # CBOE Volatility Index
+    "vix3m": "VXVCLS",   # CBOE S&P 500 3-Month Volatility Index (VIX3M / legacy VXV)
+}
+_FRED_OBS_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def _fetch_fred_series(series_id: str, start: str, end: str) -> dict:
+    """{date -> float} for a FRED series over [start, end]. {} on any failure.
+
+    Deliberately NOT app.macro.fred_client: that client hardcodes `limit: 24` for the regime
+    detector's recent-window contract (with a documented desc/asc bug fix), so it cannot serve a
+    date-ranged backfill. Never raises — a fallback that can break the primary path is worse than
+    no fallback.
+    """
+    try:
+        from app.config import settings
+        api_key = getattr(settings, "fred_api_key", None)
+        if not api_key:
+            logger.debug("FRED fallback skipped for %s: no api key", series_id)
+            return {}
+        import httpx
+        resp = httpx.get(_FRED_OBS_URL, timeout=20, params={
+            "series_id": series_id, "api_key": api_key, "file_type": "json",
+            "observation_start": start, "observation_end": end,
+        })
+        if resp.status_code != 200:
+            logger.warning("FRED %s HTTP %s", series_id, resp.status_code)
+            return {}
+        out = {}
+        for o in resp.json().get("observations", []):
+            v = o.get("value")
+            if v in (None, "", "."):      # FRED marks missing observations with "."
+                continue
+            try:
+                out[str(o["date"])[:10]] = float(v)
+            except (TypeError, ValueError):
+                continue
+        return out
+    except Exception as exc:  # noqa: BLE001 — fallback must never break the primary fetch
+        logger.warning("FRED fallback failed for %s: %s", series_id, exc)
+        return {}
+
+
+def _fill_from_fred(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """Fill missing vix/vix3m values in `df` from FRED. Only ever writes where the value is
+    absent, so a working yfinance value is never overwritten."""
+    if df.empty:
+        return df
+    for col, series_id in FRED_SERIES.items():
+        if col not in df.columns:
+            continue
+        missing = df[col].isna()
+        if not missing.any():
+            continue
+        obs = _fetch_fred_series(series_id, start, end)
+        if not obs:
+            continue
+        filled = df.loc[missing, "date"].astype(str).str[:10].map(obs)
+        n = int(filled.notna().sum())
+        if n:
+            df.loc[missing, col] = filled
+            logger.info("macro_history: filled %d missing %s value(s) from FRED (%s)",
+                        n, col, series_id)
+    return df
+
 
 def load_macro_history() -> pd.DataFrame:
     """Load the macro history parquet from disk (no network call).
@@ -117,6 +199,8 @@ def _fetch_closes(start: str, end: str) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NA
     df = df[_COLUMNS].sort_values("date").reset_index(drop=True)
+    # Backstop the volatility series from FRED where yfinance returned NaN (see FRED_SERIES).
+    df = _fill_from_fred(df, start, end)
     return df
 
 
