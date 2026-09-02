@@ -4,6 +4,27 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-02 — A second, four-month-old brain for the same account was one `docker start` away. The compose `app` service is now opt-in via profile.
+
+**Context.** The live system runs the app **natively** (`serve.ps1` → uvicorn on :8000) against containerized postgres + redis. But `docker-compose.yml` also defined an `app` service — a fully self-contained second copy of the trading system pointed at the same Alpaca account. The container `mrtrader_app` was found still present on the box, built from an **April image**: 4-month-old code, model v4 (live is v229/v41). Two details made it live ammunition rather than clutter:
+
+- `restart: unless-stopped`
+- exit code **137** — SIGKILL, not a clean `docker stop`
+
+A container killed rather than stopped is one the daemon can consider eligible to come back on the next Docker Desktop start. Had it come back, two processes would have been placing orders into one account off different code, different models, and different position state — and the reconciliation invariant would have reported the resulting break as a mystery, because nothing in our monitoring knows the second writer exists.
+
+**Nothing detected this.** The port-8000 guard in `serve.ps1` catches the reverse direction (container up, then native start). It cannot catch the container coming up *underneath* a healthy native process, because Docker publishes :8000 only if it wins the bind — and the trading loop does not need the port to trade. `start.ps1` line 23 (`docker stop mrtrader_app`) is a race, not a guard: it only helps if we start first.
+
+**Decision.**
+1. Removed the container (`docker rm mrtrader_app`), plus `lucid_davinci`, a stray 4-month-old `postgres:16-alpine`. Bind mounts only (`reports/`, `frontend/dist`), no named volumes — no data was held by either.
+2. Put the `app` service behind `profiles: ["container"]`. Plain `docker compose up` now resolves to **postgres + redis only** (verified via `docker compose config --services`). Running the containerized app is now a deliberate act: `docker compose --profile container up app`.
+
+**Rationale for the profile over deletion.** The service is a legitimate deployment path we may want later; the defect was that it was reachable *by accident* from the most common command anyone types in a repo root. A profile keeps the capability and removes the footgun. `start.ps1`'s defensive `docker stop` is retained — belt and braces, now that it is no longer the only thing standing between us and a double writer.
+
+**Consequences.** No behavior change to the live system. The near-miss is the point: this sat one command away for four months, and we found it by auditing stopped containers rather than by any alarm. Generalizes to the standing lesson from the 08-22 fold and the VIX3M outage — *the dangerous failures are the silent ones*, and a stopped-but-present container is a silent failure waiting for a reboot.
+
+---
+
 ## 2026-09-01 — The crash governor had gone silently inert: yfinance stopped supplying ^VIX3M, so the trend sleeve lost its only de-risk mechanism. FRED added as a fallback.
 
 **Found by asking whether one WARNING line was a one-off.** The 2026-08-31 rebalance logged `crash governor: insufficient/invalid signal -> mult=1.0 (fail-safe)` — the ONLY such line in all of 2026. It was not a blip: the governor logs nothing on a clean pass (`mult == 1.0`), so the four prior rebalances were genuine successes and this was a first failure at the end of a long decay.
