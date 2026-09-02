@@ -6,6 +6,16 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
+## 📏 EXECUTION IS NOT THE PROBLEM (2026-09-02) — the "execution drag" number never measured execution
+
+The weekly email reported **"Execution drag −0.67 bps/day"** (~−1.7%/yr against a ~3.3%/yr expected gross edge), which made implementation look like it was eating half the edge. It was not.
+
+- **Measured execution slippage: +0.42 bps — $9 total** on 76 fills / $211,557 notional (fills vs minute-VWAP at fill time, 06-17 → 09-02). **Market orders at 09:45 stay** — there is nothing here to recover, and limit orders would trade $9 for real non-fill risk.
+- **`slippage_drag_bps_day` → `tracking_drag_bps_day`.** Both books are priced on the same closes, so fill price is algebraically absent from it; it measures held-vs-intended *weights*. The name was believed for weeks.
+- **The −0.67 was mostly one contaminated window.** 08-24 → 08-28 snapshots recorded DBC/EEM qty 0 on a day the blotter shows both were bought (the untagged-rows double-buy, DECISIONS 2026-08-30) — a 13pp exposure hole for five sessions. Now excluded via `CONTAMINATED_WINDOWS`, counted and named in the report note.
+- **Headline after the fix: −0.42 bps/day, verdict WATCH → PASS** (corr 0.991, TE 0.76%/yr vs 2% threshold). `exposure_gaps()` now warns (never auto-excludes) if the same shape recurs.
+- Also checked and clean: turnover runs 1.0–1.3× required most weeks; EEM/GLD signal churn costs ~nothing in friction. See DECISIONS 2026-09-02.
+
 ## ✅ UNATTENDED WINDOW CLOSED (2026-08-06 → 2026-08-20) — owner back, stack survived intact
 
 The daily liveness beacon fired **15/15 days including weekends, every one delivered, zero gaps and zero errors**. No reboot occurred (Windows Updates stayed paused), and the DBC repair held — the book reconciled MATCH throughout, so the Aug 10 cash-sleeve run that would have latched HALT_NEW_RISK never had a break to latch onto.

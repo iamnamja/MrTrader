@@ -58,6 +58,31 @@ PASS_MAX_TE_ANN = 0.02              # annualized tracking error <= 2%/yr
 WATCH_MIN_CORR = 0.75               # below this (with valid corr) -> FAIL
 ANN = 252
 
+# ── Contaminated snapshot windows ────────────────────────────────────────────────────────────
+# Days where the SNAPSHOT misrepresents the book, so `actual` is wrong as an input rather than
+# informative as an outcome. Excluding these is not cherry-picking: the metric's whole job is to
+# compare the book we hold against the book we intended, and on these days we do not have a
+# faithful record of the book we held. A day where we genuinely failed to reach target belongs in
+# the series; a day where the recorder lied does not.
+#
+# Every entry must name the defect and the evidence. Excluded days are COUNTED and surfaced in the
+# report note — never dropped silently.
+CONTAMINATED_WINDOWS: tuple[tuple[str, str, str], ...] = (
+    ("2026-08-24", "2026-08-28",
+     "08-22 fold untagged the trend rows: snapshots recorded DBC qty 0 and EEM qty 0 against "
+     "intended weights of 0.067 each, while the blotter shows both were bought that morning "
+     "(DBC 214 @ 31.14, EEM 101 @ 65.86). Actual exposure reads 0.353 vs 0.500 intended — a "
+     "$13.3k / 13pp hole that persists until the 08-31 rebalance. Same root cause as the "
+     "double-buy incident (see DECISIONS 2026-08-30); the sleeve was fixed, this data was not."),
+)
+
+# A rebalance day whose actual exposure misses intended by more than this is a candidate for the
+# same class of defect. We WARN rather than auto-exclude: the identical symptom can mean the book
+# genuinely failed to reach target, which is real drag and must stay in the series. Auto-excluding
+# would let the metric quietly discard its own bad news. Normal days sit near 1pp; 2026-08-24 was
+# 14.7pp.
+EXPOSURE_GAP_WARN = 0.10
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trend_backval_daily (
     trade_date        TEXT PRIMARY KEY,
@@ -390,7 +415,12 @@ def daily_rows(snapshots: list[dict]) -> tuple[list[dict], dict]:
                         a_ret += (float(pos0.get(sym, 0.0)) * float(px0) / nav0) * r
                         i_ret += float(carried_intent.get(sym, 0.0)) * r
                         u_ret += float(ungov_book.get(sym, 0.0)) * r
-                    rows.append({"date": row.get("trade_date"), "actual": a_ret,
+                    # `prev_date` is carried because the pairing is asymmetric: this row's
+                    # `actual` is built from the PRIOR snapshot's positions, so a snapshot that
+                    # misstates the book contaminates the FOLLOWING row, not its own. Anything
+                    # filtering on data quality has to see both ends of the pair.
+                    rows.append({"date": row.get("trade_date"),
+                                 "prev_date": prev.get("trade_date"), "actual": a_ret,
                                  "intended": i_ret, "ungoverned": u_ret})
                 else:
                     diag["bad_days"] += 1
@@ -478,6 +508,55 @@ def regime_slices(rows: list[dict]) -> dict[str, dict]:
     return out
 
 
+def exclude_contaminated(rows: list[dict]) -> tuple[list[dict], list[str]]:
+    """Drop rows touching a CONTAMINATED_WINDOWS snapshot. Returns (kept, excluded_dates). Pure.
+
+    The windows name bad SNAPSHOT dates, and a row spans two snapshots — its own and the prior
+    one, whose positions supply `actual`. So a row is contaminated if EITHER end lands in a
+    window. Filtering on `date` alone would leave the last poisoned row in the series (the one
+    after the window closes) and drop a clean one at the front.
+
+    Chaining note: the kept series is still compounded as-is, so cumulative figures read as
+    "return excluding those days" rather than a true account return. That is the right reading for
+    a tracking/drag statistic — and these were already NAV-contribution figures, not account
+    returns, so nothing that was previously exact becomes approximate."""
+    if not CONTAMINATED_WINDOWS:
+        return list(rows), []
+
+    def _bad(d: Any) -> bool:
+        return d is not None and any(lo <= str(d) <= hi for lo, hi, _ in CONTAMINATED_WINDOWS)
+
+    kept, dropped = [], []
+    for r in rows:
+        if _bad(r.get("date")) or _bad(r.get("prev_date")):
+            dropped.append(str(r.get("date")))
+        else:
+            kept.append(r)
+    return kept, dropped
+
+
+def exposure_gaps(snapshots: list[dict], threshold: float = EXPOSURE_GAP_WARN) -> list[dict]:
+    """Rebalance days where |sum(actual weights) - sum(intended weights)| exceeds `threshold`.
+
+    A large, persistent gap means the snapshot and the real book disagree — the shape of the
+    2026-08-24 defect. Report-only: callers WARN, they do not exclude (see EXPOSURE_GAP_WARN)."""
+    out = []
+    for s in snapshots:
+        iw = _json(s.get("intended_weights"))
+        if not iw:                       # non-rebalance day: intent is carried, not restated
+            continue
+        pos, px = _json(s.get("positions")), _json(s.get("prices"))
+        nav = float(s.get("nav") or 0.0)
+        if nav <= 0:
+            continue
+        w_act = sum(float(pos.get(k, 0.0)) * float(px.get(k, 0.0) or 0.0) for k in pos) / nav
+        w_int = sum(float(v) for v in iw.values())
+        if abs(w_act - w_int) > threshold:
+            out.append({"date": str(s.get("trade_date")), "actual": w_act, "intended": w_int,
+                        "gap": w_act - w_int})
+    return out
+
+
 def _tracking_metrics(pairs: list[tuple[float, float]]) -> dict[str, Any]:
     """Pure tracking metrics from aligned (actual, intended) daily-return pairs."""
     import numpy as np
@@ -532,7 +611,12 @@ class BackValReport:
     corr: Optional[float]
     tracking_error_ann: Optional[float]
     drift_ann: Optional[float]
-    slippage_drag_bps_day: Optional[float]
+    # NOT execution slippage. `daily_rows` prices BOTH books on the SAME closes, so fill price is
+    # algebraically absent from this number — it is the return difference between the weights we
+    # HELD and the weights we INTENDED. Measured execution slippage over 2026-06-17..09-02 was
+    # +0.42 bps ($9 on $211k traded, fills vs minute-VWAP at fill time). Renamed from
+    # `slippage_drag_bps_day` on 2026-09-02, which had been read as a cost it never measured.
+    tracking_drag_bps_day: Optional[float]
     actual_cum_return: Optional[float]
     intended_cum_return: Optional[float]
     actual_sharpe_navcontrib: Optional[float]
@@ -577,6 +661,7 @@ def compute_report(start: _date | str | None = None,
         we = snaps[-1]["trade_date"] if snaps else None
 
         rows, diag = daily_rows(snaps)
+        rows, excluded = exclude_contaminated(rows)
         pairs = [(r["actual"], r["intended"]) for r in rows]
         m = _tracking_metrics(pairs)
         cf = governor_counterfactual(rows)
@@ -587,6 +672,17 @@ def compute_report(start: _date | str | None = None,
             notes.append(f"{diag['no_intent_days']} day(s) had no intended book yet")
         if diag["bad_days"]:
             notes.append(f"{diag['bad_days']} day(s) dropped (missing nav/snapshot)")
+        if excluded:
+            notes.append(f"{len(excluded)} day(s) excluded as contaminated "
+                         f"({excluded[0]}..{excluded[-1]}) — see CONTAMINATED_WINDOWS")
+        # Report-only detector for the NEXT instance of the same defect. Warns; never excludes.
+        for g in exposure_gaps(snaps):
+            if any(lo <= g["date"] <= hi for lo, hi, _ in CONTAMINATED_WINDOWS):
+                continue                 # already accounted for above
+            log.warning("back_validation: %s actual exposure %.3f vs intended %.3f (gap %+.3f) — "
+                        "snapshot may not reflect the real book; drag is unreliable for this day",
+                        g["date"], g["actual"], g["intended"], g["gap"])
+            notes.append(f"{g['date']} exposure gap {g['gap']:+.1%}")
         note = "; ".join(notes) or None
         # Detect a stuck/empty instrument: snapshots exist but no usable pairs.
         if len(snaps) >= MIN_DAYS_FOR_VERDICT and m["n_days"] == 0:
@@ -594,7 +690,7 @@ def compute_report(start: _date | str | None = None,
         return BackValReport(
             verdict=_verdict(m), n_days=m["n_days"], corr=m["corr"],
             tracking_error_ann=m["te_ann"], drift_ann=m["drift_ann"],
-            slippage_drag_bps_day=m["drag_bps_day"],
+            tracking_drag_bps_day=m["drag_bps_day"],
             actual_cum_return=m["actual_cum"], intended_cum_return=m["intended_cum"],
             actual_sharpe_navcontrib=m["actual_sharpe"],
             intended_sharpe_navcontrib=m["intended_sharpe"],

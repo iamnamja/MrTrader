@@ -4,6 +4,43 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-02 — `slippage_drag_bps_day` never measured slippage. Real execution cost is $9; the metric was renamed and its contaminated window excluded.
+
+**Context.** The weekly back-validation email reported "Execution drag: −0.67 bps/day" — roughly −1.7%/yr against an expected gross edge of ~3.3%/yr. Read at face value, implementation was eating half the edge, and the obvious remedy was to stop sending market orders at 09:45 on the weekly rebalance.
+
+**The metric cannot see execution.** `daily_rows` prices BOTH books on the SAME Alpaca closes:
+
+```
+actual_t   = Σ (qty_{t-1}·px_{t-1}/nav_{t-1}) · (px_t/px_{t-1} − 1)
+intended_t = Σ  intended_w_sym(≤t-1)          · (px_t/px_{t-1} − 1)
+```
+
+Fill price appears nowhere. The number is the return difference between the weights we HELD and the weights we INTENDED — a tracking statistic. The name asserted a cost it is structurally incapable of measuring, and the name is what got believed.
+
+**Measured execution cost, for the first time.** Every fill compared against the minute-VWAP of the minute it filled in, 2026-06-17 → 09-02: **76 fills, $211,557 notional, +0.42 bps — $9 total.** Per symbol: DBC +2.22, UUP +1.51, EEM +0.89, SGOV +0.61, EFA −0.29, QQQ −0.38, IWM −1.76, SPY −1.90, GLD −3.68 (negative = filled better than VWAP). Fill times: 68 at 09:45, 8 at 09:50. Minute-VWAP is mildly lenient — a large order partly sets the VWAP it is judged against — but at $6k clips in ETFs trading hundreds of millions daily that impact is negligible.
+
+**Decision: market orders at 09:45 stay.** There is no cost here to recover. Limit orders would trade $9 of savings for real non-fill risk in a strategy whose premise is holding the target weights.
+
+Two related checks came back clean and are recorded so they are not re-litigated:
+- **Turnover is not excessive.** Against prior-day holdings marked at current prices, executed notional runs 1.0–1.3× required on most rebalances. The one outlier is 2026-08-24 (DBC $322 required, $6,664 traded) — the double-buy bug, not a policy problem.
+- **Signal churn is not a cost problem.** EEM exits and re-enters weekly, GLD appeared for exactly one week. At 0.42 bps that costs nothing. If this churn hurts, it hurts through signal quality, not friction — a different question, and out of scope under the moratorium.
+
+**Decision: rename + exclude the contaminated window.**
+1. `slippage_drag_bps_day` → **`tracking_drag_bps_day`**, with the arithmetic reason stated at the field. `notifier` keeps a `.get` fallback for payloads queued before the rename.
+2. `CONTAMINATED_WINDOWS` excludes **2026-08-24 → 08-28**: the snapshots recorded DBC qty 0 and EEM qty 0 against intended weights of 0.067 each, on a day the blotter shows both were bought (DBC 214 @ 31.14, EEM 101 @ 65.86). Actual exposure read 0.353 vs 0.500 intended — a $13.3k / 13pp hole that persisted five sessions until the 08-31 rebalance. Same root cause as the untagged-rows double-buy (DECISIONS 2026-08-30): the sleeve was fixed, the recorded data was not.
+
+**Why exclusion is not cherry-picking.** The metric compares the book we held against the book we intended. On these days we do not possess a faithful record of the book we held, so `actual` is wrong as an INPUT rather than informative as an outcome. A day where we genuinely failed to reach target belongs in the series; a day where the recorder lied does not. Excluded days are counted and named in the report note — never dropped silently.
+
+**A pairing subtlety, caught by a test rather than by reading.** A row's `actual` is built from the PRIOR snapshot's positions, so a bad snapshot contaminates the FOLLOWING row, not its own. Filtering on row date alone left the last poisoned row in and dropped a clean one at the front. `daily_rows` now carries `prev_date` and exclusion checks both ends of the pair.
+
+**Auto-detection, deliberately warn-only.** `exposure_gaps()` flags rebalance days where |Σw_actual − Σw_intended| > 10pp (normal ≈ 1pp; 08-24 was 14.7pp) into the log and the report note. It does NOT auto-exclude: the identical symptom can mean the book genuinely failed to reach target, which is real drag and must stay in the series. A metric that auto-excludes on this symptom would quietly discard its own bad news.
+
+**Consequences.** Over 2026-06-17 → 09-02 the headline moves **−0.67 → −0.42 bps/day** and the verdict **WATCH → PASS** (corr 0.991, TE 0.76%/yr against a 2% threshold, drift −1.05%/yr against 1.5%). The residual −0.42 bps/day is not execution: the largest remaining candidate is the structural artifact of comparing a fixed carried-forward intent against a book whose weights drift with prices between weekly rebalances. Not chased — it is a measurement convention, not money.
+
+**The transferable lesson.** A number was believed for weeks because of what it was called, and the error survived until someone checked what it computed. It also cost the wrong recommendation: "slippage is the highest-value work left" was stated on this evidence and was wrong. Metric names are load-bearing.
+
+---
+
 ## 2026-09-02 — A second, four-month-old brain for the same account was one `docker start` away. The compose `app` service is now opt-in via profile.
 
 **Context.** The live system runs the app **natively** (`serve.ps1` → uvicorn on :8000) against containerized postgres + redis. But `docker-compose.yml` also defined an `app` service — a fully self-contained second copy of the trading system pointed at the same Alpaca account. The container `mrtrader_app` was found still present on the box, built from an **April image**: 4-month-old code, model v4 (live is v229/v41). Two details made it live ammunition rather than clutter:
