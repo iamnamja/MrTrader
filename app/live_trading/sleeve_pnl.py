@@ -20,6 +20,25 @@ Validated against the live account before being written: over all history,
 ``equity = deposits + FIFO_realized + unrealized + fees`` reconciles to **$0.68** on a $101k
 account across 310+ fills. That identity is the correctness bar for anything here.
 
+⚠️ PAPER-ACCOUNT DIVIDEND ARTIFACT (affects the CASH sleeve most)
+-----------------------------------------------------------------
+Alpaca paper credits NO dividends (verified: the account has zero DIV activities). Marking is
+therefore price-only, and for a distributing ETF the monthly ex-dividend drop appears as a pure
+loss with no offsetting cash. SGOV — whose entire return IS the distribution — is the worst case:
+
+    ex-div drops 2026-06-15..2026-09-01 : -0.27, -0.29, -0.28  = -0.84/share
+    price-only return                   : -0.119%
+    total return                        : +0.481%   <- ~0.60pp the paper account never receives
+
+So the cash sleeve reads roughly -3%/yr where a live account would earn about +4.5%/yr.
+
+This is recorded FAITHFULLY rather than corrected. Marking cash at total-return prices would make
+the sleeve series stop reconciling against the account's own NAV — and that reconciliation is the
+only thing that caught the three construction errors documented in
+`docs/reference/PNL_TRACKING_SCOPE_2026-09-01.md`. A scorecard that quietly disagrees with the
+broker is worth less than one that is visibly distorted in a known, quantified way. The artifact
+disappears by itself the moment real capital is used.
+
 SLEEVE ATTRIBUTION
 ------------------
 Fills carry a `client_order_id` like ``trend-20260831-DBC`` or ``cash-20260831-SGOV-buy``, so the
