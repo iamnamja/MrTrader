@@ -43,6 +43,11 @@ _ADDED_COLUMNS = {
     "unrealized_pnl": "REAL",
     "daily_pnl": "REAL",
     "cumulative_pnl": "REAL",
+    # Dividend accrual added 2026-09-02 — see trend_tracker/_ADDED_COLUMNS and
+    # app/live_trading/dividends.py. Kept separate from daily_pnl so the series still reconciles.
+    "dividend_accrual": "REAL",
+    "cumulative_dividend": "REAL",
+    "cumulative_economic": "REAL",
 }
 
 
@@ -67,6 +72,9 @@ def record_daily(trade_date: _date | str | None = None, *, n_positions: int | No
                  realized_pnl: float | None = None, unrealized_pnl: float | None = None,
                  daily_pnl_override: float | None = None,
                  cumulative_pnl_override: float | None = None,
+                 dividend_accrual: float | None = None,
+                 cumulative_dividend: float | None = None,
+                 cumulative_economic: float | None = None,
                  extra: dict[str, Any] | None = None) -> bool:
     """Upsert today's cash-sleeve row. Partial upsert (None = don't touch). Never raises.
 
@@ -102,8 +110,9 @@ def record_daily(trade_date: _date | str | None = None, *, n_positions: int | No
 
             c.execute(
                 "INSERT INTO cash_daily(trade_date, n_positions, tbill_deployed, cash_buffer, "
-                "realized_pnl, unrealized_pnl, daily_pnl, cumulative_pnl, extra, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "realized_pnl, unrealized_pnl, daily_pnl, cumulative_pnl, extra, created_at, "
+                "dividend_accrual, cumulative_dividend, cumulative_economic) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
                 "n_positions=COALESCE(excluded.n_positions, n_positions), "
                 "tbill_deployed=COALESCE(excluded.tbill_deployed, tbill_deployed), "
@@ -112,11 +121,15 @@ def record_daily(trade_date: _date | str | None = None, *, n_positions: int | No
                 "unrealized_pnl=COALESCE(excluded.unrealized_pnl, unrealized_pnl), "
                 "daily_pnl=COALESCE(excluded.daily_pnl, daily_pnl), "
                 "cumulative_pnl=COALESCE(excluded.cumulative_pnl, cumulative_pnl), "
-                "extra=COALESCE(excluded.extra, extra)",
+                "extra=COALESCE(excluded.extra, extra), "
+                "dividend_accrual=COALESCE(excluded.dividend_accrual, dividend_accrual), "
+                "cumulative_dividend=COALESCE(excluded.cumulative_dividend, cumulative_dividend), "
+                "cumulative_economic=COALESCE(excluded.cumulative_economic, cumulative_economic)",
                 (td, (int(n_positions) if n_positions is not None else None),
                  _f(tbill_deployed), _f(cash_buffer),
                  _f(realized_pnl), _f(unrealized_pnl), daily_pnl, cumulative_pnl,
-                 (json.dumps(extra, default=str) if extra is not None else None), time.time()))
+                 (json.dumps(extra, default=str) if extra is not None else None), time.time(),
+                 _f(dividend_accrual), _f(cumulative_dividend), _f(cumulative_economic)))
         return True
     except Exception:
         log.exception("cash_tracker.record_daily failed (swallowed)")

@@ -244,3 +244,65 @@ with the broker is worth less than one visibly distorted in a known, quantified 
 
 Any future comparison of live-paper results against a backtest that assumes total returns has to
 adjust for this, or it will systematically penalise the cash sleeve.
+
+---
+
+## 13. Follow-up work, 2026-09-02
+
+Two items from the Track A/B review, built after the P&L recorder landed.
+
+### 13a. Standing invariants (`app/live_trading/invariants.py`)
+
+Every serious defect in the 2026-08/09 review was caught by checking arithmetic against the broker
+rather than trusting plausible numbers — but always BY HAND, reactively. Nothing ran on a schedule,
+which is why each survived so long:
+
+| Defect | Undetected for |
+|---|---|
+| regime scorer pinned to v9 while v40 existed | ~7 weeks |
+| crash governor unable to compute (VIX3M gone) | ~5 weeks |
+| order-status enum leak disabling three features | months |
+| DBC double-buy, 11.5% of equity | until someone looked |
+| P&L scorecard writing NULLs | 3 months |
+
+Five checks now run daily and ride the beacon, so a breach lands in mail already being read:
+
+1. `account_identity` — equity == deposits + FIFO realized + unrealized + fees
+2. `sleeve_pnl_vs_nav` — Σ sleeve cumulative == NAV move over the same window
+3. `position_reconcile` — DB intent == broker reality (READ-ONLY; the pure `reconcile()`, never
+   the enforcing wrapper, so a monitor can never latch HALT_NEW_RISK)
+4. `crash_governor_live` — can it actually COMPUTE? (enabled + paired VIX/VIX3M + fresh)
+5. `scorecard_recording` — is the P&L series still accruing? (self-referential by design)
+
+Design rules: read-only; every check independently guarded so one failure degrades rather than
+suppresses; and **a check that cannot EVALUATE is a breach, not a pass** — "could not determine" is
+exactly the state the crash governor sat in for five weeks.
+
+First live run: all five OK (`account_identity` residual −$4.17, `sleeve_pnl_vs_nav` +$13.87,
+reconcile MATCH, governor 6/6 paired obs 1d old, scorecard current).
+
+### 13b. Uncredited-dividend accrual (`app/live_trading/dividends.py`)
+
+⚠️ **Larger than §12b estimated, and it affects the TREND sleeve too.** That section put the gap at
+~$270 by measuring SGOV *price drops*, which understate the actual distribution and ignored the
+equity ETFs entirely. Measured properly from dividend history:
+
+| Sleeve | Paper | Uncredited divs | Economic |
+|---|---|---|---|
+| trend | +$66.85 | +$18.46 | +$85.31 |
+| cash | −$108.04 | +$444.72 | +$336.68 |
+| **TOTAL** | **−$41.19** | **+$463.18** | **+$421.99** |
+
+Distributions in-window: SGOV 0.9100/share (3), SPY 1.9040 (1), QQQ 0.8130 (1).
+
+**The paper record shows a LOSS where live capital would have made a GAIN.** That is not a rounding
+detail — it inverts the headline, and the distortion grows with the cash allocation (~49% of book).
+
+Recorded in three new columns on both trackers (`dividend_accrual`, `cumulative_dividend`,
+`cumulative_economic`) and surfaced on the beacon as
+`paper $X | economic $Y (uncredited divs $Z)`. Deliberately kept OUT of `daily_pnl` /
+`cumulative_pnl`, which must keep reconciling against broker NAV — still +$13.87 after this change.
+
+**A latent bug the tests caught:** the dividend memo was keyed on `(symbols, start)` with no expiry.
+The app process runs for weeks, so it would have pinned dividend history at boot and never seen a
+newly-declared ex-div. The key now includes today's date.
