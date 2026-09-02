@@ -135,16 +135,23 @@ def main() -> int:
             s_["prices"] = {**s_["prices"], **extra}
     alpaca = AlpacaClient()
     fills = alpaca.get_all_orders()
+    from app.live_trading.dividends import fetch_dividends
+    _syms = set()
+    for _s in snaps:
+        _syms |= set(_s.get("prices") or {})
+    divs = fetch_dividends(_syms, snaps[0]["date"])
 
     totals = {}
+    econ_totals = {}
     for sleeve, tracker in (("trend", trend_tracker), ("cash", cash_tracker)):
-        rows = daily_pnl_series(compute_daily_pnl(fills, snaps, sleeve=sleeve))
+        rows = daily_pnl_series(compute_daily_pnl(fills, snaps, sleeve=sleeve, divs=divs))
         marked = [r for r in rows if r.get("unrealized") is not None]
         unmarked = len(rows) - len(marked)
         last = marked[-1] if marked else None
         totals[sleeve] = (last["cumulative"] if last else 0.0)
+        econ_totals[sleeve] = (last.get("cumulative_economic") if last else 0.0) or 0.0
         print(f"  {sleeve:6s}: {len(rows)} days | marked {len(marked)} | unmarked {unmarked} "
-              f"| cumulative ${totals[sleeve]:+,.2f}")
+              f"| paper ${totals[sleeve]:+,.2f} | economic ${econ_totals[sleeve]:+,.2f}")
         if apply:
             # Back up before rewriting history — same discipline as the trade-book repairs.
             try:
@@ -161,6 +168,9 @@ def main() -> int:
                     unrealized_pnl=float(r["unrealized"]),
                     daily_pnl_override=float(r["daily"]),
                     cumulative_pnl_override=float(r["cumulative"]),
+                    dividend_accrual=float(r.get("dividend") or 0.0),
+                    cumulative_dividend=float(r.get("cumulative_dividend") or 0.0),
+                    cumulative_economic=float(r.get("cumulative_economic") or r["cumulative"]),
                 ):
                     n += 1
             print(f"          wrote {n} row(s) to {tracker.DB_PATH.name}")

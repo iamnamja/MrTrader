@@ -112,6 +112,7 @@ def compute_daily_pnl(
     *,
     sleeve: Optional[str] = None,
     db=None,
+    divs: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """Per-date ``{date, realized, unrealized, position_value, cost_basis, positions}``.
 
@@ -184,9 +185,15 @@ def compute_daily_pnl(
             log.warning("sleeve_pnl %s %s: %d held symbol(s) unpriced in snapshot: %s",
                         sleeve or "all", d, len(unpriced), ",".join(sorted(unpriced)))
 
+        # Uncredited dividend on the book held THIS date. Kept OUT of realized/unrealized so the
+        # series still reconciles against the broker's NAV — see app.live_trading.dividends.
+        from app.live_trading.dividends import accrual_for
+        dividend = accrual_for(positions, d, divs)
+
         out.append({
             "date": d,
             "realized": realized,
+            "dividend": dividend,
             # Only meaningful when every held symbol is priced; otherwise the level is partial.
             "unrealized": (position_value - cost_basis) if not unpriced else None,
             "position_value": position_value,
@@ -243,9 +250,19 @@ def record_daily_pnl(asof: Optional[str] = None, *, alpaca=None, db=None) -> Dic
             snaps = [s for s in snaps if s["date"] <= str(asof)[:10]]
         fills = alpaca.get_all_orders()
 
+        # Uncredited dividends — Alpaca paper pays none, so the P&L above is price-only and
+        # understates the book. Recorded SEPARATELY (never folded into daily_pnl) so the series
+        # keeps reconciling against broker NAV. See app/live_trading/dividends.py.
+        from app.live_trading.dividends import fetch_dividends
+        _syms = set()
+        for _s in snaps:
+            _syms |= set(_s.get("prices") or {})
+        divs = fetch_dividends(_syms, snaps[0]["date"])
+
         from app.live_trading import cash_tracker, trend_tracker
         for sleeve, tracker in (("trend", trend_tracker), ("cash", cash_tracker)):
-            rows = daily_pnl_series(compute_daily_pnl(fills, snaps, sleeve=sleeve, db=db))
+            rows = daily_pnl_series(
+                compute_daily_pnl(fills, snaps, sleeve=sleeve, db=db, divs=divs))
             if not rows:
                 continue
             last = rows[-1]
@@ -263,12 +280,17 @@ def record_daily_pnl(asof: Optional[str] = None, *, alpaca=None, db=None) -> Dic
                 # day-one P&L.
                 daily_pnl_override=(float(last["daily"]) if last.get("daily") is not None else None),
                 cumulative_pnl_override=float(last["cumulative"]),
+                dividend_accrual=float(last.get("dividend") or 0.0),
+                cumulative_dividend=float(last.get("cumulative_dividend") or 0.0),
+                cumulative_economic=float(last.get("cumulative_economic") or last["cumulative"]),
             )
             out["written"][sleeve] = {
                 "date": last["date"], "realized": round(float(last["realized"]), 2),
                 "unrealized": round(float(last["unrealized"]), 2),
                 "daily": (round(float(last["daily"]), 2) if last.get("daily") is not None else None),
                 "cumulative": round(float(last["cumulative"]), 2),
+                "cumulative_economic": round(
+                    float(last.get("cumulative_economic") or last["cumulative"]), 2),
             }
         log.info("sleeve P&L recorded: %s", out["written"])
     except Exception as exc:  # noqa: BLE001 — never fail the EOD job over a scorecard write
@@ -290,17 +312,23 @@ def daily_pnl_series(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     first_marked = next((r for r in rows if r.get("unrealized") is not None), None)
     prior_unreal = float(first_marked["unrealized"]) if first_marked else 0.0
     cum = 0.0
+    cum_div = 0.0          # tracked ALONGSIDE, never added into `daily`/`cumulative`
     out = []
     for r in rows:
+        cum_div += float(r.get("dividend") or 0.0)
         u = r.get("unrealized")
         if u is None:
             # Unmarked day: cannot compute a delta. Carry cumulative unchanged rather than
             # absorbing the gap as a gain, and leave prior_unreal alone so the next marked day
             # measures against the last KNOWN level (a multi-day move, correctly attributed).
-            out.append({**r, "daily": None, "cumulative": cum})
+            out.append({**r, "daily": None, "cumulative": cum,
+                        "cumulative_dividend": cum_div, "cumulative_economic": cum + cum_div})
             continue
         daily = float(r["realized"]) + (float(u) - prior_unreal)
         cum += daily
         prior_unreal = float(u)
-        out.append({**r, "daily": daily, "cumulative": cum})
+        out.append({**r, "daily": daily, "cumulative": cum,
+                    # `cumulative` is what the broker shows (and reconciles).
+                    # `cumulative_economic` is what live capital would have earned.
+                    "cumulative_dividend": cum_div, "cumulative_economic": cum + cum_div})
     return out

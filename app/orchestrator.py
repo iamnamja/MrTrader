@@ -693,11 +693,50 @@ class AgentOrchestrator:
             from app.trading_modes import mode_manager
             return mode_manager.mode.value
         probe("trading_mode", _mode)
+
+        # Standing invariants. The beacon proves the HOST is alive; these prove the BOOKKEEPING
+        # and the SAFETY CONTROLS are. Every serious defect in the 2026-08/09 review was caught by
+        # checking arithmetic against the broker — but only because someone happened to look, which
+        # is why a pinned model ran 7 weeks and an inert crash governor 5. Riding the beacon means
+        # a breach lands in mail already being read every morning.
+        def _pnl():
+            # Two honest numbers: what the broker shows (reconciles) and what live capital would
+            # have earned. Alpaca paper credits no dividends, so the first understates the book —
+            # measured at $463 over the first 2.5 months, enough to flip the headline sign.
+            from app.live_trading import cash_tracker, trend_tracker
+            paper = econ = 0.0
+            for tracker, table in ((trend_tracker, "trend_daily"), (cash_tracker, "cash_daily")):
+                # Use the tracker's OWN _conn(): it applies the schema + column migrations, so a
+                # fresh or redirected DB yields an empty result rather than "no such table".
+                c = tracker._conn()
+                row = c.execute(
+                    f"SELECT cumulative_pnl, cumulative_economic FROM {table} "
+                    f"WHERE cumulative_pnl IS NOT NULL ORDER BY trade_date DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    paper += float(row[0] or 0.0)
+                    econ += float(row[1] if row[1] is not None else (row[0] or 0.0))
+            return f"paper ${paper:+,.2f} | economic ${econ:+,.2f} (uncredited divs ${econ-paper:+,.2f})"
+        probe("sleeve_pnl", _pnl)
+
+        def _inv():
+            from app.live_trading import invariants
+            rep = invariants.run_all()
+            p["invariants_detail"] = [
+                {"name": c.name, "ok": c.ok, "detail": c.detail} for c in rep.checks
+            ]
+            return rep.summary() if not rep.ok else f"all {len(rep.checks)} OK"
+        probe("invariants", _inv)
+
         # DEGRADED on a probe failure OR a live reconciliation break — the two things that
         # mean "up, but do not assume it is working".
         recon_bad = isinstance(p.get("reconciliation"), str) and "MATCH" not in p["reconciliation"]
         if recon_bad:
             degraded.append("reconciliation not MATCH")
+        inv_detail = p.get("invariants_detail") or []
+        breached = [c["name"] for c in inv_detail if c.get("ok") is not True]
+        if breached:
+            degraded.append("invariant breach: " + ", ".join(breached))
         p["degraded"] = degraded
         p["all_ok"] = not degraded
 

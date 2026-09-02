@@ -531,11 +531,22 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Equity", p.get("equity")),
             ("Open positions", p.get("positions")),
             ("Reconciliation", p.get("reconciliation")),
+            ("Sleeve P&L", p.get("sleeve_pnl")),
+            ("Invariants", p.get("invariants")),
             ("Market", p.get("market")),
         ]
         if p.get("degraded"):
             rows.append(("&#9888; Degraded", "; ".join(p["degraded"])))
         body = _section("Daily liveness beacon", rows)
+        # Per-invariant detail. Breaches first — the whole point is that a silent failure becomes
+        # something you read at breakfast rather than discover weeks later.
+        _inv = p.get("invariants_detail") or []
+        if _inv:
+            _inv = sorted(_inv, key=lambda c: c.get("ok") is True)
+            body += _section("Invariants", [
+                (("&#10007; " if c.get("ok") is not True else "&#10003; ") + str(c.get("name")),
+                 str(c.get("detail") or "")) for c in _inv
+            ])
         body += ("<p style='color:#666;font-size:13px'>You receive this once a day. "
                  "<strong>If this email stops arriving, the host is down</strong> — the in-process "
                  "watchdog cannot alert on its own death.</p>")

@@ -53,11 +53,30 @@ CREATE TABLE IF NOT EXISTS trend_daily (
 """
 
 
+# Dividend columns added 2026-09-02. Alpaca paper credits NO dividends, so the P&L series above
+# is price-only and understates the book. These record what a LIVE account would have received,
+# kept strictly SEPARATE so `daily_pnl`/`cumulative_pnl` keep reconciling against broker NAV.
+# See app/live_trading/dividends.py.
+_ADDED_COLUMNS = {
+    "dividend_accrual": "REAL",       # uncredited dividend on THIS date
+    "cumulative_dividend": "REAL",    # running total
+    "cumulative_economic": "REAL",    # cumulative_pnl + cumulative_dividend
+}
+
+
+def _ensure_columns(c: sqlite3.Connection) -> None:
+    have = {r[1] for r in c.execute("PRAGMA table_info(trend_daily)").fetchall()}
+    for col, typ in _ADDED_COLUMNS.items():
+        if col not in have:
+            c.execute(f"ALTER TABLE trend_daily ADD COLUMN {col} {typ}")
+
+
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), timeout=10)
     c.execute("PRAGMA journal_mode=WAL;")
     c.executescript(_SCHEMA)
+    _ensure_columns(c)
     return c
 
 
@@ -71,6 +90,9 @@ def record_daily(
     unrealized_pnl: float | None = None,
     daily_pnl_override: float | None = None,
     cumulative_pnl_override: float | None = None,
+    dividend_accrual: float | None = None,
+    cumulative_dividend: float | None = None,
+    cumulative_economic: float | None = None,
     extra: dict[str, Any] | None = None,
 ) -> bool:
     """Upsert today's trend tracking row. Never raises.
@@ -124,7 +146,7 @@ def record_daily(
             c.execute(
                 "INSERT INTO trend_daily(trade_date, n_positions, gross_deployed, "
                 "turnover, realized_pnl, unrealized_pnl, daily_pnl, cumulative_pnl, "
-                "extra, created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "extra, created_at, dividend_accrual, cumulative_dividend, cumulative_economic) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(trade_date) DO UPDATE SET "
                 "n_positions=COALESCE(excluded.n_positions, n_positions), "
                 "gross_deployed=COALESCE(excluded.gross_deployed, gross_deployed), "
@@ -133,12 +155,16 @@ def record_daily(
                 "unrealized_pnl=COALESCE(excluded.unrealized_pnl, unrealized_pnl), "
                 "daily_pnl=COALESCE(excluded.daily_pnl, daily_pnl), "
                 "cumulative_pnl=COALESCE(excluded.cumulative_pnl, cumulative_pnl), "
-                "extra=COALESCE(excluded.extra, extra)",
+                "extra=COALESCE(excluded.extra, extra), "
+                "dividend_accrual=COALESCE(excluded.dividend_accrual, dividend_accrual), "
+                "cumulative_dividend=COALESCE(excluded.cumulative_dividend, cumulative_dividend), "
+                "cumulative_economic=COALESCE(excluded.cumulative_economic, cumulative_economic)",
                 (
                     td, _i(n_positions), _f(gross_deployed), _f(turnover),
                     _f(realized_pnl), _f(unrealized_pnl), daily_pnl, cumulative_pnl,
                     (json.dumps(extra, default=str) if extra is not None else None),
-                    time.time(),
+                    time.time(), _f(dividend_accrual), _f(cumulative_dividend),
+                    _f(cumulative_economic),
                 ),
             )
         return True

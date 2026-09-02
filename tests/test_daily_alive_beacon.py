@@ -18,6 +18,13 @@ from app.orchestrator import AgentOrchestrator
 from app.scheduler import AgentScheduler
 
 
+def _all_ok_invariants():
+    """An all-passing InvariantReport, so the beacon tests exercise the BEACON, not the checks."""
+    from app.live_trading.invariants import Check, InvariantReport
+    return InvariantReport([Check("account_identity", True, "residual $0.00"),
+                            Check("position_reconcile", True, "MATCH")])
+
+
 def _run_beacon(orch):
     """Invoke the beacon, capturing the enqueued payload instead of writing to the queue."""
     captured = {}
@@ -68,6 +75,11 @@ class TestBeaconSends:
             patch("app.live_trading.reconciliation.db_expected_positions", return_value={}),
             patch("app.live_trading.reconciliation.db_pending_positions", return_value={}),
             patch("app.live_trading.reconciliation.reconcile"),
+            # The invariants probe reaches the broker's activities API and the tracker DBs of its
+            # own accord; unpatched it degrades the beacon for reasons these tests do not assert.
+            # Its own behaviour is covered in tests/test_invariants.py.
+            patch("app.live_trading.invariants.run_all",
+                  return_value=_all_ok_invariants()),
         ]
 
     def _run_hermetic(self, recon_status):
