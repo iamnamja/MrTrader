@@ -4,6 +4,64 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-02 — `slippage_drag_bps_day` never measured slippage. Real execution cost is $9; the metric was renamed and its contaminated window excluded.
+
+**Context.** The weekly back-validation email reported "Execution drag: −0.67 bps/day" — roughly −1.7%/yr against an expected gross edge of ~3.3%/yr. Read at face value, implementation was eating half the edge, and the obvious remedy was to stop sending market orders at 09:45 on the weekly rebalance.
+
+**The metric cannot see execution.** `daily_rows` prices BOTH books on the SAME Alpaca closes:
+
+```
+actual_t   = Σ (qty_{t-1}·px_{t-1}/nav_{t-1}) · (px_t/px_{t-1} − 1)
+intended_t = Σ  intended_w_sym(≤t-1)          · (px_t/px_{t-1} − 1)
+```
+
+Fill price appears nowhere. The number is the return difference between the weights we HELD and the weights we INTENDED — a tracking statistic. The name asserted a cost it is structurally incapable of measuring, and the name is what got believed.
+
+**Measured execution cost, for the first time.** Every fill compared against the minute-VWAP of the minute it filled in, 2026-06-17 → 09-02: **76 fills, $211,557 notional, +0.42 bps — $9 total.** Per symbol: DBC +2.22, UUP +1.51, EEM +0.89, SGOV +0.61, EFA −0.29, QQQ −0.38, IWM −1.76, SPY −1.90, GLD −3.68 (negative = filled better than VWAP). Fill times: 68 at 09:45, 8 at 09:50. Minute-VWAP is mildly lenient — a large order partly sets the VWAP it is judged against — but at $6k clips in ETFs trading hundreds of millions daily that impact is negligible.
+
+**Decision: market orders at 09:45 stay.** There is no cost here to recover. Limit orders would trade $9 of savings for real non-fill risk in a strategy whose premise is holding the target weights.
+
+Two related checks came back clean and are recorded so they are not re-litigated:
+- **Turnover is not excessive.** Against prior-day holdings marked at current prices, executed notional runs 1.0–1.3× required on most rebalances. The one outlier is 2026-08-24 (DBC $322 required, $6,664 traded) — the double-buy bug, not a policy problem.
+- **Signal churn is not a cost problem.** EEM exits and re-enters weekly, GLD appeared for exactly one week. At 0.42 bps that costs nothing. If this churn hurts, it hurts through signal quality, not friction — a different question, and out of scope under the moratorium.
+
+**Decision: rename + exclude the contaminated window.**
+1. `slippage_drag_bps_day` → **`tracking_drag_bps_day`**, with the arithmetic reason stated at the field. `notifier` keeps a `.get` fallback for payloads queued before the rename.
+2. `CONTAMINATED_WINDOWS` excludes **2026-08-24 → 08-28**: the snapshots recorded DBC qty 0 and EEM qty 0 against intended weights of 0.067 each, on a day the blotter shows both were bought (DBC 214 @ 31.14, EEM 101 @ 65.86). Actual exposure read 0.353 vs 0.500 intended — a $13.3k / 13pp hole that persisted five sessions until the 08-31 rebalance. Same root cause as the untagged-rows double-buy (DECISIONS 2026-08-30): the sleeve was fixed, the recorded data was not.
+
+**Why exclusion is not cherry-picking.** The metric compares the book we held against the book we intended. On these days we do not possess a faithful record of the book we held, so `actual` is wrong as an INPUT rather than informative as an outcome. A day where we genuinely failed to reach target belongs in the series; a day where the recorder lied does not. Excluded days are counted and named in the report note — never dropped silently.
+
+**A pairing subtlety, caught by a test rather than by reading.** A row's `actual` is built from the PRIOR snapshot's positions, so a bad snapshot contaminates the FOLLOWING row, not its own. Filtering on row date alone left the last poisoned row in and dropped a clean one at the front. `daily_rows` now carries `prev_date` and exclusion checks both ends of the pair.
+
+**Auto-detection, deliberately warn-only.** `exposure_gaps()` flags rebalance days where |Σw_actual − Σw_intended| > 10pp (normal ≈ 1pp; 08-24 was 14.7pp) into the log and the report note. It does NOT auto-exclude: the identical symptom can mean the book genuinely failed to reach target, which is real drag and must stay in the series. A metric that auto-excludes on this symptom would quietly discard its own bad news.
+
+**Consequences.** Over 2026-06-17 → 09-02 the headline moves **−0.67 → −0.42 bps/day** and the verdict **WATCH → PASS** (corr 0.991, TE 0.76%/yr against a 2% threshold, drift −1.05%/yr against 1.5%). The residual −0.42 bps/day is not execution: the largest remaining candidate is the structural artifact of comparing a fixed carried-forward intent against a book whose weights drift with prices between weekly rebalances. Not chased — it is a measurement convention, not money.
+
+**The transferable lesson.** A number was believed for weeks because of what it was called, and the error survived until someone checked what it computed. It also cost the wrong recommendation: "slippage is the highest-value work left" was stated on this evidence and was wrong. Metric names are load-bearing.
+
+---
+
+## 2026-09-02 — A second, four-month-old brain for the same account was one `docker start` away. The compose `app` service is now opt-in via profile.
+
+**Context.** The live system runs the app **natively** (`serve.ps1` → uvicorn on :8000) against containerized postgres + redis. But `docker-compose.yml` also defined an `app` service — a fully self-contained second copy of the trading system pointed at the same Alpaca account. The container `mrtrader_app` was found still present on the box, built from an **April image**: 4-month-old code, model v4 (live is v229/v41). Two details made it live ammunition rather than clutter:
+
+- `restart: unless-stopped`
+- exit code **137** — SIGKILL, not a clean `docker stop`
+
+A container killed rather than stopped is one the daemon can consider eligible to come back on the next Docker Desktop start. Had it come back, two processes would have been placing orders into one account off different code, different models, and different position state — and the reconciliation invariant would have reported the resulting break as a mystery, because nothing in our monitoring knows the second writer exists.
+
+**Nothing detected this.** The port-8000 guard in `serve.ps1` catches the reverse direction (container up, then native start). It cannot catch the container coming up *underneath* a healthy native process, because Docker publishes :8000 only if it wins the bind — and the trading loop does not need the port to trade. `start.ps1` line 23 (`docker stop mrtrader_app`) is a race, not a guard: it only helps if we start first.
+
+**Decision.**
+1. Removed the container (`docker rm mrtrader_app`), plus `lucid_davinci`, a stray 4-month-old `postgres:16-alpine`. Bind mounts only (`reports/`, `frontend/dist`), no named volumes — no data was held by either.
+2. Put the `app` service behind `profiles: ["container"]`. Plain `docker compose up` now resolves to **postgres + redis only** (verified via `docker compose config --services`). Running the containerized app is now a deliberate act: `docker compose --profile container up app`.
+
+**Rationale for the profile over deletion.** The service is a legitimate deployment path we may want later; the defect was that it was reachable *by accident* from the most common command anyone types in a repo root. A profile keeps the capability and removes the footgun. `start.ps1`'s defensive `docker stop` is retained — belt and braces, now that it is no longer the only thing standing between us and a double writer.
+
+**Consequences.** No behavior change to the live system. The near-miss is the point: this sat one command away for four months, and we found it by auditing stopped containers rather than by any alarm. Generalizes to the standing lesson from the 08-22 fold and the VIX3M outage — *the dangerous failures are the silent ones*, and a stopped-but-present container is a silent failure waiting for a reboot.
+
+---
+
 ## 2026-09-01 — The crash governor had gone silently inert: yfinance stopped supplying ^VIX3M, so the trend sleeve lost its only de-risk mechanism. FRED added as a fallback.
 
 **Found by asking whether one WARNING line was a one-off.** The 2026-08-31 rebalance logged `crash governor: insufficient/invalid signal -> mult=1.0 (fail-safe)` — the ONLY such line in all of 2026. It was not a blip: the governor logs nothing on a clean pass (`mult == 1.0`), so the four prior rebalances were genuine successes and this was a first failure at the end of a long decay.

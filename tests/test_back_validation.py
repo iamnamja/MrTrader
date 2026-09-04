@@ -355,3 +355,82 @@ def test_schema_migration_is_idempotent_on_legacy_db(bv):
         with bv._conn() as c:
             cols = {r[1] for r in c.execute("PRAGMA table_info(trend_backval_daily)").fetchall()}
     assert {"crash_mult", "credit_mult", "ladder_mult", "ungoverned_weights"} <= cols
+
+
+# ── contamination handling (2026-09-02) ───────────────────────────────────────
+# The 2026-08-24 defect: the snapshot recorded qty 0 for DBC and EEM on a day the blotter shows
+# both were bought. `actual` was therefore wrong as an INPUT, not informative as an outcome, and
+# it dragged the headline number for five sessions. These tests pin the two halves of the response
+# — deterministic exclusion of days we know lied, and a warning for days that look like the next
+# instance — and the boundary between them.
+class TestContaminatedWindows:
+    def test_excludes_only_dates_inside_a_window(self, bv, monkeypatch):
+        monkeypatch.setattr(bv, "CONTAMINATED_WINDOWS", (("2026-08-24", "2026-08-28", "x"),))
+        ds = ("2026-08-21", "2026-08-24", "2026-08-26", "2026-08-28", "2026-08-31")
+        rows = [{"date": d, "prev_date": p, "actual": 0.0, "intended": 0.0}
+                for p, d in zip(("2026-08-20",) + ds[:-1], ds)]
+        kept, dropped = bv.exclude_contaminated(rows)
+        # 08-31 goes too: its `actual` is built from the 08-28 snapshot, which is inside the window.
+        assert [r["date"] for r in kept] == ["2026-08-21"]                 # bounds inclusive
+        assert dropped == ["2026-08-24", "2026-08-26", "2026-08-28", "2026-08-31"]
+
+    def test_empty_window_list_is_a_passthrough(self, bv, monkeypatch):
+        monkeypatch.setattr(bv, "CONTAMINATED_WINDOWS", ())
+        rows = [{"date": "2026-08-24", "prev_date": "2026-08-21",
+                 "actual": 1.0, "intended": 0.0}]
+        kept, dropped = bv.exclude_contaminated(rows)
+        assert kept == rows and dropped == []
+
+    def test_exclusion_moves_the_drag_and_is_disclosed(self, bv, monkeypatch):
+        """The point of the change: a contaminated day must stop biasing the headline, and the
+        report must SAY it was dropped. A silent exclusion is worse than the bias."""
+        monkeypatch.setattr(bv, "CONTAMINATED_WINDOWS", (("2026-06-03", "2026-06-03", "x"),))
+        # SPY +10% a step, holdings rescaled each day to keep actual exactly at the intended
+        # 0.125 of NAV — so a clean series has zero drag by construction and any drag the test
+        # sees is the contamination. 06-03's snapshot claims a flat book: the 2026-08-24 shape.
+        dates = ("2026-06-01", "2026-06-02", "2026-06-03",
+                 "2026-06-04", "2026-06-05", "2026-06-08")
+        for i, d in enumerate(dates):
+            px = 10.0 * (1.1 ** i)
+            qty = 0.0 if d == "2026-06-03" else 12_500.0 / px
+            _insert(bv, td=d, prices={"SPY": px}, positions={"SPY": qty},
+                    intended={"SPY": 0.125}, crash=1.0)
+        with_bad = bv.compute_report()
+        monkeypatch.setattr(bv, "CONTAMINATED_WINDOWS", ())
+        without = bv.compute_report()
+        # both the 06-03 row and the 06-04 row (whose `actual` reads 06-03's positions) go
+        assert with_bad.n_days == without.n_days - 2
+        assert with_bad.tracking_drag_bps_day == pytest.approx(0.0, abs=1e-6)
+        # One poisoned row in five fabricates -25 bps/day of "drag" that never happened.
+        assert without.tracking_drag_bps_day < -10
+        assert "excluded as contaminated" in (with_bad.note or "")
+
+
+class TestExposureGapDetector:
+    def _snap(self, td, qty, w):
+        return {"trade_date": td, "nav": 100_000.0, "prices": json.dumps({"SPY": 10.0}),
+                "positions": json.dumps({"SPY": qty}),
+                "intended_weights": (json.dumps(w) if w is not None else None)}
+
+    def test_flags_a_large_gap(self, bv):
+        # holds 0.35 of NAV against 0.50 intended — the real 2026-08-24 magnitude
+        g = bv.exposure_gaps([self._snap("2026-08-24", 3500.0, {"SPY": 0.50})])
+        assert len(g) == 1 and g[0]["gap"] == pytest.approx(-0.15)
+
+    def test_ignores_ordinary_drift(self, bv):
+        assert bv.exposure_gaps([self._snap("2026-08-17", 4900.0, {"SPY": 0.50})]) == []
+
+    def test_skips_non_rebalance_days(self, bv):
+        """Intent is carried, not restated, so a null intended_weights is not a zero-weight book —
+        reading it as one would flag every non-rebalance day in the history."""
+        assert bv.exposure_gaps([self._snap("2026-08-26", 3500.0, None)]) == []
+
+    def test_a_gap_warns_but_does_not_exclude(self, bv):
+        """A book that genuinely failed to reach target is real drag and must stay in the series.
+        Auto-excluding on this symptom would let the metric discard its own bad news."""
+        for d, q in (("2026-06-01", 1250.0), ("2026-06-02", 200.0), ("2026-06-03", 200.0)):
+            _insert(bv, td=d, prices={"SPY": 10.0 * (1.1 ** int(d[-1]))}, positions={"SPY": q},
+                    intended={"SPY": 0.125}, crash=1.0)
+        rep = bv.compute_report()
+        assert "exposure gap" in (rep.note or "")
+        assert "excluded as contaminated" not in (rep.note or "")

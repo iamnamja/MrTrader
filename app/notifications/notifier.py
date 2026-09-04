@@ -442,7 +442,10 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
             ("Intended-vs-actual correlation", p.get("corr")),
             ("Annualized tracking error", p.get("tracking_error_ann")),
             ("Annualized drift (actual - intended)", p.get("drift_ann")),
-            ("Execution drag (bps/day)", p.get("slippage_drag_bps_day")),
+            # Weight-tracking drag, NOT execution cost — both books are priced on the same closes.
+            # The `.get` fallback covers payloads queued before the 2026-09-02 rename.
+            ("Tracking drag, held-vs-intended weights (bps/day)",
+             p.get("tracking_drag_bps_day", p.get("slippage_drag_bps_day"))),
             ("Actual cum return (NAV contrib)", p.get("actual_cum_return")),
             ("Intended cum return (NAV contrib)", p.get("intended_cum_return")),
             ("Governor-active days", p.get("governor_days")),

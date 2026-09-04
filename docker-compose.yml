@@ -29,7 +29,20 @@ services:
       timeout: 5s
       retries: 5
 
+  # NOT started by `docker compose up` — see the profile below.
+  #
+  # The live system runs the app NATIVELY (serve.ps1 -> uvicorn on :8000) against the postgres
+  # and redis containers. This service is a second, containerized brain for the same account.
+  # On 2026-08-26 the container was found still present from an April image (model v4, 4-month-old
+  # code) with `restart: unless-stopped` and exit code 137 — i.e. SIGKILLed, never cleanly stopped,
+  # so the daemon considered it eligible to come back on the next Docker start. Had it, two
+  # processes would have traded the same Alpaca account off different code and different models.
+  #
+  # `profiles` makes it opt-in: plain `docker compose up` starts postgres + redis only. To run the
+  # containerized app deliberately: `docker compose --profile container up app` (and stop the
+  # native uvicorn first — the port-8000 guard in serve.ps1 covers the reverse direction).
   app:
+    profiles: ["container"]
     build: .
     container_name: mrtrader_app
     ports:

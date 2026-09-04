@@ -215,9 +215,14 @@ Honest disagreement is signal. Don't paper over these.
   rebalances on a different calendar and uses split/div-ADJUSTED yfinance closes vs Alpaca RAW marks — both
   inject divergence unrelated to execution). Instead the sleeve's OWN intended weights (captured at rebalance,
   post inverse-vol + alloc + governor) are replayed on the SAME Alpaca price panel + SAME calendar as the
-  actual held book, so the only thing that can differ is execution friction (whole-share rounding, 80% gross
-  cap, per-name caps, PEAD crowding, partial/failed fills, timing). Reports correlation / annualized tracking
-  error / drift / execution drag + a PASS/WATCH/FAIL/BUILDING verdict; daily EOD snapshot + weekly email wired
+  actual held book, so the only thing that can differ is the WEIGHTS (whole-share rounding, 80% gross
+  cap, per-name caps, PEAD crowding, partial/failed fills, timing). [Corrected 2026-09-02: this
+  paragraph originally called that difference "execution friction", and the metric was named
+  `slippage_drag_bps_day` to match. Both books are priced on the same closes, so fill price is
+  algebraically absent — it cannot see slippage. Renamed `tracking_drag_bps_day`; measured execution
+  slippage is a separate number (+0.42 bps, $9 on $211k). See DECISIONS 2026-09-02.] Reports
+  correlation / annualized tracking error / drift / tracking drag + a PASS/WATCH/FAIL/BUILDING
+  verdict; daily EOD snapshot + weekly email wired
   into the orchestrator. Also fixed a latent bug: `trend_weekly` emails were being dropped (unregistered
   event). 2 Opus deep-dives (CRITICAL caught: shadow runs would record intent vs an empty book → spurious
   FAIL; fixed — live-only). 17 tests; full suite 3564 pass; report-only. **Success criterion met: a weekly
