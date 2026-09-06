@@ -207,6 +207,7 @@ class TestVixTermRatioFeature:
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
+        monkeypatch.setattr(rf, "_macro_series", lambda f: None)
         builder = rf.RegimeFeatureBuilder()
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
         vix_s = pd.Series(
@@ -491,30 +492,30 @@ class TestBackfillResumesFromTheLastRow:
     stale red it replaced."""
 
     def test_start_none_resumes_from_the_last_existing_row(self, monkeypatch):
-        import scripts.backfill_regime_snapshots as bf
+        from app.ml import regime_backfill as bf
 
         captured = {}
         monkeypatch.setattr(bf, "last_backfill_date", lambda: date(2026, 5, 7))
 
         def _fake_days(start, end):
-            captured["start"] = start
+            captured.setdefault("start", start)
             return []
-        monkeypatch.setattr(bf, "_trading_days_between", _fake_days)
+        monkeypatch.setattr(bf, "trading_days_between", _fake_days)
 
         bf.extend_backfill(None, date(2026, 9, 5))
         # resumes the day AFTER the last row — not today-30
         assert captured["start"] == date(2026, 5, 8)
 
     def test_start_none_on_an_empty_table_falls_back_to_a_lookback(self, monkeypatch):
-        import scripts.backfill_regime_snapshots as bf
+        from app.ml import regime_backfill as bf
 
         captured = {}
         monkeypatch.setattr(bf, "last_backfill_date", lambda: None)
 
         def _fake_days(start, end):
-            captured["start"] = start
+            captured.setdefault("start", start)
             return []
-        monkeypatch.setattr(bf, "_trading_days_between", _fake_days)
+        monkeypatch.setattr(bf, "trading_days_between", _fake_days)
 
         bf.extend_backfill(None, date(2026, 9, 5))
         assert captured["start"] == date(2026, 9, 5) - timedelta(days=30)
@@ -562,3 +563,124 @@ class TestLiveScoringFeatureContract:
 
         src = inspect.getsource(RegimeModel.score)
         assert "_vix_level" in src and "_legacy_fallback" in src
+
+
+# ── fourth-review fixes ──────────────────────────────────────────────────────
+
+class TestVixTermRatioIsDatePaired:
+    """The two legs must come from the SAME date. Resolving them through independent
+    'within 5 days' lookups divides closes from different days — and that is the DEFAULT
+    live path, because yfinance ^VIX3M is ~95% NaN so the denominator comes from FRED,
+    which lags a business day behind the yfinance numerator."""
+
+    def _s(self, pairs):
+        return pd.Series([p[1] for p in pairs],
+                         index=pd.to_datetime([p[0] for p in pairs]), name="close")
+
+    def test_same_date_pair_is_used(self, monkeypatch):
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda f: None)
+        vix = self._s([("2026-09-03", 14.32), ("2026-09-04", 14.53)])
+        v3m = self._s([("2026-09-03", 17.42), ("2026-09-04", 17.61)])
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4)) == pytest.approx(
+            round(14.53 / 17.61, 4))
+
+    def test_a_lagging_denominator_does_not_pair_with_todays_numerator(self, monkeypatch):
+        """THE BUG: VIX spikes 15 -> 25 while VIX3M is only published through yesterday.
+        Unpaired, 25/16 = 1.5625 crosses the 1.05 backwardation threshold and flips the
+        rule label to RISK_OFF. Paired, we use the last day carrying BOTH."""
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda f: None)
+        vix = self._s([("2026-09-03", 15.0), ("2026-09-04", 25.0)])
+        v3m = self._s([("2026-09-03", 16.0)])            # denominator lags one day
+        ratio = rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4))
+        assert ratio == pytest.approx(round(15.0 / 16.0, 4))
+        assert ratio < 1.05                              # NOT spurious backwardation
+
+    def test_returns_none_when_no_date_carries_both(self, monkeypatch):
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda f: None)
+        vix = self._s([("2026-09-04", 15.0)])
+        v3m = self._s([("2026-07-17", 20.54)])           # never overlaps in-window
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4)) is None
+
+    def test_yfinance_still_wins_per_date_over_macro(self, monkeypatch):
+        import app.ml.regime_features as rf
+
+        macro = {"vix": self._s([("2026-09-04", 99.0)]),
+                 "vix3m": self._s([("2026-09-04", 17.61)])}
+        monkeypatch.setattr(rf, "_macro_series", lambda f: macro.get(f))
+        vix = self._s([("2026-09-04", 14.53)])
+        assert rf._vix_term_ratio_as_of(vix, None, date(2026, 9, 4)) == pytest.approx(
+            round(14.53 / 17.61, 4))
+
+
+class TestSpyStalenessGuard:
+    def test_stale_spy_leaves_trend_features_null(self, monkeypatch):
+        """spy_ma200_dist and spy_20d_return are in the trainer's core set AND drive
+        label_regime_day — a frozen SPY feed must not pin them to their last value."""
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda f: None)
+        builder = rf.RegimeFeatureBuilder()
+        feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
+        idx = pd.date_range(end=pd.Timestamp("2026-07-17"), periods=300, freq="D")
+        stale = pd.DataFrame({"close": [500.0] * len(idx)}, index=idx)
+        builder._add_spy_features(feats, stale, date(2026, 9, 4))
+        assert feats["spy_ma200_dist"] != feats["spy_ma200_dist"]     # NaN
+        assert feats["spy_20d_return"] != feats["spy_20d_return"]
+
+
+class TestBackfillNeverWritesUnusableRows:
+    """fetch_all_prefetched returns {} on a batch-download failure; {} still takes the
+    prefetched branch and build() yields a full dict of NaN — NOT None. Under a forced
+    rewrite that would NULL a fortnight of good rows AND advance last_backfill_date past
+    them, making the damage permanent and invisible."""
+
+    def test_empty_prefetch_writes_nothing(self, monkeypatch):
+        from app.ml import regime_backfill as rb
+
+        monkeypatch.setattr(rb, "last_backfill_date", lambda: date(2026, 8, 20))
+        monkeypatch.setattr(
+            rb.RegimeFeatureBuilder, "fetch_all_prefetched",
+            staticmethod(lambda *a, **k: {}))
+        wrote = []
+        out = rb.extend_backfill(None, date(2026, 9, 5), rewrite_recent_days=14,
+                                 upsert=lambda *a, **k: wrote.append(1) or True)
+        assert wrote == []
+        assert out["ok"] == 0 and out["unusable"] == out["days"] > 0
+
+    def test_all_nan_features_are_not_written(self, monkeypatch):
+        from app.ml import regime_backfill as rb
+
+        monkeypatch.setattr(rb, "last_backfill_date", lambda: date(2026, 9, 1))
+        monkeypatch.setattr(
+            rb.RegimeFeatureBuilder, "fetch_all_prefetched",
+            staticmethod(lambda *a, **k: {"SPY": object()}))
+        monkeypatch.setattr(
+            rb.RegimeFeatureBuilder, "build",
+            lambda self, **k: {f: float("nan") for f in rb._REQUIRED_FEATURES})
+        wrote = []
+        out = rb.extend_backfill(None, date(2026, 9, 5),
+                                 upsert=lambda *a, **k: wrote.append(1) or True)
+        assert wrote == []
+        assert out["ok"] == 0 and out["unusable"] > 0
+
+    def test_usable_rows_are_written(self, monkeypatch):
+        from app.ml import regime_backfill as rb
+
+        monkeypatch.setattr(rb, "last_backfill_date", lambda: date(2026, 9, 1))
+        monkeypatch.setattr(
+            rb.RegimeFeatureBuilder, "fetch_all_prefetched",
+            staticmethod(lambda *a, **k: {"SPY": object()}))
+        monkeypatch.setattr(
+            rb.RegimeFeatureBuilder, "build",
+            lambda self, **k: {f: 1.0 for f in rb._REQUIRED_FEATURES})
+        wrote = []
+        out = rb.extend_backfill(None, date(2026, 9, 5),
+                                 upsert=lambda *a, **k: wrote.append(1) or True)
+        assert len(wrote) == out["ok"] > 0
+        assert out["unusable"] == 0

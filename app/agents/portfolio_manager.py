@@ -4583,8 +4583,13 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         # whether the attempt promoted or not.
         attempt_marker = MODEL_DIR / ".regime_retrain_last_attempt"
         last_attempt = attempt_marker.stat().st_mtime if attempt_marker.exists() else 0.0
-        if newest is not None:
-            age_days = (time.time() - max(newest.stat().st_mtime, last_attempt)) / 86400.0
+        # max() over BOTH, and evaluated even when `newest` is None: with no pickle on
+        # disk (fresh deploy, or every pickle deleted by successive gate failures) the
+        # sentinel is the ONLY brake, and discarding it re-runs the full pipeline every
+        # weekday forever — precisely what the sentinel was added to prevent.
+        _last_ts = max(newest.stat().st_mtime if newest is not None else 0.0, last_attempt)
+        if _last_ts > 0.0:
+            age_days = (time.time() - _last_ts) / 86400.0
             if age_days < REGIME_RETRAIN_INTERVAL_DAYS:
                 self.logger.info(
                     "Regime model is %.1f days old (interval=%d) — skipping retrain",
@@ -4609,7 +4614,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         try:
             import functools as _ft
             from datetime import date as _date, timedelta as _td
-            from scripts.backfill_regime_snapshots import extend_backfill
+            from app.ml.regime_backfill import extend_backfill
             loop = asyncio.get_event_loop()
             counts = await loop.run_in_executor(
                 None,

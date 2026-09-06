@@ -294,6 +294,27 @@ class RegimeFeatureBuilder:
         if df is None or len(df) < 5:
             return
         close = df["close"] if "close" in df.columns else df.iloc[:, 0]
+
+        # SPY needs the same staleness discipline as VIX, for the same reason: `.iloc[-1]`
+        # on a slice pins to the last available bar however old it is, and
+        # spy_ma200_dist / spy_20d_return are BOTH in load_dataset's core set AND drivers
+        # of label_regime_day. A frozen SPY feed would quietly hold the trend features at
+        # their last value — the identical failure this change fixed for VIX3M, and the
+        # one the VIX3M fix would otherwise have left one ticker away.
+        close = _freshest_vol_series(close, "spy", as_of_date)
+        if close is None or len(close) == 0:
+            return
+        close = close.dropna()
+        if len(close) < 5:
+            return
+        if not _is_fresh(close, as_of_date):
+            logger.warning(
+                "No SPY close within %d days of %s (last %s) — SPY features left NULL",
+                _MAX_VIX3M_STALENESS_DAYS, as_of_date,
+                pd.to_datetime(close.index[-1]).date(),
+            )
+            return
+
         last = float(close.iloc[-1])
 
         if len(close) >= 2:
@@ -358,11 +379,13 @@ class RegimeFeatureBuilder:
         if len(vix_s) >= 6:
             feats["vix_5d_change"] = float(vix_s.iloc[-1] / vix_s.iloc[-6] - 1.0)
 
-        vix3m_raw = _vix3m_as_of(vix3m_s, as_of_date)
-        if vix3m_raw is not None and vix3m_raw == vix3m_raw:
-            vix3m = float(np.clip(vix3m_raw, 5.0, 80.0))
-            if vix3m > 0:
-                feats["vix_term_ratio"] = round(vix / vix3m, 4)
+        # Paired by DATE — not two independent "within 5 days" lookups. See
+        # _vix_term_ratio_as_of: the denominator is normally FRED (a business day behind)
+        # while the numerator is today's yfinance close, so unpaired resolution divides
+        # closes from different days on exactly the volatile days that matter.
+        ratio = _vix_term_ratio_as_of(vix_s, vix3m_s, as_of_date)
+        if ratio is not None:
+            feats["vix_term_ratio"] = ratio
 
     def _add_breadth_features(
         self,
@@ -587,6 +610,67 @@ def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[flo
     logger.debug("No VIX3M close within %d days of %s — vix_term_ratio left NULL",
                  _MAX_VIX3M_STALENESS_DAYS, as_of_date)
     return None
+
+
+def _series_as_of_map(series: Optional[pd.Series]) -> dict:
+    """{'YYYY-MM-DD': value} for a date-indexed close series; {} for None/empty."""
+    if series is None or len(series) == 0:
+        return {}
+    fresh = series.dropna()
+    if fresh.empty:
+        return {}
+    return {pd.to_datetime(d).strftime("%Y-%m-%d"): float(v) for d, v in fresh.items()}
+
+
+def _vix_term_ratio_as_of(
+    vix_s: Optional[pd.Series],
+    vix3m_s: Optional[pd.Series],
+    as_of_date: date,
+) -> Optional[float]:
+    """VIX / VIX3M for the most recent date where BOTH are available, or None.
+
+    THE TWO LEGS MUST COME FROM THE SAME DATE. Resolving them through independent
+    lookups — each merely "within 5 days of as_of" — routinely divides closes from
+    different days AND different sources, and that is the DEFAULT live path, not an edge
+    case: yfinance's ^VIX3M is ~95% NaN, so the denominator comes from FRED, which
+    publishes with roughly a one-business-day lag, while the numerator is today's
+    yfinance close. Today's VIX over yesterday's VIX3M.
+
+    That is not a rounding difference on a vol spike. VIX 15 -> 25 against a prior-day
+    VIX3M of 16 reads 1.56 rather than the true ~1.32 — across the 1.05 backwardation
+    threshold, flipping the rule label to RISK_OFF on exactly the days the feature is
+    supposed to be trusted. macro_history's crash governor already requires both series
+    on the SAME settled date (#674); this consumer now does too.
+
+    Sources are still tried yfinance-first per leg, but the PAIRING is by date: we walk
+    back from as_of_date and take the first day that has both.
+    """
+    oldest_ok = as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)
+
+    vix_map = dict(_macro_series_map("vix"))
+    vix_map.update(_series_as_of_map(vix_s))          # yfinance wins per date
+    v3_map = dict(_macro_series_map("vix3m"))
+    v3_map.update(_series_as_of_map(vix3m_s))
+
+    probe = as_of_date
+    while probe >= oldest_ok:
+        key = probe.isoformat()
+        v, v3 = vix_map.get(key), v3_map.get(key)
+        if v is not None and v3 is not None:
+            v = float(np.clip(v, 5.0, 80.0))
+            v3 = float(np.clip(v3, 5.0, 80.0))
+            if v3 > 0:
+                return round(v / v3, 4)
+        probe -= timedelta(days=1)
+
+    logger.debug("No date within %d days of %s carries BOTH VIX and VIX3M — "
+                 "vix_term_ratio left NULL", _MAX_VIX3M_STALENESS_DAYS, as_of_date)
+    return None
+
+
+def _macro_series_map(field: str) -> dict:
+    s = _macro_series(field)
+    return {} if s is None else _series_as_of_map(s)
 
 
 def _close_series(df) -> Optional[pd.Series]:
