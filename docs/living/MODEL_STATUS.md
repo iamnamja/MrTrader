@@ -236,16 +236,22 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 >   rather than a stale number that looks real. Verified bit-identical on 12 historical dates
 >   spanning 2018–2025, so the repair is purely additive.
 > - `build_folds(data_end)` — the three fixed folds (frozen, for comparability) **plus** a rolling
->   fold `2026-04-30 → data_end`. `walk_forward` WARNs loudly when the rolling fold is absent or
->   too thin, because a skipped rolling fold silently restores the un-failable gate.
-> - `train_end` now records the data actually trained on; `requested_end` is kept separately, and a
->   >7-day gap between them WARNs.
+>   fold over the last `ROLLING_TEST_WINDOW_DAYS` (120) of the dataset, **both ends derived from
+>   the data**. The aggregates (`wf_auc_mean`/`wf_auc_min`/`brier_score`) come from the FIXED folds
+>   only — in the pickle AND the DB row — so they still reproduce v35..v42 exactly; the rolling
+>   fold rides separately as `rolling_log_loss`, gated on log loss because a 120-day window may
+>   contain no RISK_OFF day at all and macro-F1 would then swing on class presence.
+> - `train_end` now records the data actually trained on; `requested_end` is kept separately, and
+>   **a lag > `MAX_DATA_LAG_DAYS` (10) FAILS the gate** — a frozen dataset would otherwise freeze
+>   the rolling fold too. `_retrain_regime` also calls `extend_backfill()` before training, because
+>   nothing had ever scheduled the backfill script.
+> - A missing/None rolling term FAILS the gate: no evidence about the present must not read as no
+>   problem. Fail-safe — the new pickle is deleted and the prior passing model stays live.
 > - Regime snapshots backfilled 2026-05-08 → 2026-09-04 (86 new rows, **0 NULL `vix_term_ratio`**).
 >
-> **Result: gate PASSES on the rolling fold** — folds now `0.906 / 0.963 / 1.000 / 1.000`,
-> `f1_min 0.9062`, `log_loss mean 0.0427`. Folds 1–3 reproduce the historical numbers exactly
-> (mean 0.9563, brier 0.0569), so the version-over-version series stays comparable and no
-> promotion is blocked. The next scheduled weekly retrain (Fri 17:30) picks all of this up with no
+> **Result: gate PASSES** — fixed folds `0.906 / 0.963 / 1.000` → `f1_min 0.9062`,
+> `log_loss mean 0.0569`, **identical to the v35..v42 rows** (comparability preserved, nothing
+> blocked); rolling fold `2026-05-07 → 2026-09-04` (n=82) at macro-F1 1.000, log loss ~0.0000. The next scheduled weekly retrain (Fri 17:30) picks all of this up with no
 > manual promotion.
 >
 > **⚠️ Known limitation — what this gate can and cannot catch.** `label_regime_day` is a

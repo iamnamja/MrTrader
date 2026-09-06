@@ -88,6 +88,52 @@ def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
     return True
 
 
+def extend_backfill(start: date, end: date, rewrite: bool = False) -> dict:
+    """Write `backfill`-trigger snapshots for [start, end]. Idempotent; returns counts.
+
+    Extracted from main() so the weekly regime retrain can KEEP THE DATASET CURRENT
+    ITSELF. Nothing scheduled this script, so when the backfill stopped on 2026-05-07 the
+    regime training set silently froze for four months while the retrain kept "succeeding"
+    (DECISIONS 2026-09-06). A gate that detects staleness is necessary but not sufficient —
+    something has to actually advance the data, or the gate just fails every week instead.
+    """
+    from app.database.session import init_db, get_session
+    from app.database.models import RegimeSnapshot
+    from app.ml.regime_features import RegimeFeatureBuilder, label_regime_day, label_name
+
+    trading_days = _trading_days_between(start, end)
+    if not trading_days:
+        return {"ok": 0, "skipped": 0, "errors": 0, "days": 0}
+
+    builder = RegimeFeatureBuilder()
+    prefetched = builder.fetch_all_prefetched(start - timedelta(days=400),
+                                              end + timedelta(days=1))
+    init_db()
+    db = get_session()
+    ok = skipped = errors = 0
+    try:
+        for i, d in enumerate(trading_days):
+            try:
+                feats = builder.build(as_of_date=d, _prefetched=prefetched)
+                if feats is None:
+                    skipped += 1
+                    continue
+                feats["regime_label_rule"] = label_name(label_regime_day(feats))
+                if _upsert_snapshot(db, RegimeSnapshot, feats, d, rewrite):
+                    ok += 1
+                else:
+                    skipped += 1
+                if (i + 1) % 100 == 0:
+                    db.commit()
+            except Exception as exc:
+                errors += 1
+                logger.warning("Error on %s: %s", d, exc)
+        db.commit()
+    finally:
+        db.close()
+    return {"ok": ok, "skipped": skipped, "errors": errors, "days": len(trading_days)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill regime_snapshots table (V2)")
     parser.add_argument("--start", default=START_DATE_DEFAULT.isoformat(),

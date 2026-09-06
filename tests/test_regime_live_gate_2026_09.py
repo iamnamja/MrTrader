@@ -180,19 +180,16 @@ class TestVix3mAsOf:
         monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
 
-    def test_an_unconsulted_source_does_not_reach_for_macro_data(self, monkeypatch):
-        """A caller passing None/empty is saying "I have nothing" — substituting the
-        on-disk macro parquet there would inject global data into what may be a
-        deliberately controlled window (a backtest, a fixture). Caught by the existing
-        test_no_data_returns_nan_not_exception when the first cut got this wrong."""
+    def test_none_or_empty_primary_still_reaches_the_fred_backstop(self, monkeypatch):
+        """`_fetch_single` returns None on ANY yfinance failure, so refusing the fallback
+        for a None/empty primary would disable the backstop in exactly the outage it
+        exists for. There is no look-ahead cost: the fallback is probed by as_of_date."""
         import app.ml.regime_features as rf
 
-        called = []
-        monkeypatch.setattr(rf, "_macro_vix3m_map",
-                            lambda: called.append(1) or {"2026-09-04": 17.61})
-        assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
-        assert rf._vix3m_as_of(pd.Series([], dtype=float), date(2026, 9, 4)) is None
-        assert called == []
+        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
+        assert rf._vix3m_as_of(None, date(2026, 9, 4)) == pytest.approx(17.61)
+        assert rf._vix3m_as_of(pd.Series([], dtype=float),
+                               date(2026, 9, 4)) == pytest.approx(17.61)
 
     def test_future_dated_value_is_not_used(self, monkeypatch):
         """A close dated after as_of would be lookahead; reject it."""
@@ -384,3 +381,102 @@ class TestRegimeGateRequiresRecentEvidence:
 
         ok, _ = regime_gate({"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569})
         assert not ok
+
+
+# ── second-review fixes ──────────────────────────────────────────────────────
+
+class TestStalenessIsAGateFailure:
+    """The rolling fold derives from the DATA's end, so a dataset that stops advancing
+    yields a rolling fold that also stops advancing — the un-failable gate returning one
+    level down. Only `requested_end` is calendar-anchored, so it is what detects a freeze."""
+
+    def _p(self, **kw):
+        d = {"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569,
+             "rolling_log_loss": 0.0001,
+             "train_end": "2026-09-04", "requested_end": "2026-09-06"}
+        d.update(kw)
+        return d
+
+    def test_current_data_passes(self):
+        from app.ml.regime_training import regime_gate
+
+        assert regime_gate(self._p()) == (True, [])
+
+    def test_the_original_defect_now_fails_the_gate(self):
+        """Exactly the v35..v42 condition: data ends 2026-05-07, retrain asks for today."""
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate(
+            self._p(train_end="2026-05-07", requested_end="2026-09-06"))
+        assert not ok
+        assert any("stale" in f for f in failures)
+
+    def test_a_holiday_week_of_lag_is_tolerated(self):
+        from app.ml.regime_training import regime_gate
+
+        ok, _ = regime_gate(self._p(train_end="2026-08-30", requested_end="2026-09-06"))
+        assert ok
+
+    def test_unparseable_dates_fail_rather_than_raise(self):
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate(self._p(train_end="not-a-date"))
+        assert not ok
+        assert any("unparseable" in f for f in failures)
+
+
+class TestRegistryAndPickleAgree:
+    """`_write_model_version` recomputing wf_auc_min over ALL folds would write a different
+    value into the registry than the pickle carries — contaminating the very series the
+    fixed folds exist to preserve."""
+
+    def test_write_model_version_takes_f1_min_rather_than_recomputing(self):
+        import inspect
+        from app.ml.regime_training import RegimeModelTrainer
+
+        sig = inspect.signature(RegimeModelTrainer._write_model_version)
+        assert "f1_min" in sig.parameters
+        src = inspect.getsource(RegimeModelTrainer._write_model_version)
+        assert "wf_auc_min=f1_min" in src
+        assert "for r in fold_results" not in src.split("wf_auc_min")[1][:200]
+
+
+class TestEmptyDatasetIsDiagnosed:
+    def test_all_rows_dropped_raises_a_named_error_not_a_bare_max(self, monkeypatch):
+        """train() does max(df['snapshot_date']); an all-dropped frame would die there with
+        'max() arg is an empty sequence', naming neither cause nor subsystem. Newly
+        reachable because the staleness guard NULLs vix_level instead of carrying a stale
+        value forward."""
+        import contextlib
+        import app.database.session as sess
+        import app.ml.regime_training as rt
+
+        class _Row:
+            snapshot_date = date(2026, 9, 4)
+
+            def __getattr__(self, name):
+                return float("nan")     # every feature missing -> every row dropped
+
+        class _Q:
+            def filter(self, *a, **k):
+                return self
+
+            def order_by(self, *a, **k):
+                return self
+
+            def all(self):
+                return [_Row(), _Row()]
+
+        class _S:
+            def query(self, *a, **k):
+                return _Q()
+
+        @contextlib.contextmanager
+        def _fake_session():
+            yield _S()
+
+        monkeypatch.setattr(sess, "get_session", _fake_session)
+        monkeypatch.setattr(sess, "init_db", lambda *a, **k: None)
+
+        with pytest.raises(ValueError, match="dropped for missing core features"):
+            rt.RegimeModelTrainer().load_dataset(date(2018, 1, 1), date(2026, 9, 6))

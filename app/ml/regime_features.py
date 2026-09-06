@@ -514,22 +514,6 @@ def _macro_vix3m_map() -> dict:
     return {d.strftime("%Y-%m-%d"): float(v) for d, v in s.items()}
 
 
-def _was_consulted(series: Optional[pd.Series]) -> bool:
-    """True when a source actually returned ROWS (even if every value is NaN).
-
-    The macro fallback fires only for a consulted-but-unusable source. A caller that
-    passes None or an EMPTY series is saying "I have no data for you", and the honest
-    answer to that is NaN — reaching to the on-disk macro parquet behind such a caller
-    would silently substitute global data into what may be a deliberately controlled
-    window (a backtest, a fixture), which is a look-ahead risk, not a repair.
-
-    This still covers every failure mode actually observed: the prefetch path returns
-    ^VIX3M rows that are present but all-NaN, and the live path returns rows that are
-    present but weeks stale. Both have rows.
-    """
-    return series is not None and len(series) > 0
-
-
 def _is_fresh(series: Optional[pd.Series], as_of_date: date) -> bool:
     """True when `series` carries a non-NaN value dated (as_of - bound, as_of]."""
     if series is None or len(series) == 0:
@@ -553,9 +537,14 @@ def _freshest_vol_series(
     """
     if _is_fresh(series, as_of_date):
         return series
-    if not _was_consulted(series):
-        return series      # caller supplied nothing — do not substitute global data
 
+    # The fallback fires for None/empty too, not only for stale-but-present. An earlier
+    # cut restricted it to sources that had returned rows, reasoning that a caller passing
+    # nothing should not have global data substituted behind it. That was wrong on the
+    # facts: `_fetch_single`/`_fetch_spy` return None on ANY yfinance failure, so the
+    # restriction disabled the backstop in exactly the outage it exists for — blanking the
+    # whole VIX block while a good FRED value sat in the parquet. There is no look-ahead
+    # risk to trade off, because the fallback is sliced by as_of_date below.
     fallback = _macro_series(field)
     if fallback is None:
         return series      # nothing better available; caller's staleness checks apply
@@ -585,9 +574,6 @@ def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[flo
             last_dt = pd.to_datetime(fresh.index[-1]).date()
             if oldest_ok <= last_dt <= as_of_date:
                 return float(fresh.iloc[-1])
-
-    if not _was_consulted(vix3m_s):
-        return None        # see _was_consulted: no input => no substituted data
 
     macro = _macro_vix3m_map()
     if macro:

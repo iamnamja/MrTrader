@@ -81,6 +81,34 @@ def regime_gate(payload: dict) -> tuple[bool, list[str]]:
     log_loss = payload.get("wf_log_loss_mean", 99.0)   # 3-class CE mean across FIXED folds
     rolling_ll = payload.get("rolling_log_loss")       # None => could not be evaluated
     failures: list[str] = []
+
+    # DATA STALENESS IS A GATE FAILURE, NOT A LOG LINE.
+    #
+    # The rolling fold is derived from the DATA's end, not the calendar. That is correct
+    # for fold construction, but it means a dataset that stops advancing yields a rolling
+    # fold that also stops advancing — identical window, identical rolling_log_loss,
+    # forever. The un-failable gate would quietly return, one level down.
+    #
+    # `requested_end` is the only calendar-anchored value in the payload (it comes from
+    # date.today() at train time), so comparing it against `train_end` — the data's real
+    # last day — is what detects the freeze. This is precisely the condition that caused
+    # the original defect: the backfill stopped on 2026-05-07 and nothing noticed for four
+    # months, because the only symptom was a metric that never moved.
+    train_end = payload.get("train_end")
+    requested_end = payload.get("requested_end")
+    if train_end and requested_end:
+        try:
+            lag = (date.fromisoformat(str(requested_end)[:10])
+                   - date.fromisoformat(str(train_end)[:10])).days
+            if lag > MAX_DATA_LAG_DAYS:
+                failures.append(
+                    f"regime snapshots are {lag} days stale (data ends {train_end}, "
+                    f"asked through {requested_end}) > {MAX_DATA_LAG_DAYS} — the model is "
+                    f"being retrained on data it has already seen"
+                )
+        except (TypeError, ValueError):
+            failures.append(f"unparseable train_end/requested_end "
+                            f"({train_end!r}/{requested_end!r})")
     if not isinstance(f1_min, (int, float)) or f1_min < REGIME_GATE_MACRO_F1_MIN:
         failures.append(f"macro_F1_min {f1_min} < {REGIME_GATE_MACRO_F1_MIN}")
     if not isinstance(log_loss, (int, float)) or log_loss >= REGIME_GATE_LOG_LOSS_MAX:
@@ -94,6 +122,11 @@ def regime_gate(payload: dict) -> tuple[bool, list[str]]:
         failures.append(f"rolling_log_loss {rolling_ll} >= {REGIME_GATE_LOG_LOSS_MAX}")
     return (not failures, failures)
 
+
+# How far the regime snapshots may lag the retrain date before the gate refuses to promote.
+# 10 days spans a holiday week plus a weekend; beyond that the dataset is not merely late,
+# it has stopped. See the staleness block in regime_gate.
+MAX_DATA_LAG_DAYS = 10
 
 # Thresholds on the continuous score for display/legacy label derivation
 RISK_OFF_SCORE_THRESHOLD = 0.30   # score < 0.30 → RISK_OFF
@@ -226,6 +259,17 @@ class RegimeModelTrainer:
                              "vix_5d_change", "spy_50d_return",
                              "spy_above_ma50", "spy_above_ma200")]
         df = df.dropna(subset=core)
+        if df.empty:
+            # Re-checked AFTER the dropna: the earlier `df.empty` guard fires only when the
+            # QUERY returned nothing. Newly reachable now that the staleness guard NULLs
+            # vix_level rather than carrying a stale value forward — without this, train()
+            # dies in `max(df["snapshot_date"])` with a bare "max() arg is an empty
+            # sequence" that names neither the cause nor the subsystem.
+            raise ValueError(
+                f"All {len(rows)} regime snapshots for {start} → {end} were dropped for "
+                f"missing core features. The upstream market-data feed is failing; check "
+                f"VIX/SPY availability before retraining."
+            )
 
         label_counts = df["label"].value_counts().to_dict()
         n = len(df)
@@ -515,7 +559,8 @@ class RegimeModelTrainer:
             }, f)
 
         logger.info("Regime model v%d saved → %s", version, model_path)
-        self._write_model_version(version, start, data_end, fold_results, ll_mean, f1_mean, model_path)
+        self._write_model_version(version, start, data_end, fold_results, ll_mean,
+                                  f1_mean, f1_min, model_path)
         return model_path
 
     def _write_model_version(
@@ -526,6 +571,7 @@ class RegimeModelTrainer:
         fold_results: list,
         ll_mean: float,
         f1_mean: float,
+        f1_min: float,
         model_path: Path,
     ) -> None:
         from app.database.session import get_session, init_db
@@ -545,10 +591,12 @@ class RegimeModelTrainer:
                 train_end=train_end,
                 feature_names_json=json.dumps(REGIME_FEATURE_NAMES),
                 wf_auc_mean=f1_mean,        # repurposed: store macro F1 here
-                wf_auc_min=min(
-                    (r["macro_f1"] for r in fold_results if r["macro_f1"] is not None),
-                    default=0.0,
-                ),
+                # Passed in, NOT recomputed over `fold_results` — recomputing here would
+                # silently re-include the rolling fold and write a DIFFERENT wf_auc_min
+                # into the registry than the pickle carries, contaminating the very
+                # version-over-version series the fixed folds exist to preserve. The
+                # registry and the pickle must agree by construction.
+                wf_auc_min=f1_min,
                 brier_score=ll_mean,        # repurposed: store log_loss here
                 notes=json.dumps(fold_results),
                 model_path=str(model_path),

@@ -104,7 +104,19 @@ class TestRegimeFeatureBuilderCore:
         assert feats["spy_rvol_5d"] > 0.0
         assert feats["spy_rvol_20d"] > 0.0
 
-    def test_no_data_returns_nan_not_exception(self):
+    def test_no_data_returns_nan_not_exception(self, monkeypatch):
+        """No data ANYWHERE -> NaN, and no exception.
+
+        The macro_history/FRED backstop (2026-09-06) is stubbed out here on purpose. Since
+        that change, empty yfinance input alone no longer means "no data": the builder
+        falls back to the FRED-backed series, which is the entire point — a yfinance
+        outage must not blank the regime vector while a good value sits in the parquet.
+        Stubbing the fallback keeps this test asserting what its name says.
+        """
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda field: None)
+        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         builder = self._builder_with_mocks()
         # Empty DataFrames
         feats = builder.build(
@@ -114,6 +126,24 @@ class TestRegimeFeatureBuilderCore:
         )
         assert math.isnan(feats["vix_level"])
         assert math.isnan(feats["spy_ma20_dist"])
+
+    def test_empty_yfinance_falls_back_to_the_fred_backed_series(self, monkeypatch):
+        """The complement: with the backstop available, an empty primary must NOT blank
+        the VIX block. An earlier cut of the staleness guard got this backwards."""
+        import app.ml.regime_features as rf
+
+        idx = pd.date_range(end=pd.Timestamp("2025-04-07"), periods=300, freq="D")
+        monkeypatch.setattr(
+            rf, "_macro_series",
+            lambda field: pd.Series([18.0] * len(idx), index=idx, name="close"),
+        )
+        builder = self._builder_with_mocks()
+        feats = builder.build(
+            as_of_date=date(2025, 4, 7),
+            _spy_df=pd.DataFrame(),
+            _vix_df=pd.Series([], dtype=float),
+        )
+        assert feats["vix_level"] == pytest.approx(18.0)
 
 
 # ── Macro calendar tests ───────────────────────────────────────────────────────

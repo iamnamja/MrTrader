@@ -4590,6 +4590,31 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         else:
             self.logger.info("No regime model found — training from scratch")
 
+        # Bring the training data up to date BEFORE retraining. Nothing else does: the
+        # backfill script had no scheduler, so when it stopped on 2026-05-07 the regime
+        # training set froze for four months while the weekly retrain kept re-fitting the
+        # same 2179 rows and reporting success (DECISIONS 2026-09-06). The gate now fails
+        # on stale data, but a gate that fails every week is an outage, not a fix —
+        # something has to actually advance the snapshots. Idempotent: existing rows are
+        # skipped. Best-effort — a failure here must not block the retrain, because the
+        # gate will catch the staleness downstream and refuse to promote.
+        try:
+            import functools as _ft
+            from datetime import date as _date, timedelta as _td
+            from scripts.backfill_regime_snapshots import extend_backfill
+            loop = asyncio.get_event_loop()
+            counts = await loop.run_in_executor(
+                None,
+                _ft.partial(extend_backfill,
+                            _date.today() - _td(days=30), _date.today() - _td(days=1)),
+            )
+            self.logger.info("Regime snapshots extended before retrain: %s", counts)
+        except Exception as exc:
+            self.logger.warning(
+                "Could not extend regime snapshots before retrain (%s) — continuing; the "
+                "staleness gate will refuse to promote if the data is too old", exc,
+            )
+
         try:
             from app.ml.regime_training import RegimeModelTrainer
             trainer = RegimeModelTrainer()

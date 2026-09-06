@@ -139,6 +139,23 @@ class RegimeModel:
             return self._legacy_fallback(as_of_date, trigger)
 
         import numpy as np
+        # A missing VIX LEVEL is not a missing feature — it is a dead feed, and this model
+        # has never seen it missing. `vix_level` is in load_dataset's `core` dropna set, so
+        # every training row had one and XGBoost holds no learned default branch for its
+        # absence; predicting anyway yields an arbitrary-but-confident score that silently
+        # drives live position sizing. Reachable since the 2026-09-06 staleness guard began
+        # NULLing vix_level instead of carrying a stale value forward, and only when BOTH
+        # yfinance and the FRED backstop are down — i.e. a real outage, where neutral is
+        # the honest answer.
+        _vix_level = feats.get("vix_level")
+        if _vix_level is None or _vix_level != _vix_level:
+            logger.error(
+                "Regime scoring: vix_level unavailable for %s (both yfinance and the FRED "
+                "backstop failed) — refusing to score on a feature the model never saw "
+                "missing; returning neutral", as_of_date,
+            )
+            return self._legacy_fallback(as_of_date, trigger)
+
         # NaN, deliberately — not 0.0. `build()` pre-seeds every feature to NaN, so the
         # key always exists and a `.get(f, 0.0)` default could never fire anyway; spelling
         # it 0.0 merely advertised an imputation that does not happen. NaN is also the
