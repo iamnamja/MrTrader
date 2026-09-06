@@ -38,27 +38,41 @@ class TestBuildFolds:
         ]
 
     def test_rolling_fold_added_when_data_is_current(self):
-        from app.ml.regime_training import build_folds, _FIXED_FOLDS
+        from app.ml.regime_training import (
+            build_folds, _FIXED_FOLDS, ROLLING_TEST_WINDOW_DAYS)
+        from datetime import timedelta
 
         folds = build_folds(date(2026, 9, 4))
         assert len(folds) == len(_FIXED_FOLDS) + 1
-        train_start, train_end, test_end = folds[-1]
-        assert train_end == date(2026, 4, 30)
+        _, train_end, test_end = folds[-1]
         assert test_end == date(2026, 9, 4)
-        # the rolling fold must be genuinely out-of-sample: walk_forward selects the
-        # test set with `> train_end`, so the windows cannot overlap
+        assert train_end == date(2026, 9, 4) - timedelta(days=ROLLING_TEST_WINDOW_DAYS)
+        # genuinely out-of-sample: walk_forward selects the test set with `> train_end`
         assert train_end < test_end
 
-    def test_no_rolling_fold_when_data_stops_at_the_boundary(self):
+    def test_rolling_fold_train_end_rolls_too(self):
+        """REGRESSION: the first cut pinned the rolling TRAIN end at 2026-04-30 and let
+        only the test end advance, which recreates the frozen-window defect on a slower
+        clock — by 2027 it would score a year-stale fit against a year of unseen data."""
+        from app.ml.regime_training import build_folds
+
+        a_train_end = build_folds(date(2026, 9, 4))[-1][1]
+        b_train_end = build_folds(date(2027, 9, 4))[-1][1]
+        assert b_train_end > a_train_end
+        assert (b_train_end - a_train_end).days == 365
+
+    def test_rolling_test_window_length_is_stable_over_time(self):
+        from app.ml.regime_training import build_folds
+
+        for d in (date(2026, 9, 4), date(2027, 9, 4), date(2030, 1, 15)):
+            _, train_end, test_end = build_folds(d)[-1]
+            assert (test_end - train_end).days == 120
+
+    def test_no_rolling_fold_without_enough_training_history(self):
+        """A rolling fold whose train window is shorter than fold 1's is refused."""
         from app.ml.regime_training import build_folds, _FIXED_FOLDS
 
-        assert len(build_folds(date(2026, 4, 30))) == len(_FIXED_FOLDS)
-
-    def test_no_rolling_fold_when_data_is_stale(self):
-        """The v35..v42 situation: data older than the boundary yields the frozen gate."""
-        from app.ml.regime_training import build_folds, _FIXED_FOLDS
-
-        assert len(build_folds(date(2026, 1, 15))) == len(_FIXED_FOLDS)
+        assert len(build_folds(date(2024, 3, 1))) == len(_FIXED_FOLDS)
 
     def test_none_data_end_is_tolerated(self):
         from app.ml.regime_training import build_folds, _FIXED_FOLDS
@@ -82,17 +96,15 @@ class TestWalkForwardWarnsWhenGateIsFrozen:
         dates = pd.date_range(end=pd.Timestamp(last_date), periods=n, freq="D").date
         return pd.DataFrame({"snapshot_date": list(dates)})
 
-    def test_warns_when_dataset_predates_the_rolling_boundary(self, caplog):
-        from app.ml.regime_training import RegimeModelTrainer, _ROLLING_FOLD_TRAIN_END
+    def test_warns_when_dataset_cannot_support_a_rolling_fold(self, caplog):
+        from app.ml.regime_training import RegimeModelTrainer
 
         trainer = RegimeModelTrainer()
         df = self._df(date(2023, 6, 30))
         with caplog.at_level("WARNING"):
             # every fold will bail on insufficient data; we only assert on the banner
             trainer.walk_forward(df)
-        assert any("NO ROLLING FOLD" in r.message or "NO ROLLING FOLD" in r.getMessage()
-                   for r in caplog.records)
-        assert _ROLLING_FOLD_TRAIN_END == date(2026, 4, 30)
+        assert any("NO ROLLING FOLD" in r.getMessage() for r in caplog.records)
 
 
 # ── (4) VIX3M staleness + FRED backstop ───────────────────────────────────────
@@ -135,14 +147,16 @@ class TestVix3mAsOf:
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
-        assert rf._vix3m_as_of(None, date(2026, 9, 6)) == pytest.approx(17.61)
+        stale = self._series([("2026-07-17", 20.54)])
+        assert rf._vix3m_as_of(stale, date(2026, 9, 6)) == pytest.approx(17.61)
 
     def test_macro_fallback_respects_the_same_staleness_bound(self, monkeypatch):
         """A stale FRED series must not be carried forward either."""
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-07-17": 20.54})
-        assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
+        stale = self._series([("2026-07-17", 20.54)])
+        assert rf._vix3m_as_of(stale, date(2026, 9, 4)) is None
 
     def test_yfinance_wins_when_both_are_fresh(self, monkeypatch):
         """yfinance stays PRIMARY — FRED only fills what yfinance is missing."""
@@ -165,6 +179,20 @@ class TestVix3mAsOf:
 
         monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
+
+    def test_an_unconsulted_source_does_not_reach_for_macro_data(self, monkeypatch):
+        """A caller passing None/empty is saying "I have nothing" — substituting the
+        on-disk macro parquet there would inject global data into what may be a
+        deliberately controlled window (a backtest, a fixture). Caught by the existing
+        test_no_data_returns_nan_not_exception when the first cut got this wrong."""
+        import app.ml.regime_features as rf
+
+        called = []
+        monkeypatch.setattr(rf, "_macro_vix3m_map",
+                            lambda: called.append(1) or {"2026-09-04": 17.61})
+        assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
+        assert rf._vix3m_as_of(pd.Series([], dtype=float), date(2026, 9, 4)) is None
+        assert called == []
 
     def test_future_dated_value_is_not_used(self, monkeypatch):
         """A close dated after as_of would be lookahead; reject it."""
@@ -209,3 +237,150 @@ class TestVixTermRatioFeature:
         builder._add_vix_features(feats, vix_s, stale, date(2026, 9, 4))
 
         assert feats["vix_term_ratio"] == pytest.approx(0.8251, abs=1e-4)
+
+
+# ── (1) NaN-blind coalescing in the label rule (found in review) ──────────────
+
+class TestLabelRuleIsNanSafe:
+    """`row.get(k) or default` is NaN-blind: NaN is truthy, so `NaN or 1.0` is NaN and
+    every later comparison silently becomes False. Latent until `_vix3m_as_of` started
+    (correctly) returning None on a dead feed — at which point a VIX3M outage would have
+    force-labelled every affected day RISK_CAUTION."""
+
+    def _row(self, **kw):
+        base = {
+            "vix_level": 18.0, "vix_pct_1y": 0.40, "vix_term_ratio": 0.95,
+            "spy_ma50_dist": 0.03, "spy_ma200_dist": 0.05,
+            "credit_hyg_ief_20d": 0.002, "breadth_rsp_spy_ratio_20d": 0.01,
+            "spy_20d_return": 0.03,
+        }
+        base.update(kw)
+        return base
+
+    def test_nan_behaves_like_none_not_like_a_value(self):
+        from app.ml.regime_features import label_regime_day
+
+        nan = float("nan")
+        assert label_regime_day(self._row(vix_term_ratio=None)) == 2
+        # THE BUG: this returned 1 (RISK_CAUTION) because NaN <= 1.0 is False
+        assert label_regime_day(self._row(vix_term_ratio=nan)) == 2
+        assert label_regime_day(self._row(vix_term_ratio=0.95)) == 2
+
+    @pytest.mark.parametrize("field", [
+        "vix_level", "vix_pct_1y", "vix_term_ratio", "spy_ma50_dist",
+        "spy_ma200_dist", "credit_hyg_ief_20d", "breadth_rsp_spy_ratio_20d",
+        "spy_20d_return",
+    ])
+    def test_every_coalesced_field_is_nan_safe(self, field):
+        """All eight shared the same idiom, so all eight are pinned."""
+        from app.ml.regime_features import label_regime_day
+
+        assert (label_regime_day(self._row(**{field: float("nan")}))
+                == label_regime_day(self._row(**{field: None})))
+
+    def test_real_backwardation_still_triggers_risk_off(self):
+        """The NaN fix must not blunt the signal it was masking."""
+        from app.ml.regime_features import label_regime_day
+
+        assert label_regime_day(self._row(vix_pct_1y=0.90, vix_term_ratio=1.10)) == 0
+
+    def test_coalesce_handles_unparseable_values(self):
+        from app.ml.regime_features import _coalesce
+
+        assert _coalesce({"x": "abc"}, "x", 1.0) == 1.0
+        assert _coalesce({}, "x", 1.0) == 1.0
+        assert _coalesce({"x": None}, "x", 1.0) == 1.0
+        assert _coalesce({"x": float("nan")}, "x", 1.0) == 1.0
+        assert _coalesce({"x": "2.5"}, "x", 1.0) == 2.5
+
+
+# ── (6) the VIX numerator needs the same guard as the denominator ─────────────
+
+class TestVixNumeratorStaleness:
+    def test_stale_vix_yields_null_features_not_a_stale_ratio(self, monkeypatch):
+        """Guarding only VIX3M would still let a weeks-old VIX pair with a fresh
+        denominator — the same wrong number, merely relocated."""
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda field: None)
+        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
+        builder = rf.RegimeFeatureBuilder()
+        feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
+        stale_vix = pd.Series(
+            [15.0] * 60,
+            index=pd.date_range(end=pd.Timestamp("2026-07-17"), periods=60, freq="D"),
+        )
+        builder._add_vix_features(feats, stale_vix, None, date(2026, 9, 4))
+
+        assert feats["vix_level"] != feats["vix_level"]        # NaN
+        assert feats["vix_term_ratio"] != feats["vix_term_ratio"]
+
+    def test_fresh_vix_still_populates(self, monkeypatch):
+        import app.ml.regime_features as rf
+
+        monkeypatch.setattr(rf, "_macro_series", lambda field: None)
+        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
+        builder = rf.RegimeFeatureBuilder()
+        feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
+        vix = pd.Series(
+            [15.0] * 60,
+            index=pd.date_range(end=pd.Timestamp("2026-09-04"), periods=60, freq="D"),
+        )
+        builder._add_vix_features(feats, vix, None, date(2026, 9, 4))
+        assert feats["vix_level"] == pytest.approx(15.0)
+
+
+# ── (2) a rolling fold that is BUILT but SKIPPED must not pass silently ───────
+
+class TestRegimeGateRequiresRecentEvidence:
+    """The `NO ROLLING FOLD` banner keys on the fold COUNT, so it cannot fire when a
+    rolling fold is built and then dropped by the min-rows guard. The gate closes that
+    hole: no rolling evidence => FAIL, whatever the reason."""
+
+    def _base(self, **kw):
+        d = {"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569,
+             "rolling_log_loss": 0.0001}
+        d.update(kw)
+        return d
+
+    def test_passes_with_recent_evidence(self):
+        from app.ml.regime_training import regime_gate
+
+        assert regime_gate(self._base()) == (True, [])
+
+    def test_missing_rolling_key_fails(self):
+        from app.ml.regime_training import regime_gate
+
+        payload = self._base()
+        del payload["rolling_log_loss"]
+        ok, failures = regime_gate(payload)
+        assert not ok
+        assert any("rolling fold not evaluated" in f for f in failures)
+
+    def test_none_rolling_fails(self):
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate(self._base(rolling_log_loss=None))
+        assert not ok
+        assert any("rolling fold not evaluated" in f for f in failures)
+
+    def test_nan_rolling_fails(self):
+        from app.ml.regime_training import regime_gate
+
+        ok, _ = regime_gate(self._base(rolling_log_loss=float("nan")))
+        assert not ok
+
+    def test_bad_rolling_log_loss_fails_even_when_fixed_folds_pass(self):
+        """The whole point: the fixed folds always pass, so only this term can fail."""
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate(self._base(rolling_log_loss=0.9))
+        assert not ok
+        assert any("rolling_log_loss" in f for f in failures)
+
+    def test_the_v42_payload_shape_no_longer_passes(self):
+        """v35..v42 carried no rolling term. Re-evaluating one must not read as healthy."""
+        from app.ml.regime_training import regime_gate
+
+        ok, _ = regime_gate({"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569})
+        assert not ok

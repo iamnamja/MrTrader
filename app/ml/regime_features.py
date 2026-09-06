@@ -86,6 +86,30 @@ _MULTI_LOOKBACK_DAYS = 320
 _MAX_VIX3M_STALENESS_DAYS = 5
 
 
+def _coalesce(row, key: str, default: float) -> float:
+    """`row[key]`, treating BOTH None and NaN as missing.
+
+    `row.get(k) or default` — the idiom this replaces — is NaN-blind, because NaN is
+    truthy: `float('nan') or 1.0` is NaN, not 1.0. Every subsequent comparison against
+    that NaN is then False, which silently rewrites the rule. Concretely, a NULL
+    `vix_term_ratio` made the RISK_ON contango test (`vix_term <= 1.0`) unsatisfiable
+    and the RISK_OFF backwardation test (`vix_term > 1.05`) unreachable, so an
+    outage day was force-labelled RISK_CAUTION instead of taking the 1.0 default.
+    Harmless while the feed was always populated; a live mislabeller the moment
+    `_vix3m_as_of` started (correctly) returning None on a dead feed.
+
+    Also coerces to float so a Decimal/str from the DB cannot compare oddly.
+    """
+    val = row.get(key)
+    if val is None:
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else f      # f != f  <=>  f is NaN
+
+
 def label_regime_day(row: dict) -> int:
     """
     V2 rule-based 3-class label.
@@ -98,14 +122,14 @@ def label_regime_day(row: dict) -> int:
     Multi-factor: no single signal dominates. Uses VIX percentile + term
     structure + trend (not single-day return) + credit + breadth.
     """
-    vix = row.get("vix_level") or 20.0
-    vix_pct1y = row.get("vix_pct_1y") or 0.5
-    vix_term = row.get("vix_term_ratio") or 1.0
-    ma50_dist = row.get("spy_ma50_dist") or 0.0
-    ma200_dist = row.get("spy_ma200_dist") or 0.0
-    credit_20d = row.get("credit_hyg_ief_20d") or 0.0
-    breadth = row.get("breadth_rsp_spy_ratio_20d") or 0.0
-    spy_20d = row.get("spy_20d_return") or 0.0
+    vix = _coalesce(row, "vix_level", 20.0)
+    vix_pct1y = _coalesce(row, "vix_pct_1y", 0.5)
+    vix_term = _coalesce(row, "vix_term_ratio", 1.0)
+    ma50_dist = _coalesce(row, "spy_ma50_dist", 0.0)
+    ma200_dist = _coalesce(row, "spy_ma200_dist", 0.0)
+    credit_20d = _coalesce(row, "credit_hyg_ief_20d", 0.0)
+    breadth = _coalesce(row, "breadth_rsp_spy_ratio_20d", 0.0)
+    spy_20d = _coalesce(row, "spy_20d_return", 0.0)
 
     # RISK_OFF: any strong hostile signal
     risk_off = (
@@ -306,8 +330,24 @@ class RegimeFeatureBuilder:
         vix3m_s: Optional[pd.Series],
         as_of_date: date,
     ) -> None:
-        if vix_s is None or vix_s.empty:
+        # The NUMERATOR needs the same freshness guarantee as the denominator: pairing a
+        # weeks-old VIX with a current VIX3M is the same silent-wrong-number failure,
+        # just relocated. Fall back to the FRED-backed macro series before giving up.
+        vix_s = _freshest_vol_series(vix_s, "vix", as_of_date)
+
+        if vix_s is None or len(vix_s) == 0:
             return
+        vix_s = vix_s.dropna()
+        if vix_s.empty:
+            return
+        if not _is_fresh(vix_s, as_of_date):
+            logger.warning(
+                "No VIX close within %d days of %s (last %s) — VIX features left NULL",
+                _MAX_VIX3M_STALENESS_DAYS, as_of_date,
+                pd.to_datetime(vix_s.index[-1]).date(),
+            )
+            return
+
         vix = float(np.clip(vix_s.iloc[-1], 5.0, 80.0))
         feats["vix_level"] = vix
 
@@ -429,35 +469,103 @@ def _fetch_df(ticker: str, as_of_date: date, lookback_days: int) -> Optional[pd.
         return None
 
 
-@lru_cache(maxsize=2)
-def _macro_vix3m_map_cached(_mtime: float) -> dict:
-    """{'YYYY-MM-DD': vix3m} from the macro-history parquet, keyed on the file's mtime.
+@lru_cache(maxsize=4)
+def _macro_series_cached(field: str, _mtime: float) -> Optional[pd.Series]:
+    """Date-indexed close series for `field` from the macro-history parquet.
 
-    Keyed on mtime rather than plain-cached so a long-running process picks up the
-    startup/daily macro refresh — a permanently-cached map would re-create the very
-    staleness bug this fallback exists to fix.
+    Keyed on the file's mtime rather than plain-cached so a long-running process picks
+    up the startup/daily macro refresh — a permanently-cached series would re-create the
+    very staleness bug this fallback exists to fix.
     """
     try:
         from app.data.macro_history import load_macro_history
 
         df = load_macro_history()
-        if df is None or df.empty or "vix3m" not in df.columns:
-            return {}
-        sub = df.dropna(subset=["vix3m"])
-        return {str(d)[:10]: float(v) for d, v in zip(sub["date"], sub["vix3m"])}
+        if df is None or df.empty or field not in df.columns:
+            return None
+        sub = df.dropna(subset=[field])
+        if sub.empty:
+            return None
+        return pd.Series(
+            sub[field].astype(float).to_numpy(),
+            index=pd.to_datetime(sub["date"]),
+            name="close",
+        )
     except Exception as exc:  # never let a fallback take down feature building
-        logger.warning("macro_history VIX3M fallback unavailable: %s", exc)
-        return {}
+        logger.warning("macro_history '%s' fallback unavailable: %s", field, exc)
+        return None
 
 
-def _macro_vix3m_map() -> dict:
+def _macro_series(field: str) -> Optional[pd.Series]:
     try:
         from app.data.macro_history import MACRO_PATH
 
         mtime = MACRO_PATH.stat().st_mtime if MACRO_PATH.exists() else 0.0
     except Exception:
         mtime = 0.0
-    return _macro_vix3m_map_cached(mtime)
+    return _macro_series_cached(field, mtime)
+
+
+def _macro_vix3m_map() -> dict:
+    """{'YYYY-MM-DD': vix3m}. Thin view over _macro_series for point lookups."""
+    s = _macro_series("vix3m")
+    if s is None:
+        return {}
+    return {d.strftime("%Y-%m-%d"): float(v) for d, v in s.items()}
+
+
+def _was_consulted(series: Optional[pd.Series]) -> bool:
+    """True when a source actually returned ROWS (even if every value is NaN).
+
+    The macro fallback fires only for a consulted-but-unusable source. A caller that
+    passes None or an EMPTY series is saying "I have no data for you", and the honest
+    answer to that is NaN — reaching to the on-disk macro parquet behind such a caller
+    would silently substitute global data into what may be a deliberately controlled
+    window (a backtest, a fixture), which is a look-ahead risk, not a repair.
+
+    This still covers every failure mode actually observed: the prefetch path returns
+    ^VIX3M rows that are present but all-NaN, and the live path returns rows that are
+    present but weeks stale. Both have rows.
+    """
+    return series is not None and len(series) > 0
+
+
+def _is_fresh(series: Optional[pd.Series], as_of_date: date) -> bool:
+    """True when `series` carries a non-NaN value dated (as_of - bound, as_of]."""
+    if series is None or len(series) == 0:
+        return False
+    fresh = series.dropna()
+    if fresh.empty:
+        return False
+    last_dt = pd.to_datetime(fresh.index[-1]).date()
+    return (as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)) <= last_dt <= as_of_date
+
+
+def _freshest_vol_series(
+    series: Optional[pd.Series], field: str, as_of_date: date
+) -> Optional[pd.Series]:
+    """`series` if it is fresh for as_of_date, else the FRED-backed macro_history series.
+
+    Applies to the VIX NUMERATOR as well as the VIX3M denominator. Guarding only the
+    denominator would still let the ratio pair a weeks-old VIX against a current VIX3M —
+    the same silent-wrong-number failure, merely relocated. Returns a series (not a
+    scalar) because the percentile and 5-day-change features need the whole window.
+    """
+    if _is_fresh(series, as_of_date):
+        return series
+    if not _was_consulted(series):
+        return series      # caller supplied nothing — do not substitute global data
+
+    fallback = _macro_series(field)
+    if fallback is None:
+        return series      # nothing better available; caller's staleness checks apply
+
+    sliced = fallback[pd.to_datetime(fallback.index).date <= as_of_date]
+    if sliced.empty:
+        return series
+    if series is not None and len(series.dropna()) and not _is_fresh(series, as_of_date):
+        logger.debug("%s stale at %s — falling back to macro_history", field, as_of_date)
+    return sliced
 
 
 def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[float]:
@@ -477,6 +585,9 @@ def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[flo
             last_dt = pd.to_datetime(fresh.index[-1]).date()
             if oldest_ok <= last_dt <= as_of_date:
                 return float(fresh.iloc[-1])
+
+    if not _was_consulted(vix3m_s):
+        return None        # see _was_consulted: no input => no substituted data
 
     macro = _macro_vix3m_map()
     if macro:

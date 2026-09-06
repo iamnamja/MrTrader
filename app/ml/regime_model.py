@@ -139,7 +139,15 @@ class RegimeModel:
             return self._legacy_fallback(as_of_date, trigger)
 
         import numpy as np
-        X = np.array([[feats.get(f, 0.0) for f in self._feature_names]])
+        # NaN, deliberately — not 0.0. `build()` pre-seeds every feature to NaN, so the
+        # key always exists and a `.get(f, 0.0)` default could never fire anyway; spelling
+        # it 0.0 merely advertised an imputation that does not happen. NaN is also the
+        # correct signal: XGBoost routes missing values down a learned default branch,
+        # whereas 0.0 would ASSERT a value — for a ratio like vix_term_ratio that means
+        # "infinite backwardation", which is not what a dead data feed means. Since
+        # `_vix3m_as_of` now yields NULL rather than a stale number (DECISIONS 2026-09-06),
+        # this path sees NaN more often than it used to.
+        X = np.array([[feats.get(f, float("nan")) for f in self._feature_names]])
 
         if self._model_version >= 2:
             probs, score, label = self._score_v2(X)

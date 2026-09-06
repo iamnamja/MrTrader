@@ -18,9 +18,19 @@ from app.ml.regime_training import regime_gate
 from app.ml import retrain_config as rc
 
 
-_PASS = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358}
-_FAIL_F1 = {"version": 9, "wf_auc_min": 0.55, "wf_log_loss_mean": 0.358}
-_FAIL_LL = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.50}
+# `rolling_log_loss` is REQUIRED as of 2026-09-06: the fixed folds re-score frozen
+# windows and so always return the same numbers, which is how v35..v42 all passed while
+# the training data sat frozen for four months. The rolling term is the only one that can
+# react to recent data, and its ABSENCE fails the gate. See regime_gate's docstring.
+_PASS = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
+         "rolling_log_loss": 0.31}
+_FAIL_F1 = {"version": 9, "wf_auc_min": 0.55, "wf_log_loss_mean": 0.358,
+            "rolling_log_loss": 0.31}
+_FAIL_LL = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.50,
+            "rolling_log_loss": 0.31}
+_FAIL_NO_ROLLING = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358}
+_FAIL_ROLLING = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
+                 "rolling_log_loss": 0.90}
 
 
 # ───────────────────────── config + gate ───────────────────────────────────────
@@ -46,12 +56,25 @@ def test_regime_gate_fail_log_loss():
     assert ok is False and any("log_loss" in f for f in failures)
 
 
+def test_regime_gate_fails_without_a_rolling_fold():
+    """No evidence about recent data must not read as no problem. Fail-safe: the caller
+    deletes the new pickle and keeps the prior passing model."""
+    ok, failures = regime_gate(_FAIL_NO_ROLLING)
+    assert ok is False and any("rolling fold not evaluated" in f for f in failures)
+
+
+def test_regime_gate_fail_rolling_log_loss():
+    """The ONLY gate term that can fail on a model that is genuinely worse now."""
+    ok, failures = regime_gate(_FAIL_ROLLING)
+    assert ok is False and any("rolling_log_loss" in f for f in failures)
+
+
 def test_regime_gate_missing_keys_fails_safely():
     """THE regression: the old code did payload['wf_auc_min'] → KeyError when the pickle
     lacked it. regime_gate must use safe defaults and FAIL (not raise) on an empty payload."""
     ok, failures = regime_gate({})
     assert ok is False
-    assert len(failures) == 2  # both thresholds reported
+    assert len(failures) == 3  # both fixed thresholds + the missing rolling term
 
 
 def test_regime_gate_non_numeric_fails_safely():
