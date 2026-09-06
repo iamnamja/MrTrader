@@ -4,6 +4,42 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-06 — The regime gate could not fail. Under it: a training set frozen for four months, a timestamp reporting an intention as a fact, and a VIX3M feed silently pinned to a 7-week-old close.
+
+**Context.** Syncing a stale version number in MODEL_STATUS (recorded regime v40; the live scorer loads v42) turned into four stacked defects in the subsystem that carries the live book's position sizing. Each one hid the next.
+
+**What was found, in the order the layers came off.**
+
+1. **The gate was applied to a constant.** `regime_model_versions` records byte-identical walk-forward metrics for every version **v35 → v42** — `wf_auc_mean=0.9563`, `wf_auc_min=0.9062`, `brier=0.0569`, same fold-1 `log_loss=0.1001`, same `temperature=1.2444`, same `pred_distribution` — while `train_end` advanced a week each time. `_FOLDS` was a hardcoded literal whose last fold tested `2025-09-30 → 2026-04-30`. Same windows every week, same numbers forever. `REGIME_GATE_MACRO_F1_MIN` / `REGIME_GATE_LOG_LOSS_MAX` were being evaluated against a value that could not move.
+
+2. **The training set had been frozen since 2026-05-07.** `load_dataset` filters `snapshot_trigger == "backfill"`, and the backfill job stopped on 2026-05-07. The 113 daily snapshots since then are written as `premarket` / `startup_catchup` and were filtered out. The weekly "retrain" re-fit the same 2179 rows every week; the differing model MD5s are XGBoost nondeterminism, not new information.
+
+3. **`train_end` was reporting the request, not the data — and that is what hid #2.** `train()` recorded the REQUESTED `end` (`date.today()`) into both the pickle and the DB row. Every weekly row therefore claimed `train_end=2026-09-04` while the dataset ended 2026-05-07. Anyone auditing the registry saw a model trained through last Friday.
+
+4. **`vix_term_ratio` was live, wrong, and unfalsifiable.** `RegimeFeatureBuilder` reads `^VIX3M` from yfinance with no FRED backstop and no staleness bound; `_slice_to_date(...)` followed by `.iloc[-1]` returns the last available row REGARDLESS of age. yfinance's `^VIX3M` history rots backwards over time (documented in `macro_history.py`: 100% coverage through Apr 2026 → 5% by Aug). Measured on 2026-09-06: `build(as_of_date=2026-09-04)` returned `vix_term_ratio=0.7074`, computed from the **2026-07-17** close (20.54) against a 2026-09-04 VIX. The FRED-backed answer is 14.53/17.61 = **0.8251**. This feeds `label_regime_day` and the model that sizes the live book.
+
+**#4 is #674 again, in the consumer nobody checked.** That PR backstopped VIX/VIX3M from FRED for `macro_history` after the same rot silently disabled the crash governor. `RegimeFeatureBuilder` is a second consumer of the same feed and did not get the fix. It also *blocked* the obvious repair for #2: backfilling before fixing the feed would have written a feature discontinuity into exactly the window being added.
+
+**Decisions.**
+
+1. **`_vix3m_as_of()` — fail to NULL, never to stale.** yfinance stays PRIMARY (intraday-fresh when it works); `macro_history` (FRED-backed) is the fallback; BOTH are subject to a 5-calendar-day staleness bound (covers a long weekend plus a holiday). No fresh value yields `None` → a NULL feature, which XGBoost handles natively. This is the point: the prior code could not distinguish "VIX3M is 20.54 today" from "VIX3M was 20.54 seven weeks ago". Verified bit-identical against 12 stored historical dates spanning 2018–2025, so the repair is purely additive — it changes behaviour only where the old code was already wrong.
+
+2. **`build_folds(data_end)` — three frozen folds plus one rolling.** The historical three stay byte-frozen so the version-over-version series remains comparable; a fourth fold tests `2026-04-30 → data_end`. Degradation now appears as a NEW fold rather than as a shifted aggregate. `data_end` is the dataset's actual max, never `date.today()`. `walk_forward` WARNs loudly when the rolling fold is absent or too thin, because a skipped rolling fold silently restores the un-failable gate — the exact failure being fixed.
+
+3. **`train_end` records what was trained on.** The requested end is kept separately as `requested_end`, and a gap >7 days between them WARNs. A field that reports an intention as a fact is worse than a missing field.
+
+4. **Regime snapshots backfilled 2026-05-08 → 2026-09-04** (86 new rows, 91 processed, 0 errors) — run AFTER the VIX3M repair, so the new rows carry correct `vix_term_ratio`: **0 NULLs**. Without the repair, 35+ would have been NULL or stale.
+
+**Result.** Gate PASSES with the rolling fold: folds `0.906 / 0.963 / 1.000 / 1.000`, `f1_min 0.9062`, `log_loss mean 0.0427`. Folds 1–3 reproduce the historical numbers exactly (mean 0.9563, brier 0.0569), confirming comparability is preserved and no promotion is blocked. The next scheduled weekly retrain (Fri 17:30) picks this up with no manual promotion; **no model was promoted as part of this change.**
+
+**Known limitation, recorded so a PASS is not over-read.** `label_regime_day` is a deterministic RULE over features that are themselves model inputs. The model is therefore a rule-approximator and macro_F1 → 1.0 is the expected ceiling, not evidence of predictive skill. The rolling fold makes the gate react to the present and will catch pipeline breakage, fitting failures and label-distribution shifts. It will **not** catch loss of predictive edge, and it would not by itself have caught defect #4 — a stale `vix_term_ratio` moves the rule label and the model prediction together. A PASS means "the machine is intact", not "the regime signal still works". Building a gate that can detect the latter is a separate piece of work and is NOT authorised under the CH moratorium as an edge hunt; it belongs in hardening.
+
+**Scope note.** All four repairs are hardening / live re-validation, explicitly allowed under the 12-month hunting moratorium (to 2027-07-08). No strategy, threshold, or allocation changed.
+
+**The transferable lesson, and it is the same one as four days ago.** On 2026-09-02 a metric was believed for weeks because of its name, until someone read what it computed. Here a gate was believed because it reported a number, until someone asked why the number never moved. The pattern in both: **a check that cannot fail is indistinguishable from a check that passes, and nothing in the system will tell you which one you have.** Constant output over time is itself a signal — v35 through v42 agreeing to four decimal places was the tell, and it was sitting in the database the whole time.
+
+---
+
 ## 2026-09-02 — `slippage_drag_bps_day` never measured slippage. Real execution cost is $9; the metric was renamed and its contaminated window excluded.
 
 **Context.** The weekly back-validation email reported "Execution drag: −0.67 bps/day" — roughly −1.7%/yr against an expected gross edge of ~3.3%/yr. Read at face value, implementation was eating half the edge, and the obvious remedy was to stop sending market orders at 09:45 on the weekly rebalance.

@@ -3,7 +3,11 @@
 Labels:  V2 rule-based 3-class (RISK_OFF=0, RISK_CAUTION=1, RISK_ON=2)
 Model:   XGBoost multi:softprob + temperature scaling (no isotonic)
 Score:   E[class/2] = 0.5*P(CAUTION) + 1.0*P(RISK_ON)  →  naturally in [0,1]
-Folds:   3 expanding walk-forward folds from 2018-01-01
+Folds:   3 FIXED expanding walk-forward folds from 2018-01-01 (frozen for
+         version-over-version comparability) + 1 ROLLING fold that tests
+         2026-04-30 → the last date actually in the dataset. Without the
+         rolling fold the gate re-scores the same three windows forever and
+         cannot fail — see _ROLLING_FOLD_TRAIN_END.
 """
 from __future__ import annotations
 
@@ -65,12 +69,51 @@ def regime_gate(payload: dict) -> tuple[bool, list[str]]:
 RISK_OFF_SCORE_THRESHOLD = 0.30   # score < 0.30 → RISK_OFF
 RISK_ON_SCORE_THRESHOLD = 0.60    # score >= 0.60 → RISK_ON
 
-# Walk-forward folds — expanding window, start 2018 to capture multiple regimes
-_FOLDS = [
+# Walk-forward folds — expanding window, start 2018 to capture multiple regimes.
+#
+# These three are FROZEN ON PURPOSE: holding them identical across versions is what makes
+# the version-over-version metric series comparable. They are NOT the whole gate — see
+# _ROLLING_FOLD_TRAIN_END below.
+_FIXED_FOLDS = [
     (date(2018, 1, 1), date(2023, 12, 31), date(2024, 12, 31)),
     (date(2018, 1, 1), date(2024, 12, 31), date(2025, 9, 30)),
     (date(2018, 1, 1), date(2025, 9, 30), date(2026, 4, 30)),
 ]
+
+# Where the rolling fold starts testing — i.e. where the fixed folds stop.
+#
+# WHY THIS EXISTS (2026-09-06). With only the three fixed folds, the walk-forward re-scored
+# the SAME three windows on every weekly retrain, so it returned the same numbers forever:
+# versions v35 through v42 all recorded wf_auc_mean=0.9563, wf_auc_min=0.9062,
+# brier=0.0569, byte-identical down to fold-1's temperature=1.2444. The promotion gate was
+# being applied to a constant. It could not fail, and therefore could not detect a
+# regression in the model that carries the live book's position sizing.
+#
+# The rolling fold re-opens the gate onto the present while leaving the three fixed folds
+# alone, so degradation shows up as a NEW fold rather than as a shifted aggregate.
+_ROLLING_FOLD_TRAIN_END = date(2026, 4, 30)
+
+# Below this the rolling test window is too thin to mean anything, so it is dropped rather
+# than reported as a weak fold. Matches walk_forward's own per-fold minimum.
+_MIN_ROLLING_TEST_ROWS = 20
+
+
+def build_folds(data_end: Optional[date]) -> list:
+    """The three fixed folds, plus a rolling fold testing _ROLLING_FOLD_TRAIN_END → data_end.
+
+    `data_end` is the LAST DATE ACTUALLY IN THE DATASET, never `date.today()` — the two
+    diverged by four months without anyone noticing (see `train`), which is the whole
+    reason this takes a parameter instead of reading the clock.
+    """
+    folds = list(_FIXED_FOLDS)
+    if data_end is not None and data_end > _ROLLING_FOLD_TRAIN_END:
+        folds.append((date(2018, 1, 1), _ROLLING_FOLD_TRAIN_END, data_end))
+    return folds
+
+
+# Back-compat alias: the fixed three. Prefer build_folds() — this name no longer describes
+# the folds the gate actually runs on.
+_FOLDS = _FIXED_FOLDS
 
 
 def score_from_probs(probs: np.ndarray) -> np.ndarray:
@@ -209,8 +252,29 @@ class RegimeModelTrainer:
         """Run expanding-window walk-forward, return per-fold metrics."""
         from sklearn.metrics import log_loss, f1_score, confusion_matrix
 
+        data_end = max(full_df["snapshot_date"]) if len(full_df) else None
+        folds = build_folds(data_end)
+
+        # The rolling fold is the only part of this gate that can react to a regression.
+        # If it is missing the gate has silently reverted to re-scoring three fixed windows,
+        # which is the exact failure this was built to end — so say so at WARNING, loudly,
+        # rather than letting it pass as a normal 3-fold run.
+        if len(folds) == len(_FIXED_FOLDS):
+            logger.warning(
+                "NO ROLLING FOLD: dataset ends %s, at or before the rolling train_end %s. "
+                "The gate is evaluating %d FIXED windows only and cannot detect recent "
+                "degradation. Extend the regime snapshots before trusting this result.",
+                data_end, _ROLLING_FOLD_TRAIN_END, len(folds),
+            )
+        else:
+            logger.info(
+                "Folds: %d fixed + 1 rolling (%s → %s)",
+                len(_FIXED_FOLDS), _ROLLING_FOLD_TRAIN_END, data_end,
+            )
+
         results = []
-        for fold_idx, (train_start, train_end, test_end) in enumerate(_FOLDS, 1):
+        for fold_idx, (train_start, train_end, test_end) in enumerate(folds, 1):
+            is_rolling = fold_idx > len(_FIXED_FOLDS)
             train_df = full_df[
                 (full_df["snapshot_date"] >= train_start)
                 & (full_df["snapshot_date"] <= train_end)
@@ -220,12 +284,18 @@ class RegimeModelTrainer:
                 & (full_df["snapshot_date"] <= test_end)
             ]
 
-            if len(train_df) < 100 or len(test_df) < 20:
-                logger.warning("Fold %d: insufficient data (train=%d, test=%d)",
-                               fold_idx, len(train_df), len(test_df))
+            min_test = _MIN_ROLLING_TEST_ROWS if is_rolling else 20
+            if len(train_df) < 100 or len(test_df) < min_test:
+                # A skipped fold contributes nothing to the mean/min, so a skipped ROLLING
+                # fold silently restores the frozen-gate behaviour. Escalate that case.
+                logger.warning(
+                    "%sFold %d: insufficient data (train=%d, test=%d) — excluded from the gate",
+                    "ROLLING " if is_rolling else "", fold_idx, len(train_df), len(test_df),
+                )
                 results.append({
                     "fold": fold_idx, "log_loss": None, "macro_f1": None,
                     "n_train": len(train_df), "n_test": len(test_df),
+                    "rolling": is_rolling,
                 })
                 continue
 
@@ -276,6 +346,7 @@ class RegimeModelTrainer:
                 "pred_distribution": pred_distribution,
                 "n_train": len(train_df),
                 "n_test": len(test_df),
+                "rolling": is_rolling,
             })
         return results
 
@@ -296,6 +367,22 @@ class RegimeModelTrainer:
             end = date.today()
 
         df = self.load_dataset(start, end)
+
+        # The REQUESTED end and the end of the data that actually came back are different
+        # things, and recording the request as if it were the data is how four months of
+        # staleness stayed invisible: every weekly row claimed train_end=<today> while the
+        # dataset had been frozen at 2026-05-07 (the backfill stopped; the live snapshots
+        # carry a different snapshot_trigger and are filtered out by load_dataset). The
+        # pickle and the DB row now record what was TRAINED ON.
+        data_end = max(df["snapshot_date"])
+        if (end - data_end).days > 7:
+            logger.warning(
+                "REGIME DATA IS STALE: requested through %s but the dataset ends %s "
+                "(%d days behind). The model is being retrained on data it has already "
+                "seen. Extend the regime snapshots (scripts/backfill_regime_snapshots.py).",
+                end, data_end, (end - data_end).days,
+            )
+
         fold_results = self.walk_forward(df)
 
         lls = [r["log_loss"] for r in fold_results if r["log_loss"] is not None]
@@ -330,7 +417,8 @@ class RegimeModelTrainer:
                 "model_version": 2,          # V2 marker — checked by regime_model.py
                 "trained_at": datetime.utcnow().isoformat(),
                 "train_start": start.isoformat(),
-                "train_end": end.isoformat(),
+                "train_end": data_end.isoformat(),   # data actually trained on, NOT the requested end
+                "requested_end": end.isoformat(),
                 "wf_results": fold_results,
                 "wf_log_loss_mean": ll_mean,
                 "wf_macro_f1_mean": f1_mean,
@@ -346,7 +434,7 @@ class RegimeModelTrainer:
             }, f)
 
         logger.info("Regime model v%d saved → %s", version, model_path)
-        self._write_model_version(version, start, end, fold_results, ll_mean, f1_mean, model_path)
+        self._write_model_version(version, start, data_end, fold_results, ll_mean, f1_mean, model_path)
         return model_path
 
     def _write_model_version(

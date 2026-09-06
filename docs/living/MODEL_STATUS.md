@@ -160,7 +160,7 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 |---|---|---|---|---|---|
 | swing | **v223** | ⚠️ UNVERIFIABLE | INVALID (in-sample) | Cannot run — trained_through=None | DB `ACTIVE`. Saved 2026-05-27, predates trained_through (PR #311, 2026-05-30). v224–v229 exist but are `RETIRED`. Retrain required. **Dormant** — live book is trend + cash. |
 | intraday | v63 | ⚠️ UNVERIFIABLE | **INVALID (in-sample memorization)** | +5.143 STRUCK FROM RECORD | DB `ACTIVE`. Saved 2026-05-22. +5.14 was scored on its own training data — see below. v64/v65 `RETIRED`. **Dormant** — no intraday sleeve live. |
-| regime | **v42** | ACTIVE | — | log_loss/macro-F1 gate (not Sharpe) — **evaluated on folds ending 2026-04-30, see note** | Trained 2026-09-04. File-based (`regime_model_v*.pkl` + `regime_model_versions`), NOT in `ModelVersion`. Carries the live book's sizing. Weekly Fri 17:30 retrain; v41 2026-08-28, v40 2026-08-21. |
+| regime | **v42** | ACTIVE | — | log_loss/macro-F1 gate (not Sharpe): `f1_min 0.906 / log_loss 0.043`, **4 folds incl. rolling → 2026-09-04** | Trained 2026-09-04. File-based (`regime_model_v*.pkl` + `regime_model_versions`), NOT in `ModelVersion`. Carries the live book's sizing. Weekly Fri 17:30 retrain; v41 2026-08-28, v40 2026-08-21. |
 | portfolio_selector | v4 | ACTIVE | — | — | DB `ACTIVE`; present for completeness |
 
 > ### ⚠️ 2026-08-22 — regime loader was pinned to v9 for six weeks (FIXED)
@@ -186,7 +186,7 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 > exactly 7 days apart at 17:30, and the artifacts are distinct files (different MD5s), so each
 > week genuinely retrains on data through the new `train_end`. The daily-retrain symptom is gone.
 
-> ### ⚠️ 2026-09-06 — the regime promotion gate has not seen data since 2026-04-30 (OPEN)
+> ### ✅ 2026-09-06 — the regime gate could not fail, and the VIX3M feed was silently stale (RESOLVED)
 >
 > `regime_model_versions` records **byte-identical** WF metrics for every version from v35 through
 > v42 — `wf_auc_mean=0.9563`, `wf_auc_min=0.9062`, `brier=0.0569`, same fold-1 `log_loss=0.1001`,
@@ -215,19 +215,52 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 > still pass. It cannot report otherwise. Every weekly promotion since v35 has been unverified in
 > substance while appearing verified in the record.
 >
-> **Not yet fixed — the fix is a live-behavior change and needs a decision.** Rolling the fold
-> schedule forward will produce the first genuinely new regime metrics since April, and those
-> metrics could fail the gate, which would block promotion of the model now carrying live sizing.
-> That is the correct outcome if it happens, but it should be a deliberate act, not a side effect
-> of a doc sync. Options: (a) derive `_FOLDS` from the data's max date so it rolls automatically,
-> (b) add a fourth fold `2026-04-30 → today` and keep the first three fixed for comparability.
-> **(b) is preferred** — it keeps the historical series comparable across versions while making the
-> gate live again, and it makes any degradation visible as a new fold rather than as a shifted
-> aggregate. Allowed under the CH moratorium: this is hardening / live re-validation, not a hunt.
+> **RESOLVED 2026-09-06** — but the fold schedule was only one of four stacked defects, and not
+> the deepest. Investigating it turned up three more, each of which hid the next. Full account in
+> DECISIONS 2026-09-06; summary:
+>
+> | # | Defect | Effect |
+> |---|---|---|
+> | 1 | `load_dataset` filters `snapshot_trigger == "backfill"`; the backfill stopped **2026-05-07** | The weekly retrain re-fit the SAME 2179 rows for four months. The 113 daily snapshots since carry `premarket`/`startup_catchup` and were filtered out. |
+> | 2 | `train_end` recorded the **requested** `end` (`date.today()`), not the data's max | Every weekly row claimed data it did not have. **This is what hid #1** — the DB said 2026-09-04 while the data stopped in May. |
+> | 3 | `_FOLDS` hardcoded, last test window ends 2026-04-30 | The gate re-scored three fixed windows forever → the constant 0.9563/0.9062/0.0569. |
+> | 4 | `RegimeFeatureBuilder` had no FRED backstop for `^VIX3M` **and no staleness bound** | `_slice_to_date(...).iloc[-1]` carried the last close forward indefinitely. `build(2026-09-04)` returned `vix_term_ratio=0.7074` off the **2026-07-17** close; the FRED-backed value is 14.53/17.61 = **0.8251**. Live, feeding `label_regime_day` and the sizing model. |
+>
+> #4 is the same yfinance `^VIX3M` rot that #674 fixed for the crash governor — patched in one
+> consumer, not the other. It also *blocked* the obvious fix for #1: backfilling before repairing
+> the feed would have written a feature discontinuity into precisely the window being added.
+>
+> **What changed.**
+> - `_vix3m_as_of()` — yfinance PRIMARY, `macro_history` (FRED-backed) fallback, both subject to a
+>   5-calendar-day staleness bound. No fresh value → **NULL**, which XGBoost handles natively,
+>   rather than a stale number that looks real. Verified bit-identical on 12 historical dates
+>   spanning 2018–2025, so the repair is purely additive.
+> - `build_folds(data_end)` — the three fixed folds (frozen, for comparability) **plus** a rolling
+>   fold `2026-04-30 → data_end`. `walk_forward` WARNs loudly when the rolling fold is absent or
+>   too thin, because a skipped rolling fold silently restores the un-failable gate.
+> - `train_end` now records the data actually trained on; `requested_end` is kept separately, and a
+>   >7-day gap between them WARNs.
+> - Regime snapshots backfilled 2026-05-08 → 2026-09-04 (86 new rows, **0 NULL `vix_term_ratio`**).
+>
+> **Result: gate PASSES on the rolling fold** — folds now `0.906 / 0.963 / 1.000 / 1.000`,
+> `f1_min 0.9062`, `log_loss mean 0.0427`. Folds 1–3 reproduce the historical numbers exactly
+> (mean 0.9563, brier 0.0569), so the version-over-version series stays comparable and no
+> promotion is blocked. The next scheduled weekly retrain (Fri 17:30) picks all of this up with no
+> manual promotion.
+>
+> **⚠️ Known limitation — what this gate can and cannot catch.** `label_regime_day` is a
+> deterministic RULE over features that are themselves model inputs, so the model is a
+> rule-approximator and macro_F1 → 1.0 is the expected ceiling, not evidence of predictive skill.
+> The rolling fold makes the gate react to the present, and it will catch pipeline breakage,
+> fitting failures and label-distribution shifts. It will **not** catch loss of predictive edge,
+> and it would not by itself have caught defect #4 — a stale `vix_term_ratio` moves the rule label
+> and the model prediction together. Treat a PASS as "the machine is intact", not "the regime
+> signal still works".
 >
 > **Lesson, same shape as the 2026-09-02 `slippage_drag_bps_day` finding** (DECISIONS): a check was
 > trusted because of what it was named, and the error survived until someone read what it computed.
-> There, a metric could not see execution; here, a gate cannot see the present.
+> There, a metric could not see execution; here, a gate could not see the present — and underneath
+> it, a feed had quietly stopped and a timestamp field was reporting an intention as a fact.
 
 > ## 🔴 CRITICAL (2026-05-31): Both ML models are UNVERIFIABLE; prior results are in-sample
 >

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -67,6 +68,22 @@ SECTOR_TICKERS = ["XLK", "XLE", "XLF", "XLV", "XLI", "XLY", "XLC", "XLP", "XLU"]
 _SPY_LOOKBACK_DAYS = 320
 _VIX_LOOKBACK_DAYS = 320
 _MULTI_LOOKBACK_DAYS = 320
+
+# How old a VIX3M close may be and still describe `as_of_date`. 5 calendar days covers a
+# three-day weekend plus a holiday; anything older is a data outage, not a settled close.
+#
+# WHY THIS EXISTS (2026-09-06). `_slice_to_date(...)` then `.iloc[-1]` returns the last
+# available row REGARDLESS of its age, so a series that stops updating silently pins the
+# feature to its final value forever. yfinance's ^VIX3M is doing exactly that — its history
+# rots backwards over time (macro_history.py documents the decay: 100% coverage through
+# Apr 2026 -> 5% by Aug). Measured on 2026-09-06, `build(as_of_date=2026-09-04)` returned
+# vix_term_ratio=0.7074, computed from the 2026-07-17 VIX3M close (20.54) against a
+# 2026-09-04 VIX — a 7-week-stale denominator. The FRED-backed value is 14.53/17.61 = 0.825.
+# Silent because nothing errored: the number was present, plausible, and wrong.
+#
+# macro_history carries the same two series with a FRED backstop (DECISIONS 2026-08-xx / #674,
+# which fixed this same outage for the crash governor but not for this second consumer).
+_MAX_VIX3M_STALENESS_DAYS = 5
 
 
 def label_regime_day(row: dict) -> int:
@@ -301,8 +318,9 @@ class RegimeFeatureBuilder:
         if len(vix_s) >= 6:
             feats["vix_5d_change"] = float(vix_s.iloc[-1] / vix_s.iloc[-6] - 1.0)
 
-        if vix3m_s is not None and not vix3m_s.empty:
-            vix3m = float(np.clip(vix3m_s.iloc[-1], 5.0, 80.0))
+        vix3m_raw = _vix3m_as_of(vix3m_s, as_of_date)
+        if vix3m_raw is not None and vix3m_raw == vix3m_raw:
+            vix3m = float(np.clip(vix3m_raw, 5.0, 80.0))
             if vix3m > 0:
                 feats["vix_term_ratio"] = round(vix / vix3m, 4)
 
@@ -409,6 +427,69 @@ def _fetch_df(ticker: str, as_of_date: date, lookback_days: int) -> Optional[pd.
     except Exception as exc:
         logger.debug("_fetch_df %s failed: %s", ticker, exc)
         return None
+
+
+@lru_cache(maxsize=2)
+def _macro_vix3m_map_cached(_mtime: float) -> dict:
+    """{'YYYY-MM-DD': vix3m} from the macro-history parquet, keyed on the file's mtime.
+
+    Keyed on mtime rather than plain-cached so a long-running process picks up the
+    startup/daily macro refresh — a permanently-cached map would re-create the very
+    staleness bug this fallback exists to fix.
+    """
+    try:
+        from app.data.macro_history import load_macro_history
+
+        df = load_macro_history()
+        if df is None or df.empty or "vix3m" not in df.columns:
+            return {}
+        sub = df.dropna(subset=["vix3m"])
+        return {str(d)[:10]: float(v) for d, v in zip(sub["date"], sub["vix3m"])}
+    except Exception as exc:  # never let a fallback take down feature building
+        logger.warning("macro_history VIX3M fallback unavailable: %s", exc)
+        return {}
+
+
+def _macro_vix3m_map() -> dict:
+    try:
+        from app.data.macro_history import MACRO_PATH
+
+        mtime = MACRO_PATH.stat().st_mtime if MACRO_PATH.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    return _macro_vix3m_map_cached(mtime)
+
+
+def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[float]:
+    """VIX3M close describing `as_of_date`, or None when no fresh value exists.
+
+    Order: yfinance (intraday-fresh when it works) -> macro_history (FRED-backed).
+    Both are subject to the same staleness bound, so a dead feed yields None — and a
+    NULL feature, which XGBoost handles natively — rather than a stale number that
+    looks real. Returning None here is the point: the prior code could not tell the
+    difference between "VIX3M is 20.54 today" and "VIX3M was 20.54 seven weeks ago".
+    """
+    oldest_ok = as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)
+
+    if vix3m_s is not None and not vix3m_s.empty:
+        fresh = vix3m_s.dropna()
+        if not fresh.empty:
+            last_dt = pd.to_datetime(fresh.index[-1]).date()
+            if oldest_ok <= last_dt <= as_of_date:
+                return float(fresh.iloc[-1])
+
+    macro = _macro_vix3m_map()
+    if macro:
+        probe = as_of_date
+        while probe >= oldest_ok:
+            hit = macro.get(probe.isoformat())
+            if hit is not None:
+                return float(hit)
+            probe -= timedelta(days=1)
+
+    logger.debug("No VIX3M close within %d days of %s — vix_term_ratio left NULL",
+                 _MAX_VIX3M_STALENESS_DAYS, as_of_date)
+    return None
 
 
 def _close_series(df) -> Optional[pd.Series]:
