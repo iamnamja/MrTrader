@@ -109,95 +109,98 @@ class TestWalkForwardWarnsWhenGateIsFrozen:
 
 # ── (4) VIX3M staleness + FRED backstop ───────────────────────────────────────
 
-class TestVix3mAsOf:
-    def _series(self, pairs):
-        idx = pd.to_datetime([p[0] for p in pairs])
-        return pd.Series([p[1] for p in pairs], index=idx, name="close")
+class TestVixTermResolution:
+    """Targets the SHIPPING path (`_vix_term_ratio_as_of`). An earlier cut of these tests
+    exercised a single-leg `_vix3m_as_of` helper that production no longer calls, so the
+    staleness logic that actually ships was largely untested and several "disable the FRED
+    backstop" monkeypatches were silent no-ops.
 
-    def test_fresh_yfinance_value_is_used(self):
-        from app.ml.regime_features import _vix3m_as_of
+    Every test here stubs `_macro_series` — the ONE seam the shipping path uses. Stubbing
+    anything else lets the real, gitignored `data/macro/macro_history.parquet` leak in,
+    which passes locally and fails on CI.
+    """
 
-        s = self._series([("2026-09-03", 17.4), ("2026-09-04", 17.6)])
-        assert _vix3m_as_of(s, date(2026, 9, 4)) == pytest.approx(17.6)
+    def _s(self, pairs):
+        return pd.Series([p[1] for p in pairs],
+                         index=pd.to_datetime([p[0] for p in pairs]), name="close")
 
-    def test_value_within_the_staleness_bound_is_used(self):
-        """A long weekend must not invalidate Friday's settled close."""
-        from app.ml.regime_features import _vix3m_as_of
+    def _no_macro(self, monkeypatch):
+        import app.ml.regime_features as rf
+        monkeypatch.setattr(rf, "_macro_series", lambda field: None)
 
-        s = self._series([("2026-09-04", 17.6)])
-        assert _vix3m_as_of(s, date(2026, 9, 7)) == pytest.approx(17.6)
-
-    def test_stale_yfinance_value_is_rejected_not_carried_forward(self, monkeypatch):
-        """THE BUG: .iloc[-1] returned the 2026-07-17 close for a 2026-09-04 as_of."""
+    def test_fresh_yfinance_pair_is_used(self, monkeypatch):
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
-        s = self._series([("2026-07-16", 20.4), ("2026-07-17", 20.54)])
-        assert rf._vix3m_as_of(s, date(2026, 9, 4)) is None
+        self._no_macro(monkeypatch)
+        vix = self._s([("2026-09-03", 14.32), ("2026-09-04", 14.53)])
+        v3m = self._s([("2026-09-03", 17.42), ("2026-09-04", 17.61)])
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4)) == pytest.approx(
+            round(14.53 / 17.61, 4))
 
-    def test_falls_back_to_macro_history_when_yfinance_is_stale(self, monkeypatch):
+    def test_a_pair_within_the_staleness_bound_is_used(self, monkeypatch):
+        """A long weekend must not invalidate Friday's settled closes."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
-        s = self._series([("2026-07-17", 20.54)])
-        assert rf._vix3m_as_of(s, date(2026, 9, 4)) == pytest.approx(17.61)
+        self._no_macro(monkeypatch)
+        vix = self._s([("2026-09-04", 14.53)])
+        v3m = self._s([("2026-09-04", 17.61)])
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 7)) == pytest.approx(
+            round(14.53 / 17.61, 4))
 
-    def test_macro_fallback_walks_back_to_the_last_settled_close(self, monkeypatch):
-        """as_of on a weekend resolves to Friday, not to None."""
+    def test_stale_pair_is_rejected_not_carried_forward(self, monkeypatch):
+        """THE ORIGINAL BUG: .iloc[-1] returned the 2026-07-17 close for a 2026-09-04
+        as_of, giving vix_term_ratio=0.7074 against a truth of 0.8251."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
-        stale = self._series([("2026-07-17", 20.54)])
-        assert rf._vix3m_as_of(stale, date(2026, 9, 6)) == pytest.approx(17.61)
+        self._no_macro(monkeypatch)
+        vix = self._s([("2026-07-17", 15.0)])
+        v3m = self._s([("2026-07-17", 20.54)])
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4)) is None
+
+    def test_falls_back_to_the_fred_backed_series(self, monkeypatch):
+        import app.ml.regime_features as rf
+
+        macro = {"vix": self._s([("2026-09-04", 14.53)]),
+                 "vix3m": self._s([("2026-09-04", 17.61)])}
+        monkeypatch.setattr(rf, "_macro_series", lambda f: macro.get(f))
+        stale = self._s([("2026-07-17", 20.54)])
+        assert rf._vix_term_ratio_as_of(None, stale, date(2026, 9, 4)) == pytest.approx(
+            round(14.53 / 17.61, 4))
 
     def test_macro_fallback_respects_the_same_staleness_bound(self, monkeypatch):
-        """A stale FRED series must not be carried forward either."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-07-17": 20.54})
-        stale = self._series([("2026-07-17", 20.54)])
-        assert rf._vix3m_as_of(stale, date(2026, 9, 4)) is None
-
-    def test_yfinance_wins_when_both_are_fresh(self, monkeypatch):
-        """yfinance stays PRIMARY — FRED only fills what yfinance is missing."""
-        import app.ml.regime_features as rf
-
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 99.0})
-        s = self._series([("2026-09-04", 17.6)])
-        assert rf._vix3m_as_of(s, date(2026, 9, 4)) == pytest.approx(17.6)
-
-    def test_all_nan_series_falls_through_to_macro(self, monkeypatch):
-        """The prefetch path returns rows present but NaN — that is 'missing', not 'fresh'."""
-        import app.ml.regime_features as rf
-
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
-        s = self._series([("2026-09-03", float("nan")), ("2026-09-04", float("nan"))])
-        assert rf._vix3m_as_of(s, date(2026, 9, 4)) == pytest.approx(17.61)
+        macro = {"vix": self._s([("2026-07-17", 15.0)]),
+                 "vix3m": self._s([("2026-07-17", 20.54)])}
+        monkeypatch.setattr(rf, "_macro_series", lambda f: macro.get(f))
+        assert rf._vix_term_ratio_as_of(None, None, date(2026, 9, 4)) is None
 
     def test_no_data_anywhere_returns_none(self, monkeypatch):
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
-        assert rf._vix3m_as_of(None, date(2026, 9, 4)) is None
+        self._no_macro(monkeypatch)
+        assert rf._vix_term_ratio_as_of(None, None, date(2026, 9, 4)) is None
 
-    def test_none_or_empty_primary_still_reaches_the_fred_backstop(self, monkeypatch):
-        """`_fetch_single` returns None on ANY yfinance failure, so refusing the fallback
-        for a None/empty primary would disable the backstop in exactly the outage it
-        exists for. There is no look-ahead cost: the fallback is probed by as_of_date."""
+    def test_all_nan_series_falls_through_to_macro(self, monkeypatch):
+        """The prefetch path returns rows that are present but all-NaN — that is
+        'missing', not 'fresh'."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
-        assert rf._vix3m_as_of(None, date(2026, 9, 4)) == pytest.approx(17.61)
-        assert rf._vix3m_as_of(pd.Series([], dtype=float),
-                               date(2026, 9, 4)) == pytest.approx(17.61)
+        macro = {"vix": self._s([("2026-09-04", 14.53)]),
+                 "vix3m": self._s([("2026-09-04", 17.61)])}
+        monkeypatch.setattr(rf, "_macro_series", lambda f: macro.get(f))
+        nan_s = self._s([("2026-09-03", float("nan")), ("2026-09-04", float("nan"))])
+        assert rf._vix_term_ratio_as_of(nan_s, nan_s, date(2026, 9, 4)) == pytest.approx(
+            round(14.53 / 17.61, 4))
 
     def test_future_dated_value_is_not_used(self, monkeypatch):
-        """A close dated after as_of would be lookahead; reject it."""
+        """A close dated after as_of would be lookahead."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
-        s = self._series([("2026-09-10", 17.6)])
-        assert rf._vix3m_as_of(s, date(2026, 9, 4)) is None
+        self._no_macro(monkeypatch)
+        vix = self._s([("2026-09-10", 15.0)])
+        v3m = self._s([("2026-09-10", 17.6)])
+        assert rf._vix_term_ratio_as_of(vix, v3m, date(2026, 9, 4)) is None
 
 
 class TestVixTermRatioFeature:
@@ -206,7 +209,6 @@ class TestVixTermRatioFeature:
     def test_vix_term_ratio_is_null_when_no_fresh_vix3m(self, monkeypatch):
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         monkeypatch.setattr(rf, "_macro_series", lambda f: None)
         builder = rf.RegimeFeatureBuilder()
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
@@ -222,9 +224,14 @@ class TestVixTermRatioFeature:
         assert feats["vix_term_ratio"] != feats["vix_term_ratio"]
 
     def test_vix_term_ratio_uses_the_fred_backed_value(self, monkeypatch):
+        """Stubs `_macro_series`, the seam the shipping path uses. Patching a helper the
+        shipping path no longer calls let the real (gitignored) macro parquet leak in —
+        green locally, red on CI."""
         import app.ml.regime_features as rf
 
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
+        _m = {"vix": pd.Series([14.53], index=pd.to_datetime(["2026-09-04"])),
+              "vix3m": pd.Series([17.61], index=pd.to_datetime(["2026-09-04"]))}
+        monkeypatch.setattr(rf, "_macro_series", lambda f: _m.get(f))
         builder = rf.RegimeFeatureBuilder()
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
         vix_s = pd.Series(
@@ -301,7 +308,6 @@ class TestVixNumeratorStaleness:
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_series", lambda field: None)
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {"2026-09-04": 17.61})
         builder = rf.RegimeFeatureBuilder()
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
         stale_vix = pd.Series(
@@ -317,7 +323,6 @@ class TestVixNumeratorStaleness:
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_series", lambda field: None)
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         builder = rf.RegimeFeatureBuilder()
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
         vix = pd.Series(

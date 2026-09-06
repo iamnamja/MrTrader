@@ -56,47 +56,16 @@ def _label_name(label_int: int) -> str:
     return {0: "RISK_OFF", 1: "RISK_CAUTION", 2: "RISK_ON"}.get(label_int, "UNKNOWN")
 
 
-def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
-    """Insert or update a backfill row. Returns True if written."""
-    existing = (
-        db.query(snap_cls)
-        .filter(
-            snap_cls.snapshot_date == d,
-            snap_cls.snapshot_trigger == "backfill",
-        )
-        .first()
-    )
-    if existing is not None and not rewrite:
-        return False
-
-    clean = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in feats.items()}
-
-    if existing is not None:
-        for k, v in clean.items():
-            if hasattr(existing, k):
-                setattr(existing, k, v)
-        if hasattr(existing, "regime_label_rule") and "regime_label_rule" in clean:
-            existing.regime_label_rule = clean["regime_label_rule"]
-    else:
-        row = snap_cls(
-            snapshot_date=d,
-            snapshot_trigger="backfill",
-            regime_label="UNKNOWN",
-            **{k: v for k, v in clean.items() if hasattr(snap_cls, k)},
-        )
-        db.add(row)
-    return True
-
-
 # The reusable helpers now live in app/ml/regime_backfill.py — app code must not depend
 # on `scripts.*` being importable (see that module's docstring). Re-exported here so the
 # CLI and any existing callers keep working.
 from app.ml.regime_backfill import (            # noqa: E402
+    _upsert_snapshot,
     extend_backfill,
     last_backfill_date,
 )
 
-__all__ = ["extend_backfill", "last_backfill_date", "main"]
+__all__ = ["extend_backfill", "last_backfill_date", "_upsert_snapshot", "main"]
 
 
 def main() -> None:

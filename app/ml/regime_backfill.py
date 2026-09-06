@@ -18,14 +18,24 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-from app.ml.regime_features import RegimeFeatureBuilder, label_regime_day, label_name
+from app.ml.regime_features import (
+    CORE_FEATURE_NAMES,
+    RegimeFeatureBuilder,
+    label_regime_day,
+    label_name,
+)
 
 logger = logging.getLogger(__name__)
 
-# A row is worth writing only if the features the trainer REQUIRES are present. These are
-# load_dataset's `core` dropna set in miniature: a row missing them is dropped from
-# training anyway, so writing it buys nothing and — under rewrite — destroys a good row.
-_REQUIRED_FEATURES = ("vix_level", "spy_ma50_dist", "spy_ma200_dist")
+# A row is worth writing only if the features the trainer REQUIRES are present — the FULL
+# set, imported from regime_features so it cannot drift from load_dataset's dropna.
+#
+# Guarding a hand-picked three was not enough. `rewrite_recent_days` overwrites EVERY
+# column, so one missing ticker in the batch download (HYG, say) would NULL 14 days of
+# previously-good credit features and relabel those days, and a MacroCalendar failure would
+# NULL days_to_fomc/cpi/nfp — which ARE in the core set, making those 14 rows permanently
+# untrainable. Neither would ever heal, because the rewrite window moves on.
+_REQUIRED_FEATURES = CORE_FEATURE_NAMES
 
 
 def _is_trading_day(d: date) -> bool:
@@ -55,6 +65,38 @@ def last_backfill_date() -> Optional[date]:
             .filter(RegimeSnapshot.snapshot_trigger == "backfill")
             .scalar()
         )
+
+
+def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
+    """Insert or update a backfill row. Returns True if written."""
+    existing = (
+        db.query(snap_cls)
+        .filter(
+            snap_cls.snapshot_date == d,
+            snap_cls.snapshot_trigger == "backfill",
+        )
+        .first()
+    )
+    if existing is not None and not rewrite:
+        return False
+
+    clean = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in feats.items()}
+
+    if existing is not None:
+        for k, v in clean.items():
+            if hasattr(existing, k):
+                setattr(existing, k, v)
+        if hasattr(existing, "regime_label_rule") and "regime_label_rule" in clean:
+            existing.regime_label_rule = clean["regime_label_rule"]
+    else:
+        row = snap_cls(
+            snapshot_date=d,
+            snapshot_trigger="backfill",
+            regime_label="UNKNOWN",
+            **{k: v for k, v in clean.items() if hasattr(snap_cls, k)},
+        )
+        db.add(row)
+    return True
 
 
 def _usable(feats: dict) -> bool:
@@ -96,7 +138,7 @@ def extend_backfill(
     from app.database.models import RegimeSnapshot
 
     if upsert is None:
-        from scripts.backfill_regime_snapshots import _upsert_snapshot as upsert
+        upsert = _upsert_snapshot
 
     if start is None:
         last = last_backfill_date()

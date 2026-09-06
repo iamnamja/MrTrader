@@ -55,6 +55,24 @@ REGIME_FEATURE_NAMES = [
     "nis_sizing_factor",
 ]
 
+# The features `load_dataset` REQUIRES: a row missing any of these is dropped from
+# training entirely. Defined here, beside REGIME_FEATURE_NAMES, so the trainer's dropna and
+# the backfill's write-guard cannot drift apart — a row the backfill considers good but the
+# trainer discards is a row that silently never trains, which is how this subsystem got
+# into trouble in the first place.
+CORE_FEATURE_NAMES = tuple(
+    f for f in REGIME_FEATURE_NAMES
+    if f not in (
+        "nis_risk_numeric", "nis_sizing_factor",
+        "breadth_pct_ma50",                       # legacy col — not in V2 features
+        "vix_term_ratio", "breadth_rsp_spy_ratio_20d",
+        "credit_hyg_ief_5d", "credit_hyg_ief_20d",
+        "sector_dispersion_20d", "sector_leader_lag_20d",
+        "vix_5d_change", "spy_50d_return",
+        "spy_above_ma50", "spy_above_ma200",
+    )
+)
+
 # Tickers fetched for V2 features
 MULTI_TICKERS = [
     "SPY", "RSP",
@@ -529,14 +547,6 @@ def _macro_series(field: str) -> Optional[pd.Series]:
     return _macro_series_cached(field, mtime)
 
 
-def _macro_vix3m_map() -> dict:
-    """{'YYYY-MM-DD': vix3m}. Thin view over _macro_series for point lookups."""
-    s = _macro_series("vix3m")
-    if s is None:
-        return {}
-    return {d.strftime("%Y-%m-%d"): float(v) for d, v in s.items()}
-
-
 def _is_fresh(series: Optional[pd.Series], as_of_date: date) -> bool:
     """True when `series` carries a non-NaN value dated (as_of - bound, as_of]."""
     if series is None or len(series) == 0:
@@ -578,38 +588,6 @@ def _freshest_vol_series(
     if series is not None and len(series.dropna()) and not _is_fresh(series, as_of_date):
         logger.debug("%s stale at %s — falling back to macro_history", field, as_of_date)
     return sliced
-
-
-def _vix3m_as_of(vix3m_s: Optional[pd.Series], as_of_date: date) -> Optional[float]:
-    """VIX3M close describing `as_of_date`, or None when no fresh value exists.
-
-    Order: yfinance (intraday-fresh when it works) -> macro_history (FRED-backed).
-    Both are subject to the same staleness bound, so a dead feed yields None — and a
-    NULL feature, which XGBoost handles natively — rather than a stale number that
-    looks real. Returning None here is the point: the prior code could not tell the
-    difference between "VIX3M is 20.54 today" and "VIX3M was 20.54 seven weeks ago".
-    """
-    oldest_ok = as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)
-
-    if vix3m_s is not None and not vix3m_s.empty:
-        fresh = vix3m_s.dropna()
-        if not fresh.empty:
-            last_dt = pd.to_datetime(fresh.index[-1]).date()
-            if oldest_ok <= last_dt <= as_of_date:
-                return float(fresh.iloc[-1])
-
-    macro = _macro_vix3m_map()
-    if macro:
-        probe = as_of_date
-        while probe >= oldest_ok:
-            hit = macro.get(probe.isoformat())
-            if hit is not None:
-                return float(hit)
-            probe -= timedelta(days=1)
-
-    logger.debug("No VIX3M close within %d days of %s — vix_term_ratio left NULL",
-                 _MAX_VIX3M_STALENESS_DAYS, as_of_date)
-    return None
 
 
 def _series_as_of_map(series: Optional[pd.Series]) -> dict:

@@ -27,6 +27,7 @@ from xgboost import XGBClassifier
 
 from app.ml.retrain_config import MAX_WORKERS
 from app.ml.regime_features import (
+    CORE_FEATURE_NAMES,
     REGIME_FEATURE_NAMES,
     RegimeFeatureBuilder,
     label_regime_day,
@@ -257,16 +258,9 @@ class RegimeModelTrainer:
         df["nis_risk_numeric"] = df["nis_risk_numeric"].fillna(0.5).infer_objects(copy=False)
         df["nis_sizing_factor"] = df["nis_sizing_factor"].fillna(1.0).infer_objects(copy=False)
 
-        # Drop rows with missing core market features (VIX, SPY)
-        core = [f for f in REGIME_FEATURE_NAMES
-                if f not in ("nis_risk_numeric", "nis_sizing_factor",
-                             "breadth_pct_ma50",  # legacy col — not in V2 features
-                             "vix_term_ratio", "breadth_rsp_spy_ratio_20d",
-                             "credit_hyg_ief_5d", "credit_hyg_ief_20d",
-                             "sector_dispersion_20d", "sector_leader_lag_20d",
-                             "vix_5d_change", "spy_50d_return",
-                             "spy_above_ma50", "spy_above_ma200")]
-        df = df.dropna(subset=core)
+        # Drop rows with missing core market features (VIX, SPY). CORE_FEATURE_NAMES is
+        # shared with the backfill's write-guard so the two cannot drift.
+        df = df.dropna(subset=list(CORE_FEATURE_NAMES))
         if df.empty:
             # Re-checked AFTER the dropna: the earlier `df.empty` guard fires only when the
             # QUERY returned nothing. Newly reachable now that the staleness guard NULLs

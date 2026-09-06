@@ -116,7 +116,6 @@ class TestRegimeFeatureBuilderCore:
         import app.ml.regime_features as rf
 
         monkeypatch.setattr(rf, "_macro_series", lambda field: None)
-        monkeypatch.setattr(rf, "_macro_vix3m_map", lambda: {})
         builder = self._builder_with_mocks()
         # Empty DataFrames
         feats = builder.build(
