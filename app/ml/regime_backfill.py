@@ -83,10 +83,21 @@ def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
     clean = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in feats.items()}
 
     if existing is not None:
+        # A REWRITE MAY IMPROVE A ROW, NEVER DEGRADE IT. Blanket-overwriting means one
+        # missing ticker in the batch download (HYG, say) NULLs previously-good credit
+        # features on days that already had them, and relabels any RISK_OFF day that came
+        # from `credit_20d < -0.03`. A required-feature allowlist cannot cover this,
+        # because the columns at risk (credit, breadth, sector, vix_term) are legitimately
+        # NULL on some days and so cannot be required. The invariant that DOES hold is
+        # directional: never replace a value with nothing.
         for k, v in clean.items():
-            if hasattr(existing, k):
-                setattr(existing, k, v)
-        if hasattr(existing, "regime_label_rule") and "regime_label_rule" in clean:
+            if not hasattr(existing, k):
+                continue
+            if v is None and getattr(existing, k) is not None:
+                continue          # keep the good value we already have
+            setattr(existing, k, v)
+        if (hasattr(existing, "regime_label_rule")
+                and clean.get("regime_label_rule") is not None):
             existing.regime_label_rule = clean["regime_label_rule"]
     else:
         row = snap_cls(

@@ -95,9 +95,18 @@ def regime_gate(payload: dict) -> tuple[bool, list[str]]:
     # last day — is what detects the freeze. This is precisely the condition that caused
     # the original defect: the backfill stopped on 2026-05-07 and nothing noticed for four
     # months, because the only symptom was a metric that never moved.
+    # REQUIRED, not opt-in. Reading these only "if present" would make the staleness term
+    # depend on payload contents — the opposite of the missing-evidence-is-a-FAILURE rule
+    # applied to rolling_log_loss below, and an open door for exactly the payload shape
+    # (v35..v42) that had no way to express staleness at all.
     train_end = payload.get("train_end")
     requested_end = payload.get("requested_end")
-    if train_end and requested_end:
+    if not train_end or not requested_end:
+        failures.append(
+            "train_end/requested_end missing — cannot tell whether the training data is "
+            "current; refusing to promote"
+        )
+    else:
         try:
             lag = (date.fromisoformat(str(requested_end)[:10])
                    - date.fromisoformat(str(train_end)[:10])).days

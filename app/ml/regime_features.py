@@ -309,9 +309,13 @@ class RegimeFeatureBuilder:
     # ── Feature builders ──────────────────────────────────────────────────────
 
     def _add_spy_features(self, feats: dict, df: Optional[pd.DataFrame], as_of_date: date) -> None:
-        if df is None or len(df) < 5:
-            return
-        close = df["close"] if "close" in df.columns else df.iloc[:, 0]
+        # The fallback must be reached BEFORE giving up on an absent frame — returning
+        # early on `df is None` would make the macro/`spy` backstop dead in exactly the
+        # total-outage case it exists for. _add_vix_features was restructured this way;
+        # this one was not, which is the same mistake twice.
+        close = None
+        if df is not None and len(df) > 0:
+            close = df["close"] if "close" in df.columns else df.iloc[:, 0]
 
         # SPY needs the same staleness discipline as VIX, for the same reason: `.iloc[-1]`
         # on a slice pins to the last available bar however old it is, and
@@ -323,6 +327,9 @@ class RegimeFeatureBuilder:
         if close is None or len(close) == 0:
             return
         close = close.dropna()
+        if len(close) < 5:
+            return
+        close = close[pd.to_datetime(close.index).date <= as_of_date]
         if len(close) < 5:
             return
         if not _is_fresh(close, as_of_date):

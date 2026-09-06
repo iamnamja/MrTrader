@@ -22,15 +22,22 @@ from app.ml import retrain_config as rc
 # windows and so always return the same numbers, which is how v35..v42 all passed while
 # the training data sat frozen for four months. The rolling term is the only one that can
 # react to recent data, and its ABSENCE fails the gate. See regime_gate's docstring.
+# `train_end`/`requested_end` are REQUIRED too: the gate must be able to tell whether the
+# training data is current, and "cannot tell" is a failure, not a pass.
+_FRESH = {"train_end": "2026-09-04", "requested_end": "2026-09-06"}
 _PASS = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
-         "rolling_log_loss": 0.31}
+         "rolling_log_loss": 0.31, **_FRESH}
 _FAIL_F1 = {"version": 9, "wf_auc_min": 0.55, "wf_log_loss_mean": 0.358,
-            "rolling_log_loss": 0.31}
+            "rolling_log_loss": 0.31, **_FRESH}
 _FAIL_LL = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.50,
-            "rolling_log_loss": 0.31}
-_FAIL_NO_ROLLING = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358}
+            "rolling_log_loss": 0.31, **_FRESH}
+_FAIL_NO_ROLLING = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
+                    **_FRESH}
 _FAIL_ROLLING = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
-                 "rolling_log_loss": 0.90}
+                 "rolling_log_loss": 0.90, **_FRESH}
+_FAIL_STALE = {"version": 9, "wf_auc_min": 0.728, "wf_log_loss_mean": 0.358,
+               "rolling_log_loss": 0.31,
+               "train_end": "2026-05-07", "requested_end": "2026-09-06"}
 
 
 # ───────────────────────── config + gate ───────────────────────────────────────
@@ -63,6 +70,12 @@ def test_regime_gate_fails_without_a_rolling_fold():
     assert ok is False and any("rolling fold not evaluated" in f for f in failures)
 
 
+def test_regime_gate_fail_stale_training_data():
+    """The v35..v42 condition: data frozen in May while the retrain asks for today."""
+    ok, failures = regime_gate(_FAIL_STALE)
+    assert ok is False and any("stale" in f for f in failures)
+
+
 def test_regime_gate_fail_rolling_log_loss():
     """The ONLY gate term that can fail on a model that is genuinely worse now."""
     ok, failures = regime_gate(_FAIL_ROLLING)
@@ -74,7 +87,8 @@ def test_regime_gate_missing_keys_fails_safely():
     lacked it. regime_gate must use safe defaults and FAIL (not raise) on an empty payload."""
     ok, failures = regime_gate({})
     assert ok is False
-    assert len(failures) == 3  # both fixed thresholds + the missing rolling term
+    # both fixed thresholds + missing rolling term + missing staleness evidence
+    assert len(failures) == 4
 
 
 def test_regime_gate_non_numeric_fails_safely():

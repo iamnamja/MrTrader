@@ -342,7 +342,8 @@ class TestRegimeGateRequiresRecentEvidence:
 
     def _base(self, **kw):
         d = {"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569,
-             "rolling_log_loss": 0.0001}
+             "rolling_log_loss": 0.0001,
+             "train_end": "2026-09-04", "requested_end": "2026-09-06"}
         d.update(kw)
         return d
 
@@ -386,7 +387,7 @@ class TestRegimeGateRequiresRecentEvidence:
         from app.ml.regime_training import regime_gate
 
         ok, _ = regime_gate({"wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569})
-        assert not ok
+        assert not ok      # no rolling term AND no staleness evidence
 
 
 # ── second-review fixes ──────────────────────────────────────────────────────
@@ -567,7 +568,7 @@ class TestLiveScoringFeatureContract:
         from app.ml.regime_model import RegimeModel
 
         src = inspect.getsource(RegimeModel.score)
-        assert "_vix_level" in src and "_legacy_fallback" in src
+        assert "CORE_FEATURE_NAMES" in src and "_legacy_fallback" in src
 
 
 # ── fourth-review fixes ──────────────────────────────────────────────────────
@@ -689,3 +690,125 @@ class TestBackfillNeverWritesUnusableRows:
                                  upsert=lambda *a, **k: wrote.append(1) or True)
         assert len(wrote) == out["ok"] > 0
         assert out["unusable"] == 0
+
+
+# ── sixth-review fixes ───────────────────────────────────────────────────────
+
+class TestRewriteNeverDegradesARow:
+    """`rewrite_recent_days` overwrites EVERY column, so one missing ticker in the batch
+    download would NULL previously-good credit/breadth/sector features and relabel those
+    days. A required-feature allowlist cannot cover this — those columns are legitimately
+    NULL on some days — but a directional invariant can: never replace a value with
+    nothing."""
+
+    class _Existing:
+        def __init__(self, **kw):
+            self.vix_level = 15.0
+            self.credit_hyg_ief_20d = -0.04
+            self.regime_label_rule = "RISK_OFF"
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    class _SnapCls:
+        snapshot_date = None
+        snapshot_trigger = None
+
+    def _db(self, existing):
+        class _Q:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return existing
+
+        class _DB:
+            def query(self, *a, **k):
+                return _Q()
+
+            def add(self, row):
+                raise AssertionError("should update, not insert")
+        return _DB()
+
+    def test_a_null_does_not_overwrite_a_good_value(self):
+        from app.ml.regime_backfill import _upsert_snapshot
+
+        existing = self._Existing()
+        feats = {"vix_level": 16.0, "credit_hyg_ief_20d": None,
+                 "regime_label_rule": None}
+        _upsert_snapshot(self._db(existing), self._SnapCls, feats,
+                         date(2026, 9, 4), True)
+
+        assert existing.vix_level == 16.0            # improved
+        assert existing.credit_hyg_ief_20d == -0.04  # PRESERVED, not NULLed
+        assert existing.regime_label_rule == "RISK_OFF"
+
+    def test_a_real_value_still_overwrites(self):
+        from app.ml.regime_backfill import _upsert_snapshot
+
+        existing = self._Existing()
+        feats = {"credit_hyg_ief_20d": -0.01, "regime_label_rule": "RISK_ON"}
+        _upsert_snapshot(self._db(existing), self._SnapCls, feats,
+                         date(2026, 9, 4), True)
+
+        assert existing.credit_hyg_ief_20d == -0.01
+        assert existing.regime_label_rule == "RISK_ON"
+
+    def test_nan_is_treated_as_null_by_the_guard(self):
+        from app.ml.regime_backfill import _upsert_snapshot
+
+        existing = self._Existing()
+        _upsert_snapshot(self._db(existing), self._SnapCls,
+                         {"credit_hyg_ief_20d": float("nan")}, date(2026, 9, 4), True)
+        assert existing.credit_hyg_ief_20d == -0.04
+
+
+class TestCoreFeatureGuardCoversEverything:
+    def test_live_scoring_guards_the_whole_core_set_not_just_vix(self):
+        """The SPY staleness guard NULLs eight trend features in the same dropna set, so
+        guarding only vix_level would leave a frozen SPY feed scoring confidently."""
+        import inspect
+        from app.ml.regime_model import RegimeModel
+
+        src = inspect.getsource(RegimeModel.score)
+        assert "CORE_FEATURE_NAMES" in src
+        assert "_legacy_fallback" in src
+
+    def test_core_names_include_both_vix_and_spy_legs(self):
+        from app.ml.regime_features import CORE_FEATURE_NAMES
+
+        assert "vix_level" in CORE_FEATURE_NAMES
+        assert "spy_ma200_dist" in CORE_FEATURE_NAMES
+        assert "spy_20d_return" in CORE_FEATURE_NAMES
+        # legitimately-NULL columns must NOT be required
+        assert "vix_term_ratio" not in CORE_FEATURE_NAMES
+        assert "credit_hyg_ief_20d" not in CORE_FEATURE_NAMES
+
+
+class TestStalenessEvidenceIsRequired:
+    def test_missing_train_end_fails_rather_than_skipping_the_check(self):
+        """Opt-in-on-payload-contents is the opposite of the missing-evidence rule applied
+        to rolling_log_loss, and an open door for the v35..v42 payload shape."""
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate({
+            "wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569,
+            "rolling_log_loss": 0.0001,
+        })
+        assert not ok
+        assert any("train_end/requested_end missing" in f for f in failures)
+
+
+class TestSpyFallbackIsReachable:
+    def test_absent_frame_still_reaches_the_macro_backstop(self, monkeypatch):
+        """Returning early on `df is None` would make the spy backstop dead in exactly the
+        total-outage case it exists for."""
+        import app.ml.regime_features as rf
+
+        idx = pd.date_range(end=pd.Timestamp("2026-09-04"), periods=300, freq="D")
+        monkeypatch.setattr(
+            rf, "_macro_series",
+            lambda f: pd.Series([500.0] * len(idx), index=idx, name="close"))
+        builder = rf.RegimeFeatureBuilder()
+        feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
+        builder._add_spy_features(feats, None, date(2026, 9, 4))
+        assert feats["spy_ma200_dist"] == pytest.approx(0.0)   # flat series -> 0 distance

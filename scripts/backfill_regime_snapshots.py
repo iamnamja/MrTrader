@@ -63,6 +63,7 @@ from app.ml.regime_backfill import (            # noqa: E402
     _upsert_snapshot,
     extend_backfill,
     last_backfill_date,
+    trading_days_between,
 )
 
 __all__ = ["extend_backfill", "last_backfill_date", "_upsert_snapshot", "main"]
@@ -80,105 +81,63 @@ def main() -> None:
 
     start = date.fromisoformat(args.start)
     end = date.today() - timedelta(days=1)
-
     logger.info("Backfill range: %s → %s  rewrite=%s", start, end, args.rewrite)
 
-    trading_days = _trading_days_between(start, end)
-    logger.info("Trading days to process: %d", len(trading_days))
+    if args.dry_run:
+        from app.ml.regime_features import (
+            RegimeFeatureBuilder, label_regime_day, label_name)
 
-    from app.ml.regime_features import RegimeFeatureBuilder, label_regime_day, label_name
-
-    builder = RegimeFeatureBuilder()
-
-    # Batch-fetch all 15 tickers (SPY, RSP, ^VIX, ^VIX3M, HYG, IEF, 9 sector ETFs)
-    # Extra year of history before start for MA200 and rolling windows
-    fetch_start = start - timedelta(days=400)
-    fetch_end = end + timedelta(days=1)
-    logger.info("Batch-fetching all regime tickers from %s to %s...", fetch_start, fetch_end)
-    prefetched = builder.fetch_all_prefetched(fetch_start, fetch_end)
-    logger.info(
-        "Prefetch complete: %d tickers loaded",
-        sum(1 for v in prefetched.values() if v is not None and not v.empty),
-    )
-
-    if not args.dry_run:
-        from app.database.session import init_db, get_session
-        from app.database.models import RegimeSnapshot
-        init_db()
-
-    ok = 0
-    skipped = 0
-    errors = 0
-
-    db = None if args.dry_run else get_session()
-    try:
+        trading_days = trading_days_between(start, end)
+        logger.info("Trading days to process: %d", len(trading_days))
+        builder = RegimeFeatureBuilder()
+        prefetched = builder.fetch_all_prefetched(start - timedelta(days=400),
+                                                  end + timedelta(days=1))
+        logger.info("Prefetch complete: %d tickers loaded",
+                    sum(1 for v in prefetched.values()
+                        if v is not None and not v.empty))
+        shown = 0
         for i, d in enumerate(trading_days):
-            try:
-                feats = builder.build(as_of_date=d, _prefetched=prefetched)
-                if feats is None:
-                    skipped += 1
-                    continue
+            feats = builder.build(as_of_date=d, _prefetched=prefetched)
+            if feats is None:
+                continue
+            feats["regime_label_rule"] = label_name(label_regime_day(feats))
+            if i < 5 or d >= end - timedelta(days=7):
+                logger.info("[DRY RUN] %s  vix=%s  vix_term=%s  credit_20d=%s  label=%s",
+                            d, feats.get("vix_level"), feats.get("vix_term_ratio"),
+                            feats.get("credit_hyg_ief_20d"),
+                            feats.get("regime_label_rule", "?"))
+            shown += 1
+        logger.info("Done (dry run). %d day(s) would be considered.", shown)
+        return
 
-                # Attach V2 rule label
-                label_int = label_regime_day(feats)
-                feats["regime_label_rule"] = label_name(label_int)
+    # Route ALL writes through extend_backfill so the CLI gets the SAME guards as the
+    # weekly retrain: the empty-prefetch bail-out and the never-degrade-a-row upsert.
+    # Without this, `--rewrite` during a yfinance outage would NULL every row in the table
+    # — build() returns an all-NaN dict, not None, so a `feats is None` check does not
+    # catch it — and this is the tool the new staleness warnings tell operators to run.
+    counts = extend_backfill(start, end, rewrite=args.rewrite)
+    logger.info("Done. ok=%d  skipped=%d  errors=%d  unusable=%d",
+                counts["ok"], counts["skipped"], counts["errors"],
+                counts.get("unusable", 0))
+    if counts.get("unusable"):
+        logger.warning("%d day(s) lacked required features and were NOT written",
+                       counts["unusable"])
 
-                if args.dry_run:
-                    if i < 5 or d >= end - timedelta(days=7):
-                        logger.info(
-                            "[DRY RUN] %s  vix=%.1f  vix_term=%.3f  credit_20d=%.4f  "
-                            "breadth_20d=%.4f  label=%s",
-                            d,
-                            feats.get("vix_level") or float("nan"),
-                            feats.get("vix_term_ratio") or float("nan"),
-                            feats.get("credit_hyg_ief_20d") or float("nan"),
-                            feats.get("breadth_rsp_spy_ratio_20d") or float("nan"),
-                            feats.get("regime_label_rule", "?"),
-                        )
-                    ok += 1
-                else:
-                    written = _upsert_snapshot(db, RegimeSnapshot, feats, d, args.rewrite)
-                    if written:
-                        ok += 1
-                    else:
-                        skipped += 1
-
-                    if (i + 1) % 100 == 0:
-                        db.commit()
-                        logger.info(
-                            "Progress: %d / %d  ok=%d skipped=%d errors=%d",
-                            i + 1, len(trading_days), ok, skipped, errors,
-                        )
-
-            except Exception as exc:
-                errors += 1
-                logger.warning("Error on %s: %s", d, exc)
-
-        if not args.dry_run:
-            db.commit()
-
+    from app.database.session import get_session
+    from app.database.models import RegimeSnapshot
+    db2 = get_session()
+    try:
+        total = db2.query(RegimeSnapshot).filter(
+            RegimeSnapshot.snapshot_trigger == "backfill"
+        ).count()
+        logger.info("Total backfill rows in regime_snapshots: %d", total)
+        gate = 1500  # expect ~2000 rows from 2018
+        if total < gate:
+            logger.warning("Gate: expected >= %d rows, got %d", gate, total)
+        else:
+            logger.info("Gate PASSED: >= %d backfill rows", gate)
     finally:
-        if db is not None:
-            db.close()
-
-    logger.info("Done. ok=%d  skipped=%d  errors=%d", ok, skipped, errors)
-
-    if not args.dry_run:
-        from app.database.session import get_session
-        from app.database.models import RegimeSnapshot
-        db2 = get_session()
-        try:
-            total = db2.query(RegimeSnapshot).filter(
-                RegimeSnapshot.snapshot_trigger == "backfill"
-            ).count()
-            logger.info("Total backfill rows in regime_snapshots: %d", total)
-            gate = 1500  # expect ~2000 rows from 2018
-            if total < gate:
-                logger.warning("Gate: expected >= %d rows, got %d", gate, total)
-            else:
-                logger.info("Gate PASSED: >= %d backfill rows", gate)
-        finally:
-            db2.close()
+        db2.close()
 
 
 if __name__ == "__main__":

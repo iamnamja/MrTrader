@@ -64,7 +64,19 @@ def main() -> int:
     if gate_pass:
         logger.info("GATE: PASSED ✓")
     else:
+        # DELETE the rejected pickle, exactly as PortfolioManager._retrain_regime does.
+        # Leaving it on disk makes it the highest-numbered file, which is precisely what
+        # `latest_versioned_file` loads — so a model the gate REJECTED would go live while
+        # the CLI printed FAILED and exited 1. Latent before this branch (the gate could
+        # not fail); routine now.
         logger.error("GATE: FAILED — %s", ", ".join(failures))
+        try:
+            Path(model_path).unlink(missing_ok=True)
+            logger.error("Deleted rejected model %s — prior version stays active",
+                         model_path)
+        except OSError as exc:
+            logger.error("Could not delete rejected model %s: %s — REMOVE IT BY HAND "
+                         "before the scorer loads it", model_path, exc)
         return 1
 
     return 0

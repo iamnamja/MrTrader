@@ -152,19 +152,26 @@ class RegimeModel:
             if _v is None or _v != _v:
                 feats[_f] = _default
 
-        # A missing VIX LEVEL is the opposite case — it is a dead feed, not a feature the
-        # trainer imputed. `vix_level` is in load_dataset's `core` dropna set, so every
-        # training row had one and XGBoost holds no learned default branch for its absence;
-        # predicting anyway yields an arbitrary-but-confident score that silently drives
-        # live position sizing. Reachable since the 2026-09-06 staleness guard began NULLing
-        # vix_level instead of carrying a stale value forward, and only when BOTH yfinance
-        # and the FRED backstop are down — i.e. a real outage, where neutral is honest.
-        _vix_level = feats.get("vix_level")
-        if _vix_level is None or _vix_level != _vix_level:
+        # A missing CORE feature is the opposite case — a dead feed, not something the
+        # trainer imputed. Every name in CORE_FEATURE_NAMES is in load_dataset's dropna
+        # set, so every training row had one and XGBoost holds no learned default branch
+        # for its absence; predicting anyway yields an arbitrary-but-confident score that
+        # silently drives live position sizing.
+        #
+        # Checking the WHOLE set, not just vix_level: the 2026-09-06 SPY staleness guard
+        # NULLs eight trend features that sit in the same dropna set, so guarding only the
+        # VIX leg would have left a frozen SPY feed scoring confidently off NaN trend
+        # features. Reachable only when a feed AND its FRED backstop are both down — a
+        # real outage, where neutral is the honest answer.
+        from app.ml.regime_features import CORE_FEATURE_NAMES
+
+        _missing = [f for f in CORE_FEATURE_NAMES
+                    if feats.get(f) is None or feats.get(f) != feats.get(f)]
+        if _missing:
             logger.error(
-                "Regime scoring: vix_level unavailable for %s (both yfinance and the FRED "
-                "backstop failed) — refusing to score on a feature the model never saw "
-                "missing; returning neutral", as_of_date,
+                "Regime scoring: %d core feature(s) unavailable for %s (%s) — refusing to "
+                "score on features the model never saw missing; returning neutral",
+                len(_missing), as_of_date, ", ".join(_missing[:5]),
             )
             return self._legacy_fallback(as_of_date, trigger)
 
