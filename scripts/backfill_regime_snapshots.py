@@ -88,7 +88,27 @@ def _upsert_snapshot(db, snap_cls, feats: dict, d: date, rewrite: bool) -> bool:
     return True
 
 
-def extend_backfill(start: date, end: date, rewrite: bool = False) -> dict:
+def last_backfill_date() -> "date | None":
+    """Latest `backfill`-trigger snapshot_date, or None when the table is empty."""
+    from sqlalchemy import func
+    from app.database.session import init_db, get_session
+    from app.database.models import RegimeSnapshot
+
+    init_db()
+    with get_session() as db:
+        return (
+            db.query(func.max(RegimeSnapshot.snapshot_date))
+            .filter(RegimeSnapshot.snapshot_trigger == "backfill")
+            .scalar()
+        )
+
+
+def extend_backfill(
+    start: "date | None",
+    end: date,
+    rewrite: bool = False,
+    rewrite_recent_days: int = 0,
+) -> dict:
     """Write `backfill`-trigger snapshots for [start, end]. Idempotent; returns counts.
 
     Extracted from main() so the weekly regime retrain can KEEP THE DATASET CURRENT
@@ -96,17 +116,43 @@ def extend_backfill(start: date, end: date, rewrite: bool = False) -> dict:
     regime training set silently froze for four months while the retrain kept "succeeding"
     (DECISIONS 2026-09-06). A gate that detects staleness is necessary but not sufficient —
     something has to actually advance the data, or the gate just fails every week instead.
+
+    `start=None` RESUMES FROM THE LAST EXISTING ROW. A fixed lookback (the first cut used
+    today-30) cannot close a gap longer than the lookback: it writes only the recent tail,
+    leaves the older hole empty forever, and — worse — drags `max(snapshot_date)` up to
+    today so the staleness gate reads the dataset as CURRENT and passes over a hole. A
+    false green is worse than the stale red it replaces.
+
+    `rewrite_recent_days` re-computes the last N days even where rows exist. A day written
+    while the feed was degraded carries a NULL VIX block, and `load_dataset`'s
+    dropna(subset=core) then drops it from training permanently; nothing else would ever
+    revisit it. The staleness guard makes such writes more likely, not less, because it
+    NULLs rather than carrying a stale value forward.
     """
     from app.database.session import init_db, get_session
     from app.database.models import RegimeSnapshot
     from app.ml.regime_features import RegimeFeatureBuilder, label_regime_day, label_name
 
+    if start is None:
+        last = last_backfill_date()
+        start = (last + timedelta(days=1)) if last else (end - timedelta(days=30))
+
     trading_days = _trading_days_between(start, end)
+    rewrite_from = (end - timedelta(days=rewrite_recent_days)
+                    if rewrite_recent_days > 0 else None)
+    if rewrite_from is not None:
+        # widen the range so degraded recent rows are revisited even when start > them
+        extra = [d for d in _trading_days_between(rewrite_from, end)
+                 if d not in set(trading_days)]
+        trading_days = sorted(set(trading_days) | set(extra))
     if not trading_days:
         return {"ok": 0, "skipped": 0, "errors": 0, "days": 0}
 
+    if not trading_days:
+        return {"ok": 0, "skipped": 0, "errors": 0, "days": 0, "start": None}
+
     builder = RegimeFeatureBuilder()
-    prefetched = builder.fetch_all_prefetched(start - timedelta(days=400),
+    prefetched = builder.fetch_all_prefetched(min(trading_days) - timedelta(days=400),
                                               end + timedelta(days=1))
     init_db()
     db = get_session()
@@ -119,7 +165,8 @@ def extend_backfill(start: date, end: date, rewrite: bool = False) -> dict:
                     skipped += 1
                     continue
                 feats["regime_label_rule"] = label_name(label_regime_day(feats))
-                if _upsert_snapshot(db, RegimeSnapshot, feats, d, rewrite):
+                _rw = rewrite or (rewrite_from is not None and d >= rewrite_from)
+                if _upsert_snapshot(db, RegimeSnapshot, feats, d, _rw):
                     ok += 1
                 else:
                     skipped += 1
@@ -131,7 +178,8 @@ def extend_backfill(start: date, end: date, rewrite: bool = False) -> dict:
         db.commit()
     finally:
         db.close()
-    return {"ok": ok, "skipped": skipped, "errors": errors, "days": len(trading_days)}
+    return {"ok": ok, "skipped": skipped, "errors": errors,
+            "days": len(trading_days), "start": trading_days[0].isoformat()}
 
 
 def main() -> None:

@@ -4575,8 +4575,16 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         # of weekly — the cadence retrain_config explicitly argues against.
         from app.ml.model_versioning import latest_versioned_file
         newest = latest_versioned_file(MODEL_DIR, "regime_model")
+        # A gate FAILURE deletes the new pickle, so the newest file stays the OLD one and
+        # its mtime never advances — before this PR that was unreachable (the gate could
+        # not fail), but failure is now a routine outcome, and without this the whole
+        # pipeline (15-ticker fetch + 4 fold fits + final fit) would re-run EVERY weekday
+        # forever. The attempt sentinel records that we tried, so the weekly cadence holds
+        # whether the attempt promoted or not.
+        attempt_marker = MODEL_DIR / ".regime_retrain_last_attempt"
+        last_attempt = attempt_marker.stat().st_mtime if attempt_marker.exists() else 0.0
         if newest is not None:
-            age_days = (time.time() - newest.stat().st_mtime) / 86400.0
+            age_days = (time.time() - max(newest.stat().st_mtime, last_attempt)) / 86400.0
             if age_days < REGIME_RETRAIN_INTERVAL_DAYS:
                 self.logger.info(
                     "Regime model is %.1f days old (interval=%d) — skipping retrain",
@@ -4605,8 +4613,16 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             loop = asyncio.get_event_loop()
             counts = await loop.run_in_executor(
                 None,
-                _ft.partial(extend_backfill,
-                            _date.today() - _td(days=30), _date.today() - _td(days=1)),
+                # start=None RESUMES FROM THE LAST EXISTING ROW. A fixed lookback cannot
+                # close a gap longer than itself: it writes the recent tail, leaves the
+                # older hole empty forever, and drags max(snapshot_date) up to today so
+                # the staleness gate reads CURRENT and passes over the hole — a false
+                # green, worse than the stale red it replaced.
+                # rewrite_recent_days re-computes the last fortnight so a day written
+                # while the feed was degraded (NULL VIX block -> dropped by the training
+                # dropna, permanently) heals instead of being lost.
+                _ft.partial(extend_backfill, None, _date.today() - _td(days=1),
+                            rewrite_recent_days=14),
             )
             self.logger.info("Regime snapshots extended before retrain: %s", counts)
         except Exception as exc:
@@ -4643,10 +4659,15 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     version, ", ".join(failures),
                 )
                 model_path.unlink(missing_ok=True)
+                attempt_marker.touch()      # see the sentinel note above
                 await self.log_decision("REGIME_RETRAIN_GATE_FAILED", reasoning={
                     "version": version, "failures": failures,
                 })
         except Exception as exc:
+            try:
+                attempt_marker.touch()      # a crashing retrain must not loop daily either
+            except Exception:
+                pass
             self.logger.error("Regime retrain failed: %s", exc, exc_info=True)
             await self.log_decision("REGIME_RETRAIN_FAILED", reasoning={"error": str(exc)})
 

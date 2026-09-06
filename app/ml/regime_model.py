@@ -139,14 +139,26 @@ class RegimeModel:
             return self._legacy_fallback(as_of_date, trigger)
 
         import numpy as np
-        # A missing VIX LEVEL is not a missing feature — it is a dead feed, and this model
-        # has never seen it missing. `vix_level` is in load_dataset's `core` dropna set, so
-        # every training row had one and XGBoost holds no learned default branch for its
-        # absence; predicting anyway yields an arbitrary-but-confident score that silently
-        # drives live position sizing. Reachable since the 2026-09-06 staleness guard began
-        # NULLing vix_level instead of carrying a stale value forward, and only when BOTH
-        # yfinance and the FRED backstop are down — i.e. a real outage, where neutral is
-        # the honest answer.
+
+        # Match load_dataset's imputation EXACTLY. The trainer fills these two before
+        # fitting (nis_risk_numeric->0.5, nis_sizing_factor->1.0), so the model has never
+        # seen them missing and holds no learned default branch — yet `_add_nis_features`
+        # leaves both NaN whenever the NIS snapshot table is empty or its query raises
+        # (swallowed). Feeding NaN here would be the same "predict on a feature the model
+        # never saw missing" mistake the vix_level guard below exists to prevent, minus
+        # the guard. Imputing is right for these two precisely BECAUSE training imputed.
+        for _f, _default in (("nis_risk_numeric", 0.5), ("nis_sizing_factor", 1.0)):
+            _v = feats.get(_f)
+            if _v is None or _v != _v:
+                feats[_f] = _default
+
+        # A missing VIX LEVEL is the opposite case — it is a dead feed, not a feature the
+        # trainer imputed. `vix_level` is in load_dataset's `core` dropna set, so every
+        # training row had one and XGBoost holds no learned default branch for its absence;
+        # predicting anyway yields an arbitrary-but-confident score that silently drives
+        # live position sizing. Reachable since the 2026-09-06 staleness guard began NULLing
+        # vix_level instead of carrying a stale value forward, and only when BOTH yfinance
+        # and the FRED backstop are down — i.e. a real outage, where neutral is honest.
         _vix_level = feats.get("vix_level")
         if _vix_level is None or _vix_level != _vix_level:
             logger.error(

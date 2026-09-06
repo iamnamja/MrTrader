@@ -167,9 +167,17 @@ ROLLING_TEST_WINDOW_DAYS = 120
 # train on less than the first fixed fold does.
 _MIN_ROLLING_TRAIN_END = _FIXED_FOLDS[0][1]
 
-# Below this the rolling test window is too thin to mean anything, so it is dropped rather
-# than reported as a weak fold. Matches walk_forward's own per-fold minimum.
-_MIN_ROLLING_TEST_ROWS = 20
+# Below this the rolling test window is too thin to certify anything, so the fold is
+# dropped — and because a missing rolling term FAILS the gate, a sparse window blocks
+# promotion instead of quietly certifying on a fragment.
+#
+# A 120-calendar-day window should hold ~82 trading days. The first cut used 20, which was
+# both a no-op (it equalled the generic per-fold minimum, so the branch never bound) and
+# ~4x too low: a rolling fold could pass on a quarter of its intended sample with nothing
+# recording that it had. 60 leaves room for holidays and a short data hiccup while still
+# refusing a window with a real gap in it — which doubles as the only check that would
+# notice a HOLE in the recent snapshots, since max(snapshot_date) is blind to those.
+_MIN_ROLLING_TEST_ROWS = 60
 
 
 def build_folds(data_end: Optional[date]) -> list:

@@ -17,7 +17,7 @@ Four stacked defects, each of which hid the next:
 
 These tests pin the behaviour that makes each of those loud instead of silent.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -480,3 +480,85 @@ class TestEmptyDatasetIsDiagnosed:
 
         with pytest.raises(ValueError, match="dropped for missing core features"):
             rt.RegimeModelTrainer().load_dataset(date(2018, 1, 1), date(2026, 9, 6))
+
+
+# ── third-review fixes ───────────────────────────────────────────────────────
+
+class TestBackfillResumesFromTheLastRow:
+    """A fixed lookback cannot close a gap longer than itself: it writes the recent tail,
+    leaves the older hole empty forever, and drags max(snapshot_date) up to today so the
+    staleness gate reads CURRENT and passes over the hole. A false green is worse than the
+    stale red it replaced."""
+
+    def test_start_none_resumes_from_the_last_existing_row(self, monkeypatch):
+        import scripts.backfill_regime_snapshots as bf
+
+        captured = {}
+        monkeypatch.setattr(bf, "last_backfill_date", lambda: date(2026, 5, 7))
+
+        def _fake_days(start, end):
+            captured["start"] = start
+            return []
+        monkeypatch.setattr(bf, "_trading_days_between", _fake_days)
+
+        bf.extend_backfill(None, date(2026, 9, 5))
+        # resumes the day AFTER the last row — not today-30
+        assert captured["start"] == date(2026, 5, 8)
+
+    def test_start_none_on_an_empty_table_falls_back_to_a_lookback(self, monkeypatch):
+        import scripts.backfill_regime_snapshots as bf
+
+        captured = {}
+        monkeypatch.setattr(bf, "last_backfill_date", lambda: None)
+
+        def _fake_days(start, end):
+            captured["start"] = start
+            return []
+        monkeypatch.setattr(bf, "_trading_days_between", _fake_days)
+
+        bf.extend_backfill(None, date(2026, 9, 5))
+        assert captured["start"] == date(2026, 9, 5) - timedelta(days=30)
+
+
+class TestRollingFoldMinimumBinds:
+    def test_minimum_is_proportionate_to_the_window(self):
+        """20 was both a no-op (it equalled the generic per-fold minimum) and ~4x below
+        the ~82 trading days a 120-calendar-day window holds."""
+        from app.ml.regime_training import (
+            _MIN_ROLLING_TEST_ROWS, ROLLING_TEST_WINDOW_DAYS)
+
+        assert _MIN_ROLLING_TEST_ROWS > 20
+        approx_trading_days = ROLLING_TEST_WINDOW_DAYS * 5 / 7
+        assert _MIN_ROLLING_TEST_ROWS > 0.5 * approx_trading_days
+
+    def test_a_sparse_rolling_window_blocks_promotion(self):
+        """Dropping the fold makes rolling_log_loss None, which FAILS the gate — so a hole
+        in the recent snapshots cannot be certified over."""
+        from app.ml.regime_training import regime_gate
+
+        ok, failures = regime_gate({
+            "wf_auc_min": 0.9062, "wf_log_loss_mean": 0.0569,
+            "rolling_log_loss": None,
+            "train_end": "2026-09-04", "requested_end": "2026-09-06",
+        })
+        assert not ok
+        assert any("rolling fold not evaluated" in f for f in failures)
+
+
+class TestLiveScoringFeatureContract:
+    def test_nis_features_are_imputed_exactly_as_the_trainer_does(self):
+        import inspect
+        from app.ml.regime_model import RegimeModel
+
+        src = inspect.getsource(RegimeModel.score)
+        assert '("nis_risk_numeric", 0.5)' in src
+        assert '("nis_sizing_factor", 1.0)' in src
+
+    def test_missing_vix_level_falls_back_to_neutral(self):
+        """vix_level is in the trainer's core dropna set, so the model never saw it
+        missing and has no learned branch — scoring anyway is arbitrary-but-confident."""
+        import inspect
+        from app.ml.regime_model import RegimeModel
+
+        src = inspect.getsource(RegimeModel.score)
+        assert "_vix_level" in src and "_legacy_fallback" in src
