@@ -104,6 +104,10 @@ _MULTI_LOOKBACK_DAYS = 320
 _MAX_VIX3M_STALENESS_DAYS = 5
 
 
+# See the note at its use in label_regime_day.
+_UNKNOWN_VIX_TERM = 1.001
+
+
 def _coalesce(row, key: str, default: float) -> float:
     """`row[key]`, treating BOTH None and NaN as missing.
 
@@ -142,7 +146,14 @@ def label_regime_day(row: dict) -> int:
     """
     vix = _coalesce(row, "vix_level", 20.0)
     vix_pct1y = _coalesce(row, "vix_pct_1y", 0.5)
-    vix_term = _coalesce(row, "vix_term_ratio", 1.0)
+    # 1.0 EXACTLY satisfies the RISK_ON contango test (`vix_term <= 1.0`), so defaulting a
+    # MISSING term structure to 1.0 makes an outage day eligible for the cleanest risk-on
+    # label. The stricter same-date pairing (2026-09-06) makes such NULLs far more common,
+    # so that default would bias training labels risk-on during exactly a VIX3M outage.
+    # _UNKNOWN_VIX_TERM sits just above the contango line and well below the 1.05
+    # backwardation trigger: unknown term structure disqualifies RISK_ON without asserting
+    # RISK_OFF, landing the day on RISK_CAUTION — which is where "we do not know" belongs.
+    vix_term = _coalesce(row, "vix_term_ratio", _UNKNOWN_VIX_TERM)
     ma50_dist = _coalesce(row, "spy_ma50_dist", 0.0)
     ma200_dist = _coalesce(row, "spy_ma200_dist", 0.0)
     credit_20d = _coalesce(row, "credit_hyg_ief_20d", 0.0)

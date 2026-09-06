@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 # untrainable. Neither would ever heal, because the rewrite window moves on.
 _REQUIRED_FEATURES = CORE_FEATURE_NAMES
 
+# Where an EMPTY table starts from. Falling back to a 30-day tail here would be the exact
+# fixed-lookback behaviour this module's docstring forbids: the 2018-to-today history would
+# then never be written by any automated path, and `max(snapshot_date)` would read current
+# over a table containing one month. Matches the CLI's START_DATE_DEFAULT.
+INITIAL_START = date(2018, 1, 1)
+
 
 def _is_trading_day(d: date) -> bool:
     return d.weekday() < 5
@@ -153,7 +159,12 @@ def extend_backfill(
 
     if start is None:
         last = last_backfill_date()
-        start = (last + timedelta(days=1)) if last else (end - timedelta(days=30))
+        if last:
+            start = last + timedelta(days=1)
+        else:
+            logger.warning("Regime snapshots table is EMPTY — backfilling from %s",
+                           INITIAL_START)
+            start = INITIAL_START
 
     trading_days = trading_days_between(start, end)
     rewrite_from = (end - timedelta(days=rewrite_recent_days)
@@ -197,7 +208,16 @@ def extend_backfill(
                 if (i + 1) % 100 == 0:
                     db.commit()
             except Exception as exc:
+                # WITHOUT the rollback, one failed periodic commit leaves the Session in
+                # pending-rollback state and EVERY remaining day raises
+                # PendingRollbackError, is counted as an error, and the final commit
+                # raises out into _retrain_regime — which swallows it as a single WARNING.
+                # That is the silent-decay mode this whole change exists to end.
                 errors += 1
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 logger.warning("Error on %s: %s", d, exc)
         db.commit()
     finally:

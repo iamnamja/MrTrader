@@ -263,12 +263,15 @@ class TestLabelRuleIsNanSafe:
         return base
 
     def test_nan_behaves_like_none_not_like_a_value(self):
+        """The invariant is that NaN and None resolve IDENTICALLY. (Which label they
+        resolve to is set by _UNKNOWN_VIX_TERM — see
+        TestUnknownTermStructureDoesNotQualifyForRiskOn. Before the fix they differed:
+        None took the default while NaN poisoned every comparison.)"""
         from app.ml.regime_features import label_regime_day
 
         nan = float("nan")
-        assert label_regime_day(self._row(vix_term_ratio=None)) == 2
-        # THE BUG: this returned 1 (RISK_CAUTION) because NaN <= 1.0 is False
-        assert label_regime_day(self._row(vix_term_ratio=nan)) == 2
+        assert (label_regime_day(self._row(vix_term_ratio=nan))
+                == label_regime_day(self._row(vix_term_ratio=None)))
         assert label_regime_day(self._row(vix_term_ratio=0.95)) == 2
 
     @pytest.mark.parametrize("field", [
@@ -511,20 +514,6 @@ class TestBackfillResumesFromTheLastRow:
         bf.extend_backfill(None, date(2026, 9, 5))
         # resumes the day AFTER the last row — not today-30
         assert captured["start"] == date(2026, 5, 8)
-
-    def test_start_none_on_an_empty_table_falls_back_to_a_lookback(self, monkeypatch):
-        from app.ml import regime_backfill as bf
-
-        captured = {}
-        monkeypatch.setattr(bf, "last_backfill_date", lambda: None)
-
-        def _fake_days(start, end):
-            captured.setdefault("start", start)
-            return []
-        monkeypatch.setattr(bf, "trading_days_between", _fake_days)
-
-        bf.extend_backfill(None, date(2026, 9, 5))
-        assert captured["start"] == date(2026, 9, 5) - timedelta(days=30)
 
 
 class TestRollingFoldMinimumBinds:
@@ -812,3 +801,95 @@ class TestSpyFallbackIsReachable:
         feats = {k: float("nan") for k in rf.REGIME_FEATURE_NAMES}
         builder._add_spy_features(feats, None, date(2026, 9, 4))
         assert feats["spy_ma200_dist"] == pytest.approx(0.0)   # flat series -> 0 distance
+
+
+# ── seventh-review fixes ─────────────────────────────────────────────────────
+
+class TestOutageDeRisksRatherThanSizingUp:
+    """`_legacy_fallback` returns label UNKNOWN, and `_regime_sizing_multiplier` maps
+    UNKNOWN to `regime_sizing_unknown = 1.0` — FULL SIZE. Routing a DATA OUTAGE through it
+    would size the book at maximum precisely when the inputs went dark."""
+
+    def test_degraded_fallback_is_risk_caution_not_unknown(self):
+        from app.ml.regime_model import RegimeModel
+
+        m = RegimeModel()
+        out = m._degraded_fallback(date(2026, 9, 4), "premarket", ["vix_level"])
+        assert out["regime_label"] == "RISK_CAUTION"
+        assert out["regime_label"] != "UNKNOWN"
+        assert out["degraded_missing"] == ["vix_level"]
+
+    def test_degraded_score_lands_in_the_caution_band(self):
+        """So the existing score-based sizing map resolves it without special casing."""
+        from app.config import settings
+        from app.ml.regime_model import RegimeModel
+
+        score = RegimeModel()._degraded_fallback(
+            date(2026, 9, 4), "premarket", [])["regime_score"]
+        assert settings.regime_risk_off_threshold <= score < settings.regime_risk_on_threshold
+
+    def test_score_routes_outages_to_the_degraded_path(self):
+        import inspect
+        from app.ml.regime_model import RegimeModel
+
+        src = inspect.getsource(RegimeModel.score)
+        assert "_degraded_fallback" in src
+
+
+class TestUnknownTermStructureDoesNotQualifyForRiskOn:
+    """1.0 EXACTLY satisfies the contango test, so defaulting a MISSING term structure to
+    1.0 makes an outage day eligible for the cleanest risk-on label — and the stricter
+    same-date pairing makes such NULLs far more common."""
+
+    def _row(self, **kw):
+        base = {
+            "vix_level": 18.0, "vix_pct_1y": 0.40, "vix_term_ratio": 0.95,
+            "spy_ma50_dist": 0.03, "spy_ma200_dist": 0.05,
+            "credit_hyg_ief_20d": 0.002, "breadth_rsp_spy_ratio_20d": 0.01,
+            "spy_20d_return": 0.03,
+        }
+        base.update(kw)
+        return base
+
+    def test_missing_term_structure_is_caution_not_risk_on(self):
+        from app.ml.regime_features import label_regime_day
+
+        assert label_regime_day(self._row(vix_term_ratio=None)) == 1
+        assert label_regime_day(self._row(vix_term_ratio=float("nan"))) == 1
+
+    def test_real_contango_still_earns_risk_on(self):
+        from app.ml.regime_features import label_regime_day
+
+        assert label_regime_day(self._row(vix_term_ratio=0.95)) == 2
+
+    def test_unknown_does_not_assert_risk_off_either(self):
+        from app.ml.regime_features import _UNKNOWN_VIX_TERM
+
+        assert _UNKNOWN_VIX_TERM > 1.0        # disqualifies RISK_ON
+        assert _UNKNOWN_VIX_TERM <= 1.05      # does not trigger RISK_OFF
+
+
+class TestBackfillErrorContainment:
+    def test_a_failed_day_rolls_back_so_later_days_still_write(self, monkeypatch):
+        """Without the rollback, one failed commit poisons the Session and every remaining
+        day raises PendingRollbackError."""
+        import inspect
+        from app.ml import regime_backfill as rb
+
+        src = inspect.getsource(rb.extend_backfill)
+        assert "db.rollback()" in src
+
+    def test_empty_table_backfills_from_history_not_a_30_day_tail(self, monkeypatch):
+        from app.ml import regime_backfill as rb
+
+        captured = {}
+        monkeypatch.setattr(rb, "last_backfill_date", lambda: None)
+
+        def _fake_days(start, end):
+            captured.setdefault("start", start)
+            return []
+        monkeypatch.setattr(rb, "trading_days_between", _fake_days)
+
+        rb.extend_backfill(None, date(2026, 9, 5))
+        assert captured["start"] == rb.INITIAL_START
+        assert rb.INITIAL_START == date(2018, 1, 1)

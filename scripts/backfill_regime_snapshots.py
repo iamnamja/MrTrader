@@ -61,6 +61,7 @@ def _label_name(label_int: int) -> str:
 # CLI and any existing callers keep working.
 from app.ml.regime_backfill import (            # noqa: E402
     _upsert_snapshot,
+    _usable,
     extend_backfill,
     last_backfill_date,
     trading_days_between,
@@ -95,19 +96,29 @@ def main() -> None:
         logger.info("Prefetch complete: %d tickers loaded",
                     sum(1 for v in prefetched.values()
                         if v is not None and not v.empty))
-        shown = 0
+        # Mirror the real path: same _usable() verdict, same per-day error containment.
+        # A dry run that does not apply the write-guard does not predict what the real run
+        # writes, and one without try/except aborts the whole preview on a single bad day.
+        writable = unusable = errors = 0
         for i, d in enumerate(trading_days):
-            feats = builder.build(as_of_date=d, _prefetched=prefetched)
-            if feats is None:
-                continue
-            feats["regime_label_rule"] = label_name(label_regime_day(feats))
-            if i < 5 or d >= end - timedelta(days=7):
-                logger.info("[DRY RUN] %s  vix=%s  vix_term=%s  credit_20d=%s  label=%s",
-                            d, feats.get("vix_level"), feats.get("vix_term_ratio"),
-                            feats.get("credit_hyg_ief_20d"),
-                            feats.get("regime_label_rule", "?"))
-            shown += 1
-        logger.info("Done (dry run). %d day(s) would be considered.", shown)
+            try:
+                feats = builder.build(as_of_date=d, _prefetched=prefetched)
+                if feats is None or not _usable(feats):
+                    unusable += 1
+                    continue
+                feats["regime_label_rule"] = label_name(label_regime_day(feats))
+                if i < 5 or d >= end - timedelta(days=7):
+                    logger.info(
+                        "[DRY RUN] %s  vix=%s  vix_term=%s  credit_20d=%s  label=%s",
+                        d, feats.get("vix_level"), feats.get("vix_term_ratio"),
+                        feats.get("credit_hyg_ief_20d"),
+                        feats.get("regime_label_rule", "?"))
+                writable += 1
+            except Exception as exc:
+                errors += 1
+                logger.warning("Error on %s: %s", d, exc)
+        logger.info("Done (dry run). writable=%d  unusable=%d  errors=%d",
+                    writable, unusable, errors)
         return
 
     # Route ALL writes through extend_backfill so the CLI gets the SAME guards as the
