@@ -147,6 +147,9 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 
 ## Active Models (Paper Trading)
 
+> **Regime row re-reconciled 2026-09-06** (v40 → **v42**; the weekly cadence advanced it twice
+> while this file said v40). Rest of the table as of 2026-08-22.
+>
 > **Reconciled against the DB 2026-08-22.** Verified from `ModelVersion` (`status='ACTIVE'`)
 > and, for regime, from the artifacts + `regime_model_versions`. Two corrections: swing was
 > listed as v224 but the ACTIVE row is **v223** (v224–v229 are all `RETIRED` — trained, never
@@ -157,7 +160,7 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 |---|---|---|---|---|---|
 | swing | **v223** | ⚠️ UNVERIFIABLE | INVALID (in-sample) | Cannot run — trained_through=None | DB `ACTIVE`. Saved 2026-05-27, predates trained_through (PR #311, 2026-05-30). v224–v229 exist but are `RETIRED`. Retrain required. **Dormant** — live book is trend + cash. |
 | intraday | v63 | ⚠️ UNVERIFIABLE | **INVALID (in-sample memorization)** | +5.143 STRUCK FROM RECORD | DB `ACTIVE`. Saved 2026-05-22. +5.14 was scored on its own training data — see below. v64/v65 `RETIRED`. **Dormant** — no intraday sleeve live. |
-| regime | **v40** | ACTIVE | — | log_loss/macro-F1 gate (not Sharpe) | Trained 2026-08-21. File-based (`regime_model_v*.pkl` + `regime_model_versions`), NOT in `ModelVersion`. Carries the live book's sizing. |
+| regime | **v42** | ACTIVE | — | log_loss/macro-F1 gate (not Sharpe) — **evaluated on folds ending 2026-04-30, see note** | Trained 2026-09-04. File-based (`regime_model_v*.pkl` + `regime_model_versions`), NOT in `ModelVersion`. Carries the live book's sizing. Weekly Fri 17:30 retrain; v41 2026-08-28, v40 2026-08-21. |
 | portfolio_selector | v4 | ACTIVE | — | — | DB `ACTIVE`; present for completeness |
 
 > ### ⚠️ 2026-08-22 — regime loader was pinned to v9 for six weeks (FIXED)
@@ -178,6 +181,53 @@ A prior Opus review found the live path silently diverged from the backtest; tha
 > **Live effect: the regime scorer now loads v40 instead of v9, which changes position sizing
 > weights.** Features were always current — only the trained weights were stale — so this is a
 > weights refresh, not a switch from frozen to live inputs.
+>
+> **Cadence confirmed restored (2026-09-06).** v40 2026-08-21, v41 2026-08-28, v42 2026-09-04 —
+> exactly 7 days apart at 17:30, and the artifacts are distinct files (different MD5s), so each
+> week genuinely retrains on data through the new `train_end`. The daily-retrain symptom is gone.
+
+> ### ⚠️ 2026-09-06 — the regime promotion gate has not seen data since 2026-04-30 (OPEN)
+>
+> `regime_model_versions` records **byte-identical** WF metrics for every version from v35 through
+> v42 — `wf_auc_mean=0.9563`, `wf_auc_min=0.9062`, `brier=0.0569`, same fold-1 `log_loss=0.1001`,
+> same `temperature=1.2444`, same `pred_distribution` — while `train_end` advances a week each time.
+>
+> **This is not a bug in the retrain; it is a gate that cannot fail.** `_FOLDS` in
+> `app/ml/regime_training.py` is a hardcoded literal whose last fold tests
+> **2025-09-30 → 2026-04-30**:
+>
+> ```python
+> _FOLDS = [
+>     (date(2018, 1, 1), date(2023, 12, 31), date(2024, 12, 31)),
+>     (date(2018, 1, 1), date(2024, 12, 31), date(2025,  9, 30)),
+>     (date(2018, 1, 1), date(2025,  9, 30), date(2026,  4, 30)),
+> ]
+> ```
+>
+> The final model is retrained through the current date, but the walk-forward that decides whether
+> it may be promoted re-scores the same three fixed windows every week. Identical inputs, identical
+> outputs. The gate (`REGIME_GATE_MACRO_F1_MIN=0.60`, `REGIME_GATE_LOG_LOSS_MAX=0.45`) is therefore
+> being applied to a **constant**, not to a measurement of the model being promoted.
+>
+> **Why this matters.** This is the model that carries the live book's position sizing. If regime
+> prediction has degraded at any point since 2026-04-30 — more than four months, including the
+> entire period the live book has been running post-#674 — the gate would still report 0.9563 and
+> still pass. It cannot report otherwise. Every weekly promotion since v35 has been unverified in
+> substance while appearing verified in the record.
+>
+> **Not yet fixed — the fix is a live-behavior change and needs a decision.** Rolling the fold
+> schedule forward will produce the first genuinely new regime metrics since April, and those
+> metrics could fail the gate, which would block promotion of the model now carrying live sizing.
+> That is the correct outcome if it happens, but it should be a deliberate act, not a side effect
+> of a doc sync. Options: (a) derive `_FOLDS` from the data's max date so it rolls automatically,
+> (b) add a fourth fold `2026-04-30 → today` and keep the first three fixed for comparability.
+> **(b) is preferred** — it keeps the historical series comparable across versions while making the
+> gate live again, and it makes any degradation visible as a new fold rather than as a shifted
+> aggregate. Allowed under the CH moratorium: this is hardening / live re-validation, not a hunt.
+>
+> **Lesson, same shape as the 2026-09-02 `slippage_drag_bps_day` finding** (DECISIONS): a check was
+> trusted because of what it was named, and the error survived until someone read what it computed.
+> There, a metric could not see execution; here, a gate cannot see the present.
 
 > ## 🔴 CRITICAL (2026-05-31): Both ML models are UNVERIFIABLE; prior results are in-sample
 >
