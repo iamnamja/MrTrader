@@ -39,11 +39,21 @@ forever. It also conflated "the job ran" with "the job traded": no row is writte
 rebalance is HELD by a gate, when the target book is all-cash, or in shadow mode, so those
 weeks would have re-run the sleeve every remaining day.
 
-So the state is PER JOB and records RUNNING, not trading. Each job marks its turn as soon
-as the market-open gate passes and BEFORE it does any work, which makes the guarantee
-at-most-once-per-week: a crash mid-rebalance loses that week rather than risking a second
-pass over partially-placed orders. A job that never got past the market-open gate has not
-taken its turn and is retried the next trading day of the same week.
+So the state is PER JOB and records RUNNING, not trading. Each job CLAIMS its turn as soon
+as the market-open gate passes and BEFORE it does any work, and stands down if the claim
+is refused. The claim is a conditional upsert, so it is a real mutex rather than a
+check-then-write with a network call in the middle: at-most-once per week holds even with
+two orchestrator processes on the same store, and a crash mid-rebalance loses that week
+rather than risking a second pass over partially-placed orders. A job that never got past
+the market-open gate has not claimed its turn and is retried the next trading day of the
+same week.
+
+CASH AND THE ENFORCE-VERIFY FOLLOW TREND, THEY DO NOT DECIDE INDEPENDENTLY. Cash parks
+what the trend rebalance left idle, and the verify checks the rebalance that just ran, so
+both gate on "trend claimed its turn TODAY" as well as their own. Letting them decide the
+day for themselves means the verify can email a false ATTENTION about a rebalance that has
+not happened yet — leaving the real one unverified, including the un-backfillable CH0b
+capture — and cash can sweep into T-bills on a day trend did not rebalance.
 
 The roll never crosses a week boundary in either direction, so no week can take two turns.
 """
@@ -111,27 +121,53 @@ def turn_taken_this_week(job: str, today: date) -> Optional[bool]:
         return None
 
 
-def mark_turn_taken(job: str, today: date) -> bool:
-    """Record that `job` took its turn today. Never raises.
+def turn_taken_on(job: str) -> Optional[date]:
+    """The date `job` last claimed a turn, or None (unknown or never)."""
+    try:
+        with _conn() as c:
+            row = c.execute("SELECT taken_on FROM weekly_turn WHERE job = ?",
+                            (job,)).fetchone()
+        return date.fromisoformat(str(row[0])[:10]) if row and row[0] else None
+    except Exception as exc:      # noqa: BLE001
+        log.warning("weekly_turn read failed for %s (%s)", job, exc)
+        return None
 
-    Called AFTER the market-open gate and BEFORE the work, so the guarantee is
-    at-most-once per week: a crash part-way through a rebalance loses the week rather
-    than risking a second pass over partially-placed orders.
+
+def claim_turn(job: str, today: date) -> bool:
+    """Atomically claim `job`'s turn for `today`'s week. True only if THIS caller won it.
+
+    THE CLAIM IS THE MUTEX, which is why it is a conditional upsert and not a plain write.
+    A read-then-write pair leaves a window — SELECT, an Alpaca network round-trip, then an
+    unconditional write — in which a second orchestrator process passes the same check and
+    both trade. That is not hypothetical here: a second copy of this system pointed at the
+    same account was one `docker start` away as recently as 2026-09-02 (DECISIONS). The
+    `WHERE weekly_turn.week_start < excluded.week_start` clause makes the database the
+    arbiter, and rowcount says who won.
+
+    A False return therefore means EITHER someone already holds this week's turn OR the
+    store could not be written. Both must stop the caller: an unclaimable turn that still
+    traded would re-run every remaining day of the week — five live rebalances — with one
+    ERROR line a day as the only symptom. Callers treat False as fail-closed.
     """
     try:
         with _conn() as c:
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO weekly_turn(job, week_start, taken_on, taken_at) "
                 "VALUES (?,?,?,?) ON CONFLICT(job) DO UPDATE SET "
                 "week_start=excluded.week_start, taken_on=excluded.taken_on, "
-                "taken_at=excluded.taken_at",
+                "taken_at=excluded.taken_at "
+                "WHERE weekly_turn.week_start < excluded.week_start",
                 (job, week_start(today).isoformat(), today.isoformat(),
                  datetime.now(timezone.utc).isoformat()),
             )
-        return True
+            won = cur.rowcount > 0
+        if not won:
+            log.info("weekly_turn: %s already claimed for the week of %s — standing down",
+                     job, week_start(today))
+        return won
     except Exception as exc:      # noqa: BLE001
-        log.error("weekly_turn write failed for %s on %s (%s) — the job may run again "
-                  "this week", job, today, exc)
+        log.error("weekly_turn claim FAILED for %s on %s (%s) — standing down rather than "
+                  "running unclaimed", job, today, exc)
         return False
 
 

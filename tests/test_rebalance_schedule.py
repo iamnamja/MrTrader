@@ -18,7 +18,8 @@ import pytest
 from app.live_trading.exchange_calendar import holidays, is_trading_day
 from app.live_trading.rebalance_schedule import (
     JOB_CASH, JOB_ENFORCE_VERIFY, JOB_TREND,
-    is_rebalance_day, mark_turn_taken, turn_taken_this_week, week_anchor, week_turn,
+    claim_turn, is_rebalance_day, turn_taken_on, turn_taken_this_week,
+    week_anchor, week_turn,
 )
 
 
@@ -47,7 +48,7 @@ def _simulate(year: int, target_weekday: int = MON, decline: set = frozenset(),
             due, _ = is_rebalance_day(
                 d, target_weekday, turn_taken=turn_taken_this_week(job, d))
             if due and is_trading_day(d) and d not in decline:
-                mark_turn_taken(job, d)          # claimed BEFORE the work
+                claim_turn(job, d)          # claimed BEFORE the work
                 turns.append(d)
         d += timedelta(days=1)
     return turns
@@ -233,7 +234,7 @@ class TestCallersStillGuardOnMarketOpen:
 
         src = inspect.getsource(getattr(AgentOrchestrator, fn))
         assert job_const in src
-        assert "turn_taken_this_week" in src and "mark_turn_taken" in src
+        assert "turn_taken_this_week" in src and "claim_turn" in src
 
     @pytest.mark.parametrize("fn", [
         "_trigger_trend_rebalance", "_trigger_cash_rebalance",
@@ -248,7 +249,7 @@ class TestCallersStillGuardOnMarketOpen:
 
         src = inspect.getsource(getattr(AgentOrchestrator, fn))
         # the CALL, not the import line at the top of the handler
-        assert src.index("is_open") < src.index("mark_turn_taken(JOB")
+        assert src.index("is_open") < src.index("claim_turn(JOB")
 
 
 class TestJobsDoNotStealEachOthersTurn:
@@ -257,15 +258,15 @@ class TestJobsDoNotStealEachOthersTurn:
 
     def test_trend_running_does_not_consume_the_cash_turn(self):
         day = date(2026, 9, 14)
-        mark_turn_taken(JOB_TREND, day)
+        claim_turn(JOB_TREND, day)
         assert turn_taken_this_week(JOB_TREND, day) is True
         assert turn_taken_this_week(JOB_CASH, day) is False
         assert is_rebalance_day(day, MON, turn_taken=turn_taken_this_week(JOB_CASH, day))[0]
 
     def test_trend_and_cash_do_not_consume_the_verify_turn(self):
         day = date(2026, 9, 14)
-        mark_turn_taken(JOB_TREND, day)
-        mark_turn_taken(JOB_CASH, day)
+        claim_turn(JOB_TREND, day)
+        claim_turn(JOB_CASH, day)
         assert turn_taken_this_week(JOB_ENFORCE_VERIFY, day) is False
         assert is_rebalance_day(
             day, MON, turn_taken=turn_taken_this_week(JOB_ENFORCE_VERIFY, day))[0]
@@ -286,7 +287,7 @@ class TestTurnIsClaimedByRunningNotByTrading:
 
     def test_a_held_or_shadow_run_still_consumes_the_week(self):
         day = date(2026, 9, 14)
-        mark_turn_taken(JOB_TREND, day)          # the job ran; it simply placed no trades
+        claim_turn(JOB_TREND, day)          # the job ran; it simply placed no trades
         for later in (date(2026, 9, 15), date(2026, 9, 16), date(2026, 9, 18)):
             due, why = is_rebalance_day(
                 later, MON, turn_taken=turn_taken_this_week(JOB_TREND, later))
@@ -305,12 +306,84 @@ class TestTurnStoreIsSafe:
         monkeypatch.setattr(rs, "_conn", self._broken())
         assert rs.turn_taken_this_week(JOB_TREND, date(2026, 9, 14)) is None
 
-    def test_write_returns_false_and_does_not_raise_when_broken(self, monkeypatch):
+    def test_claim_returns_false_and_does_not_raise_when_broken(self, monkeypatch):
         import app.live_trading.rebalance_schedule as rs
 
         monkeypatch.setattr(rs, "_conn", self._broken())
-        assert rs.mark_turn_taken(JOB_TREND, date(2026, 9, 14)) is False
+        assert rs.claim_turn(JOB_TREND, date(2026, 9, 14)) is False
 
     def test_a_new_week_resets_the_turn(self):
-        mark_turn_taken(JOB_TREND, date(2026, 9, 14))
+        claim_turn(JOB_TREND, date(2026, 9, 14))
         assert turn_taken_this_week(JOB_TREND, date(2026, 9, 21)) is False
+
+
+class TestClaimIsAMutex:
+    """The claim is a conditional upsert, not a check-then-write, because there is an
+    Alpaca network round-trip between the check and the write. Commit 45be334 ("a second
+    brain for the same account") makes a second process a live concern, not a hypothetical."""
+
+    def test_only_the_first_claimant_wins_the_week(self):
+        day = date(2026, 9, 14)
+        assert claim_turn(JOB_TREND, day) is True
+        assert claim_turn(JOB_TREND, day) is False          # a second process
+        assert claim_turn(JOB_TREND, date(2026, 9, 16)) is False   # later same week
+
+    def test_a_new_week_can_be_claimed_again(self):
+        assert claim_turn(JOB_TREND, date(2026, 9, 14)) is True
+        assert claim_turn(JOB_TREND, date(2026, 9, 21)) is True
+
+    def test_a_lost_claim_does_not_corrupt_the_winners_record(self):
+        claim_turn(JOB_TREND, date(2026, 9, 14))
+        claim_turn(JOB_TREND, date(2026, 9, 16))
+        assert turn_taken_on(JOB_TREND) == date(2026, 9, 14)
+
+    def test_jobs_claim_independently(self):
+        day = date(2026, 9, 14)
+        assert claim_turn(JOB_TREND, day) is True
+        assert claim_turn(JOB_CASH, day) is True
+        assert claim_turn(JOB_ENFORCE_VERIFY, day) is True
+
+
+class TestFollowersGateOnTrendsTurn:
+    """Cash parks what trend left idle; the verify checks the rebalance that just ran. If
+    they picked their own day, the verify could email a false ATTENTION and consume the
+    week — leaving the REAL rebalance unverified, CH0b capture included — and cash could
+    sweep on a day trend did not rebalance."""
+
+    @pytest.mark.parametrize("fn", ["_trigger_cash_rebalance", "_verify_enforce_rebalance"])
+    def test_follower_checks_trend_took_its_turn_today(self, fn):
+        import inspect
+        from app.orchestrator import AgentOrchestrator
+
+        src = inspect.getsource(getattr(AgentOrchestrator, fn))
+        assert "turn_taken_on(JOB_TREND) != today" in src
+
+    def test_trend_itself_does_not_wait_on_anything(self):
+        import inspect
+        from app.orchestrator import AgentOrchestrator
+
+        src = inspect.getsource(AgentOrchestrator._trigger_trend_rebalance)
+        assert "turn_taken_on(JOB_TREND)" not in src
+
+    def test_turn_taken_on_reports_the_claimed_day(self):
+        assert turn_taken_on(JOB_TREND) is None
+        claim_turn(JOB_TREND, date(2026, 9, 8))
+        assert turn_taken_on(JOB_TREND) == date(2026, 9, 8)
+
+
+class TestUnclaimableTurnStopsTheJob:
+    """A refused claim that still traded would re-fire every remaining day of the week —
+    five live rebalances — with one ERROR line a day as the only symptom."""
+
+    @pytest.mark.parametrize("fn", [
+        "_trigger_trend_rebalance", "_trigger_cash_rebalance", "_verify_enforce_rebalance",
+    ])
+    def test_each_job_returns_when_the_claim_is_refused(self, fn):
+        import inspect
+        from app.orchestrator import AgentOrchestrator
+
+        src = inspect.getsource(getattr(AgentOrchestrator, fn))
+        idx = src.index("claim_turn(JOB")
+        after = src[idx:idx + 400]
+        assert "if not claim_turn(JOB" in src[max(0, idx - 20):idx + 40]
+        assert "return" in after
