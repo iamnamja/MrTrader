@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -54,6 +55,24 @@ REGIME_FEATURE_NAMES = [
     "nis_sizing_factor",
 ]
 
+# The features `load_dataset` REQUIRES: a row missing any of these is dropped from
+# training entirely. Defined here, beside REGIME_FEATURE_NAMES, so the trainer's dropna and
+# the backfill's write-guard cannot drift apart — a row the backfill considers good but the
+# trainer discards is a row that silently never trains, which is how this subsystem got
+# into trouble in the first place.
+CORE_FEATURE_NAMES = tuple(
+    f for f in REGIME_FEATURE_NAMES
+    if f not in (
+        "nis_risk_numeric", "nis_sizing_factor",
+        "breadth_pct_ma50",                       # legacy col — not in V2 features
+        "vix_term_ratio", "breadth_rsp_spy_ratio_20d",
+        "credit_hyg_ief_5d", "credit_hyg_ief_20d",
+        "sector_dispersion_20d", "sector_leader_lag_20d",
+        "vix_5d_change", "spy_50d_return",
+        "spy_above_ma50", "spy_above_ma200",
+    )
+)
+
 # Tickers fetched for V2 features
 MULTI_TICKERS = [
     "SPY", "RSP",
@@ -68,6 +87,50 @@ _SPY_LOOKBACK_DAYS = 320
 _VIX_LOOKBACK_DAYS = 320
 _MULTI_LOOKBACK_DAYS = 320
 
+# How old a VIX3M close may be and still describe `as_of_date`. 5 calendar days covers a
+# three-day weekend plus a holiday; anything older is a data outage, not a settled close.
+#
+# WHY THIS EXISTS (2026-09-06). `_slice_to_date(...)` then `.iloc[-1]` returns the last
+# available row REGARDLESS of its age, so a series that stops updating silently pins the
+# feature to its final value forever. yfinance's ^VIX3M is doing exactly that — its history
+# rots backwards over time (macro_history.py documents the decay: 100% coverage through
+# Apr 2026 -> 5% by Aug). Measured on 2026-09-06, `build(as_of_date=2026-09-04)` returned
+# vix_term_ratio=0.7074, computed from the 2026-07-17 VIX3M close (20.54) against a
+# 2026-09-04 VIX — a 7-week-stale denominator. The FRED-backed value is 14.53/17.61 = 0.825.
+# Silent because nothing errored: the number was present, plausible, and wrong.
+#
+# macro_history carries the same two series with a FRED backstop (DECISIONS 2026-08-xx / #674,
+# which fixed this same outage for the crash governor but not for this second consumer).
+_MAX_VIX3M_STALENESS_DAYS = 5
+
+
+# See the note at its use in label_regime_day.
+_UNKNOWN_VIX_TERM = 1.001
+
+
+def _coalesce(row, key: str, default: float) -> float:
+    """`row[key]`, treating BOTH None and NaN as missing.
+
+    `row.get(k) or default` — the idiom this replaces — is NaN-blind, because NaN is
+    truthy: `float('nan') or 1.0` is NaN, not 1.0. Every subsequent comparison against
+    that NaN is then False, which silently rewrites the rule. Concretely, a NULL
+    `vix_term_ratio` made the RISK_ON contango test (`vix_term <= 1.0`) unsatisfiable
+    and the RISK_OFF backwardation test (`vix_term > 1.05`) unreachable, so an
+    outage day was force-labelled RISK_CAUTION instead of taking the 1.0 default.
+    Harmless while the feed was always populated; a live mislabeller the moment
+    `_vix3m_as_of` started (correctly) returning None on a dead feed.
+
+    Also coerces to float so a Decimal/str from the DB cannot compare oddly.
+    """
+    val = row.get(key)
+    if val is None:
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else f      # f != f  <=>  f is NaN
+
 
 def label_regime_day(row: dict) -> int:
     """
@@ -81,14 +144,21 @@ def label_regime_day(row: dict) -> int:
     Multi-factor: no single signal dominates. Uses VIX percentile + term
     structure + trend (not single-day return) + credit + breadth.
     """
-    vix = row.get("vix_level") or 20.0
-    vix_pct1y = row.get("vix_pct_1y") or 0.5
-    vix_term = row.get("vix_term_ratio") or 1.0
-    ma50_dist = row.get("spy_ma50_dist") or 0.0
-    ma200_dist = row.get("spy_ma200_dist") or 0.0
-    credit_20d = row.get("credit_hyg_ief_20d") or 0.0
-    breadth = row.get("breadth_rsp_spy_ratio_20d") or 0.0
-    spy_20d = row.get("spy_20d_return") or 0.0
+    vix = _coalesce(row, "vix_level", 20.0)
+    vix_pct1y = _coalesce(row, "vix_pct_1y", 0.5)
+    # 1.0 EXACTLY satisfies the RISK_ON contango test (`vix_term <= 1.0`), so defaulting a
+    # MISSING term structure to 1.0 makes an outage day eligible for the cleanest risk-on
+    # label. The stricter same-date pairing (2026-09-06) makes such NULLs far more common,
+    # so that default would bias training labels risk-on during exactly a VIX3M outage.
+    # _UNKNOWN_VIX_TERM sits just above the contango line and well below the 1.05
+    # backwardation trigger: unknown term structure disqualifies RISK_ON without asserting
+    # RISK_OFF, landing the day on RISK_CAUTION — which is where "we do not know" belongs.
+    vix_term = _coalesce(row, "vix_term_ratio", _UNKNOWN_VIX_TERM)
+    ma50_dist = _coalesce(row, "spy_ma50_dist", 0.0)
+    ma200_dist = _coalesce(row, "spy_ma200_dist", 0.0)
+    credit_20d = _coalesce(row, "credit_hyg_ief_20d", 0.0)
+    breadth = _coalesce(row, "breadth_rsp_spy_ratio_20d", 0.0)
+    spy_20d = _coalesce(row, "spy_20d_return", 0.0)
 
     # RISK_OFF: any strong hostile signal
     risk_off = (
@@ -250,9 +320,37 @@ class RegimeFeatureBuilder:
     # ── Feature builders ──────────────────────────────────────────────────────
 
     def _add_spy_features(self, feats: dict, df: Optional[pd.DataFrame], as_of_date: date) -> None:
-        if df is None or len(df) < 5:
+        # The fallback must be reached BEFORE giving up on an absent frame — returning
+        # early on `df is None` would make the macro/`spy` backstop dead in exactly the
+        # total-outage case it exists for. _add_vix_features was restructured this way;
+        # this one was not, which is the same mistake twice.
+        close = None
+        if df is not None and len(df) > 0:
+            close = df["close"] if "close" in df.columns else df.iloc[:, 0]
+
+        # SPY needs the same staleness discipline as VIX, for the same reason: `.iloc[-1]`
+        # on a slice pins to the last available bar however old it is, and
+        # spy_ma200_dist / spy_20d_return are BOTH in load_dataset's core set AND drivers
+        # of label_regime_day. A frozen SPY feed would quietly hold the trend features at
+        # their last value — the identical failure this change fixed for VIX3M, and the
+        # one the VIX3M fix would otherwise have left one ticker away.
+        close = _freshest_vol_series(close, "spy", as_of_date)
+        if close is None or len(close) == 0:
             return
-        close = df["close"] if "close" in df.columns else df.iloc[:, 0]
+        close = close.dropna()
+        if len(close) < 5:
+            return
+        close = close[pd.to_datetime(close.index).date <= as_of_date]
+        if len(close) < 5:
+            return
+        if not _is_fresh(close, as_of_date):
+            logger.warning(
+                "No SPY close within %d days of %s (last %s) — SPY features left NULL",
+                _MAX_VIX3M_STALENESS_DAYS, as_of_date,
+                pd.to_datetime(close.index[-1]).date(),
+            )
+            return
+
         last = float(close.iloc[-1])
 
         if len(close) >= 2:
@@ -289,8 +387,24 @@ class RegimeFeatureBuilder:
         vix3m_s: Optional[pd.Series],
         as_of_date: date,
     ) -> None:
-        if vix_s is None or vix_s.empty:
+        # The NUMERATOR needs the same freshness guarantee as the denominator: pairing a
+        # weeks-old VIX with a current VIX3M is the same silent-wrong-number failure,
+        # just relocated. Fall back to the FRED-backed macro series before giving up.
+        vix_s = _freshest_vol_series(vix_s, "vix", as_of_date)
+
+        if vix_s is None or len(vix_s) == 0:
             return
+        vix_s = vix_s.dropna()
+        if vix_s.empty:
+            return
+        if not _is_fresh(vix_s, as_of_date):
+            logger.warning(
+                "No VIX close within %d days of %s (last %s) — VIX features left NULL",
+                _MAX_VIX3M_STALENESS_DAYS, as_of_date,
+                pd.to_datetime(vix_s.index[-1]).date(),
+            )
+            return
+
         vix = float(np.clip(vix_s.iloc[-1], 5.0, 80.0))
         feats["vix_level"] = vix
 
@@ -301,10 +415,13 @@ class RegimeFeatureBuilder:
         if len(vix_s) >= 6:
             feats["vix_5d_change"] = float(vix_s.iloc[-1] / vix_s.iloc[-6] - 1.0)
 
-        if vix3m_s is not None and not vix3m_s.empty:
-            vix3m = float(np.clip(vix3m_s.iloc[-1], 5.0, 80.0))
-            if vix3m > 0:
-                feats["vix_term_ratio"] = round(vix / vix3m, 4)
+        # Paired by DATE — not two independent "within 5 days" lookups. See
+        # _vix_term_ratio_as_of: the denominator is normally FRED (a business day behind)
+        # while the numerator is today's yfinance close, so unpaired resolution divides
+        # closes from different days on exactly the volatile days that matter.
+        ratio = _vix_term_ratio_as_of(vix_s, vix3m_s, as_of_date)
+        if ratio is not None:
+            feats["vix_term_ratio"] = ratio
 
     def _add_breadth_features(
         self,
@@ -409,6 +526,147 @@ def _fetch_df(ticker: str, as_of_date: date, lookback_days: int) -> Optional[pd.
     except Exception as exc:
         logger.debug("_fetch_df %s failed: %s", ticker, exc)
         return None
+
+
+@lru_cache(maxsize=4)
+def _macro_series_cached(field: str, _mtime: float) -> Optional[pd.Series]:
+    """Date-indexed close series for `field` from the macro-history parquet.
+
+    Keyed on the file's mtime rather than plain-cached so a long-running process picks
+    up the startup/daily macro refresh — a permanently-cached series would re-create the
+    very staleness bug this fallback exists to fix.
+    """
+    try:
+        from app.data.macro_history import load_macro_history
+
+        df = load_macro_history()
+        if df is None or df.empty or field not in df.columns:
+            return None
+        sub = df.dropna(subset=[field])
+        if sub.empty:
+            return None
+        return pd.Series(
+            sub[field].astype(float).to_numpy(),
+            index=pd.to_datetime(sub["date"]),
+            name="close",
+        )
+    except Exception as exc:  # never let a fallback take down feature building
+        logger.warning("macro_history '%s' fallback unavailable: %s", field, exc)
+        return None
+
+
+def _macro_series(field: str) -> Optional[pd.Series]:
+    try:
+        from app.data.macro_history import MACRO_PATH
+
+        mtime = MACRO_PATH.stat().st_mtime if MACRO_PATH.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    return _macro_series_cached(field, mtime)
+
+
+def _is_fresh(series: Optional[pd.Series], as_of_date: date) -> bool:
+    """True when `series` carries a non-NaN value dated (as_of - bound, as_of]."""
+    if series is None or len(series) == 0:
+        return False
+    fresh = series.dropna()
+    if fresh.empty:
+        return False
+    last_dt = pd.to_datetime(fresh.index[-1]).date()
+    return (as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)) <= last_dt <= as_of_date
+
+
+def _freshest_vol_series(
+    series: Optional[pd.Series], field: str, as_of_date: date
+) -> Optional[pd.Series]:
+    """`series` if it is fresh for as_of_date, else the FRED-backed macro_history series.
+
+    Applies to the VIX NUMERATOR as well as the VIX3M denominator. Guarding only the
+    denominator would still let the ratio pair a weeks-old VIX against a current VIX3M —
+    the same silent-wrong-number failure, merely relocated. Returns a series (not a
+    scalar) because the percentile and 5-day-change features need the whole window.
+    """
+    if _is_fresh(series, as_of_date):
+        return series
+
+    # The fallback fires for None/empty too, not only for stale-but-present. An earlier
+    # cut restricted it to sources that had returned rows, reasoning that a caller passing
+    # nothing should not have global data substituted behind it. That was wrong on the
+    # facts: `_fetch_single`/`_fetch_spy` return None on ANY yfinance failure, so the
+    # restriction disabled the backstop in exactly the outage it exists for — blanking the
+    # whole VIX block while a good FRED value sat in the parquet. There is no look-ahead
+    # risk to trade off, because the fallback is sliced by as_of_date below.
+    fallback = _macro_series(field)
+    if fallback is None:
+        return series      # nothing better available; caller's staleness checks apply
+
+    sliced = fallback[pd.to_datetime(fallback.index).date <= as_of_date]
+    if sliced.empty:
+        return series
+    if series is not None and len(series.dropna()) and not _is_fresh(series, as_of_date):
+        logger.debug("%s stale at %s — falling back to macro_history", field, as_of_date)
+    return sliced
+
+
+def _series_as_of_map(series: Optional[pd.Series]) -> dict:
+    """{'YYYY-MM-DD': value} for a date-indexed close series; {} for None/empty."""
+    if series is None or len(series) == 0:
+        return {}
+    fresh = series.dropna()
+    if fresh.empty:
+        return {}
+    return {pd.to_datetime(d).strftime("%Y-%m-%d"): float(v) for d, v in fresh.items()}
+
+
+def _vix_term_ratio_as_of(
+    vix_s: Optional[pd.Series],
+    vix3m_s: Optional[pd.Series],
+    as_of_date: date,
+) -> Optional[float]:
+    """VIX / VIX3M for the most recent date where BOTH are available, or None.
+
+    THE TWO LEGS MUST COME FROM THE SAME DATE. Resolving them through independent
+    lookups — each merely "within 5 days of as_of" — routinely divides closes from
+    different days AND different sources, and that is the DEFAULT live path, not an edge
+    case: yfinance's ^VIX3M is ~95% NaN, so the denominator comes from FRED, which
+    publishes with roughly a one-business-day lag, while the numerator is today's
+    yfinance close. Today's VIX over yesterday's VIX3M.
+
+    That is not a rounding difference on a vol spike. VIX 15 -> 25 against a prior-day
+    VIX3M of 16 reads 1.56 rather than the true ~1.32 — across the 1.05 backwardation
+    threshold, flipping the rule label to RISK_OFF on exactly the days the feature is
+    supposed to be trusted. macro_history's crash governor already requires both series
+    on the SAME settled date (#674); this consumer now does too.
+
+    Sources are still tried yfinance-first per leg, but the PAIRING is by date: we walk
+    back from as_of_date and take the first day that has both.
+    """
+    oldest_ok = as_of_date - timedelta(days=_MAX_VIX3M_STALENESS_DAYS)
+
+    vix_map = dict(_macro_series_map("vix"))
+    vix_map.update(_series_as_of_map(vix_s))          # yfinance wins per date
+    v3_map = dict(_macro_series_map("vix3m"))
+    v3_map.update(_series_as_of_map(vix3m_s))
+
+    probe = as_of_date
+    while probe >= oldest_ok:
+        key = probe.isoformat()
+        v, v3 = vix_map.get(key), v3_map.get(key)
+        if v is not None and v3 is not None:
+            v = float(np.clip(v, 5.0, 80.0))
+            v3 = float(np.clip(v3, 5.0, 80.0))
+            if v3 > 0:
+                return round(v / v3, 4)
+        probe -= timedelta(days=1)
+
+    logger.debug("No date within %d days of %s carries BOTH VIX and VIX3M — "
+                 "vix_term_ratio left NULL", _MAX_VIX3M_STALENESS_DAYS, as_of_date)
+    return None
+
+
+def _macro_series_map(field: str) -> dict:
+    s = _macro_series(field)
+    return {} if s is None else _series_as_of_map(s)
 
 
 def _close_series(df) -> Optional[pd.Series]:

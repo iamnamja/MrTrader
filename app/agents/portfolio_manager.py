@@ -4566,7 +4566,10 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         import asyncio
         import time
         import pickle
-        from app.ml.retrain_config import REGIME_RETRAIN_INTERVAL_DAYS
+        from app.ml.retrain_config import (
+            REGIME_BACKFILL_TIMEOUT_S,
+            REGIME_RETRAIN_INTERVAL_DAYS,
+        )
         from app.ml.regime_training import MODEL_DIR, regime_gate
 
         # NUMERIC latest: a lexical sort returned v9 once v10 existed, so this guard aged
@@ -4575,8 +4578,21 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         # of weekly — the cadence retrain_config explicitly argues against.
         from app.ml.model_versioning import latest_versioned_file
         newest = latest_versioned_file(MODEL_DIR, "regime_model")
-        if newest is not None:
-            age_days = (time.time() - newest.stat().st_mtime) / 86400.0
+        # A gate FAILURE deletes the new pickle, so the newest file stays the OLD one and
+        # its mtime never advances — before this PR that was unreachable (the gate could
+        # not fail), but failure is now a routine outcome, and without this the whole
+        # pipeline (15-ticker fetch + 4 fold fits + final fit) would re-run EVERY weekday
+        # forever. The attempt sentinel records that we tried, so the weekly cadence holds
+        # whether the attempt promoted or not.
+        attempt_marker = MODEL_DIR / ".regime_retrain_last_attempt"
+        last_attempt = attempt_marker.stat().st_mtime if attempt_marker.exists() else 0.0
+        # max() over BOTH, and evaluated even when `newest` is None: with no pickle on
+        # disk (fresh deploy, or every pickle deleted by successive gate failures) the
+        # sentinel is the ONLY brake, and discarding it re-runs the full pipeline every
+        # weekday forever — precisely what the sentinel was added to prevent.
+        _last_ts = max(newest.stat().st_mtime if newest is not None else 0.0, last_attempt)
+        if _last_ts > 0.0:
+            age_days = (time.time() - _last_ts) / 86400.0
             if age_days < REGIME_RETRAIN_INTERVAL_DAYS:
                 self.logger.info(
                     "Regime model is %.1f days old (interval=%d) — skipping retrain",
@@ -4589,6 +4605,49 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             )
         else:
             self.logger.info("No regime model found — training from scratch")
+
+        # Bring the training data up to date BEFORE retraining. Nothing else does: the
+        # backfill script had no scheduler, so when it stopped on 2026-05-07 the regime
+        # training set froze for four months while the weekly retrain kept re-fitting the
+        # same 2179 rows and reporting success (DECISIONS 2026-09-06). The gate now fails
+        # on stale data, but a gate that fails every week is an outage, not a fix —
+        # something has to actually advance the snapshots. Idempotent: existing rows are
+        # skipped. Best-effort — a failure here must not block the retrain, because the
+        # gate will catch the staleness downstream and refuse to promote.
+        try:
+            import functools as _ft
+            from datetime import date as _date, timedelta as _td
+            from app.ml.regime_backfill import extend_backfill
+            loop = asyncio.get_event_loop()
+            counts = await asyncio.wait_for(loop.run_in_executor(
+                None,
+                # start=None RESUMES FROM THE LAST EXISTING ROW. A fixed lookback cannot
+                # close a gap longer than itself: it writes the recent tail, leaves the
+                # older hole empty forever, and drags max(snapshot_date) up to today so
+                # the staleness gate reads CURRENT and passes over the hole — a false
+                # green, worse than the stale red it replaced.
+                # rewrite_recent_days re-computes the last fortnight so a day written
+                # while the feed was degraded (NULL VIX block -> dropped by the training
+                # dropna, permanently) heals instead of being lost.
+                _ft.partial(extend_backfill, None, _date.today() - _td(days=1),
+                            rewrite_recent_days=14),
+            ), timeout=REGIME_BACKFILL_TIMEOUT_S)
+            self.logger.info("Regime snapshots extended before retrain: %s", counts)
+        except asyncio.TimeoutError:
+            # BOUNDED ON PURPOSE. This is a network fetch (15 tickers) inside the weekly
+            # retrain; an unbounded one lets a hung or rate-limited feed stall the retrain
+            # indefinitely with no symptom. Whatever it managed to write is committed in
+            # batches, and the staleness gate refuses to promote if the data is still old.
+            self.logger.error(
+                "Regime snapshot extension exceeded %ss — abandoning it and continuing; "
+                "the staleness gate will refuse to promote if the data is too old",
+                REGIME_BACKFILL_TIMEOUT_S,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not extend regime snapshots before retrain (%s) — continuing; the "
+                "staleness gate will refuse to promote if the data is too old", exc,
+            )
 
         try:
             from app.ml.regime_training import RegimeModelTrainer
@@ -4618,10 +4677,15 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                     version, ", ".join(failures),
                 )
                 model_path.unlink(missing_ok=True)
+                attempt_marker.touch()      # see the sentinel note above
                 await self.log_decision("REGIME_RETRAIN_GATE_FAILED", reasoning={
                     "version": version, "failures": failures,
                 })
         except Exception as exc:
+            try:
+                attempt_marker.touch()      # a crashing retrain must not loop daily either
+            except Exception:
+                pass
             self.logger.error("Regime retrain failed: %s", exc, exc_info=True)
             await self.log_decision("REGIME_RETRAIN_FAILED", reasoning={"error": str(exc)})
 

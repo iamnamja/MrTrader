@@ -139,7 +139,51 @@ class RegimeModel:
             return self._legacy_fallback(as_of_date, trigger)
 
         import numpy as np
-        X = np.array([[feats.get(f, 0.0) for f in self._feature_names]])
+
+        # Match load_dataset's imputation EXACTLY. The trainer fills these two before
+        # fitting (nis_risk_numeric->0.5, nis_sizing_factor->1.0), so the model has never
+        # seen them missing and holds no learned default branch — yet `_add_nis_features`
+        # leaves both NaN whenever the NIS snapshot table is empty or its query raises
+        # (swallowed). Feeding NaN here would be the same "predict on a feature the model
+        # never saw missing" mistake the vix_level guard below exists to prevent, minus
+        # the guard. Imputing is right for these two precisely BECAUSE training imputed.
+        for _f, _default in (("nis_risk_numeric", 0.5), ("nis_sizing_factor", 1.0)):
+            _v = feats.get(_f)
+            if _v is None or _v != _v:
+                feats[_f] = _default
+
+        # A missing CORE feature is the opposite case — a dead feed, not something the
+        # trainer imputed. Every name in CORE_FEATURE_NAMES is in load_dataset's dropna
+        # set, so every training row had one and XGBoost holds no learned default branch
+        # for its absence; predicting anyway yields an arbitrary-but-confident score that
+        # silently drives live position sizing.
+        #
+        # Checking the WHOLE set, not just vix_level: the 2026-09-06 SPY staleness guard
+        # NULLs eight trend features that sit in the same dropna set, so guarding only the
+        # VIX leg would have left a frozen SPY feed scoring confidently off NaN trend
+        # features. Reachable only when a feed AND its FRED backstop are both down — a
+        # real outage, where neutral is the honest answer.
+        from app.ml.regime_features import CORE_FEATURE_NAMES
+
+        _missing = [f for f in CORE_FEATURE_NAMES
+                    if feats.get(f) is None or feats.get(f) != feats.get(f)]
+        if _missing:
+            logger.error(
+                "Regime scoring: %d core feature(s) unavailable for %s (%s) — refusing to "
+                "score on features the model never saw missing; DE-RISKING to RISK_CAUTION",
+                len(_missing), as_of_date, ", ".join(_missing[:5]),
+            )
+            return self._degraded_fallback(as_of_date, trigger, _missing)
+
+        # NaN, deliberately — not 0.0. `build()` pre-seeds every feature to NaN, so the
+        # key always exists and a `.get(f, 0.0)` default could never fire anyway; spelling
+        # it 0.0 merely advertised an imputation that does not happen. NaN is also the
+        # correct signal: XGBoost routes missing values down a learned default branch,
+        # whereas 0.0 would ASSERT a value — for a ratio like vix_term_ratio that means
+        # "infinite backwardation", which is not what a dead data feed means. Since
+        # `_vix3m_as_of` now yields NULL rather than a stale number (DECISIONS 2026-09-06),
+        # this path sees NaN more often than it used to.
+        X = np.array([[feats.get(f, float("nan")) for f in self._feature_names]])
 
         if self._model_version >= 2:
             probs, score, label = self._score_v2(X)
@@ -230,6 +274,39 @@ class RegimeModel:
                 session.commit()
         except Exception as exc:
             logger.error("Failed to persist regime snapshot: %s", exc)
+
+    def _degraded_fallback(self, as_of_date: Optional[date], trigger: str,
+                           missing: list) -> dict:
+        """Feed outage: we HAVE a model but cannot measure the regime. De-risk.
+
+        NOT `_legacy_fallback`. That returns regime_label="UNKNOWN", and
+        `_regime_sizing_multiplier` maps UNKNOWN to `regime_sizing_unknown = 1.0` — FULL
+        SIZE. That default is deliberate and correct for its own case ("no model yet, do
+        not penalise early paper days"), but routing a DATA OUTAGE through it would size
+        the book at maximum precisely when the inputs went dark, which in a vol event is
+        the worst possible moment. An earlier cut of this guard did exactly that while its
+        comment claimed it was "returning neutral"; it was not neutral, it was aggressive.
+
+        Returning a RISK_CAUTION score instead means an outage de-risks. The score sits
+        deliberately between the risk-off and risk-on thresholds so the existing
+        score-based mapping resolves it to `regime_sizing_risk_caution` with no special
+        casing at the call site.
+        """
+        from app.config import settings
+
+        score = (settings.regime_risk_off_threshold
+                 + settings.regime_risk_on_threshold) / 2.0
+        return {
+            "regime_score": score,
+            "regime_label": "RISK_CAUTION",
+            "prob_risk_off": None,
+            "prob_risk_caution": None,
+            "prob_risk_on": None,
+            "version": f"regime_v{self._version}_degraded",
+            "trigger": trigger,
+            "cached": False,
+            "degraded_missing": list(missing),
+        }
 
     def _legacy_fallback(self, as_of_date: Optional[date], trigger: str) -> dict:
         logger.warning("Regime model not loaded — returning UNKNOWN (legacy fallback)")

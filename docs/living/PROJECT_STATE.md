@@ -6,6 +6,25 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
+## ✅ REGIME SUBSYSTEM REPAIRED (2026-09-06) — the gate could not fail, and the data under it had been frozen since May
+
+Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**). Underneath were **four stacked defects, each hiding the next**:
+
+1. **`_FOLDS` hardcoded**, last test window ending 2026-04-30 → the walk-forward re-scored the same three windows weekly. **v35→v42 all recorded byte-identical `0.9563 / 0.9062 / 0.0569`.** The promotion gate was evaluated against a constant — it could not fail.
+2. **Training set frozen at 2026-05-07.** `load_dataset` filters `snapshot_trigger=="backfill"`; the backfill stopped. The 113 daily snapshots since are `premarket`/`startup_catchup` and were filtered out. Four months of weekly "retrains" re-fit the same 2179 rows.
+3. **`train_end` recorded the requested `date.today()`, not the data's max** — so the registry claimed data it did not have. **This is what hid #2.**
+4. **`vix_term_ratio` was live and wrong.** No FRED backstop for `^VIX3M` + no staleness bound; `.iloc[-1]` carries the last close forward forever. `build(2026-09-04)` returned **0.7074** off the **2026-07-17** close; truth is 14.53/17.61 = **0.8251**. Feeds `label_regime_day` and the sizing model. Same yfinance rot #674 fixed for the crash governor — **patched in one consumer, not the other.**
+
+**Fixed:** staleness-bounded `_vix3m_as_of()` with FRED fallback (bit-identical on 12 historical dates — purely additive); `build_folds(data_end)` = 3 frozen folds + 1 rolling, with a loud WARN if the rolling fold goes missing; honest `train_end`; snapshots backfilled to 2026-09-04 (0 NULL vix_term). **Gate PASSES** (`0.906/0.963/1.000/1.000`); folds 1–3 reproduce history exactly, so nothing is blocked. **No model promoted** — next weekly retrain (Fri 17:30) picks it up. Suite 4593 pass / 0 fail.
+
+⚠️ **Read a PASS narrowly:** `label_regime_day` is a deterministic rule over the model's own inputs, so macro_F1→1.0 is the ceiling by construction. The gate now catches pipeline breakage and fitting failure; it does **not** measure predictive edge.
+
+**→ NEEDS OWNER ACTION:** (a) **restart uvicorn** — the running process still has the pre-fix VIX3M code, so live `vix_term_ratio` is still computed off a 7-week-old close; (b) **CH1 enforce flip** is still pending (see below).
+
+## ⏳ CH1 per-name gate enforce flip — DUE, awaiting the config write
+
+6 consecutive clean Mondays (07-27 → 08-31): book_corr **0.21–0.34** against a 0.90 gate, max_name_w ≤0.088, **0 would-blocks at every threshold 0.80–0.95**. The backlog's "flip after ~3–4 more clean Mondays" (07-21) is long satisfied, and the gate is nowhere near binding, so enforce is inert on the current book shape. Command: set `pm.per_name_gate_mode` = `enforce` (reverse with `shadow`). Read live — no restart needed for the flag itself.
+
 ## 📏 EXECUTION IS NOT THE PROBLEM (2026-09-02) — the "execution drag" number never measured execution
 
 The weekly email reported **"Execution drag −0.67 bps/day"** (~−1.7%/yr against a ~3.3%/yr expected gross edge), which made implementation look like it was eating half the edge. It was not.

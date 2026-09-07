@@ -88,6 +88,14 @@ RETRAIN_WEEKDAY: int = -1  # disabled — Phase C in progress (was: 2 = Wednesda
 # regime_model_v5 carries the live book's sizing. 7 days (weekly) matches the cadence
 # at which regime features meaningfully shift.
 REGIME_RETRAIN_INTERVAL_DAYS: int = 7
+
+# Ceiling on the pre-retrain regime-snapshot extension. That step is a 15-ticker network
+# fetch run inside the weekly retrain; unbounded, a hung or rate-limited feed stalls the
+# retrain with no symptom (and, in tests, blows the 120s pytest timeout mid-`patch`, which
+# leaves the patch applied and poisons every later test in the worker — how this ceiling
+# got noticed). Partial progress is committed in batches, and the staleness gate still
+# refuses to promote if the data ends up too old.
+REGIME_BACKFILL_TIMEOUT_S: int = 900
 # Promotion gate for the regime model. The model is 3-class (BULL/NEUTRAL/BEAR) scored
 # by cross-entropy log-loss (random baseline = log(3) ≈ 1.099) — NOT a 2-class Brier
 # score. (The old 0.22 threshold was a 2-class Brier value mis-applied to 3-class CE.)
