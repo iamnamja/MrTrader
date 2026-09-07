@@ -10,7 +10,7 @@
 
 A holiday on the rebalance weekday used to **cancel** the week, not delay it — Labor Day put **14 days** between the 08-31 and 09-14 trend rebalances. The frozen CH0a baseline (`mean_sharpe 0.7009`) rebalances on a 5-**trading**-day grid that never skips a holiday week, so the live book was running an untested cadence 4-5x/year. Measured: 2026 had 48 live turns with four 14-day gaps (2027: 47/five); corrected = **52 turns, max gap 8 days** both years.
 
-Now: **first trading day on or after the configured weekday, within that week** (`app/live_trading/rebalance_schedule.py`), shared by all three weekly jobs (trend 09:45, cash 09:50, enforce-verify 11:07). Stateless; the once-per-week guarantee comes from the calendar. Alpaca-clock fail-closed check unchanged. Does NOT catch up rebalances missed to an app outage — deliberately out of scope.
+Now: **the week's turn is the trading day nearest its anchor (forward first, else backward), and it is spent only when we ACTUALLY rebalanced** — `back_validation.last_rebalance_date()`, falling back to the calendar if that lookup fails. Shared by all three weekly jobs (trend 09:45, cash 09:50, enforce-verify 11:07). Alpaca-clock fail-closed check unchanged at every site. Keying on the real rebalance (not the calendar) is what lets a **declined** anchor — transient clock error, or an unscheduled closure the static holiday list doesn't know — be retried later that week; a calendar-only rule silently re-created the 14-day gap. Consequence: a week missed to an **app outage** is now also retried within that week.
 
 **⚠️ Takes effect only after an orchestrator restart** (scheduler code). Next turn is Mon 2026-09-14 either way; the first behaviour change lands on the next Monday holiday.
 

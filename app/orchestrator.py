@@ -331,7 +331,12 @@ class AgentOrchestrator:
         # would email ATTENTION about a rebalance that correctly did not happen.
         from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        due, _why = is_rebalance_day(today, target_weekday)
+        try:
+            from app.live_trading.back_validation import last_rebalance_date
+            _last = last_rebalance_date()
+        except Exception:
+            _last = None
+        due, _why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
         if not due:
             return
         try:
@@ -384,7 +389,16 @@ class AgentOrchestrator:
         # year. See app/live_trading/rebalance_schedule.py.
         from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        due, why = is_rebalance_day(today, target_weekday)
+        # The week's turn is spent when we ACTUALLY rebalanced, not when the calendar
+        # says we could have — otherwise a declined anchor (transient clock error, or an
+        # unscheduled closure absent from the static holiday list) silently re-creates
+        # the 14-day gap this fallthrough exists to remove.
+        try:
+            from app.live_trading.back_validation import last_rebalance_date
+            _last = last_rebalance_date()
+        except Exception:
+            _last = None
+        due, why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
         if not due:
             logger.debug("trend rebalance: %s — skip", why)
             return
@@ -466,7 +480,16 @@ class AgentOrchestrator:
         # Tuesday and cash stayed pinned to Monday would leave the remainder unparked.
         from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        due, why = is_rebalance_day(today, target_weekday)
+        # The week's turn is spent when we ACTUALLY rebalanced, not when the calendar
+        # says we could have — otherwise a declined anchor (transient clock error, or an
+        # unscheduled closure absent from the static holiday list) silently re-creates
+        # the 14-day gap this fallthrough exists to remove.
+        try:
+            from app.live_trading.back_validation import last_rebalance_date
+            _last = last_rebalance_date()
+        except Exception:
+            _last = None
+        due, why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
         if not due:
             logger.debug("cash rebalance: %s — skip", why)
             return

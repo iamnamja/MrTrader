@@ -1,4 +1,4 @@
-"""When the weekly rebalance actually runs — holiday-aware, stateless.
+"""When the weekly rebalance actually runs — holiday-aware.
 
 WHY THIS EXISTS (2026-09-07). The weekly jobs were pinned to a CALENDAR weekday and
 fail-closed on a market holiday, with no fallthrough:
@@ -8,8 +8,7 @@ fail-closed on a market holiday, with no fallthrough:
 
 So a Monday holiday did not delay the rebalance by a day — it cancelled it for the week.
 Labor Day 2026-09-07 put 14 calendar days between the 08-31 and 09-14 rebalances, and
-Monday holidays recur 4-5x a year (MLK, Washington's Birthday, Memorial Day, Juneteenth,
-Independence Day, Labor Day can all land on a Monday).
+Monday holidays recur 4-5x a year.
 
 THE ARGUMENT IS FIDELITY, NOT TASTE. The frozen CH0a baseline that produced the trend
 book's CPCV mean_sharpe 0.7009 rebalances on a TRADING-DAY grid:
@@ -19,76 +18,111 @@ book's CPCV mean_sharpe 0.7009 rebalances on a TRADING-DAY grid:
 
 `n` indexes the daily close panel, which contains trading days only — so a holiday week
 simply has four trading days and the 5-trading-day cadence never breaks. The live book
-skipping a week is a cadence the validated edge was never tested at (~9 trading days
-instead of 5), several times a year. This restores live to the construction that was
-actually validated.
+skipping a week ran a cadence the validated edge was never tested at. Measured:
+2026 old = 48 turns with four 14-day gaps, new = 52 turns with a maximum gap of 8 days.
 
-STATELESS BY DESIGN. "First trading day on-or-after the anchor, within the anchor's own
-week" is decidable from the calendar alone, so there is no "have we already rebalanced
-this week?" flag to persist, drift, or contradict the DB. It also gives the once-per-week
-guarantee for free: on the Wednesday after a Monday holiday the loop below finds Tuesday
-was a trading day and refuses — without which a naive "next trading day" rule would
-rebalance again every remaining day of the week.
+    THE WEEK'S TURN IS TAKEN WHEN WE ACTUALLY REBALANCED — NOT WHEN THE CALENDAR SAYS
+    WE COULD HAVE.
 
-WHAT THIS DELIBERATELY DOES NOT DO: catch up a rebalance missed because the APP was down
-(the 2026-09-05 reboot, say). That is a different risk — it would trade on an intent
-formed under unknown conditions, possibly days stale — and it needs its own decision. A
-missed trading day still reads as missed here.
+That distinction is the whole correctness argument. An earlier cut inferred "the turn has
+passed" from the static calendar alone, which silently re-created the bug: if the anchor
+was a trading day but the rebalance was DECLINED that morning — a transient Alpaca clock
+error, or an unscheduled closure absent from the static holiday list (NYSE 2025-01-09
+Carter funeral, 2018-12-05, Sandy 2012) — the next day still read "this week's turn was
+Monday" and skipped, producing exactly the 14-day gap this module exists to remove. So the
+authority is `back_validation.last_rebalance_date()`, which records only genuine live
+rebalances. The calendar is the fallback when that lookup is unavailable.
+
+A consequence worth stating plainly: because the test is "did we rebalance", a week missed
+because the APP WAS DOWN on the anchor day is also picked up on the next trading day of
+that week. That is a widening from the first draft of this change, and it is deliberate —
+the rebalance recomputes its weights from current data at run time, and every existing
+gate (per-name enforce, whole-book, reconciliation, market-open) still applies, so there
+is no stale-intent risk that would justify carrying the miss for a full extra week.
+
+The roll never crosses a week boundary in either direction, so no week can take two turns.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 from app.live_trading.exchange_calendar import is_trading_day
 
 
 def week_anchor(today: date, target_weekday: int) -> date:
-    """The configured weekday within `today`'s own ISO week.
-
-    Anchoring inside the week is what keeps the fallthrough from ever crossing into the
-    next week and colliding with its anchor.
-    """
+    """The configured weekday within `today`'s own ISO week."""
     monday = today - timedelta(days=today.weekday())
     return monday + timedelta(days=target_weekday)
 
 
-def is_rebalance_day(today: date, target_weekday: int) -> Tuple[bool, str]:
-    """Should the weekly rebalance run today? Returns (verdict, human-readable reason).
+def _week_trading_days(today: date) -> List[date]:
+    monday = today - timedelta(days=today.weekday())
+    return [d for d in (monday + timedelta(days=i) for i in range(5)) if is_trading_day(d)]
 
-    True exactly when `today` is the FIRST trading day on or after this week's anchor.
 
-    - anchor is a trading day        -> runs on the anchor, as before
-    - anchor is a holiday            -> runs on the next trading day THAT WEEK
-    - a later day in the same week   -> False (the anchor week already had its turn)
-    - no trading day left that week  -> False (see the Friday note below)
+def week_turn(today: date, target_weekday: int) -> Optional[date]:
+    """The single day this week's rebalance belongs on, or None if the week has none.
 
-    A Friday-anchored week whose Friday is a holiday is SKIPPED rather than rolled into
-    Monday, because Monday already carries its own week's anchor and rolling would give
-    that week two rebalances. With the live config (`pm.trend_rebalance_weekday=0`) the
-    roll always stays inside the week, so this is a correctness guard, not a live path.
+    Preference order, all inside the anchor's own week:
+      1. the anchor itself, when it trades
+      2. the next trading day AFTER it   (Monday holiday -> Tuesday)
+      3. the last trading day BEFORE it  (Friday holiday -> Thursday)
 
-    This decides WHICH DAY. It does not decide whether the market is open — the callers
-    keep their Alpaca-clock check as the final fail-closed authority, because this
-    calendar is a static holiday list and cannot know about an unscheduled closure.
+    Rule 3 exists because rolling a Friday anchor FORWARD would land on the next Monday,
+    which already carries its own week's anchor and would give that week two turns.
+    Rolling backwards has no such collision, so skipping the week outright — which an
+    earlier cut did — was strictly worse than the available alternative. `weekday` is
+    live-tunable from the DB with no redeploy, so this is reachable without a code change.
     """
     anchor = week_anchor(today, target_weekday)
+    trading = _week_trading_days(today)
+    if not trading:
+        return None
+    after = [d for d in trading if d >= anchor]
+    if after:
+        return after[0]
+    return trading[-1]
 
-    if today < anchor:
-        return False, f"before this week's anchor ({anchor})"
+
+def is_rebalance_day(
+    today: date,
+    target_weekday: int,
+    last_rebalance: Optional[date] = None,
+) -> Tuple[bool, str]:
+    """Should the weekly rebalance run today? Returns (verdict, human-readable reason).
+
+    `last_rebalance` is the date we last ACTUALLY rebalanced (see
+    `back_validation.last_rebalance_date`). Pass it whenever it is available: it is what
+    lets a declined anchor be retried later in the same week. When it is None the rule
+    degrades to the conservative calendar-only behaviour — a missed anchor consumes the
+    week — which is the safe direction for a failed lookup.
+
+    This decides WHICH DAY. It never decides whether the market is open: the callers keep
+    their Alpaca-clock check as the final fail-closed authority, because a static holiday
+    list cannot know about an unscheduled closure.
+    """
+    turn = week_turn(today, target_weekday)
+    if turn is None:
+        return False, f"no trading day in the week of {today}"
+    if today < turn:
+        return False, f"before this week's turn ({turn})"
     if not is_trading_day(today):
         return False, f"{today} is not a trading day"
 
-    # Any trading day between the anchor and today means the turn has already come and
-    # gone this week — this is the once-per-week guarantee.
-    probe = anchor
-    while probe < today:
-        if is_trading_day(probe):
-            return False, (f"this week's turn was {probe} (anchor {anchor}); "
-                           f"not rebalancing again")
-        probe += timedelta(days=1)
+    monday = today - timedelta(days=today.weekday())
 
-    if today == anchor:
-        return True, f"anchor day ({anchor})"
-    return True, (f"anchor {anchor} was a holiday — first trading day after it "
-                  f"({today})")
+    if last_rebalance is not None:
+        if last_rebalance >= monday:
+            return False, (f"already rebalanced this week on {last_rebalance}")
+        if today == turn:
+            return True, f"this week's turn ({turn}); last was {last_rebalance}"
+        return True, (f"this week's turn was {turn} and no rebalance was recorded "
+                      f"(last {last_rebalance}) — retrying on {today}")
+
+    # No record available: fall back to the calendar. Conservative by design — it cannot
+    # tell a declined anchor from a taken one, so it treats the turn as spent.
+    if today != turn:
+        return False, (f"this week's turn was {turn}; no rebalance record available to "
+                       f"justify a retry")
+    return True, f"this week's turn ({turn}); no rebalance record available"
