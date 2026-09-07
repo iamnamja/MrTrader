@@ -236,38 +236,6 @@ def record_daily_snapshot(db=None, *, asof: _date | str | None = None) -> bool:
         return False
 
 
-def last_rebalance_date() -> "_date | None":
-    """The date of the most recent GENUINE LIVE rebalance, or None.
-
-    `record_rebalance_intent` writes a row only when the sleeve actually traded live
-    (status ok, mode live, non-empty intended book), so `MAX(trade_date)` over rows that
-    carry an intended book is the honest answer to "when did we last rebalance?".
-
-    Used by the weekly scheduler to decide whether this week's turn has been taken. The
-    calendar alone cannot answer that: it knows the anchor was a trading day, but not
-    whether the rebalance was DECLINED that day (a transient Alpaca clock error, or an
-    unscheduled closure absent from the static holiday list — NYSE 2025-01-09, 2018-12-05,
-    Sandy 2012). Inferring "we must have traded" from "the calendar says it was open" is
-    what reintroduces the very 14-day gap the fallthrough exists to remove.
-
-    Never raises — returns None on any failure, and the caller falls back to the
-    conservative calendar-only rule.
-    """
-    try:
-        with _conn() as c:
-            row = c.execute(
-                "SELECT MAX(trade_date) FROM trend_backval_daily "
-                "WHERE intended_weights IS NOT NULL"
-            ).fetchone()
-        if not row or not row[0]:
-            return None
-        return _date.fromisoformat(str(row[0])[:10])
-    except Exception as exc:      # noqa: BLE001 - scheduling must never break on this
-        log.warning("last_rebalance_date unavailable (%s) — scheduler will fall back "
-                    "to the calendar-only rule", exc)
-        return None
-
-
 def record_rebalance_intent(summary: dict, *, asof: _date | str | None = None) -> bool:
     """Persist the sleeve's INTENDED book + diagnostics from a run_trend_rebalance summary.
     Upserts onto the rebalance day's row (COALESCE-merges with the daily snapshot). Never

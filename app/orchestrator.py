@@ -331,12 +331,11 @@ class AgentOrchestrator:
         # would email ATTENTION about a rebalance that correctly did not happen.
         from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        try:
-            from app.live_trading.back_validation import last_rebalance_date
-            _last = last_rebalance_date()
-        except Exception:
-            _last = None
-        due, _why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
+        from app.live_trading.rebalance_schedule import (
+            JOB_ENFORCE_VERIFY, mark_turn_taken, turn_taken_this_week)
+        due, _why = is_rebalance_day(
+            today, target_weekday,
+            turn_taken=turn_taken_this_week(JOB_ENFORCE_VERIFY, today))
         if not due:
             return
         try:
@@ -347,6 +346,7 @@ class AgentOrchestrator:
             return
         if not clock or not clock.get("is_open"):
             return
+        mark_turn_taken(JOB_ENFORCE_VERIFY, today)
         try:
             from scripts.verify_enforce_rebalance import run_and_report
             loop = asyncio.get_event_loop()
@@ -393,12 +393,13 @@ class AgentOrchestrator:
         # says we could have — otherwise a declined anchor (transient clock error, or an
         # unscheduled closure absent from the static holiday list) silently re-creates
         # the 14-day gap this fallthrough exists to remove.
-        try:
-            from app.live_trading.back_validation import last_rebalance_date
-            _last = last_rebalance_date()
-        except Exception:
-            _last = None
-        due, why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
+        # PER-JOB state. These three weekly jobs share an anchor but are independent
+        # turns; keying them off one shared record (an earlier cut used the trend
+        # sleeve's trade rows) makes the later jobs read "already done" and skip forever.
+        from app.live_trading.rebalance_schedule import (
+            JOB_TREND, mark_turn_taken, turn_taken_this_week)
+        due, why = is_rebalance_day(
+            today, target_weekday, turn_taken=turn_taken_this_week(JOB_TREND, today))
         if not due:
             logger.debug("trend rebalance: %s — skip", why)
             return
@@ -415,6 +416,10 @@ class AgentOrchestrator:
             logger.info("trend rebalance: market not open today — skip (holiday/closed)")
             return
 
+        # Claim the week BEFORE trading: at-most-once. A crash part-way through loses this
+        # week rather than risking a second pass over partially-placed orders. A run that
+        # never reached here (market shut, clock error) has NOT claimed it and retries.
+        mark_turn_taken(JOB_TREND, today)
         logger.info("Orchestrator: triggering weekly trend rebalance")
         try:
             from app.live_trading import trend_sleeve, trend_tracker
@@ -484,12 +489,13 @@ class AgentOrchestrator:
         # says we could have — otherwise a declined anchor (transient clock error, or an
         # unscheduled closure absent from the static holiday list) silently re-creates
         # the 14-day gap this fallthrough exists to remove.
-        try:
-            from app.live_trading.back_validation import last_rebalance_date
-            _last = last_rebalance_date()
-        except Exception:
-            _last = None
-        due, why = is_rebalance_day(today, target_weekday, last_rebalance=_last)
+        # PER-JOB state. These three weekly jobs share an anchor but are independent
+        # turns; keying them off one shared record (an earlier cut used the trend
+        # sleeve's trade rows) makes the later jobs read "already done" and skip forever.
+        from app.live_trading.rebalance_schedule import (
+            JOB_CASH, mark_turn_taken, turn_taken_this_week)
+        due, why = is_rebalance_day(
+            today, target_weekday, turn_taken=turn_taken_this_week(JOB_CASH, today))
         if not due:
             logger.debug("cash rebalance: %s — skip", why)
             return
@@ -505,6 +511,7 @@ class AgentOrchestrator:
             logger.info("cash rebalance: market not open today — skip (holiday/closed)")
             return
 
+        mark_turn_taken(JOB_CASH, today)      # claim before trading — see the trend job
         logger.info("Orchestrator: triggering weekly cash rebalance")
         try:
             from app.live_trading import cash_sleeve, cash_tracker
