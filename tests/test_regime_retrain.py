@@ -18,6 +18,20 @@ from app.ml.regime_training import regime_gate
 from app.ml import retrain_config as rc
 
 
+@pytest.fixture(autouse=True)
+def _no_network_backfill():
+    """`_retrain_regime` extends the regime snapshots before training — a 15-ticker
+    NETWORK fetch. Unmocked it blows the 120s pytest timeout, and a timeout that fires
+    inside a `with patch(...)` unwinds without restoring the patch, leaving
+    RegimeModelTrainer a MagicMock that poisons every later test in the worker. That is
+    what turned two slow tests into six CI failures across two shards.
+    """
+    with patch("app.ml.regime_backfill.extend_backfill",
+               return_value={"ok": 0, "skipped": 0, "errors": 0, "unusable": 0,
+                             "days": 0, "start": None}) as m:
+        yield m
+
+
 # `rolling_log_loss` is REQUIRED as of 2026-09-06: the fixed folds re-score frozen
 # windows and so always return the same numbers, which is how v35..v42 all passed while
 # the training data sat frozen for four months. The rolling term is the only one that can

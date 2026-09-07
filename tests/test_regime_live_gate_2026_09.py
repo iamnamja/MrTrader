@@ -440,15 +440,56 @@ class TestRegistryAndPickleAgree:
     value into the registry than the pickle carries — contaminating the very series the
     fixed folds exist to preserve."""
 
-    def test_write_model_version_takes_f1_min_rather_than_recomputing(self):
-        import inspect
-        from app.ml.regime_training import RegimeModelTrainer
+    def test_registry_row_gets_the_fixed_fold_min_not_an_all_fold_min(self, monkeypatch):
+        """Behavioural, not signature-inspection: asserting on inspect.signature broke the
+        moment another test leaked a MagicMock onto the class."""
+        import app.ml.regime_training as rt
 
-        sig = inspect.signature(RegimeModelTrainer._write_model_version)
-        assert "f1_min" in sig.parameters
-        src = inspect.getsource(RegimeModelTrainer._write_model_version)
-        assert "wf_auc_min=f1_min" in src
-        assert "for r in fold_results" not in src.split("wf_auc_min")[1][:200]
+        captured = {}
+
+        class _Row:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+        class _S:
+            def query(self, *a, **k):
+                class _Q:
+                    def filter_by(self, **kk):
+                        return self
+
+                    def first(self):
+                        return None
+                return _Q()
+
+            def add(self, row):
+                pass
+
+            def commit(self):
+                pass
+
+            def flush(self):
+                pass
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _sess():
+            yield _S()
+
+        monkeypatch.setattr("app.database.session.get_session", _sess)
+        monkeypatch.setattr("app.database.session.init_db", lambda *a, **k: None)
+        monkeypatch.setattr("app.database.models.RegimeModelVersion", _Row)
+
+        folds = [
+            {"fold": 1, "macro_f1": 0.9062, "log_loss": 0.10, "rolling": False},
+            {"fold": 4, "macro_f1": 0.30, "log_loss": 0.01, "rolling": True},
+        ]
+        rt.RegimeModelTrainer()._write_model_version(
+            99, date(2018, 1, 1), date(2026, 9, 4), folds, 0.0569, 0.9563, 0.9062,
+            "/tmp/x.pkl")
+
+        # the class-poor ROLLING 0.30 must NOT become the registry's min
+        assert captured["wf_auc_min"] == pytest.approx(0.9062)
 
 
 class TestEmptyDatasetIsDiagnosed:

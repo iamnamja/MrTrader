@@ -4566,7 +4566,10 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
         import asyncio
         import time
         import pickle
-        from app.ml.retrain_config import REGIME_RETRAIN_INTERVAL_DAYS
+        from app.ml.retrain_config import (
+            REGIME_BACKFILL_TIMEOUT_S,
+            REGIME_RETRAIN_INTERVAL_DAYS,
+        )
         from app.ml.regime_training import MODEL_DIR, regime_gate
 
         # NUMERIC latest: a lexical sort returned v9 once v10 existed, so this guard aged
@@ -4616,7 +4619,7 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
             from datetime import date as _date, timedelta as _td
             from app.ml.regime_backfill import extend_backfill
             loop = asyncio.get_event_loop()
-            counts = await loop.run_in_executor(
+            counts = await asyncio.wait_for(loop.run_in_executor(
                 None,
                 # start=None RESUMES FROM THE LAST EXISTING ROW. A fixed lookback cannot
                 # close a gap longer than itself: it writes the recent tail, leaves the
@@ -4628,8 +4631,18 @@ class PortfolioManager(RebalanceMixin, BaseAgent):
                 # dropna, permanently) heals instead of being lost.
                 _ft.partial(extend_backfill, None, _date.today() - _td(days=1),
                             rewrite_recent_days=14),
-            )
+            ), timeout=REGIME_BACKFILL_TIMEOUT_S)
             self.logger.info("Regime snapshots extended before retrain: %s", counts)
+        except asyncio.TimeoutError:
+            # BOUNDED ON PURPOSE. This is a network fetch (15 tickers) inside the weekly
+            # retrain; an unbounded one lets a hung or rate-limited feed stall the retrain
+            # indefinitely with no symptom. Whatever it managed to write is committed in
+            # batches, and the staleness gate refuses to promote if the data is still old.
+            self.logger.error(
+                "Regime snapshot extension exceeded %ss — abandoning it and continuing; "
+                "the staleness gate will refuse to promote if the data is too old",
+                REGIME_BACKFILL_TIMEOUT_S,
+            )
         except Exception as exc:
             self.logger.warning(
                 "Could not extend regime snapshots before retrain (%s) — continuing; the "
