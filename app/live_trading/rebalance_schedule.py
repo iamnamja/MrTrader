@@ -121,16 +121,51 @@ def turn_taken_this_week(job: str, today: date) -> Optional[bool]:
         return None
 
 
+class TurnStoreUnavailable(RuntimeError):
+    """The weekly_turn store could not be read.
+
+    Distinct from "never claimed" ON PURPOSE. Collapsing both into None made an unreadable
+    store indistinguishable from a job that has not run yet, and the two demand opposite
+    responses: a follower must stand down when it cannot tell whether the leader ran, but
+    must run when it can tell the leader has.
+    """
+
+
 def turn_taken_on(job: str) -> Optional[date]:
-    """The date `job` last claimed a turn, or None (unknown or never)."""
+    """The date `job` last claimed a turn, or None if it never has.
+
+    Raises TurnStoreUnavailable if the store cannot be read — callers must decide, rather
+    than silently receiving a value that reads as "never".
+    """
     try:
         with _conn() as c:
             row = c.execute("SELECT taken_on FROM weekly_turn WHERE job = ?",
                             (job,)).fetchone()
-        return date.fromisoformat(str(row[0])[:10]) if row and row[0] else None
     except Exception as exc:      # noqa: BLE001
-        log.warning("weekly_turn read failed for %s (%s)", job, exc)
-        return None
+        raise TurnStoreUnavailable(str(exc)) from exc
+    return date.fromisoformat(str(row[0])[:10]) if row and row[0] else None
+
+
+def leader_ran_this_week(leader: str, today: date) -> bool:
+    """Has `leader` claimed a turn in `today`'s week, on or before today?
+
+    The follower gate. Deliberately WEEK-scoped, not day-scoped: an earlier cut required
+    `turn_taken_on(leader) == today`, which made the follower's own retry path unreachable
+    — if the verify's 11:07 clock call threw on the day trend rebalanced fine, that week's
+    verify (with its un-backfillable CH0b capture) was simply lost, because Tue-Fri could
+    never satisfy `== today` again. Week scope keeps the ordering guarantee (`<= today`)
+    while restoring the retry.
+
+    It also decouples the two live-tunable weekday keys: `pm.cash_rebalance_weekday` need
+    not equal `pm.trend_rebalance_weekday`. Under the day-scoped rule, cash=1 with trend=0
+    left the cash sleeve permanently and silently dead.
+
+    Raises TurnStoreUnavailable rather than guessing.
+    """
+    day = turn_taken_on(leader)
+    if day is None:
+        return False
+    return week_start(today) <= day <= today
 
 
 def claim_turn(job: str, today: date) -> bool:

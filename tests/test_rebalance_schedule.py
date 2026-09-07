@@ -18,8 +18,8 @@ import pytest
 from app.live_trading.exchange_calendar import holidays, is_trading_day
 from app.live_trading.rebalance_schedule import (
     JOB_CASH, JOB_ENFORCE_VERIFY, JOB_TREND,
-    claim_turn, is_rebalance_day, turn_taken_on, turn_taken_this_week,
-    week_anchor, week_turn,
+    TurnStoreUnavailable, claim_turn, is_rebalance_day, leader_ran_this_week,
+    turn_taken_on, turn_taken_this_week, week_anchor, week_start, week_turn,
 )
 
 
@@ -351,19 +351,20 @@ class TestFollowersGateOnTrendsTurn:
     sweep on a day trend did not rebalance."""
 
     @pytest.mark.parametrize("fn", ["_trigger_cash_rebalance", "_verify_enforce_rebalance"])
-    def test_follower_checks_trend_took_its_turn_today(self, fn):
+    def test_follower_checks_trend_ran_this_week(self, fn):
         import inspect
         from app.orchestrator import AgentOrchestrator
 
         src = inspect.getsource(getattr(AgentOrchestrator, fn))
-        assert "turn_taken_on(JOB_TREND) != today" in src
+        assert "leader_ran_this_week(JOB_TREND, today)" in src
+        assert "TurnStoreUnavailable" in src
 
     def test_trend_itself_does_not_wait_on_anything(self):
         import inspect
         from app.orchestrator import AgentOrchestrator
 
         src = inspect.getsource(AgentOrchestrator._trigger_trend_rebalance)
-        assert "turn_taken_on(JOB_TREND)" not in src
+        assert "leader_ran_this_week" not in src
 
     def test_turn_taken_on_reports_the_claimed_day(self):
         assert turn_taken_on(JOB_TREND) is None
@@ -387,3 +388,75 @@ class TestUnclaimableTurnStopsTheJob:
         after = src[idx:idx + 400]
         assert "if not claim_turn(JOB" in src[max(0, idx - 20):idx + 40]
         assert "return" in after
+
+
+class TestFollowerGateIsWeekScoped:
+    """Day-scoped (`turn_taken_on(leader) == today`) broke two things at once."""
+
+    def test_a_follower_can_still_retry_later_in_the_week(self):
+        """If the verify's own 11:07 clock call throws on the day trend rebalanced fine,
+        a day-scoped gate lost that week's verify — and its un-backfillable CH0b capture —
+        because Tue-Fri could never satisfy `== today` again."""
+        claim_turn(JOB_TREND, date(2026, 9, 14))
+        for later in (date(2026, 9, 15), date(2026, 9, 16), date(2026, 9, 18)):
+            assert leader_ran_this_week(JOB_TREND, later) is True
+
+    def test_a_follower_on_a_different_weekday_still_runs(self):
+        """pm.cash_rebalance_weekday and pm.trend_rebalance_weekday are independent,
+        live-tunable keys. Day-scoped, cash=1 with trend=0 was permanently dead."""
+        claim_turn(JOB_TREND, date(2026, 9, 14))            # trend on Monday
+        tuesday = date(2026, 9, 15)
+        assert leader_ran_this_week(JOB_TREND, tuesday) is True
+        due, _ = is_rebalance_day(
+            tuesday, 1, turn_taken=turn_taken_this_week(JOB_CASH, tuesday))
+        assert due                                           # cash anchored on Tuesday
+
+    def test_a_follower_does_not_run_before_the_leader(self):
+        """Ordering still holds: the gate is <= today, not merely same-week."""
+        claim_turn(JOB_TREND, date(2026, 9, 16))             # trend ran Wednesday
+        assert leader_ran_this_week(JOB_TREND, date(2026, 9, 15)) is False
+
+    def test_last_weeks_leader_turn_does_not_count(self):
+        claim_turn(JOB_TREND, date(2026, 9, 11))
+        assert leader_ran_this_week(JOB_TREND, date(2026, 9, 14)) is False
+
+    def test_never_claimed_is_false_not_an_error(self):
+        assert leader_ran_this_week(JOB_TREND, date(2026, 9, 14)) is False
+
+
+class TestUnknownIsNotNever:
+    """An unreadable store and a never-claimed job both used to read as None, and they
+    demand opposite responses."""
+
+    def test_read_failure_raises_rather_than_looking_like_never(self, monkeypatch):
+        import app.live_trading.rebalance_schedule as rs
+
+        def _boom():
+            raise RuntimeError("store gone")
+        monkeypatch.setattr(rs, "_conn", _boom)
+        with pytest.raises(TurnStoreUnavailable):
+            rs.turn_taken_on(JOB_TREND)
+        with pytest.raises(TurnStoreUnavailable):
+            rs.leader_ran_this_week(JOB_TREND, date(2026, 9, 14))
+
+    def test_never_claimed_returns_none_without_raising(self):
+        assert turn_taken_on(JOB_TREND) is None
+
+    def test_followers_fail_closed_on_an_unreadable_store(self):
+        """Not parking idle cash for one week is small and self-correcting; sweeping
+        without knowing the book settled is not."""
+        import inspect
+        from app.orchestrator import AgentOrchestrator
+
+        for fn in ("_trigger_cash_rebalance", "_verify_enforce_rebalance"):
+            src = inspect.getsource(getattr(AgentOrchestrator, fn))
+            idx = src.index("except TurnStoreUnavailable")
+            assert "return" in src[idx:idx + 300]
+
+
+class TestWeekStartHelper:
+    def test_week_start_is_monday(self):
+        for offset in range(7):
+            d = date(2026, 9, 14) + timedelta(days=offset)
+            assert week_start(d).weekday() == 0
+            assert week_start(d) <= d

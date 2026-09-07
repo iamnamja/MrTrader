@@ -388,9 +388,17 @@ env var is never set outside pytest, and the live server keeps writing
 The trend sleeve (`app/live_trading/trend_sleeve.py`) rebalances the 10-ETF basket
 (SPY,QQQ,IWM,EFA,EEM,TLT,IEF,GLD,DBC,UUP) **weekly, on Monday 09:45 ET** to inverse-vol
 long-flat TSMOM target weights. The orchestrator registers the job **daily** (cron Mon–Fri
-09:45) with an in-handler `weekday == pm.trend_rebalance_weekday` (default 0 = Monday) guard,
-so the rebalance day is live-tunable (`agent_config`) without redeploy, and a market-open
-clock guard fails closed on holidays. `misfire_grace_time=1800` (vs the 60s default for daily
+09:45); the in-handler guard is `rebalance_schedule.is_rebalance_day()` — the first TRADING
+day on or after `pm.trend_rebalance_weekday` (default 0 = Monday) *within that week*, so the
+rebalance day stays live-tunable (`agent_config`) without redeploy. **A holiday on the
+weekday DELAYS the rebalance to the next trading day; it does not cancel the week** (changed
+2026-09-07: the old `weekday ==` guard skipped the week outright, which put 14 days between
+the 2026-08-31 and 09-14 rebalances and diverged from the CH0a baseline's continuous
+5-trading-day grid, 4-5x a year). The week's turn is claimed atomically, once, per job, only
+after the market-open clock guard passes — which still fails closed on holidays and
+unscheduled closures. The cash sleeve (09:50) and the enforce-verify (11:07) follow the same
+rule and additionally require that the trend rebalance has already run that week. See
+`app/live_trading/rebalance_schedule.py` and DECISIONS 2026-09-07. `misfire_grace_time=1800` (vs the 60s default for daily
 jobs): a *weekly* job dropped by a >60s-late fire would skip the ENTIRE week, so it tolerates
 a 30-min-late fire (TSMOM is slow → benign). Orders are placed directly via Alpaca, tagged
 `selector/trade_type="trend"`, committed **per order** (a restart mid-loop must not orphan a

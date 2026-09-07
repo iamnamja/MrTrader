@@ -332,8 +332,8 @@ class AgentOrchestrator:
         from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
         from app.live_trading.rebalance_schedule import (
-            JOB_ENFORCE_VERIFY, JOB_TREND, claim_turn, turn_taken_on,
-            turn_taken_this_week)
+            JOB_ENFORCE_VERIFY, JOB_TREND, TurnStoreUnavailable, claim_turn,
+            leader_ran_this_week, turn_taken_this_week)
         due, _why = is_rebalance_day(
             today, target_weekday,
             turn_taken=turn_taken_this_week(JOB_ENFORCE_VERIFY, today))
@@ -341,9 +341,14 @@ class AgentOrchestrator:
             return
         # FOLLOW TREND: verifying a rebalance that has not happened emails a false
         # ATTENTION and, worse, consumes this week's verify — so the REAL rebalance
-        # tomorrow goes unverified, including the un-backfillable CH0b capture.
-        if turn_taken_on(JOB_TREND) != today:
-            logger.info("enforce-verify: trend has not taken its turn today — skip")
+        # tomorrow would go unverified, including the un-backfillable CH0b capture.
+        # Week-scoped so this job keeps its own retry if ITS clock call fails.
+        try:
+            if not leader_ran_this_week(JOB_TREND, today):
+                logger.info("enforce-verify: trend has not rebalanced yet this week — skip")
+                return
+        except TurnStoreUnavailable as exc:
+            logger.error("enforce-verify: cannot tell whether trend ran (%s) — skip", exc)
             return
         try:
             from app.integrations import get_alpaca_client
@@ -505,17 +510,25 @@ class AgentOrchestrator:
         # turns; keying them off one shared record (an earlier cut used the trend
         # sleeve's trade rows) makes the later jobs read "already done" and skip forever.
         from app.live_trading.rebalance_schedule import (
-            JOB_CASH, JOB_TREND, claim_turn, turn_taken_on, turn_taken_this_week)
+            JOB_CASH, JOB_TREND, TurnStoreUnavailable, claim_turn,
+            leader_ran_this_week, turn_taken_this_week)
         due, why = is_rebalance_day(
             today, target_weekday, turn_taken=turn_taken_this_week(JOB_CASH, today))
         if not due:
             logger.debug("cash rebalance: %s — skip", why)
             return
-        # FOLLOW TREND. This sleeve parks what the trend rebalance left idle, so running on
-        # a day trend did not rebalance would sweep into T-bills against a book that is
-        # about to change — and the remainder would sit unparked until next week.
-        if turn_taken_on(JOB_TREND) != today:
-            logger.info("cash rebalance: trend has not taken its turn today — skip")
+        # FOLLOW TREND. This sleeve parks what the trend rebalance left idle, so running
+        # before trend has rebalanced would sweep into T-bills against a book that is about
+        # to change. WEEK-scoped, not day-scoped: cash's weekday key is independent of
+        # trend's, and a day-scoped check made cash=1/trend=0 permanently dead.
+        # Fail-closed on an unreadable store: not parking idle cash for one week is a
+        # small, self-correcting harm; sweeping without knowing the book settled is not.
+        try:
+            if not leader_ran_this_week(JOB_TREND, today):
+                logger.info("cash rebalance: trend has not rebalanced yet this week — skip")
+                return
+        except TurnStoreUnavailable as exc:
+            logger.error("cash rebalance: cannot tell whether trend ran (%s) — skip", exc)
             return
         logger.info("cash rebalance: due today — %s", why)
 
