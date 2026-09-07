@@ -6,6 +6,14 @@
 
 **Last updated:** 2026-06-12 (**ALPHA-v7 Phase B / Ruler v2 — Phase 1 (PR #471) + Phase 2 (PR #472) LANDED, both DARK. Phase 2 = `bayes_sr.py` (Bayesian posterior P(SR>0), replaces saturated DSR) + `ruler_v2.py` (two-tier gate) + `CPCVResult.oos_returns_dated` + `GATE_MODE="ruler_v2"` dispatch; legacy gates byte-for-byte untouched (89 tests). Opus deep-dive caught a CRITICAL: CAPITAL was "unreachable on backtest alone" only by threshold luck → made live-paper a STRUCTURAL gating criterion (posterior = P(SR>0 | backtest AND live paper)). No live behavior change (flag not flipped; owner OD-1…OD-9 sign-off pending). Earlier today: H1 RUN → PEAD DEMOTED at event level (p=0.78). ✅ PEAD FLIPPED OFF LIVE + uvicorn restarted → live book = trend-only (25%) + cash. P0+P1c+P2+P3-H1 shipped (#454/#455/#456) + P4a options feature table + H4a–H4e pre-registered. P4 H4a–H4e → ALL 5 KILL; H2 NOT_CONFIRMED (OPT-5 parked); H3 BLOCKED (revision data). All Alpha-v6 hypotheses adjudicated (P5 PARK). NEW DIRECTION: ALPHA-v7 — operate a premia book (`docs/reference/ALPHA_V7_SYNTHESIS_AND_PLAN.md`; Phase B design = `docs/reference/RULER_V2_DESIGN.md`). Live book unchanged.**)
 
+## 📅 REBALANCE NO LONGER SKIPS A HOLIDAY WEEK (2026-09-07)
+
+A holiday on the rebalance weekday used to **cancel** the week, not delay it — Labor Day put **14 days** between the 08-31 and 09-14 trend rebalances. The frozen CH0a baseline (`mean_sharpe 0.7009`) rebalances on a 5-**trading**-day grid that never skips a holiday week, so the live book was running an untested cadence 4-5x/year. Measured: 2026 had 48 live turns with four 14-day gaps (2027: 47/five); corrected = **52 turns, max gap 8 days** both years.
+
+Now: **first trading day on or after the configured weekday, within that week** (`app/live_trading/rebalance_schedule.py`), shared by all three weekly jobs (trend 09:45, cash 09:50, enforce-verify 11:07). Stateless; the once-per-week guarantee comes from the calendar. Alpaca-clock fail-closed check unchanged. Does NOT catch up rebalances missed to an app outage — deliberately out of scope.
+
+**⚠️ Takes effect only after an orchestrator restart** (scheduler code). Next turn is Mon 2026-09-14 either way; the first behaviour change lands on the next Monday holiday.
+
 ## ✅ REGIME SUBSYSTEM REPAIRED (2026-09-06) — the gate could not fail, and the data under it had been frozen since May
 
 Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**). Underneath were **four stacked defects, each hiding the next**:

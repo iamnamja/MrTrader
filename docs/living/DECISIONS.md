@@ -4,6 +4,42 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-07 — A holiday on the rebalance weekday cancelled the week instead of delaying it. The live book was running a cadence the backtest never tested, 4-5x a year.
+
+**Context.** The weekly jobs were pinned to a CALENDAR weekday and fail-closed on a market holiday, with no fallthrough:
+
+```python
+if today.weekday() != target_weekday:
+    return          # and nothing ever catches it up
+```
+
+Labor Day (Mon 2026-09-07) therefore put **14 calendar days** between the 08-31 and 09-14 trend rebalances. Not a one-off: MLK, Washington's Birthday, Memorial Day, Juneteenth, Independence Day and Labor Day can all land on a Monday.
+
+**Why this is a fidelity problem, not a preference.** The frozen CH0a baseline that produced the trend book's CPCV `mean_sharpe 0.7009` rebalances on a **trading-day grid**:
+
+```python
+# app/strategy/tsmom.py
+is_rebal = (np.arange(n) % cfg.rebalance_days == 0)     # rebalance_days = 5
+```
+
+`n` indexes the daily close panel, which contains trading days only. A holiday week simply has four trading days and the 5-trading-day cadence **never breaks**. The live book skipping a week ran ~9 trading days between rebalances — a cadence the validated edge was never tested at. Measured over the calendar: **2026 had 48 live turns with four 14-day gaps (2027: 47 turns, five gaps); the corrected rule gives 52 turns with a maximum gap of 8 days in both years.** The old behaviour silently discarded ~9% of the year's rebalances.
+
+**Decision: run on the first TRADING day on or after the configured weekday, within that weekday's own week.** `app/live_trading/rebalance_schedule.is_rebalance_day()`, shared by all three weekly jobs.
+
+**Stateless on purpose.** The rule is decidable from the calendar alone, so there is no "did we already rebalance this week?" flag to persist, drift, or contradict the DB — and the once-per-week guarantee falls out for free. That guarantee is the trap in this change: a naive "next trading day" rule passes the market-open check on the Wednesday, Thursday and Friday after a Monday holiday too, and would rebalance **four times**. The implementation refuses once any trading day on-or-after the anchor has passed.
+
+**All three jobs move together.** `pm.trend_rebalance_weekday` (09:45), `pm.cash_rebalance_weekday` (09:50) and the 11:07 enforce-verify shared the old gate. Cash MUST track trend because it parks whatever trend left idle; and had the verify stayed pinned while the rebalance rolled, the first Monday holiday after shipping would have emailed ATTENTION about a rebalance that correctly did not happen.
+
+**A Friday anchor does not roll into Monday.** Monday already carries its own week's anchor, so rolling would give that week two rebalances. Such a week is skipped instead. Not the live config (`weekday=0`), but the guard is tested.
+
+**Explicitly NOT in scope: catching up a rebalance missed because the APP was down** (the 2026-09-05 reboot, say). That would trade on an intent formed under unknown conditions, possibly days stale, and is a different risk decision. A missed trading day still reads as missed.
+
+**The market-open check stays.** This helper decides WHICH DAY; the Alpaca clock remains the fail-closed authority at each call site, because a static holiday list cannot know about an unscheduled closure. Tested.
+
+**Scope note.** Hardening / live-vs-backtest fidelity — allowed under the CH moratorium. No strategy, threshold, universe or allocation changed; only which day the existing rebalance fires.
+
+---
+
 ## 2026-09-06 — The regime gate could not fail. Under it: a training set frozen for four months, a timestamp reporting an intention as a fact, and a VIX3M feed silently pinned to a 7-week-old close.
 
 **Context.** Syncing a stale version number in MODEL_STATUS (recorded regime v40; the live scorer loads v42) turned into four stacked defects in the subsystem that carries the live book's position sizing. Each one hid the next.

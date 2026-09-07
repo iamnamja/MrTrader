@@ -326,8 +326,13 @@ class AgentOrchestrator:
                 db.close()
         except Exception:
             target_weekday = 0
+        # Must use the SAME rule as the rebalance it verifies. If the rebalance rolls to
+        # Tuesday and this stayed on Monday, the first Monday holiday after shipping
+        # would email ATTENTION about a rebalance that correctly did not happen.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
+        due, _why = is_rebalance_day(today, target_weekday)
+        if not due:
             return
         try:
             from app.integrations import get_alpaca_client
@@ -372,11 +377,18 @@ class AgentOrchestrator:
         except Exception:
             target_weekday = 0  # Monday default
 
+        # First TRADING day on or after this week's configured weekday — so a holiday
+        # delays the rebalance by a day instead of cancelling it for the week. The
+        # frozen CH0a baseline rebalances on a 5-TRADING-day grid that never skips a
+        # holiday week, so skipping was a live-vs-backtest divergence several times a
+        # year. See app/live_trading/rebalance_schedule.py.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
-            logger.debug("trend rebalance: not the configured weekday (%d != %d) — skip",
-                         today.weekday(), target_weekday)
+        due, why = is_rebalance_day(today, target_weekday)
+        if not due:
+            logger.debug("trend rebalance: %s — skip", why)
             return
+        logger.info("trend rebalance: due today — %s", why)
 
         # Market-open guard (fail-closed: unknown/closed -> do not trade; covers holidays)
         try:
@@ -449,11 +461,16 @@ class AgentOrchestrator:
         except Exception:
             target_weekday = 0  # Monday default
 
+        # Same holiday fallthrough as the trend rebalance. Cash MUST track it: this sleeve
+        # parks whatever the trend rebalance left idle, so a week where trend runs on the
+        # Tuesday and cash stayed pinned to Monday would leave the remainder unparked.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
-            logger.debug("cash rebalance: not the configured weekday (%d != %d) — skip",
-                         today.weekday(), target_weekday)
+        due, why = is_rebalance_day(today, target_weekday)
+        if not due:
+            logger.debug("cash rebalance: %s — skip", why)
             return
+        logger.info("cash rebalance: due today — %s", why)
 
         try:
             from app.integrations import get_alpaca_client
