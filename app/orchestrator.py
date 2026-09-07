@@ -326,8 +326,29 @@ class AgentOrchestrator:
                 db.close()
         except Exception:
             target_weekday = 0
+        # Must use the SAME rule as the rebalance it verifies. If the rebalance rolls to
+        # Tuesday and this stayed on Monday, the first Monday holiday after shipping
+        # would email ATTENTION about a rebalance that correctly did not happen.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
+        from app.live_trading.rebalance_schedule import (
+            JOB_ENFORCE_VERIFY, JOB_TREND, TurnStoreUnavailable, claim_turn,
+            leader_ran_this_week, turn_taken_this_week)
+        due, _why = is_rebalance_day(
+            today, target_weekday,
+            turn_taken=turn_taken_this_week(JOB_ENFORCE_VERIFY, today))
+        if not due:
+            return
+        # FOLLOW TREND: verifying a rebalance that has not happened emails a false
+        # ATTENTION and, worse, consumes this week's verify — so the REAL rebalance
+        # tomorrow would go unverified, including the un-backfillable CH0b capture.
+        # Week-scoped so this job keeps its own retry if ITS clock call fails.
+        try:
+            if not leader_ran_this_week(JOB_TREND, today):
+                logger.info("enforce-verify: trend has not rebalanced yet this week — skip")
+                return
+        except TurnStoreUnavailable as exc:
+            logger.error("enforce-verify: cannot tell whether trend ran (%s) — skip", exc)
             return
         try:
             from app.integrations import get_alpaca_client
@@ -336,6 +357,8 @@ class AgentOrchestrator:
             logger.debug("enforce-verify: clock check failed — skip: %s", exc)
             return
         if not clock or not clock.get("is_open"):
+            return
+        if not claim_turn(JOB_ENFORCE_VERIFY, today):
             return
         try:
             from scripts.verify_enforce_rebalance import run_and_report
@@ -372,11 +395,28 @@ class AgentOrchestrator:
         except Exception:
             target_weekday = 0  # Monday default
 
+        # First TRADING day on or after this week's configured weekday — so a holiday
+        # delays the rebalance by a day instead of cancelling it for the week. The
+        # frozen CH0a baseline rebalances on a 5-TRADING-day grid that never skips a
+        # holiday week, so skipping was a live-vs-backtest divergence several times a
+        # year. See app/live_trading/rebalance_schedule.py.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
-            logger.debug("trend rebalance: not the configured weekday (%d != %d) — skip",
-                         today.weekday(), target_weekday)
+        # The week's turn is spent when we ACTUALLY rebalanced, not when the calendar
+        # says we could have — otherwise a declined anchor (transient clock error, or an
+        # unscheduled closure absent from the static holiday list) silently re-creates
+        # the 14-day gap this fallthrough exists to remove.
+        # PER-JOB state. These three weekly jobs share an anchor but are independent
+        # turns; keying them off one shared record (an earlier cut used the trend
+        # sleeve's trade rows) makes the later jobs read "already done" and skip forever.
+        from app.live_trading.rebalance_schedule import (
+            JOB_TREND, claim_turn, turn_taken_this_week)
+        due, why = is_rebalance_day(
+            today, target_weekday, turn_taken=turn_taken_this_week(JOB_TREND, today))
+        if not due:
+            logger.debug("trend rebalance: %s — skip", why)
             return
+        logger.info("trend rebalance: due today — %s", why)
 
         # Market-open guard (fail-closed: unknown/closed -> do not trade; covers holidays)
         try:
@@ -389,6 +429,14 @@ class AgentOrchestrator:
             logger.info("trend rebalance: market not open today — skip (holiday/closed)")
             return
 
+        # Claim the week BEFORE trading, and STAND DOWN if the claim is refused. The claim
+        # is the mutex (conditional upsert), so this is also what stops two orchestrator
+        # processes both trading. A refused claim means either someone else holds the week
+        # or the store is unwritable; running anyway would re-fire every remaining day —
+        # five live rebalances — with one ERROR line a day as the only symptom.
+        if not claim_turn(JOB_TREND, today):
+            logger.error("trend rebalance: could not claim this week's turn — standing down")
+            return
         logger.info("Orchestrator: triggering weekly trend rebalance")
         try:
             from app.live_trading import trend_sleeve, trend_tracker
@@ -449,11 +497,40 @@ class AgentOrchestrator:
         except Exception:
             target_weekday = 0  # Monday default
 
+        # Same holiday fallthrough as the trend rebalance. Cash MUST track it: this sleeve
+        # parks whatever the trend rebalance left idle, so a week where trend runs on the
+        # Tuesday and cash stayed pinned to Monday would leave the remainder unparked.
+        from app.live_trading.rebalance_schedule import is_rebalance_day
         today = _dt.now(_et).date() if _et else _dt.now().date()
-        if today.weekday() != target_weekday:
-            logger.debug("cash rebalance: not the configured weekday (%d != %d) — skip",
-                         today.weekday(), target_weekday)
+        # The week's turn is spent when we ACTUALLY rebalanced, not when the calendar
+        # says we could have — otherwise a declined anchor (transient clock error, or an
+        # unscheduled closure absent from the static holiday list) silently re-creates
+        # the 14-day gap this fallthrough exists to remove.
+        # PER-JOB state. These three weekly jobs share an anchor but are independent
+        # turns; keying them off one shared record (an earlier cut used the trend
+        # sleeve's trade rows) makes the later jobs read "already done" and skip forever.
+        from app.live_trading.rebalance_schedule import (
+            JOB_CASH, JOB_TREND, TurnStoreUnavailable, claim_turn,
+            leader_ran_this_week, turn_taken_this_week)
+        due, why = is_rebalance_day(
+            today, target_weekday, turn_taken=turn_taken_this_week(JOB_CASH, today))
+        if not due:
+            logger.debug("cash rebalance: %s — skip", why)
             return
+        # FOLLOW TREND. This sleeve parks what the trend rebalance left idle, so running
+        # before trend has rebalanced would sweep into T-bills against a book that is about
+        # to change. WEEK-scoped, not day-scoped: cash's weekday key is independent of
+        # trend's, and a day-scoped check made cash=1/trend=0 permanently dead.
+        # Fail-closed on an unreadable store: not parking idle cash for one week is a
+        # small, self-correcting harm; sweeping without knowing the book settled is not.
+        try:
+            if not leader_ran_this_week(JOB_TREND, today):
+                logger.info("cash rebalance: trend has not rebalanced yet this week — skip")
+                return
+        except TurnStoreUnavailable as exc:
+            logger.error("cash rebalance: cannot tell whether trend ran (%s) — skip", exc)
+            return
+        logger.info("cash rebalance: due today — %s", why)
 
         try:
             from app.integrations import get_alpaca_client
@@ -465,6 +542,9 @@ class AgentOrchestrator:
             logger.info("cash rebalance: market not open today — skip (holiday/closed)")
             return
 
+        if not claim_turn(JOB_CASH, today):   # claim before trading — see the trend job
+            logger.error("cash rebalance: could not claim this week's turn — standing down")
+            return
         logger.info("Orchestrator: triggering weekly cash rebalance")
         try:
             from app.live_trading import cash_sleeve, cash_tracker

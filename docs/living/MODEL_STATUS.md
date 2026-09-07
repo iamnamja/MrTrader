@@ -62,9 +62,10 @@ double-tilt guarded. See DECISIONS 2026-06-08.
 The validated trend sleeve (`app/strategy/tsmom.py`, standalone Sharpe **+0.71**, 19y,
 crisis-diversifier) is now wired to trade live as a **standalone weekly ETF rebalancer**
 (`app/live_trading/trend_sleeve.py`), running *alongside* PEAD — NOT a `swing_selector`
-value. Fires from the orchestrator daily at 09:45 ET, runs only on
-`pm.trend_rebalance_weekday` (default Mon) when the market is open (fail-closed via
-`AlpacaClient.get_clock`).
+value. Fires from the orchestrator daily at 09:45 ET, runs on the first
+TRADING day on or after `pm.trend_rebalance_weekday` (default Mon) within that week — a
+holiday DELAYS it to the next trading day rather than cancelling the week (2026-09-07) —
+when the market is open (fail-closed via `AlpacaClient.get_clock`).
 
 - **Deploys DORMANT + SHADOW**: `pm.trend_enabled=false`, `pm.trend_shadow=true`. Shadow
   logs would-be orders to `decision_audit` (`strategy="trend"`, `block_reason="shadow"`)
