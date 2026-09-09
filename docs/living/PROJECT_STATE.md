@@ -27,11 +27,15 @@ Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**)
 
 ⚠️ **Read a PASS narrowly:** `label_regime_day` is a deterministic rule over the model's own inputs, so macro_F1→1.0 is the ceiling by construction. The gate now catches pipeline breakage and fitting failure; it does **not** measure predictive edge.
 
-**→ NEEDS OWNER ACTION:** (a) **restart uvicorn** — the running process still has the pre-fix VIX3M code, so live `vix_term_ratio` is still computed off a 7-week-old close; (b) **CH1 enforce flip** is still pending (see below).
+**✅ Both owner actions are DONE:** uvicorn restarted 2026-09-07 (live `vix_term_ratio` now 0.8251, not the stale 0.7074), and the CH1 enforce flip landed the same day — see the CH1 section below.
 
-## ⏳ CH1 per-name gate enforce flip — DUE, awaiting the config write
+## ✅ CH1 PER-NAME GATE IS LIVE IN ENFORCE (flipped 2026-09-07; first live run 09-08 CLEAN)
 
-6 consecutive clean Mondays (07-27 → 08-31): book_corr **0.21–0.34** against a 0.90 gate, max_name_w ≤0.088, **0 would-blocks at every threshold 0.80–0.95**. The backlog's "flip after ~3–4 more clean Mondays" (07-21) is long satisfied, and the gate is nowhere near binding, so enforce is inert on the current book shape. Command: set `pm.per_name_gate_mode` = `enforce` (reverse with `shadow`). Read live — no restart needed for the flag itself.
+`pm.per_name_gate_mode='enforce'` after a 6-Monday shadow soak (07-27 → 08-31: book_corr 0.21–0.34 against a 0.90 gate, max_name_w ≤0.088, **0 would-blocks at every threshold 0.80–0.95**). Reverse with `shadow`; read live, no restart.
+
+**First live enforce rebalance — Tue 2026-09-08 — passed clean.** All three gates in `mode=enforce` OK: per-name `book_corr 0.244 / max_name_w 0.064 / heat 0.010`, whole-book OK, reconciliation OK, **`blocked=0`**. 8 names traded. Inert on the current book shape, exactly as the soak predicted.
+
+⚠️ **The flip made the weekly enforce-health email cry wolf.** `verify_enforce_rebalance.EXPECT` is a hand-maintained literal tracking this live-tunable config and still said `shadow`, so 09-08 emailed ATTENTION on a healthy book. Fixed 2026-09-09: gate modes are now RANKED (`off < shadow < enforce`) and the check flags **weaker-than-intended**, never merely different — a future flip cannot desync it into a false alarm.
 
 ## 📏 EXECUTION IS NOT THE PROBLEM (2026-09-02) — the "execution drag" number never measured execution
 

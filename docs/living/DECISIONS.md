@@ -4,6 +4,32 @@ Format: `## YYYY-MM-DD — Title` then context, decision, rationale, consequence
 
 ---
 
+## 2026-09-09 — CH1 went to enforce, and the health check that watches it started crying wolf every week
+
+**Context.** `pm.per_name_gate_mode` was flipped `shadow` → `enforce` on 2026-09-07, closing CH1 after a 6-Monday soak (07-27 → 08-31: book_corr 0.21–0.34 against a 0.90 gate, max_name_w ≤0.088, **0 would-blocks at any threshold 0.80–0.95**). The first live enforce rebalance ran **Tue 2026-09-08** and was clean: per-name `book_corr 0.244 / max_name_w 0.064 / heat 0.010`, whole-book OK, reconciliation OK, `blocked=0`, 8 names traded. The gate is inert on the current book shape, as the soak predicted.
+
+**The defect the flip exposed.** `scripts/verify_enforce_rebalance.py` — the 11:07 job that emails the weekly enforce-health PASS/ATTENTION — asserts the live config against a hand-maintained literal, `EXPECT`, which still said `"pm.per_name_gate_mode": "shadow"`. So on the very first enforce Monday it reported
+
+> `config pm.per_name_gate_mode='enforce' (expected 'shadow')`
+
+**ATTENTION on a healthy book, and it would have fired every week from then on.** A health check that cries wolf weekly is worse than no health check: it trains the owner to skim past the one email whose entire job is to be believed. The scorecard row for 09-08 was present and healthy (`mode: enforce, allow: true, would_block: false, breaches: []`), and the log records `attention=1`, so that config line was the sole item.
+
+**Decision: rank the modes and flag only WEAKER-than-intended.** `off < shadow < enforce`. The check exists to catch "we believed we were enforcing and we are not", so *different* was never the right test — *weaker* is. A gate stronger than the recorded minimum is now reported under `stronger_than_expected` and never raises ATTENTION.
+
+**Why that is the fix and not just bumping the literal.** `EXPECT` tracks a LIVE-TUNABLE DB config from a static file; the two can always drift, and bumping the value would leave the next flip to re-create the identical false alarm. Making the comparison one-directional means drift in the safe direction is silent, and only a genuine weakening pages anyone. Booleans (`trend_enabled`, `trend_shadow`) keep exact comparison — they are not a ladder.
+
+**Consequence.** 2026-09-08's report becomes a clean PASS under the new rule (pinned by a test using that exact config).
+
+**A second, worse gap fell out of writing that test.** The first version looped over a hardcoded `("whole_book_gate", "reconciliation", "per_name_gate")` tuple instead of `HOLD_REASONS`, which made both of its assertions tautologies — and hid the thing it was supposed to find: **`pm.kill_switch_sm_mode` can HOLD the trend rebalance** (`block_reason='kill_switch_sm'`) **and was monitored by nothing at all.** Set it to `off` and the weekly email still said PASS. It is now in `EXPECT_MIN_MODE` with a recorded minimum of `shadow` — deliberately weaker than its live `enforce`, because `off` (gate not consulted) is the dangerous state and recording the weaker minimum surfaces the true posture under `stronger_than_expected` rather than asserting a posture nobody signed off. The coverage test now derives from `HOLD_REASONS` itself, with `HOLD_REASONS_WITHOUT_MODE` naming the one genuine exemption (`kill_switch` is the binary cross-process stop, not a ladder) and a second test proving that exemption list cannot be used to hide a real mode config.
+
+**`stronger_than_expected` is rendered, not just computed.** It appears in `main()`'s output and in the notifier's email rows. A note nobody sees never prompts anyone to update `EXPECT_MIN_MODE`, so the literal drifts further from live — which is how this class of bug starts.
+
+**The ENFORCE-HOLD advice was itself a cry-wolf generator.** It told the operator to revert the offending gate to `shadow` if the hold looked spurious — which, under the new one-directional check, produces a weaker-than-intended ATTENTION every week until the revert is undone. It now says to lower that gate's `EXPECT_MIN_MODE` entry in the same change, so a deliberate revert is recorded rather than re-raised.
+
+**The transferable point, and it is now the fourth instance this fortnight.** A check was believed because of what it asserted, until someone read what it compared against. `slippage_drag_bps_day` measured weights, not slippage; the regime gate re-scored frozen windows; the rebalance scheduler inferred "we traded" from "the calendar was open"; and here the enforce verifier compared live config against a literal nobody updates. **The recurring shape: a check whose reference value is maintained by hand, separately from the thing it checks.**
+
+---
+
 ## 2026-09-07 — A holiday on the rebalance weekday cancelled the week instead of delaying it. The live book was running a cadence the backtest never tested, 4-5x a year.
 
 **Context.** The weekly jobs were pinned to a CALENDAR weekday and fail-closed on a market holiday, with no fallthrough:

@@ -1,8 +1,9 @@
 """verify_enforce_rebalance.py — post-rebalance verification of the FIRST enforce-mode trend
 rebalance (Mon 2026-07-13, then every Monday).
 
-Confirms three things after the ~09:45 ET Monday trend rebalance:
-  1. the enforce config is actually in force (whole-book gate + reconciliation = enforce);
+Confirms three things after the ~09:45 ET weekly trend rebalance:
+  1. the enforce config is actually in force — no gate is WEAKER than the posture we
+     intend (whole-book gate + reconciliation + per-name gate = enforce);
   2. the rebalance ran LIVE and CLEAN — no spurious enforce HOLD (whole-book gate / reconciliation
      / kill-switch) blocking a legitimate rebalance;
   3. the CH0b live-forward scorecard CAPTURED this rebalance's per-governor multipliers +
@@ -17,10 +18,45 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
-EXPECT = {"pm.whole_book_gate_mode": "enforce", "pm.reconciliation_mode": "enforce",
-          "pm.per_name_gate_mode": "shadow", "pm.trend_enabled": "true", "pm.trend_shadow": "false"}
+# Gate modes are ORDERED, and this check exists to catch "we believed we were enforcing and
+# we are not". So the test is `weaker than intended`, NOT `different from intended`.
+#
+# WHY (2026-09-08). This dict is a hand-maintained literal that has to track a LIVE-TUNABLE
+# DB config, and it drifted the moment CH1 flipped the per-name gate shadow -> enforce: the
+# gate got STRONGER, the literal still said "shadow", and the weekly enforce-health email
+# reported ATTENTION on a healthy book. A health check that cries wolf every week is worse
+# than no health check, because it trains the owner to ignore it. Ranking the modes makes
+# the alarm one-directional: a gate stronger than recorded is reported, never flagged, so a
+# future flip cannot desync this file into a false alarm again.
+_MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
+
+# The MINIMUM posture each gate must be in.
+EXPECT_MIN_MODE = {
+    "pm.whole_book_gate_mode": "enforce",
+    "pm.reconciliation_mode": "enforce",
+    "pm.per_name_gate_mode": "enforce",     # CH1 flipped 2026-09-07 after a 6-Monday soak
+    # Can HOLD a rebalance (block_reason 'kill_switch_sm', trend_sleeve.py) and was
+    # monitored by NOTHING until 2026-09-09 — turn it off and the weekly email still said
+    # PASS. Minimum is 'shadow' rather than its live 'enforce' deliberately: 'off' means
+    # the gate is not consulted at all, which is the dangerous weakening, and recording the
+    # weaker minimum surfaces the real posture under `stronger_than_expected` instead of
+    # asserting a posture the owner has not signed off here.
+    "pm.kill_switch_sm_mode": "shadow",
+}
+
+# HOLD reasons with NO mode config of their own. `kill_switch` is the binary
+# `kill_switch.is_active` cross-process stop, not an off/shadow/enforce ladder, so it
+# cannot appear in EXPECT_MIN_MODE. Listed explicitly so the coverage test stays honest
+# rather than silently skipping whatever it cannot map.
+HOLD_REASONS_WITHOUT_MODE = {"kill_switch"}
+
+# Non-mode flags, compared exactly — these are booleans, not a ladder.
+EXPECT_EXACT = {"pm.trend_enabled": "true", "pm.trend_shadow": "false"}
+
+# Back-compat for callers/tests that introspect the old name.
+EXPECT = {**EXPECT_MIN_MODE, **EXPECT_EXACT}
 HOLD_REASONS = {"whole_book_gate", "reconciliation", "per_name_gate", "kill_switch", "kill_switch_sm"}
 
 
@@ -43,7 +79,21 @@ def check() -> dict:
         from app.database.agent_config import get_agent_config
         from app.database.session import get_session
         with get_session() as db:
-            for k, want in EXPECT.items():
+            for k, want in EXPECT_MIN_MODE.items():
+                got = str(get_agent_config(db, k) or "").strip().lower()
+                rep["config"][k] = got
+                got_rank = _MODE_RANK.get(got)
+                want_rank = _MODE_RANK[want]
+                if got_rank is None:
+                    flag(f"config {k}={got!r} is not a recognised mode "
+                         f"(expected at least {want!r})")
+                elif got_rank < want_rank:
+                    flag(f"config {k}={got!r} is WEAKER than {want!r}")
+                elif got_rank > want_rank:
+                    # Stronger than recorded: worth saying, never worth alarming.
+                    rep.setdefault("stronger_than_expected", []).append(
+                        f"{k}={got!r} (recorded minimum {want!r})")
+            for k, want in EXPECT_EXACT.items():
                 got = str(get_agent_config(db, k) or "").strip().lower()
                 rep["config"][k] = got
                 if got != want:
@@ -99,8 +149,10 @@ def check() -> dict:
         held = HOLD_REASONS & set(reasons)
         if held:
             flag(f"ENFORCE HOLD detected (block_reason {sorted(held)}) — VERIFY this is a REAL "
-                 f"breach, not a spurious hold; one-line revert if spurious: set the mode back to "
-                 f"'shadow' via set_agent_config")
+                 f"breach, not a spurious hold. If spurious, revert that gate to 'shadow' via "
+                 f"set_agent_config AND lower its EXPECT_MIN_MODE entry here in the same change, "
+                 f"so the deliberate revert is recorded rather than re-raised as a weaker-than-"
+                 f"intended ATTENTION every week")
     except Exception as exc:  # noqa: BLE001
         flag(f"could not read decisions: {exc}")
 
@@ -127,6 +179,8 @@ def main() -> int:
     print(f"  config:    {rep['config']}")
     print(f"  scorecard: {rep['scorecard']}")
     print(f"  decisions: {rep['decisions']}")
+    for s_ in rep.get("stronger_than_expected", []):
+        print(f"    - note: stronger than recorded — {s_}")
     for a in rep["attention"]:
         print(f"    - ATTENTION: {a}")
     return 0 if rep["status"] == "OK" else 2
