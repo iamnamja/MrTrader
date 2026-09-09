@@ -512,6 +512,11 @@ def render(event_type: str, p: dict[str, Any]) -> tuple[str, str]:
                                    if sc.get("present") else "NO row yet"),
             ("Decisions today", p.get("decisions")),
         ]
+        # Reported, never alarming: a gate stronger than the recorded minimum is healthy,
+        # but it must be VISIBLE or EXPECT_MIN_MODE never gets updated and the literal
+        # drifts further from the live config.
+        if p.get("stronger_than_expected"):
+            rows.append(("Stronger than recorded", "; ".join(p["stronger_than_expected"])))
         if p.get("attention"):
             rows.append(("⚠ ATTENTION", "; ".join(p["attention"])))
         body = _section("CH5 — post-rebalance ENFORCE verification (config in force + CH0b scorecard "

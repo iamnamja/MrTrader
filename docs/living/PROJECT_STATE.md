@@ -27,7 +27,7 @@ Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**)
 
 ⚠️ **Read a PASS narrowly:** `label_regime_day` is a deterministic rule over the model's own inputs, so macro_F1→1.0 is the ceiling by construction. The gate now catches pipeline breakage and fitting failure; it does **not** measure predictive edge.
 
-**→ NEEDS OWNER ACTION:** (a) **restart uvicorn** — the running process still has the pre-fix VIX3M code, so live `vix_term_ratio` is still computed off a 7-week-old close; (b) **CH1 enforce flip** is still pending (see below).
+**✅ Both owner actions are DONE:** uvicorn restarted 2026-09-07 (live `vix_term_ratio` now 0.8251, not the stale 0.7074), and the CH1 enforce flip landed the same day — see the CH1 section below.
 
 ## ✅ CH1 PER-NAME GATE IS LIVE IN ENFORCE (flipped 2026-09-07; first live run 09-08 CLEAN)
 
@@ -36,33 +36,6 @@ Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**)
 **First live enforce rebalance — Tue 2026-09-08 — passed clean.** All three gates in `mode=enforce` OK: per-name `book_corr 0.244 / max_name_w 0.064 / heat 0.010`, whole-book OK, reconciliation OK, **`blocked=0`**. 8 names traded. Inert on the current book shape, exactly as the soak predicted.
 
 ⚠️ **The flip made the weekly enforce-health email cry wolf.** `verify_enforce_rebalance.EXPECT` is a hand-maintained literal tracking this live-tunable config and still said `shadow`, so 09-08 emailed ATTENTION on a healthy book. Fixed 2026-09-09: gate modes are now RANKED (`off < shadow < enforce`) and the check flags **weaker-than-intended**, never merely different — a future flip cannot desync it into a false alarm.
-
-## 📅 REBALANCE NO LONGER SKIPS A HOLIDAY WEEK (2026-09-07)
-
-A holiday on the rebalance weekday used to **cancel** the week, not delay it — Labor Day put **14 days** between the 08-31 and 09-14 trend rebalances. The frozen CH0a baseline (`mean_sharpe 0.7009`) rebalances on a 5-**trading**-day grid that never skips a holiday week, so the live book was running an untested cadence 4-5x/year. Measured: 2026 had 48 live turns with four 14-day gaps (2027: 47/five); corrected = **52 turns, max gap 8 days** both years.
-
-Now: **the week's turn is the trading day nearest its anchor (forward first, else backward), and it is spent only when the JOB ITSELF RAN** — a per-job `weekly_turn` record, claimed after the market-open gate and before any work (at-most-once; a crash loses the week rather than risking a second pass over placed orders). All three weekly jobs (trend 09:45, cash 09:50, enforce-verify 11:07) keep their own turn — an earlier cut shared one record and would have disabled cash and the verify **permanently** — and cash + verify additionally require that **trend claimed its turn today**, so they cannot run against a rebalance that has not happened. The claim is a conditional upsert (a real mutex, not check-then-write across a network call), and a refused claim stands the job down rather than letting it re-fire daily. Alpaca-clock fail-closed check unchanged at every site. A **declined** anchor — clock error, or an unscheduled closure the static holiday list doesn't know — is retried later that week; a week missed to an **app outage** likewise. An unreadable store degrades to the conservative calendar-only rule.
-
-**⚠️ Takes effect only after an orchestrator restart** (scheduler code). Next turn is Mon 2026-09-14 either way; the first behaviour change lands on the next Monday holiday.
-
-## ✅ REGIME SUBSYSTEM REPAIRED (2026-09-06) — the gate could not fail, and the data under it had been frozen since May
-
-Started as a stale version number in MODEL_STATUS (said v40; live loads **v42**). Underneath were **four stacked defects, each hiding the next**:
-
-1. **`_FOLDS` hardcoded**, last test window ending 2026-04-30 → the walk-forward re-scored the same three windows weekly. **v35→v42 all recorded byte-identical `0.9563 / 0.9062 / 0.0569`.** The promotion gate was evaluated against a constant — it could not fail.
-2. **Training set frozen at 2026-05-07.** `load_dataset` filters `snapshot_trigger=="backfill"`; the backfill stopped. The 113 daily snapshots since are `premarket`/`startup_catchup` and were filtered out. Four months of weekly "retrains" re-fit the same 2179 rows.
-3. **`train_end` recorded the requested `date.today()`, not the data's max** — so the registry claimed data it did not have. **This is what hid #2.**
-4. **`vix_term_ratio` was live and wrong.** No FRED backstop for `^VIX3M` + no staleness bound; `.iloc[-1]` carries the last close forward forever. `build(2026-09-04)` returned **0.7074** off the **2026-07-17** close; truth is 14.53/17.61 = **0.8251**. Feeds `label_regime_day` and the sizing model. Same yfinance rot #674 fixed for the crash governor — **patched in one consumer, not the other.**
-
-**Fixed:** staleness-bounded `_vix3m_as_of()` with FRED fallback (bit-identical on 12 historical dates — purely additive); `build_folds(data_end)` = 3 frozen folds + 1 rolling, with a loud WARN if the rolling fold goes missing; honest `train_end`; snapshots backfilled to 2026-09-04 (0 NULL vix_term). **Gate PASSES** (`0.906/0.963/1.000/1.000`); folds 1–3 reproduce history exactly, so nothing is blocked. **No model promoted** — next weekly retrain (Fri 17:30) picks it up. Suite 4593 pass / 0 fail.
-
-⚠️ **Read a PASS narrowly:** `label_regime_day` is a deterministic rule over the model's own inputs, so macro_F1→1.0 is the ceiling by construction. The gate now catches pipeline breakage and fitting failure; it does **not** measure predictive edge.
-
-**→ NEEDS OWNER ACTION:** (a) **restart uvicorn** — the running process still has the pre-fix VIX3M code, so live `vix_term_ratio` is still computed off a 7-week-old close; (b) **CH1 enforce flip** is still pending (see below).
-
-## ⏳ CH1 per-name gate enforce flip — DUE, awaiting the config write
-
-6 consecutive clean Mondays (07-27 → 08-31): book_corr **0.21–0.34** against a 0.90 gate, max_name_w ≤0.088, **0 would-blocks at every threshold 0.80–0.95**. The backlog's "flip after ~3–4 more clean Mondays" (07-21) is long satisfied, and the gate is nowhere near binding, so enforce is inert on the current book shape. Command: set `pm.per_name_gate_mode` = `enforce` (reverse with `shadow`). Read live — no restart needed for the flag itself.
 
 ## 📏 EXECUTION IS NOT THE PROBLEM (2026-09-02) — the "execution drag" number never measured execution
 

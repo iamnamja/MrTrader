@@ -58,8 +58,10 @@ def _patch(monkeypatch, *, config, scorecard_rows, decision_rows):
                         lambda since=None: scorecard_rows)
 
 
+# The real live posture as of 2026-09-09.
 _ENFORCE = {"pm.whole_book_gate_mode": "enforce", "pm.reconciliation_mode": "enforce",
-            "pm.per_name_gate_mode": "enforce",   # CH1 flipped 2026-09-07
+            "pm.per_name_gate_mode": "enforce",     # CH1 flipped 2026-09-07
+            "pm.kill_switch_sm_mode": "enforce",    # recorded minimum is 'shadow'
             "pm.trend_enabled": "true", "pm.trend_shadow": "false"}
 
 
@@ -195,11 +197,63 @@ def test_the_live_posture_from_2026_09_08_is_clean(monkeypatch):
     assert rep["attention"] == []
 
 
-def test_expect_min_mode_covers_every_gate_the_hold_reasons_name():
-    """A gate that can HOLD a rebalance but has no expected posture is unmonitored."""
-    from scripts.verify_enforce_rebalance import EXPECT_MIN_MODE, HOLD_REASONS
+def test_every_hold_reason_is_either_monitored_or_explicitly_exempt():
+    """A gate that can HOLD a rebalance but has no expected posture is unmonitored — the
+    weekly email says PASS while it sits at 'off'. Derived from HOLD_REASONS itself; an
+    earlier version looped over a hardcoded tuple, which made both asserts tautologies and
+    hid exactly that gap for `pm.kill_switch_sm_mode`."""
+    from scripts.verify_enforce_rebalance import (
+        EXPECT_MIN_MODE, HOLD_REASONS, HOLD_REASONS_WITHOUT_MODE)
 
     monitored = {k.removeprefix("pm.").removesuffix("_mode") for k in EXPECT_MIN_MODE}
-    for reason in ("whole_book_gate", "reconciliation", "per_name_gate"):
-        assert reason in HOLD_REASONS
-        assert reason in monitored or reason.replace("_gate", "") in monitored
+    for reason in HOLD_REASONS:
+        assert reason in monitored or reason in HOLD_REASONS_WITHOUT_MODE, (
+            f"{reason!r} can HOLD a rebalance but has no EXPECT_MIN_MODE entry and is not "
+            f"listed in HOLD_REASONS_WITHOUT_MODE")
+
+
+def test_the_exemption_list_does_not_hide_a_real_mode_config():
+    """HOLD_REASONS_WITHOUT_MODE must only contain reasons that genuinely have no
+    off/shadow/enforce config, or it becomes a way to silence the coverage test."""
+    from app.database.agent_config import CONFIG_SCHEMA
+    from scripts.verify_enforce_rebalance import HOLD_REASONS_WITHOUT_MODE
+
+    keys = {c["key"] for c in CONFIG_SCHEMA}
+    for reason in HOLD_REASONS_WITHOUT_MODE:
+        assert f"pm.{reason}_mode" not in keys, (
+            f"pm.{reason}_mode exists as a config — it should be monitored, not exempt")
+
+
+def test_kill_switch_sm_off_is_flagged(monkeypatch):
+    """The gap the tautological test hid: this gate HOLDs the trend rebalance."""
+    from scripts.verify_enforce_rebalance import check
+
+    _patch(monkeypatch, config=_cfg(**{"pm.kill_switch_sm_mode": "off"}),
+           scorecard_rows=[_good_row()], decision_rows=[_Row("enter")])
+    rep = check()
+    assert any("WEAKER" in a and "kill_switch_sm" in a for a in rep["attention"])
+
+
+def test_stronger_than_expected_is_rendered_not_just_computed(monkeypatch):
+    """A note nobody sees never prompts anyone to update EXPECT_MIN_MODE, so the literal
+    drifts further from live — which is how this whole class of bug starts."""
+    import inspect
+    import scripts.verify_enforce_rebalance as v
+    from app.notifications import notifier
+
+    assert "stronger_than_expected" in inspect.getsource(v.main)
+    assert "stronger_than_expected" in inspect.getsource(notifier)
+
+
+def test_hold_advice_does_not_recommend_creating_a_false_alarm(monkeypatch):
+    """The message used to say 'revert the mode to shadow' with no mention of lowering the
+    expectation — following it produced a weaker-than-intended ATTENTION every week, the
+    exact cry-wolf pattern this file was fixed to remove."""
+    from scripts.verify_enforce_rebalance import check
+
+    _patch(monkeypatch, config=_ENFORCE, scorecard_rows=[_good_row()],
+           decision_rows=[_Row("block", block_reason="per_name_gate")])
+    rep = check()
+    hold = [a for a in rep["attention"] if "ENFORCE HOLD" in a]
+    assert hold, "a real HOLD must still be flagged"
+    assert "EXPECT_MIN_MODE" in hold[0]

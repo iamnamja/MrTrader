@@ -37,7 +37,20 @@ EXPECT_MIN_MODE = {
     "pm.whole_book_gate_mode": "enforce",
     "pm.reconciliation_mode": "enforce",
     "pm.per_name_gate_mode": "enforce",     # CH1 flipped 2026-09-07 after a 6-Monday soak
+    # Can HOLD a rebalance (block_reason 'kill_switch_sm', trend_sleeve.py) and was
+    # monitored by NOTHING until 2026-09-09 — turn it off and the weekly email still said
+    # PASS. Minimum is 'shadow' rather than its live 'enforce' deliberately: 'off' means
+    # the gate is not consulted at all, which is the dangerous weakening, and recording the
+    # weaker minimum surfaces the real posture under `stronger_than_expected` instead of
+    # asserting a posture the owner has not signed off here.
+    "pm.kill_switch_sm_mode": "shadow",
 }
+
+# HOLD reasons with NO mode config of their own. `kill_switch` is the binary
+# `kill_switch.is_active` cross-process stop, not an off/shadow/enforce ladder, so it
+# cannot appear in EXPECT_MIN_MODE. Listed explicitly so the coverage test stays honest
+# rather than silently skipping whatever it cannot map.
+HOLD_REASONS_WITHOUT_MODE = {"kill_switch"}
 
 # Non-mode flags, compared exactly — these are booleans, not a ladder.
 EXPECT_EXACT = {"pm.trend_enabled": "true", "pm.trend_shadow": "false"}
@@ -136,8 +149,10 @@ def check() -> dict:
         held = HOLD_REASONS & set(reasons)
         if held:
             flag(f"ENFORCE HOLD detected (block_reason {sorted(held)}) — VERIFY this is a REAL "
-                 f"breach, not a spurious hold; one-line revert if spurious: set the mode back to "
-                 f"'shadow' via set_agent_config")
+                 f"breach, not a spurious hold. If spurious, revert that gate to 'shadow' via "
+                 f"set_agent_config AND lower its EXPECT_MIN_MODE entry here in the same change, "
+                 f"so the deliberate revert is recorded rather than re-raised as a weaker-than-"
+                 f"intended ATTENTION every week")
     except Exception as exc:  # noqa: BLE001
         flag(f"could not read decisions: {exc}")
 
@@ -164,6 +179,8 @@ def main() -> int:
     print(f"  config:    {rep['config']}")
     print(f"  scorecard: {rep['scorecard']}")
     print(f"  decisions: {rep['decisions']}")
+    for s_ in rep.get("stronger_than_expected", []):
+        print(f"    - note: stronger than recorded — {s_}")
     for a in rep["attention"]:
         print(f"    - ATTENTION: {a}")
     return 0 if rep["status"] == "OK" else 2
